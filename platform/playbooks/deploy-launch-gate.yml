@@ -1,0 +1,487 @@
+---
+# deploy-launch-gate.yml — launch-gate deploy (composable). The gate between the agents and Semaphore
+# (skynet-launch-containment, Phase 3, tasks 3.2 and 3.3).
+#
+# Phase 1: Refuse invalid inputs before anything changes. Compute the template allowlist from OPA's catalog
+#          (policies/agentcloud/data.json) and platform/semaphore/templates.yml through the launch_gate_allowlist
+#          filter (drift in either file fails the run here). Place the repo. manage-secrets: caller_skynet_token
+#          is generated once into OpenBao and reused; semaphore_api_token is the svc-launch-gate account's token,
+#          read and never generated (provision-launch-gate-semaphore-access.yml must run first). Template .env (the
+#          tokens, as environment) and config.json (URLs, allowlist, caller map, no token). Issue the listener's
+#          server leaf from step-ca (the key is made on this host) and distribute the trust bundle into ./certs.
+# Phase 2: deploy.sh (container lifecycle only): pull, change-aware start, wait for running.
+# Phase 3: Verify through the TLS listener. From this host: /healthz answers 200 against the step-ca bundle, and
+#          plain HTTP does not answer 200. Inside the container, with the caller token read from the container's
+#          own environment (never from argv or the task output): an unauthenticated launch is refused 401
+#          unauthorized, a caller launching a template outside the allowlist is refused 403 template_not_allowed,
+#          and a launch of an allowlisted template with an undeclared survey field is refused 400 undeclared_field
+#          (the gate reads the template from Semaphore on that path, and creates no task).
+#
+# The listener publishes on launch_gate_bind:launch_gate_port (127.0.0.1:8443 by default); the container listens on
+# 8443. Production declares the VM's LAN address, which the host firewall admits to the callers only. Outside
+# local_mode the bind must be a non-loopback IPv4 address.
+#
+# Listener TLS (every mode, the gate has no plain-HTTP listener): internal_leaves declares one entry named
+# launch_gate_server_leaf (profile server, reload none, this host, dir <deploy>/certs/<leaf>, sans including
+# launch_gate_tls_server_name). The gate re-reads its certificate itself, so a renewal needs no reload.
+# Local-dev declares that entry in a later change; until then a local deploy refuses here, by design.
+#
+# Deploy order on a host: provision-launch-gate-semaphore-access.yml (once, writes the token this deploy reads) ->
+# Deploy launch-gate -> skynet's route to the gate (a later change). The caller tokens are generated here and
+# handed to each caller out of band (Back Up Credentials to site-config).
+#
+# Plan: openspec change skynet-launch-containment, tasks 3.2 and 3.3 (plan/development/openspec/changes/
+# skynet-launch-containment/tasks.md).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# A play over no hosts exits 0 and records a deploy that did nothing as a success
+# (docs/MISTAKES.md 2.21), so refuse an absent or empty group first.
+- name: "Pre-flight: launch_gate_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: launch_gate_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: launch_gate_svc
+
+# ── Phase 1: Refuse invalid inputs, place repo + secrets + env + certificates ─────────────
+- name: "Phase 1: Place repo + manage launch-gate secrets and certificates"
+  hosts: launch_gate_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    # place-monorepo.yml asserts _branch is defined outside local_mode. Production clones service_branch.
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _engine: "{{ container_engine | default('podman') }}"
+    # Local-dev only when the inventory says so AND the host is a local-dev host (<name>-local), as
+    # tasks/clean-service.yml derives it: an extra var `-e local_mode=true` on a production launch cannot
+    # lift the bind, URL and step-ca refusals below.
+    _launch_gate_local_mode: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    # The rendered values. Each `_launch_gate_*` is read by env.j2 or config.json.j2 under that name.
+    # The listener's bind, port, leaf and name use a plain default(), as renew-internal-certs.yml's
+    # listener table does: an inventory value set to '' is then the same value to the deploy and to the
+    # renewal proof, and the refusals below reject it, instead of the deploy quietly using a default
+    # the renewal does not.
+    _launch_gate_image: "{{ launch_gate_image | default('', true) | string }}"
+    _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1') | string }}"
+    _launch_gate_port: "{{ launch_gate_port | default('8443') | string }}"
+    _launch_gate_semaphore_url: "{{ launch_gate_semaphore_url | default('', true) | string }}"
+    _launch_gate_semaphore_project: "{{ launch_gate_semaphore_project | default('', true) | string }}"
+    _launch_gate_opa_url: "{{ launch_gate_opa_url | default('', true) | string }}"
+    _launch_gate_server_leaf: "{{ launch_gate_server_leaf | default('launch-gate-server') | string }}"
+    _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
+    # Callers and the agents each may act as. Adding a caller is an inventory change AND a change to
+    # _launch_gate_token_callers below: each caller's token is a literal secret definition (check-secrets reads
+    # this file as text, so a computed declaration cannot be evaluated there).
+    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']}, true) }}"
+    _launch_gate_token_callers: ['skynet']
+    # The OpenBao path is secret/services/launch-gate (manage-secrets derives it from service_name).
+    # caller_skynet_token is generated once and reused; semaphore_api_token is type existing, NEVER generated: it
+    # is written by provision-launch-gate-semaphore-access.yml, and _required_existing_secrets stops the run before any
+    # OpenBao write when it is absent. The monorepo is already placed by then, which is harmless and re-run safe.
+    _secret_definitions:
+      - { name: caller_skynet_token, type: random, length: 48 }
+      - { name: semaphore_api_token, type: existing }
+    _required_existing_secrets: [semaphore_api_token]
+    _env_templates:
+      - { src: env.j2, dest: .env, mode: "0600" }
+      - { src: config.json.j2, dest: config.json, mode: "0644" }
+
+  tasks:
+    # Read-only check of the credential path before anything is written.
+    - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # Inputs are refused BEFORE the repo is placed or any OpenBao write happens. Each refusal names its variable
+    # and the fix. The regexes end in `$` and each value is also checked for length, because `$` also matches
+    # before a trailing newline and these values are written raw into .env.
+    - name: "Refuse launch_gate_image unless it is a digest-pinned official Python image"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_image is match('^docker[.]io/library/python@sha256:[0-9a-f]{64}$')
+          - (_launch_gate_image | length) == 96
+        fail_msg: >-
+          launch_gate_image must be a digest-pinned reference of the form
+          docker.io/library/python@sha256:<64 lowercase hex>, the official Python image's digest. A tag drifts
+          and is refused. Set it in the inventory and re-run.
+
+    - name: "Refuse launch_gate_bind unless it is one non-wildcard IPv4 address"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_bind is match('^(?!0[.]0[.]0[.]0$)((0|[1-9][0-9]{0,2})[.]){3}(0|[1-9][0-9]{0,2})$')
+          - (_launch_gate_bind | length) <= 15
+          - ((_launch_gate_bind.split('.')) | map('int') | max) <= 255
+        fail_msg: >-
+          launch_gate_bind must be one IPv4 address to publish the gate on: 127.0.0.1 by default, or the VM's
+          own LAN address in production. 0.0.0.0 is refused. Set it in the inventory and re-run.
+
+    # Production publishes for the callers on other VMs, so the loopback default leaves the gate unreachable
+    # while every probe here (inside the container, and the host probe on loopback) still passes.
+    - name: "Refuse a production run whose launch_gate_bind is loopback"
+      ansible.builtin.assert:
+        that:
+          - not (_launch_gate_bind is match('^127[.]'))
+        fail_msg: >-
+          Production launch-gate must publish on the VM's own LAN address so skynet can reach it: declare
+          launch_gate_bind (not a 127.x address) in the inventory and re-run.
+      when: not _launch_gate_local_mode
+
+    - name: "Refuse launch_gate_port unless it is a whole port number from 1024 to 65535"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_port is match('^[0-9]{4,5}$')
+          - (_launch_gate_port | int) >= 1024
+          - (_launch_gate_port | int) <= 65535
+        fail_msg: >-
+          launch_gate_port must be a whole port number from 1024 to 65535 (8443 by default). Set it in the
+          inventory and re-run.
+
+    - name: "Refuse launch_gate_semaphore_url unless it is https (http only under local_mode)"
+      ansible.builtin.assert:
+        that:
+          - (_launch_gate_semaphore_url is match('^https://')) or (_launch_gate_local_mode and (_launch_gate_semaphore_url is match('^http://')))
+        fail_msg: >-
+          launch_gate_semaphore_url must be an https:// URL (the Semaphore API the gate launches through). It may
+          be http:// only under local_mode. Set it in the inventory and re-run.
+
+    - name: "Refuse launch_gate_opa_url unless it is https (http only under local_mode)"
+      ansible.builtin.assert:
+        that:
+          - (_launch_gate_opa_url is match('^https://')) or (_launch_gate_local_mode and (_launch_gate_opa_url is match('^http://')))
+        fail_msg: >-
+          launch_gate_opa_url must be an https:// URL (the OPA decision API the gate asks before each launch). It
+          may be http:// only under local_mode. Set it in the inventory and re-run.
+
+    - name: "Refuse launch_gate_semaphore_project unless it is a positive integer id"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_semaphore_project is match('^[1-9][0-9]*$')
+        fail_msg: >-
+          launch_gate_semaphore_project must be the integer id of the agent-cloud project in Semaphore (a
+          positive whole number, not a name or a boolean). Set it in the inventory and re-run.
+
+    # The config refuses a caller name the token list does not cover, so this refusal is what keeps a
+    # rendered config from naming a caller whose token was never generated.
+    - name: "Refuse launch_gate_callers unless every caller has a literal token and a non-empty agent list"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_callers is mapping
+          - (_launch_gate_callers | length) > 0
+          - (_launch_gate_callers.keys() | list | difference(_launch_gate_token_callers) | length) == 0
+          - _launch_gate_callers.keys() | reject('match', '^[a-z][a-z0-9-]{0,31}$') | list | length == 0
+          - _launch_gate_callers.values() | select('string') | list | length == 0
+          - _launch_gate_callers.values() | select('mapping') | list | length == 0
+          - (_launch_gate_callers.values() | map('length') | min) > 0
+        fail_msg: >-
+          launch_gate_callers must map each caller name (lowercase, hyphens, at most 32 characters) to a non-empty
+          list of agent names. Every caller must also have a token declared in _launch_gate_token_callers and
+          _secret_definitions in this playbook; a caller without one is refused here, before anything is written.
+
+    - name: "Refuse a production deploy without exactly one step_ca_svc host to sign the server leaf"
+      ansible.builtin.assert:
+        that:
+          - groups.get('step_ca_svc', []) | length == 1
+        fail_msg: >-
+          Production launch-gate needs exactly one step_ca_svc host to sign its server leaf (it holds
+          {{ groups.get('step_ca_svc', []) | length }}).
+        quiet: true
+      when: not _launch_gate_local_mode
+
+    # The server leaf is declared once, for this host, in site-config's internal_leaves. The mint and the
+    # distribution below read that declaration, so the directory and the SAN are fixed here, before anything is
+    # issued. Every check is a refusal before anything changes.
+    - name: "Refuse a deploy whose internal_leaves does not declare the server leaf for this host"
+      ansible.builtin.assert:
+        that:
+          - _lg_leaf_decl | length == 1
+          - _lg_leaf_decl[0].profile == 'server'
+          - _lg_leaf_decl[0].host == inventory_hostname
+          - _lg_leaf_decl[0].dir == _deploy_dir ~ '/certs/' ~ _launch_gate_server_leaf
+          - _lg_leaf_decl[0].reload == 'none'
+          - _launch_gate_tls_name in (_lg_leaf_decl[0].sans | default([]))
+          - _launch_gate_server_leaf is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+        fail_msg: >-
+          internal_leaves must declare `{{ _launch_gate_server_leaf }}` once (profile server, host
+          {{ inventory_hostname }}, dir {{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}, reload none, sans
+          including {{ _launch_gate_tls_name }}). Local-dev declares it in a later change; until then a local
+          deploy refuses here.
+        quiet: true
+      vars:
+        _lg_leaf_decl: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _launch_gate_server_leaf) | list }}"
+
+    # The allowlist is the one place a template name reaches the gate's config. It is built from OPA's catalog
+    # (the filter's source of truth) and templates.yml, and the filter fails on any name either file does not
+    # declare, so a drifted catalog stops the run before the config is rendered.
+    - name: "Hold the agent identities the callers may act as"
+      ansible.builtin.set_fact:
+        _launch_gate_agents: "{{ _launch_gate_callers.values() | list | flatten | unique | list }}"
+
+    - name: "Compute the launch allowlist from OPA's catalog and templates.yml (drift fails here)"
+      ansible.builtin.set_fact:
+        _launch_gate_allowlist: >-
+          {{ lookup('ansible.builtin.file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json
+             | launch_gate_allowlist(lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates.yml') | from_yaml,
+                                      _launch_gate_agents) }}
+
+    - name: "Refuse an empty launch allowlist"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_allowlist | length > 0
+        fail_msg: "The launch allowlist is empty for the callers' agents: the gate would refuse every launch. Check the caller map."
+        quiet: true
+
+    # Phase 3 probes through these: a caller, its first agent, and the first allowlisted template. The
+    # allowlist is sorted, so the choice is stable across runs.
+    - name: "Hold the caller and template the verify play probes with"
+      ansible.builtin.set_fact:
+        _launch_gate_probe_caller: "{{ _launch_gate_callers.keys() | list | sort | first }}"
+        _launch_gate_probe_template: "{{ _launch_gate_allowlist[0] }}"
+
+    - name: "Hold the agent the verify play probes with (the probe caller's first agent)"
+      ansible.builtin.set_fact:
+        _launch_gate_probe_agent: "{{ _launch_gate_callers[_launch_gate_probe_caller][0] }}"
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Manage secrets and template the env file and config"
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+
+    # The server leaf: key generated on this host, signed by the one step_ca_svc host (production) or by the
+    # local CA on this host (local_mode). An issued leaf is kept (_mint_reissue false); renewal is Renew Internal
+    # Certs' job. Safe under --check.
+    - name: "Issue the server leaf (key here, signed on the CA host)"
+      ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
+      vars:
+        _mint_name: "{{ _launch_gate_server_leaf }}"
+        _mint_ca_host: "{{ groups['step_ca_svc'] | first if not _launch_gate_local_mode else inventory_hostname }}"
+        _mint_reissue: false
+
+    # The trust bundle (root + intermediate) the verify play and the gate's own CA check read from ./certs.
+    - name: "Distribute the step-ca trust bundle into ./certs"
+      ansible.builtin.include_tasks: tasks/distribute-ca-root.yml
+      vars:
+        _ca_root_dest_dir: "{{ _deploy_dir }}"
+        _ca_host: "{{ groups['step_ca_svc'] | first if not _launch_gate_local_mode else inventory_hostname }}"
+
+    - name: "Read the issued server leaf and the trust bundle"
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}/current/cert.pem"
+        - "{{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}/current/key.pem"
+        - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+      register: _launch_gate_tls_files
+
+    # A check-mode run writes nothing, so the files are expected to be absent there.
+    - name: "Refuse a deploy before its leaf and trust bundle are on the host"
+      ansible.builtin.assert:
+        that: _launch_gate_tls_files.results | rejectattr('stat.exists') | list | length == 0
+        fail_msg: >-
+          Missing on {{ inventory_hostname }}: {{ _launch_gate_tls_files.results | rejectattr('stat.exists')
+          | map(attribute='item') | join(', ') }}.
+        quiet: true
+      when: not ansible_check_mode
+
+# ── Phase 2: Container lifecycle ────────────────────────────────────────────────────────────
+- name: "Phase 2: Start launch-gate"
+  hosts: launch_gate_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _engine: "{{ container_engine | default('podman') }}"
+
+  tasks:
+    - name: "Run deploy.sh (container lifecycle)"
+      ansible.builtin.shell: |
+        cd "{{ _deploy_dir }}"
+        bash deploy.sh
+      environment:
+        CONTAINER_ENGINE: "{{ _engine }}"
+        # The same derivation as Phase 1: the public flag alone never selects local-dev here.
+        LOCAL_MODE: "{{ 'true' if ((local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z'))) else '' }}"
+        # Force the compose provider on the Mac-direct genesis path; empty on the Semaphore path.
+        COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
+        # and image matches.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
+      register: _deploy
+      # deploy.sh recreates only when its inputs or images changed (common.sh compose_up_if_changed) and says
+      # which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
+      when: not ansible_check_mode
+
+    - name: "Show deploy.sh output"
+      ansible.builtin.debug:
+        var: _deploy.stdout_lines
+
+# ── Phase 3: Verify ─────────────────────────────────────────────────────────────────────────
+- name: "Phase 3: Verify launch-gate"
+  hosts: launch_gate_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # These three are the same defaults Phase 1 renders. Keep them in step with that play (test_launch_gate_playbooks.bats).
+    _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1') | string }}"
+    _launch_gate_port: "{{ launch_gate_port | default('8443') | string }}"
+    _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
+    # curl, not uri: --resolve sends the declared name to the bind address, while the certificate is still
+    # verified against that name and the step-ca bundle. The body is discarded; only the status is read.
+    _tls_args:
+      - curl
+      - --silent
+      - --show-error
+      - --max-time
+      - "10"
+      - --output
+      - /dev/null
+      - --write-out
+      - "%{http_code}"
+      - --resolve
+      - "{{ _launch_gate_tls_name }}:{{ _launch_gate_port }}:{{ _launch_gate_bind }}"
+      - --cacert
+      - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
+
+  tasks:
+    - name: "Health over TLS from this host (GET /healthz -> 200, against the step-ca bundle)"
+      ansible.builtin.command:
+        argv: "{{ _tls_args + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ '/healthz'] }}"
+      register: _launch_gate_health
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      retries: 10
+      delay: 3
+      until: _launch_gate_health.stdout | trim == '200'
+      # A dry run starts nothing, and before the first deploy there is no bundle or listener to probe.
+      when: not ansible_check_mode
+
+    - name: "Assert the TLS listener answered 200 to /healthz"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_health.stdout | trim == '200'
+        fail_msg: "launch-gate /healthz over TLS answered {{ _launch_gate_health.stdout | trim }}, not 200 (curl rc {{ _launch_gate_health.rc }})."
+      when: not ansible_check_mode
+
+    # The listener is TLS only, so a plain-HTTP request must not get a 200.
+    - name: "Plain HTTP to the TLS listener must not answer 200"
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --max-time
+          - "10"
+          - "http://{{ _launch_gate_bind }}:{{ _launch_gate_port }}/healthz"
+      register: _launch_gate_plain_http
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Refuse a plain-HTTP 200 from the TLS listener"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_plain_http.stdout | trim != '200'
+        fail_msg: "The launch-gate listener answered plain HTTP with 200 on {{ _launch_gate_bind }}:{{ _launch_gate_port }}; TLS is not enforced."
+        quiet: true
+
+    # Every probe runs INSIDE the container and reads the caller token from the container's environment. The
+    # token never appears in argv, the task output or this file. The script prints only a label, a status and an
+    # error code. The two POST probes are write attempts, even though each one is refused before a task exists,
+    # so a dry run does not send them.
+    - name: "Probe the gate from inside its container (401, 403 and 400 from its own listener)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - launch-gate
+          - python
+          - -I
+          - -c
+          - |
+            import http.client
+            import json
+            import os
+            import socket
+            import ssl
+            import sys
+
+            name, caller, agent, allowed = sys.argv[1:5]
+            context = ssl.create_default_context(cafile="/certs/step-ca-bundle.crt")
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+
+
+            class PinnedConnection(http.client.HTTPSConnection):
+                # Dial the loopback address, but verify the certificate as the declared name.
+                def connect(self):
+                    raw = socket.create_connection(("127.0.0.1", 8443), timeout=10)
+                    self.sock = context.wrap_socket(raw, server_hostname=name)
+
+
+            def launch(label, token, body):
+                connection = PinnedConnection(name, 8443, timeout=10)
+                headers = {"Content-Type": "application/json"}
+                if token is not None:
+                    headers["Authorization"] = "Bearer " + token
+                connection.request("POST", "/v1/launch", body=json.dumps(body), headers=headers)
+                response = connection.getresponse()
+                data = response.read()
+                connection.close()
+                try:
+                    error = json.loads(data).get("error", "")
+                except (ValueError, AttributeError):
+                    error = ""
+                print(label, response.status, error)
+
+
+            token = os.environ["LAUNCH_GATE_CALLER_TOKEN_" + caller.upper().replace("-", "_")]
+            verify = {"agent": agent, "workflow_id": "verify", "step": "verify"}
+            launch("no-token", None, {**verify, "template": allowed})
+            launch("other-template", token, {**verify, "template": "__agent_cloud_not_a_template__"})
+            launch("allowed-template", token, {**verify, "template": allowed, "survey": {"__agent_cloud_verify__": "x"}})
+          - "{{ _launch_gate_tls_name }}"
+          - "{{ _launch_gate_probe_caller }}"
+          - "{{ _launch_gate_probe_agent }}"
+          - "{{ _launch_gate_probe_template }}"
+      register: _launch_gate_probes
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: "Assert the gate refused each probe as the policy requires"
+      ansible.builtin.assert:
+        that:
+          - "'no-token 401 unauthorized' in _launch_gate_probes.stdout_lines"
+          - "'other-template 403 template_not_allowed' in _launch_gate_probes.stdout_lines"
+          - "'allowed-template 400 undeclared_field' in _launch_gate_probes.stdout_lines"
+        fail_msg: >-
+          launch-gate answered the probes differently from the policy (labels, statuses and error codes only):
+          {{ _launch_gate_probes.stdout_lines | default([]) | join(' | ') }}. An unauthenticated launch must be 401
+          unauthorized, an off-allowlist template 403 template_not_allowed, and an undeclared survey field 400
+          undeclared_field.
+        quiet: true
+      when: not ansible_check_mode
+
+    # Last: every verify task above passed (a failure stops the play before this records).
+    - name: "Record the service-deploy step result"
+      ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml
+      vars:
+        service_deploy_result_var: _deploy

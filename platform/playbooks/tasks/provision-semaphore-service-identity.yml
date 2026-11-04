@@ -4,6 +4,7 @@
 # loopback override and a production run with no declared project, and has resolved _pid. Callers today:
 #   provision-console-semaphore-access.yml  svc-console at guest (the Dispatch Console, D20)
 #   provision-skynet-semaphore-access.yml   svc-skynet at guest (interim since 2026-10-31; was task_runner)
+#   provision-launch-gate-semaphore-access.yml   svc-launch-gate at task_runner (the launch gate; launch probe 404)
 #
 # Why one file. The console play carried the account, membership, token and proof steps in ~500 lines. A
 # second copy for skynet would drift exactly where drift is dangerous: the store merge, the transport guard,

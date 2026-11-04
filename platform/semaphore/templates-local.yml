@@ -268,6 +268,26 @@ templates:
         description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
+  # The launch gate's own Semaphore identity, local-dev (svc-launch-gate at task_runner; see the shared task's
+  # header). Run before Deploy launch-gate (Local), which reads the token this stores.
+  - name: "Provision launch-gate Semaphore Access (Local)"
+    playbook: platform/playbooks/provision-launch-gate-semaphore-access.yml
+
+  # The launch gate, local-dev. Its deploy refuses until local-dev declares the launch_gate_svc group and the server
+  # leaf (skynet-launch-containment task 3.4, the local inventory and bootstrap entries, still open).
+  - name: "Deploy launch-gate (Local)"
+    playbook: platform/playbooks/deploy-launch-gate.yml
+
+  # Removes the local launch gate's containers, then runs Deploy launch-gate (Local). The teardown runs before the
+  # deploy's Semaphore-token check, as it does for the production template.
+  - name: "Clean Deploy launch-gate (Local)"
+    playbook: platform/playbooks/clean-deploy-launch-gate.yml
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
   - name: "Clean Deploy agentgateway (Local)"
     playbook: platform/playbooks/clean-deploy-agentgateway.yml
     survey_vars:
