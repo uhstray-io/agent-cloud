@@ -22,3 +22,6 @@
   ansible.builtin.import_playbook: reconcile-plane-members.yml
   vars:
     apply: "true"
+    # The guard above already ran; the reconcile's own first-entry guard is skipped, as for
+    # every mid-run import of a guarded playbook (test_executor_internal_overrides.py).
+    _extra_var_guard_nested: true

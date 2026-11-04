@@ -24,7 +24,9 @@ def test_the_wrapper_only_imports_the_reconcile_with_apply_on():
     guard, play = plays
     assert guard["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
     assert play["ansible.builtin.import_playbook"] == "reconcile-plane-members.yml"
-    assert play["vars"] == {"apply": "true"}, "the mass-removal override must never be set here"
+    assert play["vars"] == {"apply": "true", "_extra_var_guard_nested": True}, (
+        "the mass-removal override must never be set here"
+    )
 
 
 def test_the_schedule_runs_the_wrapper_from_dev():
