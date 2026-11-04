@@ -163,8 +163,9 @@
         file: "{{ playbook_dir }}/vars/proxmox-cpu-model-flags.yml"
 
     - name: "Read each online node's CPU"
-      # Loops over the clean node names and indexes into the results (index_var). It never loops
-      # over the registered reads, whose request headers carry the PVE token (docs/MISTAKES.md 4.6).
+      # Loops over the clean node names; the derive step below indexes the results by position. It
+      # never loops over the registered reads, whose request headers carry the PVE token
+      # (docs/MISTAKES.md 4.6).
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ item }}/status"
         method: GET
@@ -175,7 +176,6 @@
       failed_when: false
       loop: "{{ _pve_nodes.json.data | selectattr('status', 'equalto', 'online') | map(attribute='node') | list }}"
       loop_control:
-        index_var: _ni
         label: "{{ item }}"
 
     - name: "Derive node CPU levels"
@@ -191,8 +191,8 @@
           {%- set ci = r.json.data.cpuinfo if ok else {} -%}
           {%- set flags = (ci.flags | default('', true) | string).split() if ok else [] -%}
           {%- set model = (ci.model | default('unknown', true) | string) if ok else 'unknown' -%}
-          {%- set has3 = (flags | length > 0) and ((proxmox_cpu_level_flags[3] | difference(flags)) | length == 0) -%}
-          {%- set has4 = has3 and ((proxmox_cpu_level_flags[4] | difference(flags)) | length == 0) -%}
+          {%- set has3 = (flags | length > 0) and ((_proxmox_cpu_level_flags[3] | difference(flags)) | length == 0) -%}
+          {%- set has4 = has3 and ((_proxmox_cpu_level_flags[4] | difference(flags)) | length == 0) -%}
           {%- set level = 4 if has4 else (3 if has3 else (2 if (flags | length > 0) else 'unknown')) -%}
           {%- set _ = out.append({
                 'node': n,

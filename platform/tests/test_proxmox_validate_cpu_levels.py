@@ -135,7 +135,7 @@ def test_the_read_loops_over_node_names_and_indexes_the_results():
     assert read["ansible.builtin.uri"] == {"url": "{{ _pve_host }}/api2/json/nodes/{{ item }}/status",
                                            "method": "GET"}
     assert read["loop"] == CLEAN_NODES
-    assert read["loop_control"] == {"index_var": "_ni", "label": "{{ item }}"}
+    assert read["loop_control"] == {"label": "{{ item }}"}
     assert read["register"] == "_node_cpu_reads"
     assert read["no_log"] is True and read["check_mode"] is False and read["changed_when"] is False
     assert read["failed_when"] is False

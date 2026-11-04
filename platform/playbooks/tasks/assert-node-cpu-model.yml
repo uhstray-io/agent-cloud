@@ -66,8 +66,8 @@
   # Level 4 needs the v3 list and the v4 extras, so both keys are added at level 4.
   ansible.builtin.set_fact:
     _ncm_required_flags: >-
-      {{ ((proxmox_cpu_level_flags[3] if (_ncm_level | int) >= 3 else [])
-         + (proxmox_cpu_level_flags[4] if (_ncm_level | int) >= 4 else [])) }}
+      {{ ((_proxmox_cpu_level_flags[3] if (_ncm_level | int) >= 3 else [])
+         + (_proxmox_cpu_level_flags[4] if (_ncm_level | int) >= 4 else [])) }}
 
 - name: "Report the node CPU model"
   ansible.builtin.debug:

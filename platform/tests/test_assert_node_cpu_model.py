@@ -163,5 +163,13 @@ def test_the_flag_lists_come_from_the_shared_vars_file():
     assert include["ansible.builtin.include_vars"]["file"] == "{{ playbook_dir }}/vars/proxmox-cpu-model-flags.yml"
     text = NODE_FILE.read_text()
     assert "'avx512f'" not in text and "'sse4_1'" not in text  # no inline copy of either list
-    flags = yaml.safe_load(FLAGS_FILE.read_text())["proxmox_cpu_level_flags"]
+    flags = yaml.safe_load(FLAGS_FILE.read_text())["_proxmox_cpu_level_flags"]
     assert flags == {3: V3_FLAGS, 4: V4_EXTRA}
+
+
+def test_the_shared_flag_lists_cannot_be_replaced_by_an_extra_var():
+    # An extra var outranks include_vars, so a public name would let `-e` empty the lists and
+    # switch the guard off. Every caller imports refuse-internal-extra-vars.yml, which refuses
+    # underscore-prefixed names only, so every name the file defines carries one (PR 853 review).
+    names = yaml.safe_load(FLAGS_FILE.read_text())
+    assert names and all(name.startswith("_") for name in names), sorted(names)
