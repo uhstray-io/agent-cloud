@@ -13,7 +13,9 @@
 # Phase 3: Verify inside the skynet container: /skynet/healthz answers 200, an
 #          authenticated run request is accepted (400 for the verify graph name,
 #          which no graph carries), and the same request without a token is 401.
-#          The read token lists runs (200) and cannot start one (401).
+#          The read token lists runs (200) and cannot start one (401). When skynet_launch_gate_url
+#          is declared, the launch gate answers 401 to a request with no token and 400 to skynet's
+#          caller token (an empty body, which starts no task).
 #
 # skynet is a two-container rootless-podman stack (skynet API on the CI-built GHCR
 # image pinned by digest, and its own Postgres). The API listens on 8080 inside the
@@ -79,7 +81,7 @@
     # its agw_clients). Read-only: skynet presents these to the gateway, never stores
     # them back under secret/services/skynet. Every key must exist, or manage-secrets
     # stops by name; the gateway deploy that enrolls the roles has to run first.
-    _shared_reads:
+    _skynet_agentgateway_reads:
       - from_service: agentgateway
         read_keys:
           - client_infra-agent
@@ -88,6 +90,15 @@
           - client_service-agent
           - client_network-agent
           - client_skynet-eval
+    # The launch gate's caller token is optional: read only when skynet_launch_gate_url is declared, so an
+    # undeclared deploy reads exactly what it did before. The token stays in OpenBao at
+    # secret/services/launch-gate:caller_skynet_token, which the gate deploy generates. This deploy
+    # shared-reads it and renders it into .env, and never writes it back. A declared gate whose token is
+    # missing stops the run by name (manage-secrets).
+    _skynet_launch_gate_reads: >-
+      {{ [{'from_service': 'launch-gate', 'read_keys': ['caller_skynet_token']}]
+         if (skynet_launch_gate_url | default('', true) | string | trim | length) > 0 else [] }}
+    _shared_reads: "{{ _skynet_agentgateway_reads + _skynet_launch_gate_reads }}"
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
 
@@ -209,6 +220,29 @@
           record, so the container maps that name to this address. 0.0.0.0 is refused. Set it in the
           inventory and re-run.
       when: not (local_mode | default(false) | bool)
+
+    # Optional launch gate (skynet_launch_gate_url). Undeclared, neither refusal runs. Declared, the URL must
+    # be https in every mode; in production its address is also mapped in the container (compose.launch-gate.yml).
+    - name: "Refuse skynet_launch_gate_url unless it is https"
+      ansible.builtin.assert:
+        that:
+          - (skynet_launch_gate_url | string) is match('^https://')
+        fail_msg: >-
+          skynet_launch_gate_url must be an https:// URL (the launch gate skynet calls over TLS). Set it in
+          the inventory and re-run, or remove it to leave the gate undeclared.
+      when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
+
+    - name: "Refuse skynet_launch_gate_ip unless it is one non-wildcard IPv4 address in production"
+      ansible.builtin.assert:
+        that:
+          - (skynet_launch_gate_ip | default('', true) | string) is match('^(?!0[.]0[.]0[.]0$)((0|[1-9][0-9]{0,2})[.]){3}(0|[1-9][0-9]{0,2})$')
+          - ((skynet_launch_gate_ip | default('', true) | string).split('.') | map('int') | max) <= 255
+        fail_msg: >-
+          skynet_launch_gate_ip must be the IPv4 address of the launch gate host. The container maps the
+          gate's name to this address. 0.0.0.0 is refused. Set it in the inventory and re-run.
+      when:
+        - not (local_mode | default(false) | bool)
+        - (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
@@ -589,6 +623,109 @@
           means OPA accepted a write from skynet; 400 means the authorization policy is not loaded
           (the bundle refused it instead); anything else means the path or the server is wrong.
 
+    # The launch gate (optional: skynet_launch_gate_url). Both probes run inside skynet's container, so they
+    # prove the container's own trust store and name mapping reach the gate over TLS. The URL and the token
+    # come from the container's environment and never appear in argv or the task output. Undeclared, neither
+    # probe runs.
+    - name: "Launch gate refuses a request with no token (POST /v1/launch -> 401, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import json
+            import os
+            import urllib.error
+            import urllib.request
+            request = urllib.request.Request(
+                os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
+                data=b'{}',
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            try:
+                response = urllib.request.urlopen(request, timeout=10)
+                status, body = response.status, response.read()
+            except urllib.error.HTTPError as error:
+                status, body = error.code, error.read()
+            try:
+                code = json.loads(body.decode('utf-8')).get('error', '')
+            except (ValueError, AttributeError):
+                code = ''
+            print(status, code)
+      register: _skynet_gate_anon
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
+
+    - name: "Assert the launch gate refused a request with no token (401 unauthorized)"
+      ansible.builtin.assert:
+        that:
+          - _skynet_gate_anon.rc == 0
+          - (_skynet_gate_anon.stdout_lines | last | default('')) == '401 unauthorized'
+        fail_msg: >-
+          skynet's POST to the launch gate /v1/launch with no token answered
+          '{{ _skynet_gate_anon.stdout_lines | last | default('') }}' (rc {{ _skynet_gate_anon.rc }}; error tail:
+          {{ (_skynet_gate_anon.stderr_lines | default([]))[-3:] | join(' | ') }}). A certificate verify failure
+          means the container's trust bundle does not carry the gate's CA; a name resolution failure means the
+          compose.launch-gate.yml mapping is missing or wrong; a refused or timed-out connection means the gate's
+          firewall does not admit skynet_svc; 200 means the gate admits a request with no token.
+      when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
+
+    # The same request with skynet's caller token must pass authentication and fail on the empty body
+    # (400 bad_request). The gate refuses the body before any Semaphore call, so this starts no task.
+    - name: "Launch gate accepts the caller token (POST /v1/launch -> 400 bad_request, inside the container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -c
+          - |
+            import json
+            import os
+            import urllib.error
+            import urllib.request
+            request = urllib.request.Request(
+                os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
+                data=b'{}',
+                headers={'Authorization': 'Bearer ' + os.environ['SKYNET_LAUNCH_GATE_TOKEN'], 'Content-Type': 'application/json'},
+                method='POST',
+            )
+            try:
+                response = urllib.request.urlopen(request, timeout=10)
+                status, body = response.status, response.read()
+            except urllib.error.HTTPError as error:
+                status, body = error.code, error.read()
+            try:
+                code = json.loads(body.decode('utf-8')).get('error', '')
+            except (ValueError, AttributeError):
+                code = ''
+            print(status, code)
+      register: _skynet_gate_authed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
+
+    - name: "Assert the launch gate accepted the caller token (400 bad_request)"
+      ansible.builtin.assert:
+        that:
+          - _skynet_gate_authed.rc == 0
+          - (_skynet_gate_authed.stdout_lines | last | default('')) == '400 bad_request'
+        fail_msg: >-
+          skynet's caller token against the launch gate answered
+          '{{ _skynet_gate_authed.stdout_lines | last | default('') }}' (rc {{ _skynet_gate_authed.rc }}; error tail:
+          {{ (_skynet_gate_authed.stderr_lines | default([]))[-3:] | join(' | ') }}). 401 means the token in
+          skynet's .env differs from the gate's caller token, so redeploy the gate or skynet from the same
+          secret; any other status means the gate is broken or its route moved.
+      when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
@@ -596,6 +733,11 @@
           (inside the container, :8080); read token lists runs (200) and cannot start one (401);
           skynet's own OPA client got OPA's default deny over {{ skynet_opa_url | default('its OPA URL') }},
           and OPA refused skynet's write to /v1/data (401).
+          {% if (skynet_launch_gate_url | default('', true) | string | trim | length) > 0 %}
+          The launch gate answered 401 to a request with no token and 400 to skynet's caller token, over {{ skynet_launch_gate_url }}.
+          {% else %}
+          The launch gate is not declared (skynet_launch_gate_url unset), so it was not probed.
+          {% endif %}
           Published on skynet_publish_bind:skynet_publish_port; the gateway's /skynet/ route is separate.
 
     # Last: every verify task above passed (a failure stops the play before this records).

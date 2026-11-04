@@ -1,0 +1,17 @@
+# skynet — launch-gate overlay. deploy.sh appends it outside LOCAL_MODE, and only when .env carries
+# SKYNET_LAUNCH_GATE_HOSTNAME. templates/env.j2 renders that line outside local mode, and only when the
+# inventory declares skynet_launch_gate_url. .env is the one decision point, so this file and the
+# variables it needs cannot disagree.
+#
+# skynet calls the launch gate over https. The container maps the gate's name to the address the
+# inventory declares (skynet_launch_gate_ip), the same mechanism compose.prod.yml uses for OPA. The
+# mapping lives in its own overlay because compose.prod.yml's variables are required (:?): loading them
+# for every production deploy would stop an undeclared skynet from starting.
+#
+# Both variables are required (:?), so compose refuses to start without them rather than starting with
+# no mapping.
+
+services:
+  skynet:
+    extra_hosts:
+      - "${SKYNET_LAUNCH_GATE_HOSTNAME:?set skynet_launch_gate_url in the inventory}:${SKYNET_LAUNCH_GATE_IP:?set skynet_launch_gate_ip in the inventory}"
