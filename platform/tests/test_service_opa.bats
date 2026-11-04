@@ -206,60 +206,73 @@ task_with() {
   [ -z "$stray" ]
 }
 
-@test "opa: the verify proves a policy write is refused with exactly 401 (authorization policy), on the plain and the TLS path" {
-  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
-  task_with "$pb" 'Policy writes are refused' > "$BATS_TEST_TMPDIR/write.yml"
-  assert_grep -qF 'method: PUT' "$BATS_TEST_TMPDIR/write.yml"
-  assert_grep -qF '/v1/data/agentcloud_write_probe' "$BATS_TEST_TMPDIR/write.yml"
-  assert_grep -qF "_opa_write.status != 401" "$BATS_TEST_TMPDIR/write.yml"
-  assert_grep -qF "(_opa_write.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/write.yml"
-  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/write.yml"
-  refute_grep -qF "status_code: [400]" "$BATS_TEST_TMPDIR/write.yml"
-  task_with "$pb" 'Policy writes over TLS are refused' > "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qF "'--request', 'PUT'" "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qF "(_opa_write_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qF ".code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/write-tls.yml"
-  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/write-tls.yml"
-  # The probe never writes under a package a decision reads.
-  refute_grep -qE '/v1/(data/agentcloud/|policies)' "$BATS_TEST_TMPDIR/write.yml" "$BATS_TEST_TMPDIR/write-tls.yml"
+@test "opa: the verify probes one list of three refusals (policy write, data read, decision with explain), each with its method, path and body" {
+  # The list is a play var, so it is read by range rather than by task. The write probe's path sits
+  # outside every package a decision reads; only the explain probe reads a decision.
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml" probes
+  probes="$BATS_TEST_TMPDIR/probes.yml"
+  sed -n '/^    _opa_refusal_probes:/,/^    _opa_tls_probe_args:/p' "$pb" > "$probes"
+  [ "$(grep -c '^      - what: ' "$probes")" -eq 3 ]
+  assert_grep -qxF '      - what: policy write' "$probes"
+  assert_grep -qxF '        method: PUT' "$probes"
+  assert_grep -qxF '        path: /v1/data/agentcloud_write_probe' "$probes"
+  assert_grep -qxF '        body: {}' "$probes"
+  assert_grep -qxF '      - what: data read' "$probes"
+  assert_grep -qxF '        method: GET' "$probes"
+  assert_grep -qxF '        path: /v1/data' "$probes"
+  assert_grep -qxF '      - what: decision with explain' "$probes"
+  assert_grep -qxF '        method: POST' "$probes"
+  assert_grep -qxF '        path: /v1/data/agentcloud/decision?explain=full' "$probes"
+  assert_grep -qxF '          input: {agent: nemoclaw, action: read, service: nocodb}' "$probes"
+  # The write probe never writes under a package a decision reads, nor under the policy API.
+  sed -n '/what: policy write/,/what: data read/p' "$probes" > "$BATS_TEST_TMPDIR/write-entry.yml"
+  refute_grep -qE '/v1/data/agentcloud/|/v1/policies' "$BATS_TEST_TMPDIR/write-entry.yml"
+  refute_grep -qE '/v1/policies' "$probes"
 }
 
-@test "opa: the verify proves a data read is refused with exactly 401 (authorization policy), on the plain and the TLS path" {
-  # GET /v1/data would return every data document (agent catalogs, guardrail rules), so the
-  # authorization policy must refuse it, on both listeners, with the same JSON shape as a write.
+@test "opa: both refusal tasks loop over the one probe list, and the six per-probe tasks are gone" {
   local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
-  task_with "$pb" 'Data reads are refused' > "$BATS_TEST_TMPDIR/read.yml"
-  assert_grep -qF 'method: GET' "$BATS_TEST_TMPDIR/read.yml"
-  assert_grep -qF '{{ _opa_url }}/v1/data"' "$BATS_TEST_TMPDIR/read.yml"
-  assert_grep -qF "_opa_read.status != 401" "$BATS_TEST_TMPDIR/read.yml"
-  assert_grep -qF "(_opa_read.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/read.yml"
-  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/read.yml"
-  task_with "$pb" 'Data reads over TLS are refused' > "$BATS_TEST_TMPDIR/read-tls.yml"
-  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/read-tls.yml"
-  assert_grep -qF "_opa_url ~ '/v1/data'" "$BATS_TEST_TMPDIR/read-tls.yml"
-  assert_grep -qF "(_opa_read_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/read-tls.yml"
-  assert_grep -qF "_opa_read_tls.stdout_lines[:-1]" "$BATS_TEST_TMPDIR/read-tls.yml"
-  assert_grep -qF ".code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/read-tls.yml"
-  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/read-tls.yml"
+  task_with "$pb" 'Authorization refusals: policy write' > "$BATS_TEST_TMPDIR/plain.yml"
+  assert_grep -qxF '      loop: "{{ _opa_refusal_probes }}"' "$BATS_TEST_TMPDIR/plain.yml"
+  task_with "$pb" 'Authorization refusals over TLS' > "$BATS_TEST_TMPDIR/tls.yml"
+  assert_grep -qxF '      loop: "{{ _opa_refusal_probes }}"' "$BATS_TEST_TMPDIR/tls.yml"
+  [ "$(grep -c '^    - name: "Authorization refusals' "$pb")" -eq 2 ]
+  refute_grep -qE '^    - name: "(Policy writes|Data reads|Decision with explain)' "$pb"
 }
 
-@test "opa: the verify proves a decision asking for engine internals (?explain=full) is refused with 401, on the plain and the TLS path" {
-  # ?explain=full on the decision path returns the evaluation trace of the policy and its data,
-  # so the authorization policy admits a decision only with no query parameters.
-  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
-  task_with "$pb" 'Decision with explain is refused' > "$BATS_TEST_TMPDIR/explain.yml"
-  assert_grep -qF 'method: POST' "$BATS_TEST_TMPDIR/explain.yml"
-  assert_grep -qF '{{ _opa_url }}/v1/data/agentcloud/decision?explain=full"' "$BATS_TEST_TMPDIR/explain.yml"
-  assert_grep -qF "_opa_explain.status != 401" "$BATS_TEST_TMPDIR/explain.yml"
-  assert_grep -qF "(_opa_explain.json.code | default('')) != 'unauthorized'" "$BATS_TEST_TMPDIR/explain.yml"
-  assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/explain.yml"
-  task_with "$pb" 'Decision with explain over TLS is refused' > "$BATS_TEST_TMPDIR/explain-tls.yml"
-  assert_grep -qF "reject('equalto', '--fail')" "$BATS_TEST_TMPDIR/explain-tls.yml"
-  assert_grep -qF "/v1/data/agentcloud/decision?explain=full'" "$BATS_TEST_TMPDIR/explain-tls.yml"
-  assert_grep -qF "(_opa_explain_tls.stdout_lines | last) != '401'" "$BATS_TEST_TMPDIR/explain-tls.yml"
-  assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/explain-tls.yml"
-  # The rule itself, and its unit tests.
+@test "opa: the plain refusal task fails on any status but 401 or any code but unauthorized, and sends no body on a GET" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml" plain
+  plain="$BATS_TEST_TMPDIR/plain.yml"
+  task_with "$pb" 'Authorization refusals: policy write' > "$plain"
+  assert_grep -qxF '        url: "{{ _opa_url }}{{ item.path }}"' "$plain"
+  assert_grep -qxF '        method: "{{ item.method }}"' "$plain"
+  assert_grep -qxF '        status_code: [401]' "$plain"
+  assert_grep -qF "failed_when: _opa_refusal.status != 401 or (_opa_refusal.json.code | default('')) != 'unauthorized'" "$plain"
+  # uri would JSON-encode an absent body as null, so json is set only where a probe has a body.
+  assert_grep -qxF "        body_format: \"{{ 'json' if item.body is defined else omit }}\"" "$plain"
+  assert_grep -qxF '        body: "{{ item.body | default(omit) }}"' "$plain"
+  assert_grep -qxF '      when: not ansible_check_mode and not _opa_tls' "$plain"
+  refute_grep -qF 'status_code: [400]' "$plain"
+}
+
+@test "opa tls: the TLS refusal task drops --fail through the probe args and passes only on a last-line 401 with code unauthorized" {
+  local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml" tls
+  tls="$BATS_TEST_TMPDIR/tls.yml"
+  task_with "$pb" 'Authorization refusals over TLS' > "$tls"
+  assert_grep -qF '{{ _opa_tls_probe_args' "$tls"
+  refute_grep -qF '_opa_tls_args' "$tls"
+  refute_grep -qF -- '--fail' "$tls"
+  assert_grep -qF "'--request', item.method" "$tls"
+  assert_grep -qF "'--write-out', '\n%{http_code}'" "$tls"
+  assert_grep -qF "_opa_refusal_tls.rc != 0" "$tls"
+  assert_grep -qF "(_opa_refusal_tls.stdout_lines | last) != '401'" "$tls"
+  assert_grep -qF "(_opa_refusal_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'unauthorized'" "$tls"
+  assert_grep -qxF '      when: _opa_tls and not ansible_check_mode' "$tls"
+}
+
+@test "opa authz: a decision with query parameters is refused, explain and instrument alike (the rule and its unit tests)" {
+  # ?explain=full returns the evaluation trace of the policy and its data, so the authorization
+  # policy admits a decision only with no query parameters. Each refusal has a unit test.
   local authz="$DEPLOY_DIR/policies/system/authz.rego" tests="$DEPLOY_DIR/policies/system/authz_test.rego"
   assert_grep -qF 'count(object.get(input, "params", {})) == 0' "$authz"
   assert_grep -qE '^test_deny_decision_explain if' "$tests"
