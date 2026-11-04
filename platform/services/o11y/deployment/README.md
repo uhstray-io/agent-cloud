@@ -848,6 +848,27 @@ contact-point removal from code, removes the webhook line from the existing
 OpenBao is unavailable. Persistent alert enablement is a separate reviewed
 inventory rollout after a successful canary receipt.
 
+## Query errors keep the last state
+
+Alert rules set `execErrState: KeepLast`. When a rule's query errors or runs past
+Grafana's 30s evaluation timeout, the rule keeps the state it had before the error
+instead of moving to `Alerting` and paging as a datasource error. The 2026-11-04
+review found that I/O-wait spikes on the receiver host pushed rule evaluations past
+that timeout, and under the earlier `Alerting` setting every rule paged together for
+those transient timeouts. Most of the Discord firing notifications in that review
+came from them.
+
+A sustained failure still pages once. The `alerting-health` group's rule
+`o11y_alert_evaluations_failing` fires when rule evaluations have failed more than
+five times in fifteen minutes, held for fifteen minutes. It keeps
+`execErrState: Alerting`, so a prolonged disruption is reported by one alert rather
+than by every rule. Rules whose queries are still failing hold their last state while
+it fires; check the receiver host's I/O wait and Prometheus health.
+
+A full Grafana or Prometheus outage is covered by the external liveness watcher
+(`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs
+from the Semaphore host and does not depend on Grafana's rule evaluation.
+
 ## Production alert-delivery drill
 
 When production alerts are already enabled, use `Drill o11y Active Alert

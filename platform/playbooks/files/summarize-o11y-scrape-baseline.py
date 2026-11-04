@@ -1523,7 +1523,7 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
             and rule.get("annotations") == target["_annotations"]
             and rule.get("isPaused") is target["_is_paused"]
             and rule.get("notification_settings") == target["_notification_settings"]
-            and rule.get("noDataState") == "OK" and rule.get("execErrState") == "Alerting"
+            and rule.get("noDataState") == "OK" and rule.get("execErrState") == "KeepLast"
             and rule.get("for") == "2m"
         )
     if target["_inert"]:
@@ -1564,7 +1564,7 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
         and rule.get("isPaused") is target["_is_paused"]
         and rule.get("notification_settings") == target["_notification_settings"]
         and rule.get("noDataState") == "OK"
-        and rule.get("execErrState") == "Alerting"
+        and rule.get("execErrState") == "KeepLast"
         and rule.get("for") == "2m"
     )
 
@@ -1799,7 +1799,8 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
                 rule.get("title") == f"Missing telemetry group ({uid})"
                 and labels == expected_labels and rule.get("condition") == "B"
                 and _expected_target_queries_match(rule_data, group["_expr"])
-                and rule.get("noDataState") == "OK" and rule.get("execErrState") == "Alerting"
+                # Previous rules may still carry Alerting until the KeepLast change re-provisions them.
+                and rule.get("noDataState") == "OK" and rule.get("execErrState") in ("Alerting", "KeepLast")
                 and rule.get("for") == "2m" and rule.get("isPaused") in (True, False)
                 and rule.get("annotations") == expected_annotations
                 and set(rule) == {
@@ -1911,7 +1912,7 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
             and rule.get("condition") == "B"
             and _expected_target_queries_match(rule_data, expected_expr)
             and rule.get("noDataState") == "OK"
-            and rule.get("execErrState") == "Alerting"
+            and rule.get("execErrState") in ("Alerting", "KeepLast")
             and rule.get("for") == "2m"
             and rule.get("isPaused") in (True, False)
             and set(rule) == {
