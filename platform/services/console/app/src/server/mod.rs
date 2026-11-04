@@ -59,6 +59,8 @@ pub struct AppState {
     pub flows: inventory::FlowSet,
     /// The agentgateway clients, budgets and models `GET /v1/gateway` answers (task 8.3a).
     pub gateway: gateway::GatewaySet,
+    /// The gateway's last-hour token use per client (D39). The refresh task writes it; `/v1/gateway` only reads it.
+    pub usage: tokio::sync::RwLock<grafana::UsageCache>,
     /// OpenBao client for run-time reads (plan 17 D27). Logs in on first use, never at boot.
     /// `None` when `CONSOLE_OPENBAO_*` is unset.
     pub openbao: Option<openbao::Openbao>,
@@ -119,6 +121,8 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         Some(path) => gateway::GatewaySet::configured(gateway::load_gateway(path)?),
         None => gateway::GatewaySet::unconfigured(),
     };
+    let usage =
+        grafana::UsageCache::new(config.grafana_token.is_some() && config.grafana_url.is_some());
     let openbao = match &config.openbao {
         Some(settings) => Some(
             openbao::Openbao::new(settings.clone())
@@ -153,6 +157,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         proxmox_http,
         flows,
         gateway,
+        usage: tokio::sync::RwLock::new(usage),
         openbao,
         secrets: tokio::sync::RwLock::new(secrets_cache),
         access: tokio::sync::RwLock::new(access_cache),
@@ -164,7 +169,10 @@ pub fn load(config: Config) -> Result<SharedState, String> {
 /// The client every upstream call shares: no redirects, a 20 s timeout, and the roots of a
 /// PEM bundle when `extra_ca` is set. Verification stays on in every case. `var` names the
 /// setting in an error.
-fn client_with_roots(extra_ca: Option<&Path>, var: &str) -> Result<reqwest::Client, String> {
+pub(crate) fn client_with_roots(
+    extra_ca: Option<&Path>,
+    var: &str,
+) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(20));
@@ -264,6 +272,7 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/network", get(inventory::get_network))
         .route("/v1/flows", get(inventory::get_flows))
         .route("/v1/gateway", get(gateway::get_gateway))
+        .route("/v1/roles", get(work::list_roles))
         .route("/v1/secrets", get(secrets::get_secrets))
         .route("/v1/access", get(access::get_access))
         .route("/v1/policies", get(policies::get_policies))
@@ -313,6 +322,7 @@ mod tests {
             work::WorkCache::unconfigured(),
             Vec::new(),
             gateway::GatewaySet::unconfigured(),
+            grafana::UsageCache::new(false),
         )
     }
 
@@ -321,6 +331,7 @@ mod tests {
         work: work::WorkCache,
         workflow: Vec<work::Step>,
         gateway_set: gateway::GatewaySet,
+        usage: grafana::UsageCache,
     ) -> SharedState {
         Arc::new(AppState {
             config: Config {
@@ -339,6 +350,7 @@ mod tests {
                 flows_file: None,
                 gateway_file: None,
                 grafana_url: None,
+                grafana_token: None,
                 authentik: None,
                 role_map_file: None,
                 github: None,
@@ -353,6 +365,7 @@ mod tests {
             proxmox_http: reqwest::Client::new(),
             flows: inventory::FlowSet::unconfigured(),
             gateway: gateway_set,
+            usage: tokio::sync::RwLock::new(usage),
             openbao: None,
             secrets: tokio::sync::RwLock::new(secrets::SecretsCache::new(false)),
             access: tokio::sync::RwLock::new(access::AccessCache::new(false)),
@@ -490,6 +503,7 @@ mod tests {
             "/v1/network",
             "/v1/flows",
             "/v1/gateway",
+            "/v1/roles",
             "/v1/secrets",
             "/v1/policies",
             "/v1/nope",
@@ -514,11 +528,19 @@ mod tests {
     }
 
     fn gateway_state(gateway_set: gateway::GatewaySet) -> SharedState {
+        gateway_state_with_usage(gateway_set, grafana::UsageCache::new(false))
+    }
+
+    fn gateway_state_with_usage(
+        gateway_set: gateway::GatewaySet,
+        usage: grafana::UsageCache,
+    ) -> SharedState {
         app_state(
             Prefs::in_memory().expect("in-memory prefs"),
             work::WorkCache::unconfigured(),
             Vec::new(),
             gateway_set,
+            usage,
         )
     }
 
@@ -555,7 +577,7 @@ mod tests {
         assert_eq!(admin.status, 200);
         assert_eq!(
             admin.body,
-            r#"{"state":"ok","clients":[{"name":"alpha","tier":null,"tokens_per_hour":2000000,"budget_source":"default","allowed_models":["m1"]}],"models":["m1"]}"#
+            r#"{"state":"ok","clients":[{"name":"alpha","tier":null,"tokens_per_hour":2000000,"budget_source":"default","allowed_models":["m1"],"tokens_last_hour":null}],"models":["m1"],"usage":{"state":"unconfigured","refreshed_at":null,"error":null}}"#
         );
     }
 
@@ -566,7 +588,61 @@ mod tests {
         assert_eq!(admin.status, 200);
         assert_eq!(
             admin.body,
-            r#"{"state":"unconfigured","clients":[],"models":[]}"#
+            r#"{"state":"unconfigured","clients":[],"models":[],"usage":{"state":"unconfigured","refreshed_at":null,"error":null}}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn gateway_shows_each_clients_last_hour_from_the_usage_read_by_name() {
+        let file = gateway::GatewayFile {
+            clients: vec![
+                gateway::GatewayClient {
+                    name: "alpha".into(),
+                    tier: None,
+                    tokens_per_hour: 2000000,
+                    budget_source: gateway::BudgetSource::Default,
+                    allowed_models: vec!["m1".into()],
+                },
+                gateway::GatewayClient {
+                    name: "beta".into(),
+                    tier: None,
+                    tokens_per_hour: 500,
+                    budget_source: gateway::BudgetSource::Default,
+                    allowed_models: vec![],
+                },
+            ],
+            models: vec!["m1".into()],
+        };
+        let mut usage = grafana::UsageCache::new(true);
+        usage.record_ok(
+            std::collections::HashMap::from([("alpha".to_string(), 1234)]),
+            "2026-11-04T10:00:00Z".into(),
+        );
+        let state = gateway_state_with_usage(gateway::GatewaySet::configured(file), usage);
+        let admin = gateway_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&admin.body).expect("json");
+        assert_eq!(body["clients"][0]["name"], "alpha");
+        assert_eq!(body["clients"][0]["tokens_last_hour"], 1234);
+        assert!(body["clients"][1]["tokens_last_hour"].is_null());
+        assert_eq!(body["usage"]["state"], "ok");
+        assert_eq!(body["usage"]["refreshed_at"], "2026-11-04T10:00:00Z");
+        assert!(body["usage"]["error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn roles_answer_platform_admins_only_with_each_owner_and_its_steps() {
+        let (addr, cookie) = signed_in_on(work_state(), &["ops"]).await;
+        let member = call(addr, "GET", "/v1/roles", Some(cookie), "").await;
+        assert_eq!(member.status, 403);
+        assert_eq!(member.body, r#"{"error":"forbidden"}"#);
+
+        let (addr, cookie) = signed_in_on(work_state(), &["platform-admins"]).await;
+        let admin = call(addr, "GET", "/v1/roles", Some(cookie), "").await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"roles":[{"name":"infra-agent","steps":[{"id":"step-a","order":1,"label":"Plan"}]},{"name":"security-agent","steps":[{"id":"step-c","order":3,"label":"Verify"}]},{"name":"service-agent","steps":[{"id":"step-b","order":2,"label":"Build"}]}]}"#
         );
     }
 
@@ -832,6 +908,7 @@ mod tests {
             cache,
             steps,
             gateway::GatewaySet::unconfigured(),
+            grafana::UsageCache::new(false),
         )
     }
 
@@ -1015,6 +1092,7 @@ mod tests {
             ("secrets.rs", include_str!("secrets.rs")),
             ("github.rs", include_str!("github.rs")),
             ("policies.rs", include_str!("policies.rs")),
+            ("grafana.rs", include_str!("grafana.rs")),
         ] {
             assert!(!text.contains(needle), "{file} turns verification off");
         }

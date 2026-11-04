@@ -15,6 +15,8 @@ mod inventory_api;
 mod policy;
 mod policy_api;
 mod profile;
+mod roles;
+mod roles_api;
 mod scope;
 mod secrets;
 mod secrets_api;
@@ -35,6 +37,7 @@ use empty::{CiCd, Dashboard, NotFound, Telemetry};
 use gateway::{AiGateway, LlmAccess};
 use policy::Policy;
 use profile::Profile;
+use roles::RoleDetail;
 use secrets::Secrets;
 use services::{ServiceDetail, Services};
 use settings::{OrgSettings, TenantSettings};
@@ -71,6 +74,8 @@ pub enum Route {
     LlmAccess {},
     #[route("/cicd")]
     CiCd {},
+    #[route("/roles/:role")]
+    RoleDetail { role: String },
     #[route("/settings/tenant")]
     TenantSettings {},
     #[route("/settings/org")]

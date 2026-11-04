@@ -53,6 +53,7 @@ fn run_server() -> ! {
             server::secrets::spawn_refresh(state.clone());
             server::access::spawn_refresh(state.clone());
             server::policies::spawn_refresh(state.clone());
+            server::grafana::spawn_refresh(state.clone());
             Ok(server::router(state))
         }
     })
