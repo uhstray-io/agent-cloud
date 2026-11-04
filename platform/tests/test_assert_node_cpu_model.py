@@ -167,9 +167,11 @@ def test_the_flag_lists_come_from_the_shared_vars_file():
     assert flags == {3: V3_FLAGS, 4: V4_EXTRA}
 
 
-def test_the_shared_flag_lists_cannot_be_replaced_by_an_extra_var():
+def test_every_name_in_the_shared_flag_file_is_internal():
     # An extra var outranks include_vars, so a public name would let `-e` empty the lists and
     # switch the guard off. Every caller imports refuse-internal-extra-vars.yml, which refuses
     # underscore-prefixed names only, so every name the file defines carries one (PR 853 review).
+    # That the refusal holds, templated forgeries included, is proven for every launchable playbook
+    # by test_executor_internal_overrides.py; this pins only that these names fall under it.
     names = yaml.safe_load(FLAGS_FILE.read_text())
     assert names and all(name.startswith("_") for name in names), sorted(names)
