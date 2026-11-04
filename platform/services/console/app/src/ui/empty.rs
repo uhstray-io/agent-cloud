@@ -25,7 +25,7 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "policy" | "agents" | "llm" | "tenantsettings" | "orgsettings" => Some(5),
+        "policy" | "tenantsettings" | "orgsettings" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }
@@ -85,22 +85,6 @@ pub const POLICY: PageMeta = PageMeta {
     icon: "scale",
     purpose: "Policy packages and decisions. A change is proposed as a plan, then a pull request.",
     authority: "OPA (Rego in Git)",
-};
-
-pub const AI_GATEWAY: PageMeta = PageMeta {
-    id: "agents",
-    title: "AI Gateway",
-    icon: "door-open",
-    purpose: "Gateway groups for production and development, with their clients and budgets.",
-    authority: "agentgateway",
-};
-
-pub const LLM_ACCESS: PageMeta = PageMeta {
-    id: "llm",
-    title: "LLM access",
-    icon: "message-square-lock",
-    purpose: "Request a model key for a scoped set of agents. The key is handed off, not shown.",
-    authority: "agentgateway",
 };
 
 pub const CICD: PageMeta = PageMeta {
@@ -168,16 +152,6 @@ pub fn Policy() -> Element {
 }
 
 #[component]
-pub fn AiGateway() -> Element {
-    rsx! { EmptyPage { page: AI_GATEWAY } }
-}
-
-#[component]
-pub fn LlmAccess() -> Element {
-    rsx! { EmptyPage { page: LLM_ACCESS } }
-}
-
-#[component]
 pub fn CiCd() -> Element {
     rsx! { EmptyPage { page: CICD } }
 }
@@ -221,8 +195,6 @@ mod tests {
         assert_eq!(phase_for("services"), Some(3));
         assert_eq!(phase_for("compute"), Some(3));
         assert_eq!(phase_for("dashboard"), Some(4));
-        assert_eq!(phase_for("agents"), Some(5));
-        assert_eq!(phase_for("llm"), Some(5));
         assert_eq!(phase_for("tenantsettings"), Some(5));
         assert_eq!(phase_for("cicd"), Some(6));
         assert_eq!(phase_for("telemetry"), Some(6));
@@ -244,8 +216,6 @@ mod tests {
             COMPUTE,
             TELEMETRY,
             POLICY,
-            AI_GATEWAY,
-            LLM_ACCESS,
             CICD,
             TENANT_SETTINGS,
             ORG_SETTINGS,

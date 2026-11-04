@@ -47,6 +47,7 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_SEMAPHORE_TOKEN` | `secrets.semaphore_api_token`, read from `secret/services/console` (see "Semaphore access") |
 | `CONSOLE_WORKFLOW_FILE=/etc/console/workflow.json` | fixed path; the file is `config/workflow.json` |
 | `CONSOLE_FLOWS_FILE=/etc/console/flows.json` | fixed path; the file is `config/flows.json` (always rendered) |
+| `CONSOLE_GATEWAY_FILE=/etc/console/gateway.json` | fixed path; the file is `config/gateway.json` (always rendered, empty lists without an `agentgateway_svc` host). Names and figures only (task 8.3a) |
 | `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | `console_netbox_url`; the token is `secrets.console_api_token`, a shared read of `secret/services/netbox`. The group renders only when the URL is set (Phase 3, see below) |
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | `console_proxmox_url`; id and secret are shared reads of `secret/services/proxmox` (`console_token_id`, `console_token`). All-or-none, like the NetBox group |
 | `CONSOLE_PROXMOX_CA_FILE=/etc/console/proxmox-ca.pem` | set only when `console_proxmox_ca_pem` is set; the file is always mounted (empty when unset) |
@@ -160,6 +161,7 @@ Routes and scoping:
 | `GET /v1/tenants/{t}/services`, `/services/{name}` | members of `t` | VMs that carry workflow fields; one VM |
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |
+| `GET /v1/gateway` | `platform-admins` only; 403 otherwise | `{state, clients, models}` from `config/gateway.json`: each agentgateway client with its tier, its hourly token figure, where that figure comes from (`client`, `tier`, `default`) and its allowed models; `state` is `ok` or `unconfigured`. Names and figures only, never a key. Internal identities (mcp-self, legacy-shared, pool identities) are not listed. Admin-only identities are not listed either (task 8.3a) |
 | `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
 
 A tenant the caller may not see answers `404 unknown_tenant`, byte-identical to an unknown one. Prefixes never appear in a tenant answer: a prefix with no site names no tenant (D16). Devices are site-scoped, so they do.
@@ -215,6 +217,7 @@ deployment/
 │   ├── scope.json.j2       config/scope.json from console_tenants
 │   ├── workflow.json.j2    config/workflow.json from the service-onboarding registry
 │   ├── flows.json.j2       config/flows.json from the authentik, caddy and o11y declarations (names only)
+│   ├── gateway.json.j2     config/gateway.json from the agentgateway host's vars: clients, budgets, models (names and figures only; task 8.3a)
 │   └── proxmox-ca.pem.j2   config/proxmox-ca.pem from console_proxmox_ca_pem (empty when unset)
 ├── .gitignore              .env, config/, certs/ (rendered per deploy)
 ├── AGENTS.md -> CLAUDE.md

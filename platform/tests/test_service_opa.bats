@@ -188,16 +188,11 @@ task_with() {
 
 # ── Read-only policy (bundle mode) ──────────────────────────────────────────────
 
-@test "opa: both command lists load ./policies as a bundle, so the REST write API is refused" {
+@test "opa: the verify runs the Rego tests as a bundle, the way the server loads them" {
   # Without --bundle, PUT /v1/data and /v1/policies (and DELETE /v1/data/agentcloud) succeed for
   # any caller the firewall admits; the :ro mount protects the files, not the running policy.
-  local f args
-  for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
-    # The whole list ends in "--bundle /policies": strip that suffix and require it was there.
-    args="$(command_args "$f" | tr '\n' ' ')"
-    [ "${args% --bundle /policies }" != "$args" ]
-  done
-  # The Rego tests load the tree the way the server does.
+  # Both command lists ending in "--bundle /policies" is asserted by the --authorization test
+  # below, whose anchored suffix includes it. The Rego tests load the tree the way the server does.
   assert_grep -qF '/opa test --bundle /policies"' "$REPO_ROOT/platform/playbooks/deploy-opa.yml"
 }
 
@@ -294,12 +289,12 @@ task_with() {
 
 @test "opa: both command lists pass --authorization=basic, directly before --bundle" {
   # Without the flag the policy is never asked, and every request reaches the handlers.
-  local f
+  local f cmd args
   for f in "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.tls.yml"; do
-    [ "$(command_args "$f" | grep -cxF -- '--authorization=basic')" -eq 1 ]
+    cmd="$(command_args "$f")"
+    [ "$(grep -cxF -- '--authorization=basic' <<<"$cmd")" -eq 1 ]
     # The command ends with the flag, then the bundle it guards (anchored on the whole list).
-    local args
-    args="$(command_args "$f" | tr '\n' ' ')"
+    args="$(tr '\n' ' ' <<<"$cmd")"
     # `[ ]`, not `[[ ]]`: a false `[[ ]]` mid-body does not fail a Bats test (test_assertions_are_real.bats).
     [ "${args%" --authorization=basic --bundle /policies "}" != "$args" ]
   done
