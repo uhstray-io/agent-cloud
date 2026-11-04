@@ -61,7 +61,10 @@
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _engine: "{{ container_engine | default('podman') }}"
-    _launch_gate_local_mode: "{{ local_mode | default(false) | bool }}"
+    # Local-dev only when the inventory says so AND the host is a local-dev host (<name>-local), as
+    # tasks/clean-service.yml derives it: an extra var `-e local_mode=true` on a production launch cannot
+    # lift the bind, URL and step-ca refusals below.
+    _launch_gate_local_mode: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
     # The rendered values. Each `_launch_gate_*` is read by env.j2 or config.json.j2 under that name.
     # The listener's bind, port, leaf and name use a plain default(), as renew-internal-certs.yml's
     # listener table does: an inventory value set to '' is then the same value to the deploy and to the
@@ -307,7 +310,8 @@
         bash deploy.sh
       environment:
         CONTAINER_ENGINE: "{{ _engine }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        # The same derivation as Phase 1: the public flag alone never selects local-dev here.
+        LOCAL_MODE: "{{ 'true' if ((local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z'))) else '' }}"
         # Force the compose provider on the Mac-direct genesis path; empty on the Semaphore path.
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
         # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
@@ -364,12 +368,15 @@
       retries: 10
       delay: 3
       until: _launch_gate_health.stdout | trim == '200'
+      # A dry run starts nothing, and before the first deploy there is no bundle or listener to probe.
+      when: not ansible_check_mode
 
     - name: "Assert the TLS listener answered 200 to /healthz"
       ansible.builtin.assert:
         that:
           - _launch_gate_health.stdout | trim == '200'
         fail_msg: "launch-gate /healthz over TLS answered {{ _launch_gate_health.stdout | trim }}, not 200 (curl rc {{ _launch_gate_health.rc }})."
+      when: not ansible_check_mode
 
     # The listener is TLS only, so a plain-HTTP request must not get a 200.
     - name: "Plain HTTP to the TLS listener must not answer 200"
@@ -448,7 +455,7 @@
             token = os.environ["LAUNCH_GATE_CALLER_TOKEN_" + caller.upper().replace("-", "_")]
             verify = {"agent": agent, "workflow_id": "verify", "step": "verify"}
             launch("no-token", None, {**verify, "template": allowed})
-            launch("other-template", token, {**verify, "template": "Destroy VM"})
+            launch("other-template", token, {**verify, "template": "__agent_cloud_not_a_template__"})
             launch("allowed-template", token, {**verify, "template": allowed, "survey": {"__agent_cloud_verify__": "x"}})
           - "{{ _launch_gate_tls_name }}"
           - "{{ _launch_gate_probe_caller }}"

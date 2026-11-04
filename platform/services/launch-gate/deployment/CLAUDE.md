@@ -27,7 +27,6 @@ No environment runs the gate yet. The open tasks of the `skynet-launch-containme
 
 - the local-dev inventory and bootstrap entries (3.4). Until local-dev declares the `launch_gate_svc` group, `Deploy launch-gate (Local)`
   refuses at its pre-flight,
-- the renewal proof for the server leaf (3.5),
 - skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),
 - the production host, firewall rules, the `svc-launch-gate` team member, and the rollout (5.1-5.5).
 

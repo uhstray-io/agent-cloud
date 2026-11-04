@@ -255,7 +255,7 @@ argv = probe["ansible.builtin.command"]["argv"]
 assert argv[:4] == ["{{ _engine }}", "exec", "launch-gate", "python"], argv[:4]
 assert argv[4:6] == ["-I", "-c"], argv[4:6]
 script = argv[6]
-for needle in ('os.environ["LAUNCH_GATE_CALLER_TOKEN_"', 'launch("no-token", None,', 'launch("other-template", token, {**verify, "template": "Destroy VM"})',
+for needle in ('os.environ["LAUNCH_GATE_CALLER_TOKEN_"', 'launch("no-token", None,', 'launch("other-template", token, {**verify, "template": "__agent_cloud_not_a_template__"})',
                'launch("allowed-template", token,', '"__agent_cloud_verify__": "x"', 'cafile="/certs/step-ca-bundle.crt"',
                'minimum_version = ssl.TLSVersion.TLSv1_2', 'server_hostname=name'):
     assert needle in script, needle
@@ -423,6 +423,32 @@ INV
   [ "$status" -ne 0 ]
   assert_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
   assert_contains "$output" 'launch_gate_image must be a digest-pinned reference'
+  refute_contains "$output" 'Place the monorepo'
+  [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
+}
+
+@test "launch-gate deploy: -e local_mode=true on a host that is not <name>-local does not lift the production refusals" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local inv="$BATS_TEST_TMPDIR/hosts.ini"
+  # A production-shaped host (no -local suffix) on the loopback default bind. With the public flag alone
+  # selecting local-dev, the loopback refusal would be skipped; the mode is the host's identity instead.
+  cat > "$inv" <<'INV'
+[launch_gate_svc]
+lg-prod ansible_connection=local
+
+[launch_gate_svc:vars]
+service_name=launch-gate
+monorepo_deploy_path=platform/services/launch-gate/deployment
+openbao_addr=http://127.0.0.1:8200
+launch_gate_image=docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+launch_gate_semaphore_url=https://semaphore.example.test
+launch_gate_semaphore_project=1
+launch_gate_opa_url=https://opa.example.test:8281
+INV
+  run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=true -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a production run whose launch_gate_bind is loopback'
+  assert_contains "$output" 'Production launch-gate must publish on the VM'
   refute_contains "$output" 'Place the monorepo'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
 }
