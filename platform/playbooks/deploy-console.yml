@@ -124,8 +124,10 @@
     # plan/architecture/04-credentials-access.md by platform/tests/test_console_access_role_map.py.
     _access_role_map: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/vars/access-role-map.yml') | from_yaml }}"
     # The deploy templates the Request a service page lists (8.4, D38), read on the controller. catalog.json.j2 keeps
-    # the `Deploy <name>` templates whose playbook is deploy-<service>.yml (not Deploy All Services) and counts each
-    # service's hosts from the inventory groups. templates.yml is a D31 pinned input (rotate-console-credentials.yml).
+    # the `Deploy <name>` templates whose playbook is deploy-<service>.yml (not Deploy All Services), counts each
+    # service's hosts in the group its playbook targets (else <service>_svc), and keeps one entry per service.
+    # NOT a rotation pin: templates.yml changes many times a week, and the catalog holds names and counts, not code.
+    # Pinning it would make the monthly rotation refuse, and the secret_id would expire while the rotation waited.
     _console_catalog_templates: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates.yml') | from_yaml).templates }}"
     # Flow inputs (D24). The authentik apps mirror deploy-authentik.yml: an undefined authentik_apps on the
     # authentik host means the whole catalog, and an explicit [] is an empty selection. No authentik host

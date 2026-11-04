@@ -232,7 +232,7 @@ deployment/
 │   ├── workflow.json.j2    config/workflow.json from the service-onboarding registry
 │   ├── flows.json.j2       config/flows.json from the authentik, caddy and o11y declarations (names only)
 │   ├── gateway.json.j2     config/gateway.json from the agentgateway host's vars: clients, budgets, models (names and figures only; task 8.3a)
-│   ├── catalog.json.j2     config/catalog.json from platform/semaphore/templates.yml: the Deploy templates, names, template names and host counts only (task 8.4)
+│   ├── catalog.json.j2     config/catalog.json from platform/semaphore/templates.yml: one entry per service, names, template names and host counts only; the count is the group the service's deploy playbook targets (task 8.4)
 │   └── proxmox-ca.pem.j2   config/proxmox-ca.pem from console_proxmox_ca_pem (empty when unset)
 ├── .gitignore              .env, config/, certs/ (rendered per deploy)
 ├── AGENTS.md -> CLAUDE.md
