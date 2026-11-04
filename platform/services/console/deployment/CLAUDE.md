@@ -141,7 +141,7 @@ The server reads NetBox (sites, clusters, VMs, devices, prefixes) and Proxmox (n
 | NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to |
 | Proxmox | `CONSOLE_PROXMOX_TOKEN_ID` and `CONSOLE_PROXMOX_TOKEN`, a PVEAuditor token | `cluster/resources`: nodes and guests, joined to a VM by name |
 
-Environment, read by `app/src/server/config.rs`. The deploy does not set these yet (see Open items):
+Environment, read by `app/src/server/config.rs`. `templates/env.j2` renders NetBox and Proxmox only when `console_netbox_url` or `console_proxmox_url` is set. `CONSOLE_PROXMOX_CA_FILE` is rendered only with the Proxmox group and when `console_proxmox_ca_pem` is set. The Grafana rows below follow their own inputs. `CONSOLE_FLOWS_FILE` is always rendered.
 
 | Variable | Meaning |
 |----------|---------|
@@ -149,7 +149,7 @@ Environment, read by `app/src/server/config.rs`. The deploy does not set these y
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | all-or-none. `CONSOLE_PROXMOX_CA_FILE` (optional PEM roots for a self-signed API) counts as a member, so alone it names the missing URL |
 | `CONSOLE_FLOWS_FILE` | optional JSON array of `{kind, from, to, label}`, rendered from declarations. Names only: an extra key fails startup |
 | `CONSOLE_GRAFANA_URL` | optional Grafana origin: the deep-link base, and the origin of the usage read. Unset: every link is `null` and no usage read runs. Cleartext `http://` only to a loopback or RFC1918 host |
-| `CONSOLE_GRAFANA_TOKEN` | optional Grafana API token, a Viewer service account's (D32), for the gateway usage read (D39). Requires `CONSOLE_GRAFANA_URL`: alone it names the missing URL. Unset: `usage.state` is `unconfigured` and every client's `tokens_last_hour` is `null` |
+| `CONSOLE_GRAFANA_TOKEN` | optional Grafana API token, a Viewer service account's (D32), for the gateway usage read (D39). Requires `CONSOLE_GRAFANA_URL`: alone it names the missing URL. The deploy renders it only with `console_grafana_api_enabled` and `console_grafana_url` both set. Unset: `usage.state` is `unconfigured` and every client's `tokens_last_hour` is `null` |
 
 Infrastructure URLs take `https://` always, and `http://` only to loopback or RFC1918. Anything else fails startup and names the variable. Certificate verification is never turned off. Without a CA file, Proxmox is verified against reqwest's bundled roots, so a self-signed API shows as `source.proxmox: "error"`.
 
@@ -254,7 +254,7 @@ The `Containerfile` is part of this change. It sits next to this file and builds
 
 ## Open items
 
-- **Phase 3 wiring (not in this change).** The server reads the Phase 3 variables above, but nothing sets them. `templates/env.j2` and `deploy-console.yml` do not render them. No playbook provisions the NetBox token: `provision-netbox-automation-token.yml` has no `console` entry yet. `provision-console-proxmox-token.yml` does not exist. Until these land, a deploy answers `unconfigured` for both sources.
+- **Phase 3 inputs.** `templates/env.j2` renders the NetBox and Proxmox variables only when `console_netbox_url` or `console_proxmox_url` is set. `deploy-console.yml` shared-reads their tokens on the same conditions: `console_api_token` from `netbox`, and `console_token_id` with `console_token` from `proxmox`. The NetBox token's `console` profile is in `provision-netbox-automation-token.yml`, and `provision-console-proxmox-token.yml` exists. Without those URL inputs, a deploy answers `unconfigured` for both sources. Whether either token is provisioned in a given environment is not checked here.
 
 - **Authentik side** (in this change): the `console` OAuth2 provider and application are declared in `platform/services/authentik/deployment/blueprints/console-oidc.yaml`, and `console_oidc_client_secret` is a generated secret in `platform/playbooks/vars/secret-declarations/authentik.yml`. Deploy Authentik before the console, otherwise the Phase 1 shared read fails.
 - **Containerfile and `../app`** (in this change): the Containerfile must copy only the paths it needs. `deployment/Containerfile.dockerignore` keeps `.env`, `config/`, `certs/` and `app/target` out of the build context; podman 5.8.2 honors it (verified with a scratch build). A Containerfile with `COPY . .` would still bake in whatever remains.
