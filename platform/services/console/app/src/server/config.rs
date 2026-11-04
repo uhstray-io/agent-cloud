@@ -106,6 +106,9 @@ pub struct Config {
     pub openbao: Option<OpenbaoConfig>,
     /// Data-flow catalogue (JSON array) rendered from inventory declarations. `None` answers `unconfigured`.
     pub flows_file: Option<PathBuf>,
+    /// agentgateway clients, budgets and models (JSON object) rendered from the agentgateway host's vars (task 8.3a).
+    /// `None` answers `/v1/gateway` as `unconfigured`.
+    pub gateway_file: Option<PathBuf>,
     /// Grafana origin for deep links, no trailing slash. `None` leaves every link null.
     pub grafana_url: Option<String>,
     /// Authentik directory for the Access page. `None` leaves `/v1/access` answering `unconfigured`.
@@ -171,6 +174,10 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        let gateway_file = get("CONSOLE_GATEWAY_FILE")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
         let grafana_url = get("CONSOLE_GRAFANA_URL")
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
@@ -196,6 +203,7 @@ impl Config {
             proxmox,
             openbao,
             flows_file,
+            gateway_file,
             grafana_url,
             authentik,
             role_map_file,
@@ -571,6 +579,7 @@ mod tests {
         assert!(config.netbox.is_none());
         assert!(config.proxmox.is_none());
         assert!(config.flows_file.is_none());
+        assert!(config.gateway_file.is_none());
     }
 
     #[test]
@@ -800,6 +809,22 @@ mod tests {
             Config::from_lookup(overlay(openbao_env(), "CONSOLE_OPENBAO_URL", url.clone()))
                 .expect("valid config");
         assert_eq!(config.openbao.expect("configured").api_url, url);
+    }
+
+    #[test]
+    fn gateway_file_is_optional_and_trimmed() {
+        let mut env = full_env();
+        env.insert("CONSOLE_GATEWAY_FILE", "  /etc/console/gateway.json  ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert_eq!(
+            config.gateway_file,
+            Some(PathBuf::from("/etc/console/gateway.json"))
+        );
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GATEWAY_FILE", "   ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert!(config.gateway_file.is_none());
     }
 
     #[test]

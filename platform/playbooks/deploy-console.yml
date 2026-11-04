@@ -9,6 +9,9 @@
 #          is shared-read from authentik, which owns it. Template .env, config/scope.json and
 #          config/workflow.json (the service-onboarding registry's steps: id, order, owner, label),
 #          config/flows.json (the D24 edges, names only), config/proxmox-ca.pem (always, empty when unset) and
+#          config/gateway.json (task 8.3a: the agentgateway clients, budgets and models, names and figures only; always,
+#          empty lists when no agentgateway_svc host). The gateway file reads the agentgateway host's vars through the
+#          _console_gw_* expressions below, never a key, a client_<name> field, an address or a port. Also
 #          config/role-map.json (always; the Access page's role map, from vars/access-role-map.yml). The Authentik
 #          directory token (8.2b) is shared-read only when console_authentik_api_url is set.
 #          Phase 3 (D22-D24) reads NetBox and Proxmox only when their URL vars are set, and refuses a
@@ -107,6 +110,9 @@
       # The Proxmox CA (public PEM from console_proxmox_ca_pem). Always rendered, empty when unset, so the
       # compose bind mount always has a file; CONSOLE_PROXMOX_CA_FILE is set only when the PEM is set.
       - { src: proxmox-ca.pem.j2, dest: config/proxmox-ca.pem, mode: "0644" }
+      # The agentgateway clients, budgets and models (task 8.3a), names and figures only. Always rendered: empty
+      # lists when no agentgateway_svc host exists. Bind-mounted read-only (compose.yml); deploy.sh hashes it.
+      - { src: gateway.json.j2, dest: config/gateway.json, mode: "0644" }
       # The Access page's role map (8.2b): the authoritative table as data, always rendered. Not a secret.
       - { src: role-map.json.j2, dest: config/role-map.json, mode: "0644" }
     # The role map (8.2b) is read on the controller. Its source is pinned against the authoritative table in
@@ -121,6 +127,22 @@
          if (groups['authentik_svc'] | default([]) | length > 0) else [] }}
     _console_caddy_sites: "{{ (hostvars[groups['caddy_svc'][0]].caddy_managed_sites | default('', true) | string) if (groups['caddy_svc'] | default([]) | length > 0) else '' }}"
     _console_o11y_targets: "{{ (hostvars[groups['o11y_svc'][0]].o11y_expected_metrics_targets | default([])) if (groups['o11y_svc'] | default([]) | length > 0) else [] }}"
+    # The agentgateway clients, budgets and models for config/gateway.json (task 8.3a). Each expression reads the
+    # agentgateway host's own vars and applies the same default the gateway's config.yaml.j2 applies, so the file
+    # carries what the gateway enforces. Only these named vars are read: no key, no client_<name> field, no address,
+    # no port. No agentgateway_svc host means an empty list or the gateway's own default, and gateway.json.j2 renders
+    # empty lists. _console_gw_host is '' then, so the hostvars lookups are never evaluated.
+    # The console reads the FIRST agentgateway_svc host (single-gateway topology; prod has one host).
+    _console_gw_host: "{{ groups['agentgateway_svc'][0] if (groups['agentgateway_svc'] | default([]) | length > 0) else '' }}"
+    _console_gw_clients: "{{ hostvars[_console_gw_host].agw_clients | default([]) if (_console_gw_host | length > 0) else [] }}"
+    _console_gw_policies: "{{ hostvars[_console_gw_host].agw_client_policies | default({}) if (_console_gw_host | length > 0) else {} }}"
+    _console_gw_tiers: "{{ hostvars[_console_gw_host].agw_tier_tokens_per_hour | default({}) if (_console_gw_host | length > 0) else {} }}"
+    _console_gw_default_tokens: "{{ hostvars[_console_gw_host].agw_rate_tokens_per_hour | default(2000000) if (_console_gw_host | length > 0) else 2000000 }}"
+    _console_gw_models: "{{ hostvars[_console_gw_host].agw_models | default([]) if (_console_gw_host | length > 0) else [] }}"
+    _console_gw_openrouter_identities: "{{ hostvars[_console_gw_host].agw_openrouter_identities | default([]) if (_console_gw_host | length > 0) else [] }}"
+    _console_gw_openrouter_admins: "{{ hostvars[_console_gw_host].agw_openrouter_admins | default(false) if (_console_gw_host | length > 0) else false }}"
+    _console_gw_admin_gate: "{{ hostvars[_console_gw_host].agw_admin_identities_enabled | default(false) if (_console_gw_host | length > 0) else false }}"
+    _console_gw_platform_admins: "{{ hostvars[_console_gw_host].platform_admins | default([]) if (_console_gw_host | length > 0) else [] }}"
     # The service-onboarding workflow registry: the one definition of the steps (read on the controller).
     _workflow_registry: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../workflows/service-onboarding/registry.yml') | from_yaml }}"
     # The console_svc host vars a production console cannot run without. The guard task below checks them.

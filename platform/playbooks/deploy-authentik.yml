@@ -526,7 +526,7 @@
           {{ (_oidc_verify.rc == 0) if (_do_oidc_verify | bool)
              else ('not-applicable' if (_verify_apps | default([]) | length == 0) else 'not-checked') }}
         _oidc_errors: >-
-          {{ (['custom blueprints not all applied, or declared accounts not as declared (verify-users exit '
+          {{ (['custom blueprints not all applied, or declared accounts / the console directory token not as declared (verify-users exit '
                ~ _users_verify.rc ~ ')'] if _users_verify.rc != 0 else [])
              + (['live OIDC redirect_uris do not match intent (verify-oidc exit ' ~ _oidc_verify.rc ~ ')']
                 if ((_do_oidc_verify | bool) and _oidc_verify.rc != 0) else []) }}

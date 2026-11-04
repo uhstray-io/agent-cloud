@@ -142,6 +142,20 @@ It fails the deploy unless:
 It prints usernames, group names and blueprint statuses — never a credential. Handing
 a new user their first login waits on this step passing.
 
+## Dispatch Console directory reader (view-only)
+
+The console reads the user and group directory with `svc-console-directory`, a service
+account whose only group is `console-directory-readers` (not a superuser, never in
+`platform-admins`). That group's role grants `authentik_core.view_user` and
+`authentik_core.view_group` and nothing else; `console-oidc.yaml` declares all of it, and the
+blueprint applies only when the `console` app is enabled. Its token is `CONSOLE_DIRECTORY_TOKEN`,
+from its own OpenBao field `secret/services/authentik:console_directory_token`, not the platform
+service account's token. The verify (section 5 of `verify-users.py.j2`) reads the directory with the
+token (both lists must return 200), attempts a group create (must return 403), and checks the account
+is neither superuser nor in `platform-admins`. A token that can create a group fails the deploy, and
+the probe group it created is removed with the bootstrap token first. The role's two view permissions
+are pinned by the blueprint on every apply; the verify does not read the role's permission list back.
+
 ## Files
 
 | File | Role |

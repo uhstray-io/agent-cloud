@@ -180,9 +180,9 @@ def test_compose_mounts_the_role_map_read_only_at_the_path_env_names():
 def test_deploy_sh_refuses_without_the_role_map_and_hashes_it_into_both_up_branches():
     text = (CONSOLE / "deploy.sh").read_text()
     assert "config/role-map.json not found" in text
-    assert text.count(
-        "compose_up_if_changed config/scope.json config/workflow.json config/flows.json "
-        "config/proxmox-ca.pem config/role-map.json") == 2
+    # Each compose_up_if_changed line passes the role map exactly once, so the digest covers it on both branches.
+    up_lines = [ln for ln in text.splitlines() if "compose_up_if_changed config/" in ln]
+    assert [ln.count("config/role-map.json") for ln in up_lines] == [1, 1]
 
 
 def test_the_authentik_directory_read_is_its_own_entry_gated_on_its_url():
