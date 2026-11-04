@@ -207,15 +207,19 @@ repos:
   # Ledger citations (docs/MISTAKES.md 5.2): the citation test (8.2) runs when the ledger is
   # staged. The pre-push hook is the only other place it runs, and SKIP_TESTS=1 bypasses that
   # whole hook, so a ledger edit once committed a dead citation (2026-11-04). The test takes
-  # about 0.4s, so it can gate the commit itself. Needs pytest on python3, like the pre-push run.
+  # about 0.4s, so it can gate the commit itself. Like the pre-push run, it skips with a message
+  # when pytest is not importable for python3 (a missing tool skips; CLAUDE.md "Test check on
+  # push"). A real test failure blocks the commit. CI's Python core job runs the same file.
   - repo: local
     hooks:
       - id: ledger-citations
         name: ledger citations resolve (docs/MISTAKES.md 5.2)
         language: system
-        entry: python3 -m pytest -q -p no:cacheprovider platform/tests/test_ledger_test_citations.py
+        entry: >-
+          sh -c 'python3 -c "import pytest" 2>/dev/null || { echo "ledger-citations: pytest is not installed for python3; skipped (CI still runs it)"; exit 0; }; exec python3 -m pytest -q -p no:cacheprovider platform/tests/test_ledger_test_citations.py'
         files: ^docs/MISTAKES\.md$
         pass_filenames: false
+        verbose: true
         stages: [pre-commit]
 
   # Standard pre-commit hooks for general hygiene
