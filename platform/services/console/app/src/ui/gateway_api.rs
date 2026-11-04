@@ -32,6 +32,30 @@ pub enum BudgetSource {
     Unknown,
 }
 
+/// The state of the usage read. Any other word, and a missing field, is `Unknown`, which the page shows as a
+/// notice rather than as a figure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UsageState {
+    Ok,
+    Unconfigured,
+    Loading,
+    Error,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// The usage block of `GET /v1/gateway`: the read's state, when its last good figures were read, and the
+/// sentence that says why the newest read failed, when it did.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct Usage {
+    pub state: UsageState,
+    pub refreshed_at: Option<String>,
+    pub error: Option<String>,
+}
+
 /// `GET /v1/gateway`.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default)]
@@ -39,10 +63,11 @@ pub struct GatewayBody {
     pub state: GatewayState,
     pub clients: Vec<GatewayClient>,
     pub models: Vec<String>,
+    pub usage: Usage,
 }
 
-/// One gateway client: its name, its tier when it has one, its hourly token budget, and the
-/// models it may call.
+/// One gateway client: its name, its tier when it has one, its hourly token budget, the models it may call, and
+/// its last-hour token count from the usage read (`None` when the read has no figure for it).
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default)]
 pub struct GatewayClient {
@@ -51,7 +76,12 @@ pub struct GatewayClient {
     pub tokens_per_hour: u64,
     pub budget_source: BudgetSource,
     pub allowed_models: Vec<String>,
+    pub tokens_last_hour: Option<u64>,
 }
+
+/// The note under the Last hour column. The figure is the metric of the same traffic, not the gateway's counter.
+pub const APPROXIMATE: &str =
+    "Approximate: metric of the same traffic; the gateway enforces its own counter.";
 
 /// One served model and the clients whose `allowed_models` name it, in the answer's order.
 #[derive(Debug, Clone, PartialEq)]
@@ -93,6 +123,42 @@ pub fn budget_source_text(source: BudgetSource) -> Option<&'static str> {
         BudgetSource::Tier => Some("tier"),
         BudgetSource::Default => Some("default"),
         BudgetSource::Unknown => None,
+    }
+}
+
+/// The Last hour cell's text: thousands separators, or an em dash when no figure is known.
+pub fn last_hour_text(tokens: Option<u64>) -> String {
+    tokens.map_or_else(|| "\u{2014}".to_string(), budget_text)
+}
+
+/// The bar's percent: the last hour's tokens against the hourly budget, capped at 100. `None` when there is no
+/// figure or the budget is zero, so no bar is drawn.
+pub fn usage_percent(tokens: Option<u64>, budget: u64) -> Option<f64> {
+    let tokens = tokens?;
+    if budget == 0 {
+        return None;
+    }
+    Some((tokens as f64 * 100.0 / budget as f64).min(100.0))
+}
+
+/// The line that says the usage figures are not current, or `None` when they are. The server's sentence wins
+/// whenever it is present, since a failed read with a last good figure is `error` and still shows figures.
+pub fn usage_notice(usage: &Usage) -> Option<String> {
+    if let Some(error) = usage.error.as_deref() {
+        return Some(error.to_string());
+    }
+    match usage.state {
+        UsageState::Ok => None,
+        UsageState::Unconfigured => {
+            Some("Token usage is not configured for this console.".to_string())
+        }
+        UsageState::Loading => {
+            Some("Token usage is loading: the first read has not finished.".to_string())
+        }
+        UsageState::Error => Some("The newest usage read failed.".to_string()),
+        UsageState::Unknown => {
+            Some("The console received a token usage state it does not know.".to_string())
+        }
     }
 }
 
@@ -251,5 +317,94 @@ mod tests {
         let rows = clients_by_model(&clients, &models);
         assert_eq!(rows.len(), 1);
         assert!(rows[0].clients.is_empty());
+    }
+
+    #[test]
+    fn the_usage_block_and_each_clients_last_hour_decode() {
+        let value = serde_json::json!({
+            "state": "ok",
+            "clients": [
+                {"name": "research-team", "tokens_per_hour": 250000000, "tokens_last_hour": 1234},
+                {"name": "ops", "tokens_per_hour": 10, "tokens_last_hour": null}
+            ],
+            "models": [],
+            "usage": {"state": "error", "refreshed_at": "2026-11-04T10:00:00Z",
+                      "error": "The newest usage read failed: Grafana answered HTTP 500. Showing the last good read."}
+        });
+        let body: GatewayBody = serde_json::from_value(value).expect("body");
+        assert_eq!(body.usage.state, UsageState::Error);
+        assert_eq!(
+            body.usage.refreshed_at.as_deref(),
+            Some("2026-11-04T10:00:00Z")
+        );
+        assert_eq!(body.clients[0].tokens_last_hour, Some(1234));
+        assert_eq!(body.clients[1].tokens_last_hour, None);
+    }
+
+    #[test]
+    fn a_missing_usage_block_or_state_word_is_unknown_not_ok() {
+        let body: GatewayBody =
+            serde_json::from_value(serde_json::json!({"state": "ok"})).expect("body");
+        assert_eq!(body.usage.state, UsageState::Unknown);
+        assert!(
+            usage_notice(&body.usage).is_some(),
+            "an unknown state is a notice"
+        );
+        let odd: Usage =
+            serde_json::from_value(serde_json::json!({"state": "degraded"})).expect("usage");
+        assert_eq!(odd.state, UsageState::Unknown);
+    }
+
+    #[test]
+    fn last_hour_reads_thousands_or_a_dash() {
+        assert_eq!(last_hour_text(Some(1_234_567)), "1,234,567");
+        assert_eq!(last_hour_text(Some(0)), "0");
+        assert_eq!(last_hour_text(None), "\u{2014}");
+    }
+
+    #[test]
+    fn the_bar_is_the_share_of_budget_capped_and_absent_without_a_figure_or_budget() {
+        assert_eq!(usage_percent(None, 1000), None, "no figure, no bar");
+        assert_eq!(usage_percent(Some(5), 0), None, "no budget, no bar");
+        assert_eq!(usage_percent(Some(250), 1000), Some(25.0));
+        assert_eq!(usage_percent(Some(1000), 1000), Some(100.0));
+        assert_eq!(
+            usage_percent(Some(3000), 1000),
+            Some(100.0),
+            "capped at 100"
+        );
+        assert_eq!(usage_percent(Some(0), 1000), Some(0.0));
+    }
+
+    #[test]
+    fn the_notice_names_every_state_and_shows_the_servers_sentence_first() {
+        let usage = |state, error: Option<&str>| Usage {
+            state,
+            refreshed_at: None,
+            error: error.map(str::to_string),
+        };
+        assert_eq!(usage_notice(&usage(UsageState::Ok, None)), None);
+        assert_eq!(
+            usage_notice(&usage(UsageState::Unconfigured, None)).as_deref(),
+            Some("Token usage is not configured for this console.")
+        );
+        assert!(usage_notice(&usage(UsageState::Loading, None))
+            .expect("loading")
+            .contains("loading"));
+        assert_eq!(
+            usage_notice(&usage(UsageState::Error, None)).as_deref(),
+            Some("The newest usage read failed.")
+        );
+        assert_eq!(
+            usage_notice(&usage(
+                UsageState::Error,
+                Some("The newest usage read failed: boom. Showing the last good read.")
+            ))
+            .as_deref(),
+            Some("The newest usage read failed: boom. Showing the last good read.")
+        );
+        assert!(usage_notice(&usage(UsageState::Unknown, None))
+            .expect("unknown")
+            .contains("does not know"));
     }
 }

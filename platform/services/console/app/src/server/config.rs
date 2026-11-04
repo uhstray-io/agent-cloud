@@ -111,6 +111,9 @@ pub struct Config {
     pub gateway_file: Option<PathBuf>,
     /// Grafana origin for deep links, no trailing slash. `None` leaves every link null.
     pub grafana_url: Option<String>,
+    /// Grafana API token for the gateway usage read (D39, a Viewer service account's). Present only with
+    /// `grafana_url` (see `from_lookup`). Read only by the refresh task in `grafana.rs`. `None` leaves usage unconfigured.
+    pub grafana_token: Option<Secret>,
     /// Authentik directory for the Access page. `None` leaves `/v1/access` answering `unconfigured`.
     pub authentik: Option<AuthentikConfig>,
     /// Role map JSON rendered from `vars/access-role-map.yml`. `None` serves an empty role map.
@@ -183,6 +186,14 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(|value| infrastructure_origin("CONSOLE_GRAFANA_URL", &value))
             .transpose()?;
+        let grafana_token = get("CONSOLE_GRAFANA_TOKEN")
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(Secret::new);
+        // The token is sent only to the origin it names, so it cannot be set without one.
+        if grafana_token.is_some() && grafana_url.is_none() {
+            return Err(ConfigError::Missing("CONSOLE_GRAFANA_URL"));
+        }
         let authentik = authentik_from(&get)?;
         let role_map_file = get("CONSOLE_ROLE_MAP_FILE")
             .map(|value| value.trim().to_string())
@@ -205,6 +216,7 @@ impl Config {
             flows_file,
             gateway_file,
             grafana_url,
+            grafana_token,
             authentik,
             role_map_file,
         })
@@ -876,6 +888,33 @@ mod tests {
         let config = Config::from_lookup(overlay(full_env(), "CONSOLE_GRAFANA_URL", url.clone()))
             .expect("valid config");
         assert_eq!(config.grafana_url.as_deref(), Some(url.as_str()));
+    }
+
+    #[test]
+    fn grafana_token_needs_the_url_and_never_prints() {
+        let mut env = full_env();
+        env.insert("CONSOLE_GRAFANA_TOKEN", "grafana-token-value");
+        let err = Config::from_lookup(lookup(env))
+            .err()
+            .expect("a token without its url must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_GRAFANA_URL"));
+        assert!(!err.to_string().contains("grafana-token-value"));
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GRAFANA_URL", "https://grafana.example.test");
+        env.insert("CONSOLE_GRAFANA_TOKEN", "  grafana-token-value  ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        let kept = config.grafana_token.expect("configured");
+        assert_eq!(kept.expose(), "grafana-token-value");
+        assert!(!format!("{kept:?}").contains("grafana-token-value"));
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GRAFANA_URL", "https://grafana.example.test");
+        env.insert("CONSOLE_GRAFANA_TOKEN", "   ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert!(config.grafana_token.is_none(), "a blank token is no token");
+        let config = Config::from_lookup(lookup(full_env())).expect("valid config");
+        assert!(config.grafana_token.is_none());
     }
 
     /// A private or loopback address built at runtime. The guard tests need these addresses,

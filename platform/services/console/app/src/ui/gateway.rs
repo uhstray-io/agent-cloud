@@ -7,13 +7,13 @@ use dioxus::prelude::*;
 
 use super::empty::PageMeta;
 use super::gateway_api::{
-    budget_source_text, budget_text, clients_by_model, not_ok_message, GatewayBody, GatewayClient,
-    GATEWAY_PATH,
+    budget_source_text, budget_text, clients_by_model, last_hour_text, not_ok_message,
+    usage_notice, usage_percent, GatewayBody, GatewayClient, APPROXIMATE, GATEWAY_PATH,
 };
 use super::icons::icon;
 use super::inventory::{poll_admin, Admin, POLL_MS};
 use super::shell::Ctx;
-use super::status::Notice;
+use super::status::{Meter, Notice};
 
 /// The AI Gateway page's nav entry and header text.
 pub const AI_GATEWAY: PageMeta = PageMeta {
@@ -116,7 +116,12 @@ fn GatewayBodyView(body: GatewayBody, panel: Panel, reason: String) -> Element {
         }
         match panel {
             Panel::Models => rsx! { ModelTable { clients: body.clients, models: body.models } },
-            Panel::Access => rsx! { AccessTable { clients: body.clients } },
+            Panel::Access => rsx! {
+                if let Some(line) = usage_notice(&body.usage) {
+                    p { class: "stale", role: "status", "{line}" }
+                }
+                AccessTable { clients: body.clients }
+            },
         }
         p { class: "hint", "{ADMIN_NOTE}" }
     }
@@ -173,6 +178,7 @@ fn AccessTable(clients: Vec<GatewayClient>) -> Element {
                             th { "Client" }
                             th { "Tier" }
                             th { class: "num", "Budget / hour" }
+                            th { class: "num", "Last hour" }
                             th { "Models" }
                             th { "Actions" }
                         }
@@ -191,6 +197,12 @@ fn AccessTable(clients: Vec<GatewayClient>) -> Element {
                                     span { "{budget_text(client.tokens_per_hour)}" }
                                     if let Some(source) = budget_source_text(client.budget_source) {
                                         span { class: "hint", " {source}" }
+                                    }
+                                }
+                                td { class: "num", title: "{APPROXIMATE}",
+                                    span { "{last_hour_text(client.tokens_last_hour)}" }
+                                    if let Some(pct) = usage_percent(client.tokens_last_hour, client.tokens_per_hour) {
+                                        Meter { label: format!("{} last hour, share of its budget", client.name), pct }
                                     }
                                 }
                                 td {
