@@ -561,12 +561,13 @@
             # wrote and left pending (the config read returns pending values, so that run's model is
             # not in _cfg_changes). Either way a start on a model the guest cannot run would leave it
             # down, so when a model change awaited this restart and the guest is stopped, the value the
-            # guest last RAN goes back before any start: the pending entry's current `value` (PVE API
-            # GET .../pending, "Current value."), else the config as read before this run's write; no
-            # key at all when there was none.
+            # guest last RAN goes back before any start: the cpu entry's current `value` from GET
+            # .../pending ("both current and pending values"; `value` is "Current value."), read
+            # before this run's write and whatever is pending on it, a change or a delete; else the
+            # config as read before the write; no key at all when there was none.
             - name: "Recovery: work out whether the CPU model must be restored before a start"
               vars:
-                _cpu_pending_items: "{{ _pending.json.data | default([]) | selectattr('key', 'equalto', 'cpu') | selectattr('pending', 'defined') | list }}"
+                _cpu_pending_items: "{{ _pending.json.data | default([]) | selectattr('key', 'equalto', 'cpu') | list }}"
                 _cpu_ran: >-
                   {{ ((_cpu_pending_items | first).value | default('')) if (_cpu_pending_items | length > 0)
                      else (_cfg.json.data.cpu | default('')) }}

@@ -240,8 +240,13 @@ RESTORE_TASK = "Recovery: work out whether the CPU model must be restored before
     ("x86-64-v3", [{"key": "cpu", "value": "kvm64", "pending": "x86-64-v3"}], True, "stopped", True,
      {"cpu": "kvm64"}),
     ("x86-64-v3", [{"key": "cpu", "pending": "x86-64-v3"}], True, "stopped", True, {"delete": "cpu"}),
-    ("x86-64-v3", [{"key": "memory", "value": "4096", "pending": "8192"}], True, "stopped", True,
-     {"cpu": "x86-64-v3"}),
+    # A pending delete: the config read drops cpu, but the guest still ran the entry's current value.
+    (None, [{"key": "cpu", "value": "x86-64-v2-AES", "delete": 1}], True, "stopped", True,
+     {"cpu": "x86-64-v2-AES"}),
+    # The endpoint lists current values too; an entry with nothing pending still names what ran.
+    ("x86-64-v3", [{"key": "memory", "value": "4096", "pending": "8192"},
+                   {"key": "cpu", "value": "x86-64-v2-AES"}], True, "stopped", True,
+     {"cpu": "x86-64-v2-AES"}),
 ])
 def test_a_stopped_guest_gets_the_cpu_model_it_last_ran(tmp_path, cfg_cpu, pending, awaits, status,
                                                         needed, body):
