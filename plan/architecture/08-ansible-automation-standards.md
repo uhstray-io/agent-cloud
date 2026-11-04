@@ -231,7 +231,7 @@ allowlist as it is fixed.
 | `plan/architecture/01-automation-model.md` | Composable task library this document treats as the reuse unit |
 | `plan/architecture/03-testing-ci-quality.md` | CI lint and test gates |
 | `plan/development/15-service-deployment-workflow-agents.md` | The workflow that needs dry run and verify on every step |
-| OpenSpec change `service-deployment-workflow` | Requirements `platform/automation-standards` |
+| OpenSpec change `service-deployment-workflow` | Requirements capability `platform/automation-standards` (an OpenSpec capability name, not a file path) |
 | root `AGENTS.md` | Credential handling and `no_log` scope |
 
 ## Revision History

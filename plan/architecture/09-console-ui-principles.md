@@ -114,8 +114,8 @@ not belong in the console.
 | Change what agents may do | Policy → **Propose a change** → drafted plan → approve | Rego change + test on a branch, `opa test`, replay, PR review, deploy |
 | Add a person | Access → one-row form → approve | Authentik blueprint deploy (plan 12) |
 | Ship a change | CI/CD → delivery context: review, checks, promotion stage | GitHub; `main` required checks from `.github/rulesets/protect-main.json` |
-| Review what agents propose | Dashboard → Proposals awaiting approval → expand → comment, edit plan, approve or deny | OPA re-checks an edited plan; approval moves it to Queued; a denial runs nothing |
-| Get a service | Services → **Request a service** → approved catalog service, or a new service | Approved: inventory lookup, address check, Provision VM, the service's deploy template. New: onboarding review (`plan/architecture/02`) |
+| Review what agents propose | Dashboard → Proposals awaiting approval → expand → comment, edit plan, approve or deny | Planned: OPA re-checks an edited plan; approval moves it to Queued; a denial runs nothing. The launch gate that carries agent launches is not yet deployed ([launch-gate CLAUDE.md](../../platform/services/launch-gate/deployment/CLAUDE.md)) |
+| Get a service | Services → **Request a service** → approved catalog service, or a new service | Approved: inventory lookup, address check, Provision VM, the service's deploy template. New: onboarding review ([`02-service-onboarding.md`](02-service-onboarding.md)) |
 | Change tenant or org configuration | Sidebar → Tenant / Organization settings (platform admins) → propose | Inventory PR and Authentik blueprints; business-domain tags drive the Active Work tiles |
 | Personalise | Account → Profile | Preferences stored by the console; identity fields stay in Authentik (locked) |
 
