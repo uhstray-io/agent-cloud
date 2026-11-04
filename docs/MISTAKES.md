@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) | Unverified claim | 2 | Convention |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) | Unverified claim | 3 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
@@ -74,7 +74,7 @@ and why.
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
 | 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | 1 | Test + **repo-wide normalisation outstanding** |
-| 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red) | **x3** False green | 3 | Test (anchored + active-construct) |
+| 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
 | 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
@@ -1181,7 +1181,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 2** — 2026-11-02, 2026-11-03
+**Occurrences: 3** — 2026-11-02, 2026-11-03, 2026-11-04
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1213,6 +1213,18 @@ admitted `localhost` (the controller) and parent groups; the second review caugh
 landed names the bare-name templates in the catalog and requires a `_svc` group everywhere else. Why
 the rule did not fire: it was applied to the one playbook in view and not to the others the claim
 covered; the brief described what all of them do after reading one.
+
+**Occurrence 3 — 2026-11-04.** Asked what work came next on the observability rollout, I told the
+operator that OpenSpec task 2.3 was "source-only work, so I can start now without production
+access". I had read the task's first line, truncated at 230 characters. Its body says the source
+slice is already checked and what remains is production work: an endpoint-availability receipt
+with a controlled unhealthy drill through the live alerts, and a fresh coverage census that needs
+an updated private receipt binding and therefore the production inventory sync first. A review
+pass caught it before any work started; the correction went to the operator in the next message.
+Why the rule did not fire: it names briefs and plans about code, and a task list read as a summary
+rather than as a body to read. **Proposed guard** (count 3): a Stop hook that, when a reply
+characterises a numbered OpenSpec task ("source-only", "needs nothing", "done"), requires a read of
+that task's whole block in `tasks.md` earlier in the turn, and otherwise prompts to read it first.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
@@ -1660,7 +1672,7 @@ localhost-defaulting variant, which is the dangerous one — is a separate chang
 recorded here so it is not mistaken for done.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
-**Occurrences: 3** — 2026-08-25, 2026-08-25, 2026-11-02
+**Occurrences: 4** — 2026-08-25, 2026-08-25, 2026-11-02, 2026-11-04
 
 **What happened.** 2.12 records replacing a blacklist of forbidden write verbs
 with an invariant: within the validation step, every mention of the live
@@ -1712,6 +1724,18 @@ Convention is not enough): an AST ratchet in `platform/tests`, modelled on the
 `test_assertions_are_real.bats` ratchet, that flags any `in` / `not in` comparison whose needle is an f-string beginning
 with an interpolated value and whose haystack is captured output, held in a known-list like
 `known_inert_assertions.txt`, so a new one fails CI and existing ones are visible.
+
+**Occurrence 4 — 2026-11-04.** PR #815's stdin-token route in `platform/semaphore/sync-inventory.yml`
+includes the shared transport and parsed-inventory preflight under `when: sync_inventory_token is
+defined`. The only checks on it were BATS greps (`platform/tests/test_semaphore_repositories.bats:187-188`)
+for `sync_inventory_token is defined` and `tasks/runtime-preflight.yml` anywhere in the file. The
+independent review changed the condition to `when: false and sync_inventory_token is defined`: both
+greps still matched, and all 35 Python tests still passed, so a token could have gone to a cleartext
+URL with the suite green. Fixed in `d6746d3d` by a behavioural test that runs the play with the token
+against `http://example.invalid` and URLs carrying credentials, and requires the preflight's fixed
+refusal; the same mutation turns it red. Why the rule did not fire: it was applied to allow-lists and
+needles in Python, and a grep that proves a guard's text exists read as a guard test. A guard is
+tested by running it.
 
 ### 2.16 A test whose population was selected by the presence of the fix
 
