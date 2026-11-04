@@ -6,19 +6,29 @@ stdlib Python HTTPS service in `app/launch_gate.py`. An agent (skynet, later the
 requested agent, and that the template is on the allowlist. It then asks OPA for a decision and creates the
 Semaphore task only on an allow. Full design and the check order: `plan/development/openspec/changes/skynet-launch-containment/design.md`.
 
-## Status: container files only
+## Status: deploy playbooks and templates; not deployed
 
-This directory holds the container files. It does not deploy anything by itself. Not in this directory yet:
+The container files are in this directory. This directory does not deploy anything by itself. The playbooks that
+deploy it are in `platform/playbooks/`, and their Semaphore templates are declared in `platform/semaphore/templates.yml`
+(with generated `(Dev)` variants) and `platform/semaphore/templates-local.yml`:
 
-- the deploy playbook (`deploy-launch-gate.yml`), its clean-deploy and Semaphore-access playbooks,
-- the `templates.yml` entries,
-- the `svc-launch-gate` Semaphore identity,
-- the server leaf issuance and the renewal proof,
-- the host firewall rules that admit the callers.
+- `deploy-launch-gate.yml`, the deploy (template `Deploy launch-gate`). It refuses bad inputs before any change, places
+  the repo, renders the allowlist, manages the tokens, issues the server leaf, runs `deploy.sh`, and verifies.
+- `clean-deploy-launch-gate.yml`, the destructive redeploy (template `Clean Deploy launch-gate`). It runs the teardown
+  first, then the deploy.
+- `provision-launch-gate-semaphore-access.yml`, the identity `svc-launch-gate` at `task_runner` (template
+  `Provision launch-gate Semaphore Access`). Run it before the deploy: the deploy reads the token it stores and stops
+  when that token is absent.
 
-These are the later tasks of the `skynet-launch-containment` change: the playbooks and templates (3.2-3.4),
-the renewal proof (3.5), skynet's side (3.6), and the production host, firewall and Semaphore member
-(5.1). Until they land, nothing here runs in any environment.
+The playbook headers hold the behaviour, the refusals and the order of the steps.
+
+No environment runs the gate yet. The open tasks of the `skynet-launch-containment` change
+(`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) are:
+
+- the local-dev inventory and bootstrap entries (3.4). Until local-dev declares the `launch_gate_svc` group, `Deploy launch-gate (Local)`
+  refuses at its pre-flight,
+- skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),
+- the production host, firewall rules, the `svc-launch-gate` team member, and the rollout (5.1-5.5).
 
 ## Files
 
@@ -43,8 +53,9 @@ the catalog, and every destructive template, from reaching OPA at all.
 
 The image is `${LAUNCH_GATE_IMAGE:?set launch_gate_image in the inventory}`. The design calls for an official
 Python image pinned by digest. Nothing in this directory chooses it. The app's annotations (`str | None`) are
-evaluated at import, so the image must be Python 3.10 or later. Whether the chosen image meets that, and has
-`ssl` and `python` on its PATH, is unverified here. The playbook change must prove it.
+evaluated at import, so the image must be Python 3.10 or later. The deploy does not assert a Python version. Its
+Phase 3 probes run the gate under the pinned image: `python` must start and import `ssl` inside the container, and
+`/healthz` must answer 200 over TLS from the host.
 
 ## Config contract (`config.json`)
 
@@ -97,7 +108,8 @@ caller, in sorted order, from `secrets['caller_<name>_token']`.
 
 It fails closed: it raises `AnsibleFilterError` on an empty agent list, an agent not in the catalog, an agent with no
 `allowed_templates` list, a remaining name that `templates.yml` does not declare (catalog drift), or a template
-name declared twice. The playbook that calls it is a later change and must not catch the error.
+name declared twice. The deploy playbook calls it in Phase 1 without a rescue, so the error stops the run before the
+repo is placed.
 
 ## Do not
 
@@ -122,6 +134,9 @@ name declared twice. The playbook that calls it is a later change and must not c
 - `platform/tests/test_launch_gate_allowlist.py`: the filter on synthetic and on the repository's own catalog and
   templates, and both templates rendered with the real `to_nice_json`. The rendered config is accepted by the
   app's own `load_config`.
+- `platform/tests/test_launch_gate_playbooks.bats`: the order of the guards and the plays in the three playbooks, their
+  refusals, the secrets they declare, the Phase 3 probes, and one behavioural run that refuses a non-digest image
+  before the repo is placed.
 - `platform/tests/test_launch_gate*.py` (existing): the app.
 - `platform/tests/test_restart_policy.bats`, `test_compose_image_qualified.py`, `test_no_bind_mount_dir_delete.py`:
   repository-wide guards that also cover this directory.

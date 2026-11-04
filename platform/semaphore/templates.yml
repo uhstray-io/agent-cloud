@@ -1465,6 +1465,56 @@ templates:
         required: false
         default_value: "main"
 
+  # The launch gate's own Semaphore identity (skynet-launch-containment, Phase 3): svc-launch-gate at project role
+  # task_runner, the launch right for agent-initiated launches. Launch rights are runner rights (AGENTS.md), so the
+  # right stays with this one account; the gate's own checks, not the role, contain it. Run it BEFORE Deploy
+  # launch-gate, which reads the token this stores and stops when that token is absent.
+  - name: Provision launch-gate Semaphore Access
+    playbook: platform/playbooks/provision-launch-gate-semaphore-access.yml
+    dev_variant: true
+
+  # The launch gate (platform/services/launch-gate): the only path by which an agent's launch reaches Semaphore.
+  # The deploy refuses a non-digest image and an internal_leaves entry that does not declare its server leaf before
+  # any change; its verify proves the gate refuses an unauthenticated launch, an off-allowlist template and an
+  # undeclared survey field. Run "Provision launch-gate Semaphore Access" first. main has no launch-gate deploy
+  # until dev is promoted, so the main-bound template cannot run; the "(Dev)" variant can.
+  - name: Deploy launch-gate
+    playbook: platform/playbooks/deploy-launch-gate.yml
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
+        type: string
+        required: false
+        default_value: "false"
+
+  # Removes the launch gate's containers and, outside local-dev, its placed clone, then runs Deploy launch-gate. The
+  # gate holds no database; its caller and Semaphore tokens come back from OpenBao unchanged. The teardown runs
+  # before the deploy's check that the Semaphore token exists, so a run made before Provision launch-gate Semaphore
+  # Access leaves the gate down.
+  - name: Clean Deploy launch-gate
+    playbook: platform/playbooks/clean-deploy-launch-gate.yml
+    dev_variant: true
+    survey_vars:
+      - name: confirm_reset
+        title: "Confirm: host whose data is destroyed"
+        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Clean Deploy agentgateway
     playbook: platform/playbooks/clean-deploy-agentgateway.yml
     # Introduced on dev (PR #191); main has no agentgateway code until promotion, so
@@ -1956,6 +2006,10 @@ templates:
     # task, and removes it; seed_inputs is its allowlist. First installation:
     # run Provision Seed Environment for this template, then
     # `scripts/semaphore-seed-input.py --verify-only` (the read-only access check).
+    #
+    # bao_value_encoding (default plain) says how BAO_VALUE is encoded. The seed input is
+    # one line (the CLI refuses a newline), and a PEM private key is multi-line, so such a
+    # value is staged as base64 and the playbook decodes it before the merge.
     isolated_environment: OpenBao key seed inputs
     seed_inputs: [BAO_VALUE]
     seed_access_check: bao_verify_access_only
@@ -1975,6 +2029,12 @@ templates:
         description: "true = log in and read the path, then stop before any write"
         type: string
         default_value: "false"
+      - name: bao_value_encoding
+        title: "Value encoding"
+        description: "plain (default) or base64. Use base64 for a multi-line value such as a PEM key: the one-line input is decoded before it is stored."
+        type: string
+        default_value: "plain"
+        required: false
 
   - name: Rotate Semaphore Operator Token
     playbook: platform/playbooks/rotate-semaphore-api-token.yml

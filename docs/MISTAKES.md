@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x5** | Unverified claim | 5 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x6** | Unverified claim | 6 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -93,6 +93,7 @@ and why.
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
 | 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
+| 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -124,7 +125,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards) | Process | 7 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again) | Process | 8 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed) |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -247,7 +248,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 5** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07
+**Occurrences: 6** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -308,6 +309,15 @@ phrase ("because", "built by", "predates", "empty since") with no `path:line`, c
 task id in the same sentence, and asks for the source before the reply is sent. It will be
 noisy; start it as a warning. Until it exists, a cause for a failure is reported as "cause not
 established" unless the code, the commit history or the query is cited.
+
+**Occurrence 6 — 2026-11-03 (a gap read from a truncated line).** A grounding checkpoint reported that
+plan 03's OPA production checklist skipped the access and boot-persistence runs, and PR #849 added a
+step listing them. Steps 6 and 9 already recorded them. The checklist had been read with
+`grep ... | cut -c1-220`, which cut both steps before the task numbers, and the missing text was
+read as missing runs. The pr-reviewer caught the duplicate before merge; the step was dropped.
+Why the rule did not fire: the file was the right one, so the "right artifact" check passed, but
+the read itself was partial. A gap claim needs the full text of the lines it says are missing, not
+a display-truncated view of them.
 
 ### 1.3 A masked exit code reported as success
 
@@ -2287,6 +2297,29 @@ objects the function assigns itself: a fixture parameter that is stopped and the
 covered: `test_nemoclaw_policy.py::_candidate_port()` and `test_agw_stream_usage.py::_free_port()` hand a freed
 port to a process that binds it, a different race (the first says so in its docstring).
 
+### 2.34 A deploy verify reported healthy over a crash-looping container
+
+**What happened.** Semaphore task 11958 (Deploy Plane (Dev), 2026-11-03) recorded the service-deploy step as `pass`
+and the Report line as "plane healthy". In that run, container `plane_runner_1` (image
+`makeplane/node-runner-commercial:v3.3.3`, restart policy `always`) had a RestartCount of 453. Each start exited 127
+with "Fatal glibc error: CPU does not support x86-64-v3". The runner image needs x86-64-v3, and the VM's CPU, the template's
+default model, reports "QEMU Virtual CPU version 2.5+" with no AVX2, BMI or FMA flags. The verify (`deploy-plane.yml`, Phase 4) probed only `/api/instances/` through the proxy, and that answered.
+
+**Root cause.** The verify proved one path, the API through the proxy, and treated that as proof of the whole plane.
+Under restart policy `always` a crash-looping container reads as `Up` between restarts, so a single status read
+cannot show it, and no Phase 4 step read the state of any container the probe did not reach.
+
+**The rule.** A deploy verify asserts that every container its compose project created is running, and that no
+restart count grows across a settle window, before it records a pass. A container declared one-shot
+(`agent-cloud.one-shot`) counts as finished only when its status is `exited` with exit code 0. The restart count alone is not enough: the status read
+at the end of the window is the other half.
+
+**Enforced by.** Test: `platform/tests/test_assert_containers_stable.py` runs the shared task
+`platform/playbooks/tasks/assert-containers-stable.yml` against synthetic readings and against a fake engine, and checks
+that Deploy Plane's Phase 4 runs it after the API probe and before Report. Mutation-checked on the restart, status,
+one-shot, first-pass, listing, gate and failed-inspect guards and on the wiring. Wired into Deploy Plane only; other services stay
+`Convention` until they include the task.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -3431,6 +3464,17 @@ repo-wide scans are exactly the tests that cover files they do not name. **Propo
 narrowing the 2026-10-30 proposal: `SKIP_TESTS=1` skips only the slow playbook-run tests; the
 pre-push hook always runs the fast repo-wide scans (the AST and text guards under
 `platform/tests` that read every file), so they cannot be bypassed with the rest.
+
+**Occurrence 2026-11-03 (the same guard, a day later).** PR #847 added an HTTPS test server to
+`platform/tests/test_verify_service_health.py` and was pushed under `SKIP_TESTS=1` after its own
+file and fifteen playbook-scanning guards passed locally. CI's Python core failed on
+`test_tls_contexts_pinned.py`: the new `SSLContext` set no minimum TLS version, the same guard the
+2026-11-02 occurrence missed. Fixed in `241dbf77` before merge. Why the rule did not fire: the
+brief named the guard files to run by hand, and the list was chosen from what the change looked
+like (playbook guards for a playbook change), not from what it added (a TLS context). Evidence for
+the proposed guard: running every `platform/tests` file that does not launch `ansible-playbook`
+took 91 s on this workstation with `-n auto` and includes the TLS guard. That subset is the
+concrete candidate for what the hook keeps running under `SKIP_TESTS=1`.
 
 ### 5.3 Merging while the review was rate-limited
 

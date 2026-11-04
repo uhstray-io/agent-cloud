@@ -17,13 +17,13 @@
 
 ## 3. Deployment as code (agent-cloud)
 
-- [ ] 3.1 Compose (digest-pinned Python image, source read-only, certs mount, published on the declared LAN bind), deploy.sh (lifecycle only), env template
-- [ ] 3.2 `deploy-launch-gate.yml`: input refusals, place repo, secrets (`caller_<name>_token` generated, `semaphore_api_token` existing), allowlist rendered from OPA's catalog excluding destructive templates, leaf issuance, deploy, verify (TLS health, 401 without token, 400 for an undeclared key, 403 for a non-allowlisted template, plain HTTP refused)
-- [ ] 3.3 `clean-deploy-launch-gate.yml`, `provision-launch-gate-semaphore-access.yml` (shared identity task, `task_runner`, launch probe 404)
-- [ ] 3.4 Templates (base with Dev variant, Local) in `templates.yml` / `templates-local.yml`; local-dev inventory and bootstrap entries
-- [ ] 3.5 Renew Internal Certs: generalise the OPA server-leaf proof into a declared-listener proof and admit `launch-gate-server`; tests for both leaves
+- [x] 3.1 Compose (digest-pinned Python image, source read-only, certs mount, published on the declared LAN bind), deploy.sh (lifecycle only), env template (the digest pin is enforced by the refusal in `deploy-launch-gate.yml`)
+- [x] 3.2 `deploy-launch-gate.yml`: input refusals, place repo, secrets (`caller_<name>_token` generated, `semaphore_api_token` existing), allowlist rendered from OPA's catalog excluding destructive templates, leaf issuance, deploy, verify (TLS health, 401 without token, 400 for an undeclared key, 403 for a non-allowlisted template, plain HTTP refused). Structure and refusals are tested in `platform/tests/test_launch_gate_playbooks.bats`; no live deploy has run
+- [x] 3.3 `clean-deploy-launch-gate.yml`, `provision-launch-gate-semaphore-access.yml` (shared identity task, `task_runner`, launch probe 404). No live run has been made
+- [ ] 3.4 Templates (base with Dev variant, Local) in `templates.yml` / `templates-local.yml`; local-dev inventory and bootstrap entries (the templates have landed; the local-dev inventory and bootstrap entries are still open)
+- [x] 3.5 Renew Internal Certs: generalise the OPA server-leaf proof into a declared-listener proof and admit `launch-gate-server`; tests for both leaves
 - [ ] 3.6 deploy-skynet: shared-read `caller_skynet_token`, render `SKYNET_LAUNCH_GATE_URL` and the gate's name mapping in `compose.prod.yml`, verify skynet's container reaches the gate (401 without token)
-- [ ] 3.7 Docs: service CLAUDE.md, AGENTS.md rows (secrets layout, workflows, sub-directory docs), playbooks README
+- [x] 3.7 Docs: service CLAUDE.md, AGENTS.md rows (secrets layout, workflows, sub-directory docs), playbooks README
 - [ ] 3.8 Validation gate: scenarios "Missing token" and "Caller claims another identity" pass against the locally deployed gate
 
 ## 4. skynet (skynet repo)

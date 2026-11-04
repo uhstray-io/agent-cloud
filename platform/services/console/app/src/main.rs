@@ -51,6 +51,7 @@ fn run_server() -> ! {
             server::work::spawn_poller(state.clone());
             server::inventory::spawn_refresh(state.clone());
             server::secrets::spawn_refresh(state.clone());
+            server::access::spawn_refresh(state.clone());
             Ok(server::router(state))
         }
     })
