@@ -2131,6 +2131,18 @@ templates:
         required: false
         default_value: "false"
 
+  # The member reconcile on its schedule (change task 2.7): an APPLYING run every hour, because
+  # a schedule cannot answer a survey and the base template only reports unless apply=true. The
+  # wrapper sets apply for the imported reconcile; its mass-removal refusal still holds. Dev-bound
+  # like the console token refresh: a schedule on a main-bound base would run `main`, which has
+  # no copy of the wrapper until promotion. Registered after the production apply succeeded
+  # (task 11753).
+  - name: Reconcile Plane Members Scheduled (Dev)
+    playbook: platform/playbooks/reconcile-plane-members-scheduled.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "23 * * * *"
+
   - name: Sync Plane Projects
     playbook: platform/playbooks/sync-plane-projects.yml
     # Open OpenSpec tasks of every repository enabled in platform/services/plane/projects.yml
