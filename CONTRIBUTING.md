@@ -184,7 +184,7 @@ and a lock left by a push that has exited is reclaimed automatically (`docs/MIST
 
 ## Adding a New Service
 
-Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN.md) for the complete onboarding checklist. At minimum:
+Follow the [Service Integration Plan](plan/architecture/02-service-onboarding.md) for the complete onboarding checklist. At minimum:
 
 1. Create `platform/services/<name>/deployment/` with `deploy.sh`, `compose.yml`, and Jinja2 templates
 2. `deploy.sh` handles container lifecycle only — no secret generation or OpenBao interaction
@@ -291,10 +291,10 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 | -------- | ------- |
 | `CLAUDE.md` | AI agent guidance (conventions, deployment rules, secrets management) |
 | `plan/architecture/01-automation-model.md` | Composable Ansible task architecture |
-| `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation |
-| `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | New service onboarding checklist |
-| `plan/architecture/TESTING-AND-LINTING-PLAN.md` | Testing strategy and implementation status |
-| `plan/architecture/BRANCH-TESTING-WORKFLOW.md` | Branch deploy and validation workflow |
+| `plan/architecture/04-credentials-access.md` | Secret generation, storage, rotation |
+| `plan/architecture/02-service-onboarding.md` | New service onboarding checklist |
+| `plan/architecture/03-testing-ci-quality.md` | Testing strategy and implementation status |
+| `plan/architecture/03-testing-ci-quality.md` (section "Branch Testing Workflow") | Branch deploy and validation workflow |
 
 ---
 
