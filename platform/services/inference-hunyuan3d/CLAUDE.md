@@ -62,5 +62,5 @@ Per Phase 2 decision — own MinIO instance, served through central Caddy at `/g
 - Sibling sidecar: [`../inference-comfyui/CLAUDE.md`](../inference-comfyui/CLAUDE.md)
 - Consumer: [`../uhhcraft/CLAUDE.md`](../uhhcraft/CLAUDE.md)
 - HTTP contract: [`context/architecture/contract.md`](context/architecture/contract.md)
-- Integration plan: [`../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/development/07-websmith-uhhcraft.md)
+- Integration plan: [`../../../plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md)
 - Root conventions: [`../../../CLAUDE.md`](../../../CLAUDE.md)

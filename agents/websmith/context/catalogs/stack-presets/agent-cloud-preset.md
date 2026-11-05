@@ -46,7 +46,7 @@ This is not an alternative to the language-specific presets (`go-templ-htmx`, `n
 ## Hosting
 
 - **Proxmox cluster** at the uhstray.io datacenter. New VMs cloned from a base Ubuntu 24.04 template via `provision-vm.yml`.
-- **GPU services** (image / 3D / inference) need PCIe passthrough — see [`plan/development/UHHCRAFT-GPU-PASSTHROUGH.md`](../../../../../plan/development/UHHCRAFT-GPU-PASSTHROUGH.md).
+- **GPU services** (image / 3D / inference) need PCIe passthrough — see [`plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md`](../../../../../plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md).
 - **Public DNS** via CloudFlare; A record per service pointing at the Caddy VM's public IP. Caddy fronts everything.
 - **Internal-only services** (queue workers, internal tools) don't get DNS records or Caddy entries — they bind loopback and are reached from within the platform network.
 
@@ -64,7 +64,7 @@ When adding a new site:
 1. If your language already has jobs (Go), no CI changes needed — path filter picks them up.
 2. If you bring a new language, add a path-gated job triggered when `platform/services/<sitename>/deployment/**` changes. Use the Go jobs as the shape to mirror.
 
-Branch testing via Semaphore (see `plan/architecture/BRANCH-TESTING-WORKFLOW.md`) deploys feature branches to real VMs for end-to-end validation before merge.
+Branch testing via Semaphore (see `plan/archive/architecture/BRANCH-TESTING-WORKFLOW.md`) deploys feature branches to real VMs for end-to-end validation before merge.
 
 ## Cost profile
 
@@ -85,11 +85,11 @@ The expensive thing is **human ops time**, not infra. The agent-cloud preset is 
 
 - **Secrets discipline.** No literal credentials in code, compose files, or templates. Everything is `{{ }}` references resolved by Ansible. CI's credential pattern audit will fail builds that violate this.
 - **No `version:` key in `compose.yml`.** Podman-compose < 1.3.0 dislikes it. Compose-spec deprecated it anyway.
-- **Fully-qualified image names.** Podman requires `docker.io/library/postgres:16-alpine`, not bare `postgres:16-alpine`. See [`PODMAN-VS-DOCKER-COMPOSE.md`](../../../../../plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md).
+- **Fully-qualified image names.** Podman requires `docker.io/library/postgres:16-alpine`, not bare `postgres:16-alpine`. See [`PODMAN-VS-DOCKER-COMPOSE.md`](../../../../../plan/archive/architecture/PODMAN-VS-DOCKER-COMPOSE.md).
 - **`depends_on: condition: service_healthy`** requires podman-compose ≥ 1.3.0. Stage container start manually in deploy.sh if you can't guarantee that.
 - **`deploy.sh` is lifecycle only.** No secret generation, no migrations, no API calls. Anything that's not "podman compose up + wait healthy" goes in `post-deploy.sh`.
 - **Caddy fragment, not main Caddyfile edits.** Each site lives at `sites/<sitename>.caddy`, distributed by `tasks/distribute-caddy-site.yml`. The main Caddyfile gets one `import` line and otherwise stays out of your way.
-- **GPU services need a §1 decision before provisioning.** See `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` §1 — the path through passthrough setup is different depending on whether the host is already in the Proxmox cluster.
+- **GPU services need a §1 decision before provisioning.** See `plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md` §1 — the path through passthrough setup is different depending on whether the host is already in the Proxmox cluster.
 - **SPEC deviations get recorded.** Any departure from this preset must be captured in `platform/services/<sitename>/context/spec/SPEC.md` under `## Alignment with agent-cloud conventions` or `## Tracking future deviations`. No silent drift.
 
 ## Customization points
