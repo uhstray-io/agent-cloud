@@ -1464,8 +1464,8 @@ def test_candidate_digest_block_is_skipped_by_a_dry_run_and_leaves_no_temp_dir(t
     (tmp_path / "services").symlink_to(ROOT / "platform/services")
     probe = {"name": "candidate probe", "hosts": "localhost", "gather_facts": False,
              "vars": {"_o11y_source_review_required": True},
-             "tasks": [candidate, {"name": "Report the digest",
-                                   "ansible.builtin.debug": {"msg": "digest={{ _o11y_candidate_config_sha256 | default('skipped') }}"}}]}
+             "tasks": [candidate, {"name": "Report the digest", "ansible.builtin.debug": {
+                 "msg": "digest={{ _o11y_candidate_config_sha256 | default('skipped') }}"}}]}
     (tmp_path / "playbooks/probe.yml").write_text(yaml.safe_dump([probe]), encoding="utf-8")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
