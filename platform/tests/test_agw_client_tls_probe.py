@@ -23,6 +23,7 @@ import playbook_yaml
 import pytest
 import yaml
 from fake_http import DrainingHandler, refused_port
+from strict_chain import assert_strict_chain
 
 REPO = playbook_yaml.REPO
 PLAYBOOK = REPO / "platform/playbooks/probe-agentgateway-client-tls.yml"
@@ -60,6 +61,7 @@ def _leaf(directory: Path, ca: str, name: str, san: str, usage: str, dest: Path)
     )
     _openssl("x509", "-req", "-in", f"{name}.csr", "-CA", f"{ca}.crt", "-CAkey", f"{ca}.key", "-CAcreateserial",
              "-days", "2", "-out", f"{name}.crt", "-extfile", f"{name}.ext", cwd=directory)
+    assert_strict_chain(directory / f"{ca}.crt", directory / f"{name}.crt")
     (dest / "current").mkdir(parents=True)
     (dest / "current/cert.pem").write_text((directory / f"{name}.crt").read_text())
     (dest / "current/key.pem").write_text((directory / f"{name}.key").read_text())

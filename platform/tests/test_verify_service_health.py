@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from fake_http import DrainingHandler
+from strict_chain import assert_strict_chain
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/verify-service-health.yml"
@@ -31,6 +32,8 @@ CN = Test internal CA
 [ca]
 basicConstraints = critical,CA:TRUE
 keyUsage = critical,keyCertSign,cRLSign
+# Explicit, not left to the OpenSSL build: without an SKI here, strict chain verification rejects the CA.
+subjectKeyIdentifier = hash
 """
 LEAF_CNF = """[req]
 distinguished_name = dn
@@ -42,6 +45,9 @@ basicConstraints = critical,CA:FALSE
 keyUsage = critical,digitalSignature,keyEncipherment
 extendedKeyUsage = serverAuth
 subjectAltName = DNS:health.test,IP:127.0.0.1
+# Python 3.13+ VERIFY_X509_STRICT rejects a CA-signed leaf without an Authority Key Identifier.
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
 """
 needs_tls = pytest.mark.skipif(shutil.which("openssl") is None or shutil.which("curl") is None,
                                reason="needs openssl and curl")
@@ -182,6 +188,7 @@ def _tls_material(directory: Path):
         "-config", "leaf.cnf")
     run("x509", "-req", "-in", "leaf.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "2",
         "-out", "leaf.pem", "-extfile", "leaf.cnf", "-extensions", "leaf")
+    assert_strict_chain(directory / "ca.pem", directory / "leaf.pem")
 
 
 def _serve_tls(status: int, directory: Path):
