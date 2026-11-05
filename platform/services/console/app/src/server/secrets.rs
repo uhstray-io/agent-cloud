@@ -527,8 +527,10 @@ mod tests {
                 gateway_file: None,
                 catalog_file: None,
                 grafana_url: None,
+                grafana_token: None,
                 authentik: None,
                 role_map_file: None,
+                github: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -541,10 +543,12 @@ mod tests {
             flows: FlowSet::unconfigured(),
             gateway: crate::server::gateway::GatewaySet::unconfigured(),
             catalog: crate::server::catalog::CatalogSet::unconfigured(),
+            usage: tokio::sync::RwLock::new(crate::server::grafana::UsageCache::new(false)),
             openbao,
             secrets: tokio::sync::RwLock::new(SecretsCache::new(configured)),
             access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
             role_map: crate::server::access::RoleMap::empty(),
+            policies: tokio::sync::RwLock::new(crate::server::policies::PoliciesCache::new(false)),
         })
     }
 

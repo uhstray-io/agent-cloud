@@ -194,5 +194,37 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Plane's MCP server — bypass the challenge for the MCP and OAuth machine paths only
+    # (Joseph, 2026-11-04; plane change task 5.3).
+    #
+    # Why: harnesses (Claude Code, pi, weft) are non-browser clients, and the zone answered every
+    # plane-mcp path with `cf-mitigated: challenge` (HTTP 403), so none could reach the server.
+    # The server is its own OAuth authorization server: its discovery documents (read from the
+    # production container, 2026-11-04) name issuer `.../http` and `/authorize`, `/token` and
+    # `/register` at this host's root. A harness reads the protected-resource document, then looks
+    # for the authorization-server metadata at the RFC 8414 path-inserted URLs for issuer `/http`
+    # (the MCP SDK in Claude Code and pi tries `/.well-known/oauth-authorization-server/http` and two
+    # openid-configuration forms, never the root document); the server serves it only at the root,
+    # so the lookup misses and the SDK falls back to `/authorize`, `/token` and `/register` at the
+    # root (PR 866 review). So the skip covers both MCP endpoints, `/token` and `/register`, and the
+    # two `.well-known/oauth-*` families by prefix, so a path-inserted lookup gets the origin's own
+    # answer instead of a challenge page. `/authorize` runs in the user's browser, which passes a
+    # challenge, and stays challenged with every other path. Authentication stays at the origin: both MCP
+    # endpoints refuse an anonymous call (401, the deploy's verify probe), `/token` needs a client
+    # and a code, and Plane OAuth runs through Authentik.
+    {
+      ref         = "plane-mcp-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Plane MCP + its OAuth machine endpoints - bypass challenge for non-browser clients"
+      expression  = "(http.host eq \"plane-mcp.uhstray.io\" and (http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\"} or starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\") or starts_with(http.request.uri.path, \"/.well-known/oauth-authorization-server\")))"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }

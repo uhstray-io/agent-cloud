@@ -7,7 +7,7 @@
 //! Semaphore's RFC3339 strings do not compare safely as text: Go drops trailing
 //! fractional zeros, so `…:00Z` would sort after `…:00.1Z`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::server::axum::extract::{Path, State};
@@ -455,6 +455,64 @@ pub async fn get_work_item(
     .into_response()
 }
 
+/// One agent role (D40): a registry owner, with the steps it owns in registry order. The roles are derived from
+/// the registry alone, so a role exists exactly when a step names it as owner.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Role {
+    pub name: String,
+    pub steps: Vec<RoleStep>,
+}
+
+/// One registry step as a role lists it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RoleStep {
+    pub id: String,
+    pub order: u32,
+    pub label: String,
+}
+
+/// What `GET /v1/roles` answers: the roles, sorted by name.
+#[derive(Debug, Serialize)]
+pub struct RoleList {
+    pub roles: Vec<Role>,
+}
+
+/// The distinct non-empty owners of the registry steps, sorted by name, each with its steps in `order`.
+pub fn roles_from(steps: &[Step]) -> Vec<Role> {
+    let mut by_owner: BTreeMap<&str, Vec<RoleStep>> = BTreeMap::new();
+    for step in steps.iter().filter(|step| !step.owner.trim().is_empty()) {
+        by_owner
+            .entry(step.owner.as_str())
+            .or_default()
+            .push(RoleStep {
+                id: step.id.clone(),
+                order: step.order,
+                label: step.label.clone(),
+            });
+    }
+    by_owner
+        .into_iter()
+        .map(|(name, mut owned)| {
+            owned.sort_by_key(|step| step.order);
+            Role {
+                name: name.to_string(),
+                steps: owned,
+            }
+        })
+        .collect()
+}
+
+/// `GET /v1/roles`: the registry's roles. Platform admins only, like `/v1/work`.
+pub async fn list_roles(State(app): State<SharedState>, session: Session) -> Response {
+    if let Err(response) = admin_only(&session).await {
+        return response;
+    }
+    Json(RoleList {
+        roles: roles_from(&app.workflow),
+    })
+    .into_response()
+}
+
 /// Starts the poll when Semaphore is configured. The first poll runs at once; a
 /// missed tick is skipped, not replayed. The cache lock is held only to store a result.
 pub fn spawn_poller(state: SharedState) {
@@ -852,6 +910,28 @@ mod tests {
         assert_eq!(cache.error.as_deref(), Some("Semaphore answered HTTP 500"));
         assert_eq!(cache.updated_at.as_deref(), Some("t1"));
         assert_eq!(cache.items.len(), 1);
+    }
+
+    #[test]
+    fn roles_are_the_distinct_owners_sorted_with_their_steps_in_order() {
+        let steps = vec![
+            step("step-c", 3, "security-agent", "Verify"),
+            step("step-b", 2, "service-agent", "Build"),
+            step("step-a", 1, "infra-agent", "Plan"),
+            step("step-d", 4, "service-agent", "Deploy"),
+            step("step-x", 5, "  ", "Unowned"),
+        ];
+        let roles = roles_from(&steps);
+        let names: Vec<&str> = roles.iter().map(|role| role.name.as_str()).collect();
+        assert_eq!(names, ["infra-agent", "security-agent", "service-agent"]);
+        let service = roles
+            .iter()
+            .find(|role| role.name == "service-agent")
+            .expect("role");
+        let ids: Vec<&str> = service.steps.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["step-b", "step-d"]);
+        assert_eq!(service.steps[0].label, "Build");
+        assert!(roles_from(&[]).is_empty(), "no registry, no roles");
     }
 
     #[test]

@@ -57,6 +57,7 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_GRAFANA_TOKEN` | `secrets.console_grafana_token`, a shared read of `secret/services/o11y`. Rendered only when `console_grafana_api_enabled` is true AND `console_grafana_url` is set |
 | `CONSOLE_AUTHENTIK_URL`, `CONSOLE_AUTHENTIK_TOKEN` | `console_authentik_api_url`; the token is `secrets.console_directory_token`, a shared read of `secret/services/authentik`. All-or-none, rendered only when the URL is set (Access page, see below) |
 | `CONSOLE_ROLE_MAP_FILE=/etc/console/role-map.json` | fixed path; the file is `config/role-map.json`, always rendered |
+| `CONSOLE_GITHUB_REPO`, `CONSOLE_GITHUB_REF` | `console_github_repo` (default `uhstray-io/agent-cloud`) and `console_github_ref` (default `dev`). Rendered only with `console_openbao_url`: the token is read from OpenBao (`secret/services/console/github`, field `token`) on every policy refresh and is never rendered. A malformed value is refused by name at deploy and at startup |
 
 `config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
@@ -103,8 +104,6 @@ Each authority is read with the smallest credential, and only when its URL var i
 
 Inputs are bind-mounted read-only like `scope.json` and `workflow.json`, and `deploy.sh` recreates the container when any of them changes.
 
-Not yet done here: `config.rs` does not read the `CONSOLE_NETBOX_*`, `CONSOLE_PROXMOX_*`, `CONSOLE_FLOWS_FILE` or `CONSOLE_GRAFANA_URL` variables. The server work reads them, so this wiring is inert until that lands.
-
 ## Active Work (Semaphore, read-only)
 
 The server reads Semaphore's task list and serves it at `/v1/work` (plan 17 D17-D20). Read it with the code, not this section: `app/src/server/work.rs` (joins, lanes) and `app/src/server/semaphore.rs` (the one read).
@@ -137,21 +136,23 @@ The window is Semaphore's newest 200 tasks of the project (`tasks/last`). A run 
 
 ## Inventory (NetBox and Proxmox, read-only, Phase 3)
 
-The server reads NetBox (sites, clusters, VMs, devices, prefixes) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
+The server reads NetBox (sites, clusters, VMs, devices, prefixes, tags) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The tags read keeps the business domains: NetBox tags whose slug starts with `domain-` (D37). It stands apart from the site and prefix reads: a refused or failed tag read never fails the NetBox source. It keeps the last good domains and sets `diagnostics.domains_error` for platform admins. NetBox tags are global, so the domains are platform-wide and every tenant gets the same list. The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links and the gateway usage read).
 
 | Source | Credential | Read |
 |--------|------------|------|
-| NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to |
+| NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to; every tag, keeping the `domain-` slugs. The `console` profile grants `extras.tag` view (`platform/playbooks/provision-netbox-automation-token.yml:74`); that the grant covers `/api/extras/tags/` is unverified against a live NetBox |
 | Proxmox | `CONSOLE_PROXMOX_TOKEN_ID` and `CONSOLE_PROXMOX_TOKEN`, a PVEAuditor token | `cluster/resources`: nodes and guests, joined to a VM by name |
 
-Environment, read by `app/src/server/config.rs`. The deploy does not set these yet (see Open items):
+Environment, read by `app/src/server/config.rs`. `templates/env.j2` renders NetBox and Proxmox only when `console_netbox_url` or `console_proxmox_url` is set. `CONSOLE_PROXMOX_CA_FILE` is rendered only with the Proxmox group and when `console_proxmox_ca_pem` is set. The Grafana rows below follow their own inputs. `CONSOLE_FLOWS_FILE` is always rendered.
 
 | Variable | Meaning |
 |----------|---------|
 | `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | all-or-none. Unset: `source.netbox` is `unconfigured` |
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | all-or-none. `CONSOLE_PROXMOX_CA_FILE` (optional PEM roots for a self-signed API) counts as a member, so alone it names the missing URL |
 | `CONSOLE_FLOWS_FILE` | optional JSON array of `{kind, from, to, label}`, rendered from declarations. Names only: an extra key fails startup |
-| `CONSOLE_GRAFANA_URL` | optional Grafana origin for deep links. Unset: every link is `null` |
+| `CONSOLE_GRAFANA_URL` | optional Grafana origin: the deep-link base, and the origin of the usage read. Unset: every link is `null` and no usage read runs. Cleartext `http://` only to a loopback or RFC1918 host |
+| `CONSOLE_GRAFANA_TOKEN` | optional Grafana API token, a Viewer service account's (D32), for the gateway usage read (D39). Requires `CONSOLE_GRAFANA_URL`: alone it names the missing URL. The deploy renders it only with `console_grafana_api_enabled` and `console_grafana_url` both set. Unset: `usage.state` is `unconfigured` and every client's `tokens_last_hour` is `null` |
+| `CONSOLE_GITHUB_REPO`, `CONSOLE_GITHUB_REF` | optional, all-or-none, validated by `github_repo_valid` and `github_ref_valid`. Unset: `/v1/policies` is `unconfigured`. Set without `CONSOLE_OPENBAO_*`, the policy read still stays `unconfigured`: the token comes from OpenBao |
 
 Infrastructure URLs take `https://` always, and `http://` only to loopback or RFC1918. Anything else fails startup and names the variable. Certificate verification is never turned off. Without a CA file, Proxmox is verified against reqwest's bundled roots, so a self-signed API shows as `source.proxmox: "error"`.
 
@@ -161,14 +162,16 @@ Routes and scoping:
 
 | Route | Who | Carries |
 |-------|-----|---------|
-| `GET /v1/tenants/{t}/inventory` | members of `t` | sites, with clusters, nodes, VMs (with RAG) and devices. Node CPU, memory and uptime only for platform admins |
+| `GET /v1/tenants/{t}/inventory` | members of `t` | the business `domains` (platform-wide), sites, with clusters, nodes, VMs (with RAG, and the domain slugs each VM carries) and devices. Node CPU, memory and uptime only for platform admins |
 | `GET /v1/tenants/{t}/services`, `/services/{name}` | members of `t` | VMs that carry workflow fields; one VM |
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |
-| `GET /v1/gateway` | `platform-admins` only; 403 otherwise | `{state, clients, models}` from `config/gateway.json`: each agentgateway client with its tier, its hourly token figure, where that figure comes from (`client`, `tier`, `default`) and its allowed models; `state` is `ok` or `unconfigured`. Names and figures only, never a key. Internal identities (mcp-self, legacy-shared, pool identities) are not listed. Admin-only identities are not listed either (task 8.3a) |
+| `GET /v1/gateway` | `platform-admins` only; 403 otherwise | `{state, clients, models, usage}` from `config/gateway.json`: each agentgateway client with its tier, its hourly token figure, where that figure comes from (`client`, `tier`, `default`), its allowed models and `tokens_last_hour` (the usage read's figure for its name, or `null`); `state` is `ok` or `unconfigured`. `usage` is `{state, refreshed_at, error}`, its `state` one of `ok`, `unconfigured`, `loading`, `error`. Names and figures only, never a key. Internal identities (mcp-self, legacy-shared, pool identities) are not listed. Admin-only identities are not listed either (task 8.3a) |
 | `GET /v1/catalog` | any signed-in member; 401 signed out | `{state, services}` from `config/catalog.json`: each service the platform can deploy, with `service`, `name`, `template` and `running` (whether any host carries it). Platform admins also get `deployed_hosts` per service; a member's body has no such key. `state` is `ok` or `unconfigured`. The menu is not sensitive, so it is open to members (task 8.4, D38) |
+| `GET /v1/roles` | `platform-admins` only; 403 otherwise | `{roles}`: one role per distinct owner in the workflow registry (`CONSOLE_WORKFLOW_FILE`), sorted by name, each with its `steps` (`{id, order, label}`) in order. Empty without the registry (D40) |
 | `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
 | `GET /v1/access` | `platform-admins` only; 401 signed out, 403 otherwise | Authentik users and groups from a background read, plus the Access Level -> per-service `role_map` (8.2b). See "Access" below |
+| `GET /v1/policies` | `platform-admins` only; 401 signed out, 403 otherwise | The OPA and OpenBao policy files on `CONSOLE_GITHUB_REF` of `CONSOLE_GITHUB_REPO`, read from GitHub every 15 minutes with the console's read-only token from OpenBao: name, kind, last commit and a link per file. No decision counts (D36). See "Policy" below |
 
 A tenant the caller may not see answers `404 unknown_tenant`, byte-identical to an unknown one. Prefixes never appear in a tenant answer: a prefix with no site names no tenant (D16). Devices are site-scoped, so they do.
 
@@ -185,6 +188,10 @@ RAG (`inventory::rag`), first match wins: `red` when a workflow step failed, or 
 
 Deep links: each VM and service row carries `grafana_url`, the Service Overview dashboard with `var-service` and `var-log_service` set to the VM name. `links.grafana_conformance` is the conformance dashboard. Both use the dashboard uids in `platform/services/o11y/deployment/config/grafana/dashboards/`.
 
+**Gateway usage (D39).** With `CONSOLE_GRAFANA_TOKEN` and its URL, one background read runs every 5 minutes (`grafana.rs`): an instant query of the gateway's token counter per identity over the last hour, sent through Grafana's Prometheus proxy (datasource uid `prometheus`) with the Viewer token as a bearer. A client's `tokens_last_hour` is the figure under its name. The count is the metric of the same traffic, not the gateway's own budget counter (the gateway enforces its rolling budget in its own Postgres), so the LLM access page labels it approximate. A failed read keeps the last good figures and sets `usage.error` to a sentence that names the reason. The reason is fixed text: never a URL, a body or the token. The origin is refused for cleartext to a public host, at startup and again at request time.
+
+**Agent roles (D40).** The roles are the distinct owners of the registry steps, derived by the server (`work::roles_from`). The sidebar reads `GET /v1/roles` once, for platform admins only, and links each role to `/roles/:role`. That page shows the role's steps, its Active Work strips (one per job, as the board shows them), and the gateway client of the same name, or says there is none.
+
 ## Access (Authentik directory and role map, plan 17 8.2b)
 
 `GET /v1/access` answers `{state, users, groups, role_map, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_AUTHENTIK_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/access.rs`; the response contract is the module header and the serde types, not this section.
@@ -192,6 +199,16 @@ Deep links: each VM and service row carries `grafana_url`, the Service Overview 
 - **Directory.** One background task reads `/api/v3/core/users/` and `/api/v3/core/groups/` every 5 minutes with the view-only token `svc-console-directory` holds (`view_user` and `view_group` only). It follows `pagination.next` up to 20 pages of 100 per list. The groups list is read with `include_users=false`: the pk list the member count reads is always serialized, and only the expanded `users_obj` depends on the flag (authentik `core/api/groups.py`, 2024.12.3). `error` is one of three operator sentences, or `null`: `The newest directory read failed: <reason>. Showing the last good read.` (a failed refresh with a last good read kept), `The directory read failed: <reason>.` (an error with no data), or `Authentik holds more than 2000 users or groups; the first 2000 are shown.` (a list cut at the page bound; the rows read are shown). No URL, response body or token reaches an error or a log line. `service_account` is true for `type` `service_account` or `internal_service_account` (`UserTypeEnum`); `internal` and `external` are not counted.
 - **Role map.** `config/role-map.json` is rendered from `platform/playbooks/vars/access-role-map.yml`, which mirrors the table "Access Level -> Per-Service Role Mapping" in `plan/architecture/04-credentials-access.md`. `platform/tests/test_console_access_role_map.py` pins every cell against that table and the serde names against the rendered JSON. Edit the table and the vars file together. The vars file is a D31 pinned input, so a rotation refuses while the controller's copy differs from the deployed commit.
 - **Gate.** `work::admin_only`, the same gate as `/v1/network` and `/v1/secrets`.
+
+## Policy (GitHub, plan 17 8.4, D36)
+
+`GET /v1/policies` answers `{state, repo, ref, files, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GITHUB_*`, or no `CONSOLE_OPENBAO_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/policies.rs` (cache and refresh) and `app/src/server/github.rs` (the reads); the response contract is the serde types and the module headers, not this section.
+
+- **Source.** Two sets of files on one ref: OPA (`*.rego`, `*_test.rego` and `*.json` under `platform/services/opa/deployment/policies/`, any depth) and OpenBao (`*.hcl` directly in `platform/services/openbao/deployment/config/policies/`). The tree is read at the ref's tip, and each file's last commit comes from that same tip.
+- **Bounds.** At most 80 files: the first 80 by path are shown, and `error` says the list was cut. At most 200 GitHub requests per refresh. A truncated tree is an error, never a partial list. The refresh runs every 15 minutes and keeps the last good list on failure.
+- **Token.** The `token` field of `secret/services/console/github`, read from OpenBao on every refresh and sent to the GitHub API origin only. It is never cached and never echoed in an error.
+- **No decision counts.** The console has no source for them: OPA authz refuses data reads, so the page says so and shows none.
+- **Gate.** `work::admin_only`, the same gate as `/v1/secrets`.
 
 ## Shared credentials (plan 17, D26-D27)
 
@@ -253,7 +270,7 @@ The `Containerfile` is part of this change. It sits next to this file and builds
 
 ## Open items
 
-- **Phase 3 wiring (not in this change).** The server reads the Phase 3 variables above, but nothing sets them. `templates/env.j2` and `deploy-console.yml` do not render them. No playbook provisions the NetBox token: `provision-netbox-automation-token.yml` has no `console` entry yet. `provision-console-proxmox-token.yml` does not exist. Until these land, a deploy answers `unconfigured` for both sources.
+- **Phase 3 inputs.** `templates/env.j2` renders the NetBox and Proxmox variables only when `console_netbox_url` or `console_proxmox_url` is set. `deploy-console.yml` shared-reads their tokens on the same conditions: `console_api_token` from `netbox`, and `console_token_id` with `console_token` from `proxmox`. The NetBox token's `console` profile is in `provision-netbox-automation-token.yml`, and `provision-console-proxmox-token.yml` exists. Without those URL inputs, a deploy answers `unconfigured` for both sources. Whether either token is provisioned in a given environment is not checked here.
 
 - **Authentik side** (in this change): the `console` OAuth2 provider and application are declared in `platform/services/authentik/deployment/blueprints/console-oidc.yaml`, and `console_oidc_client_secret` is a generated secret in `platform/playbooks/vars/secret-declarations/authentik.yml`. Deploy Authentik before the console, otherwise the Phase 1 shared read fails.
 - **Containerfile and `../app`** (in this change): the Containerfile must copy only the paths it needs. `deployment/Containerfile.dockerignore` keeps `.env`, `config/`, `certs/` and `app/target` out of the build context; podman 5.8.2 honors it (verified with a scratch build). A Containerfile with `COPY . .` would still bake in whatever remains.

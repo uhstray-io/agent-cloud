@@ -663,3 +663,12 @@ all:
           # agent is started by tasks/deploy-orb-agent.yml, carries no compose label, and so
           # is not found by the project selector.
           stop_extra_containers: [netbox-orb-agent]
+          # Business-domain tags (Ensure NetBox Business Domains, plan 17 D37): display names only, one NetBox tag
+          # each (slug `domain-<name>`). The template creates and updates the declared tags and never deletes; a
+          # domain-* tag that is no longer declared is reported by name. Undefined or empty is a visible no-op.
+          # netbox_business_domains:
+          #   - Products
+          #   - Professional Services
+          #   - Automation
+          #   - Administration
+          #   - IT

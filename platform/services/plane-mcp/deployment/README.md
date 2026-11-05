@@ -17,3 +17,5 @@ Plane's MCP server, run as its own compose project beside Plane. The design, the
 ## Deploy
 
 Semaphore template `Deploy Plane MCP`, playbook `platform/playbooks/deploy-plane-mcp.yml`. Run it after `Deploy Plane`: it registers (or repairs) Plane's OAuth application for the server itself, so there is no manual step.
+
+Harness clients (Claude Code, pi): `scripts/plane-mcp-client.py`, described in [CLAUDE.md](CLAUDE.md#harness-clients).

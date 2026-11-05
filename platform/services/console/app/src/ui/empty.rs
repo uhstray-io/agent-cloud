@@ -25,7 +25,6 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "policy" | "tenantsettings" | "orgsettings" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }
@@ -79,36 +78,12 @@ pub const TELEMETRY: PageMeta = PageMeta {
     authority: "Prometheus, Loki, Grafana",
 };
 
-pub const POLICY: PageMeta = PageMeta {
-    id: "policy",
-    title: "Policy",
-    icon: "scale",
-    purpose: "Policy packages and decisions. A change is proposed as a plan, then a pull request.",
-    authority: "OPA (Rego in Git)",
-};
-
 pub const CICD: PageMeta = PageMeta {
     id: "cicd",
     title: "CI/CD",
     icon: "git-pull-request-arrow",
     purpose: "Delivery context for each change: reviews, required checks and the promotion path.",
     authority: "GitHub",
-};
-
-pub const TENANT_SETTINGS: PageMeta = PageMeta {
-    id: "tenantsettings",
-    title: "Tenant settings",
-    icon: "building",
-    purpose: "Tenant defaults. A change is proposed, never written directly.",
-    authority: "site-config inventory, Authentik, NetBox tags",
-};
-
-pub const ORG_SETTINGS: PageMeta = PageMeta {
-    id: "orgsettings",
-    title: "Organization settings",
-    icon: "settings-2",
-    purpose: "Organizations, sites, approvers and business-domain tags. A change is proposed.",
-    authority: "site-config inventory, Authentik, NetBox tags",
 };
 
 /// The empty state every placeholder page renders.
@@ -147,23 +122,8 @@ pub fn Telemetry() -> Element {
 }
 
 #[component]
-pub fn Policy() -> Element {
-    rsx! { EmptyPage { page: POLICY } }
-}
-
-#[component]
 pub fn CiCd() -> Element {
     rsx! { EmptyPage { page: CICD } }
-}
-
-#[component]
-pub fn TenantSettings() -> Element {
-    rsx! { EmptyPage { page: TENANT_SETTINGS } }
-}
-
-#[component]
-pub fn OrgSettings() -> Element {
-    rsx! { EmptyPage { page: ORG_SETTINGS } }
 }
 
 /// Any path the router does not know. It renders outside the shell, so it
@@ -195,7 +155,6 @@ mod tests {
         assert_eq!(phase_for("services"), Some(3));
         assert_eq!(phase_for("compute"), Some(3));
         assert_eq!(phase_for("dashboard"), Some(4));
-        assert_eq!(phase_for("tenantsettings"), Some(5));
         assert_eq!(phase_for("cicd"), Some(6));
         assert_eq!(phase_for("telemetry"), Some(6));
     }
@@ -215,10 +174,7 @@ mod tests {
             SERVICES,
             COMPUTE,
             TELEMETRY,
-            POLICY,
             CICD,
-            TENANT_SETTINGS,
-            ORG_SETTINGS,
         ];
         for page in pages {
             assert!(phase_for(page.id).is_some(), "{} has no phase", page.id);
