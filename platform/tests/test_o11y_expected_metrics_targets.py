@@ -899,6 +899,127 @@ def test_live_expected_target_contract_must_match_validated_previous_ownership(d
         })
 
 
+def _exec_state(document, state):
+    """Set the error state on every generated expected-target rule of a rendered document."""
+    for rule in _service_rules(document):
+        # Active rules only: paused tombstones keep their OK state.
+        if rule["uid"].startswith("o11y_missing_") and rule["isPaused"] is False:
+            rule["execErrState"] = state
+    return document
+
+
+def _alerting_readback(document):
+    """Grafana readback of active rules placed before the KeepLast change: still Alerting."""
+    live = _live_rules(document)
+    for rule in live:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "Alerting"
+    return live
+
+
+def _two_targets():
+    return [_expected(), _expected(uid="o11y_missing_api_backup", instance="api-backup.example.test:9100")]
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_first_deploy_accepts_live_alerting_previous_owners_against_keeplast_render(grouped):
+    # First deploy after the KeepLast change: prod Grafana still holds the Alerting rules
+    # the previous placement wrote, and the new render says KeepLast. The live Alerting
+    # readback is the previous owner's state, so it must not be refused as drift.
+    targets = _two_targets()
+    if grouped:
+        previous = _exec_state(_grouped_render(targets), "Alerting")
+        pending = _grouped_render(targets)
+    else:
+        previous = _exec_state(_render(o11y_expected_metrics_targets=targets), "Alerting")
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_alerting_readback(previous),
+    )
+    # The transition accepted the live Alerting owners: an enabled, prepared result, no refusal.
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_interrupted_first_deploy_recovers_when_live_alerting_and_placed_file_keeplast(grouped):
+    # An interrupted deploy wrote the KeepLast file in Phase 1 and failed before deploy.sh
+    # reloaded Grafana, so the live rules still say Alerting. The rerun must accept that
+    # instead of refusing live_target_drift on every retry.
+    targets = _two_targets()
+    if grouped:
+        previous = _grouped_render(targets)
+        pending = _grouped_render(targets)
+    else:
+        previous = _render(o11y_expected_metrics_targets=targets)
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_alerting_readback(previous),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_interrupted_deploy_recovers_when_live_keeplast_and_placed_file_alerting(grouped):
+    # The reverse order: the placed file still says Alerting while Grafana has already
+    # reloaded KeepLast. The rerun accepts the live rules in either state.
+    targets = _two_targets()
+    if grouped:
+        previous = _exec_state(_grouped_render(targets), "Alerting")
+        pending = _grouped_render(targets)
+    else:
+        previous = _exec_state(_render(o11y_expected_metrics_targets=targets), "Alerting")
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_live_rules(pending),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_transition_refuses_a_live_error_state_that_no_owner_placed(grouped):
+    # A placement writes only Alerting or KeepLast. Any other live state on an active rule
+    # is still drift, so the relaxed error-state check cannot hide a foreign rule.
+    targets = _two_targets()
+    previous = _grouped_render(targets) if grouped else _render(o11y_expected_metrics_targets=targets)
+    live = _live_rules(previous)
+    for rule in live:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "OK"
+    with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+        _transition(
+            previous, enabled=True, targets=targets, mode="grouped" if grouped else "legacy", live=live,
+        )
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_post_deploy_readback_still_requires_keeplast_on_active_rules(grouped):
+    # After the first deploy the rules are rendered KeepLast; a live Alerting rule at the
+    # active readback is refused, so a placement that never converged cannot pass.
+    targets = _two_targets()
+    document = _grouped_render(targets) if grouped else _render(o11y_expected_metrics_targets=targets)
+    input_document = {
+        "reviewed": True,
+        "mode": "grouped" if grouped else "legacy",
+        "targets": targets,
+        "retired_uids": [],
+        "live_rules": _live_rules(document),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    }
+    if grouped:
+        # Per-target tombstones render inert beside the group rule and are owned as paused rows.
+        input_document["paused_uids"] = [target["uid"] for target in targets]
+        input_document["tombstones"] = [SURVEY._as_tombstone({"_kind": "target", **target}) for target in targets]
+    assert SURVEY.validate_active_expected_target_rules(input_document)["status"] == "validated"
+    for rule in input_document["live_rules"]:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "Alerting"
+    with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+        SURVEY.validate_active_expected_target_rules(input_document)
+
+
 @pytest.mark.parametrize("drift", ["condition", "datasource", "threshold"])
 def test_live_expected_target_preflight_rejects_complete_query_contract_drift(drift):
     previous = _render(o11y_expected_metrics_targets=[_expected()])
