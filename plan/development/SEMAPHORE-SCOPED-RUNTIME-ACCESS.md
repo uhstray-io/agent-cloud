@@ -2,6 +2,7 @@
 
 **Date:** 2026-09-05
 **Status:** ACTIVE
+> **Parent plan:** [Guardrails and governance](03-guardrails-governance.md)
 **Context:** Production validation needs one declared survey update without
 republishing unrelated templates or extracting backup credentials.
 
