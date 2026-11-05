@@ -20,7 +20,14 @@ SURVEY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SURVEY)
 RECEIVERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "pyroscope", "grafana")
 ZERO_CLASSES = {"email": 0, "ipv4": 0, "credential": 0, "secret_pair": 0, "url_query": 0}
-UNVERIFIED = {"status": "unverified", "entries": None, "capped": None, "blocking_hits": None, "classes": None}
+UNVERIFIED = {
+    "status": "unverified",
+    "entries": None,
+    "capped": None,
+    "unscanned": None,
+    "blocking_hits": None,
+    "classes": None,
+}
 
 
 def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
@@ -96,10 +103,12 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
     assert "MESSAGE" not in " ".join(metadata_argv[0])
     assert content_argv[0][content_argv[0].index("-n") + 1] == str(SURVEY.CONTENT_CAP)
     assert content_argv[0][-1] == "CONTAINER_NAME=o11y-loki"
+    assert "--all" in content_argv[0]
     assert content["loki"] == {
         "status": "clear",
         "entries": 1,
         "capped": False,
+        "unscanned": 0,
         "blocking_hits": 0,
         "classes": ZERO_CLASSES,
     }
@@ -653,6 +662,7 @@ def test_content_survey_counts_classes_per_receiver_and_never_returns_text(monke
         "status": "blocked",
         "entries": 1,
         "capped": False,
+        "unscanned": 0,
         "blocking_hits": 2,
         "classes": {**ZERO_CLASSES, "email": 1, "credential": 1},
     }
@@ -660,6 +670,7 @@ def test_content_survey_counts_classes_per_receiver_and_never_returns_text(monke
         "status": "clear",
         "entries": 1,
         "capped": False,
+        "unscanned": 0,
         "blocking_hits": 0,
         "classes": {**ZERO_CLASSES, "ipv4": 1},
     }
@@ -747,7 +758,7 @@ def test_failed_content_read_is_unverified_and_leaks_nothing(monkeypatch, conten
 def test_each_content_class_counts_its_own_hit(message, label):
     output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
     expected = {**ZERO_CLASSES, **({label: 1} if label else {})}
-    assert SURVEY.content_scan(output, "o11y-loki") == {"entries": 1, "classes": expected}
+    assert SURVEY.content_scan(output, "o11y-loki") == {"entries": 1, "unscanned": 0, "classes": expected}
 
 
 _BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -806,6 +817,7 @@ def test_binary_messages_are_decoded_and_unusable_messages_are_counted_not_scann
     ]
     assert SURVEY.content_scan("\n".join(lines), "o11y-loki") == {
         "entries": 5,
+        "unscanned": 3,
         "classes": {**ZERO_CLASSES, "email": 2},
     }
 
@@ -836,3 +848,48 @@ def test_content_status_reports_blocked_over_unverified_over_clear(statuses, exp
     assert SURVEY.content_status({f"c{index}": {"status": status} for index, status in enumerate(statuses)}) == (
         expected
     )
+
+
+def test_null_message_is_unscanned_and_marks_the_receiver_unverified(monkeypatch):
+    # journalctl writes a field over 4096 bytes as null when --all is absent; that must never read as clear.
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-prometheus": [None]},
+    )
+    report = SURVEY.survey()
+    prometheus = report["content_survey"]["prometheus"]
+    assert prometheus["status"] == "unverified"
+    assert prometheus["unscanned"] == 1
+    assert prometheus["entries"] == 1
+    assert prometheus["blocking_hits"] == 0
+    assert report["content_survey"]["loki"]["status"] == "clear"
+    assert report["content_survey_status"] == "unverified"
+
+
+def test_blocking_hit_beats_an_unscanned_entry_in_the_same_receiver(monkeypatch):
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-grafana": ["notify ops@example.com", None]},
+    )
+    report = SURVEY.survey()
+    grafana = report["content_survey"]["grafana"]
+    assert grafana["status"] == "blocked"
+    assert grafana["unscanned"] == 1
+    assert grafana["blocking_hits"] == 1
+    assert report["content_survey_status"] == "blocked"
+
+
+def test_every_non_text_message_shape_is_counted_as_unscanned():
+    lines = [
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": None}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki"}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": {"not": "text"}}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": [300, 1]}),
+    ]
+    assert SURVEY.content_scan("\n".join(lines), "o11y-loki") == {
+        "entries": 4,
+        "unscanned": 4,
+        "classes": ZERO_CLASSES,
+    }

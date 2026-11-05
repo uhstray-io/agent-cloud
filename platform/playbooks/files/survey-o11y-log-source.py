@@ -168,8 +168,12 @@ def message_text(value):
 
 
 def content_scan(output, expected_name):
-    """Count one container's entries and content-class hits; None when the journal output is malformed."""
+    """Count one container's entries, content-class hits, and entries whose text could not be classified.
+
+    Returns None when the journal output is malformed.
+    """
     entries = 0
+    unscanned = 0
     classes = dict.fromkeys(CONTENT_PATTERNS, 0)
     for line in output.splitlines():
         if not line.strip():
@@ -187,14 +191,24 @@ def content_scan(output, expected_name):
         entries += 1
         text = message_text(entry.get("MESSAGE"))
         if text is None:
+            # journalctl encodes a field longer than 4096 bytes as null unless --all is passed. An entry
+            # whose text is not classified is a gap, never a clear result.
+            unscanned += 1
             continue
         for label, pattern in CONTENT_PATTERNS.items():
             classes[label] += sum(1 for _ in pattern.finditer(text))
-    return {"entries": entries, "classes": classes}
+    return {"entries": entries, "unscanned": unscanned, "classes": classes}
 
 
 def unverified_content():
-    return {"status": "unverified", "entries": None, "capped": None, "blocking_hits": None, "classes": None}
+    return {
+        "status": "unverified",
+        "entries": None,
+        "capped": None,
+        "unscanned": None,
+        "blocking_hits": None,
+        "classes": None,
+    }
 
 
 def content_survey(names, drivers):
@@ -212,6 +226,8 @@ def content_survey(names, drivers):
                 "--no-pager",
                 "--quiet",
                 "--output=json",
+                # Without --all, journalctl encodes any field over 4096 bytes as null.
+                "--all",
                 "--output-fields=CONTAINER_NAME,MESSAGE",
                 f"--since={JOURNAL_WINDOW}",
                 "-n",
@@ -226,10 +242,14 @@ def content_survey(names, drivers):
             continue
         classes = scanned["classes"]
         blocking = sum(classes[label] for label in BLOCKING_CLASSES)
+        unscanned = scanned["unscanned"]
+        # blocked wins: a hit is actionable even when some entries could not be read.
+        status = "blocked" if blocking else "unverified" if unscanned else "clear"
         report[short] = {
-            "status": "blocked" if blocking else "clear",
+            "status": status,
             "entries": scanned["entries"],
             "capped": scanned["entries"] >= CONTENT_CAP,
+            "unscanned": unscanned,
             "blocking_hits": blocking,
             "classes": classes,
         }
