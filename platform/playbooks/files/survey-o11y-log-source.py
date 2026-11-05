@@ -263,7 +263,15 @@ def content_survey(names, drivers):
         blocking = sum(classes[label] for label in BLOCKING_CLASSES)
         unscanned = scanned["unscanned"]
         # blocked wins: a hit is actionable even when some entries could not be read.
-        status = "blocked" if blocking else "unverified" if unscanned else "clear"
+        # An empty read proves nothing about the receiver: no entries in the window is "no_entries", never "clear".
+        if blocking:
+            status = "blocked"
+        elif unscanned:
+            status = "unverified"
+        elif scanned["entries"] == 0:
+            status = "no_entries"
+        else:
+            status = "clear"
         report[short] = {
             "status": status,
             "entries": scanned["entries"],
@@ -281,6 +289,9 @@ def content_status(report):
         return "blocked"
     if "unverified" in statuses:
         return "unverified"
+    # A receiver with no entries in the window was read but not evidenced: the set is incomplete, not clear.
+    if "no_entries" in statuses:
+        return "incomplete"
     return "clear"
 
 

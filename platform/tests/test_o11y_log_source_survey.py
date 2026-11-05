@@ -677,8 +677,9 @@ def test_content_survey_counts_classes_per_receiver_and_never_returns_text(monke
     assert content["loki"]["status"] == "clear"
     assert content["loki"]["classes"] == ZERO_CLASSES
     assert content["node-exporter"] == UNVERIFIED
+    # Read fine but no entries in the window: evidence of absence is not evidence of clear.
     for short in ("prometheus", "alloy", "pyroscope"):
-        assert content[short]["status"] == "clear"
+        assert content[short]["status"] == "no_entries"
     content_argv = [argv for argv in calls if "--output-fields=CONTAINER_NAME,MESSAGE" in argv]
     assert sorted(argv[-1] for argv in content_argv) == sorted(f"CONTAINER_NAME=o11y-{short}" for short in RECEIVERS)
     for leaked in (
@@ -703,7 +704,9 @@ def test_content_survey_flags_a_read_that_reaches_the_cap(monkeypatch, offset):
     prometheus = report["content_survey"]["prometheus"]
     assert prometheus["entries"] == SURVEY.CONTENT_CAP + offset
     assert prometheus["capped"] is (offset == 0)
-    assert report["content_survey_status"] == "clear"
+    assert prometheus["status"] == "clear"
+    # The other six receivers are empty in this fixture, so the set is incomplete rather than clear.
+    assert report["content_survey_status"] == "incomplete"
 
 
 def test_receiver_not_running_or_not_journald_is_unverified_and_never_read(monkeypatch):
@@ -741,6 +744,22 @@ def test_failed_content_read_is_unverified_and_leaks_nothing(monkeypatch, conten
     serialized = json.dumps(report)
     assert "private diagnostic" not in serialized
     assert "ops@example.com" not in serialized
+
+
+def test_nonzero_exit_with_valid_rows_is_unverified_not_read(monkeypatch):
+    # Only the exit code keeps a failed read from counting as evidence: the rows here parse cleanly.
+    receiver_host(monkeypatch, running=["o11y-loki"])
+    inner = SURVEY.run
+
+    def failed_with_valid_rows(argv, timeout=8):
+        if "--output-fields=CONTAINER_NAME,MESSAGE" in argv:
+            return 1, json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": "ordinary line"})
+        return inner(argv, timeout=timeout)
+
+    monkeypatch.setattr(SURVEY, "run", failed_with_valid_rows)
+    report = SURVEY.survey()
+    assert report["content_survey"]["loki"] == UNVERIFIED
+    assert report["content_survey_status"] == "unverified"
 
 
 @pytest.mark.parametrize(
@@ -844,12 +863,16 @@ def test_malformed_content_row_makes_the_whole_container_unscannable(line):
     ("statuses", "expected"),
     [
         (["clear", "clear"], "clear"),
+        (["clear", "no_entries"], "incomplete"),
+        (["no_entries", "no_entries"], "incomplete"),
         (["clear", "unverified"], "unverified"),
+        (["no_entries", "unverified"], "unverified"),
         (["unverified", "blocked"], "blocked"),
         (["blocked", "clear"], "blocked"),
+        (["blocked", "no_entries"], "blocked"),
     ],
 )
-def test_content_status_reports_blocked_over_unverified_over_clear(statuses, expected):
+def test_content_status_reports_blocked_over_unverified_over_incomplete_over_clear(statuses, expected):
     assert SURVEY.content_status({f"c{index}": {"status": status} for index, status in enumerate(statuses)}) == (
         expected
     )
@@ -868,7 +891,8 @@ def test_null_message_is_unscanned_and_marks_the_receiver_unverified(monkeypatch
     assert prometheus["unscanned"] == 1
     assert prometheus["entries"] == 1
     assert prometheus["blocking_hits"] == 0
-    assert report["content_survey"]["loki"]["status"] == "clear"
+    # loki is read with no entries in this fixture, so it is no_entries, never clear.
+    assert report["content_survey"]["loki"]["status"] == "no_entries"
     assert report["content_survey_status"] == "unverified"
 
 
