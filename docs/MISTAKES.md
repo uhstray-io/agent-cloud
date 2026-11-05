@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) | Unverified claim | 3 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) | Unverified claim | 4 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
@@ -1181,7 +1181,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 3** — 2026-11-02, 2026-11-03, 2026-11-04
+**Occurrences: 4** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1225,6 +1225,19 @@ Why the rule did not fire: it names briefs and plans about code, and a task list
 rather than as a body to read. **Proposed guard** (count 3): a Stop hook that, when a reply
 characterises a numbered OpenSpec task ("source-only", "needs nothing", "done"), requires a read of
 that task's whole block in `tasks.md` earlier in the turn, and otherwise prompts to read it first.
+
+**Occurrence 4 — 2026-11-05.** Writing the o11y alert review (PR 876,
+`plan/development/O11Y-ALERT-REVIEW-2026-11.md`), I stated that "Grow Semaphore Root (Dev) task 9846
+grew the root at 15:23 on 2026-10-28". I had the task's name and its start time from the Semaphore
+history and nothing else. This file's own record of that outage, 3.18 and 3.19, says the root was grown
+over operator-authorised SSH at about 03:50 UTC and the containers were started at 15:18; task 9846 ran
+after the recovery. The independent review of PR 876 caught it before merge, and the merged text follows
+3.18. Why the rule did not fire: the claim was about what a Semaphore task did, read from its name and
+timing, and I did not search this ledger for the incident it fell inside. The count-3 proposal would not
+have caught it either: it covers OpenSpec task characterisations, not a review document's account of an
+operation. **Widened proposal:** a review or incident document that attributes an outcome to a named
+task run must cite that run's output or the ledger entry for the incident it falls in; the plan-doc
+review checklist gains that line.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
