@@ -874,24 +874,28 @@ PY
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   # A dry run does not rewrite .env or recreate the container, so the first gate-enabled --check meets a
   # container without SKYNET_LAUNCH_GATE_*. The probes print env-missing; only check mode may accept it.
-  python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR/gate-asserts.yml" <<'PY'
+  # One play per assert, so a regression in either one alone turns this red.
+  python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR" <<'PY'
 import sys, yaml
 plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-names = ["Assert the launch gate refused a request with no token (401 unauthorized)",
-         "Assert the launch gate accepted the caller token (400 bad_request)"]
-tasks = [t for p in plays for t in p.get("tasks", []) if t.get("name") in names]
-assert len(tasks) == 2, [t.get("name") for t in tasks]
+names = {"anon": "Assert the launch gate refused a request with no token (401 unauthorized)",
+         "authed": "Assert the launch gate accepted the caller token (400 bad_request)"}
 fake = {"rc": 0, "stdout_lines": ["{{ probe_line }}"], "stderr_lines": []}
-play = [{"hosts": "localhost", "gather_facts": False, "connection": "local",
-         "vars": {"skynet_launch_gate_url": "https://launch-gate.example.test:8443",
-                  "_skynet_gate_anon": fake, "_skynet_gate_authed": fake},
-         "tasks": tasks}]
-yaml.safe_dump(play, open(sys.argv[2], "w"))
+for key, name in names.items():
+    tasks = [t for p in plays for t in p.get("tasks", []) if t.get("name") == name]
+    assert len(tasks) == 1, name
+    play = [{"hosts": "localhost", "gather_facts": False, "connection": "local",
+             "vars": {"skynet_launch_gate_url": "https://launch-gate.example.test:8443",
+                      "_skynet_gate_anon": fake, "_skynet_gate_authed": fake},
+             "tasks": tasks}]
+    yaml.safe_dump(play, open(f"{sys.argv[2]}/gate-assert-{key}.yml", "w"))
 PY
-  run ansible-playbook -i localhost, "$BATS_TEST_TMPDIR/gate-asserts.yml" --check -e probe_line=env-missing
-  [ "$status" -eq 0 ]
-  run ansible-playbook -i localhost, "$BATS_TEST_TMPDIR/gate-asserts.yml" -e probe_line=env-missing
-  [ "$status" -ne 0 ]
+  for key in anon authed; do
+    run ansible-playbook -i localhost, "$BATS_TEST_TMPDIR/gate-assert-$key.yml" --check -e probe_line=env-missing
+    [ "$status" -eq 0 ] || { echo "$key: env-missing refused under --check"; return 1; }
+    run ansible-playbook -i localhost, "$BATS_TEST_TMPDIR/gate-assert-$key.yml" -e probe_line=env-missing
+    [ "$status" -ne 0 ] || { echo "$key: env-missing accepted on a real run"; return 1; }
+  done
 }
 
 @test "skynet: the example's agentgateway route is commented out, not active" {
