@@ -19,8 +19,11 @@ CONTENT_CONTAINERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "
 CONTENT_CAP = 200
 # Fixed content classes. Only counts leave this process; the matched text never does.
 CONTENT_PATTERNS = {
-    "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
-    "ipv4": re.compile(r"\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b"),
+    # The lookbehind anchors each match at the start of a local-part run. Without it the engine retries
+    # from every position inside a long run of letters or base64, which is quadratic (about 1.7 s per 48 KB line).
+    "email": re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+    # Digit and dot guards, not \b: \b matches after a dot, so "999.1.1.1" and "1.1.1.1.1" would count.
+    "ipv4": re.compile(r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])"),
     "credential": re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
     "secret_pair": re.compile(
         r"(?i)\b(?:token|password|passwd|secret|api[_-]?key|authorization)\s*[=:]\s*[^\s,;&]{4,}"

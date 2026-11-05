@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import random
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -746,6 +748,50 @@ def test_each_content_class_counts_its_own_hit(message, label):
     output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
     expected = {**ZERO_CLASSES, **({label: 1} if label else {})}
     assert SURVEY.content_scan(output, "o11y-loki") == {"entries": 1, "classes": expected}
+
+
+_BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_RANDOM_BASE64 = "".join(random.Random(0).choice(_BASE64) for _ in range(48000))
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a" * 48000, "QUJD" * 12000, _RANDOM_BASE64],
+    ids=["letters", "repeated-base64", "random-base64"],
+)
+def test_classifier_stays_linear_on_a_48k_letter_or_base64_line(text):
+    line = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": text})
+    started = time.perf_counter()
+    scanned = SURVEY.content_scan(line, "o11y-loki")
+    elapsed = time.perf_counter() - started
+    assert scanned["entries"] == 1
+    assert elapsed < 0.2, f"classifier took {elapsed:.3f}s on a 48 KB line"
+
+
+@pytest.mark.parametrize(
+    ("message", "addresses"),
+    [
+        ("contact ops@example.com now", 1),
+        ("ops@example.com,ops2@example.org", 2),
+        ("(ops@example.com)", 1),
+        ("a.b+c@sub.example.org", 1),
+        ("x_ops@example.com", 1),
+        ("user:ops@example.com;", 1),
+    ],
+)
+def test_email_class_keeps_matching_addresses_after_the_anchor(message, addresses):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["email"] == addresses
+
+
+@pytest.mark.parametrize(
+    ("message", "hits"),
+    [("addr 203.0.113.1 x", 1), ("addr 999.1.1.1 x", 0), ("addr 1.1.1.1.1 x", 0)],
+    ids=["plain-address", "three-digit-first-octet", "five-part-number"],
+)
+def test_ipv4_class_rejects_parts_of_longer_dotted_numbers(message, hits):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["ipv4"] == hits
 
 
 def test_binary_messages_are_decoded_and_unusable_messages_are_counted_not_scanned():
