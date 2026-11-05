@@ -2994,8 +2994,8 @@ templates:
         description: "Exact reviewed Dev revision for the read-only log-source survey"
         type: string
         required: true
-    # Reports fixed driver/source categories and counts only; no logs, paths,
-    # addresses, container identities, or stderr are exposed.
+    # Reports fixed driver/source categories, receiver container short names, and counts
+    # only; no log text, paths, addresses, matched substrings, container IDs, or stderr are exposed.
 
   - name: Survey o11y Alloy Health (Dev)
     playbook: platform/playbooks/survey-o11y-alloy-health.yml

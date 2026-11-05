@@ -16,6 +16,9 @@ PLAYBOOK = ROOT / "platform/playbooks/survey-o11y-log-source.yml"
 SPEC = importlib.util.spec_from_file_location("o11y_log_source_survey", HELPER)
 SURVEY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SURVEY)
+RECEIVERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "pyroscope", "grafana")
+ZERO_CLASSES = {"email": 0, "ipv4": 0, "credential": 0, "secret_pair": 0, "url_query": 0}
+UNVERIFIED = {"status": "unverified", "entries": None, "capped": None, "blocking_hits": None, "classes": None}
 
 
 def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
@@ -62,6 +65,8 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
     monkeypatch.setattr(SURVEY, "run", run)
     report = SURVEY.survey()
     serialized = json.dumps(report)
+    content = report.pop("content_survey")
+    assert report.pop("content_survey_status") == "unverified"
 
     assert report == {
         "status": "observed",
@@ -79,12 +84,25 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
         "journald_metadata_entry_count": 1,
         "alloy_read_only_journal_source_mounted": False,
     }
-    assert len(journal_argv) == 1
-    assert "--output=json" in journal_argv[0]
-    assert "--output-fields=CONTAINER_NAME" in journal_argv[0]
-    assert f"--since={SURVEY.JOURNAL_WINDOW}" in journal_argv[0]
-    assert "-n" in journal_argv[0] and "100" in journal_argv[0]
-    assert "MESSAGE" not in " ".join(journal_argv[0])
+    metadata_argv = [argv for argv in journal_argv if "--output-fields=CONTAINER_NAME" in argv]
+    content_argv = [argv for argv in journal_argv if "--output-fields=CONTAINER_NAME,MESSAGE" in argv]
+    assert len(metadata_argv) == 1
+    assert len(content_argv) == 1
+    assert "--output=json" in metadata_argv[0]
+    assert f"--since={SURVEY.JOURNAL_WINDOW}" in metadata_argv[0]
+    assert "-n" in metadata_argv[0] and "100" in metadata_argv[0]
+    assert "MESSAGE" not in " ".join(metadata_argv[0])
+    assert content_argv[0][content_argv[0].index("-n") + 1] == str(SURVEY.CONTENT_CAP)
+    assert content_argv[0][-1] == "CONTAINER_NAME=o11y-loki"
+    assert content["loki"] == {
+        "status": "clear",
+        "entries": 1,
+        "capped": False,
+        "blocking_hits": 0,
+        "classes": ZERO_CLASSES,
+    }
+    assert sorted(content) == sorted(RECEIVERS)
+    assert all(content[short] == UNVERIFIED for short in RECEIVERS if short != "loki")
     assert "private-container-id" not in serialized
     assert "private-journal-id" not in serialized
     assert "private log body" not in serialized
@@ -563,3 +581,212 @@ def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
     assert [item["name"] for item in template["survey_vars"]] == ["expected_repository_sha"]
 
     assert playbook_yaml.REPO == ROOT
+
+
+def receiver_host(monkeypatch, *, running, messages=None, failing=(), drivers=None, calls=None):
+    """Fake podman and journalctl for a receiver host; messages maps a container name to MESSAGE values."""
+    messages = messages or {}
+    drivers = drivers or {}
+
+    def run(argv, timeout=8):
+        if argv[:3] == ["podman", "info", "--format"]:
+            return 0, '{"host":{"logDriver":"journald"}}'
+        if argv[:2] == ["podman", "ps"]:
+            return 0, json.dumps([{"Names": [name]} for name in running])
+        if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
+            driver = drivers.get(argv[-1], "journald")
+            return 0, json.dumps(
+                [{"State": {"Running": True}, "HostConfig": {"LogConfig": {"Type": driver}}, "Mounts": []}]
+            )
+        if argv[0] == "journalctl":
+            name = argv[-1].removeprefix("CONTAINER_NAME=")
+            if calls is not None:
+                calls.append(argv)
+            if name in failing:
+                return 1, "private diagnostic"
+            return 0, "\n".join(
+                json.dumps({"CONTAINER_NAME": name, "MESSAGE": message}) for message in messages.get(name, [])
+            )
+        raise AssertionError("unexpected command")
+
+    monkeypatch.setattr(SURVEY, "run", run)
+
+
+def test_content_allowlist_is_the_seven_receiver_containers_without_the_collector():
+    compose = yaml.safe_load((ROOT / "platform/services/o11y/deployment/compose.yml").read_text())
+    container_names = {
+        service.get("container_name") for service in compose["services"].values() if isinstance(service, dict)
+    }
+    journal = yaml.safe_load((ROOT / "platform/services/o11y/deployment/compose.journal.yml").read_text())
+    collector = journal["services"]["journal-collector"]["container_name"]
+    assert sorted(SURVEY.CONTENT_CONTAINERS) == sorted(RECEIVERS)
+    assert {f"o11y-{short}" for short in RECEIVERS} <= container_names
+    assert collector == "o11y-journal-collector"
+    assert collector not in container_names
+    assert collector not in {f"o11y-{short}" for short in SURVEY.CONTENT_CONTAINERS}
+
+
+def test_content_survey_counts_classes_per_receiver_and_never_returns_text(monkeypatch):
+    calls = []
+    running = [f"o11y-{short}" for short in RECEIVERS] + ["o11y-journal-collector"]
+    receiver_host(
+        monkeypatch,
+        running=running,
+        messages={
+            "o11y-grafana": ["notify ops@example.com with Bearer abcdefgh12345678"],
+            "o11y-tempo": ["upstream answered from 203.0.113.7"],
+            "o11y-loki": ["private log body /private/path"],
+            "o11y-journal-collector": ["collector echoes ops@example.com"],
+        },
+        failing={"o11y-node-exporter"},
+        calls=calls,
+    )
+    report = SURVEY.survey()
+    serialized = json.dumps(report)
+    content = report["content_survey"]
+
+    assert report["content_survey_status"] == "blocked"
+    assert sorted(content) == sorted(RECEIVERS)
+    assert content["grafana"] == {
+        "status": "blocked",
+        "entries": 1,
+        "capped": False,
+        "blocking_hits": 2,
+        "classes": {**ZERO_CLASSES, "email": 1, "credential": 1},
+    }
+    assert content["tempo"] == {
+        "status": "clear",
+        "entries": 1,
+        "capped": False,
+        "blocking_hits": 0,
+        "classes": {**ZERO_CLASSES, "ipv4": 1},
+    }
+    assert content["loki"]["status"] == "clear"
+    assert content["loki"]["classes"] == ZERO_CLASSES
+    assert content["node-exporter"] == UNVERIFIED
+    for short in ("prometheus", "alloy", "pyroscope"):
+        assert content[short]["status"] == "clear"
+    content_argv = [argv for argv in calls if "--output-fields=CONTAINER_NAME,MESSAGE" in argv]
+    assert sorted(argv[-1] for argv in content_argv) == sorted(f"CONTAINER_NAME=o11y-{short}" for short in RECEIVERS)
+    for leaked in (
+        "ops@example.com",
+        "abcdefgh12345678",
+        "203.0.113.7",
+        "private log body",
+        "/private/path",
+        "journal-collector",
+    ):
+        assert leaked not in serialized
+
+
+@pytest.mark.parametrize("offset", [-1, 0], ids=["below-cap", "at-cap"])
+def test_content_survey_flags_a_read_that_reaches_the_cap(monkeypatch, offset):
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-prometheus": ["ordinary line"] * (SURVEY.CONTENT_CAP + offset)},
+    )
+    report = SURVEY.survey()
+    prometheus = report["content_survey"]["prometheus"]
+    assert prometheus["entries"] == SURVEY.CONTENT_CAP + offset
+    assert prometheus["capped"] is (offset == 0)
+    assert report["content_survey_status"] == "clear"
+
+
+def test_receiver_not_running_or_not_journald_is_unverified_and_never_read(monkeypatch):
+    calls = []
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS if short != "pyroscope"],
+        drivers={"o11y-tempo": "json-file"},
+        calls=calls,
+    )
+    report = SURVEY.survey()
+    content = report["content_survey"]
+    assert content["pyroscope"] == UNVERIFIED
+    assert content["tempo"] == UNVERIFIED
+    assert report["content_survey_status"] == "unverified"
+    read = [argv[-1] for argv in calls if "--output-fields=CONTAINER_NAME,MESSAGE" in argv]
+    assert "CONTAINER_NAME=o11y-pyroscope" not in read
+    assert "CONTAINER_NAME=o11y-tempo" not in read
+
+
+@pytest.mark.parametrize("content_rc", [1, None], ids=["nonzero-exit", "timeout-or-missing-command"])
+def test_failed_content_read_is_unverified_and_leaks_nothing(monkeypatch, content_rc):
+    receiver_host(monkeypatch, running=["o11y-loki"])
+    inner = SURVEY.run
+
+    def failing_content(argv, timeout=8):
+        if "--output-fields=CONTAINER_NAME,MESSAGE" in argv:
+            return content_rc, "ops@example.com private diagnostic"
+        return inner(argv, timeout=timeout)
+
+    monkeypatch.setattr(SURVEY, "run", failing_content)
+    report = SURVEY.survey()
+    assert report["content_survey"]["loki"] == UNVERIFIED
+    assert report["content_survey_status"] == "unverified"
+    serialized = json.dumps(report)
+    assert "private diagnostic" not in serialized
+    assert "ops@example.com" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("message", "label"),
+    [
+        ("contact ops@example.com now", "email"),
+        ("call 203.0.113.7 now", "ipv4"),
+        ("sent Bearer abcdefgh12345678", "credential"),
+        ("config token: abcd1234", "secret_pair"),
+        ("open https://example.com/cb?code=1", "url_query"),
+        ("ordinary private log body", None),
+    ],
+    ids=["email", "ipv4", "credential", "secret_pair", "url_query", "clean"],
+)
+def test_each_content_class_counts_its_own_hit(message, label):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    expected = {**ZERO_CLASSES, **({label: 1} if label else {})}
+    assert SURVEY.content_scan(output, "o11y-loki") == {"entries": 1, "classes": expected}
+
+
+def test_binary_messages_are_decoded_and_unusable_messages_are_counted_not_scanned():
+    email = list(b"ops@example.com")
+    lines = [
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": email}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": [0xFF] + email}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": {"not": "text"}}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": [300, 1]}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki"}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki-other", "MESSAGE": "ops@example.com"}),
+    ]
+    assert SURVEY.content_scan("\n".join(lines), "o11y-loki") == {
+        "entries": 5,
+        "classes": {**ZERO_CLASSES, "email": 2},
+    }
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "not json ops@example.com",
+        json.dumps({"CONTAINER_NAME": {"not": "a name"}, "MESSAGE": "ops@example.com"}),
+        json.dumps({"CONTAINER_NAME": ["o11y-loki", None], "MESSAGE": "ops@example.com"}),
+    ],
+    ids=["non-json", "dict-name", "non-string-name-list"],
+)
+def test_malformed_content_row_makes_the_whole_container_unscannable(line):
+    assert SURVEY.content_scan(line, "o11y-loki") is None
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        (["clear", "clear"], "clear"),
+        (["clear", "unverified"], "unverified"),
+        (["unverified", "blocked"], "blocked"),
+        (["blocked", "clear"], "blocked"),
+    ],
+)
+def test_content_status_reports_blocked_over_unverified_over_clear(statuses, expected):
+    assert SURVEY.content_status({f"c{index}": {"status": status} for index, status in enumerate(statuses)}) == (
+        expected
+    )

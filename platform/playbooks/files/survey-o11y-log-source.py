@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Return bounded receiver-host container log-source metadata only."""
+"""Return bounded receiver-host container log-source metadata and content-class counts only."""
 
 import json
 import posixpath
+import re
 import subprocess
 import sys
 
@@ -13,6 +14,21 @@ O11Y_PREFIX = "o11y-"
 JOURNAL_DESTINATIONS = {"/var/log/journal", "/run/log/journal"}
 # Mounts from other host paths have unknown provenance and cannot establish a journal source.
 JOURNAL_SOURCES = {"/var/log/journal", "/run/log/journal"}
+# Receiver containers whose journald content is classified. The journal collector is deliberately absent.
+CONTENT_CONTAINERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "pyroscope", "grafana")
+CONTENT_CAP = 200
+# Fixed content classes. Only counts leave this process; the matched text never does.
+CONTENT_PATTERNS = {
+    "email": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+    "ipv4": re.compile(r"\b(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}\b"),
+    "credential": re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
+    "secret_pair": re.compile(
+        r"(?i)\b(?:token|password|passwd|secret|api[_-]?key|authorization)\s*[=:]\s*[^\s,;&]{4,}"
+    ),
+    "url_query": re.compile(r"https?://[^\s?#]+\?[^\s#]+"),
+}
+# A bare IPv4 address is reported but does not block; the other classes do.
+BLOCKING_CLASSES = ("email", "credential", "secret_pair", "url_query")
 
 
 def run(argv, timeout=8):
@@ -136,6 +152,96 @@ def journal_status(names, drivers):
     return ("readable" if count else "no_entries"), count
 
 
+def message_text(value):
+    if isinstance(value, str):
+        return value
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 255 for item in value)
+    ):
+        return bytes(value).decode("utf-8", errors="replace")
+    return None
+
+
+def content_scan(output, expected_name):
+    """Count one container's entries and content-class hits; None when the journal output is malformed."""
+    entries = 0
+    classes = dict.fromkeys(CONTENT_PATTERNS, 0)
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        entry = decode_json(line)
+        if not isinstance(entry, dict):
+            return None
+        names = entry.get("CONTAINER_NAME")
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            return None
+        if expected_name not in names:
+            continue
+        entries += 1
+        text = message_text(entry.get("MESSAGE"))
+        if text is None:
+            continue
+        for label, pattern in CONTENT_PATTERNS.items():
+            classes[label] += sum(1 for _ in pattern.finditer(text))
+    return {"entries": entries, "classes": classes}
+
+
+def unverified_content():
+    return {"status": "unverified", "entries": None, "capped": None, "blocking_hits": None, "classes": None}
+
+
+def content_survey(names, drivers):
+    report = {}
+    for short in CONTENT_CONTAINERS:
+        name = O11Y_PREFIX + short
+        # Only journald content is readable here; a receiver that is not running or not journald is not read.
+        if name not in names or drivers.get(name) != "journald":
+            report[short] = unverified_content()
+            continue
+        rc, output = run(
+            [
+                "journalctl",
+                "--user",
+                "--no-pager",
+                "--quiet",
+                "--output=json",
+                "--output-fields=CONTAINER_NAME,MESSAGE",
+                f"--since={JOURNAL_WINDOW}",
+                "-n",
+                str(CONTENT_CAP),
+                f"CONTAINER_NAME={name}",
+            ],
+            timeout=12,
+        )
+        scanned = content_scan(output, name) if rc == 0 else None
+        if scanned is None:
+            report[short] = unverified_content()
+            continue
+        classes = scanned["classes"]
+        blocking = sum(classes[label] for label in BLOCKING_CLASSES)
+        report[short] = {
+            "status": "blocked" if blocking else "clear",
+            "entries": scanned["entries"],
+            "capped": scanned["entries"] >= CONTENT_CAP,
+            "blocking_hits": blocking,
+            "classes": classes,
+        }
+    return report
+
+
+def content_status(report):
+    statuses = {item["status"] for item in report.values()}
+    if "blocked" in statuses:
+        return "blocked"
+    if "unverified" in statuses:
+        return "unverified"
+    return "clear"
+
+
 def alloy_source():
     container = inspect("o11y-alloy")
     if container is None:
@@ -230,6 +336,7 @@ def survey():
     alloy_mounted = alloy_source()
     if alloy_mounted is None:
         return {"status": "unavailable", "reason": "alloy_source_unverified"}
+    content = content_survey(names, drivers)
     return {
         "status": "observed",
         "rootless_default_log_driver": default,
@@ -238,6 +345,8 @@ def survey():
         "journald_metadata_read": journal,
         "journald_metadata_entry_count": journal_count,
         "alloy_read_only_journal_source_mounted": alloy_mounted,
+        "content_survey": content,
+        "content_survey_status": content_status(content),
     }
 
 
