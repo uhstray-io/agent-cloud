@@ -1,7 +1,8 @@
 # O11Y-RESTORE-TARGET-PREFLIGHT
 
 **Date:** 2026-10-20
-**Status:** PROPOSED
+**Status:** IMPLEMENTED (source complete; live acceptance remains open)
+> **Parent plan:** [Observability](05-observability.md)
 **Context:** OpenSpec change `pbs-vm-and-restore-gate`, task 5.1, needs a repeatable read-only check of one privately declared, isolated restore target before a later restore workflow is designed or run.
 
 ## Problem

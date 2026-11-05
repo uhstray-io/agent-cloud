@@ -2,6 +2,7 @@
 
 **Date:** 2026-10-20
 **Status:** IMPLEMENTED (source and tests; live acceptance remains open)
+> **Parent plan:** [Observability](05-observability.md)
 **Context:** The Dev-bound seven-day capacity survey returned its existing `source_series_ambiguous` refusal. This plan adds bounded, sanitized evidence to help diagnose that refusal without changing source selection or capacity acceptance.
 
 ---
@@ -89,7 +90,7 @@ The diagnostic operates on an already bounded read-only query response. It must 
 
 - [OpenSpec observability signal and capacity change](openspec/changes/o11y-signal-labeling-profiling-alerting/design.md)
 - [OpenSpec capacity task 5.3](openspec/changes/observability-estate/tasks.md)
-- [Testing and linting plan](../architecture/TESTING-AND-LINTING-PLAN.md)
+- [Testing and linting plan](../architecture/03-testing-ci-quality.md)
 - [Repository principles](../../PRINCIPLES.md)
 - [Repository architecture](../../ARCHITECTURE.md)
 
