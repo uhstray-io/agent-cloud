@@ -151,6 +151,10 @@
 
     - name: Derive the reviewed Alloy candidate digest from the committed renderer
       when: _o11y_source_review_required | bool
+      # Runs under --check too: it only works in a private controller temp directory
+      # (create, render, hash, remove). Check mode skips tempfile, so without this
+      # every dry run failed at the render with no directory to write into.
+      check_mode: false
       block:
         - name: Allocate private controller candidate workspace
           ansible.builtin.tempfile:
