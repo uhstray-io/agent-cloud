@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import random
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +18,30 @@ PLAYBOOK = ROOT / "platform/playbooks/survey-o11y-log-source.yml"
 SPEC = importlib.util.spec_from_file_location("o11y_log_source_survey", HELPER)
 SURVEY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SURVEY)
+RECEIVERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "pyroscope", "grafana")
+ZERO_CLASSES = {
+    "email": 0,
+    "ipv4": 0,
+    "credential": 0,
+    "secret_pair": 0,
+    "url_query": 0,
+    "dsn_userinfo": 0,
+    "jwt": 0,
+    "private_key": 0,
+    "session": 0,
+}
+# Built by concatenation so the staged-diff PEM gate does not match a literal header in test source.
+PEM_HEADER = "-----BEGIN " + "RSA PRIVATE KEY-----"
+# Built by concatenation so a secret scanner does not read the fake as a real Postgres credential.
+DSN_FIXTURE = "dsn " + "postgres" + "://app:" + "hunter2" + "@dbhost/app"
+UNVERIFIED = {
+    "status": "unverified",
+    "entries": None,
+    "capped": None,
+    "unscanned": None,
+    "blocking_hits": None,
+    "classes": None,
+}
 
 
 def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
@@ -62,6 +88,8 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
     monkeypatch.setattr(SURVEY, "run", run)
     report = SURVEY.survey()
     serialized = json.dumps(report)
+    content = report.pop("content_survey")
+    assert report.pop("content_survey_status") == "unverified"
 
     assert report == {
         "status": "observed",
@@ -79,12 +107,27 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
         "journald_metadata_entry_count": 1,
         "alloy_read_only_journal_source_mounted": False,
     }
-    assert len(journal_argv) == 1
-    assert "--output=json" in journal_argv[0]
-    assert "--output-fields=CONTAINER_NAME" in journal_argv[0]
-    assert f"--since={SURVEY.JOURNAL_WINDOW}" in journal_argv[0]
-    assert "-n" in journal_argv[0] and "100" in journal_argv[0]
-    assert "MESSAGE" not in " ".join(journal_argv[0])
+    metadata_argv = [argv for argv in journal_argv if "--output-fields=CONTAINER_NAME" in argv]
+    content_argv = [argv for argv in journal_argv if "--output-fields=CONTAINER_NAME,MESSAGE" in argv]
+    assert len(metadata_argv) == 1
+    assert len(content_argv) == 1
+    assert "--output=json" in metadata_argv[0]
+    assert f"--since={SURVEY.JOURNAL_WINDOW}" in metadata_argv[0]
+    assert "-n" in metadata_argv[0] and "100" in metadata_argv[0]
+    assert "MESSAGE" not in " ".join(metadata_argv[0])
+    assert content_argv[0][content_argv[0].index("-n") + 1] == str(SURVEY.CONTENT_CAP)
+    assert content_argv[0][-1] == "CONTAINER_NAME=o11y-loki"
+    assert "--all" in content_argv[0]
+    assert content["loki"] == {
+        "status": "clear",
+        "entries": 1,
+        "capped": False,
+        "unscanned": 0,
+        "blocking_hits": 0,
+        "classes": ZERO_CLASSES,
+    }
+    assert sorted(content) == sorted(RECEIVERS)
+    assert all(content[short] == UNVERIFIED for short in RECEIVERS if short != "loki")
     assert "private-container-id" not in serialized
     assert "private-journal-id" not in serialized
     assert "private log body" not in serialized
@@ -563,3 +606,512 @@ def test_playbook_is_dev_bound_guarded_exact_head_and_read_only_in_check_mode():
     assert [item["name"] for item in template["survey_vars"]] == ["expected_repository_sha"]
 
     assert playbook_yaml.REPO == ROOT
+
+
+def receiver_host(monkeypatch, *, running, messages=None, failing=(), drivers=None, calls=None):
+    """Fake podman and journalctl for a receiver host; messages maps a container name to MESSAGE values."""
+    messages = messages or {}
+    drivers = drivers or {}
+
+    def run(argv, timeout=8):
+        if argv[:3] == ["podman", "info", "--format"]:
+            return 0, '{"host":{"logDriver":"journald"}}'
+        if argv[:2] == ["podman", "ps"]:
+            return 0, json.dumps([{"Names": [name]} for name in running])
+        if argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
+            driver = drivers.get(argv[-1], "journald")
+            return 0, json.dumps(
+                [{"State": {"Running": True}, "HostConfig": {"LogConfig": {"Type": driver}}, "Mounts": []}]
+            )
+        if argv[0] == "journalctl":
+            name = argv[-1].removeprefix("CONTAINER_NAME=")
+            if calls is not None:
+                calls.append(argv)
+            if name in failing:
+                return 1, "private diagnostic"
+            return 0, "\n".join(
+                json.dumps({"CONTAINER_NAME": name, "MESSAGE": message}) for message in messages.get(name, [])
+            )
+        raise AssertionError("unexpected command")
+
+    monkeypatch.setattr(SURVEY, "run", run)
+
+
+def test_content_allowlist_is_the_seven_receiver_containers_without_the_collector():
+    compose = yaml.safe_load((ROOT / "platform/services/o11y/deployment/compose.yml").read_text())
+    container_names = {
+        service.get("container_name") for service in compose["services"].values() if isinstance(service, dict)
+    }
+    journal = yaml.safe_load((ROOT / "platform/services/o11y/deployment/compose.journal.yml").read_text())
+    collector = journal["services"]["journal-collector"]["container_name"]
+    assert sorted(SURVEY.CONTENT_CONTAINERS) == sorted(RECEIVERS)
+    assert {f"o11y-{short}" for short in RECEIVERS} <= container_names
+    assert collector == "o11y-journal-collector"
+    assert collector not in container_names
+    assert collector not in {f"o11y-{short}" for short in SURVEY.CONTENT_CONTAINERS}
+
+
+def test_content_survey_counts_classes_per_receiver_and_never_returns_text(monkeypatch):
+    calls = []
+    running = [f"o11y-{short}" for short in RECEIVERS] + ["o11y-journal-collector"]
+    receiver_host(
+        monkeypatch,
+        running=running,
+        messages={
+            "o11y-grafana": ["notify ops@example.com with Bearer abcdefgh12345678"],
+            "o11y-tempo": ["upstream answered from 203.0.113.7"],
+            "o11y-loki": ["private log body /private/path"],
+            "o11y-journal-collector": ["collector echoes ops@example.com"],
+        },
+        failing={"o11y-node-exporter"},
+        calls=calls,
+    )
+    report = SURVEY.survey()
+    serialized = json.dumps(report)
+    content = report["content_survey"]
+
+    assert report["content_survey_status"] == "blocked"
+    assert sorted(content) == sorted(RECEIVERS)
+    assert content["grafana"] == {
+        "status": "blocked",
+        "entries": 1,
+        "capped": False,
+        "unscanned": 0,
+        "blocking_hits": 2,
+        "classes": {**ZERO_CLASSES, "email": 1, "credential": 1},
+    }
+    assert content["tempo"] == {
+        "status": "clear",
+        "entries": 1,
+        "capped": False,
+        "unscanned": 0,
+        "blocking_hits": 0,
+        "classes": {**ZERO_CLASSES, "ipv4": 1},
+    }
+    assert content["loki"]["status"] == "clear"
+    assert content["loki"]["classes"] == ZERO_CLASSES
+    assert content["node-exporter"] == UNVERIFIED
+    # Read fine but no entries in the window: evidence of absence is not evidence of clear.
+    for short in ("prometheus", "alloy", "pyroscope"):
+        assert content[short]["status"] == "no_entries"
+    content_argv = [argv for argv in calls if "--output-fields=CONTAINER_NAME,MESSAGE" in argv]
+    assert sorted(argv[-1] for argv in content_argv) == sorted(f"CONTAINER_NAME=o11y-{short}" for short in RECEIVERS)
+    for leaked in (
+        "ops@example.com",
+        "abcdefgh12345678",
+        "203.0.113.7",
+        "private log body",
+        "/private/path",
+        "journal-collector",
+    ):
+        assert leaked not in serialized
+
+
+@pytest.mark.parametrize("offset", [-1, 0], ids=["below-cap", "at-cap"])
+def test_content_survey_flags_a_read_that_reaches_the_cap(monkeypatch, offset):
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-prometheus": ["ordinary line"] * (SURVEY.CONTENT_CAP + offset)},
+    )
+    report = SURVEY.survey()
+    prometheus = report["content_survey"]["prometheus"]
+    assert prometheus["entries"] == SURVEY.CONTENT_CAP + offset
+    assert prometheus["capped"] is (offset == 0)
+    assert prometheus["status"] == "clear"
+    # The other six receivers are empty in this fixture, so the set is incomplete rather than clear.
+    assert report["content_survey_status"] == "incomplete"
+
+
+def test_receiver_not_running_or_not_journald_is_unverified_and_never_read(monkeypatch):
+    calls = []
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS if short != "pyroscope"],
+        drivers={"o11y-tempo": "json-file"},
+        calls=calls,
+    )
+    report = SURVEY.survey()
+    content = report["content_survey"]
+    assert content["pyroscope"] == UNVERIFIED
+    assert content["tempo"] == UNVERIFIED
+    assert report["content_survey_status"] == "unverified"
+    read = [argv[-1] for argv in calls if "--output-fields=CONTAINER_NAME,MESSAGE" in argv]
+    assert "CONTAINER_NAME=o11y-pyroscope" not in read
+    assert "CONTAINER_NAME=o11y-tempo" not in read
+
+
+@pytest.mark.parametrize("content_rc", [1, None], ids=["nonzero-exit", "timeout-or-missing-command"])
+def test_failed_content_read_is_unverified_and_leaks_nothing(monkeypatch, content_rc):
+    receiver_host(monkeypatch, running=["o11y-loki"])
+    inner = SURVEY.run
+
+    def failing_content(argv, timeout=8):
+        if "--output-fields=CONTAINER_NAME,MESSAGE" in argv:
+            return content_rc, "ops@example.com private diagnostic"
+        return inner(argv, timeout=timeout)
+
+    monkeypatch.setattr(SURVEY, "run", failing_content)
+    report = SURVEY.survey()
+    assert report["content_survey"]["loki"] == UNVERIFIED
+    assert report["content_survey_status"] == "unverified"
+    serialized = json.dumps(report)
+    assert "private diagnostic" not in serialized
+    assert "ops@example.com" not in serialized
+
+
+def test_nonzero_exit_with_valid_rows_is_unverified_not_read(monkeypatch):
+    # Only the exit code keeps a failed read from counting as evidence: the rows here parse cleanly.
+    receiver_host(monkeypatch, running=["o11y-loki"])
+    inner = SURVEY.run
+
+    def failed_with_valid_rows(argv, timeout=8):
+        if "--output-fields=CONTAINER_NAME,MESSAGE" in argv:
+            return 1, json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": "ordinary line"})
+        return inner(argv, timeout=timeout)
+
+    monkeypatch.setattr(SURVEY, "run", failed_with_valid_rows)
+    report = SURVEY.survey()
+    assert report["content_survey"]["loki"] == UNVERIFIED
+    assert report["content_survey_status"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    ("message", "label"),
+    [
+        ("contact ops@example.com now", "email"),
+        ("call 203.0.113.7 now", "ipv4"),
+        ("sent Bearer abcdefgh12345678", "credential"),
+        ("config token: abcd1234", "secret_pair"),
+        ("open https://example.com/cb?code=1", "url_query"),
+        (DSN_FIXTURE, "dsn_userinfo"),
+        ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZQ", "jwt"),
+        (PEM_HEADER, "private_key"),
+        ("Cookie: sid=1", "session"),
+        ("ordinary private log body", None),
+    ],
+    ids=[
+        "email",
+        "ipv4",
+        "credential",
+        "secret_pair",
+        "url_query",
+        "dsn_userinfo",
+        "jwt",
+        "private_key",
+        "session",
+        "clean",
+    ],
+)
+def test_each_content_class_counts_its_own_hit(message, label):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    expected = {**ZERO_CLASSES, **({label: 1} if label else {})}
+    assert SURVEY.content_scan(output, "o11y-loki") == {"entries": 1, "unscanned": 0, "classes": expected}
+
+
+_BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+_RANDOM_BASE64 = "".join(random.Random(0).choice(_BASE64) for _ in range(48000))
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a" * 48000, "QUJD" * 12000, _RANDOM_BASE64],
+    ids=["letters", "repeated-base64", "random-base64"],
+)
+def test_classifier_stays_linear_on_a_48k_letter_or_base64_line(text):
+    line = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": text})
+    started = time.perf_counter()
+    scanned = SURVEY.content_scan(line, "o11y-loki")
+    elapsed = time.perf_counter() - started
+    assert scanned["entries"] == 1
+    assert elapsed < 0.2, f"classifier took {elapsed:.3f}s on a 48 KB line"
+
+
+@pytest.mark.parametrize(
+    ("message", "addresses"),
+    [
+        ("contact ops@example.com now", 1),
+        ("ops@example.com,ops2@example.org", 2),
+        ("(ops@example.com)", 1),
+        ("a.b+c@sub.example.org", 1),
+        ("x_ops@example.com", 1),
+        ("user:ops@example.com;", 1),
+    ],
+)
+def test_email_class_keeps_matching_addresses_after_the_anchor(message, addresses):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["email"] == addresses
+
+
+@pytest.mark.parametrize(
+    ("message", "hits"),
+    [
+        ("addr 203.0.113.1 x", 1),
+        ("addr 999.1.1.1 x", 0),
+        ("addr 1.1.1.1.1 x", 0),
+        ("host 203.0.113.1.", 1),
+    ],
+    ids=["plain-address", "three-digit-first-octet", "five-part-number", "full-stop-after-address"],
+)
+def test_ipv4_class_rejects_parts_of_longer_dotted_numbers(message, hits):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["ipv4"] == hits
+
+
+def test_binary_messages_are_decoded_and_unusable_messages_are_counted_not_scanned():
+    email = list(b"ops@example.com")
+    lines = [
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": email}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": [0xFF] + email}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": {"not": "text"}}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": [300, 1]}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki"}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki-other", "MESSAGE": "ops@example.com"}),
+    ]
+    assert SURVEY.content_scan("\n".join(lines), "o11y-loki") == {
+        "entries": 5,
+        "unscanned": 3,
+        "classes": {**ZERO_CLASSES, "email": 2},
+    }
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "not json ops@example.com",
+        json.dumps({"CONTAINER_NAME": {"not": "a name"}, "MESSAGE": "ops@example.com"}),
+        json.dumps({"CONTAINER_NAME": ["o11y-loki", None], "MESSAGE": "ops@example.com"}),
+    ],
+    ids=["non-json", "dict-name", "non-string-name-list"],
+)
+def test_malformed_content_row_makes_the_whole_container_unscannable(line):
+    assert SURVEY.content_scan(line, "o11y-loki") is None
+
+
+@pytest.mark.parametrize(
+    ("statuses", "expected"),
+    [
+        (["clear", "clear"], "clear"),
+        (["clear", "no_entries"], "incomplete"),
+        (["no_entries", "no_entries"], "incomplete"),
+        (["clear", "unverified"], "unverified"),
+        (["no_entries", "unverified"], "unverified"),
+        (["unverified", "blocked"], "blocked"),
+        (["blocked", "clear"], "blocked"),
+        (["blocked", "no_entries"], "blocked"),
+    ],
+)
+def test_content_status_reports_blocked_over_unverified_over_incomplete_over_clear(statuses, expected):
+    assert SURVEY.content_status({f"c{index}": {"status": status} for index, status in enumerate(statuses)}) == (
+        expected
+    )
+
+
+def test_null_message_is_unscanned_and_marks_the_receiver_unverified(monkeypatch):
+    # journalctl writes a field over 4096 bytes as null when --all is absent; that must never read as clear.
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-prometheus": [None]},
+    )
+    report = SURVEY.survey()
+    prometheus = report["content_survey"]["prometheus"]
+    assert prometheus["status"] == "unverified"
+    assert prometheus["unscanned"] == 1
+    assert prometheus["entries"] == 1
+    assert prometheus["blocking_hits"] == 0
+    # loki is read with no entries in this fixture, so it is no_entries, never clear.
+    assert report["content_survey"]["loki"]["status"] == "no_entries"
+    assert report["content_survey_status"] == "unverified"
+
+
+def test_blocking_hit_beats_an_unscanned_entry_in_the_same_receiver(monkeypatch):
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-grafana": ["notify ops@example.com", None]},
+    )
+    report = SURVEY.survey()
+    grafana = report["content_survey"]["grafana"]
+    assert grafana["status"] == "blocked"
+    assert grafana["unscanned"] == 1
+    assert grafana["blocking_hits"] == 1
+    assert report["content_survey_status"] == "blocked"
+
+
+def test_every_non_text_message_shape_is_counted_as_unscanned():
+    lines = [
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": None}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki"}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": {"not": "text"}}),
+        json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": [300, 1]}),
+    ]
+    assert SURVEY.content_scan("\n".join(lines), "o11y-loki") == {
+        "entries": 4,
+        "unscanned": 4,
+        "classes": ZERO_CLASSES,
+    }
+
+
+@pytest.mark.parametrize(
+    ("text", "hits"),
+    [
+        ("http://" * 6000, 0),
+        ("http://x" * 6000, 0),
+        ("=http://" * 6000, 0),
+        ("https://a?" * 6000, 1),
+    ],
+    ids=["bare-scheme-run", "scheme-with-token-run", "equals-scheme-run", "query-marker-run"],
+)
+def test_url_query_class_stays_linear_on_repeated_http_runs(text, hits):
+    line = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": text})
+    started = time.perf_counter()
+    scanned = SURVEY.content_scan(line, "o11y-loki")
+    elapsed = time.perf_counter() - started
+    assert scanned["classes"]["url_query"] == hits
+    assert elapsed < 0.2, f"url_query classifier took {elapsed:.3f}s on a repeated-scheme line"
+
+
+@pytest.mark.parametrize(
+    ("message", "hits"),
+    [
+        ("see http://a/b?x=1", 1),
+        ("open https://example.com/cb?code=1", 1),
+        ("Location:https://a/b?c=1", 1),
+        ("/proxy/https://a?b=1", 1),
+        ("x=https://a?b=1", 1),
+        ("HTTP://A?B", 1),
+        # Known over-count, accepted: a scheme glued to a word still counts, because the token scan
+        # no longer requires a boundary before the scheme.
+        ("xhttp://a?b", 1),
+        # A "?" inside the fragment also counts; the rule is literal and errs toward counting.
+        ("http://a#x?y", 1),
+        ("http://a/b", 0),
+        ("http://a?", 0),
+        ("http://a?#x", 0),
+    ],
+    ids=[
+        "token-boundary",
+        "https-with-query",
+        "after-colon",
+        "after-path-segment",
+        "after-equals",
+        "upper-case",
+        "glued-to-a-word",
+        "marker-in-fragment",
+        "no-query",
+        "marker-without-tail",
+        "marker-before-fragment-only",
+    ],
+)
+def test_url_query_class_counts_a_token_with_a_scheme_and_a_query_marker(message, hits):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["url_query"] == hits
+
+
+def test_url_query_counts_each_token_once_across_a_line():
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": "see http://a/b?x=1 and https://c?d=2 http://e/f"})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["url_query"] == 2
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "db_password=xyz1234",
+        "GF_SECURITY_ADMIN_PASSWORD=<redacted>",
+        "client_secret=abcd1234",
+        "access_token=" + "eyJhbGciOiJIUzI1NiJ9",
+        "x_api_key=abc12345",
+        "accessToken=abcd1234",
+        '{"password":"hunter2hunter2"}',
+        '"token": "abcdabcd"',
+    ],
+    ids=[
+        "db-password",
+        "gf-admin-password",
+        "client-secret",
+        "access-token-prefix",
+        "x-api-key",
+        "camel-access-token",
+        "json-password",
+        "json-token",
+    ],
+)
+def test_secret_pair_matches_the_keyword_anywhere_with_optional_quotes(message):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["secret_pair"] == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password=" * 6000,
+        '"token":' * 6000,
+        "password" + " " * 48000,
+        "eyJ" * 16000,
+        "eyJ_" * 12000,
+        "-----BEGIN " + "A " * 24000,
+        "-----BEGIN " * 4000,
+        "cookie:" * 6000,
+        "_session=" * 6000,
+        "://" * 14000,
+        "a://" + "x:" * 20000 + "@h",
+    ],
+    ids=[
+        "secret-equals-run",
+        "secret-json-run",
+        "secret-keyword-then-spaces",
+        "jwt-prefix-run",
+        "jwt-underscore-run",
+        "private-key-header-then-run",
+        "private-key-header-run",
+        "session-cookie-run",
+        "session-cookie-equals-run",
+        "dsn-separator-run",
+        "dsn-authority-run",
+    ],
+)
+def test_new_and_widened_classes_stay_linear_on_adversarial_lines(text):
+    line = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": text})
+    started = time.perf_counter()
+    SURVEY.content_scan(line, "o11y-loki")
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.2, f"classifiers took {elapsed:.3f}s on an adversarial line"
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        ("email", "contact ops@example.com now"),
+        ("credential", "sent Bearer abcdefgh12345678"),
+        ("secret_pair", '{"password":"hunter2hunter2"}'),
+        ("url_query", "open https://example.com/cb?code=1"),
+        ("dsn_userinfo", DSN_FIXTURE),
+        ("jwt", "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZQ"),
+        ("private_key", PEM_HEADER),
+        ("session", "Cookie: sid=1"),
+    ],
+    ids=[
+        "email",
+        "credential",
+        "secret-pair",
+        "url-query",
+        "dsn-userinfo",
+        "jwt",
+        "private-key",
+        "session",
+    ],
+)
+def test_each_blocking_class_marks_its_receiver_blocked(monkeypatch, label, message):
+    # Removing a class from BLOCKING_CLASSES would turn its receiver clear or unverified: this test catches that.
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-loki": [message]},
+    )
+    report = SURVEY.survey()
+    loki = report["content_survey"]["loki"]
+    assert loki["status"] == "blocked"
+    assert loki["classes"][label] == 1
+    assert loki["blocking_hits"] == 1
+    assert report["content_survey_status"] == "blocked"
