@@ -1662,6 +1662,8 @@
           # The live project id (_pid, resolved above by name), not a literal.
           skynet_semaphore_project={{ _pid }}
           skynet_semaphore_catalog=local
+          # The launch gate by its local-dev network alias (task 3.6); deploy the gate before skynet.
+          skynet_launch_gate_url=https://launch-gate.local.{{ _dev_zone }}:8443
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

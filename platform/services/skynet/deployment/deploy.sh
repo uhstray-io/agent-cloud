@@ -25,6 +25,14 @@ if [ "${LOCAL_MODE:-}" != "true" ]; then
   COMPOSE_OVERLAYS="compose.prod.yml ${COMPOSE_OVERLAYS:-}"
 fi
 
+# Production with the launch gate declared: .env carries SKYNET_LAUNCH_GATE_HOSTNAME, which env.j2 renders only
+# outside local mode and only when skynet_launch_gate_url is set. compose.launch-gate.yml maps the gate's name.
+# .env is the one decision point, so the overlay and the variables it needs cannot disagree. Undeclared, the
+# overlay is not loaded and the stack is what it was before the gate existed.
+if [ "${LOCAL_MODE:-}" != "true" ] && grep -qE '^SKYNET_LAUNCH_GATE_HOSTNAME=.' .env 2>/dev/null; then
+  COMPOSE_OVERLAYS="compose.launch-gate.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     --no-pull) SKIP_PULL=true ;;

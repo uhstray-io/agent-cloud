@@ -22,7 +22,7 @@
 - [x] 3.3 `clean-deploy-launch-gate.yml`, `provision-launch-gate-semaphore-access.yml` (shared identity task, `task_runner`, launch probe 404). First live run: local-dev, task 3.4
 - [x] 3.4 Templates (base with Dev variant, Local) in `templates.yml` / `templates-local.yml`; local-dev inventory and bootstrap entries (local-dev bootstrapped from dev 47d902fb on 2026-11-04; local Semaphore tasks 11594 Provision launch-gate Semaphore Access (Local), 11596 Deploy launch-gate (Local), every verify step ok)
 - [x] 3.5 Renew Internal Certs: generalise the OPA server-leaf proof into a declared-listener proof and admit `launch-gate-server`; tests for both leaves
-- [ ] 3.6 deploy-skynet: shared-read `caller_skynet_token`, render `SKYNET_LAUNCH_GATE_URL` and the gate's name mapping in `compose.prod.yml`, verify skynet's container reaches the gate (401 without token)
+- [ ] 3.6 deploy-skynet: shared-read `caller_skynet_token`, render `SKYNET_LAUNCH_GATE_URL` and the gate's name mapping (its own overlay, `compose.launch-gate.yml`, loaded only when the gate is declared: in `compose.prod.yml` its required variables would stop every production deploy without a gate), verify skynet's container reaches the gate (401 without token)
 - [x] 3.7 Docs: service CLAUDE.md, AGENTS.md rows (secrets layout, workflows, sub-directory docs), playbooks README
 - [x] 3.8 Validation gate: scenarios "Missing token" and "Caller claims another identity" pass against the locally deployed gate (2026-11-04: no token -> 401 unauthorized, logged with no caller; skynet's token naming `nemoclaw` -> 403 agent_not_permitted, logged with no OPA reason and no task; only skynet is a local caller, so the second scenario used an agent outside skynet's set)
 

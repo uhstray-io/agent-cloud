@@ -70,13 +70,15 @@ skip_unless_service_file() {
 
 @test "skynet: shared-reads the six agentgateway role keys and nothing else" {
   local block
-  block=$(sed -n '/^    _shared_reads:/,/^    _env_templates:/p' "$PLAYBOOK")
+  block=$(sed -n '/^    _skynet_agentgateway_reads:/,/^    _skynet_launch_gate_reads:/p' "$PLAYBOOK")
   assert_contains "$block" 'from_service: agentgateway'
   for role in infra-agent security-agent o11y-agent service-agent network-agent skynet-eval; do
     assert_contains "$block" "client_$role"
   done
   # The block names exactly six keys, so a seventh read cannot slip in unnoticed.
   [ "$(grep -c '^          - client_' <<<"$block")" -eq 6 ]
+  # _shared_reads is the agentgateway list plus the optional launch-gate read, and nothing else.
+  assert_grep -qF '_shared_reads: "{{ _skynet_agentgateway_reads + _skynet_launch_gate_reads }}"' "$PLAYBOOK"
 }
 
 @test "skynet: env template is .env at 0600 from env.j2" {
@@ -130,12 +132,13 @@ skip_unless_service_file() {
   refute_grep -qF '_skynet_semaphore_token' "$PLAYBOOK"
   refute_grep -qF 'LOCAL-DEV STOPGAP' "$PLAYBOOK"
   refute_grep -qF 'community.hashi_vault.hashi_vault' "$PLAYBOOK"
-  # Before the monorepo is placed, local_mode gates only the three production refusals (the old
-  # stopgap refusal gated on it too). Every other refusal runs in every environment.
+  # Before the monorepo is placed, local_mode gates only the four production refusals (the three
+  # long-standing ones and the launch-gate IP, which is also gated on the gate being declared). Every
+  # other refusal runs in every environment.
   local refusals_block
   refusals_block=$(sed -n '/^    - name: "Refuse skynet_image/,/^    - name: "Place the monorepo/p' "$PLAYBOOK")
   assert_contains "$refusals_block" 'Refuse skynet_publish_port'
-  [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 3 ]
+  [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 4 ]
   [ "$(grep -c 'when: not (local_mode | default(false) | bool)' <<<"$refusals_block")" -eq 3 ]
   if [ -f "$DEPLOY_DIR/templates/env.j2" ]; then
     refute_grep -qF '_skynet_semaphore_token' "$DEPLOY_DIR/templates/env.j2"
@@ -233,7 +236,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the twelve refusals are present as named assert tasks, all before the repo is placed" {
+@test "skynet: the fourteen refusals are present as named assert tasks, all before the repo is placed" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -245,7 +248,12 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 12 ]
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 14 ]
+  # The launch-gate refusals: the URL is https in every mode, and its IP is checked in production.
+  assert_grep -qx 'Refuse skynet_launch_gate_url unless it is https' <<<"$refusals"
+  assert_grep -qx 'Refuse skynet_launch_gate_ip unless it is one non-wildcard IPv4 address in production' <<<"$refusals"
+  assert_precedes "$PLAYBOOK" 'Refuse skynet_launch_gate_url unless' 'tasks/place-monorepo\.yml'
+  assert_precedes "$PLAYBOOK" 'Refuse skynet_launch_gate_ip unless' 'tasks/place-monorepo\.yml'
   # The three production refusals name the CA host, the OPA address and the publish bind.
   assert_grep -qx 'Refuse a production run whose skynet_publish_bind is unset or loopback' <<<"$refusals"
   assert_grep -qx 'Refuse a production run without a step_ca_svc host to read the CA root from' <<<"$refusals"
@@ -300,8 +308,8 @@ tasks = [
     t for t in play1["tasks"]
     if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
-if len(tasks) != 12:
-    sys.exit(f"expected 12 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 14:
+    sys.exit(f"expected 14 refusal asserts in Phase 1, found {len(tasks)}")
 play = [{"name": "extracted refusals", "hosts": "localhost", "connection": "local",
          "gather_facts": False, "tasks": tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
@@ -530,6 +538,228 @@ prod_accepted() {
   [ "$status" -eq 0 ]
 }
 
+@test "skynet: the launch gate's token is shared-read only when skynet_launch_gate_url is declared" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  # Evaluate the real Phase 1 vars (not a copy) and write _shared_reads out, once undeclared and once declared.
+  python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR/shared-reads.yml" <<'PY'
+import sys
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+phase1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
+probe = {
+    "name": "shared reads",
+    "hosts": "localhost",
+    "connection": "local",
+    "gather_facts": False,
+    "vars": phase1["vars"],
+    "tasks": [{"ansible.builtin.copy": {"content": "{{ _shared_reads | to_json }}", "dest": "{{ reads_out }}"}}],
+}
+with open(sys.argv[2], "w", encoding="utf-8") as fh:
+    yaml.safe_dump([probe], fh, sort_keys=False)
+PY
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/shared-reads.yml" -e "reads_out=$BATS_TEST_TMPDIR/reads-unset.json"
+  [ "$status" -eq 0 ]
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/shared-reads.yml" \
+    -e "reads_out=$BATS_TEST_TMPDIR/reads-set.json" -e skynet_launch_gate_url=https://launch-gate.example.test:8443
+  [ "$status" -eq 0 ]
+  python3 - "$BATS_TEST_TMPDIR/reads-unset.json" "$BATS_TEST_TMPDIR/reads-set.json" <<'PY'
+import json
+import sys
+
+unset = json.load(open(sys.argv[1], encoding="utf-8"))
+declared = json.load(open(sys.argv[2], encoding="utf-8"))
+assert [item["from_service"] for item in unset] == ["agentgateway"], unset
+assert [item["from_service"] for item in declared] == ["agentgateway", "launch-gate"], declared
+assert declared[0] == unset[0], "the agentgateway read changed when the gate was declared"
+assert declared[1] == {"from_service": "launch-gate", "read_keys": ["caller_skynet_token"]}, declared[1]
+PY
+}
+
+@test "skynet: the launch gate URL refuses cleartext http in every mode, and a declared https URL is accepted" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  run accepted skynet_launch_gate_url '"http://launch-gate.example.test:8443"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_launch_gate_url '"launch-gate.example.test:8443"'
+  [ "$status" -ne 0 ]
+  # No host: urlsplit renders an empty name, deploy.sh would skip the mapping, and the verify would fail late.
+  run accepted skynet_launch_gate_url '"https://"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_launch_gate_url '"https:///v1"'
+  [ "$status" -ne 0 ]
+  run accepted skynet_launch_gate_url '"https://launch-gate.example.test:8443"'
+  [ "$status" -eq 0 ]
+}
+
+# gate_prod_accepted <json-value>: production, gate declared, the IP set to the value. An empty value leaves
+# the IP undeclared. Exit 0 only when the playbook accepts it.
+gate_prod_accepted() {
+  prod_inventory
+  local extra=(-e "skynet_launch_gate_url=https://launch-gate.example.test:8443")
+  if [ -n "$1" ]; then
+    extra+=(-e "{\"skynet_launch_gate_ip\": $1}")
+  fi
+  ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10 \
+    "${extra[@]}" >/dev/null 2>&1
+}
+
+@test "skynet: production with the gate declared refuses an undeclared or malformed skynet_launch_gate_ip; a non-wildcard address is accepted" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  run gate_prod_accepted ''
+  [ "$status" -ne 0 ]
+  run gate_prod_accepted '"0.0.0.0"'
+  [ "$status" -ne 0 ]
+  run gate_prod_accepted '"launch-gate.example.test"'
+  [ "$status" -ne 0 ]
+  run gate_prod_accepted '"203.0.113"'
+  [ "$status" -ne 0 ]
+  run gate_prod_accepted '"203.0.113.256"'
+  [ "$status" -ne 0 ]
+  run gate_prod_accepted '"00.0.0.0"'
+  [ "$status" -ne 0 ]
+  run gate_prod_accepted '""'
+  [ "$status" -ne 0 ]
+  run gate_prod_accepted '"203.0.113.30"'
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: an undeclared gate adds no refusal in production, and local mode does not check the gate IP" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  prod_inventory
+  # Production, no gate declared, no gate IP: the run that passed before the gate existed still passes.
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10
+  [ "$status" -eq 0 ]
+  # Local mode, gate declared: the gate is reached by its local-dev alias, so no IP is required or checked.
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json" \
+    -e skynet_launch_gate_url=https://launch-gate.example.test:8443 -e '{"skynet_launch_gate_ip": "0.0.0.0"}'
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: env renders the launch gate only when declared, and the production host mapping only outside local mode" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local env="$DEPLOY_DIR/templates/env.j2"
+  skip_unless_service_file "$env"
+  cat > "$BATS_TEST_TMPDIR/render.yml" <<'YAML'
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Render the skynet env file for this case
+      ansible.builtin.template:
+        src: "{{ env_src }}"
+        dest: "{{ env_dest }}"
+        mode: "0600"
+YAML
+  python3 - "$env" "$BATS_TEST_TMPDIR" <<'PY'
+import json
+import sys
+
+env, tmp = sys.argv[1], sys.argv[2]
+base = {
+    "env_src": env,
+    "secrets": {"api_token": "a", "db_password": "b", "read_token": "c",
+                "semaphore_api_token": "d", "caller_skynet_token": "g"},
+    "skynet_image": "ghcr.io/uhstray-io/skynet-tier2@sha256:" + "a" * 64,
+    "skynet_gateway_url": "https://inference.example.test",
+    "skynet_model": "test-model",
+    "skynet_opa_url": "https://opa.example.test:8281",
+    "skynet_opa_ip": "203.0.113.20",
+    "skynet_semaphore_url": "https://semaphore.example.test",
+    "skynet_semaphore_project": 1,
+    "skynet_semaphore_catalog": "production",
+}
+gate = {"skynet_launch_gate_url": "https://launch-gate.example.test:8443"}
+cases = {
+    "unset": {**base, "local_mode": False},
+    "local": {**base, **gate, "local_mode": True},
+    "prod": {**base, **gate, "skynet_launch_gate_ip": "203.0.113.30", "local_mode": False},
+}
+for name, values in cases.items():
+    values["env_dest"] = f"{tmp}/rendered-{name}.env"
+    with open(f"{tmp}/vars-{name}.json", "w", encoding="utf-8") as fh:
+        json.dump(values, fh)
+PY
+  local name
+  for name in unset local prod; do
+    ansible-playbook "$BATS_TEST_TMPDIR/render.yml" -e "@$BATS_TEST_TMPDIR/vars-$name.json" >/dev/null
+  done
+  refute_grep -qE '^SKYNET_LAUNCH_GATE_' "$BATS_TEST_TMPDIR/rendered-unset.env"
+  assert_grep -qx 'SKYNET_LAUNCH_GATE_URL=https://launch-gate.example.test:8443' "$BATS_TEST_TMPDIR/rendered-local.env"
+  assert_grep -qx 'SKYNET_LAUNCH_GATE_TOKEN=g' "$BATS_TEST_TMPDIR/rendered-local.env"
+  refute_grep -qE '^SKYNET_LAUNCH_GATE_(HOSTNAME|IP)=' "$BATS_TEST_TMPDIR/rendered-local.env"
+  assert_grep -qx 'SKYNET_LAUNCH_GATE_URL=https://launch-gate.example.test:8443' "$BATS_TEST_TMPDIR/rendered-prod.env"
+  assert_grep -qx 'SKYNET_LAUNCH_GATE_TOKEN=g' "$BATS_TEST_TMPDIR/rendered-prod.env"
+  assert_grep -qx 'SKYNET_LAUNCH_GATE_HOSTNAME=launch-gate.example.test' "$BATS_TEST_TMPDIR/rendered-prod.env"
+  assert_grep -qx 'SKYNET_LAUNCH_GATE_IP=203.0.113.30' "$BATS_TEST_TMPDIR/rendered-prod.env"
+}
+
+@test "skynet: deploy.sh loads the launch-gate overlay only outside LOCAL_MODE and only when .env maps the gate" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  # Run the real gate block, extracted from the file, against a .env in each directory under each LOCAL_MODE.
+  local gate="$BATS_TEST_TMPDIR/gate-overlay.sh"
+  sed -n '/^if .*SKYNET_LAUNCH_GATE_HOSTNAME=/,/^fi$/p' "$deploy" > "$gate"
+  [ -s "$gate" ]
+  local mapped="$BATS_TEST_TMPDIR/mapped" blank="$BATS_TEST_TMPDIR/blank" absent="$BATS_TEST_TMPDIR/absent"
+  mkdir -p "$mapped" "$blank" "$absent"
+  printf 'SKYNET_LAUNCH_GATE_HOSTNAME=launch-gate.example.test\n' > "$mapped/.env"
+  printf 'SKYNET_LAUNCH_GATE_HOSTNAME=\n' > "$blank/.env"
+  # overlays_for <directory holding .env> <LOCAL_MODE value, or empty for unset>
+  overlays_for() {
+    if [ -n "$2" ]; then
+      (cd "$1" && env -u COMPOSE_OVERLAYS LOCAL_MODE="$2" bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+    else
+      (cd "$1" && env -u COMPOSE_OVERLAYS -u LOCAL_MODE bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+    fi
+  }
+  assert_contains "$(overlays_for "$mapped" '')" 'compose.launch-gate.yml'
+  refute_contains "$(overlays_for "$mapped" true)" 'compose.launch-gate.yml'
+  refute_contains "$(overlays_for "$blank" '')" 'compose.launch-gate.yml'
+  refute_contains "$(overlays_for "$absent" '')" 'compose.launch-gate.yml'
+}
+
+@test "skynet: the launch-gate overlay is a skynet-only override that maps the gate name from two required variables" {
+  local overlay="$DEPLOY_DIR/compose.launch-gate.yml"
+  skip_unless_service_file "$overlay"
+  assert_grep -qF -- '- "${SKYNET_LAUNCH_GATE_HOSTNAME:?set skynet_launch_gate_url in the inventory}:${SKYNET_LAUNCH_GATE_IP:?set skynet_launch_gate_ip in the inventory}"' "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert list(doc["services"]) == ["skynet"], doc["services"]
+assert set(doc["services"]["skynet"]) == {"extra_hosts"}, doc["services"]["skynet"]
+PY
+}
+
+@test "skynet: the launch-gate probes run inside the container, take the URL and token from its environment, and run only when declared" {
+  local play3 anon authed block
+  play3=$(sed -n '/^- name: "Phase 3: Verify skynet"/,$p' "$PLAYBOOK")
+  anon=$(task_block "$PLAYBOOK" 'Launch gate refuses a request with no token (POST /v1/launch -> 401, inside the container)')
+  authed=$(task_block "$PLAYBOOK" 'Launch gate accepts the caller token (POST /v1/launch -> 400 bad_request, inside the container)')
+  assert_contains "$anon" "os.environ['SKYNET_LAUNCH_GATE_URL']"
+  # The unauthenticated probe must not carry the token at all.
+  refute_contains "$anon" 'SKYNET_LAUNCH_GATE_TOKEN'
+  assert_contains "$authed" "os.environ['SKYNET_LAUNCH_GATE_TOKEN']"
+  assert_contains "$authed" "os.environ['SKYNET_LAUNCH_GATE_URL']"
+  for block in "$anon" "$authed"; do
+    assert_contains "$block" 'check_mode: false'
+    assert_contains "$block" 'changed_when: false'
+    assert_contains "$block" "when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0"
+    refute_contains "$block" 'no_log'
+  done
+  assert_contains "$(task_block "$PLAYBOOK" 'Assert the launch gate refused a request with no token (401 unauthorized)')" "'401 unauthorized'"
+  assert_contains "$(task_block "$PLAYBOOK" 'Assert the launch gate accepted the caller token (400 bad_request)')" "'400 bad_request'"
+  # The token name appears nowhere in the verify play but inside the container's environment read above.
+  refute_contains "$play3" 'caller_skynet_token'
+  assert_contains "$(task_block "$PLAYBOOK" 'Report')" 'skynet_launch_gate_url'
+}
+
 @test "skynet: the production overlay is a skynet-only override: certs read-only, combined bundle, OPA mapping from two required variables" {
   local overlay="$DEPLOY_DIR/compose.prod.yml"
   skip_unless_service_file "$overlay"
@@ -640,6 +870,34 @@ assert re.match(pattern, "ghcr.io/uhstray-io/skynet-tier2:latest") is None
 PY
 }
 
+@test "skynet: a container without the gate variables passes the gate asserts only under --check" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  # A dry run does not rewrite .env or recreate the container, so the first gate-enabled --check meets a
+  # container without SKYNET_LAUNCH_GATE_*. The probes print env-missing; only check mode may accept it.
+  # One play per assert, so a regression in either one alone turns this red.
+  python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR" <<'PY'
+import sys, yaml
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+names = {"anon": "Assert the launch gate refused a request with no token (401 unauthorized)",
+         "authed": "Assert the launch gate accepted the caller token (400 bad_request)"}
+fake = {"rc": 0, "stdout_lines": ["{{ probe_line }}"], "stderr_lines": []}
+for key, name in names.items():
+    tasks = [t for p in plays for t in p.get("tasks", []) if t.get("name") == name]
+    assert len(tasks) == 1, name
+    play = [{"hosts": "localhost", "gather_facts": False, "connection": "local",
+             "vars": {"skynet_launch_gate_url": "https://launch-gate.example.test:8443",
+                      "_skynet_gate_anon": fake, "_skynet_gate_authed": fake},
+             "tasks": tasks}]
+    yaml.safe_dump(play, open(f"{sys.argv[2]}/gate-assert-{key}.yml", "w"))
+PY
+  for key in anon authed; do
+    run ansible-playbook -i localhost, "$BATS_TEST_TMPDIR/gate-assert-$key.yml" --check -e probe_line=env-missing
+    [ "$status" -eq 0 ] || { echo "$key: env-missing refused under --check"; return 1; }
+    run ansible-playbook -i localhost, "$BATS_TEST_TMPDIR/gate-assert-$key.yml" -e probe_line=env-missing
+    [ "$status" -ne 0 ] || { echo "$key: env-missing accepted on a real run"; return 1; }
+  done
+}
+
 @test "skynet: the example's agentgateway route is commented out, not active" {
   python3 - "$REPO_ROOT/platform/inventory/local-dev.yml.example" <<'PY'
 import sys
@@ -657,6 +915,7 @@ PY
 @test "skynet: the genesis INI carries skynet_svc and agrees with the example on every value" {
   python3 - "$REPO_ROOT/platform/inventory/local-dev.yml.example" "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml" <<'PY'
 import configparser
+import re
 import sys
 import yaml
 
@@ -694,6 +953,14 @@ for key, value in host.items():
     if key in ("ansible_host", "ansible_connection", "skynet_semaphore_project"):
         continue
     assert key in ini, f"{key} missing from the INI skynet_svc:vars"
+    if key == "skynet_launch_gate_url":
+        # The INI renders its zone from _dev_zone, whose default bootstrap-local-dev.yml declares. Compare the
+        # rendered value with the example's literal, substituting only that one variable.
+        raw_text = open(sys.argv[2], encoding="utf-8").read()
+        zone = re.search(r"_dev_zone: \"\{\{ dev_zone \| default\('([^']+)'\) \}\}\"", raw_text).group(1)
+        rendered = ini[key].replace("{{ _dev_zone }}", zone)
+        assert rendered == str(value), f"{key}: INI renders {rendered!r} != example {value!r}"
+        continue
     assert ini[key] == str(value), f"{key}: INI {ini[key]!r} != example {value!r}"
 assert "skynet_image" in ini, "the INI must carry the same pinned skynet_image as the example"
 # The project id is resolved live by name (_pid), so the INI names that lookup, not the example's literal.
