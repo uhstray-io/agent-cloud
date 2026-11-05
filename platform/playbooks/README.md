@@ -2,6 +2,13 @@
 
 Ansible playbooks for deploying, updating, validating, and hardening agent-cloud services via Semaphore.
 
+> **This README is a selected reference, not the catalog.** The authoritative
+> list of Semaphore templates — every task the orchestrator can launch, with its
+> survey vars, schedule and repository record — is
+> [`platform/semaphore/templates.yml`](../semaphore/templates.yml) (plus
+> `templates-local.yml` for the local instance), rendered to live templates by
+> `setup-templates.yml`. When the two disagree, `templates.yml` wins.
+
 ## Conventions
 
 ### Dry run, verify and results
