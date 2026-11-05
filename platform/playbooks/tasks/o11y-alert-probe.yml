@@ -1,6 +1,19 @@
 ---
 # Shared fault and Discord receipt path. Local uses a disposable container;
 # production uses the canary's temporary static Prometheus scrape declaration.
+#
+# Inputs beyond the scrape drill's own, each defaulting to the value the scrape drill
+# has always used, so a caller that passes none of them runs exactly as before:
+#   _alert_probe_kind            "scrape" (default) runs the onboarding-verifier refusal;
+#                                "endpoint" skips it, because that verifier only checks
+#                                scrape targets.
+#   _alert_probe_rule_uid        provisioned rule read for its pause state and firing
+#                                title (default o11y_service_down).
+#   _alert_probe_ready_query     PromQL for the readiness wait (default up{service=...}).
+#   _alert_probe_instance_lines  false skips the " - instance = " Discord lines for every
+#                                expected instance. They index _probe_expected_instances[1],
+#                                which a one-instance endpoint drill does not have (default true).
+# The Discord marker is the caller's _delivery_marker, which every caller defines.
 - name: Create a unique identity for this drill run
   ansible.builtin.command:
     argv: [python3, -c, "import uuid; print(uuid.uuid4().hex[:12])"]
@@ -40,7 +53,7 @@
       - -c
       - >-
         printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
-        curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_service_down
+        curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/{{ _alert_probe_rule_uid | default('o11y_service_down') }}
   register: _service_down_rule
   changed_when: false
   when: drill_expect_alert | default(false) | bool
@@ -102,7 +115,7 @@
           - -q
           - -O
           - "-"
-          - "http://prometheus:9090/api/v1/query?query={{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
+          - "http://prometheus:9090/api/v1/query?query={{ (_alert_probe_ready_query | default('up{service=\"' ~ expected_service ~ '\"}')) | urlencode }}"
       register: _probe_scrapes
       changed_when: false
       # Podman discovery, the 15s scrape, and remote write may span a minute.
@@ -129,6 +142,7 @@
 
     - name: Require the onboarding verifier to refuse the named endpoint
       no_log: true
+      when: (_alert_probe_kind | default('scrape')) != 'endpoint'
       block:
         - name: Run the same metrics gate used by service onboarding
           ansible.builtin.include_tasks: verify-o11y-metrics.yml
@@ -149,7 +163,7 @@
     - name: Report the expected verification failure without target identity
       ansible.builtin.debug:
         msg: "Verified refusal: the unreachable metrics target was rejected."
-      when: not ansible_check_mode
+      when: not ansible_check_mode and (_alert_probe_kind | default('scrape')) != 'endpoint'
 
     - name: Wait for Grafana's service-down rule to fire for the probe
       ansible.builtin.command:
@@ -223,20 +237,20 @@
              selectattr('content', 'search', _delivery_marker) |
              map(attribute='content') | list | first | default('')).splitlines() |
              select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length) and
-          ((' - instance = ' ~ _probe_expected_instances[0]) in
+          (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[0]) in
              (_discord_messages.json | default([]) |
                selectattr('webhook_id', 'defined') |
                selectattr('webhook_id', 'equalto', _webhook_id) |
                selectattr('content', 'defined') |
                selectattr('content', 'search', _delivery_marker) |
-               map(attribute='content') | list | first | default('')).splitlines()) and
-          ((' - instance = ' ~ _probe_expected_instances[1]) in
+               map(attribute='content') | list | first | default('')).splitlines())) and
+          (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[1]) in
              (_discord_messages.json | default([]) |
                selectattr('webhook_id', 'defined') |
                selectattr('webhook_id', 'equalto', _webhook_id) |
                selectattr('content', 'defined') |
                selectattr('content', 'search', _delivery_marker) |
-               map(attribute='content') | list | first | default('')).splitlines()) and
+               map(attribute='content') | list | first | default('')).splitlines())) and
           ((_discord_messages.json | default([]) |
              selectattr('webhook_id', 'defined') |
              selectattr('webhook_id', 'equalto', _webhook_id) |
@@ -277,8 +291,8 @@
             {%- set content = owned[0].content if owned | length == 1 else '' -%}
             {{ not (o11y_grouped_probe | default(false) | bool) or (owned | length == 1 and
                (content.splitlines() | select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length)) and
-               ((' - instance = ' ~ _probe_expected_instances[0]) in content.splitlines()) and
-               ((' - instance = ' ~ _probe_expected_instances[1]) in content.splitlines()) and
+               (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[0]) in content.splitlines())) and
+               (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[1]) in content.splitlines())) and
                (content.splitlines() | select('search', '/d/service-overview[?]var-service=' ~ expected_service ~ '$') | list | length > 0)) }}
       no_log: true
       when: drill_expect_alert | default(false) | bool

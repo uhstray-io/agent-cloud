@@ -2,8 +2,11 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
+from jinja2.exceptions import UndefinedError
+from jinja2.filters import do_urlencode
 
 ROOT = Path(__file__).resolve().parents[2]
 INSTANCES = ["127.0.0.1:65534", "127.0.0.1:65535"]
@@ -294,3 +297,150 @@ def test_preexisting_marker_or_scrape_file_refuses_before_claim_or_injection():
         assert _expression(expression, {register_name: {"stat": {"exists": False}}})
         assert not _expression(expression, {register_name: {"stat": {"exists": True}}})
         assert names.index(name) < claim < inject
+
+
+ENDPOINT_TARGET = "127.0.0.1:8443"
+ENDPOINT_SERVICE = "authentik"
+ENDPOINT_TITLE = "Endpoint health check failed"
+# The scrape drill's readiness URL as it was committed before the parameter existed.
+LEGACY_READY_URL = (
+    "http://prometheus:9090/api/v1/query?query="
+    + "{{ ('up{service=\"' ~ expected_service ~ '\"}') | urlencode }}"
+)
+
+
+def _render(template, context):
+    return Environment(undefined=StrictUndefined).from_string(template).render(context)
+
+
+def _argv_script(task):
+    return task["ansible.builtin.command"]["argv"][-1]
+
+
+def test_alert_probe_defaults_keep_the_scrape_drill_urls():
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    rule_read = _argv_script(_task(probe, "Read the provisioned service-down rule before the alert drill"))
+    # The URL is the script's last token; an exact token match, not a substring, so a
+    # default of o11y_service_down_x cannot pass as o11y_service_down.
+    rule_url = "http://127.0.0.1:3000/api/v1/provisioning/alert-rules/"
+    assert _render(rule_read, {}).split()[-1] == rule_url + "o11y_service_down"
+    endpoint_rule = _render(rule_read, {"_alert_probe_rule_uid": "o11y_endpoint_probe_failed"})
+    assert endpoint_rule.split()[-1] == rule_url + "o11y_endpoint_probe_failed"
+
+    ready = _argv_script(_task(probe, "Wait for the declared failed scrape"))
+    assert _render(ready, {"expected_service": "pilot"}) == _render(LEGACY_READY_URL, {"expected_service": "pilot"})
+    query = 'probe_success{job="o11y-availability",target_id="127.0.0.1:8443"}'
+    substituted = _render(ready, {"expected_service": "pilot", "_alert_probe_ready_query": query})
+    assert "query=" + do_urlencode(query) in substituted
+    assert "pilot" not in substituted
+
+
+def test_alert_probe_gates_default_to_the_scrape_drill():
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    refusal = _task(probe, "Require the onboarding verifier to refuse the named endpoint")
+    assert _expression(refusal["when"], {})
+    assert _expression(refusal["when"], {"_alert_probe_kind": "scrape"})
+    assert not _expression(refusal["when"], {"_alert_probe_kind": "endpoint"})
+    report = _task(probe, "Report the expected verification failure without target identity")
+    assert _expression(report["when"], {"ansible_check_mode": False})
+    assert not _expression(report["when"], {"ansible_check_mode": False, "_alert_probe_kind": "endpoint"})
+
+
+def test_endpoint_shaped_firing_alert_passes_the_grouped_firing_predicate():
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    task = _task(probe, "Wait for Grafana's service-down rule to fire for the probe")
+    alert = {
+        "labels": {
+            "service": ENDPOINT_SERVICE,
+            "alertname": ENDPOINT_TITLE,
+            "grafana_folder": "agent-cloud",
+            "instance": ENDPOINT_TARGET,
+            "target_id": ENDPOINT_TARGET,
+            "cluster": "prod-a",
+            "environment": "prod",
+        },
+        "state": "Alerting",
+    }
+    context = {
+        "_firing_alerts": {"rc": 0, "stdout": json.dumps({"data": {"alerts": [alert]}})},
+        "_probe_expected_instances": [ENDPOINT_TARGET],
+        "_service_down_rule": {"stdout": json.dumps({"title": ENDPOINT_TITLE})},
+        "_drill_cluster": "prod-a",
+        "_drill_environment": "prod",
+        "expected_service": ENDPOINT_SERVICE,
+        "o11y_grouped_probe": True,
+    }
+    assert _expression(task["until"], context)
+    context["_service_down_rule"] = {"stdout": json.dumps({"title": "Service telemetry scrape failed"})}
+    assert not _expression(task["until"], context)
+
+
+def test_endpoint_probe_success_readiness_uses_the_unchanged_predicate():
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    task = _task(probe, "Wait for the declared failed scrape")
+
+    def series(value="0"):
+        return {
+            "metric": {
+                "instance": ENDPOINT_TARGET,
+                "target_id": ENDPOINT_TARGET,
+                "job": "o11y-availability",
+                "service": ENDPOINT_SERVICE,
+                "cluster": "prod-a",
+                "environment": "prod",
+            },
+            "value": ["0", value],
+        }
+
+    context = {
+        "_probe_scrapes": {"rc": 0, "stdout": json.dumps({"data": {"result": [series()]}})},
+        "_probe_expected_instances": [ENDPOINT_TARGET],
+        "_drill_cluster": "prod-a",
+        "_drill_environment": "prod",
+        "expected_instance": ENDPOINT_TARGET,
+        "o11y_grouped_probe": True,
+    }
+    assert _expression(task["until"], context)
+    context["_probe_scrapes"]["stdout"] = json.dumps({"data": {"result": [series(value="1")]}})
+    assert not _expression(task["until"], context)
+    context["_probe_scrapes"]["stdout"] = json.dumps({"data": {"result": [series()]}})
+    context["o11y_grouped_probe"] = False
+    assert _expression(task["until"], context)
+
+
+def test_endpoint_discord_receipt_with_one_instance_needs_instance_lines_off():
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    wait = _task(probe, "Wait for the matching Discord webhook message")
+    marker = f"o11y-delivery-status=firing service={ENDPOINT_SERVICE}"
+    content = (
+        f"{marker}\n**Firing**\nLabels:\n - alertname = {ENDPOINT_TITLE}\n"
+        f" - instance = {ENDPOINT_TARGET}\n"
+        f"Annotations:\n - dashboard_url = /d/service-overview?var-service={ENDPOINT_SERVICE}"
+    )
+    context = {
+        "_discord_messages": {"json": [{"webhook_id": "owned", "content": content}]},
+        "_webhook_id": "owned",
+        "_delivery_marker": marker,
+        "_probe_expected_instances": [ENDPOINT_TARGET],
+        "expected_service": ENDPOINT_SERVICE,
+        "o11y_grouped_probe": True,
+        "_alert_probe_instance_lines": False,
+    }
+    assert _expression(wait["until"], context)
+    del context["_alert_probe_instance_lines"]
+    with pytest.raises(UndefinedError):
+        _expression(wait["until"], context)
+
+    facts = _task(probe, "Count the matching Discord receipt without retaining its content")[
+        "ansible.builtin.set_fact"
+    ]["_discord_receipt_summary"]
+    context["_alert_probe_instance_lines"] = False
+    env = Environment(undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
+    env.filters["bool"] = bool
+    env.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
+    rendered = {
+        name: env.from_string(facts[name]).render(context)
+        for name in ("grouped_message_count", "grouped_details_present")
+    }
+    assert rendered["grouped_message_count"].strip() == "1"
+    assert rendered["grouped_details_present"] == "True"
