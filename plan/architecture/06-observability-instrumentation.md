@@ -1,16 +1,27 @@
 # 06 — Observability Instrumentation Contract
-> **Consolidates:** OBSERVABILITY-INSTRUMENTATION.md (originals archived in `plan/archive/`)
+> **Consolidates:** OBSERVABILITY-INSTRUMENTATION.md (originals archived in `plan/archive/architecture/`)
 >
 > **Depends on:** 00, 01, 02
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
+> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
+**Date:** 2026-11-04
+**Status:** ACTIVE
+
 > **As-built correction, 2026-09-22:** The "deployed" statements below are
-> historical design context, not a current deployment claim. On this branch,
-> `platform/services/o11y/deployment/compose.yml` defines the four containers;
-> `config/prometheus.yml` scrapes only itself; `config/config.alloy` ships
-> container logs and has no OTLP receiver. The generic Service Overview JSON
+> historical design context, not a current deployment claim. On the 2026-09-22
+> branch, `platform/services/o11y/deployment/compose.yml` defined four
+> containers; `config/prometheus.yml` scrapes only itself; `config/config.alloy`
+> shipped container logs and had no OTLP receiver. Those statements describe
+> that date only. Current facts (checked 2026-11-04): `compose.yml` defines seven
+> services (node-exporter, prometheus, loki, alloy, tempo, pyroscope, grafana) on
+> the `o11y` network. `config/prometheus.yml` and `config/config.alloy` are not
+> committed; deploy-o11y renders them from `templates/prometheus.yml.j2` and
+> `templates/config.alloy.j2`. The Prometheus template also loads
+> inventory-rendered `scrape.d/*.yml` targets, and the Alloy template has an OTLP
+> traces receiver that forwards to Tempo (see the 2026-10-04 correction and
+> Phase 4). The generic Service Overview JSON
 > includes a `service` selector; alert rules remain absent. A read-only local check on
 > 2026-09-22 found all four containers healthy and their health/ready endpoints
 > returning HTTP 200. Grafana's chain-verified TLS route completed an Authentik
@@ -212,13 +223,15 @@ Traces answer "where did the latency/error happen across services?" — the ques
 Run `grafana/tempo` in **monolithic mode** (`-target=all`) — all required components in one process, with no Kafka. The first receiver uses local storage in both environments as recorded above. An object-store migration will be a separate reviewed change with a tested data path.
 
 ```yaml
-# platform/services/tempo/deployment/compose.yml (sketch) — local tier
+# Design sketch (2026-06-14), not the deployed file. Deployed form: the `tempo`
+# service in platform/services/o11y/deployment/compose.yml, with no published
+# port (Alloy is the sole OTLP ingress).
 services:
   tempo:
     image: docker.io/grafana/tempo:${TEMPO_VERSION:-2.7.0}   # pin at deploy
-    command: ["-target=all", "-config.file=/etc/tempo.yaml"]
+    command: ["-target=all", "-config.file=/etc/tempo/config.yml"]
     volumes:
-      - ./config/tempo.yaml:/etc/tempo.yaml:ro
+      - ./config/tempo-config.yml:/etc/tempo/config.yml:ro
       - tempo-data:/var/tempo
     ports:
       - "${TEMPO_BIND:-127.0.0.1}:${TEMPO_API_PORT:-3200}:3200"   # API (loopback debug)
@@ -228,7 +241,8 @@ volumes:
 ```
 
 ```yaml
-# config/tempo.yaml — minimal; storage.trace.backend swaps local<->s3 by env/overlay
+# Earlier design for config/tempo-config.yml (the deployed file differs);
+# storage.trace.backend swaps local<->s3 by env/overlay
 server: { http_listen_port: 3200 }
 distributor:
   receivers:
@@ -395,7 +409,8 @@ Querying Prometheus (metrics) and Loki (logs) via their datasource UIDs (`promet
 
 ### Phase 4 — Distributed tracing (Tempo)
 
-- New composable service `platform/services/tempo/` (compose + `config/tempo.yaml` + deploy.sh + `deploy-tempo.yml`), monolithic `-target=all`, `storage.trace.backend: local`; add the three traces blocks to `config.alloy` (otlp receiver → batch → otlp exporter to `tempo:4317`); add `--web.enable-remote-write-receiver` + `--enable-feature=exemplar-storage,native-histograms` to Prometheus; provision the Tempo datasource with `serviceMap` + `tracesToLogsV2`/`tracesToMetrics` correlation.
+- **Already built (checked 2026-11-04):** Tempo runs as the `tempo` service in `platform/services/o11y/deployment/compose.yml` (monolithic `-target=all`, local storage on `tempo-data`, config `config/tempo-config.yml`, no published port). No `platform/services/tempo/` directory exists, and this phase does not create one. `templates/config.alloy.j2` already has the traces path (OTLP receiver → `otelcol.exporter.otlp "tempo"` → `tempo:4317`). The Grafana `Tempo` datasource (`uid: tempo`) is provisioned with `tracesToMetrics`, `tracesToLogsV2` and `serviceMap`. Prometheus runs with `--web.enable-remote-write-receiver`.
+- **Still open:** the plan lists `--enable-feature=exemplar-storage,native-histograms` for Prometheus, and neither `compose.yml` nor the templates set it. Decide whether exemplar acceptance needs it before claiming exemplars. Tempo's metrics-generator processors default to `[]` (`O11Y_TEMPO_METRIC_PROCESSORS`), so RED and service-graph metrics appear only after a reviewed rollout enables them.
 - Instrument a first service (e.g. erpnext or a sample app) via OTEL env vars; verify spans land and the metrics-generator emits RED + service-graph metrics.
 - **Acceptance:** a request trace is visible end-to-end in Grafana; the service graph renders; a latency exemplar opens the trace; trace→logs jumps to Loki by `service.name`.
 
@@ -520,3 +535,4 @@ append-only (scenario "Status is dated and append-only").
 | 2026-06-14 | Added the tracing pillar — Tempo (monolithic, local→MinIO), OTLP via the existing Alloy, metrics-generator RED/service-graph, trace↔logs↔metrics correlation by `service.name`; Phase 4 (tracing) + Phase 5 (prod). |
 | 2026-10-04 | Production receiver correction callout (dated, appended); Proposed record for the dedicated o11y VM and static DGX Spark node scrape. |
 | 2026-10-12 | Refresh of the dedicated o11y VM record's stale facts and its acceptance by the operator (dated, appended). |
+| 2026-11-04 | As-built correction of the 2026-09-22 block (seven o11y services; Prometheus and Alloy config rendered from the `.j2` templates; Alloy OTLP traces path present). Phase 4 reconciled with the already-deployed `tempo` service; the compose sketch relabelled as a design sketch. Date/Status header added. Set note and archive pointers updated. |
