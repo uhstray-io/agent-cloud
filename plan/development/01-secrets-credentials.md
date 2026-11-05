@@ -3,6 +3,8 @@
 >
 > **Depends on:** 00
 >
+> **Status:** ACTIVE (2026-11-04) — consolidated plan. Each embedded section carries its own status; read the section status, not this line, for one section's state.
+>
 > Part of the dependency-ordered `plan/development/` set (00–10). The source
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
@@ -13,7 +15,7 @@
 # OpenBao HA & Resilience Deployment Plan
 
 > **Location:** `plan/development/01-secrets-credentials.md`
-> **Date:** 2026-06-14 · **Status:** PROPOSED · **Owner:** uhstray-io
+> **Date:** 2026-06-14 · **Status:** ACTIVE (Phase A1 landed 2026-06-14; `platform/services/openbao/deployment/config/openbao.hcl` configures `storage "raft"`, checked 2026-11-04) · **Owner:** uhstray-io
 >
 > **Context:** OpenBao is the platform's root of trust — every deploy, every AppRole login, and every service `.env` flows from it (root `CLAUDE.md` → Secrets Management). Yet it is today the least-resilient component in the stack. Local-dev *was* in-memory (a `podman machine` restart wiped all secrets and bricked every stateful volume — see [[local-openbao-is-in-memory-vm-restart-resets-all-secrets]]); that is now fixed with a persistent file backend (Track A, Phase A1 — landed). Production runs a **single-node Raft** vault with **manual Shamir unseal** (sealed after every reboot — a standing "High" risk in `IMPLEMENTATION_PLAN.md:1616` and a manual SSH operation in `ACCESS-BOUNDARIES.md:57`), **no TLS** (`tls_disable = 1`), **no snapshots**, and a **legacy bash `deploy.sh`** that generates secrets + writes policies + creates AppRoles itself — a direct violation of Critical Rules #2/#4. This plan makes local-dev resilient for testing and brings production to a convenient, self-healing HA cluster.
 >
@@ -455,6 +457,8 @@ flowchart LR
 
 # OpenBao KV Mount Parameterization Implementation Plan
 
+**Status:** PROPOSED — no code yet; `bao_kv_mount` / `BAO_KV_MOUNT` has no matches outside `plan/` (checked 2026-11-04).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Parameterize the OpenBao KV v2 **mount path** (hardcoded `secret/` today) behind a `bao_kv_mount` variable that defaults to `secret`, so multiple agent-cloud instances can each own a separately-named secret vault (e.g. `secret/`, `agent-cloud-b/`) with zero behavior change for existing instances.
@@ -798,8 +802,8 @@ local mount="${BAO_KV_MOUNT:-secret}"
 # Credential Lifecycle Implementation Plan
 
 **Date:** 2026-04-05 (extracted from governance doc 2026-05-07)
-**Status:** PROPOSED
-**Context:** Implementation phases for the credential lifecycle governance defined in `plan/architecture/04-credentials-access.md`. No phases have been started. Phase 3 (AppRole TTL enforcement) has a dedicated plan at `plan/development/01-secrets-credentials.md`.
+**Status:** ACTIVE
+**Context:** Implementation phases for the credential lifecycle governance defined in `plan/architecture/04-credentials-access.md`. Status note (2026-11-04): Phase 1 is partly in place (`vault_secret_prefix` in `platform/playbooks/vars/access-role-map.yml`). Phase 3 (AppRole TTL) is implemented in `manage-approle.yml`. There is no repo evidence for Phase 2 (`write-secret-metadata` is absent) or Phase 4 (no Hydra `delete_client`); Phases 5–7 are unconfirmed. Phase 3 (AppRole TTL enforcement) has a dedicated plan at `plan/development/01-secrets-credentials.md`.
 
 ---
 
@@ -960,13 +964,14 @@ Per governance requirements: stop services → revoke credentials → archive fo
 # AppRole TTL Enforcement Plan
 
 **Date:** 2026-05-06
-**Status:** PROPOSED
+**Status:** IMPLEMENTED
+**Status note (2026-11-04):** `manage-approle.yml` now defaults `secret_id_ttl` to 2160h (90d) and `token_num_uses` to 25 (lines 12–15 and 62–70). The problem statement below describes the pre-change code. The code change is verified by reading `manage-approle.yml`; the post-merge integration checks in the Testing Approach section (test AppRole, accelerated secret_id expiry, Semaphore override) have no evidence in this checkout.
 **Context:** The `manage-approle.yml` task hardcodes `secret_id_ttl: 0` and `token_num_uses: 0`, meaning AppRole credentials never expire and tokens have unlimited uses. This contradicts the 90-day TTL requirement established in CREDENTIAL-LIFECYCLE-PLAN.md and the secure defaults documented in AUTOMATION-COMPOSABILITY.md.
 
 **References:**
-- [CREDENTIAL-LIFECYCLE-PLAN.md](../architecture/CREDENTIAL-LIFECYCLE-PLAN.md) -- Defines 90-day secret_id TTL, 25 token_num_uses
-- [AUTOMATION-COMPOSABILITY.md](../architecture/AUTOMATION-COMPOSABILITY.md) -- Documents intended defaults and security rationale
-- [ACCESS-BOUNDARIES.md](../architecture/ACCESS-BOUNDARIES.md) -- AppRole scope boundaries and blast radius
+- [CREDENTIAL-LIFECYCLE-PLAN.md](../archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md) -- Defines 90-day secret_id TTL, 25 token_num_uses
+- [AUTOMATION-COMPOSABILITY.md](../archive/architecture/AUTOMATION-COMPOSABILITY.md) -- Documents intended defaults and security rationale
+- [ACCESS-BOUNDARIES.md](../archive/architecture/ACCESS-BOUNDARIES.md) -- AppRole scope boundaries and blast radius
 
 ---
 
