@@ -335,7 +335,7 @@ flowchart LR
     NB["NetBox orb-agent"] -->|"discovery"| PVE["Proxmox + pfSense"]
     SEM -.->|"device proposals (dev only; production execution unverified)"| NB
     O11Y["o11y"] -->|"synthetic completion probe"| AGW
-    SEM -.->|"Collect Service Conformance (Dev), launched by hand"| COL["conformance collector (not established in production)"]
+    SEM -.->|"Collect Service Conformance (Dev): schedule declared in code; live in production not verified"| COL["conformance collector (not established in production)"]
     COL -.-> NB
     COL -.-> LOKI["o11y Loki"]
 ```
@@ -423,8 +423,10 @@ flowchart TB
 
 The collector, `Collect Service Conformance`, is the workflow's only status writer: it reads each
 template's recent Semaphore history and writes the newest result per service and step to NetBox
-custom fields and to Loki for the `service-conformance` dashboard [3][42]. Only the `(Dev)` template,
-launched by hand, is established in the repository; production execution is not established, so its
+custom fields and to Loki for the `service-conformance` dashboard [3][42]. The live template is the
+`(Dev)` entry in `platform/semaphore/templates.yml`, which declares `repository: agent-cloud dev` and
+a `schedule:` cron of `*/15 * * * *`, and no main-bound base copy is published — so the schedule is
+declared in code, and whether it runs live in production is not verified from this repository; its
 diagram edges are dashed. The registry file is the authority for the order; the grouping is a reading
 aid [42].
 
@@ -583,7 +585,7 @@ flowchart LR
     SKY -.->|"execute"| SEM["Semaphore"]
     SEM --> SVC["Every service: one shape per tier,<br/>secrets in tmpfs, rootless by default"]
     PLANE["Plane"] -.->|"native sync"| GH["GitHub"]
-    SEM -.->|"only (Dev) run evidenced; production unverified"| COL["Conformance collector"]
+    SEM -.->|"(Dev) template, schedule declared in code; live in production not verified"| COL["Conformance collector"]
     COL -.-> NB["NetBox + Loki"]
 ```
 
@@ -706,6 +708,7 @@ document; for long, frequently edited documents the section name is given as wel
 
 | Date | Change |
 |---|---|
+| 2026-11-05 | Corrected the conformance collector's wording: its `(Dev)` template declares a 15-minute schedule in `platform/semaphore/templates.yml` (no main-bound copy published), so it is no longer described as hand-launched; whether the schedule is live in production is not verified from this repository; collector edges remain dashed |
 | 2026-11-05 | Corrected tududi retirement, Plane and Console production evidence, native OIDC edges, unverified production runtime edges, NetBox discovery privilege ownership, Honcho's shared Gemini secret source and WisBot's Ollama endpoint; added revision history entry |
 | 2026-11-04 | Corrected from repository evidence: skynet is LIVE as an API with Semaphore launches refused; Plane's task count is 28 of 87 with a production run recorded and live state UNVERIFIED; Dispatch Console has a recorded production start but no passing verify; GitHub runner jobs run on the host unless they declare a container; OPA declares five agent roles; the skynet-to-Semaphore edge is dashed; launch-gate and plane-mcp rows and a launch-gate node added |
 | 2026-10-27 | Initial version: service catalog with status, identity, secret and dependency maps, deploy and AI paths, decision criteria, in-flight phases and target outcome |
