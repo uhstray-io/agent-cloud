@@ -1,5 +1,5 @@
 # 07 — WebSmith & UhhCraft
-> **Consolidates:** WEBSMITH-INTEGRATION-PLAN.md, UHHCRAFT-GO-LIVE-PLAN.md, UHHCRAFT-GO-LIVE-WALKTHROUGH.md, UHHCRAFT-GPU-PASSTHROUGH.md (originals archived in `plan/archive/`)
+> **Consolidates:** WEBSMITH-INTEGRATION-PLAN.md, UHHCRAFT-GO-LIVE-PLAN.md, UHHCRAFT-GO-LIVE-WALKTHROUGH.md, UHHCRAFT-GPU-PASSTHROUGH.md (originals archived in [`plan/archive/`](../archive/README.md))
 >
 > **Depends on:** 00, 01, 02
 >
@@ -287,8 +287,8 @@ secret/services/approles/uhhcraft       role_id + secret_id (for the Go app to r
 
 **Work items:**
 
-1. Create `platform/services/openbao/deployment/config/policies/uhhcraft-policy.hcl` — read access to its own secret paths only.
-2. Create `inference-comfyui-policy.hcl` and `inference-hunyuan3d-policy.hcl`.
+1. Use the existing `platform/services/openbao/deployment/config/policies/uhhcraft.hcl` (read access to its own secret paths only; check it covers only those paths).
+2. Use the existing `inference-comfyui.hcl` and `inference-hunyuan3d.hcl` policies in the same directory.
 3. Create `platform/playbooks/apply-policy-uhhcraft.yml` (and the two inference equivalents) following the `apply-policy-orb-agent.yml` shape.
 4. Decide AppRole vs. one-shot Ansible-only access:
    - **Recommended:** Ansible-only for now. The Go app reads its config from the templated `.env`; it does not call OpenBao at runtime. Future need (token rotation) can add an AppRole later via `tasks/manage-approle.yml`.
@@ -455,7 +455,7 @@ platform/semaphore/templates.yml         + Deploy UhhCraft
 
 1. Add template definitions to `templates.yml` mirroring NetBox entries.
 2. Run `setup-templates.yml` to push the new templates into Semaphore.
-3. Confirm Semaphore's AppRole policy covers the new secret paths (`secret/services/uhhcraft/*` etc.); if not, extend `platform/services/openbao/deployment/config/policies/semaphore-policy.hcl` and re-apply.
+3. Confirm Semaphore's AppRole policy covers the new secret paths (`secret/services/uhhcraft/*` etc.); if not, extend `platform/services/openbao/deployment/config/policies/semaphore-write.hcl` (`semaphore-read.hcl` sits beside it) and re-apply.
 
 **Acceptance:**
 
@@ -532,7 +532,7 @@ kickstart.md                                  + WebSmith + UhhCraft in "Where to
 
 ### Phase 10 — Validation + branch testing + rollback
 
-> **Execution runbook:** [`UHHCRAFT-GO-LIVE-PLAN.md`](UHHCRAFT-GO-LIVE-PLAN.md) — the comprehensive, hand-off-ready checklist for this phase (open decisions, full provisioning chain, deploy sequence, smoke + rollback, Definition of Done, and open gaps). Phase 10 is hardware-gated; the runbook is what an operator/agent follows against the live cluster. The summary below is retained for context.
+> **Execution runbook:** [`UHHCRAFT-GO-LIVE-PLAN.md`](../archive/development/UHHCRAFT-GO-LIVE-PLAN.md) — the comprehensive, hand-off-ready checklist for this phase (open decisions, full provisioning chain, deploy sequence, smoke + rollback, Definition of Done, and open gaps). Phase 10 is hardware-gated; the runbook is what an operator/agent follows against the live cluster. The summary below is retained for context.
 
 **Goal:** End-to-end smoke before merging anything to main.
 
@@ -682,11 +682,11 @@ tags: [uhhcraft, inference-comfyui, inference-hunyuan3d, caddy, phase-10, go-liv
 
 # UhhCraft Go-Live — Phase 10 Production Validation Plan
 
-This is the **single, comprehensive checklist** for taking the UhhCraft platform (the `uhhcraft` storefront + the `inference-comfyui` and `inference-hunyuan3d` GPU sidecars, fronted by central Caddy) from "all code merged" to "live, validated, and signed off." It is **Phase 10** of [`WEBSMITH-INTEGRATION-PLAN.md`](WEBSMITH-INTEGRATION-PLAN.md) — the only remaining substantive phase.
+This is the **single, comprehensive checklist** for taking the UhhCraft platform (the `uhhcraft` storefront + the `inference-comfyui` and `inference-hunyuan3d` GPU sidecars, fronted by central Caddy) from "all code merged" to "live, validated, and signed off." It is **Phase 10** of [`WEBSMITH-INTEGRATION-PLAN.md`](../archive/development/WEBSMITH-INTEGRATION-PLAN.md) — the only remaining substantive phase.
 
 > **Why this doc exists:** every prior phase (1–9, 11) was code/docs that merged through CI. Phase 10 is different — it can only be completed against **real hardware**, and it depends on a few **human decisions** and a **provisioning chain** that must happen in order. This document makes all of that explicit so nothing is missed and so the work can be handed to another agent or operator succinctly.
 
-> **Running it as a live session?** Use the step-by-step **[`UHHCRAFT-GO-LIVE-WALKTHROUGH.md`](UHHCRAFT-GO-LIVE-WALKTHROUGH.md)** — the sequential `[YOU]`/`[CLAUDE]` operator script with hand-off cues. This doc is the reference (the *what*); the walkthrough is the *how-we-execute-together*.
+> **Running it as a live session?** Use the step-by-step **[`UHHCRAFT-GO-LIVE-WALKTHROUGH.md`](../archive/development/UHHCRAFT-GO-LIVE-WALKTHROUGH.md)** — the sequential `[YOU]`/`[CLAUDE]` operator script with hand-off cues. This doc is the reference (the *what*); the walkthrough is the *how-we-execute-together*.
 
 ---
 
@@ -711,7 +711,7 @@ Per the root [`CLAUDE.md`](../../CLAUDE.md) critical rules, **all deploys go thr
 
 **In scope:** `uhhcraft` (CPU VM), `inference-comfyui` (GPU VM), `inference-hunyuan3d` (GPU VM), and the central `caddy` host that fronts them.
 
-**Out of scope (explicitly):** the NocoDB / n8n composable migration (separate, **HELD** — see [`nocodb-n8n-composable-migration.md`](nocodb-n8n-composable-migration.md)); the Planned agent items (NemoClaw automation, Cowork, cross-agent, Kubernetes).
+**Out of scope (explicitly):** the NocoDB / n8n composable migration (separate, **HELD** — see [`nocodb-n8n-composable-migration.md`](../archive/development/nocodb-n8n-composable-migration.md)); the Planned agent items (NemoClaw automation, Cowork, cross-agent, Kubernetes).
 
 **Done when all of these hold** (from `WEBSMITH-INTEGRATION-PLAN.md` §6, the unchecked items):
 
@@ -756,7 +756,7 @@ These four are unresolved and block or shape the rollout. Each lists the options
 
 ### A4. GPU passthrough §1 host decision
 
-- **Context:** the two inference VMs need PCIe GPU passthrough. [`UHHCRAFT-GPU-PASSTHROUGH.md`](UHHCRAFT-GPU-PASSTHROUGH.md) §1 records a host-selection decision that is **still pending** — the passthrough setup path differs depending on whether the GPU host is already in the Proxmox cluster.
+- **Context:** the two inference VMs need PCIe GPU passthrough. [`UHHCRAFT-GPU-PASSTHROUGH.md`](../archive/development/UHHCRAFT-GPU-PASSTHROUGH.md) §1 records a host-selection decision that is **still pending** — the passthrough setup path differs depending on whether the GPU host is already in the Proxmox cluster.
 - **Decision:** resolve §1 in that doc before provisioning the GPU VMs.
 
 ---
@@ -778,7 +778,7 @@ This is the chain that must exist before Section C. Most steps are **operator ac
 ### B2. GPU passthrough (the two inference VMs)
 
 - [ ] Resolve decision **A4** first.
-- [ ] Follow [`UHHCRAFT-GPU-PASSTHROUGH.md`](UHHCRAFT-GPU-PASSTHROUGH.md): host IOMMU/VFIO, VM `hostpci` entry, then in-VM NVIDIA driver + Container Toolkit + CDI (`tasks/install-nvidia-toolkit.yml`).
+- [ ] Follow [`UHHCRAFT-GPU-PASSTHROUGH.md`](../archive/development/UHHCRAFT-GPU-PASSTHROUGH.md): host IOMMU/VFIO, VM `hostpci` entry, then in-VM NVIDIA driver + Container Toolkit + CDI (`tasks/install-nvidia-toolkit.yml`).
 - [ ] Verify inside each GPU VM: `nvidia-smi` sees the card, and a CDI device (`nvidia.com/gpu=all`) is resolvable by Podman.
 
 ### B3. OpenBao secrets (source of truth)
@@ -798,7 +798,7 @@ For the inference sidecars (`secret/services/inference-comfyui`, `secret/service
 
 - [ ] Seed all `user`-type secrets into OpenBao (operator; use the **Sync Secrets to OpenBao** / `manage-secrets` path — never commit them).
 - [ ] `Check Secrets` (read-only inventory) shows every required key present/non-empty.
-- [ ] Apply OpenBao policies: **Apply Policy - UhhCraft / ComfyUI Sidecar / Hunyuan3D Sidecar**, and **Provision AppRole - Orb Agent** (already code-managed; run once against live OpenBao to replace any hand-made creds).
+- [ ] Apply OpenBao policies: **Apply Policy - UhhCraft**, **Apply Policy - ComfyUI Sidecar**, and **Apply Policy - Hunyuan3D Sidecar**, and **Provision AppRole - Orb Agent** (already code-managed; run once against live OpenBao to replace any hand-made creds).
 
 ### B4. SSH + hardening
 
@@ -809,7 +809,7 @@ For the inference sidecars (`secret/services/inference-comfyui`, `secret/service
 
 - [ ] CloudFlare: `uhhcraft.uhstray.io` A record → the `caddy_svc` public IP (and any `/generated/*` routing is via Caddy, same host).
 - [ ] CloudFlare API token for **DNS-01** ACME present in OpenBao / Caddy env (central Caddy issues the Let's Encrypt cert via DNS-01).
-- [ ] **Central Caddy host must be running** before the per-site fragment is distributed. ⚠️ See **Section I** — there is currently no `deploy-caddy.yml` / Caddy Semaphore template; confirm how the Caddy host itself is stood up.
+- [ ] **Central Caddy host must be running** before the per-site fragment is distributed. ⚠️ See **Section I** — the repo has `deploy-caddy.yml` and the local **Deploy Caddy (Local)** template (`platform/semaphore/templates-local.yml`), but no shared-catalog Caddy template; the repo does not prove how `caddy_svc` runs in production, so confirm that first.
 - [ ] The `uhhcraft` deploy renders `templates/caddy-site.j2` → `sites/uhhcraft.caddy` and `tasks/distribute-caddy-site.yml` pushes it to the Caddy host + validates + reloads.
 
 ### B6. Inventory + Semaphore
@@ -869,7 +869,7 @@ Run each as its Semaphore template. Order matters (sidecars before the app, so t
 
 ## G. Known risks & gotchas (hard-won this cycle)
 
-- **podman-compose `depends_on: service_healthy` is parsed-not-enforced on 1.0.6** (see [`../architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../architecture/PODMAN-VS-DOCKER-COMPOSE.md) §4). Readiness is gated by explicit health-waits in `deploy.sh`/`post-deploy.sh`, not by compose ordering. If the app starts before Postgres is ready, that's the cause — check the host's podman-compose version.
+- **podman-compose `depends_on: service_healthy` is parsed-not-enforced on 1.0.6** (see [`../architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../archive/architecture/PODMAN-VS-DOCKER-COMPOSE.md) §4). Readiness is gated by explicit health-waits in `deploy.sh`/`post-deploy.sh`, not by compose ordering. If the app starts before Postgres is ready, that's the cause — check the host's podman-compose version.
 - **Stripe webhook version skew is already tolerated** in code (`IgnoreAPIVersionMismatch: true`), but the dashboard endpoint + `stripe_webhook_secret` must still be configured (A1) or events silently never arrive.
 - **Fully-qualified image names + no `version:` key** in compose (Podman requirement) — already handled in UhhCraft's compose; keep it if editing.
 - **Caddy fragment safety:** `distribute-caddy-site.yml` validates the full config before persisting and rolls back on a parse error, but distinguishes engine faults from config errors — if it refuses to roll back, the container may simply be down (check Caddy reachability first).
@@ -893,7 +893,7 @@ Run each as its Semaphore template. Order matters (sidecars before the app, so t
 
 ## I. Open gaps to close before/while executing
 
-1. **Central Caddy host deploy path is unclear.** There are deploy playbooks/templates for `uhhcraft` and both sidecars, and a per-site fragment distributor — but **no `deploy-caddy.yml` / "Deploy Caddy" Semaphore template** was found. Confirm how `caddy_svc` itself is stood up (manual? an existing service? a missing playbook). The per-site fragment distribution assumes a *running* Caddy. **This must be resolved before B5 / Section C step 5.**
+1. **Central Caddy host deploy path is unclear.** There are deploy playbooks/templates for `uhhcraft` and both sidecars, and a per-site fragment distributor — but the repo has `deploy-caddy.yml` and the local **Deploy Caddy (Local)** template, and no shared-catalog Caddy template. Confirm how `caddy_svc` itself runs in production (manual? an existing service?). The per-site fragment distribution assumes a *running* Caddy. **This must be resolved before B5 / Section C step 5.**
 2. **No `clean-deploy` for the inference sidecars** (only `uhhcraft` has one) — fine for go-live, but note it for destructive resets.
 3. **Confirm CI pushes the image to GHCR on merge** (A3) and that VMs can `podman pull` it (login/pull-secret if private).
 4. **Stripe webhook path** — confirm the exact route the handler listens on so the dashboard endpoint URL is correct.
@@ -902,12 +902,12 @@ Run each as its Semaphore template. Order matters (sidecars before the app, so t
 
 ## Cross-references
 
-- [`WEBSMITH-INTEGRATION-PLAN.md`](WEBSMITH-INTEGRATION-PLAN.md) — Phase 10 is §Phase 10 + the §6 Definition of Done this plan operationalizes.
-- [`UHHCRAFT-GPU-PASSTHROUGH.md`](UHHCRAFT-GPU-PASSTHROUGH.md) — GPU host prep + the pending §1 decision (A4).
-- [`nocodb-n8n-composable-migration.md`](nocodb-n8n-composable-migration.md) — explicitly **out of scope** here (held).
-- [`../architecture/BRANCH-TESTING-WORKFLOW.md`](../architecture/BRANCH-TESTING-WORKFLOW.md) — deploying a feature branch to the VMs for pre-merge validation.
-- [`../architecture/CADDY-REVERSE-PROXY.md`](../architecture/CADDY-REVERSE-PROXY.md) — per-site fragment pattern + DNS-01.
-- [`../architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../architecture/PODMAN-VS-DOCKER-COMPOSE.md) — runtime gotchas (§4 readiness).
+- [`WEBSMITH-INTEGRATION-PLAN.md`](../archive/development/WEBSMITH-INTEGRATION-PLAN.md) — Phase 10 is §Phase 10 + the §6 Definition of Done this plan operationalizes.
+- [`UHHCRAFT-GPU-PASSTHROUGH.md`](../archive/development/UHHCRAFT-GPU-PASSTHROUGH.md) — GPU host prep + the pending §1 decision (A4).
+- [`nocodb-n8n-composable-migration.md`](../archive/development/nocodb-n8n-composable-migration.md) — explicitly **out of scope** here (held).
+- [`../architecture/BRANCH-TESTING-WORKFLOW.md`](../archive/architecture/BRANCH-TESTING-WORKFLOW.md) — deploying a feature branch to the VMs for pre-merge validation.
+- [`../architecture/CADDY-REVERSE-PROXY.md`](../archive/architecture/CADDY-REVERSE-PROXY.md) — per-site fragment pattern + DNS-01.
+- [`../architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../archive/architecture/PODMAN-VS-DOCKER-COMPOSE.md) — runtime gotchas (§4 readiness).
 - [`../../platform/services/uhhcraft/deployment/README.md`](../../platform/services/uhhcraft/deployment/README.md) — service deploy story + rollback commands.
 - [`../../platform/services/uhhcraft/context/spec/SPEC.md`](../../platform/services/uhhcraft/context/spec/SPEC.md) — signed spec + alignment.
 
@@ -932,7 +932,7 @@ tags: [uhhcraft, go-live, phase-10, walkthrough, runbook, operator]
 
 # UhhCraft Go-Live — Session Walkthrough (You + Claude)
 
-This is the **step-by-step script for doing the go-live together**, in a live chat session. It's the *how-we-execute* companion to [`UHHCRAFT-GO-LIVE-PLAN.md`](UHHCRAFT-GO-LIVE-PLAN.md) (the *what-needs-to-be-true* reference). Follow this top to bottom; at each step it's clear **who does what** and **how we hand off**.
+This is the **step-by-step script for doing the go-live together**, in a live chat session. It's the *how-we-execute* companion to [`UHHCRAFT-GO-LIVE-PLAN.md`](../archive/development/UHHCRAFT-GO-LIVE-PLAN.md) (the *what-needs-to-be-true* reference). Follow this top to bottom; at each step it's clear **who does what** and **how we hand off**.
 
 ## Legend
 
@@ -1017,7 +1017,7 @@ Run these Semaphore templates (I trigger + poll if reachable; otherwise you clic
 
 1. `Distribute SSH Keys` → verify key auth → `Harden SSH`.
 2. `Install Podman` on each host.
-3. `Apply Policy - UhhCraft / ComfyUI Sidecar / Hunyuan3D Sidecar`; `Provision AppRole - Orb Agent`.
+3. `Apply Policy - UhhCraft`, `Apply Policy - ComfyUI Sidecar`, `Apply Policy - Hunyuan3D Sidecar`; `Provision AppRole - Orb Agent`.
 
 *Hand-off: "go" and I'll trigger them in order (or hand you the click-list).*
 
@@ -1032,7 +1032,7 @@ Per the plan §C ordering. For each: I trigger the Semaphore template, poll the 
 3. `Deploy UhhCraft` (5-phase: secrets → containers → migrations → Caddy fragment → verify).
 4. Confirm `sites/uhhcraft.caddy` distributed + Caddy reloaded clean.
 
-> ⚠️ **Open gap (plan §I):** there is no `deploy-caddy` playbook/template — confirm how `caddy_svc` itself is running **before** step 3's fragment distribution. We resolve this when we hit it.
+> ⚠️ **Open gap (plan §I):** `deploy-caddy` exists as a playbook and as the local **Deploy Caddy (Local)** template, with no shared-catalog template — confirm how `caddy_svc` itself is running **before** step 3's fragment distribution. We resolve this when we hit it.
 
 *Hand-off: "start the deploy" → I run them one at a time and report after each.*
 
@@ -1085,8 +1085,8 @@ Walk the plan §D checklist together: catalog → generate (ComfyUI) → 3D (Hun
 
 ## Cross-references
 
-- [`UHHCRAFT-GO-LIVE-PLAN.md`](UHHCRAFT-GO-LIVE-PLAN.md) — the comprehensive reference (decisions, secret table, deploy sequence, smoke checklist, DoD, gaps).
-- [`UHHCRAFT-GPU-PASSTHROUGH.md`](UHHCRAFT-GPU-PASSTHROUGH.md) — GPU step detail (Step 3).
+- [`UHHCRAFT-GO-LIVE-PLAN.md`](../archive/development/UHHCRAFT-GO-LIVE-PLAN.md) — the comprehensive reference (decisions, secret table, deploy sequence, smoke checklist, DoD, gaps).
+- [`UHHCRAFT-GPU-PASSTHROUGH.md`](../archive/development/UHHCRAFT-GPU-PASSTHROUGH.md) — GPU step detail (Step 3).
 - Root [`CLAUDE.md`](../../CLAUDE.md) — Operational Access (using site-config creds) + Semaphore-only deploy rule.
 
 ## Revision history
@@ -1100,7 +1100,7 @@ Walk the plan §D checklist together: catalog → generate (ComfyUI) → 3D (Hun
 # UhhCraft GPU Passthrough — sub-plan
 
 > **Status:** Draft, awaiting user input on §1.
-> **Parent plan:** [`WEBSMITH-INTEGRATION-PLAN.md`](./WEBSMITH-INTEGRATION-PLAN.md) Phase 6.
+> **Parent plan:** [`WEBSMITH-INTEGRATION-PLAN.md`](../archive/development/WEBSMITH-INTEGRATION-PLAN.md) Phase 6.
 > **Scope:** Provision the two GPU VMs (`inference-comfyui-svc-01` and `inference-hunyuan3d-svc-01`) on the agent-cloud Proxmox cluster with NVIDIA PCIe passthrough.
 
 This document is the single procedure for getting from "the GPU host(s) physically exist in the rack" to "the inference-* deploy playbooks complete successfully and the FastAPI wrappers can `import torch` + `torch.cuda.is_available()`."
@@ -1372,4 +1372,4 @@ The sub-plan is complete when **all** of the following hold:
 - [ ] §6 end-to-end verification: probe container sees the GPU; deploy playbook completes; `/health` returns 200.
 - [ ] §7 recovery procedure exercised at least once (test rebuild of one VM).
 
-When all boxes are checked, Phase 6 of [`WEBSMITH-INTEGRATION-PLAN.md`](./WEBSMITH-INTEGRATION-PLAN.md) can be marked complete and Phase 7 (Semaphore templates) can proceed.
+When all boxes are checked, Phase 6 of [`WEBSMITH-INTEGRATION-PLAN.md`](../archive/development/WEBSMITH-INTEGRATION-PLAN.md) can be marked complete and Phase 7 (Semaphore templates) can proceed.

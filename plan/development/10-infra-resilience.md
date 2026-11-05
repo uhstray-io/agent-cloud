@@ -1,5 +1,5 @@
 # 10 — Infrastructure & Resilience
-> **Consolidates:** DEV-PROXMOX-CLUSTER-PLAN.md, DISASTER-RECOVERY-PLAN.md (originals archived in `plan/archive/`)
+> **Consolidates:** DEV-PROXMOX-CLUSTER-PLAN.md, DISASTER-RECOVERY-PLAN.md (originals archived in [`plan/archive/`](../archive/README.md))
 >
 > **Depends on:** 00, 01
 >
@@ -13,7 +13,7 @@
 # Dev Proxmox Cluster Plan
 
 **Date:** 2026-04-25
-**Status:** PLANNING
+**Status:** Not started
 **Context:** Build a separate "dev" Proxmox cluster for testing breaking changes, automation development, and upgrade rehearsals before applying them to the production cluster.
 
 > **Full plan with network topology, IP allocations, and node configurations lives in the private `site-config` repository at `plan/DEV-PROXMOX-CLUSTER-PLAN.md`.** This stub exists in the public repo for cross-referencing only.
@@ -63,13 +63,13 @@ graph TD
 # Disaster Recovery Plan
 
 **Date:** 2026-05-06
-**Status:** PLANNING -- Stub document. Full procedures to be developed.
+**Status:** In progress -- Stub document. Full procedures to be developed.
 **Context:** The agent-cloud platform currently has no documented disaster recovery procedures. When critical infrastructure fails (Semaphore down, OpenBao sealed, VM lost), operators rely on tribal knowledge and ad-hoc SSH access. This plan will codify recovery procedures for each failure scenario.
 
 **References:**
-- [ACCESS-BOUNDARIES.md](../architecture/ACCESS-BOUNDARIES.md) -- Access paths and escalation flow
-- [CREDENTIAL-LIFECYCLE-PLAN.md](../architecture/CREDENTIAL-LIFECYCLE-PLAN.md) -- Credential storage, rotation, and audit
-- [AUTOMATION-COMPOSABILITY.md](../architecture/AUTOMATION-COMPOSABILITY.md) -- Composable task library
+- [ACCESS-BOUNDARIES.md](../archive/architecture/ACCESS-BOUNDARIES.md) -- Access paths and escalation flow
+- [CREDENTIAL-LIFECYCLE-PLAN.md](../archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md) -- Credential storage, rotation, and audit
+- [AUTOMATION-COMPOSABILITY.md](../archive/architecture/AUTOMATION-COMPOSABILITY.md) -- Composable task library
 
 ---
 
