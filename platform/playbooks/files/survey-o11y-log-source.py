@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Return bounded receiver-host container log-source metadata only."""
+"""Return bounded receiver-host container log-source metadata and content-class counts only."""
 
 import json
 import posixpath
+import re
 import subprocess
 import sys
 
@@ -13,6 +14,44 @@ O11Y_PREFIX = "o11y-"
 JOURNAL_DESTINATIONS = {"/var/log/journal", "/run/log/journal"}
 # Mounts from other host paths have unknown provenance and cannot establish a journal source.
 JOURNAL_SOURCES = {"/var/log/journal", "/run/log/journal"}
+# Receiver containers whose journald content is classified. The journal collector is deliberately absent.
+CONTENT_CONTAINERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "pyroscope", "grafana")
+CONTENT_CAP = 200
+# Fixed content classes. Only counts leave this process; the matched text never does.
+CONTENT_PATTERNS = {
+    # The lookbehind anchors each match at the start of a local-part run. Without it the engine retries
+    # from every position inside a long run of letters or base64, which is quadratic (about 1.7 s per 48 KB line).
+    "email": re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
+    # Digit and dot guards, not \b: \b matches after a dot, so "999.1.1.1" and "1.1.1.1.1" would count.
+    # The trailing guard lets a full stop end a sentence; only a following digit or ".digit" rules a match out.
+    "ipv4": re.compile(r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?!\d|\.\d)"),
+    "credential": re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
+    # Keyword anywhere, not after a word boundary, so "db_password=" and "accessToken=" match. An optional quote
+    # may sit before the separator (JSON keys) and after it (JSON values). Linear: the value run is one scan.
+    "secret_pair": re.compile(
+        r"""(?i)(?:token|password|passwd|secret|api[_-]?key|authorization)["']?\s*[=:]\s*["']?[^\s,;&"']{4,}"""
+    ),
+    # A JWT: three base64url segments, the first beginning eyJ. The lookbehind starts a match only at a run
+    # boundary, so a long run of "eyJ" cannot restart the scan at each position.
+    "jwt": re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    "private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    "session": re.compile(r"(?i)(?:\bcookie:|\bset-cookie:|_session=)"),
+}
+# url_query and dsn_userinfo are not patterns: each is a per-token scan, so no regex can restart at each scheme.
+CONTENT_CLASSES = (*CONTENT_PATTERNS, "url_query", "dsn_userinfo")
+URL_SCHEME = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+URL_QUERY_TAIL = re.compile(r"\?[^#]")
+# A bare IPv4 address is reported but does not block; the other classes do.
+BLOCKING_CLASSES = (
+    "email",
+    "credential",
+    "secret_pair",
+    "url_query",
+    "dsn_userinfo",
+    "jwt",
+    "private_key",
+    "session",
+)
 
 
 def run(argv, timeout=8):
@@ -136,6 +175,161 @@ def journal_status(names, drivers):
     return ("readable" if count else "no_entries"), count
 
 
+def message_text(value):
+    if isinstance(value, str):
+        return value
+    if (
+        isinstance(value, list)
+        and value
+        and all(isinstance(item, int) and not isinstance(item, bool) and 0 <= item <= 255 for item in value)
+    ):
+        return bytes(value).decode("utf-8", errors="replace")
+    return None
+
+
+def count_url_query(text):
+    """Count whitespace-separated tokens that hold a URL scheme with a query marker after it.
+
+    The marker is a "?" followed by a character that is not "#", anywhere after the token's first scheme.
+    A token counts at most once, so one long line of schemes costs one linear pass per token.
+    """
+    hits = 0
+    for token in text.split():
+        scheme = URL_SCHEME.search(token)
+        if scheme and URL_QUERY_TAIL.search(token, scheme.end()):
+            hits += 1
+    return hits
+
+
+def count_dsn_userinfo(text):
+    """Count whitespace-separated tokens whose URL authority carries a password: user:secret@host.
+
+    The authority is the text after the first "://" up to the next "/". It counts when a ":" sits before its
+    "@". One pass per token, so the cost is linear in the line.
+    """
+    hits = 0
+    for token in text.split():
+        scheme = token.find("://")
+        if scheme == -1:
+            continue
+        authority = token[scheme + 3 :].split("/", 1)[0]
+        at = authority.find("@")
+        if at != -1 and ":" in authority[:at]:
+            hits += 1
+    return hits
+
+
+def content_scan(output, expected_name):
+    """Count one container's entries, content-class hits, and entries whose text could not be classified.
+
+    Returns None when the journal output is malformed.
+    """
+    entries = 0
+    unscanned = 0
+    classes = dict.fromkeys(CONTENT_CLASSES, 0)
+    for line in output.splitlines():
+        if not line.strip():
+            continue
+        entry = decode_json(line)
+        if not isinstance(entry, dict):
+            return None
+        names = entry.get("CONTAINER_NAME")
+        if isinstance(names, str):
+            names = [names]
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            return None
+        if expected_name not in names:
+            continue
+        entries += 1
+        text = message_text(entry.get("MESSAGE"))
+        if text is None:
+            # journalctl encodes a field longer than 4096 bytes as null unless --all is passed. An entry
+            # whose text is not classified is a gap, never a clear result.
+            unscanned += 1
+            continue
+        for label, pattern in CONTENT_PATTERNS.items():
+            classes[label] += sum(1 for _ in pattern.finditer(text))
+        classes["url_query"] += count_url_query(text)
+        classes["dsn_userinfo"] += count_dsn_userinfo(text)
+    return {"entries": entries, "unscanned": unscanned, "classes": classes}
+
+
+def unverified_content():
+    return {
+        "status": "unverified",
+        "entries": None,
+        "capped": None,
+        "unscanned": None,
+        "blocking_hits": None,
+        "classes": None,
+    }
+
+
+def content_survey(names, drivers):
+    report = {}
+    for short in CONTENT_CONTAINERS:
+        name = O11Y_PREFIX + short
+        # Only journald content is readable here; a receiver that is not running or not journald is not read.
+        if name not in names or drivers.get(name) != "journald":
+            report[short] = unverified_content()
+            continue
+        rc, output = run(
+            [
+                "journalctl",
+                "--user",
+                "--no-pager",
+                "--quiet",
+                "--output=json",
+                # Without --all, journalctl encodes any field over 4096 bytes as null.
+                "--all",
+                "--output-fields=CONTAINER_NAME,MESSAGE",
+                f"--since={JOURNAL_WINDOW}",
+                "-n",
+                str(CONTENT_CAP),
+                f"CONTAINER_NAME={name}",
+            ],
+            timeout=12,
+        )
+        scanned = content_scan(output, name) if rc == 0 else None
+        if scanned is None:
+            report[short] = unverified_content()
+            continue
+        classes = scanned["classes"]
+        blocking = sum(classes[label] for label in BLOCKING_CLASSES)
+        unscanned = scanned["unscanned"]
+        # blocked wins: a hit is actionable even when some entries could not be read.
+        # An empty read proves nothing about the receiver: no entries in the window is "no_entries", never "clear".
+        if blocking:
+            status = "blocked"
+        elif unscanned:
+            status = "unverified"
+        elif scanned["entries"] == 0:
+            status = "no_entries"
+        else:
+            status = "clear"
+        report[short] = {
+            "status": status,
+            "entries": scanned["entries"],
+            "capped": scanned["entries"] >= CONTENT_CAP,
+            "unscanned": unscanned,
+            "blocking_hits": blocking,
+            "classes": classes,
+        }
+    return report
+
+
+def content_status(report):
+    statuses = {item["status"] for item in report.values()}
+    if "blocked" in statuses:
+        return "blocked"
+    if "unverified" in statuses:
+        return "unverified"
+    # A receiver with no entries in the window was read but not evidenced: the set is incomplete, not clear.
+    if "no_entries" in statuses:
+        return "incomplete"
+    return "clear"
+
+
 def alloy_source():
     container = inspect("o11y-alloy")
     if container is None:
@@ -230,6 +424,7 @@ def survey():
     alloy_mounted = alloy_source()
     if alloy_mounted is None:
         return {"status": "unavailable", "reason": "alloy_source_unverified"}
+    content = content_survey(names, drivers)
     return {
         "status": "observed",
         "rootless_default_log_driver": default,
@@ -238,6 +433,8 @@ def survey():
         "journald_metadata_read": journal,
         "journald_metadata_entry_count": journal_count,
         "alloy_read_only_journal_source_mounted": alloy_mounted,
+        "content_survey": content,
+        "content_survey_status": content_status(content),
     }
 
 
