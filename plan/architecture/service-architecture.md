@@ -1,6 +1,6 @@
 # Service Architecture
 
-**Date:** 2026-10-27
+**Date:** 2026-11-04
 **Status:** ACTIVE
 **Author:** Joseph A. Wisneski IV
 **Context:** agent-cloud runs more than twenty services and agents, each with its own deploy
@@ -80,7 +80,7 @@ the shared front door and substrate underneath. Dashed boxes are planned.
 ```mermaid
 flowchart TD
     subgraph AI["AI layer: proposes"]
-        SKYNET["skynet<br/>orchestration API (BUILT)"]
+        SKYNET["skynet<br/>orchestration API (LIVE; launches refused)"]
         AGW["agentgateway<br/>inference edge (LIVE)"]
         AGENTS["Agents: NetClaw, NemoClaw,<br/>Cowork (PLANNED)"]
         WISBOT["WisBot<br/>Discord agent (UNVERIFIED)"]
@@ -91,6 +91,7 @@ flowchart TD
         BAO["OpenBao<br/>secrets (LIVE)"]
         OPA["OPA<br/>agent-action policy (LIVE-LOCAL)"]
         AK["Authentik<br/>identity and SSO (LIVE)"]
+        LG["launch gate<br/>agent launch path (BUILT, not deployed)"]
     end
     subgraph AUTO["Automation layer: executes"]
         SEM["Semaphore + Ansible<br/>(LIVE)"]
@@ -126,6 +127,8 @@ flowchart TD
     CADDY ~~~ NB
     CA ~~~ O11Y
     DNS ~~~ PVE
+    SKYNET -.->|"launch request (planned)"| LG
+    LG -.->|"Semaphore task (planned)"| SEM
     AI --> GR --> AUTO --> PLAT
     APPS --> PLAT
     style PLANE stroke-dasharray: 5 5
@@ -150,13 +153,15 @@ the service; the network path itself is in the companion document. The runtime c
 | o11y | Prometheus, Loki, Alloy, Tempo, Pyroscope, Grafana, node exporter | Infrastructure | Rootless podman, own VM | Grafana native OIDC | LIVE [15] | `o11y/deployment/CLAUDE.md` |
 | agentgateway | Inference edge gateway with per-identity keys and budgets | Infrastructure | Podman, gateway + its own Postgres | API key per identity; UI by gateway OIDC (admins) | LIVE since 2026-10-14 [16] | `agentgateway/context/architecture.md` |
 | OPA | Agent-action authorization (Rego) | Guardrail | Podman | None in Phase 1 (decisions, not secrets) | LIVE-LOCAL [17] | `opa/deployment/context/architecture.md` |
-| GitHub runners | Self-hosted CI for private repos | Automation | Host service; jobs in rootless podman | None (outbound only) | LIVE, two hosts [18] | `github-runner/CLAUDE.md` |
+| GitHub runners | Self-hosted CI for private repos | Automation | Host service; jobs run on the host unless a job declares a rootless podman container | None (outbound only) | LIVE, two hosts [18] | `github-runner/CLAUDE.md` |
 | n8n | Workflow automation, queue mode | Automation | Rootless podman, 4 containers | Authentik forward_auth + n8n owner login | LIVE since 2026-09-02 [19] | `n8n/deployment/README.md` |
-| skynet | Orchestration API: runs the onboarding workflow, asks OPA, calls the model through agentgateway. Its launches through Semaphore are refused since svc-skynet became `guest` on 2026-10-31; the planned launch gate will carry them | AI | Podman, API + its own Postgres | agentgateway key + skynet bearer | BUILT; no production route; launches refused [20] | `skynet/deployment/CLAUDE.md` |
-| Dispatch Console | Operator administration UI (Rust) | Operator app | Podman, image built on the host | Native OIDC | BUILT; no production run recorded [21] | `console/deployment/CLAUDE.md` |
+| skynet | Orchestration API: runs the onboarding workflow, asks OPA, calls the model through agentgateway. Its launches through Semaphore are refused since svc-skynet became `guest` on 2026-10-31; the planned launch gate will carry them | AI | Podman, API + its own Postgres | agentgateway key + skynet bearer | LIVE API since 2026-10-30; no production route; Semaphore launches refused since 2026-10-31 [20][51] | `skynet/deployment/CLAUDE.md` |
+| Dispatch Console | Operator administration UI (Rust) | Operator app | Podman, image built on the host | Native OIDC | BUILT; a production build and start are recorded, and that deploy failed its health check; no later passing production verify is cited in the repo [21][50] | `console/deployment/CLAUDE.md` |
+| Launch gate | Only identity that asks Semaphore to launch an agent's task: authenticates the caller, checks the agent and template allowlist, asks OPA, then launches | Guardrail | Podman (deploy playbooks and templates; not deployed) | Caller bearer token; agent and template checks | BUILT; not deployed [48] | `launch-gate/deployment/CLAUDE.md` |
+| plane-mcp | Plane's MCP server for harnesses | Auxiliary | Podman, own compose project beside Plane | API-key endpoint for service identities; OAuth endpoint for people | BUILT; production edge not in place [49] | `plane-mcp/deployment/CLAUDE.md` |
 | honcho | Memory API for team memory | Auxiliary | Rootless podman, 4 containers | JWT on `/v3`; Authentik forward_auth on `/docs` | LIVE [22] | `honcho/deployment/CLAUDE.md` |
 | tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | RETIRING: retired 2026-10-23, replaced by Plane [23] | `tududi/deployment/CLAUDE.md` |
-| Plane | Work tracker replacing tududi | Auxiliary | Own VM (planned) | Authentik OIDC (planned) | PLANNED, 0 of 85 tasks [23] | `plan/development/16-plane-work-management.md` |
+| Plane | Work tracker replacing tududi | Auxiliary | Own VM (planned) | Authentik OIDC (blueprint and catalog entry in repo) | PLANNED per plan 16 (28 of 87 tasks checked); a production deploy run is recorded, live state UNVERIFIED [23][52] | `plan/development/16-plane-work-management.md` |
 | Postiz | Social publishing | Auxiliary | Rootless podman, 5 containers + search node | Native OIDC; public API path keyed by the app | LIVE-LOCAL; production host hardened, app pending [24] | `postiz/deployment/CLAUDE.md` |
 | OpenHands | Agent canvas | Auxiliary | Docker (host socket for session containers) | Authentik forward_auth | LIVE [25] | `openhands/context/architecture.md` |
 | ERPNext | ERP, system of record for storefront revenue | Business | Podman, 9 containers | Native OIDC | BUILT; local deploy pending image pull [26] | `erpnext/deployment/context/architecture.md` |
@@ -313,7 +318,7 @@ readable.
 flowchart LR
     SKY["skynet"] -->|"policy decision"| OPA["OPA"]
     SKY -->|"model calls"| AGW["agentgateway"]
-    SKY -->|"launch templates"| SEM["Semaphore"]
+    SKY -.->|"launch templates, refused since 2026-10-31"| SEM["Semaphore"]
     AGW -->|"completions"| VLLM["vLLM"]
     AGW -->|"hosted models, when declared"| OR["OpenRouter"]
     AGW -->|"budgets"| AGWDB["gateway Postgres"]
@@ -376,7 +381,7 @@ sequenceDiagram
     end
 ```
 
-The four agent roles that may act are infrastructure, security, observability and service, each an
+The five agent roles that may act are infrastructure, security, observability, service and network, each an
 OPA identity; destructive actions also need `human_approved` [40]. In production this path is not
 connected yet: skynet has no production route and the WisAI-to-skynet migration is PLANNED [20][41].
 The OPA decision in the diagram is the one skynet's own client makes; Semaphore does not ask OPA. skynet's
@@ -591,6 +596,8 @@ These checks let a reader confirm the catalog without trusting the prose.
 - **Semi-trusted code.** CI runners serve only the private repositories in their declared list;
   per-job containerisation is not an enforced control, so nothing sensitive may sit on a runner
   host [18].
+- **Host container socket.** OpenHands launches its per-session runtime through the host Docker socket. The socket mount is root-equivalent on the VM [25].
+- **Agent launches are gated.** skynet's Semaphore launches are refused while svc-skynet is `guest`; the planned narrow launcher will return them. The refusal limits a buggy launcher, not a compromised one [51].
 - **Destructive operations are double-gated.** Every Clean Deploy requires `confirm_reset` naming
   the target host, and destructive agent proposals need `human_approved` in OPA [3][40]. OPA decides
   that only when a caller asks it: skynet's client does, Semaphore does not (see section 7).
@@ -603,7 +610,7 @@ the newer fact and its date.
 | Older statement | Newer fact | Date and source |
 |---|---|---|
 | tududi listed as a deployed production service (AGENTS.md, Completed) | Retired by decision; Plane replaces it | 2026-10-23 [23] |
-| Dispatch Console plan "PROPOSED" (plan 17) | Code and deploy templates merged; production run not recorded | 2026-10-26 [21] |
+| Dispatch Console plan "PROPOSED" (plan 17) | Code and deploy templates merged; production build and start recorded, and the first deploy failed its health check | 2026-10-26 [21] |
 | WisBot's `/wisllm` depends on the WisAI endpoint | The WisAI plane was never built; skynet supersedes it | 2026-06-23 [29][41] |
 
 ## Cross-references
@@ -647,7 +654,7 @@ document; for long, frequently edited documents the section name is given as wel
 20. `platform/services/skynet/deployment/CLAUDE.md:1-25` and `:66-72`
 21. `platform/services/console/deployment/CLAUDE.md:1-115`; `plan/development/17-dispatch-console.md:1-60`
 22. `platform/services/honcho/deployment/CLAUDE.md:1-19`
-23. `plan/development/16-plane-work-management.md:1-110`; `plan/development/openspec/changes/deploy-plane-work-management/tasks.md` (0 of 85 checked)
+23. `plan/development/16-plane-work-management.md:1-110`; `plan/development/openspec/changes/deploy-plane-work-management/tasks.md` (28 of 87 checkbox tasks checked; 59 open)
 24. `platform/services/postiz/deployment/README.md:1-30`; `AGENTS.md`, Deployment Status, "Postiz local bring-up recorded"
 25. `platform/services/openhands/context/architecture.md:1-20`
 26. `platform/services/erpnext/deployment/context/architecture.md:1-20`; `AGENTS.md`, Sub-directory Documentation (erpnext row)
@@ -672,8 +679,16 @@ document; for long, frequently edited documents the section name is given as wel
 45. `plan/development/17-dispatch-console.md:30-60` (Decisions D1 to D21)
 46. `platform/playbooks/deploy-{honcho,o11y,skynet,agentgateway,console,postiz,tududi,erpnext}.yml`, each playbook's `_shared_reads`; `platform/playbooks/provision-n8n-postiz-credential.yml`
 
+47. `platform/services/opa/deployment/policies/agentcloud/data.json:71-160` (infra-, security-, o11y-, service- and network-agent identities)
+48. `platform/services/launch-gate/deployment/CLAUDE.md:1-12` ("not deployed"; the gate's request path)
+49. `platform/services/plane-mcp/deployment/CLAUDE.md:104` ("Production edge (not yet in place)"); `AGENTS.md`, Sub-directory Documentation (plane-mcp row)
+50. `platform/services/console/deployment/CLAUDE.md:196-200` (credentials; production order; the production start and its health probe)
+51. `AGENTS.md`, Deployment Status, skynet entry (prod, 2026-10-30); `platform/services/skynet/deployment/CLAUDE.md:10-16` (launch steps refused while svc-skynet is guest); `docs/MISTAKES.md` line 437 (the 2026-10-31 launcher narrowing; a separate Semaphore project is not a security control)
+52. `platform/services/plane/deployment/CLAUDE.md:19-22` (production fetch step recorded under Semaphore task 11139)
+
 ## Revision History
 
 | Date | Change |
 |---|---|
+| 2026-11-04 | Corrected from repository evidence: skynet is LIVE as an API with Semaphore launches refused; Plane's task count is 28 of 87 with a production run recorded and live state UNVERIFIED; Dispatch Console has a recorded production start but no passing verify; GitHub runner jobs run on the host unless they declare a container; OPA declares five agent roles; the skynet-to-Semaphore edge is dashed; launch-gate and plane-mcp rows and a launch-gate node added |
 | 2026-10-27 | Initial version: service catalog with status, identity, secret and dependency maps, deploy and AI paths, decision criteria, in-flight phases and target outcome |
