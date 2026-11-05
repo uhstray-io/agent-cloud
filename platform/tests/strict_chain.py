@@ -2,8 +2,10 @@
 
 Python 3.13+ ssl.create_default_context() sets VERIFY_X509_STRICT, which rejects a CA-signed certificate that has
 no Authority Key Identifier. CI runs Python 3.12, where the flag is off, so a fixture that omits the extension
-passes CI. Every fixture builder that signs a certificate calls assert_strict_chain on the result, so the
-omission fails on every interpreter, using the same openssl verification that reports the error.
+passes CI. Every fixture builder that signs a certificate calls assert_strict_chain on the result, which runs
+`openssl verify -x509_strict` on any Python version. Whether a missing extension line shows up depends on the
+openssl CLI: 3.0 adds key identifiers to an `-extfile` signing by itself, while 4.1 does not, so the explicit
+lines keep the fixtures correct across builds and this check proves the certificate that was really issued.
 """
 
 import subprocess
