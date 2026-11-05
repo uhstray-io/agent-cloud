@@ -131,6 +131,12 @@ PYSCRIPT
   refute_grep -qE 'loginctl (show-user|enable-linger) \{\{ ansible_user \}\}' "$LINGER"
 }
 
+@test "install-podman: installs catatonit, the init podman bind-mounts for a container with init: true" {
+  # podman only RECOMMENDS catatonit. The launch gate's compose file sets init: true, and its
+  # deploy refuses a production host without it.
+  assert_grep -qE '^\s+- catatonit$' "$PB"
+}
+
 @test "install-podman: installs uidmap, without which rootless podman cannot start a container" {
   # podman only RECOMMENDS uidmap. Both GitHub runners lacked it (2026-10-10), and every
   # job that declared a container failed on a missing newuidmap.
