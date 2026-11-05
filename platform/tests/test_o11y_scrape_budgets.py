@@ -1030,7 +1030,8 @@ def test_candidate_hash_is_from_same_private_controller_renderer_not_installed_b
     assert stat["ansible.builtin.stat"]["path"] == "{{ _o11y_candidate_tmp.path }}/config.alloy"
     assert candidate["always"][0]["delegate_to"] == "localhost"
     assert candidate["always"][0]["ansible.builtin.file"]["state"] == "absent"
-    assert candidate["check_mode"] is False
+    assert "check_mode" not in candidate
+    assert "not ansible_check_mode" in candidate["when"]
     assert not any(
         task.get("ansible.builtin.stat", {}).get("path") == "{{ _deploy_dir }}/config/config.alloy"
         for task in tasks
@@ -1450,8 +1451,8 @@ def test_receiver_target_identity_is_scoped_and_survives_journal_otlp_loki():
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
-def test_candidate_digest_block_runs_under_check_mode_and_leaves_no_temp_dir(tmp_path):
-    """A dry run of Deploy o11y must get past the candidate digest and clean up after itself."""
+def test_candidate_digest_block_is_skipped_by_a_dry_run_and_leaves_no_temp_dir(tmp_path):
+    """A dry run of Deploy o11y must get past the candidate digest without writing anything."""
     playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
     phase = next(play for play in playbook if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
     candidate = next(
@@ -1464,7 +1465,7 @@ def test_candidate_digest_block_runs_under_check_mode_and_leaves_no_temp_dir(tmp
     probe = {"name": "candidate probe", "hosts": "localhost", "gather_facts": False,
              "vars": {"_o11y_source_review_required": True},
              "tasks": [candidate, {"name": "Report the digest",
-                                   "ansible.builtin.debug": {"msg": "digest={{ _o11y_candidate_config_sha256 }}"}}]}
+                                   "ansible.builtin.debug": {"msg": "digest={{ _o11y_candidate_config_sha256 | default('skipped') }}"}}]}
     (tmp_path / "playbooks/probe.yml").write_text(yaml.safe_dump([probe]), encoding="utf-8")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
@@ -1474,5 +1475,5 @@ def test_candidate_digest_block_runs_under_check_mode_and_leaves_no_temp_dir(tmp
         cwd=ROOT, env=env, text=True, capture_output=True, check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert re.search(r"digest=[0-9a-f]{64}", proc.stdout), proc.stdout
+    assert "digest=skipped" in proc.stdout, proc.stdout
     assert not any(scratch.iterdir()), sorted(path.name for path in scratch.iterdir())
