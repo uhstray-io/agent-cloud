@@ -653,7 +653,8 @@ friction people route around with `--no-verify` — turning a gate into a habit 
 bypassing gates. Why it exists at all: `docs/MISTAKES.md` §5.2 records committing with a
 failing test, enforced only by convention, and §5.5/§5.6 record it recurring three more
 times. The pre-commit gates cover secrets, IPs, credentials, `.env`, whitespace, YAML and
-keys — nothing about tests, so there was no gate to pass.
+keys, and the ledger citation test when `docs/MISTAKES.md` or its citation ratchet is staged.
+Nothing else about tests, so there was no gate to pass.
 
 Failing open is the deliberate opposite of the pre-commit secret gate, which fails closed.
 A leaked secret is irreversible; a red test is not, and CI blocks the merge either way.

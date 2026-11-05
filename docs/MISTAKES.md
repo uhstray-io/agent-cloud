@@ -3508,6 +3508,8 @@ condition. Fixed in `6e7bb33d` before merge. Why the rule did not fire: the edit
 tests that read this file were not treated as tests of the change. The 91-second fast subset proposed
 above includes the citation guard.
 
+**Enforcement update 2026-11-05.** The ledger citation test also runs at pre-commit when `docs/MISTAKES.md` or the citation ratchet is staged (PR #868).
+
 ### 5.3 Merging while the review was rate-limited
 
 **What happened.** Merged a pull request while the review bot reported
