@@ -1,6 +1,6 @@
 # CLAUDE.md — platform/services/console/deployment
 
-The Dispatch Console: a Rust/Dioxus app (source in `../app`, image built from `Containerfile` in this directory) served behind central Caddy. It signs users in through Authentik (native OIDC, client `console`), keeps non-secret preferences in SQLite, shows the tenant, org and site tree declared in the inventory, and (Phase 3) reads NetBox and Proxmox read-only for the tenant inventory. Plan: `plan/development/17-dispatch-console.md`.
+The Dispatch Console: a Rust/Dioxus app (source in `../app` in the agent-cloud repository, image built from `Containerfile` in this directory) served behind central Caddy. It signs users in through Authentik (native OIDC, client `console`), keeps non-secret preferences in SQLite, shows the tenant, org and site tree declared in the inventory, and (Phase 3) reads NetBox and Proxmox read-only for the tenant inventory. Plan: `plan/development/17-dispatch-console.md`.
 
 ## What this deploy does
 
@@ -74,12 +74,12 @@ The console's `/v1/work` lists Semaphore tasks, joined to the workflow registry 
 | Piece | What | Why |
 |-------|------|-----|
 | User `svc-console` | non-admin, not external, password `secret/services/console:semaphore_password` (generated once, stored before the account is created) | Non-admin: `semaphore_admin_roster` never derives it. Not external: it logs in with that password to mint its own token. |
-| Project role | `guest` in project `console_semaphore_project` | Upstream gives guest no run permission (`db/ProjectUser.go`, `ProjectGuest: 0`), and task creation needs `CanRunProjectTasks`. |
+| Project role | `guest` in project `console_semaphore_project` | Upstream Semaphore source (`db/ProjectUser.go`) gives guest no run permission (`ProjectGuest: 0`), and task creation needs `CanRunProjectTasks`. |
 | Token | `secret/services/console:semaphore_api_token` | Reused only when `GET /api/user` with it answers `svc-console`, non-admin. Otherwise svc-console logs in and mints one. |
 
 The play proves the token with itself, at the end: `GET /api/project/{p}/tasks/last` answers 200, and `POST /api/project/{p}/tasks` with template `-1` answers 403. The POST cannot launch anything whatever the gate does: `-1` names no template, and a guest is refused before any template is read. Under `--check`, reads run and every write is skipped, and the POST is never sent.
 
-Two facts the play depends on, both at upstream v2.19.11:
+Two facts the play depends on, both at upstream Semaphore v2.19.11; the file references under `api/` below are source paths in that upstream repository, not paths in this repository:
 
 - **Listing tokens cannot reuse one.** `GET /api/user/tokens` cuts every id to 8 characters (`api/user.go:51-64`), so a listed id does not authenticate. The stored token is the only reuse path.
 - **An admin cannot mint for svc-console.** The mint uses the calling user (`api/user.go:70-104`). The play logs in as svc-console itself.
@@ -95,7 +95,7 @@ Each authority is read with the smallest credential, and only when its URL var i
 - **NetBox.** Token profile `console` in `provision-netbox-automation-token.yml`: view only, on `dcim.site`, `dcim.device`, `virtualization.cluster`, `virtualization.virtualmachine`, `ipam.prefix`, `extras.tag`. No add, change or delete. The token is created with `write_enabled=False` (NetBox's Token model has that field). D24 names prefixes, addresses and interfaces; v1 reads prefixes only, so the profile has no address or interface access. The console user must hold no superuser or group rights, checked before any write. Stored at `secret/services/netbox:console_api_token`.
 - **Proxmox.** `provision-console-proxmox-token.yml` mints `console@pve!console`, a privilege-separated token, with PVEAuditor on `/` for both the user and the token. It stores `console_token_id` and `console_token` at `secret/services/proxmox`. It never rotates a live token. A stored token that Proxmox no longer has needs `console_proxmox_token_recreate=true`. A live token Proxmox has but the store lacks is refused by name unless `console_proxmox_token_replace=true`, which revokes exactly that one token and mints a replacement, because the secret is returned only once and cannot be recovered otherwise. The ACLs are granted before the store, so a stored token always has its grants.
 - **Scope to NetBox (D23).** A site may declare `netbox_site`, a NetBox site slug. `deploy-console.yml` refuses a slug declared on two sites, naming it. A site without `netbox_site` is "not mapped".
-- **Flows (D24).** `templates/flows.json.j2` renders `config/flows.json` from the declarations, names only, never an address or a port. Edges: `authentik` apps typed by their catalog `type` (`oidc`, `forward_auth`), from the effective `authentik_apps` (undefined means the whole catalog, as in `deploy-authentik.yml`); `caddy` to each managed site's hostname (never the upstream); `service` (or `job`) to `o11y` from `o11y_expected_metrics_targets`. A missing source gives no edges of that kind. The file is a bare JSON array of `{kind, from, to, label}`, the server's `Flow` type (`app/src/server/inventory.rs`); `deny_unknown_fields` makes the console refuse to start on any other shape or key. `test_rendered_flows_match_the_servers_flow_type` checks the template against that type.
+- **Flows (D24).** `templates/flows.json.j2` renders `config/flows.json` from the declarations, names only, never an address or a port. Edges: `authentik` apps typed by their catalog `type` (`oidc`, `forward_auth`), from the effective `authentik_apps` (undefined means the whole catalog, as in `deploy-authentik.yml`); `caddy` to each managed site's hostname (never the upstream); `service` (or `job`) to `o11y` from `o11y_expected_metrics_targets`. A missing source gives no edges of that kind. The file is a bare JSON array of `{kind, from, to, label}`, the server's `Flow` type (`platform/services/console/app/src/server/inventory.rs` in this repository); `deny_unknown_fields` makes the console refuse to start on any other shape or key. `test_rendered_flows_match_the_servers_flow_type` checks the template against that type.
 - **Proxmox CA.** `console_proxmox_ca_pem` is a public certificate only; a private key is refused by name. The CA file is always mounted read-only and set through `CONSOLE_PROXMOX_CA_FILE` only when the PEM is set.
 - **Reachability (plan 17 task 6.3).** `probe-console-sources.yml` (Probe Console Sources template) runs on `console_svc` and reports, names and booleans only, whether NetBox, Proxmox and OpenBao answer from the console VM. It is read-only, and it fails the play when a configured source does not answer. A NetBox that requires login answers its unauthenticated status probe with 401 or 403; that counts as an answer, and the token reads decide whether NetBox passes.
 - **Proxmox root CA (read-only).** `read-proxmox-root-ca.yml` (Read Proxmox Root CA template) prints the cluster root CA's public PEM, subject and fingerprint for pinning as `console_proxmox_ca_pem`. Every admin-token request goes through `platform/lib/pve_pinned_get.py`, which checks the API leaf certificate's SHA-256 against `proxmox_leaf_sha256` on the same connection before sending a byte. A run without the pin prints the observed fingerprint and stops; confirm it from an independent vantage (`openssl s_client`) before passing it.
@@ -106,9 +106,9 @@ Not yet done here: `config.rs` does not read the `CONSOLE_NETBOX_*`, `CONSOLE_PR
 
 ## Active Work (Semaphore, read-only)
 
-The server reads Semaphore's task list and serves it at `/v1/work` (plan 17 D17-D20). Read it with the code, not this section: `app/src/server/work.rs` (joins, lanes) and `app/src/server/semaphore.rs` (the one read).
+The server reads Semaphore's task list and serves it at `/v1/work` (plan 17 D17-D20). Read it with the code, not this section: `platform/services/console/app/src/server/work.rs` (joins, lanes) and `platform/services/console/app/src/server/semaphore.rs` (the one read).
 
-Environment, read by the server (`app/src/server/config.rs`):
+Environment, read by `platform/services/console/app/src/server/config.rs` in this repository:
 
 | Variable | Meaning |
 |----------|---------|
@@ -136,14 +136,14 @@ The window is Semaphore's newest 200 tasks of the project (`tasks/last`). A run 
 
 ## Inventory (NetBox and Proxmox, read-only, Phase 3)
 
-The server reads NetBox (sites, clusters, VMs, devices, prefixes) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
+The server reads NetBox (sites, clusters, VMs, devices, prefixes) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The response contract is in `platform/services/console/app/docs/phase3-api.md` in this repository. The code is `platform/services/console/app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
 
 | Source | Credential | Read |
 |--------|------------|------|
 | NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to |
 | Proxmox | `CONSOLE_PROXMOX_TOKEN_ID` and `CONSOLE_PROXMOX_TOKEN`, a PVEAuditor token | `cluster/resources`: nodes and guests, joined to a VM by name |
 
-Environment, read by `app/src/server/config.rs`. The deploy does not set these yet (see Open items):
+Environment, read by `platform/services/console/app/src/server/config.rs` in this repository. The deploy does not set these yet (see Open items):
 
 | Variable | Meaning |
 |----------|---------|
@@ -185,9 +185,9 @@ Deep links: each VM and service row carries `grafana_url`, the Service Overview 
 
 ## Access (Authentik directory and role map, plan 17 8.2b)
 
-`GET /v1/access` answers `{state, users, groups, role_map, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_AUTHENTIK_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/access.rs`; the response contract is the module header and the serde types, not this section.
+`GET /v1/access` answers `{state, users, groups, role_map, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_AUTHENTIK_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The console source path in this repository is `platform/services/console/app/src/server/access.rs`; the response contract is its module header and serde types, not this section.
 
-- **Directory.** One background task reads `/api/v3/core/users/` and `/api/v3/core/groups/` every 5 minutes with the view-only token `svc-console-directory` holds (`view_user` and `view_group` only). It follows `pagination.next` up to 20 pages of 100 per list. The groups list is read with `include_users=false`: the pk list the member count reads is always serialized, and only the expanded `users_obj` depends on the flag (authentik `core/api/groups.py`, 2024.12.3). `error` is one of three operator sentences, or `null`: `The newest directory read failed: <reason>. Showing the last good read.` (a failed refresh with a last good read kept), `The directory read failed: <reason>.` (an error with no data), or `Authentik holds more than 2000 users or groups; the first 2000 are shown.` (a list cut at the page bound; the rows read are shown). No URL, response body or token reaches an error or a log line. `service_account` is true for `type` `service_account` or `internal_service_account` (`UserTypeEnum`); `internal` and `external` are not counted.
+- **Directory.** One background task reads `/api/v3/core/users/` and `/api/v3/core/groups/` every 5 minutes with the view-only token `svc-console-directory` holds (`view_user` and `view_group` only). It follows `pagination.next` up to 20 pages of 100 per list. The groups list is read with `include_users=false`: the pk list the member count reads is always serialized, and only the expanded `users_obj` depends on the flag (upstream Authentik source `core/api/groups.py`, 2024.12.3). `error` is one of three operator sentences, or `null`: `The newest directory read failed: <reason>. Showing the last good read.` (a failed refresh with a last good read kept), `The directory read failed: <reason>.` (an error with no data), or `Authentik holds more than 2000 users or groups; the first 2000 are shown.` (a list cut at the page bound; the rows read are shown). No URL, response body or token reaches an error or a log line. `service_account` is true for `type` `service_account` or `internal_service_account` (the upstream Authentik `UserTypeEnum`); `internal` and `external` are not counted.
 - **Role map.** `config/role-map.json` is rendered from `platform/playbooks/vars/access-role-map.yml`, which mirrors the table "Access Level -> Per-Service Role Mapping" in `plan/architecture/04-credentials-access.md`. `platform/tests/test_console_access_role_map.py` pins every cell against that table and the serde names against the rendered JSON. Edit the table and the vars file together. The vars file is a D31 pinned input, so a rotation refuses while the controller's copy differs from the deployed commit.
 - **Gate.** `work::admin_only`, the same gate as `/v1/network` and `/v1/secrets`.
 

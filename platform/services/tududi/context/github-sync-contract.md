@@ -5,6 +5,13 @@ written from the spike against the **deployed tududi 1.1.1** and the upstream
 source at tag `v1.1.1` — every table below names its source. The companion
 Postiz contract (`platform/services/postiz/context/use-cases.md`) is the model.
 
+**Upstream source paths:** `backend/`, `frontend/`, `modules/`, `operations/`,
+`core/` and `services/` paths below refer to the cited upstream Tududi v1.1.1
+tree, not this repository. `files/tududi-db-mint.js` is in this repository's
+`platform/playbooks/`; it is called out separately from upstream paths.
+`packages/cli/` references the upstream n8n v2.25.7 tree. Other paths beginning
+`platform/` refer to this repository.
+
 ## Verified tududi API surface (source: tag v1.1.1 unless noted)
 
 | Fact | Value | Source |

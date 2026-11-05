@@ -29,7 +29,7 @@ Authentik as the platform's central **IdP / SSO**. Read with the root
 
 ## Config-as-code (blueprints)
 
-`blueprints/*.yaml` are committed and mounted read-only at `/blueprints/custom`;
+`deployment/blueprints/*.yaml` are committed and mounted read-only at `/blueprints/custom`;
 the worker applies them idempotently on boot. The seed creates an `agent-cloud`
 group. Flows, OIDC providers, and per-app gating are added here as services are
 onboarded — never click-configured in the UI (that would drift from code).
@@ -38,7 +38,7 @@ onboarded — never click-configured in the UI (that would drift from code).
 
 Every member of `platform-admins` (the Authentik superuser group, the top role in every
 SSO'd app) is declared in ONE list, `platform_admins`, and rendered from it: the account
-blueprint (`templates/platform-admins.yaml.j2` → `blueprints-active/platform-admins.yaml`),
+blueprint (`deployment/templates/platform-admins.yaml.j2` → `blueprints-active/platform-admins.yaml`),
 the worker env's password lines (`templates/env.j2`) and the OpenBao password fields
 (`platform/playbooks/vars/secret-declarations/authentik.yml`) are all looped over the same
 entries. The gateway deploy derives a per-person identity from the same list
@@ -105,7 +105,7 @@ inventory list `platform_retired_accounts` (default empty) and run Deploy Authen
    user the users blueprint creates, including env.j2 defaults, or a declared
    `platform_admins_exceptions` member; names are compared without regard to case), and refuses the
    system accounts `akadmin`, `AnonymousUser` and `ak-outpost-*`, before it applies anything.
-2. The deploy renders `templates/platform-retired.yaml.j2` into `blueprints-active/platform-retired.yaml`:
+2. The deploy renders `deployment/templates/platform-retired.yaml.j2` into `blueprints-active/platform-retired.yaml`:
    one `state: absent` `authentik_core.user` per name. With an empty list nothing is rendered and a
    stale copy is pruned, so a platform that retires nobody carries no extra blueprint.
 3. The verify step expects that blueprint applied and every listed name gone from the live API;
@@ -122,7 +122,7 @@ administrator is not deleted by this.
 
 Blueprint application is **asynchronous** in the worker: a deploy that placed the files
 and saw a healthy server has proven only that the files landed. So the last step of
-`deploy-authentik.yml` renders `templates/verify-users.py.j2` and runs it inside
+`deploy-authentik.yml` renders `deployment/templates/verify-users.py.j2` and runs it inside
 `authentik-server` (bootstrap token from the container env, same as the OIDC check).
 It fails the deploy unless:
 

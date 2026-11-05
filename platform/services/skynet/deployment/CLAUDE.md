@@ -4,7 +4,7 @@ skynet — the Tier 2 orchestration API (`skynet`, :8080 on the container networ
 Postgres for LangGraph checkpoints (`skynet-db`, internal only). Two podman containers. `skynet`
 publishes its API on the declared host bind (`skynet_publish_bind`:`skynet_publish_port`, loopback
 `127.0.0.1:8380` by default); `skynet-db` publishes nothing. Its design is DESIGN-DECISIONS §17 in the skynet
-repository; its variables are listed in `deploy/tier2/README.md` there.
+repository; its variables are listed in the skynet repository's `deploy/tier2/README.md`.
 
 ## What this service is
 
@@ -67,7 +67,7 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 The image ref comes from the inventory (`skynet_image`), pinned by digest. It is not built on
 the VM.
 
-skynet publishes the image from its `.github/workflows/publish-tier2.yml` (merged 45fd869, skynet
+The skynet repository publishes the image from its `.github/workflows/publish-tier2.yml` (merged 45fd869, skynet
 PR #10) to GHCR as `ghcr.io/uhstray-io/skynet-tier2`. The inventory pins that digest in
 `skynet_image`.
 
@@ -137,7 +137,7 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
 
 ## Related
 
-- skynet repository, `deploy/tier2/README.md`: the variables and the API surface.
+- skynet repository's `deploy/tier2/README.md`: the variables and the API surface.
 - OpenSpec change `service-deployment-workflow`, task 3.7 (`plan/development/openspec/changes/service-deployment-workflow/tasks.md`).
 - Platform plan: `plan/development/15-service-deployment-workflow-agents.md`.
 - Gateway route and its key policy: `platform/services/agentgateway/deployment/`.
