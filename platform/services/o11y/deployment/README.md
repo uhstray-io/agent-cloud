@@ -862,11 +862,19 @@ A sustained failure still pages once. The `alerting-health` group's rule
 `o11y_alert_evaluations_failing` fires when rule evaluations have failed more than
 five times in a five-minute window, and that holds for fifteen minutes, so only a stall
 that keeps failing for about fifteen minutes pages; a short spike does not. A 14-day
-backtest against production (2026-10-21 to 2026-11-04) gave 4 such episodes, where a
-fifteen-minute window would have paged 17 times. It keeps
+backtest against production (2026-10-21 to 2026-11-04) gave 4 such episodes; counting
+failures over fifteen minutes instead of five would have paged 17 times. It keeps
 `execErrState: Alerting`, so a prolonged disruption is reported by one alert rather
 than by every rule. Rules whose queries are still failing hold their last state while
 it fires; check the receiver host's I/O wait and Prometheus health.
+
+Order matters. Run `Deploy o11y (Dev)` with this change before any alert drill or recover
+template. `Drill o11y Active Alert Delivery (Dev)` and `Recover o11y Active Alert Drill (Dev)`
+validate the live rules against the KeepLast contracts and refuse `live_target_drift` until a
+deploy has re-provisioned them. `Restore o11y Alert Baseline (Dev)` accepts either state, and so
+does the transition check at deploy, so a deploy interrupted between writing the file and
+Grafana's reload can simply be rerun. Main-bound o11y templates cannot apply this change until
+the `dev` to `main` promotion.
 
 A full Grafana or Prometheus outage is covered by the external liveness watcher
 (`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs

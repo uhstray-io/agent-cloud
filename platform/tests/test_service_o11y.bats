@@ -1869,7 +1869,7 @@ tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
 set_check = by_name['Require the live rule set to equal the provisioned rules']
-field_check = by_name["Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's"]
+field_check = by_name["Require each live rule's pause, error states, labels, annotations and duration to equal the provisioned rule's"]
 settings_check = by_name["Require each live rule's notification settings to equal the provisioned rule's"]
 query_check = by_name['Require live endpoint-health and scheduled-job PromQL to equal the provisioned expressions']
 live_rules = by_name['Read live o11y alert rules']
@@ -1880,6 +1880,8 @@ assert tasks.index(scope) < tasks.index(set_check) < tasks.index(query_check) < 
 assert slurp['register'] == '_provisioned_rules_file' and not block.get('no_log', False)
 assert live_rules['no_log'] is True and folders['no_log'] is True
 assert 'no_log' not in field_check and 'no_log' not in settings_check
+assert {'execErrState', 'noDataState', 'isPaused', 'for'} <= set(
+    re.findall(r"attribute='(\w+)'", json.dumps(field_check['ansible.builtin.assert']['that']))), 'readback must compare error and no-data states'
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
@@ -1981,6 +1983,11 @@ assert not verify_rules(swap(ns(mute_time_intervals=['maintenance'])), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, labels=r['labels'] | {'owner': 'unexpected'})), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, annotations=r['annotations'] | {'dashboard_url': '/unexpected'})), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, **{'for': '45s'})), inf_doc)
+# The readback compares the error and no-data states too: a rendered KeepLast rule
+# read back as Alerting (or the reverse) is drift, as is a rendered OK no-data state.
+assert routed['execErrState'] == 'KeepLast' and routed['noDataState'] == 'OK', routed['uid']
+assert not verify_rules(swap(lambda r: dict(r, execErrState='Alerting')), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, noDataState='Alerting')), inf_doc)
 # Routing values come from the file, not a parallel list: rendered 45s vs live 30s fails,
 # and a file that says 45s passes when live says 45s.
 wait45 = {**inf_doc, 'groups': [dict(g, rules=[dict(r, notification_settings=r['notification_settings'] | {'group_wait': '45s'})

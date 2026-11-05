@@ -1490,8 +1490,15 @@ def _expected_target_queries_match(data: Any, expression: str) -> bool:
     return True
 
 
-def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str) -> bool:
-    """Compare an API readback with one validated provisioning owner."""
+def _live_rule_matches_owned(
+    rule: Any, target: dict[str, Any], folder_uid: str, accepted_err_states: tuple[str, ...] = ("KeepLast",)
+) -> bool:
+    """Compare an API readback with one validated provisioning owner.
+
+    The error state is not ownership. A placed file and the live rule can differ in it
+    between placement and Grafana's reload, so the transition check passes the states it
+    accepts. The active readback keeps the strict default.
+    """
     if not isinstance(rule, dict) or rule.get("folderUID") != folder_uid:
         return False
     if target.get("_kind") == "group":
@@ -1523,7 +1530,7 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
             and rule.get("annotations") == target["_annotations"]
             and rule.get("isPaused") is target["_is_paused"]
             and rule.get("notification_settings") == target["_notification_settings"]
-            and rule.get("noDataState") == "OK" and rule.get("execErrState") == target.get("_exec_err_state", "KeepLast")
+            and rule.get("noDataState") == "OK" and rule.get("execErrState") in accepted_err_states
             and rule.get("for") == "2m"
         )
     if target["_inert"]:
@@ -1564,7 +1571,7 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
         and rule.get("isPaused") is target["_is_paused"]
         and rule.get("notification_settings") == target["_notification_settings"]
         and rule.get("noDataState") == "OK"
-        and rule.get("execErrState") == target.get("_exec_err_state", "KeepLast")
+        and rule.get("execErrState") in accepted_err_states
         and rule.get("for") == "2m"
     )
 
@@ -1820,7 +1827,6 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
                 "instance": "{{ $labels.instance }}",
             }
             owned.append({**group, "_kind": "group", "_inert": False, "_retired": False,
-                          "_exec_err_state": rule["execErrState"],
                           "_title": rule["title"], "_labels": live_labels, "_is_paused": rule["isPaused"],
                           "_annotations": rule["annotations"],
                           "_notification_settings": rule.get("notification_settings")})
@@ -1937,7 +1943,6 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
             **value,
             "_kind": "target",
             "_inert": False,
-            "_exec_err_state": rule["execErrState"],
             "_retired": False,
             "_title": rule["title"],
             "_expr": expr,
@@ -2101,6 +2106,10 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
             raise Refusal("live_target_drift")
         matches_previous = True
         matches_pending = bool(pending)
+        # Grafana loads a placed file only at deploy.sh, so an interrupted deploy can leave the
+        # file at KeepLast while the live rules still say Alerting, or the reverse. Either state
+        # is accepted here; the active readback (validate_active_expected_target_rules) stays strict.
+        accepted_err_states = ("Alerting", "KeepLast")
         for rule in live_targets:
             target = previous_by_uid.get(rule["uid"])
             pending_target = pending_by_uid.get(rule["uid"])
@@ -2108,9 +2117,13 @@ def prepare_expected_target_transition(input_document: Any) -> dict[str, Any]:
                 raise Refusal("live_target_drift")
             if rule.get("ruleGroup") != "service-telemetry" or rule.get("folderUID") != live_folder_uid:
                 raise Refusal("live_target_drift")
-            if target is None or not _live_rule_matches_owned(rule, target, live_folder_uid):
+            if target is None or not _live_rule_matches_owned(
+                rule, target, live_folder_uid, accepted_err_states=accepted_err_states
+            ):
                 matches_previous = False
-            if pending_target is None or not _live_rule_matches_owned(rule, pending_target, live_folder_uid):
+            if pending_target is None or not _live_rule_matches_owned(
+                rule, pending_target, live_folder_uid, accepted_err_states=accepted_err_states
+            ):
                 matches_pending = False
         if not matches_previous and not matches_pending:
             raise Refusal("live_target_drift")

@@ -942,15 +942,55 @@ def test_first_deploy_accepts_live_alerting_previous_owners_against_keeplast_ren
 
 
 @pytest.mark.parametrize("grouped", [False, True])
-def test_live_alerting_is_drift_when_previous_ownership_says_keeplast(grouped):
-    # The state a placement carries is the state the readback must match: a KeepLast
-    # previous owner does not accept a live Alerting rule.
+def test_interrupted_first_deploy_recovers_when_live_alerting_and_placed_file_keeplast(grouped):
+    # An interrupted deploy wrote the KeepLast file in Phase 1 and failed before deploy.sh
+    # reloaded Grafana, so the live rules still say Alerting. The rerun must accept that
+    # instead of refusing live_target_drift on every retry.
+    targets = _two_targets()
+    if grouped:
+        previous = _grouped_render(targets)
+        pending = _grouped_render(targets)
+    else:
+        previous = _render(o11y_expected_metrics_targets=targets)
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_alerting_readback(previous),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_interrupted_deploy_recovers_when_live_keeplast_and_placed_file_alerting(grouped):
+    # The reverse order: the placed file still says Alerting while Grafana has already
+    # reloaded KeepLast. The rerun accepts the live rules in either state.
+    targets = _two_targets()
+    if grouped:
+        previous = _exec_state(_grouped_render(targets), "Alerting")
+        pending = _grouped_render(targets)
+    else:
+        previous = _exec_state(_render(o11y_expected_metrics_targets=targets), "Alerting")
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_live_rules(pending),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_transition_refuses_a_live_error_state_that_no_owner_placed(grouped):
+    # A placement writes only Alerting or KeepLast. Any other live state on an active rule
+    # is still drift, so the relaxed error-state check cannot hide a foreign rule.
     targets = _two_targets()
     previous = _grouped_render(targets) if grouped else _render(o11y_expected_metrics_targets=targets)
+    live = _live_rules(previous)
+    for rule in live:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "OK"
     with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
         _transition(
-            previous, enabled=True, targets=targets, mode="grouped" if grouped else "legacy",
-            live=_alerting_readback(previous),
+            previous, enabled=True, targets=targets, mode="grouped" if grouped else "legacy", live=live,
         )
 
 
