@@ -9,6 +9,7 @@ context: Record sanitized results from three existing Dev-bound Semaphore survey
 
 **Date:** 2026-10-21
 **Status:** READ-ONLY EVIDENCE; restore, placement, and capacity gates remain open.
+> **Parent plan:** [Observability](05-observability.md)
 **Context:** This note records task results from existing Dev-bound backup readiness, PBS census, seven-day capacity, and inspect-only backup-job checks after PR 725 merged to Dev at `6605942ea7218989d10ab03376c4dc15908cadb3`. It distinguishes observed candidates from verified recoverability; it does not authorize or record PBS provisioning, allocation, backup, or restore work.
 
 ## Problem

@@ -1,6 +1,6 @@
 # Service Architecture
 
-**Date:** 2026-11-04
+**Date:** 2026-11-05
 **Status:** ACTIVE
 **Author:** Joseph A. Wisneski IV
 **Context:** agent-cloud runs more than twenty services and agents, each with its own deploy
@@ -27,13 +27,12 @@ Every service carries one status, the strongest claim the repository's own evide
 | **LIVE-LOCAL** | Running in the local-dev instance only |
 | **BUILT** | Deploy code is merged; no production run is recorded |
 | **PLANNED** | Decided or tracked, not built |
-| **RETIRING** | Retired by decision but still running |
+| **RETIRING** | Retirement decided; teardown not yet recorded |
 | **PLACEHOLDER** | A directory exists; nothing is deployable from it |
 | **EXTERNAL** | Owned by another repository or by the substrate |
 | **UNVERIFIED** | The repository holds no evidence of the live state |
 
-In diagrams a solid line is LIVE or BUILT and a dashed line is PLANNED, following the house diagram
-standard [1].
+In diagrams a solid line is LIVE or BUILT and a dashed line is PLANNED or not verified as running in production, following the house diagram standard [1].
 
 ---
 
@@ -99,10 +98,10 @@ flowchart TD
         RUNNERS["GitHub Actions runners<br/>(LIVE)"]
     end
     subgraph APPS["Business and operator applications"]
-        CONSOLE["Dispatch Console (BUILT)"]
+        CONSOLE["Dispatch Console (production build and start recorded;<br/>deploy failed its health check)"]
         HONCHO["honcho memory API (LIVE)"]
-        TUDUDI["tududi (RETIRING)"]
-        PLANE["Plane (PLANNED)"]
+        TUDUDI["tududi (retired 2026-10-23)"]
+        PLANE["Plane (production deploy run recorded, task 11139;<br/>live state UNVERIFIED)"]
         POSTIZ["Postiz (LIVE-LOCAL)"]
         ERP["ERPNext (BUILT)"]
         UHH["UhhCraft storefront (BUILT)"]
@@ -131,7 +130,6 @@ flowchart TD
     LG -.->|"Semaphore task (planned)"| SEM
     AI --> GR --> AUTO --> PLAT
     APPS --> PLAT
-    style PLANE stroke-dasharray: 5 5
     style AGENTS stroke-dasharray: 5 5
 ```
 
@@ -149,7 +147,7 @@ the service; the network path itself is in the companion document. The runtime c
 | Caddy | Sole HTTPS ingress | Infrastructure | Rootless podman, legacy directory | Per route (see network doc) | LIVE [11] | `05-platform-infra.md` |
 | step-ca | Internal CA, two issuing profiles | Infrastructure | Rootless podman, own VM | None: API on host loopback | LIVE 2026-09-29 [12] | `step-ca/context/architecture.md` |
 | hickory-dns | Internal zone, forwarder | Infrastructure | Podman | None (DNS) | LIVE-LOCAL; production VM provisioned [13] | `dns/context/architecture.md` |
-| NetBox | IPAM authority + Diode discovery | Infrastructure | Docker, 12 services | Authentik forward_auth | LIVE; discovery freshness UNVERIFIED [14] | `netbox/deployment/CLAUDE.md` |
+| NetBox | IPAM authority + Diode discovery | Infrastructure | Docker, 12 services; separate privileged, host-networked `netbox-orb-agent` | Authentik forward_auth | LIVE; discovery freshness UNVERIFIED [3][14] | `netbox/deployment/CLAUDE.md` |
 | o11y | Prometheus, Loki, Alloy, Tempo, Pyroscope, Grafana, node exporter | Infrastructure | Rootless podman, own VM | Grafana native OIDC | LIVE [15] | `o11y/deployment/CLAUDE.md` |
 | agentgateway | Inference edge gateway with per-identity keys and budgets | Infrastructure | Podman, gateway + its own Postgres | API key per identity; UI by gateway OIDC (admins) | LIVE since 2026-10-14 [16] | `agentgateway/context/architecture.md` |
 | OPA | Agent-action authorization (Rego) | Guardrail | Podman | None in Phase 1 (decisions, not secrets) | LIVE-LOCAL [17] | `opa/deployment/context/architecture.md` |
@@ -160,14 +158,14 @@ the service; the network path itself is in the companion document. The runtime c
 | Launch gate | Only identity that asks Semaphore to launch an agent's task: authenticates the caller, checks the agent and template allowlist, asks OPA, then launches | Guardrail | Podman (deploy playbooks and templates; not deployed) | Caller bearer token; agent and template checks | BUILT; not deployed [48] | `launch-gate/deployment/CLAUDE.md` |
 | plane-mcp | Plane's MCP server for harnesses | Auxiliary | Podman, own compose project beside Plane | API-key endpoint for service identities; OAuth endpoint for people | BUILT; production edge not in place [49] | `plane-mcp/deployment/CLAUDE.md` |
 | honcho | Memory API for team memory | Auxiliary | Rootless podman, 4 containers | JWT on `/v3`; Authentik forward_auth on `/docs` | LIVE [22] | `honcho/deployment/CLAUDE.md` |
-| tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | RETIRING: retired 2026-10-23, replaced by Plane [23] | `tududi/deployment/CLAUDE.md` |
-| Plane | Work tracker replacing tududi | Auxiliary | Own VM (planned) | Authentik OIDC (blueprint and catalog entry in repo) | PLANNED per plan 16 (28 of 87 tasks checked); a production deploy run is recorded, live state UNVERIFIED [23][52] | `plan/development/16-plane-work-management.md` |
+| tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | Retired 2026-10-23; replaced by Plane [23] | `tududi/deployment/CLAUDE.md` |
+| Plane | Work tracker replacing tududi | Auxiliary | Podman (production placement unverified) | Authentik OIDC (blueprint and catalog entry in repo) | Production deploy run recorded (task 11139); live state UNVERIFIED [23][52] | `plan/development/16-plane-work-management.md` |
 | Postiz | Social publishing | Auxiliary | Rootless podman, 5 containers + search node | Native OIDC; public API path keyed by the app | LIVE-LOCAL; production host hardened, app pending [24] | `postiz/deployment/CLAUDE.md` |
 | OpenHands | Agent canvas | Auxiliary | Docker (host socket for session containers) | Authentik forward_auth | LIVE [25] | `openhands/context/architecture.md` |
 | ERPNext | ERP, system of record for storefront revenue | Business | Podman, 9 containers | Native OIDC | BUILT; local deploy pending image pull [26] | `erpnext/deployment/context/architecture.md` |
 | UhhCraft | Storefront, first WebSmith-built site | Website | Podman, 4 containers | Public storefront | BUILT; go-live smoke pending hardware [27] | `uhhcraft/CLAUDE.md` |
 | ComfyUI, Hunyuan3D | Image and 3D generation sidecars for UhhCraft | AI | Podman with GPU | Internal only | BUILT; GPU readiness unproven [28] | each service's `CLAUDE.md` |
-| WisBot | Discord voice and chat agent | AI | Podman or Docker via runtime detection | None (Discord bot; health on loopback) | UNVERIFIED [29] | `agents/wisbot/deployment/CLAUDE.md` |
+| WisBot | Discord voice and chat agent; `OLLAMA_ENDPOINT` is Ollama-compatible, not agentgateway | AI | Podman or Docker via runtime detection | None (Discord bot; health on loopback) | UNVERIFIED [29][53] | `agents/wisbot/deployment/CLAUDE.md` |
 | NemoClaw | Agent sandbox (legacy reference) | AI | Docker (OpenShell requires it) | None declared | Legacy reference; reframed onto skynet, PLANNED [30] | `agents/nemoclaw/deployment/CLAUDE.md` |
 | NocoDB | Former table store | Automation | Podman, legacy `deploy.sh` | Hand-maintained route | RETIRING since 2026-09-01 [31] | `plan/development/09-service-migrations-tooling.md` |
 | vLLM | Model serving on the GPU pair | External | Owned by dgx-spark | Upstream key held by agentgateway | EXTERNAL [16] | dgx-spark repository |
@@ -185,6 +183,7 @@ by those two choices.
 
 ```mermaid
 flowchart LR
+    AK["Authentik<br/>identity provider"]
     ADMINS["platform-admins"] --> MEMBER
     DEVS["developers"] --> MEMBER
     ADMINS --> ADMIN
@@ -194,8 +193,7 @@ flowchart LR
             M2["Semaphore"]
             M3["ERPNext"]
             M4["Postiz"]
-            M5["tududi"]
-            M6["Dispatch Console"]
+            M5["Dispatch Console"]
         end
         subgraph FA_M["forward_auth (Caddy outpost gate)"]
             F1["n8n"]
@@ -209,6 +207,8 @@ flowchart LR
         A1["OpenBao (OIDC)"]
         A2["agentgateway operator UI (OIDC)"]
     end
+    AK -->|"native OIDC"| M2
+    AK -->|"native OIDC"| A1
 ```
 
 Native OIDC is preferred because the application then knows who the user is. `forward_auth` is
@@ -255,7 +255,7 @@ flowchart LR
     AK -->|"client secret"| CON["console"]
     AK -->|"client secret"| ERP["erpnext"]
     AK -->|"client secret"| PZR["postiz"]
-    AK -->|"client secret"| TD["tududi"]
+    AK -.->|"retired app client; current use unverified"| TD["tududi"]
     AK -->|"client secret"| AGWR["agentgateway"]
     AGWS -->|"probe identity key"| O11Y
     AGWS -->|"six role keys"| SKYR["skynet"]
@@ -264,6 +264,8 @@ flowchart LR
     PZ -->|"API key into an n8n credential"| N8N["n8n"]
     SEMS -. "local-dev stopgap only" .-> SKYR
 ```
+
+Honcho's Gemini key is read from `secret/services/nemoclaw`, not from a Honcho-owned path [53].
 
 The secret flow on every deploy is the same four steps: OpenBao to Ansible memory (credential tasks
 only carry `no_log`), Jinja2 templates, compose-readable env files that are gitignored and
@@ -281,7 +283,7 @@ grant wildcard access over `secret/data/services/*`, against the "enumerated pat
 Composable services are deployed the same way, by a Semaphore template that runs their
 `deploy-<name>.yml`. Legacy wrappers (OpenBao, Semaphore, NocoDB, NemoClaw), host services (the CI
 runners) and external systems follow the paths their own records describe, and planned services
-have none yet. The sequence shows one composable deploy, using tududi as the example [38].
+have none yet. The sequence shows one composable deploy as a generic service example [38].
 
 ```mermaid
 sequenceDiagram
@@ -324,18 +326,18 @@ flowchart LR
     AGW -->|"budgets"| AGWDB["gateway Postgres"]
     CON["Dispatch Console"] -->|"read-only tasks"| SEM
     N8N["n8n"] -->|"publish"| PZ["Postiz"]
-    N8N -->|"two-way sync"| TD["tududi"]
+    N8N -.->|"legacy two-way sync; production state unverified"| TD["tududi"]
     N8N -->|"issues"| GH["GitHub"]
     HON["honcho"] -->|"text generation (deriver, summaries);<br/>embeddings off"| GEM["Gemini API"]
     UHH["UhhCraft"] -->|"generate"| CUI["ComfyUI sidecar"]
     UHH -->|"generate"| HUN["Hunyuan3D sidecar"]
     UHH -->|"payments, mail, shipping"| EXT["Stripe, Resend, USPS, Printify"]
     NB["NetBox orb-agent"] -->|"discovery"| PVE["Proxmox + pfSense"]
-    SEM -->|"device proposals executed"| NB
+    SEM -.->|"device proposals (dev only; production execution unverified)"| NB
     O11Y["o11y"] -->|"synthetic completion probe"| AGW
-    SEM -->|"step results"| COL["conformance collector"]
-    COL --> NB
-    COL --> LOKI["o11y Loki"]
+    SEM -.->|"Collect Service Conformance (Dev), launched by hand"| COL["conformance collector (not established in production)"]
+    COL -.-> NB
+    COL -.-> LOKI["o11y Loki"]
 ```
 
 Notable edges, each recorded where it lives:
@@ -346,12 +348,12 @@ Notable edges, each recorded where it lives:
   planned (OpenSpec change `skynet-launch-containment`).
 - **agentgateway to OpenRouter.** A model declared with `provider: openrouter` is served through the
   gateway with a key only the gateway holds; it is optional and absent unless declared [16].
-- **n8n to tududi and GitHub.** The two-way task and issue sync runs as n8n workflows; it ends with
-  tududi's teardown in Plane's final phase [23][39].
-- **Semaphore to NetBox.** A device creation proposed by skynet and allowed by OPA is executed by
-  the `Create NetBox Device` playbook with a scoped NetBox token [3]. The OPA check is the one skynet's
-  own client makes; Semaphore does not make it. skynet cannot currently launch this playbook, because
-  svc-skynet is `guest` (since 2026-10-31).
+- **n8n to tududi and GitHub.** The two-way task and issue sync was implemented as n8n workflows;
+  its production state is unverified; the plan records teardown as pending [23][39].
+- **Semaphore to NetBox.** The `Create NetBox Device` playbook can execute a device proposal with a
+  scoped NetBox token [3], but the repository does not establish that this edge is running in production;
+  it is shown dashed. The OPA check is the one skynet's own client makes; Semaphore does not make it.
+  skynet cannot currently launch this playbook, because svc-skynet is `guest` (since 2026-10-31).
 
 ### 7. The AI path: propose, validate, execute
 
@@ -421,8 +423,10 @@ flowchart TB
 
 The collector, `Collect Service Conformance`, is the workflow's only status writer: it reads each
 template's recent Semaphore history and writes the newest result per service and step to NetBox
-custom fields and to Loki for the `service-conformance` dashboard [3][42]. The registry file is the
-authority for the order; the grouping is a reading aid [42].
+custom fields and to Loki for the `service-conformance` dashboard [3][42]. Only the `(Dev)` template,
+launched by hand, is established in the repository; production execution is not established, so its
+diagram edges are dashed. The registry file is the authority for the order; the grouping is a reading
+aid [42].
 
 ### 9. Runtime choice and boot persistence
 
@@ -435,14 +439,16 @@ services that still run rootful from their original directories [3][9].
 flowchart TD
     Q1{"Needs privileged mode, raw sockets,<br/>or the host container socket?"}
     Q2{"Is it the secret store or orchestrator,<br/>running from a legacy directory?"}
-    DOCKER["Docker<br/>NetBox (discovery), OpenHands (host socket),<br/>NemoClaw (OpenShell)"]
+    DOCKER["Docker<br/>NetBox services; OpenHands (host socket); NemoClaw (OpenShell)"]
     ROOTFUL["Rootful podman<br/>OpenBao, Semaphore"]
-    ROOTLESS["Rootless podman (default)<br/>Caddy, step-ca, o11y, n8n, honcho,<br/>tududi, Postiz, ..."]
+    ROOTLESS["Rootless podman (default)<br/>Caddy, step-ca, o11y, n8n, honcho,<br/>Postiz, ..."]
     Q1 -->|"yes"| DOCKER
     Q1 -->|"no"| Q2
     Q2 -->|"yes"| ROOTFUL
     Q2 -->|"no"| ROOTLESS
 ```
+
+NetBox itself uses Docker. The separate `netbox-orb-agent` discovery container is privileged and uses host networking [3][14].
 
 Containers must survive a reboot without a person. Every compose service declares `restart: always`
 (or `"no"` for a labelled one-shot); rootless services need linger plus podman's user boot unit,
@@ -465,10 +471,16 @@ stateDiagram-v2
     Retiring --> Removed: teardown change executed
     Removed --> [*]
     note right of Planned
-        Plane, the agent runtime reframe
+        The agent runtime reframe
+    end note
+    note right of Production
+        Plane deploy recorded; live state UNVERIFIED
     end note
     note right of Retiring
-        NocoDB (since 2026-09-01), tududi (since 2026-10-23)
+        NocoDB (since 2026-09-01)
+    end note
+    note right of Removed
+        tududi (retired 2026-10-23; teardown unverified)
     end note
 ```
 
@@ -488,7 +500,7 @@ visible so they are not reopened without new evidence.
 | Inference gateway versus orchestrator | agentgateway replaces skynet; skynet fronts vLLM directly; both, with distinct jobs | Per-client keys and limits for SDK clients; placement and policy across the estate | **Both.** agentgateway owns transport, keys and budgets; skynet owns placement, policy and orchestration, and reaches models through the gateway. | [44] |
 | Container runtime | Docker everywhere; rootless podman everywhere; rootless by default with named exceptions | Least privilege; the capabilities a few services require | **Rootless podman by default**; Docker only where privileged mode or the host socket is required. | [6][7] |
 | How the console reads the platform | Its own database; the controller token; read models from each authority with a read-only identity | Never a second source of truth; least privilege | **Read models from the authorities**, through a `guest` Semaphore identity that cannot launch. | [21][45] |
-| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; tududi's teardown is Plane's last phase. | [23] |
+| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; the plan's final phase is tududi teardown. | [23] |
 
 ## Source Context
 
@@ -554,6 +566,8 @@ TARGET [6]; the Kubernetes tier, Harbor and Kyverno are PLANNED in plan 03 [8].
 
 ## Target Outcome
 
+The collector's live-status guarantee is a target, not a current production claim; only the hand-launched `(Dev)` collection path is established [3].
+
 When the phases land, every repository-managed service in the catalog is either LIVE or removed
 (EXTERNAL systems such as vLLM stay EXTERNAL), and the AI layer is
 connected end to end through the guardrails. The diagram shows that end state; dashed lines are the
@@ -569,7 +583,8 @@ flowchart LR
     SKY -.->|"execute"| SEM["Semaphore"]
     SEM --> SVC["Every service: one shape per tier,<br/>secrets in tmpfs, rootless by default"]
     PLANE["Plane"] -.->|"native sync"| GH["GitHub"]
-    SEM --> COL["Conformance collector"] --> NB["NetBox + Loki"]
+    SEM -.->|"only (Dev) run evidenced; production unverified"| COL["Conformance collector"]
+    COL -.-> NB["NetBox + Loki"]
 ```
 
 ## Validation Criteria
@@ -609,7 +624,8 @@ the newer fact and its date.
 
 | Older statement | Newer fact | Date and source |
 |---|---|---|
-| tududi listed as a deployed production service (AGENTS.md, Completed) | Retired by decision; Plane replaces it | 2026-10-23 [23] |
+| tududi listed as a deployed production service (AGENTS.md, Completed) | Retired by decision on 2026-10-23; teardown and current runtime unverified; Plane replaces it [23] | 2026-10-23 |
+| Plane listed as PLANNED with a planned VM | A production deploy run is recorded (task 11139); live state remains UNVERIFIED | [23][52] |
 | Dispatch Console plan "PROPOSED" (plan 17) | Code and deploy templates merged; production build and start recorded, and the first deploy failed its health check | 2026-10-26 [21] |
 | WisBot's `/wisllm` depends on the WisAI endpoint | The WisAI plane was never built; skynet supersedes it | 2026-06-23 [29][41] |
 
@@ -678,17 +694,18 @@ document; for long, frequently edited documents the section name is given as wel
 44. `plan/architecture/05-platform-infra.md:292-351` (Inference gateway: agentgateway alongside skynet; accepted 2026-10-12)
 45. `plan/development/17-dispatch-console.md:30-60` (Decisions D1 to D21)
 46. `platform/playbooks/deploy-{honcho,o11y,skynet,agentgateway,console,postiz,tududi,erpnext}.yml`, each playbook's `_shared_reads`; `platform/playbooks/provision-n8n-postiz-credential.yml`
-
 47. `platform/services/opa/deployment/policies/agentcloud/data.json:71-160` (infra-, security-, o11y-, service- and network-agent identities)
 48. `platform/services/launch-gate/deployment/CLAUDE.md:1-12` ("not deployed"; the gate's request path)
 49. `platform/services/plane-mcp/deployment/CLAUDE.md:104` ("Production edge (not yet in place)"); `AGENTS.md`, Sub-directory Documentation (plane-mcp row)
 50. `platform/services/console/deployment/CLAUDE.md:196-200` (credentials; production order; the production start and its health probe)
 51. `AGENTS.md`, Deployment Status, skynet entry (prod, 2026-10-30); `platform/services/skynet/deployment/CLAUDE.md:10-16` (launch steps refused while svc-skynet is guest); `docs/MISTAKES.md` line 437 (the 2026-10-31 launcher narrowing; a separate Semaphore project is not a security control)
 52. `platform/services/plane/deployment/CLAUDE.md:19-22` (production fetch step recorded under Semaphore task 11139)
+53. `platform/playbooks/deploy-honcho.yml` (`from_service: nemoclaw`, `gemini_api_key`); `agents/wisbot/deployment/templates/wisbot.env.j2` (`OLLAMA_ENDPOINT`); `platform/playbooks/deploy-wisbot.yml` (`wisbot_ollama_endpoint`)
 
 ## Revision History
 
 | Date | Change |
 |---|---|
+| 2026-11-05 | Corrected tududi retirement, Plane and Console production evidence, native OIDC edges, unverified production runtime edges, NetBox discovery privilege ownership, Honcho's shared Gemini secret source and WisBot's Ollama endpoint; added revision history entry |
 | 2026-11-04 | Corrected from repository evidence: skynet is LIVE as an API with Semaphore launches refused; Plane's task count is 28 of 87 with a production run recorded and live state UNVERIFIED; Dispatch Console has a recorded production start but no passing verify; GitHub runner jobs run on the host unless they declare a container; OPA declares five agent roles; the skynet-to-Semaphore edge is dashed; launch-gate and plane-mcp rows and a launch-gate node added |
 | 2026-10-27 | Initial version: service catalog with status, identity, secret and dependency maps, deploy and AI paths, decision criteria, in-flight phases and target outcome |
