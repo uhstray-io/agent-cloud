@@ -333,6 +333,7 @@ def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
     )
     with _run_deadline_driver(tmp_path, driver, env, limit=20) as ((stdout, stderr), returncode):
         assert returncode == 1
+        assert "exceeded its fixed deadline" in stderr
         assert "write outcome is uncertain" in stderr
         assert stdout == ""
         assert TOKEN not in stdout + stderr and PRIVATE not in stdout + stderr
