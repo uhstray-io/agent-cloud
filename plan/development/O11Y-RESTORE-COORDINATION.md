@@ -3,6 +3,7 @@
 **Date:** 2026-10-24
 
 **Status:** ACTIVE
+> **Parent plan:** [Observability](05-observability.md)
 **Context:** This plan records the source implementation boundary for OpenSpec `pbs-vm-and-restore-gate`, task 5.2. The isolated restore executor and separately launched cleanup are implemented in the current feature worktree around a schema-2 CAS journal and the shared PBS completed-task contract. Independent reviews of the full PBS/restore and capability source scopes are complete, and actionable findings were fixed and verified. Final combined-head CI remains pending; the source is not published, imported into Dev Semaphore, or exercised against private OpenBao, Semaphore, PBS, Proxmox, or guest state. Private inventory declarations and all live acceptance gates remain separate.
 
 ## Problem

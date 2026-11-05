@@ -2,6 +2,7 @@
 
 **Date:** 2026-10-24
 **Status:** IMPLEMENTED (source and focused tests; live acceptance remains open)
+> **Parent plan:** [Observability](05-observability.md)
 **Context:** A reviewed Dev-bound, read-only capacity-history survey refused with its existing `source_history_too_short` reason. Its sanitized receipt showed one source series and no overlapping evaluations or source events, but did not expose whether the source evaluation-point count, canonical distinct-event count, or event span missed its existing threshold. This plan adds only bounded aggregate diagnostics to the survey receipt.
 
 ## Problem
