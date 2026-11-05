@@ -797,8 +797,13 @@ def test_email_class_keeps_matching_addresses_after_the_anchor(message, addresse
 
 @pytest.mark.parametrize(
     ("message", "hits"),
-    [("addr 203.0.113.1 x", 1), ("addr 999.1.1.1 x", 0), ("addr 1.1.1.1.1 x", 0)],
-    ids=["plain-address", "three-digit-first-octet", "five-part-number"],
+    [
+        ("addr 203.0.113.1 x", 1),
+        ("addr 999.1.1.1 x", 0),
+        ("addr 1.1.1.1.1 x", 0),
+        ("host 203.0.113.1.", 1),
+    ],
+    ids=["plain-address", "three-digit-first-octet", "five-part-number", "full-stop-after-address"],
 )
 def test_ipv4_class_rejects_parts_of_longer_dotted_numbers(message, hits):
     output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
@@ -893,3 +898,31 @@ def test_every_non_text_message_shape_is_counted_as_unscanned():
         "unscanned": 4,
         "classes": ZERO_CLASSES,
     }
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["http://" * 6000, "http://x" * 6000],
+    ids=["bare-scheme-run", "scheme-with-token-run"],
+)
+def test_url_query_class_stays_linear_on_repeated_http_runs(text):
+    line = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": text})
+    started = time.perf_counter()
+    scanned = SURVEY.content_scan(line, "o11y-loki")
+    elapsed = time.perf_counter() - started
+    assert scanned["classes"]["url_query"] == 0
+    assert elapsed < 0.2, f"url_query classifier took {elapsed:.3f}s on a repeated-scheme line"
+
+
+@pytest.mark.parametrize(
+    ("message", "hits"),
+    [
+        ("see http://a/b?x=1", 1),
+        ("xhttp://a?b", 0),
+        ("open https://example.com/cb?code=1", 1),
+    ],
+    ids=["token-boundary", "glued-to-a-word", "https-with-query"],
+)
+def test_url_query_class_needs_a_token_boundary_before_the_scheme(message, hits):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["url_query"] == hits

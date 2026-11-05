@@ -23,12 +23,15 @@ CONTENT_PATTERNS = {
     # from every position inside a long run of letters or base64, which is quadratic (about 1.7 s per 48 KB line).
     "email": re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
     # Digit and dot guards, not \b: \b matches after a dot, so "999.1.1.1" and "1.1.1.1.1" would count.
-    "ipv4": re.compile(r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?![\d.])"),
+    # The trailing guard lets a full stop end a sentence; only a following digit or ".digit" rules a match out.
+    "ipv4": re.compile(r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?!\d|\.\d)"),
     "credential": re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
     "secret_pair": re.compile(
         r"(?i)\b(?:token|password|passwd|secret|api[_-]?key|authorization)\s*[=:]\s*[^\s,;&]{4,}"
     ),
-    "url_query": re.compile(r"https?://[^\s?#]+\?[^\s#]+"),
+    # Start only at a token boundary, so "xhttp://" and runs of "http://" do not restart the scan. The possessive
+    # "++" stops backtracking; the class excludes "?", so no match is lost. Requires Python 3.11+.
+    "url_query": re.compile(r"(?<![\w/:.-])https?://[^\s?#]++\?[^\s#]+"),
 }
 # A bare IPv4 address is reported but does not block; the other classes do.
 BLOCKING_CLASSES = ("email", "credential", "secret_pair", "url_query")
