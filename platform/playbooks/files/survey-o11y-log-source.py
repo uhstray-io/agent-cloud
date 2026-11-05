@@ -29,10 +29,11 @@ CONTENT_PATTERNS = {
     "secret_pair": re.compile(
         r"(?i)\b(?:token|password|passwd|secret|api[_-]?key|authorization)\s*[=:]\s*[^\s,;&]{4,}"
     ),
-    # Start only at a token boundary, so "xhttp://" and runs of "http://" do not restart the scan. The possessive
-    # "++" stops backtracking; the class excludes "?", so no match is lost. Requires Python 3.11+.
-    "url_query": re.compile(r"(?<![\w/:.-])https?://[^\s?#]++\?[^\s#]+"),
 }
+# url_query is not a pattern: it is a per-token scan (count_url_query), so no regex can restart at each scheme.
+CONTENT_CLASSES = (*CONTENT_PATTERNS, "url_query")
+URL_SCHEME = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
+URL_QUERY_TAIL = re.compile(r"\?[^#]")
 # A bare IPv4 address is reported but does not block; the other classes do.
 BLOCKING_CLASSES = ("email", "credential", "secret_pair", "url_query")
 
@@ -170,6 +171,20 @@ def message_text(value):
     return None
 
 
+def count_url_query(text):
+    """Count whitespace-separated tokens that hold a URL scheme with a query marker after it.
+
+    The marker is a "?" followed by a character that is not "#", anywhere after the token's first scheme.
+    A token counts at most once, so one long line of schemes costs one linear pass per token.
+    """
+    hits = 0
+    for token in text.split():
+        scheme = URL_SCHEME.search(token)
+        if scheme and URL_QUERY_TAIL.search(token, scheme.end()):
+            hits += 1
+    return hits
+
+
 def content_scan(output, expected_name):
     """Count one container's entries, content-class hits, and entries whose text could not be classified.
 
@@ -177,7 +192,7 @@ def content_scan(output, expected_name):
     """
     entries = 0
     unscanned = 0
-    classes = dict.fromkeys(CONTENT_PATTERNS, 0)
+    classes = dict.fromkeys(CONTENT_CLASSES, 0)
     for line in output.splitlines():
         if not line.strip():
             continue
@@ -200,6 +215,7 @@ def content_scan(output, expected_name):
             continue
         for label, pattern in CONTENT_PATTERNS.items():
             classes[label] += sum(1 for _ in pattern.finditer(text))
+        classes["url_query"] += count_url_query(text)
     return {"entries": entries, "unscanned": unscanned, "classes": classes}
 
 

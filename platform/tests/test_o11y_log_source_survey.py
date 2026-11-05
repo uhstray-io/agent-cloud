@@ -901,16 +901,21 @@ def test_every_non_text_message_shape_is_counted_as_unscanned():
 
 
 @pytest.mark.parametrize(
-    "text",
-    ["http://" * 6000, "http://x" * 6000],
-    ids=["bare-scheme-run", "scheme-with-token-run"],
+    ("text", "hits"),
+    [
+        ("http://" * 6000, 0),
+        ("http://x" * 6000, 0),
+        ("=http://" * 6000, 0),
+        ("https://a?" * 6000, 1),
+    ],
+    ids=["bare-scheme-run", "scheme-with-token-run", "equals-scheme-run", "query-marker-run"],
 )
-def test_url_query_class_stays_linear_on_repeated_http_runs(text):
+def test_url_query_class_stays_linear_on_repeated_http_runs(text, hits):
     line = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": text})
     started = time.perf_counter()
     scanned = SURVEY.content_scan(line, "o11y-loki")
     elapsed = time.perf_counter() - started
-    assert scanned["classes"]["url_query"] == 0
+    assert scanned["classes"]["url_query"] == hits
     assert elapsed < 0.2, f"url_query classifier took {elapsed:.3f}s on a repeated-scheme line"
 
 
@@ -918,11 +923,39 @@ def test_url_query_class_stays_linear_on_repeated_http_runs(text):
     ("message", "hits"),
     [
         ("see http://a/b?x=1", 1),
-        ("xhttp://a?b", 0),
         ("open https://example.com/cb?code=1", 1),
+        ("Location:https://a/b?c=1", 1),
+        ("/proxy/https://a?b=1", 1),
+        ("x=https://a?b=1", 1),
+        ("HTTP://A?B", 1),
+        # Known over-count, accepted: a scheme glued to a word still counts, because the token scan
+        # no longer requires a boundary before the scheme.
+        ("xhttp://a?b", 1),
+        # A "?" inside the fragment also counts; the rule is literal and errs toward counting.
+        ("http://a#x?y", 1),
+        ("http://a/b", 0),
+        ("http://a?", 0),
+        ("http://a?#x", 0),
     ],
-    ids=["token-boundary", "glued-to-a-word", "https-with-query"],
+    ids=[
+        "token-boundary",
+        "https-with-query",
+        "after-colon",
+        "after-path-segment",
+        "after-equals",
+        "upper-case",
+        "glued-to-a-word",
+        "marker-in-fragment",
+        "no-query",
+        "marker-without-tail",
+        "marker-before-fragment-only",
+    ],
 )
-def test_url_query_class_needs_a_token_boundary_before_the_scheme(message, hits):
+def test_url_query_class_counts_a_token_with_a_scheme_and_a_query_marker(message, hits):
     output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
     assert SURVEY.content_scan(output, "o11y-loki")["classes"]["url_query"] == hits
+
+
+def test_url_query_counts_each_token_once_across_a_line():
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": "see http://a/b?x=1 and https://c?d=2 http://e/f"})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["url_query"] == 2
