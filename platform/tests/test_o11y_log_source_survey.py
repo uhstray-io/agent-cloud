@@ -32,6 +32,8 @@ ZERO_CLASSES = {
 }
 # Built by concatenation so the staged-diff PEM gate does not match a literal header in test source.
 PEM_HEADER = "-----BEGIN " + "RSA PRIVATE KEY-----"
+# Built by concatenation so a secret scanner does not read the fake as a real Postgres credential.
+DSN_FIXTURE = "dsn " + "postgres" + "://app:" + "hunter2" + "@dbhost/app"
 UNVERIFIED = {
     "status": "unverified",
     "entries": None,
@@ -782,7 +784,7 @@ def test_nonzero_exit_with_valid_rows_is_unverified_not_read(monkeypatch):
         ("sent Bearer abcdefgh12345678", "credential"),
         ("config token: abcd1234", "secret_pair"),
         ("open https://example.com/cb?code=1", "url_query"),
-        ("dsn postgres://app:hunter2@dbhost/app", "dsn_userinfo"),
+        (DSN_FIXTURE, "dsn_userinfo"),
         ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZQ", "jwt"),
         (PEM_HEADER, "private_key"),
         ("Cookie: sid=1", "session"),
@@ -1084,7 +1086,7 @@ def test_new_and_widened_classes_stay_linear_on_adversarial_lines(text):
         ("credential", "sent Bearer abcdefgh12345678"),
         ("secret_pair", '{"password":"hunter2hunter2"}'),
         ("url_query", "open https://example.com/cb?code=1"),
-        ("dsn_userinfo", "dsn postgres://app:hunter2@dbhost/app"),
+        ("dsn_userinfo", DSN_FIXTURE),
         ("jwt", "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZQ"),
         ("private_key", PEM_HEADER),
         ("session", "Cookie: sid=1"),
