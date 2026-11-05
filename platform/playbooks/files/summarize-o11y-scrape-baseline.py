@@ -1523,7 +1523,7 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
             and rule.get("annotations") == target["_annotations"]
             and rule.get("isPaused") is target["_is_paused"]
             and rule.get("notification_settings") == target["_notification_settings"]
-            and rule.get("noDataState") == "OK" and rule.get("execErrState") == "KeepLast"
+            and rule.get("noDataState") == "OK" and rule.get("execErrState") == target.get("_exec_err_state", "KeepLast")
             and rule.get("for") == "2m"
         )
     if target["_inert"]:
@@ -1564,7 +1564,7 @@ def _live_rule_matches_owned(rule: Any, target: dict[str, Any], folder_uid: str)
         and rule.get("isPaused") is target["_is_paused"]
         and rule.get("notification_settings") == target["_notification_settings"]
         and rule.get("noDataState") == "OK"
-        and rule.get("execErrState") == "KeepLast"
+        and rule.get("execErrState") == target.get("_exec_err_state", "KeepLast")
         and rule.get("for") == "2m"
     )
 
@@ -1820,6 +1820,7 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
                 "instance": "{{ $labels.instance }}",
             }
             owned.append({**group, "_kind": "group", "_inert": False, "_retired": False,
+                          "_exec_err_state": rule["execErrState"],
                           "_title": rule["title"], "_labels": live_labels, "_is_paused": rule["isPaused"],
                           "_annotations": rule["annotations"],
                           "_notification_settings": rule.get("notification_settings")})
@@ -1936,6 +1937,7 @@ def _owned_expected_targets(document: Any) -> list[dict[str, Any]]:
             **value,
             "_kind": "target",
             "_inert": False,
+            "_exec_err_state": rule["execErrState"],
             "_retired": False,
             "_title": rule["title"],
             "_expr": expr,
