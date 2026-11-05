@@ -1408,10 +1408,10 @@ assert rule['title'] == 'Alert rule evaluations failing'
 assert rule['condition'] == 'B' and rule['for'] == '15m'
 assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'Alerting'
 assert rule['data'][0]['datasourceUid'] == 'prometheus'
-assert rule['data'][0]['relativeTimeRange'] == {'from': 900, 'to': 0}
+assert rule['data'][0]['relativeTimeRange'] == {'from': 300, 'to': 0}
 assert rule['data'][0]['model']['instant'] is True
 assert rule['data'][0]['model']['expr'] == (
-    'sum(increase(grafana_alerting_rule_evaluation_failures_total{job="grafana"}[15m]))')
+    'sum(increase(grafana_alerting_rule_evaluation_failures_total{job="grafana"}[5m]))')
 assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [5]}
 assert rule['labels'] == {
     'severity': 'warning', 'service': 'o11y/grafana', 'owner': 'platform-operations',

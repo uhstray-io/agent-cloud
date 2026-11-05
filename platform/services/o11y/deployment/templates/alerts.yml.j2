@@ -534,11 +534,11 @@ groups:
         condition: B
         data:
           - refId: A
-            relativeTimeRange: { from: 900, to: 0 }
+            relativeTimeRange: { from: 300, to: 0 }
             datasourceUid: prometheus
             model:
               editorMode: code
-              expr: 'sum(increase(grafana_alerting_rule_evaluation_failures_total{job="grafana"}[15m]))'
+              expr: 'sum(increase(grafana_alerting_rule_evaluation_failures_total{job="grafana"}[5m]))'
               instant: true
               range: false
               intervalMs: 1000
@@ -565,7 +565,7 @@ groups:
           summary: Grafana alert rules have kept failing to evaluate for fifteen minutes; other alerts are holding their last state.
           dashboard_url: /d/o11y-self-monitoring
           description: >-
-            Rule evaluations are timing out or erroring, usually because Prometheus queries are slow (receiver storage contention) or unreachable. While this fires, the other rules cannot change state. Check receiver host I/O wait and Prometheus health; the external liveness watcher covers Grafana or Prometheus being fully down.
+            Rule evaluations are timing out or erroring, usually because Prometheus queries are slow (receiver storage contention) or unreachable. While this fires, rules whose own queries are failing hold their last state; rules whose queries succeed keep evaluating. Check receiver host I/O wait and Prometheus health; the external liveness watcher covers Grafana or Prometheus being fully down.
         labels:
           severity: warning
           service: 'o11y/grafana'

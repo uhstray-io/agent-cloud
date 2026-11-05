@@ -860,7 +860,10 @@ came from them.
 
 A sustained failure still pages once. The `alerting-health` group's rule
 `o11y_alert_evaluations_failing` fires when rule evaluations have failed more than
-five times in fifteen minutes, held for fifteen minutes. It keeps
+five times in a five-minute window, and that holds for fifteen minutes, so only a stall
+that keeps failing for about fifteen minutes pages; a short spike does not. A 14-day
+backtest against production (2026-10-21 to 2026-11-04) gave 4 such episodes, where a
+fifteen-minute window would have paged 17 times. It keeps
 `execErrState: Alerting`, so a prolonged disruption is reported by one alert rather
 than by every rule. Rules whose queries are still failing hold their last state while
 it fires; check the receiver host's I/O wait and Prometheus health.
