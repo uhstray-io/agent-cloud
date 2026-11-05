@@ -42,9 +42,14 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     top_level = {
         "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
         "root_mode_access", "acl", "mount", "children", "journal_cursor", "remotecfg", "free_space",
-        "survey_diagnostics", "pending_repair_diagnostic", "live_diagnostic",
+        "survey_diagnostics", "pending_repair_diagnostic", "live_diagnostic", "journal_components",
     }
     assert set(report) == top_level | ({"reason"} if has_reason else set())
+    assert set(report["journal_components"]) == set(POSITIONS.JOURNAL_COMPONENTS)
+    for entry in report["journal_components"].values():
+        assert set(entry) == {"presence", "cursor_validity"}
+        assert entry["presence"] in {"absent", "present", "not_directory", "unverified"}
+        assert entry["cursor_validity"] in {"absent", "valid", "invalid", "unverified"}
     assert report["remotecfg"] in {"absent", "safe", "unsafe", "unverified"}
     diagnostics = report["survey_diagnostics"]
     assert set(diagnostics) == {"inventory_fields", "named_volume", "podman_version"}
@@ -158,6 +163,13 @@ def _positions_state(
         "cursor_checked": False,
         "journal_cursor_valid": journal_cursor_valid,
         "remotecfg_state": "absent",
+        # Helper output carries one entry per declared component; the default allowlist is alloy alone.
+        "journal_components": {"o11y_alloy": {
+            "presence": "directory",
+            "cursor_presence": "present" if journal_cursor_presence == "present" else "absent",
+            "cursor_checked": False,
+            "cursor_valid": False,
+        }},
         "journal_metadata": {
             "component": {
                 "presence": "present", "type": "directory", "owner": "matches_collector",
@@ -1018,7 +1030,7 @@ sys.argv.append("true")
 exec({POSITIONS._METADATA_SCRIPT!r})
 '''
     result = subprocess.run(
-        [sys.executable, "-c", prelude, str(root), "true"],
+        [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
     )
 
@@ -1081,6 +1093,296 @@ def test_positions_cli_dispatches_prestart_and_live_actions(action, function, mo
     assert json.loads(capsys.readouterr().out) == result
 
 
+def test_positions_default_allowlist_is_alloy_only_and_cli_default_is_unchanged(monkeypatch, capsys):
+    assert POSITIONS.DEFAULT_JOURNAL_COMPONENTS == ("o11y_alloy",)
+    seen = []
+
+    def verify():
+        seen.append(POSITIONS.JOURNAL_COMPONENTS)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", POSITIONS.DEFAULT_JOURNAL_COMPONENTS)
+    monkeypatch.setattr(POSITIONS, "verify", verify)
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "verify"])
+    POSITIONS.main()
+    assert seen == [("o11y_alloy",)]
+    assert json.loads(capsys.readouterr().out) == {"status": "ready"}
+
+
+@pytest.mark.parametrize("value", [
+    "", "o11y_prometheus", "o11y_alloy,o11y_alloy", "o11y_alloy,o11y-prometheus",
+    "o11y_alloy,loki.source.journal.o11y_loki", "o11y_alloy,../escape", "o11y_alloy,",
+    "o11y_alloy,o11y-journal-collector",
+    "o11y_alloy," + ",".join(f"o11y_part{chr(97 + index)}" for index in range(16)),
+])
+def test_positions_components_argument_refuses_undeclared_or_malformed_lists(value, monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", POSITIONS.DEFAULT_JOURNAL_COMPONENTS)
+    monkeypatch.setattr(POSITIONS, "verify", lambda: called.append(True) or {"status": "ready"})
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "verify", "--components", value])
+    POSITIONS.main()
+    assert called == []
+    assert POSITIONS.JOURNAL_COMPONENTS == POSITIONS.DEFAULT_JOURNAL_COMPONENTS
+    assert json.loads(capsys.readouterr().out) == {"status": "refused", "reason": "invalid_components"}
+
+
+def test_positions_components_argument_sets_the_declared_allowlist(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", POSITIONS.DEFAULT_JOURNAL_COMPONENTS)
+    monkeypatch.setattr(POSITIONS, "survey", lambda: seen.append(POSITIONS.JOURNAL_COMPONENTS) or {"status": "ok"})
+    monkeypatch.setattr(sys, "argv", [
+        str(POSITIONS_HELPER), "survey", "--components", "o11y_alloy,o11y_prometheus,o11y_node_exporter",
+    ])
+    POSITIONS.main()
+    assert seen == [("o11y_alloy", "o11y_prometheus", "o11y_node_exporter")]
+    assert json.loads(capsys.readouterr().out) == {"status": "ok"}
+
+
+_EMBEDDED_ROOT_OWNED_PRELUDE = '''import builtins,io,os,stat,sys,types
+real_lstat=os.lstat
+real_stat=os.stat
+real_fstat=os.fstat
+def root_owned(st):
+    return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,
+        st_nlink=2 if stat.S_ISDIR(st.st_mode) else st.st_nlink,
+        st_dev=st.st_dev,st_ino=st.st_ino,st_size=st.st_size,st_mtime_ns=st.st_mtime_ns)
+os.lstat=lambda path,*args,**kwargs: root_owned(real_lstat(path,*args,**kwargs))
+os.stat=lambda path,*args,**kwargs: root_owned(real_stat(path,*args,**kwargs))
+os.fstat=lambda fd: root_owned(real_fstat(fd))
+original_open=builtins.open
+def fake_builtin_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo": return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_builtin_open
+os.listxattr=lambda *_args,**_kwargs: []
+'''
+
+
+def _embedded_run(root, *args):
+    # The script's own argv contract: sys.argv[1]=root, [2]=read_cursor, [3]=component JSON (optional).
+    code = _EMBEDDED_ROOT_OWNED_PRELUDE + f"exec({POSITIONS._METADATA_SCRIPT!r})\n"
+    return subprocess.run(
+        [sys.executable, "-c", code, str(root), *args],
+        check=False, capture_output=True, text=True,
+    )
+
+
+def _embedded_metadata(root, *args):
+    result = _embedded_run(root, *args)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def _cursor_text(component, cursor="s=1a;i=2b;b=3c;m=4d;t=5e;x=6f"):
+    return (
+        "positions:\n  ? path: cursor-" + component + "\n    labels: \"\"\n  : \"" + cursor + "\"\n"
+    )
+
+
+def _declared_root(tmp_path, *components):
+    root = tmp_path / "positions"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    for component in components:
+        directory = root / f"loki.source.journal.{component}"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+    return root
+
+
+def test_embedded_positions_admit_declared_components_and_refuse_undeclared(tmp_path):
+    root = _declared_root(tmp_path, "o11y_alloy", "o11y_prometheus")
+    declared = '["o11y_alloy", "o11y_prometheus"]'
+
+    metadata = _embedded_metadata(root, "false", declared)
+    assert metadata["component_layout"] is True
+    assert metadata["top_level"]["journal_component"] == 2
+    assert metadata["top_level"]["other_directories"] == 0
+    assert metadata["unmatched_directories"]["count"] == 0
+    assert metadata["journal_components"] == {
+        "o11y_alloy": {"presence": "directory", "cursor_presence": "absent",
+                       "cursor_checked": False, "cursor_valid": False},
+        "o11y_prometheus": {"presence": "directory", "cursor_presence": "absent",
+                            "cursor_checked": False, "cursor_valid": False},
+    }
+
+    _declared_root(tmp_path, "o11y_loki")
+    metadata = _embedded_metadata(root, "false", declared)
+    assert metadata["component_layout"] is False
+    assert metadata["top_level"]["other_directories"] == 1
+    assert metadata["unmatched_directories"]["count"] == 1
+    assert set(metadata["journal_components"]) == {"o11y_alloy", "o11y_prometheus"}
+
+    # Without the list the helper admits only the alloy component, so prometheus is unmatched.
+    metadata = _embedded_metadata(root, "false")
+    assert metadata["component_layout"] is False
+    assert metadata["top_level"]["journal_component"] == 1
+    assert metadata["top_level"]["other_directories"] == 2
+    assert set(metadata["journal_components"]) == {"o11y_alloy"}
+
+
+def test_embedded_positions_default_report_shape_adds_only_journal_components(tmp_path):
+    root = _declared_root(tmp_path, "o11y_alloy")
+    metadata = _embedded_metadata(root, "false")
+    assert set(metadata) == {
+        "status", "root", "children", "child_count", "acl", "top_level", "role_metadata",
+        "journal_metadata", "seed_metadata", "layout_diagnostic", "remotecfg_state",
+        "unmatched_directories", "root_is_mount", "child_mount", "component_layout",
+        "journal_cursor_presence", "cursor_checked", "journal_cursor_valid", "journal_components",
+        "free_bytes", "free_inodes",
+    }
+
+
+@pytest.mark.parametrize("components", [
+    '["o11y_prometheus"]', '["o11y_alloy", "o11y_alloy"]', '["o11y_alloy", "o11y-prometheus"]', '"o11y_alloy"',
+])
+def test_embedded_positions_refuse_malformed_component_argument(tmp_path, components):
+    root = _declared_root(tmp_path, "o11y_alloy")
+    result = _embedded_run(root, "false", components)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_embedded_positions_validate_each_declared_component_cursor(tmp_path):
+    root = _declared_root(tmp_path, "o11y_alloy", "o11y_prometheus")
+    alloy_positions = root / "loki.source.journal.o11y_alloy" / "positions.yml"
+    alloy_positions.write_text(_cursor_text("loki.source.journal.o11y_alloy"))
+    os.chmod(alloy_positions, 0o600)
+    prometheus = root / "loki.source.journal.o11y_prometheus"
+    cases = {
+        "absent": (None, "absent", False, False),
+        "valid": ("loki.source.journal.o11y_prometheus", "present", True, True),
+        "wrong_component": ("loki.source.journal.o11y_alloy", "present", True, False),
+    }
+    for case, (content_component, presence, checked, valid) in cases.items():
+        positions = prometheus / "positions.yml"
+        if positions.exists():
+            positions.unlink()
+        if content_component is not None:
+            positions.write_text(_cursor_text(content_component))
+            os.chmod(positions, 0o600)
+        metadata = _embedded_metadata(root, "true", '["o11y_alloy", "o11y_prometheus"]')
+        assert metadata["component_layout"] is True, case
+        assert metadata["journal_components"]["o11y_alloy"] == {
+            "presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": True,
+        }
+        assert metadata["journal_cursor_valid"] is True
+        assert metadata["journal_components"]["o11y_prometheus"] == {
+            "presence": "directory", "cursor_presence": presence,
+            "cursor_checked": checked, "cursor_valid": valid,
+        }, case
+
+
+_JOURNAL_ENTRY_ABSENT = {
+    "presence": "absent", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False,
+}
+
+
+def _declared_pair_found(monkeypatch, prometheus_entry):
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", ("o11y_alloy", "o11y_prometheus"))
+    metadata = _positions_state(owner=(0, 0))
+    metadata["cursor_checked"] = True
+    metadata["journal_components"] = {
+        "o11y_alloy": {"presence": "directory", "cursor_presence": "present",
+                       "cursor_checked": True, "cursor_valid": True},
+    }
+    if prometheus_entry is not None:
+        metadata["journal_components"]["o11y_prometheus"] = prometheus_entry
+    return _positions_found(metadata)
+
+
+@pytest.mark.parametrize(("prometheus_entry", "status", "reason"), [
+    (_JOURNAL_ENTRY_ABSENT, "ready", "positions_identity_verified"),
+    ({"presence": "directory", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False},
+     "ready", "positions_identity_verified"),
+    ({"presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": True},
+     "ready", "positions_identity_verified"),
+    ({"presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": False},
+     "refused", "metadata_ambiguous"),
+    ({"presence": "directory", "cursor_presence": "present", "cursor_checked": False, "cursor_valid": False},
+     "refused", "metadata_ambiguous"),
+    ({"presence": "other", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False},
+     "refused", "metadata_ambiguous"),
+    (None, "refused", "metadata_ambiguous"),
+])
+def test_positions_declared_non_alloy_component_gate(monkeypatch, prometheus_entry, status, reason):
+    result = POSITIONS.verify(lambda: _declared_pair_found(monkeypatch, prometheus_entry))
+    assert result["status"] == status
+    assert result["reason"] == reason
+
+
+def test_positions_undeclared_allowlist_keeps_the_alloy_gate_unchanged():
+    found = _positions_found(_positions_state(owner=(0, 0)))
+    found["metadata"]["journal_components"]["o11y_prometheus"] = {
+        "presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": False,
+    }
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
+
+
+def test_survey_reports_each_declared_component_presence_and_cursor_validity(monkeypatch):
+    declared = ("o11y_alloy", "o11y_prometheus", "o11y_loki", "o11y_tempo")
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", declared)
+    metadata = _positions_state(owner=(0, 0))
+    metadata["journal_components"] = {
+        "o11y_alloy": {"presence": "directory", "cursor_presence": "present",
+                       "cursor_checked": True, "cursor_valid": True},
+        "o11y_prometheus": dict(_JOURNAL_ENTRY_ABSENT),
+        "o11y_loki": {"presence": "other", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False},
+        "o11y_tempo": {"presence": "directory", "cursor_presence": "present",
+                       "cursor_checked": True, "cursor_valid": False},
+    }
+    found = _positions_found(metadata)
+    survey = POSITIONS.survey(lambda: found)
+    assert survey["journal_components"] == {
+        "o11y_alloy": {"presence": "present", "cursor_validity": "valid"},
+        "o11y_prometheus": {"presence": "absent", "cursor_validity": "absent"},
+        "o11y_loki": {"presence": "not_directory", "cursor_validity": "absent"},
+        "o11y_tempo": {"presence": "present", "cursor_validity": "invalid"},
+    }
+    unobserved = POSITIONS.survey(lambda: {"status": "unavailable"})
+    assert unobserved["journal_components"] == {
+        component: {"presence": "unverified", "cursor_validity": "unverified"} for component in declared
+    }
+    ready = POSITIONS.verify(lambda: _positions_found(_positions_state(owner=(0, 0))))
+    assert "journal_components" not in ready
+
+
+def test_pending_resume_counts_declared_components_and_still_requires_the_alloy_directory(monkeypatch):
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", ("o11y_alloy", "o11y_prometheus"))
+    found = _populated_pending_resume_found()
+    metadata = found["metadata"]
+    metadata["top_level"]["journal_component"] = 2
+    metadata["children"] = [{"kind": "file"}, {"kind": "dir"}, {"kind": "dir"}, {"kind": "dir"}]
+    metadata["child_count"] = 4
+    metadata["journal_components"]["o11y_prometheus"] = {
+        "presence": "directory", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False,
+    }
+    assert POSITIONS.verify(lambda: found)["reason"] == "pending_nocopy_cursor_verified"
+
+    metadata["journal_components"]["o11y_alloy"]["presence"] = "absent"
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
+
+
+def test_journal_component_vars_file_is_the_reviewed_allowlist():
+    path = ROOT / "platform/playbooks/vars/o11y-journal-components.yml"
+    rows = yaml.safe_load(path.read_text())["o11y_journal_components"]
+    assert [row["component"] for row in rows] == [
+        "o11y_alloy", "o11y_prometheus", "o11y_loki", "o11y_tempo",
+        "o11y_pyroscope", "o11y_grafana", "o11y_node_exporter",
+    ]
+    compose = (O11Y / "compose.yml").read_text()
+    for row in rows:
+        assert set(row) == {"component", "container", "service"}
+        assert POSITIONS._JOURNAL_COMPONENT_RE.fullmatch(row["component"])
+        assert row["container"] == "o11y-" + row["component"][len("o11y_"):].replace("_", "-")
+        assert row["service"] == "o11y/" + row["container"][len("o11y-"):]
+        # Grounded in the compose file the deploy runs: the container name and the service key.
+        assert f"container_name: {row['container']}\n" in compose
+        assert re.search(rf"^  {re.escape(row['service'].split('/', 1)[1])}:$", compose, re.M)
+    assert all(row["container"] != "o11y-journal-collector" for row in rows)
+    assert POSITIONS.parse_components(",".join(row["component"] for row in rows)) is not None
+
+
 def test_positions_survey_returns_only_bounded_metadata_categories():
     found = _positions_found(_positions_state(owner=(9001, 9001), children=[
         {"kind": "file", "uid": 0, "gid": 0, "nlink": 1, "mode": 0o600}
@@ -1108,6 +1410,7 @@ def test_positions_survey_returns_only_bounded_metadata_categories():
             "namespace_probe": "not_run",
         },
         "pending_repair_diagnostic": POSITIONS._pending_diagnostic(found),
+        "journal_components": {"o11y_alloy": {"presence": "present", "cursor_validity": "unverified"}},
     }
     assert "/private" not in json.dumps(report)
     assert "9001" not in json.dumps(report)
@@ -5111,6 +5414,7 @@ def test_positions_survey_exception_keeps_bounded_receipt_schema(action, monkeyp
         "free_space": "unavailable",
         "survey_diagnostics": POSITIONS._unverified_diagnostics(),
         "pending_repair_diagnostic": POSITIONS._pending_diagnostic({}),
+        "journal_components": {"o11y_alloy": {"presence": "unverified", "cursor_validity": "unverified"}},
         "live_diagnostic": {
             **POSITIONS._live_diagnostic({"status": "unavailable"}),
             "helper_reason": "survey_failed",
@@ -5678,9 +5982,10 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
         "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
         "root_mode_access", "acl", "mount", "children",
         "journal_cursor", "remotecfg", "free_space", "pending_repair_diagnostic", "live_diagnostic",
+        "journal_components",
     }
     assert set(verified) == (
-        set(survey) - {"pending_repair_diagnostic", "live_diagnostic"}
+        set(survey) - {"pending_repair_diagnostic", "live_diagnostic", "journal_components"}
     ) | {"reason"}
     assert repair == {"status": "already_correct", "reason": "owner_matches"}
     assert not any(value in str((survey, verified, repair)) for value in ("mountpoint", "positions.yml", "/private/"))
