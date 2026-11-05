@@ -1451,8 +1451,9 @@ def test_receiver_target_identity_is_scoped_and_survives_journal_otlp_loki():
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
-def test_candidate_digest_block_is_skipped_by_a_dry_run_and_leaves_no_temp_dir(tmp_path):
-    """A dry run of Deploy o11y must get past the candidate digest without writing anything."""
+@pytest.mark.parametrize("check", [True, False], ids=["dry-run", "real-run"])
+def test_candidate_digest_block_skips_a_dry_run_runs_for_real_and_leaves_no_temp_dir(tmp_path, check):
+    """A dry run must get past the candidate digest without writing; a real run must still produce it."""
     playbook = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
     phase = next(play for play in playbook if play.get("name") == "Phase 1: Place repo + manage o11y secrets")
     candidate = next(
@@ -1471,9 +1472,13 @@ def test_candidate_digest_block_is_skipped_by_a_dry_run_and_leaves_no_temp_dir(t
     scratch.mkdir()
     env = dict(os.environ, ANSIBLE_NOCOLOR="1", TMPDIR=str(scratch))
     proc = subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", "-c", "local", "--check", str(tmp_path / "playbooks/probe.yml")],
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", *(["--check"] if check else []),
+         str(tmp_path / "playbooks/probe.yml")],
         cwd=ROOT, env=env, text=True, capture_output=True, check=False,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "digest=skipped" in proc.stdout, proc.stdout
+    if check:
+        assert "digest=skipped" in proc.stdout, proc.stdout
+    else:
+        assert re.search(r"digest=[0-9a-f]{64}", proc.stdout), proc.stdout
     assert not any(scratch.iterdir()), sorted(path.name for path in scratch.iterdir())
