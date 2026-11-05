@@ -83,9 +83,9 @@ flowchart TB
 
     subgraph HOST["Hosted workloads (not a layer)"]
         OH["OpenHands (host Docker socket, root-equivalent)"]:::risk
-        APPS["honcho, Postiz, ERPNext, Dispatch Console, tududi (retiring), NocoDB (retiring)"]
+        APPS["honcho, Postiz, ERPNext, Dispatch Console, tududi (retired), NocoDB (retiring)"]
         UHH["UhhCraft"]
-        PLANE["Plane (planned)"]
+        PLANE["Plane (deploy run recorded, live unverified)"]
     end
 
     NC -.->|"model call (wiring not verified)"| AGW
@@ -180,7 +180,7 @@ jump to that doc.
 | **launch gate** | Planned as the only path from agents to Semaphore launches; not deployed | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **orb-agent** | NetBox discovery worker; runs privileged on the host network | Infrastructure | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **vLLM (DGX Spark)** | Model serving on the GPU pair; external, owned by the dgx-spark repository | Infrastructure (external) | [service-architecture.md](plan/architecture/service-architecture.md) |
-| **Hosted workloads** | honcho, Postiz, ERPNext, UhhCraft, Dispatch Console, OpenHands, tududi (retiring), NocoDB (retiring), Plane (planned); not a layer | Hosted | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **Hosted workloads** | honcho, Postiz, ERPNext, UhhCraft, Dispatch Console, OpenHands, tududi (retired), NocoDB (retiring), Plane (deploy run recorded, live unverified); not a layer | Hosted | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **Doc standards & index** | How docs are structured, status values, the full doc index | cross-cut | [00-foundation-standards.md](plan/architecture/00-foundation-standards.md) |
 
 ## Load-Bearing Decisions (one line each)
