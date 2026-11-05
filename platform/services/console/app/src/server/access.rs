@@ -782,6 +782,7 @@ mod tests {
                 gateway_file: None,
                 authentik,
                 role_map_file: None,
+                github: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -800,6 +801,7 @@ mod tests {
             secrets: tokio::sync::RwLock::new(super::super::secrets::SecretsCache::new(false)),
             access: tokio::sync::RwLock::new(AccessCache::new(configured)),
             role_map,
+            policies: tokio::sync::RwLock::new(crate::server::policies::PoliciesCache::new(false)),
         })
     }
 

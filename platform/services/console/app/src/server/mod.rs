@@ -5,10 +5,12 @@ pub mod api;
 pub mod auth;
 pub mod config;
 pub mod gateway;
+pub mod github;
 pub mod grafana;
 pub mod inventory;
 pub mod netbox;
 pub mod openbao;
+pub mod policies;
 pub mod prefs;
 pub mod proxmox;
 pub mod scope;
@@ -70,6 +72,9 @@ pub struct AppState {
     pub access: tokio::sync::RwLock<access::AccessCache>,
     /// The Access Level -> per-service role map, read once at startup. Empty when `CONSOLE_ROLE_MAP_FILE` is unset.
     pub role_map: access::RoleMap,
+    /// The OPA and OpenBao policy files for the Policy page (plan 17, 8.4, D36). The refresh task writes it;
+    /// `/v1/policies` only reads it.
+    pub policies: tokio::sync::RwLock<policies::PoliciesCache>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -131,6 +136,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         Some(path) => access::load_role_map(path)?,
         None => access::RoleMap::empty(),
     };
+    let policies_cache = policies::PoliciesCache::new(openbao.is_some() && config.github.is_some());
     let inventory_cache =
         inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
@@ -156,6 +162,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         secrets: tokio::sync::RwLock::new(secrets_cache),
         access: tokio::sync::RwLock::new(access_cache),
         role_map,
+        policies: tokio::sync::RwLock::new(policies_cache),
     }))
 }
 
@@ -268,6 +275,7 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/roles", get(work::list_roles))
         .route("/v1/secrets", get(secrets::get_secrets))
         .route("/v1/access", get(access::get_access))
+        .route("/v1/policies", get(policies::get_policies))
         .route("/v1/{*rest}", any(api::v1_unmatched))
         .with_state(state)
 }
@@ -345,6 +353,7 @@ mod tests {
                 grafana_token: None,
                 authentik: None,
                 role_map_file: None,
+                github: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -361,6 +370,7 @@ mod tests {
             secrets: tokio::sync::RwLock::new(secrets::SecretsCache::new(false)),
             access: tokio::sync::RwLock::new(access::AccessCache::new(false)),
             role_map: access::RoleMap::empty(),
+            policies: tokio::sync::RwLock::new(policies::PoliciesCache::new(false)),
         })
     }
 
@@ -495,6 +505,7 @@ mod tests {
             "/v1/gateway",
             "/v1/roles",
             "/v1/secrets",
+            "/v1/policies",
             "/v1/nope",
         ] {
             let reply = call(addr, "GET", path, None, "").await;
@@ -1079,6 +1090,8 @@ mod tests {
             ("work.rs", include_str!("work.rs")),
             ("openbao.rs", include_str!("openbao.rs")),
             ("secrets.rs", include_str!("secrets.rs")),
+            ("github.rs", include_str!("github.rs")),
+            ("policies.rs", include_str!("policies.rs")),
             ("grafana.rs", include_str!("grafana.rs")),
         ] {
             assert!(!text.contains(needle), "{file} turns verification off");

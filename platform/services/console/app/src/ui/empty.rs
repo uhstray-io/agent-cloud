@@ -25,7 +25,6 @@ pub fn phase_for(id: &str) -> Option<u8> {
         "home" => Some(2),
         "topology" | "services" | "compute" => Some(3),
         "dashboard" => Some(4),
-        "policy" => Some(5),
         "telemetry" | "cicd" => Some(6),
         _ => None,
     }
@@ -79,14 +78,6 @@ pub const TELEMETRY: PageMeta = PageMeta {
     authority: "Prometheus, Loki, Grafana",
 };
 
-pub const POLICY: PageMeta = PageMeta {
-    id: "policy",
-    title: "Policy",
-    icon: "scale",
-    purpose: "Policy packages and decisions. A change is proposed as a plan, then a pull request.",
-    authority: "OPA (Rego in Git)",
-};
-
 pub const CICD: PageMeta = PageMeta {
     id: "cicd",
     title: "CI/CD",
@@ -131,11 +122,6 @@ pub fn Telemetry() -> Element {
 }
 
 #[component]
-pub fn Policy() -> Element {
-    rsx! { EmptyPage { page: POLICY } }
-}
-
-#[component]
 pub fn CiCd() -> Element {
     rsx! { EmptyPage { page: CICD } }
 }
@@ -169,7 +155,6 @@ mod tests {
         assert_eq!(phase_for("services"), Some(3));
         assert_eq!(phase_for("compute"), Some(3));
         assert_eq!(phase_for("dashboard"), Some(4));
-        assert_eq!(phase_for("policy"), Some(5));
         assert_eq!(phase_for("cicd"), Some(6));
         assert_eq!(phase_for("telemetry"), Some(6));
     }
@@ -189,7 +174,6 @@ mod tests {
             SERVICES,
             COMPUTE,
             TELEMETRY,
-            POLICY,
             CICD,
         ];
         for page in pages {

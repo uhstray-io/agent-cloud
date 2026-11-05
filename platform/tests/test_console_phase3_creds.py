@@ -1384,3 +1384,51 @@ def test_the_console_file_agrees_with_the_gateways_own_render(tmp_path):
         assert key["budgets"][0]["limit"]["amount"] == client["tokens_per_hour"], client
         assert sorted(key.get("allowedModels", all_models)) == client["allowed_models"], client
     assert console_body["models"] == all_models
+
+
+# --- deploy-console.yml: the Policy page's GitHub source is refused before anything is placed (D36) -----
+
+GITHUB_ASSERT = "Refuse a console_github_repo or console_github_ref the console would refuse"
+OPENBAO_SET = {"console_openbao_url": "https://openbao.example.test"}
+
+
+def _github_assert(tmp_path: Path, variables: dict) -> subprocess.CompletedProcess:
+    return _run_tasks(tmp_path, [_named(DEPLOY, GITHUB_ASSERT)], {**OPENBAO_SET, **variables})
+
+
+@NEEDS_ANSIBLE
+def test_a_valid_github_pair_the_defaults_and_a_padded_ref_pass_the_deploy_assert(tmp_path):
+    # The padded ref passes because server/config.rs trims the value before it validates it.
+    for variables in [
+        {},
+        {"console_github_repo": "uhstray-io/agent-cloud", "console_github_ref": "feat/policy-page"},
+        {"console_github_ref": " dev "},
+    ]:
+        proc = _github_assert(tmp_path, variables)
+        assert proc.returncode == 0, (variables, proc.stdout + proc.stderr)
+
+
+@NEEDS_ANSIBLE
+def test_a_github_value_the_console_would_refuse_fails_the_deploy_by_name(tmp_path):
+    # Native values, so the newline and the space reach the assert as written.
+    for variables in [
+        {"console_github_ref": "dev\nmain"},
+        {"console_github_ref": "dev main"},
+        {"console_github_ref": "feat/../main"},
+        {"console_github_ref": "a/./b"},
+        {"console_github_repo": "uhstray-io/.."},
+        {"console_github_repo": "uhstray io/agent-cloud"},
+        {"console_github_repo": "uhstray-io"},
+    ]:
+        proc = _github_assert(tmp_path, variables)
+        assert proc.returncode != 0 and "Refusing to deploy the console" in proc.stdout, (
+            variables,
+            proc.stdout,
+        )
+
+
+@NEEDS_ANSIBLE
+def test_the_github_assert_is_skipped_without_openbao(tmp_path):
+    # Without OpenBao the pair is not rendered, so a bad value there blocks nothing.
+    proc = _run_tasks(tmp_path, [_named(DEPLOY, GITHUB_ASSERT)], {"console_github_ref": "feat/../main"})
+    assert proc.returncode == 0, proc.stdout + proc.stderr

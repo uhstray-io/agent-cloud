@@ -56,6 +56,7 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_GRAFANA_TOKEN` | `secrets.console_grafana_token`, a shared read of `secret/services/o11y`. Rendered only when `console_grafana_api_enabled` is true AND `console_grafana_url` is set |
 | `CONSOLE_AUTHENTIK_URL`, `CONSOLE_AUTHENTIK_TOKEN` | `console_authentik_api_url`; the token is `secrets.console_directory_token`, a shared read of `secret/services/authentik`. All-or-none, rendered only when the URL is set (Access page, see below) |
 | `CONSOLE_ROLE_MAP_FILE=/etc/console/role-map.json` | fixed path; the file is `config/role-map.json`, always rendered |
+| `CONSOLE_GITHUB_REPO`, `CONSOLE_GITHUB_REF` | `console_github_repo` (default `uhstray-io/agent-cloud`) and `console_github_ref` (default `dev`). Rendered only with `console_openbao_url`: the token is read from OpenBao (`secret/services/console/github`, field `token`) on every policy refresh and is never rendered. A malformed value is refused by name at deploy and at startup |
 
 `config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
@@ -150,6 +151,7 @@ Environment, read by `app/src/server/config.rs`. `templates/env.j2` renders NetB
 | `CONSOLE_FLOWS_FILE` | optional JSON array of `{kind, from, to, label}`, rendered from declarations. Names only: an extra key fails startup |
 | `CONSOLE_GRAFANA_URL` | optional Grafana origin: the deep-link base, and the origin of the usage read. Unset: every link is `null` and no usage read runs. Cleartext `http://` only to a loopback or RFC1918 host |
 | `CONSOLE_GRAFANA_TOKEN` | optional Grafana API token, a Viewer service account's (D32), for the gateway usage read (D39). Requires `CONSOLE_GRAFANA_URL`: alone it names the missing URL. The deploy renders it only with `console_grafana_api_enabled` and `console_grafana_url` both set. Unset: `usage.state` is `unconfigured` and every client's `tokens_last_hour` is `null` |
+| `CONSOLE_GITHUB_REPO`, `CONSOLE_GITHUB_REF` | optional, all-or-none, validated by `github_repo_valid` and `github_ref_valid`. Unset: `/v1/policies` is `unconfigured`. Set without `CONSOLE_OPENBAO_*`, the policy read still stays `unconfigured`: the token comes from OpenBao |
 
 Infrastructure URLs take `https://` always, and `http://` only to loopback or RFC1918. Anything else fails startup and names the variable. Certificate verification is never turned off. Without a CA file, Proxmox is verified against reqwest's bundled roots, so a self-signed API shows as `source.proxmox: "error"`.
 
@@ -167,6 +169,7 @@ Routes and scoping:
 | `GET /v1/roles` | `platform-admins` only; 403 otherwise | `{roles}`: one role per distinct owner in the workflow registry (`CONSOLE_WORKFLOW_FILE`), sorted by name, each with its `steps` (`{id, order, label}`) in order. Empty without the registry (D40) |
 | `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
 | `GET /v1/access` | `platform-admins` only; 401 signed out, 403 otherwise | Authentik users and groups from a background read, plus the Access Level -> per-service `role_map` (8.2b). See "Access" below |
+| `GET /v1/policies` | `platform-admins` only; 401 signed out, 403 otherwise | The OPA and OpenBao policy files on `CONSOLE_GITHUB_REF` of `CONSOLE_GITHUB_REPO`, read from GitHub every 15 minutes with the console's read-only token from OpenBao: name, kind, last commit and a link per file. No decision counts (D36). See "Policy" below |
 
 A tenant the caller may not see answers `404 unknown_tenant`, byte-identical to an unknown one. Prefixes never appear in a tenant answer: a prefix with no site names no tenant (D16). Devices are site-scoped, so they do.
 
@@ -194,6 +197,16 @@ Deep links: each VM and service row carries `grafana_url`, the Service Overview 
 - **Directory.** One background task reads `/api/v3/core/users/` and `/api/v3/core/groups/` every 5 minutes with the view-only token `svc-console-directory` holds (`view_user` and `view_group` only). It follows `pagination.next` up to 20 pages of 100 per list. The groups list is read with `include_users=false`: the pk list the member count reads is always serialized, and only the expanded `users_obj` depends on the flag (authentik `core/api/groups.py`, 2024.12.3). `error` is one of three operator sentences, or `null`: `The newest directory read failed: <reason>. Showing the last good read.` (a failed refresh with a last good read kept), `The directory read failed: <reason>.` (an error with no data), or `Authentik holds more than 2000 users or groups; the first 2000 are shown.` (a list cut at the page bound; the rows read are shown). No URL, response body or token reaches an error or a log line. `service_account` is true for `type` `service_account` or `internal_service_account` (`UserTypeEnum`); `internal` and `external` are not counted.
 - **Role map.** `config/role-map.json` is rendered from `platform/playbooks/vars/access-role-map.yml`, which mirrors the table "Access Level -> Per-Service Role Mapping" in `plan/architecture/04-credentials-access.md`. `platform/tests/test_console_access_role_map.py` pins every cell against that table and the serde names against the rendered JSON. Edit the table and the vars file together. The vars file is a D31 pinned input, so a rotation refuses while the controller's copy differs from the deployed commit.
 - **Gate.** `work::admin_only`, the same gate as `/v1/network` and `/v1/secrets`.
+
+## Policy (GitHub, plan 17 8.4, D36)
+
+`GET /v1/policies` answers `{state, repo, ref, files, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GITHUB_*`, or no `CONSOLE_OPENBAO_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/policies.rs` (cache and refresh) and `app/src/server/github.rs` (the reads); the response contract is the serde types and the module headers, not this section.
+
+- **Source.** Two sets of files on one ref: OPA (`*.rego`, `*_test.rego` and `*.json` under `platform/services/opa/deployment/policies/`, any depth) and OpenBao (`*.hcl` directly in `platform/services/openbao/deployment/config/policies/`). The tree is read at the ref's tip, and each file's last commit comes from that same tip.
+- **Bounds.** At most 80 files: the first 80 by path are shown, and `error` says the list was cut. At most 200 GitHub requests per refresh. A truncated tree is an error, never a partial list. The refresh runs every 15 minutes and keeps the last good list on failure.
+- **Token.** The `token` field of `secret/services/console/github`, read from OpenBao on every refresh and sent to the GitHub API origin only. It is never cached and never echoed in an error.
+- **No decision counts.** The console has no source for them: OPA authz refuses data reads, so the page says so and shows none.
+- **Gate.** `work::admin_only`, the same gate as `/v1/secrets`.
 
 ## Shared credentials (plan 17, D26-D27)
 

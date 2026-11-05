@@ -80,6 +80,17 @@ pub struct OpenbaoConfig {
     pub secret_id: Secret,
 }
 
+/// GitHub as the policy source for the Policy page (plan 17, 8.4, D36). Present only when both
+/// `CONSOLE_GITHUB_REPO` and `CONSOLE_GITHUB_REF` are set (see `github_from`). The token is not here:
+/// the policy refresh reads it from OpenBao on every run, and it is never kept in `Config`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GithubConfig {
+    /// `owner/name`, as `github_repo_valid` accepts it.
+    pub repo: String,
+    /// The branch or tag the files are read from, as `github_ref_valid` accepts it.
+    pub git_ref: String,
+}
+
 #[derive(Clone)]
 pub struct Config {
     /// Public origin, no trailing slash. The OIDC redirect is `<base_url>/auth/callback`.
@@ -118,6 +129,8 @@ pub struct Config {
     pub authentik: Option<AuthentikConfig>,
     /// Role map JSON rendered from `vars/access-role-map.yml`. `None` serves an empty role map.
     pub role_map_file: Option<PathBuf>,
+    /// GitHub source for the Policy page. `None` answers `/v1/policies` as `unconfigured`.
+    pub github: Option<GithubConfig>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -199,6 +212,7 @@ impl Config {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
+        let github = github_from(&get)?;
 
         Ok(Config {
             base_url,
@@ -219,6 +233,7 @@ impl Config {
             grafana_token,
             authentik,
             role_map_file,
+            github,
         })
     }
 }
@@ -319,6 +334,67 @@ fn openbao_from(
         role_id: Secret::new(role_id),
         secret_id: Secret::new(secret_id),
     }))
+}
+
+/// The two `CONSOLE_GITHUB_*` variables are all-or-none. Values never reach an error: a refusal names
+/// the variable and the rule only.
+fn github_from(get: impl Fn(&str) -> Option<String>) -> Result<Option<GithubConfig>, ConfigError> {
+    let read = |name: &'static str| {
+        get(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let repo = read("CONSOLE_GITHUB_REPO");
+    let git_ref = read("CONSOLE_GITHUB_REF");
+    if repo.is_none() && git_ref.is_none() {
+        return Ok(None);
+    }
+    let repo = repo.ok_or(ConfigError::Missing("CONSOLE_GITHUB_REPO"))?;
+    let git_ref = git_ref.ok_or(ConfigError::Missing("CONSOLE_GITHUB_REF"))?;
+    if !github_repo_valid(&repo) {
+        return Err(ConfigError::Invalid {
+            name: "CONSOLE_GITHUB_REPO",
+            reason: "must be owner/name: letters, digits and hyphens for the owner; letters, digits, dots, underscores and hyphens for the name, and not . or ..",
+        });
+    }
+    if !github_ref_valid(&git_ref) {
+        return Err(ConfigError::Invalid {
+            name: "CONSOLE_GITHUB_REF",
+            reason: "must be a branch or tag name: slash-separated segments of letters, digits, dots, underscores and hyphens, with no empty segment and no ..",
+        });
+    }
+    Ok(Some(GithubConfig { repo, git_ref }))
+}
+
+/// `owner/name`: the owner is letters, digits and hyphens; the name is letters, digits, dots,
+/// underscores and hyphens, and is never `.` or `..`, which a URL would resolve away.
+pub fn github_repo_valid(repo: &str) -> bool {
+    let Some((owner, name)) = repo.split_once('/') else {
+        return false;
+    };
+    let owner_ok =
+        !owner.is_empty() && owner.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    let name_ok = !name.is_empty()
+        && name != "."
+        && name != ".."
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    owner_ok && name_ok
+}
+
+/// A branch or tag name: one or more non-empty segments of letters, digits, dots, underscores and
+/// hyphens, joined by single slashes. No `..` anywhere and no `.` segment, so a ref cannot climb out
+/// of its namespace, and no whitespace or control character.
+pub fn github_ref_valid(git_ref: &str) -> bool {
+    !git_ref.contains("..")
+        && git_ref.split('/').all(|segment| {
+            segment != "."
+                && !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        })
 }
 
 /// The four Semaphore variables are all-or-none. None set means no work source;
@@ -1007,5 +1083,114 @@ mod tests {
         let config = Config::from_lookup(overlay(netbox_env(), "CONSOLE_NETBOX_URL", url.clone()))
             .expect("valid config");
         assert_eq!(config.netbox.expect("configured").api_url, url);
+    }
+
+    fn github_env() -> HashMap<&'static str, &'static str> {
+        let mut env = full_env();
+        env.insert("CONSOLE_GITHUB_REPO", "uhstray-io/agent-cloud");
+        env.insert("CONSOLE_GITHUB_REF", "dev");
+        env
+    }
+
+    #[test]
+    fn github_is_unconfigured_when_both_variables_are_unset() {
+        let config = Config::from_lookup(lookup(full_env())).expect("valid config");
+        assert!(config.github.is_none());
+    }
+
+    #[test]
+    fn github_is_all_or_none_and_names_the_missing_variable() {
+        let mut env = github_env();
+        env.remove("CONSOLE_GITHUB_REPO");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_GITHUB_REPO"));
+
+        let mut env = full_env();
+        env.insert("CONSOLE_GITHUB_REPO", "uhstray-io/agent-cloud");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_GITHUB_REF"));
+
+        let mut env = github_env();
+        env.insert("CONSOLE_GITHUB_REF", "   ");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_GITHUB_REF"));
+    }
+
+    #[test]
+    fn github_parses_trimmed_repo_and_ref() {
+        let mut env = github_env();
+        env.insert("CONSOLE_GITHUB_REF", "  feat/policy-page  ");
+        let config = Config::from_lookup(lookup(env)).expect("valid config");
+        assert_eq!(
+            config.github,
+            Some(GithubConfig {
+                repo: "uhstray-io/agent-cloud".into(),
+                git_ref: "feat/policy-page".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn github_repo_must_be_owner_slash_name_and_never_a_dot_segment() {
+        for good in ["uhstray-io/agent-cloud", "a/b.c_d-e", "x/y"] {
+            assert!(github_repo_valid(good), "{good}");
+        }
+        for bad in [
+            "",
+            "uhstray-io",
+            "uhstray-io/agent-cloud/extra",
+            "/agent-cloud",
+            "uhstray-io/",
+            "uhstray io/agent-cloud",
+            "uhstray-io/agent cloud",
+            "uhstray_io/agent-cloud",
+            "uhstray-io/..",
+            "uhstray-io/.",
+            "uhstray-io/agent-cloud?x=1",
+        ] {
+            assert!(!github_repo_valid(bad), "{bad:?}");
+            if bad.is_empty() {
+                // An empty value is unset, so it is named as missing, not as invalid.
+                continue;
+            }
+            let env = overlay(github_env(), "CONSOLE_GITHUB_REPO", bad.to_string());
+            let err = Config::from_lookup(env).err().expect("must fail");
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::Invalid {
+                        name: "CONSOLE_GITHUB_REPO",
+                        ..
+                    }
+                ),
+                "{bad:?}: {err}"
+            );
+            assert!(!err.to_string().contains(bad), "value echoed: {err}");
+        }
+    }
+
+    #[test]
+    fn github_ref_must_be_safe_segments_with_no_dot_dot_or_whitespace() {
+        for good in ["dev", "main", "feat/policy-page", "v1.2.3", "release_2026"] {
+            assert!(github_ref_valid(good), "{good}");
+        }
+        for bad in [
+            "",
+            "/dev",
+            "dev/",
+            "feat//x",
+            "./dev",
+            "feat/./x",
+            "feat/../main",
+            "..",
+            "a..b",
+            "dev main",
+            "dev\tmain",
+            "dev\nmain",
+            "dev?x=1",
+            "dev#frag",
+        ] {
+            assert!(!github_ref_valid(bad), "{bad:?}");
+        }
     }
 }

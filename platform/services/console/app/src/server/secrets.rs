@@ -529,6 +529,7 @@ mod tests {
                 grafana_token: None,
                 authentik: None,
                 role_map_file: None,
+                github: None,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -545,6 +546,7 @@ mod tests {
             secrets: tokio::sync::RwLock::new(SecretsCache::new(configured)),
             access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
             role_map: crate::server::access::RoleMap::empty(),
+            policies: tokio::sync::RwLock::new(crate::server::policies::PoliciesCache::new(false)),
         })
     }
 
