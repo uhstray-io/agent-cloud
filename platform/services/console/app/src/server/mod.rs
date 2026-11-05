@@ -3,6 +3,7 @@
 pub mod access;
 pub mod api;
 pub mod auth;
+pub mod catalog;
 pub mod config;
 pub mod gateway;
 pub mod github;
@@ -59,6 +60,8 @@ pub struct AppState {
     pub flows: inventory::FlowSet,
     /// The agentgateway clients, budgets and models `GET /v1/gateway` answers (task 8.3a).
     pub gateway: gateway::GatewaySet,
+    /// The deployable services `GET /v1/catalog` answers (task 8.4, D38). Members get names; admins also get host counts.
+    pub catalog: catalog::CatalogSet,
     /// The gateway's last-hour token use per client (D39). The refresh task writes it; `/v1/gateway` only reads it.
     pub usage: tokio::sync::RwLock<grafana::UsageCache>,
     /// OpenBao client for run-time reads (plan 17 D27). Logs in on first use, never at boot.
@@ -121,6 +124,10 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         Some(path) => gateway::GatewaySet::configured(gateway::load_gateway(path)?),
         None => gateway::GatewaySet::unconfigured(),
     };
+    let catalog = match &config.catalog_file {
+        Some(path) => catalog::CatalogSet::configured(catalog::load_catalog(path)?),
+        None => catalog::CatalogSet::unconfigured(),
+    };
     let usage =
         grafana::UsageCache::new(config.grafana_token.is_some() && config.grafana_url.is_some());
     let openbao = match &config.openbao {
@@ -157,6 +164,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         proxmox_http,
         flows,
         gateway,
+        catalog,
         usage: tokio::sync::RwLock::new(usage),
         openbao,
         secrets: tokio::sync::RwLock::new(secrets_cache),
@@ -272,6 +280,7 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/network", get(inventory::get_network))
         .route("/v1/flows", get(inventory::get_flows))
         .route("/v1/gateway", get(gateway::get_gateway))
+        .route("/v1/catalog", get(catalog::get_catalog))
         .route("/v1/roles", get(work::list_roles))
         .route("/v1/secrets", get(secrets::get_secrets))
         .route("/v1/access", get(access::get_access))
@@ -322,6 +331,7 @@ mod tests {
             work::WorkCache::unconfigured(),
             Vec::new(),
             gateway::GatewaySet::unconfigured(),
+            catalog::CatalogSet::unconfigured(),
             grafana::UsageCache::new(false),
         )
     }
@@ -331,6 +341,7 @@ mod tests {
         work: work::WorkCache,
         workflow: Vec<work::Step>,
         gateway_set: gateway::GatewaySet,
+        catalog_set: catalog::CatalogSet,
         usage: grafana::UsageCache,
     ) -> SharedState {
         Arc::new(AppState {
@@ -349,6 +360,7 @@ mod tests {
                 openbao: None,
                 flows_file: None,
                 gateway_file: None,
+                catalog_file: None,
                 grafana_url: None,
                 grafana_token: None,
                 authentik: None,
@@ -365,6 +377,7 @@ mod tests {
             proxmox_http: reqwest::Client::new(),
             flows: inventory::FlowSet::unconfigured(),
             gateway: gateway_set,
+            catalog: catalog_set,
             usage: tokio::sync::RwLock::new(usage),
             openbao: None,
             secrets: tokio::sync::RwLock::new(secrets::SecretsCache::new(false)),
@@ -503,6 +516,7 @@ mod tests {
             "/v1/network",
             "/v1/flows",
             "/v1/gateway",
+            "/v1/catalog",
             "/v1/roles",
             "/v1/secrets",
             "/v1/policies",
@@ -540,6 +554,7 @@ mod tests {
             work::WorkCache::unconfigured(),
             Vec::new(),
             gateway_set,
+            catalog::CatalogSet::unconfigured(),
             usage,
         )
     }
@@ -644,6 +659,78 @@ mod tests {
             admin.body,
             r#"{"roles":[{"name":"infra-agent","steps":[{"id":"step-a","order":1,"label":"Plan"}]},{"name":"security-agent","steps":[{"id":"step-c","order":3,"label":"Verify"}]},{"name":"service-agent","steps":[{"id":"step-b","order":2,"label":"Build"}]}]}"#
         );
+    }
+
+    fn catalog_state(catalog_set: catalog::CatalogSet) -> SharedState {
+        app_state(
+            Prefs::in_memory().expect("in-memory prefs"),
+            work::WorkCache::unconfigured(),
+            Vec::new(),
+            gateway::GatewaySet::unconfigured(),
+            catalog_set,
+            grafana::UsageCache::new(false),
+        )
+    }
+
+    /// Signs in with `groups` on a fresh app over `state`, then asks for `/v1/catalog`.
+    async fn catalog_reply(state: SharedState, groups: &'static [&'static str]) -> Reply {
+        let app = api_router(state)
+            .merge(test_login_route("/test/login", groups))
+            .layer(session_layer(memory_sessions()));
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.clone().expect("session cookie set on login");
+        call(addr, "GET", "/v1/catalog", Some(cookie), "").await
+    }
+
+    fn two_service_catalog() -> catalog::CatalogSet {
+        catalog::CatalogSet::configured(catalog::CatalogFile {
+            services: vec![
+                catalog::CatalogEntry {
+                    service: "netbox".into(),
+                    name: "NetBox".into(),
+                    template: "Deploy NetBox".into(),
+                    deployed_hosts: 2,
+                },
+                catalog::CatalogEntry {
+                    service: "step-ca".into(),
+                    name: "step-ca".into(),
+                    template: "Deploy step-ca (Dev)".into(),
+                    deployed_hosts: 0,
+                },
+            ],
+        })
+    }
+
+    #[tokio::test]
+    async fn catalog_answers_members_without_a_host_count_and_admins_with_it() {
+        let state = catalog_state(two_service_catalog());
+
+        let member = catalog_reply(state.clone(), &["ops"]).await;
+        assert_eq!(member.status, 200);
+        assert_eq!(
+            member.body,
+            r#"{"state":"ok","services":[{"service":"netbox","name":"NetBox","template":"Deploy NetBox","running":true},{"service":"step-ca","name":"step-ca","template":"Deploy step-ca (Dev)","running":false}]}"#
+        );
+        assert!(!member.body.contains("deployed_hosts"), "{}", member.body);
+
+        let admin = catalog_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(
+            admin.body,
+            r#"{"state":"ok","services":[{"service":"netbox","name":"NetBox","template":"Deploy NetBox","running":true,"deployed_hosts":2},{"service":"step-ca","name":"step-ca","template":"Deploy step-ca (Dev)","running":false,"deployed_hosts":0}]}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn catalog_answers_unconfigured_to_members_and_admins_alike() {
+        let state = catalog_state(catalog::CatalogSet::unconfigured());
+        let member = catalog_reply(state.clone(), &["ops"]).await;
+        assert_eq!(member.status, 200);
+        assert_eq!(member.body, r#"{"state":"unconfigured","services":[]}"#);
+        let admin = catalog_reply(state, &["platform-admins"]).await;
+        assert_eq!(admin.status, 200);
+        assert_eq!(admin.body, r#"{"state":"unconfigured","services":[]}"#);
     }
 
     #[tokio::test]
@@ -908,6 +995,7 @@ mod tests {
             cache,
             steps,
             gateway::GatewaySet::unconfigured(),
+            catalog::CatalogSet::unconfigured(),
             grafana::UsageCache::new(false),
         )
     }

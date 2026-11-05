@@ -49,6 +49,7 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_WORKFLOW_FILE=/etc/console/workflow.json` | fixed path; the file is `config/workflow.json` |
 | `CONSOLE_FLOWS_FILE=/etc/console/flows.json` | fixed path; the file is `config/flows.json` (always rendered) |
 | `CONSOLE_GATEWAY_FILE=/etc/console/gateway.json` | fixed path; the file is `config/gateway.json` (always rendered, empty lists without an `agentgateway_svc` host). Names and figures only (task 8.3a) |
+| `CONSOLE_CATALOG_FILE=/etc/console/catalog.json` | fixed path; the file is `config/catalog.json` (always rendered, an empty list when no deploy template qualifies). Names, template names and host counts only (task 8.4, D38) |
 | `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | `console_netbox_url`; the token is `secrets.console_api_token`, a shared read of `secret/services/netbox`. The group renders only when the URL is set (Phase 3, see below) |
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | `console_proxmox_url`; id and secret are shared reads of `secret/services/proxmox` (`console_token_id`, `console_token`). All-or-none, like the NetBox group |
 | `CONSOLE_PROXMOX_CA_FILE=/etc/console/proxmox-ca.pem` | set only when `console_proxmox_ca_pem` is set; the file is always mounted (empty when unset) |
@@ -166,6 +167,7 @@ Routes and scoping:
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |
 | `GET /v1/gateway` | `platform-admins` only; 403 otherwise | `{state, clients, models, usage}` from `config/gateway.json`: each agentgateway client with its tier, its hourly token figure, where that figure comes from (`client`, `tier`, `default`), its allowed models and `tokens_last_hour` (the usage read's figure for its name, or `null`); `state` is `ok` or `unconfigured`. `usage` is `{state, refreshed_at, error}`, its `state` one of `ok`, `unconfigured`, `loading`, `error`. Names and figures only, never a key. Internal identities (mcp-self, legacy-shared, pool identities) are not listed. Admin-only identities are not listed either (task 8.3a) |
+| `GET /v1/catalog` | any signed-in member; 401 signed out | `{state, services}` from `config/catalog.json`: each service the platform can deploy, with `service`, `name`, `template` and `running` (whether any host carries it). Platform admins also get `deployed_hosts` per service; a member's body has no such key. `state` is `ok` or `unconfigured`. The menu is not sensitive, so it is open to members (task 8.4, D38) |
 | `GET /v1/roles` | `platform-admins` only; 403 otherwise | `{roles}`: one role per distinct owner in the workflow registry (`CONSOLE_WORKFLOW_FILE`), sorted by name, each with its `steps` (`{id, order, label}`) in order. Empty without the registry (D40) |
 | `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
 | `GET /v1/access` | `platform-admins` only; 401 signed out, 403 otherwise | Authentik users and groups from a background read, plus the Access Level -> per-service `role_map` (8.2b). See "Access" below |
@@ -247,6 +249,7 @@ deployment/
 │   ├── workflow.json.j2    config/workflow.json from the service-onboarding registry
 │   ├── flows.json.j2       config/flows.json from the authentik, caddy and o11y declarations (names only)
 │   ├── gateway.json.j2     config/gateway.json from the agentgateway host's vars: clients, budgets, models (names and figures only; task 8.3a)
+│   ├── catalog.json.j2     config/catalog.json from platform/semaphore/templates.yml: one entry per service, names, template names and host counts only; the count is the group the service's deploy playbook targets (task 8.4)
 │   └── proxmox-ca.pem.j2   config/proxmox-ca.pem from console_proxmox_ca_pem (empty when unset)
 ├── .gitignore              .env, config/, certs/ (rendered per deploy)
 ├── AGENTS.md -> CLAUDE.md

@@ -12,7 +12,9 @@
 #          config/gateway.json (task 8.3a: the agentgateway clients, budgets and models, names and figures only; always,
 #          empty lists when no agentgateway_svc host). The gateway file reads the agentgateway host's vars through the
 #          _console_gw_* expressions below, never a key, a client_<name> field, an address or a port. Also
-#          config/role-map.json (always; the Access page's role map, from vars/access-role-map.yml). The Authentik
+#          config/role-map.json (always; the Access page's role map, from vars/access-role-map.yml). Also
+#          config/catalog.json (always; the Request a service page's list, 8.4 D38: names and host counts from the deploy
+#          templates in platform/semaphore/templates.yml, never an address). The Authentik
 #          directory token (8.2b) is shared-read only when console_authentik_api_url is set.
 #          Phase 3 (D22-D24) reads NetBox and Proxmox only when their URL vars are set, and refuses a
 #          netbox_site slug declared on two sites or a private key given as the Proxmox CA.
@@ -116,9 +118,18 @@
       - { src: gateway.json.j2, dest: config/gateway.json, mode: "0644" }
       # The Access page's role map (8.2b): the authoritative table as data, always rendered. Not a secret.
       - { src: role-map.json.j2, dest: config/role-map.json, mode: "0644" }
+      # The Request a service page's list (8.4, D38): names and host counts only, always rendered (an empty list when no
+      # deploy template qualifies). Bind-mounted read-only (compose.yml); deploy.sh hashes it.
+      - { src: catalog.json.j2, dest: config/catalog.json, mode: "0644" }
     # The role map (8.2b) is read on the controller. Its source is pinned against the authoritative table in
     # plan/architecture/04-credentials-access.md by platform/tests/test_console_access_role_map.py.
     _access_role_map: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/vars/access-role-map.yml') | from_yaml }}"
+    # The deploy templates the Request a service page lists (8.4, D38), read on the controller. catalog.json.j2 keeps
+    # the `Deploy <name>` templates whose playbook is deploy-<service>.yml (not Deploy All Services), counts each
+    # service's hosts in the group its playbook targets (else <service>_svc), and keeps one entry per service.
+    # NOT a rotation pin: templates.yml changes many times a week, and the catalog holds names and counts, not code.
+    # Pinning it would make the monthly rotation refuse, and the secret_id would expire while the rotation waited.
+    _console_catalog_templates: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates.yml') | from_yaml).templates }}"
     # Flow inputs (D24). The authentik apps mirror deploy-authentik.yml: an undefined authentik_apps on the
     # authentik host means the whole catalog, and an explicit [] is an empty selection. No authentik host
     # means no oidc edges. Only names are read: never an address, never a port.
