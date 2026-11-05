@@ -335,6 +335,16 @@ hosts, but is not yet declared for every service host (none is recorded for the 
 the rollout and make it a mandatory onboarding step (Phase 1) before relying on the trust boundary
 for any new service.*
 
+**EXCEPTION (recorded 2026-11-05, review by 2027-02-05): the gateway-to-vLLM hop is plain HTTP and
+carries the vLLM API key in clear.** On the inference path the agentgateway-to-vLLM hop (the DGX
+Spark host) does not meet the rule above: it is plain HTTP and the upstream key travels unencrypted.
+Compensating control: the GPU host's firewall admits only the gateway host to the vLLM port - that
+control is enforced outside this repository and is not verifiable from this checkout. Fix: internal-CA
+TLS for that hop, decided 2026-10-16 (ADR-0017, as cited in
+[plan/architecture/network-architecture.md](plan/architecture/network-architecture.md)), pending - the
+agent-cloud build is not started. This exception ends when that TLS lands, and it must be reviewed no
+later than 2027-02-05. The rule above is unchanged.
+
 **Consume public TLS, run a private CA; never become a public CA.** Browser-trusted certs via Caddy +
 CloudFlare DNS-01 (incl. On-Demand TLS for SaaS tenant domains); internal/LAN certs from the step-ca
 private CA whose stable root survives redeploys and volume wipes.
