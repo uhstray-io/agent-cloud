@@ -17,6 +17,8 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars_files:
+    - vars/o11y-journal-components.yml
   tasks:
     - name: Require exactly one receiver and the Dev branch
       ansible.builtin.assert:
@@ -28,6 +30,27 @@
         fail_msg: >-
           This workflow requires one o11y_svc host, service_branch=dev, and
           journal_collector_action=stage|survey|survey-cursor|repair-positions|apply|stop; stage cannot run in check mode.
+        quiet: true
+      tags: [always]
+
+    - name: Require the declared journal component cohort to be well formed
+      ansible.builtin.assert:
+        that:
+          - o11y_journal_components | length >= 1
+          - o11y_journal_components | length <= 16
+          - o11y_journal_components[0].component == 'o11y_alloy'
+          - o11y_journal_components[0].container == 'o11y-alloy'
+          - o11y_journal_components[0].service == 'o11y/alloy'
+          - o11y_journal_components | map(attribute='component') | list | unique | list | length == o11y_journal_components | length
+          - o11y_journal_components | map(attribute='container') | list | unique | list | length == o11y_journal_components | length
+          - o11y_journal_components | map(attribute='component') | select('match', '^o11y_[a-z_]+$') | list | length == o11y_journal_components | length
+          - o11y_journal_components | map(attribute='container') | select('match', '^o11y-[a-z0-9-]+$') | list | length == o11y_journal_components | length
+          - o11y_journal_components | map(attribute='container') | select('equalto', 'o11y-journal-collector') | list | length == 0
+          - o11y_journal_components | map(attribute='service') | list == o11y_journal_components | map(attribute='container') | map('regex_replace', '^o11y-', 'o11y/') | list
+        fail_msg: >-
+          vars/o11y-journal-components.yml must declare one unique component and container per
+          receiver container, o11y_alloy first with o11y-alloy and o11y/alloy, containers o11y-<name>
+          (never o11y-journal-collector), and each service o11y/<name>. Nothing was started.
         quiet: true
       tags: [always]
 
@@ -76,7 +99,10 @@
   hosts: o11y_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/o11y-journal-components.yml
   vars:
+    _journal_components_arg: "{{ o11y_journal_components | map(attribute='component') | join(',') }}"
     _journal_provider_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _journal_provider_deploy_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}/platform/services/o11y/deployment"
     _journal_provider_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/verify-o11y-journal-compose.py') }}"
@@ -144,7 +170,7 @@
 
     - name: Verify the exact receiver network before survey or apply
       ansible.builtin.command:
-        argv: [python3, -, verify-network]
+        argv: [python3, -, verify-network, --components, "{{ _journal_components_arg }}"]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
         stdin_add_newline: false
       register: _journal_network_identity
@@ -178,7 +204,10 @@
   gather_facts: false
   become: false
   any_errors_fatal: true
+  vars_files:
+    - vars/o11y-journal-components.yml
   vars:
+    _journal_components_arg: "{{ o11y_journal_components | map(attribute='component') | join(',') }}"
     _journal_directory: "{{ o11y_journal_directory | default('') | string }}"
     _journal_mount: /var/log/journal
     _journal_image: docker.io/grafana/alloy:v1.9.2
@@ -409,7 +438,7 @@
 
     - name: Verify positions volume identity and access before apply
       ansible.builtin.command:
-        argv: [python3, "-", verify]
+        argv: [python3, "-", verify, --components, "{{ _journal_components_arg }}"]
         stdin: "{{ _journal_positions_helper }}"
         stdin_add_newline: false
       register: _journal_positions_gate
@@ -629,7 +658,7 @@
 
     - name: Recheck positions volume initialization immediately before mount
       ansible.builtin.command:
-        argv: [python3, "-", verify]
+        argv: [python3, "-", verify, --components, "{{ _journal_components_arg }}"]
         stdin: "{{ _journal_positions_helper }}"
         stdin_add_newline: false
       register: _journal_positions_pre_mount
@@ -679,7 +708,7 @@
 
     - name: Retire only a verified legacy-project collector registration
       ansible.builtin.command:
-        argv: [python3, -, retire-legacy]
+        argv: [python3, -, retire-legacy, --components, "{{ _journal_components_arg }}"]
         stdin: "{{ _journal_positions_helper }}"
         stdin_add_newline: false
       register: _journal_retire_legacy
@@ -750,7 +779,7 @@
 
         - name: Verify the live collector positions mount and access
           ansible.builtin.command:
-            argv: [python3, "-", verify-live]
+            argv: [python3, "-", verify-live, --components, "{{ _journal_components_arg }}"]
             stdin: "{{ _journal_positions_helper }}"
             stdin_add_newline: false
           register: _journal_positions_live_mount
@@ -1544,6 +1573,77 @@
               All receiver data remains; positions-volume preservation was asserted
               when a collector with that mount existed.
 
+    # Observation runs only after the apply block succeeded. It is read-only, reports one fixed
+    # category per declared non-alloy source, and never fails the apply: a source that has not
+    # reached Loki yet is a finding for the operator, not a gate.
+    - name: Capture the Loki observation window for the new receiver container sources
+      ansible.builtin.command:
+        argv: [date, +%s%N]
+      register: _journal_observation_now
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Observe each new receiver container source in Loki without failing the apply
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - --signal=KILL
+          - 12s
+          - podman
+          - exec
+          - o11y-grafana
+          - timeout
+          - -s
+          - KILL
+          - "8"
+          - wget
+          - -q
+          - -O
+          - "-"
+          - >-
+            {{ 'http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22'
+               ~ (item.service | regex_replace('/', '%2F'))
+               ~ '%22%2Ctarget_id%3D%22service%3Ao11y%22%7D&start='
+               ~ (((_journal_observation_now.stdout | trim | int) - 300000000000) | string)
+               ~ '&limit=1&direction=backward' }}
+      loop: "{{ o11y_journal_components | rejectattr('component', 'equalto', 'o11y_alloy') | list }}"
+      loop_control:
+        label: observation
+      register: _journal_observation
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Classify each new receiver container source observation without exposing Loki output
+      ansible.builtin.set_fact:
+        _journal_observation_by_service: >-
+          {{ (_journal_observation_by_service | default({})) | combine({
+               item.item.service: (
+                 'query_unverified'
+                 if (item.rc | default(1) | int != 0 or not ((item.stdout | default('')) is search('"status"\s*:\s*"success"')))
+                 else ('observed'
+                   if ((item.stdout | default('')) is search('"service"\s*:\s*"' ~ item.item.service ~ '"')
+                       and (item.stdout | default('')) is search('"result"\s*:\s*\[\s*\{'))
+                   else 'not_yet_observed')
+               )
+             }) }}
+      loop: "{{ _journal_observation.results }}"
+      loop_control:
+        label: classification
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Report the bounded Loki observation of each new receiver container source
+      ansible.builtin.debug:
+        msg: >-
+          Loki observation of new receiver sources, reported and not a gate (the apply already passed):
+          {% for service, category in (_journal_observation_by_service | default({})) | dictsort %}{{ service }}={{ category }}{{ '; ' if not loop.last else '' }}{% endfor %}
+      changed_when: false
+      when: not ansible_check_mode
+
 
 - name: Stop only the journal collector while preserving its positions volume
   hosts: o11y_svc
@@ -1636,6 +1736,10 @@
   hosts: o11y_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/o11y-journal-components.yml
+  vars:
+    _journal_components_arg: "{{ o11y_journal_components | map(attribute='component') | join(',') }}"
   tasks:
     - name: Leave the survey play when the reviewed action is apply or stop
       ansible.builtin.meta: end_host
@@ -1644,7 +1748,7 @@
 
     - name: Survey positions metadata or explicit cursor validity without mounting
       ansible.builtin.command:
-        argv: [python3, "-", "{{ journal_collector_action }}"]
+        argv: [python3, "-", "{{ journal_collector_action }}", --components, "{{ _journal_components_arg }}"]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
         stdin_add_newline: false
       register: _journal_positions_survey
@@ -1885,6 +1989,10 @@
   hosts: o11y_svc
   gather_facts: false
   become: false
+  vars_files:
+    - vars/o11y-journal-components.yml
+  vars:
+    _journal_components_arg: "{{ o11y_journal_components | map(attribute='component') | join(',') }}"
   tasks:
     - name: Leave the repair play unless the explicit repair action was selected
       ansible.builtin.meta: end_host
@@ -1893,7 +2001,7 @@
 
     - name: Run the separately selected guarded positions repair
       ansible.builtin.command:
-        argv: [python3, "-", repair-positions]
+        argv: [python3, "-", repair-positions, --components, "{{ _journal_components_arg }}"]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
         stdin_add_newline: false
       register: _journal_positions_repair

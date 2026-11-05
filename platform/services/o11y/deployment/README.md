@@ -1386,6 +1386,25 @@ start or receiver mutation occurred. The deterministic marker proof is a source
 follow-up to that refusal. It has not been run in production and does not provide
 a live journal or dashboard coverage receipt.
 
+Receiver container cohort. The collector reads one `loki.source.journal` component
+per receiver container declared in `platform/playbooks/vars/o11y-journal-components.yml`
+(`o11y_journal_components`): `o11y_alloy` first, then prometheus, loki, tempo,
+pyroscope, grafana and node-exporter. Each source matches `CONTAINER_NAME=<container>`
+and labels its entries `service="o11y/<name>"`, `signal="container"` and
+`target_id="service:o11y"`. The same list is the template's loop input, the positions
+helper's `--components` allowlist and the input to the deploy's validation, so the three
+cannot diverge. The deploy refuses before it touches any host unless the list has
+`o11y_alloy` first with `o11y-alloy` and `o11y/alloy`, no duplicate component or
+container, container names of the form `o11y-<name>`, no `o11y-journal-collector`, and
+each service `o11y/<name>`. `o11y_alloy` remains the delivery proof: its exact
+`service="o11y/alloy"` marker gates apply as before. A newly declared source has no
+cursor and replays at most its 15-minute `max_age` window, never history. After apply,
+a read-only observation queries Loki once per non-alloy source over the last 300 seconds,
+filtered by that source's own `service` label, and prints one category per service:
+`observed`; `not_yet_observed` (no line in the window yet, expected for a quiet
+container); or `query_unverified` (the request failed or returned an unexpected body).
+The observation never fails the apply and is a report, not a delivery receipt.
+
 First bootstrap requires the v3 volume to be absent: bounded volume inventory
 must prove no exact-name collision, and an all-container query, including stopped
 containers, must prove `o11y-journal-collector` absent. An unexpected existing

@@ -94,6 +94,21 @@ def _render_alloy(**values):
     ).render(**values)
 
 
+def _render_journal(components):
+    """journal.alloy.j2 rendered as the deploy renders it: Ansible sets trim_blocks (the loop needs it)."""
+    env = Environment(undefined=StrictUndefined, trim_blocks=True)
+    env.filters["to_json"] = json.dumps
+    env.filters["bool"] = bool
+    return env.from_string(
+        (DEPLOY / "templates/journal.alloy.j2").read_text(encoding="utf-8")
+    ).render(
+        o11y_journal_components=components,
+        o11y_otlp_bind="otlp.internal.test",
+        o11y_otlp_port=4317,
+        o11y_otlp_tls_enabled=False,
+    )
+
+
 def _assert_bounded(job, sample_limit=None):
     assert job["body_size_limit"] == LIMIT_FIELDS["body_size_limit"]
     assert job["sample_limit"] == (LIMIT_FIELDS["sample_limit"] if sample_limit is None else sample_limit)
@@ -1433,8 +1448,25 @@ def test_receiver_target_identity_is_scoped_and_survives_journal_otlp_loki():
         assert bool(re.fullmatch(project_rules[0], project)) is (project == "o11y")
 
     journal = (DEPLOY / "templates/journal.alloy.j2").read_text(encoding="utf-8")
-    assert 'matches    = "CONTAINER_NAME=o11y-alloy"' in journal
-    assert 'labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }' in journal
+    # The alloy source is rendered from the declared receiver cohort, so its identity is asserted
+    # on the RENDERED block (not on loop source), and every declared source keeps the same
+    # receiver identity: service from the cohort, signal container, target_id service:o11y.
+    cohort = yaml.safe_load(
+        (ROOT / "platform/playbooks/vars/o11y-journal-components.yml").read_text(encoding="utf-8")
+    )["o11y_journal_components"]
+    rendered_journal = _render_journal(cohort)
+    alloy_block = rendered_journal.split('loki.source.journal "o11y_alloy" {', 1)[1].split("\n}", 1)[0]
+    assert 'matches    = "CONTAINER_NAME=o11y-alloy"' in alloy_block
+    assert 'labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }' in alloy_block
+    sources = re.findall(r'loki\.source\.journal "[^"]+" \{.*?\n\}', rendered_journal, re.S)
+    assert len(sources) == len(cohort)
+    for source, row in zip(sources, cohort, strict=True):
+        labels = (
+            f'labels     = {{ service = "{row["service"]}", signal = "container", '
+            'target_id = "service:o11y" }'
+        )
+        assert f'matches    = "CONTAINER_NAME={row["container"]}"' in source
+        assert labels in source
     assert 'logs = [otelcol.processor.attributes.journal_labels.input]' in journal
     assert 'key    = "loki.attribute.labels"' in journal
     assert 'action = "upsert"' in journal
