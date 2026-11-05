@@ -1236,8 +1236,8 @@ after the recovery. The independent review of PR 876 caught it before merge, and
 timing, and I did not search this ledger for the incident it fell inside. The count-3 proposal would not
 have caught it either: it covers OpenSpec task characterisations, not a review document's account of an
 operation. **Widened proposal:** a review or incident document that attributes an outcome to a named
-task run must cite that run's output or the ledger entry for the incident it falls in; the plan-doc
-review checklist gains that line.
+task run must cite that run's output or the ledger entry for the incident it falls in. Not built:
+the proposal is to add that requirement to `plan/architecture/00-foundation-standards.md`.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
