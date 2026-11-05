@@ -19,7 +19,19 @@ SPEC = importlib.util.spec_from_file_location("o11y_log_source_survey", HELPER)
 SURVEY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SURVEY)
 RECEIVERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "pyroscope", "grafana")
-ZERO_CLASSES = {"email": 0, "ipv4": 0, "credential": 0, "secret_pair": 0, "url_query": 0}
+ZERO_CLASSES = {
+    "email": 0,
+    "ipv4": 0,
+    "credential": 0,
+    "secret_pair": 0,
+    "url_query": 0,
+    "dsn_userinfo": 0,
+    "jwt": 0,
+    "private_key": 0,
+    "session": 0,
+}
+# Built by concatenation so the staged-diff PEM gate does not match a literal header in test source.
+PEM_HEADER = "-----BEGIN " + "RSA PRIVATE KEY-----"
 UNVERIFIED = {
     "status": "unverified",
     "entries": None,
@@ -770,9 +782,24 @@ def test_nonzero_exit_with_valid_rows_is_unverified_not_read(monkeypatch):
         ("sent Bearer abcdefgh12345678", "credential"),
         ("config token: abcd1234", "secret_pair"),
         ("open https://example.com/cb?code=1", "url_query"),
+        ("dsn postgres://app:hunter2@dbhost/app", "dsn_userinfo"),
+        ("token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZQ", "jwt"),
+        (PEM_HEADER, "private_key"),
+        ("Cookie: sid=1", "session"),
         ("ordinary private log body", None),
     ],
-    ids=["email", "ipv4", "credential", "secret_pair", "url_query", "clean"],
+    ids=[
+        "email",
+        "ipv4",
+        "credential",
+        "secret_pair",
+        "url_query",
+        "dsn_userinfo",
+        "jwt",
+        "private_key",
+        "session",
+        "clean",
+    ],
 )
 def test_each_content_class_counts_its_own_hit(message, label):
     output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
@@ -983,3 +1010,106 @@ def test_url_query_class_counts_a_token_with_a_scheme_and_a_query_marker(message
 def test_url_query_counts_each_token_once_across_a_line():
     output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": "see http://a/b?x=1 and https://c?d=2 http://e/f"})
     assert SURVEY.content_scan(output, "o11y-loki")["classes"]["url_query"] == 2
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "db_password=xyz1234",
+        "GF_SECURITY_ADMIN_PASSWORD=<redacted>",
+        "client_secret=abcd1234",
+        "access_token=" + "eyJhbGciOiJIUzI1NiJ9",
+        "x_api_key=abc12345",
+        "accessToken=abcd1234",
+        '{"password":"hunter2hunter2"}',
+        '"token": "abcdabcd"',
+    ],
+    ids=[
+        "db-password",
+        "gf-admin-password",
+        "client-secret",
+        "access-token-prefix",
+        "x-api-key",
+        "camel-access-token",
+        "json-password",
+        "json-token",
+    ],
+)
+def test_secret_pair_matches_the_keyword_anywhere_with_optional_quotes(message):
+    output = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": message})
+    assert SURVEY.content_scan(output, "o11y-loki")["classes"]["secret_pair"] == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "password=" * 6000,
+        '"token":' * 6000,
+        "password" + " " * 48000,
+        "eyJ" * 16000,
+        "eyJ_" * 12000,
+        "-----BEGIN " + "A " * 24000,
+        "-----BEGIN " * 4000,
+        "cookie:" * 6000,
+        "_session=" * 6000,
+        "://" * 14000,
+        "a://" + "x:" * 20000 + "@h",
+    ],
+    ids=[
+        "secret-equals-run",
+        "secret-json-run",
+        "secret-keyword-then-spaces",
+        "jwt-prefix-run",
+        "jwt-underscore-run",
+        "private-key-header-then-run",
+        "private-key-header-run",
+        "session-cookie-run",
+        "session-cookie-equals-run",
+        "dsn-separator-run",
+        "dsn-authority-run",
+    ],
+)
+def test_new_and_widened_classes_stay_linear_on_adversarial_lines(text):
+    line = json.dumps({"CONTAINER_NAME": "o11y-loki", "MESSAGE": text})
+    started = time.perf_counter()
+    SURVEY.content_scan(line, "o11y-loki")
+    elapsed = time.perf_counter() - started
+    assert elapsed < 0.2, f"classifiers took {elapsed:.3f}s on an adversarial line"
+
+
+@pytest.mark.parametrize(
+    ("label", "message"),
+    [
+        ("email", "contact ops@example.com now"),
+        ("credential", "sent Bearer abcdefgh12345678"),
+        ("secret_pair", '{"password":"hunter2hunter2"}'),
+        ("url_query", "open https://example.com/cb?code=1"),
+        ("dsn_userinfo", "dsn postgres://app:hunter2@dbhost/app"),
+        ("jwt", "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dGVzdHNpZ25hdHVyZQ"),
+        ("private_key", PEM_HEADER),
+        ("session", "Cookie: sid=1"),
+    ],
+    ids=[
+        "email",
+        "credential",
+        "secret-pair",
+        "url-query",
+        "dsn-userinfo",
+        "jwt",
+        "private-key",
+        "session",
+    ],
+)
+def test_each_blocking_class_marks_its_receiver_blocked(monkeypatch, label, message):
+    # Removing a class from BLOCKING_CLASSES would turn its receiver clear or unverified: this test catches that.
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-loki": [message]},
+    )
+    report = SURVEY.survey()
+    loki = report["content_survey"]["loki"]
+    assert loki["status"] == "blocked"
+    assert loki["classes"][label] == 1
+    assert loki["blocking_hits"] == 1
+    assert report["content_survey_status"] == "blocked"

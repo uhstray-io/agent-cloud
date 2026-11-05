@@ -26,16 +26,32 @@ CONTENT_PATTERNS = {
     # The trailing guard lets a full stop end a sentence; only a following digit or ".digit" rules a match out.
     "ipv4": re.compile(r"(?<![\d.])(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}(?!\d|\.\d)"),
     "credential": re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}"),
+    # Keyword anywhere, not after a word boundary, so "db_password=" and "accessToken=" match. An optional quote
+    # may sit before the separator (JSON keys) and after it (JSON values). Linear: the value run is one scan.
     "secret_pair": re.compile(
-        r"(?i)\b(?:token|password|passwd|secret|api[_-]?key|authorization)\s*[=:]\s*[^\s,;&]{4,}"
+        r"""(?i)(?:token|password|passwd|secret|api[_-]?key|authorization)["']?\s*[=:]\s*["']?[^\s,;&"']{4,}"""
     ),
+    # A JWT: three base64url segments, the first beginning eyJ. The lookbehind starts a match only at a run
+    # boundary, so a long run of "eyJ" cannot restart the scan at each position.
+    "jwt": re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    "private_key": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    "session": re.compile(r"(?i)(?:\bcookie:|\bset-cookie:|_session=)"),
 }
-# url_query is not a pattern: it is a per-token scan (count_url_query), so no regex can restart at each scheme.
-CONTENT_CLASSES = (*CONTENT_PATTERNS, "url_query")
+# url_query and dsn_userinfo are not patterns: each is a per-token scan, so no regex can restart at each scheme.
+CONTENT_CLASSES = (*CONTENT_PATTERNS, "url_query", "dsn_userinfo")
 URL_SCHEME = re.compile(r"https?://", re.IGNORECASE | re.ASCII)
 URL_QUERY_TAIL = re.compile(r"\?[^#]")
 # A bare IPv4 address is reported but does not block; the other classes do.
-BLOCKING_CLASSES = ("email", "credential", "secret_pair", "url_query")
+BLOCKING_CLASSES = (
+    "email",
+    "credential",
+    "secret_pair",
+    "url_query",
+    "dsn_userinfo",
+    "jwt",
+    "private_key",
+    "session",
+)
 
 
 def run(argv, timeout=8):
@@ -185,6 +201,24 @@ def count_url_query(text):
     return hits
 
 
+def count_dsn_userinfo(text):
+    """Count whitespace-separated tokens whose URL authority carries a password: user:secret@host.
+
+    The authority is the text after the first "://" up to the next "/". It counts when a ":" sits before its
+    "@". One pass per token, so the cost is linear in the line.
+    """
+    hits = 0
+    for token in text.split():
+        scheme = token.find("://")
+        if scheme == -1:
+            continue
+        authority = token[scheme + 3 :].split("/", 1)[0]
+        at = authority.find("@")
+        if at != -1 and ":" in authority[:at]:
+            hits += 1
+    return hits
+
+
 def content_scan(output, expected_name):
     """Count one container's entries, content-class hits, and entries whose text could not be classified.
 
@@ -216,6 +250,7 @@ def content_scan(output, expected_name):
         for label, pattern in CONTENT_PATTERNS.items():
             classes[label] += sum(1 for _ in pattern.finditer(text))
         classes["url_query"] += count_url_query(text)
+        classes["dsn_userinfo"] += count_dsn_userinfo(text)
     return {"entries": entries, "unscanned": unscanned, "classes": classes}
 
 
