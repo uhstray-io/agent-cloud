@@ -125,7 +125,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard) | Process | 9 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test) | Process | 10 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -3522,6 +3522,16 @@ tests that read this file were not treated as tests of the change. The 91-second
 above includes the citation guard.
 
 **Enforcement update 2026-11-05.** The ledger citation test also runs at pre-commit when `docs/MISTAKES.md` or the citation ratchet is staged (PR #868).
+
+**Occurrence 2026-11-05 (a repo-wide contract test).** PR #879's first head `30d5547c` forced the
+Deploy o11y Alloy-candidate block to run under `--check` (`check_mode: false`) and was pushed under
+`SKIP_TESTS=1` after only `test_o11y_scrape_budgets.py` passed locally; the independent review's wider
+run selected only test files that mention the playbook. CI's Python core failed on
+`test_check_mode_contract.py`: a write forced to run in a dry run under play `vars:` breaks the
+runner-scratch rule. Fixed in `81bd7950` by skipping the block in a dry run instead, before merge. Why
+the rule did not fire: both the author and the reviewer chose tests by the file's name, and the
+contract tests that read every playbook name none of them. The 91-second fast subset proposed above
+does not launch `ansible-playbook`, so it includes this contract test and would have stopped the push.
 
 ### 5.3 Merging while the review was rate-limited
 
