@@ -150,7 +150,12 @@
       ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
 
     - name: Derive the reviewed Alloy candidate digest from the committed renderer
-      when: _o11y_source_review_required | bool
+      # Skipped on purpose in a dry run: check mode skips tempfile, so the render had no
+      # directory to write into and every dry run failed here (task 12612). The digest feeds
+      # only the source review and the post-apply readback, which a dry run skips as well.
+      when:
+        - not ansible_check_mode
+        - _o11y_source_review_required | bool
       block:
         - name: Allocate private controller candidate workspace
           ansible.builtin.tempfile:
