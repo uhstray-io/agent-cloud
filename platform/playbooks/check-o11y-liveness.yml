@@ -22,6 +22,19 @@
 #                              with o11y_zone read from the first o11y_svc host
 #   o11y_watch_prometheus_uid  the provisioned Prometheus datasource uid (default
 #                              `prometheus`, as in grafana/provisioning/datasources)
+#   o11y_watch_retry_delay     seconds between re-probes (default 10)
+#
+# Each probe is retried twice before it counts as a failure: a liveness page means the
+# receiver stayed down for about 20 s, not that one request lost a race. Grafana caches
+# its database verdict for 5 s, so the delay stays above that.
+#
+# Reading a datasource health status (Grafana 11.4 pkg/api/datasources.go):
+#   400  Grafana reached Prometheus and Prometheus answered unhealthy
+#   500  Grafana itself errored, which is not Prometheus's unhealthy verdict: loading the
+#        datasource from Grafana's database, building the plugin context, the plugin
+#        call (translatePluginRequestErrorToAPIError) or parsing the plugin's details
+#        failed. The message names Grafana and claims no more;
+#        grafana_plugin_request_total{endpoint="checkHealth"} shows only the plugin-call case
 #
 # Check mode probes and reports but posts nothing.
 
@@ -42,6 +55,7 @@
     _derived_zone: "{{ hostvars[_o11y_first].o11y_zone | default('') if _o11y_first else (o11y_zone | default('')) }}"
     _grafana: "{{ (o11y_watch_url | default('https://o11y.' ~ _derived_zone, true)) | regex_replace('/+$', '') }}"
     _prom_uid: "{{ o11y_watch_prometheus_uid | default('prometheus') }}"
+    _retry_delay: "{{ o11y_watch_retry_delay | default(10) | int }}"
     # Hosts a webhook URL may point at. Production is Discord only; the test suite
     # substitutes a loopback fake through this variable.
     _webhook_hosts: "{{ o11y_watch_webhook_hosts | default(['discord.com', 'discordapp.com']) }}"
@@ -122,6 +136,11 @@
         status_code: [-1, 200]
       register: _grafana_health
       failed_when: false
+      until: >-
+        _grafana_health.status | default(-1) == 200
+        and (_grafana_health.json | default({})).database | default('') == 'ok'
+      retries: 2
+      delay: "{{ _retry_delay }}"
       check_mode: false
 
     - name: Probe Prometheus readiness through Grafana's datasource health
@@ -133,6 +152,13 @@
           Authorization: "Bearer {{ _watch_token }}"
       register: _prom_health_raw
       failed_when: false
+      # A rejected token is not transient; stop retrying on it.
+      until: >-
+        _prom_health_raw.status | default(-1) in [401, 403]
+        or (_prom_health_raw.status | default(-1) == 200
+            and (_prom_health_raw.json | default({})).status | default('') == 'OK')
+      retries: 2
+      delay: "{{ _retry_delay }}"
       when: _watch_token | length > 0
       no_log: true
       check_mode: false
@@ -156,7 +182,10 @@
                else (['watcher token rejected by Grafana (status ' ~ _prom_status ~ ')']
                      if (_prom_status | int) in [401, 403]
                      else ([] if (_prom_status | int) == 200 and _prom_verdict == 'OK'
-                           else ['prometheus datasource unhealthy (status ' ~ _prom_status ~ ')'])))
+                           else (['grafana datasource health errored (status '
+                                  ~ _prom_status ~ '; a Grafana-side error, not a Prometheus unhealthy verdict)']
+                                 if (_prom_status | int) == 500
+                                 else ['prometheus datasource unhealthy (status ' ~ _prom_status ~ ')']))))
           }}
 
     - name: Report the probe result

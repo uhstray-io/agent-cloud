@@ -143,7 +143,7 @@ and why.
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
-| 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
+| 5.19 | **x2** — A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine (x2: a reviewer agent pattern-killed its own test run, 2026-11-07) | Process | 2 | Convention (PreToolUse hook proposed) |
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
@@ -196,6 +196,7 @@ and why.
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
+| 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -3993,7 +3994,7 @@ reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer
 
 ### 5.19 A worker killed other sessions' test runs by process-name pattern
 
-**Occurrences: 1** — 2026-10-12
+**Occurrences: 2** — 2026-10-12, 2026-11-07
 
 **What happened.** On 2026-10-12 a wave-3 service-deploy worker cleaned up its own test runs
 with `pkill -f bats` and `pkill -f "pytest -q -n auto"`. On the shared machine those patterns
@@ -4010,6 +4011,13 @@ in the worker's brief said the machine was shared, and nothing stopped the comma
 operator-private and not visible in this repository, so the only repo-visible guard is the
 proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
 5.10, 5.14.
+
+**Occurrence 2 — 2026-11-07.** The read-only reviewer agent for PR #889 stopped its own
+backgrounded guard-test run with `pkill -f`, scoped to a pattern naming its temporary
+directory, and reported it. Nothing else was affected. The rule did not fire because the
+reviewer's brief did not restate it and the agent judged a narrow pattern safe. A pattern is
+still a pattern: it matches any process whose arguments contain it. The proposed hook remains
+the guard; Convention has now failed twice.
 
 ### 5.20 A promotion merged a head newer than the one its review covered (widens 5.16)
 
@@ -5778,6 +5786,46 @@ command lists; the verify tasks require exactly 400 on the plain and the TLS pat
 itself: every `Deploy OPA` sends `PUT /v1/data/agentcloud_write_probe`, a path no rule reads, and
 fails unless OPA refuses it. The deploy runs `opa test --bundle`, so its tests load the tree the
 way the server does, and a test refuses any data file in the tree that bundle mode would skip.
+
+### 10.34 A liveness watcher blamed Prometheus for a Grafana-side error, and paged on one sample
+
+**What happened.** `Check o11y Liveness (Dev)` repeatedly posted `o11y liveness watcher:
+prometheus datasource unhealthy (status 500)` to Discord. On 2026-11-07, with the receiver
+healthy, Grafana's own metrics showed the opposite of the message. Over 14 days
+`grafana_http_request_duration_seconds_count` recorded `/api/health` 503 (Grafana's
+`SELECT 1` database check) in 26 separate hours, and the datasource health handler
+answered 500 in at least 4. Prometheus answered no 5xx, and
+`grafana_plugin_request_total{endpoint="checkHealth",plugin_id="prometheus"}` had no error
+series. That metric counts only a failed plugin call as an error, so it rules out that one
+500 path; it does not establish which of the others fired.
+
+**Root cause.** Two layers. Grafana 11.4 keeps its state in SQLite with `wal=false` and
+`query_retries=0` (`conf/defaults.ini`), so a read that meets a write's lock fails at once.
+Lock contention is the suspected cause of the database-check 503s, not confirmed from a log:
+Grafana's container logs are not in Loki, and the health check reports only that `SELECT 1`
+failed. `CheckDatasourceHealthWithUID` and `checkDatasourceHealth` (`pkg/api/datasources.go`)
+answer 500 when the datasource fails to load from that store, when the plugin context cannot be
+built, when the plugin call fails, or when the plugin's detail payload cannot be parsed. Which
+of these produced the observed 500s is not established; a store read failing beside the
+database-check 503s is suspected. Grafana answers 400 when Prometheus returns an unhealthy
+verdict. The watcher's failure mapping treated every answer other than 200/OK as
+`prometheus datasource unhealthy` and posted after a single request. Its tests faked only a 400,
+so no test exercised a Grafana-side failure or a transient one.
+
+**The rule.** A health probe that goes through an intermediary must name the layer that failed,
+and claim no more about the cause than the status proves.
+Read the intermediary's status contract and map each status to the component that produces it.
+A watcher that pages people confirms the failure with a bounded re-probe before posting. Its
+tests include a transient failure that must not page.
+
+**Enforced by.** Test (`platform/tests/test_check_o11y_liveness.py`): a 500 is named
+as a Grafana-side failure, one 503/500 blip per probe posts nothing,
+and a persistent failure is probed three times before one post. All three fail against the
+previous playbook. `compose.yml` sets `GF_DATABASE_WAL=true` and
+`GF_DATABASE_QUERY_RETRIES=10` (asserted in `test_service_o11y.bats`). Whether the 503s and 500s
+drop is a production measurement, recorded in the o11y README against this baseline. A drop
+would be consistent with the suspected cause, not proof of it; only Grafana's own error log
+would confirm it.
 
 ## 11. The largest one
 
