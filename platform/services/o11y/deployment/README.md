@@ -959,8 +959,10 @@ while an earlier endpoint drill marker exists. It also requires the rule to exis
 unpaused, the Grafana contact point `o11y_ops_discord` to exist exactly once, and the Discord
 credentials to be usable: the bot token must be present, the stored alert webhook must be a
 Discord webhook URL, and the channel's message history must be readable. The census then
-requires the named target to be one selected availability target of this receiver. Every
-refusal happens before the marker is claimed, so a refused run leaves nothing to recover.
+requires the named target to be one selected availability target of this receiver. The target's
+health probe must read 1 and its endpoint alert must not be firing or pending now. Every
+drill-specific refusal (target, availability, markers, rule, contact, Discord, current target
+health and alert) happens before the marker is claimed, so a refused run leaves nothing to recover.
 
 Only then does the play create the marker, an empty directory named `.o11y-endpoint-drill`
 in the parent of the monorepo checkout on the receiver. It sits outside the checkout, so
@@ -1007,7 +1009,9 @@ next drill refuses to start. Run `Recover o11y Endpoint Drill (Dev)` with the re
 It needs a clean reviewed checkout and a real production run with alerts still enabled. It
 runs a normal `deploy-o11y.yml` import, then removes the marker. It does not check endpoint
 health, so a target that is really down can still be recovered. A normal deploy does not
-refuse on this marker, because a deploy is the recovery path.
+refuse on this marker, because a deploy is the recovery path. Other Deploy o11y refusals, and a
+dev move during the drill, can stop the drilled or the restoring deploy after the marker is
+claimed; Recover o11y Endpoint Drill (Dev) is the path back.
 
 ## Fault drills (`o11y Fault Drill (Dev)`)
 

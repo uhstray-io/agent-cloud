@@ -3038,15 +3038,22 @@ hours before had passed, and the same templates passed again on their next slot.
 
 **Root cause.** Semaphore tasks in one project share one inventory file under
 `/tmp/semaphore/project_1/`, and the first task to finish removes it before the others have parsed
-it. `platform/playbooks/tasks/require-parsed-inventory.yml` names this cause and its remedy (re-run
-alone). Schedules declared in `platform/semaphore/templates.yml` start several tasks on the same
-minute (:00, :15, :30, :45, and the liveness check every 10 minutes), so a manual launch in that
-minute joins the race. That the scheduled tasks' failures came from this race, rather than from
-OpenBao itself, is inferred from the timing and from the next slot passing; it was not proven.
+it. `platform/playbooks/tasks/require-parsed-inventory.yml` names this cause and its remedy
+(re-run alone). Schedules declared in `platform/semaphore/templates.yml` start several tasks on
+the same minute (:00, :15, :30, :45, and the liveness check every 10 minutes), so a manual launch
+in that minute joins the race. Five templates are declared for :00 in `templates.yml`: Check o11y
+Liveness (Dev) and Stock GitHub Runner JIT (Dev) every 10 minutes, Collect Service Conformance
+(Dev) every 15, and Refresh tududi-sync GitHub Token and Refresh Console GitHub Token (Dev) every
+45; four started at 22:00:00 in the task list above. That the scheduled tasks' failures came from
+this race, rather than from OpenBao itself, is inferred from the timing and from the next slot
+passing; it was not proven.
 
-**The rule.** Launch a manual production task away from the declared schedule slots: start it about
-a minute after a :x0 slot and never on :00, :15, :30 or :45. If a task fails on an empty inventory,
-re-run it alone, and check whether scheduled tasks started in the same minute failed too.
+**The rule.** Launch a manual production task on a minute no declared schedule uses, and at least
+five minutes after the last slot. With today's schedules in `templates.yml` (slots at :00, :10,
+:15, :20, :23, :30, :40, :45 and :50, and 04:17 daily) those minutes are :05 to :09, :28, :29,
+:35 to :39 and :55 to :59; :25 is not, because the :23 reconcile slot is two minutes earlier.
+Re-derive the list from `templates.yml` whenever a schedule changes. If a task fails on an empty
+inventory, re-run it alone, and check whether scheduled tasks started in the same minute failed too.
 
 **Enforced by.** Convention. Proposed: `scripts/semaphore-launch.py` refuses a launch within a
 minute of a schedule declared in `templates.yml`, and the foundational fix is a per-task copy of
