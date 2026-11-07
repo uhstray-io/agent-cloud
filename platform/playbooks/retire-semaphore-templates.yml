@@ -35,7 +35,9 @@
     # The controller API listens here in the declared Semaphore container. Fixed, as in
     # publish-semaphore-templates.yml: the token this run reads goes nowhere else.
     _semaphore_url: "http://127.0.0.1:3000"
-    _project_id: "{{ semaphore_project_id | default(1, true) }}"
+    # An ordinary extra var may select another project (local-dev's id differs), but only as a
+    # bare positive integer: it is interpolated into DELETE paths.
+    _project_id: "{{ semaphore_project_id | default(1, true) | string | trim }}"
     _retired: "{{ (lookup('file', playbook_dir + '/../semaphore/retired-templates.yml') | from_yaml).retired_templates | default([], true) }}"
     _retired_names: "{{ _retired | map(attribute='name') | list }}"
     _declared_base: >-
@@ -60,6 +62,13 @@
           - _retired | selectattr('name', 'defined') | selectattr('name', 'string') | map(attribute='name') | map('trim') | reject('equalto', '') | list | length == _retired | length
           - _retired_names | unique | list | length == _retired | length
         fail_msg: "platform/semaphore/retired-templates.yml must list at least one template, each with a nonempty exact name, and no name twice."
+
+    - name: "Refuse a token destination override and a non-numeric project id before authentication"
+      ansible.builtin.assert:
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - _project_id is match('^[1-9][0-9]*$')
+        fail_msg: "The controller API destination is fixed, and semaphore_project_id must be a positive integer."
 
     - name: "Refuse to retire a template that is still declared"
       ansible.builtin.assert:

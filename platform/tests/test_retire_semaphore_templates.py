@@ -162,3 +162,21 @@ def test_destination_is_the_fixed_loopback_api_and_no_survey_sets_it():
     for task, args in _uri_tasks():
         url = str(args.get("url", ""))
         assert url.startswith("{{ _semaphore_url }}/"), f"{task.get('name')}: {url}"
+
+
+def test_destination_and_project_id_are_refused_before_runtime_access():
+    """semaphore_project_id is an ordinary extra var interpolated into DELETE paths, so it must be
+    a bare positive integer, checked with the fixed destination before the token is resolved."""
+    tasks = _play()["tasks"]
+    auth = next(
+        index for index, task in enumerate(tasks)
+        if str(task.get("ansible.builtin.include_tasks", task.get("include_tasks", ""))).endswith("runtime-access.yml")
+    )
+    guards = [
+        task["ansible.builtin.assert"]["that"] for task in tasks[:auth]
+        if "ansible.builtin.assert" in task and "_project_id" in str(task["ansible.builtin.assert"])
+    ]
+    assert len(guards) == 1, "one destination/project-id guard before runtime access"
+    that = " ".join(guards[0])
+    assert f"_semaphore_url == '{DESTINATION}'" in that
+    assert "_project_id is match('^[1-9][0-9]*$')" in that
