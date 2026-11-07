@@ -159,7 +159,9 @@ services:
       # WAL lets reads proceed beside a writer. On a lock that remains, the value is the
       # number of attempts (pkg/util/retryer): 10 gives nine waits doubling from 10 ms to
       # the 1 s cap, about 3.3 s in all; 1 would not retry at all. Escalation if the 503s
-      # persist: an external Postgres for Grafana.
+      # persist: an external Postgres for Grafana. Removing this line does NOT leave WAL:
+      # SQLite keeps WAL in the file, and Grafana sets the mode only when wal is true
+      # (README, "Grafana's store is SQLite").
       GF_DATABASE_WAL: "true"
       GF_DATABASE_QUERY_RETRIES: "10"
     volumes:

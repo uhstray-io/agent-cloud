@@ -897,7 +897,17 @@ other 500 paths; the watcher, then unretried, paged on any single 500. `compose.
 10 ms to the 1 s cap, about 3.3 s in all, per Grafana's `pkg/util/retryer`). To judge the fix, compare
 `sum by (handler, status_code) (increase(grafana_http_request_duration_seconds_count{status_code=~"5.."}[7d]))`
 for a week after the deploy against that baseline. A drop is consistent with the suspected
-cause, not proof of it; Grafana's error log would confirm it. If the 503s persist, the next step is an
+cause, not proof of it; Grafana's error log would confirm it.
+
+Rolling the setting back does not take the database out of WAL mode. SQLite stores WAL
+mode in the database file and reopens it in WAL ("Persistence of WAL mode",
+<https://www.sqlite.org/wal.html>), and Grafana 11.4 adds `_journal_mode=WAL` to its
+connection only when `wal` is true (`pkg/services/sqlstore/database_config.go`), never
+the reverse. A WAL-mode file with `wal=false` keeps working. Returning to the rollback
+journal means running `PRAGMA journal_mode=DELETE;` on `grafana.db` in the `grafana-data`
+volume with Grafana stopped; no playbook does that yet, so write one before it is needed.
+
+If the 503s persist, the next step is an
 external Postgres for Grafana.
 
 ## Production alert-delivery drill
