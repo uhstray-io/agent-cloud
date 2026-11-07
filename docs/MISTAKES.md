@@ -114,7 +114,7 @@ and why.
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
 | 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
-| 3.20 | Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task and the four scheduled ones that started with it | Live state | 1 | Convention (launch away from schedule slots); per-task inventory proposed |
+| 3.20 | Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) | Live state | 1 | Convention (launch away from schedule slots); per-task inventory proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
