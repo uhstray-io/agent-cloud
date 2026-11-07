@@ -57,7 +57,9 @@ BLOCKING_CLASSES = (
 )
 
 
-def run(argv, timeout=8):
+# Podman calls take the 20-second default. At 8 seconds a running receiver's container metadata went unreadable
+# (container_metadata_unavailable) on 2026-11-07, with every receiver container up.
+def run(argv, timeout=20):
     try:
         result = subprocess.run(
             argv,

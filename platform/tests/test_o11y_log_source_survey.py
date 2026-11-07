@@ -680,6 +680,18 @@ def test_journal_reads_pin_their_timeouts_content_at_45_and_metadata_at_12(monke
     assert kinds == {("content", 45), ("metadata", 12)}
 
 
+def test_every_podman_call_pins_20_seconds_including_the_alloy_exec(monkeypatch):
+    timeouts = _survey_timeouts(monkeypatch, running=["o11y-loki", "o11y-tempo"])
+    podman = [(tuple(argv[:2]), timeout) for argv, timeout in timeouts if argv[0] == "podman"]
+    assert {kind for kind, _ in podman} == {
+        ("podman", "info"),
+        ("podman", "ps"),
+        ("podman", "inspect"),
+        ("podman", "exec"),
+    }
+    assert {timeout for _, timeout in podman} == {20}
+
+
 def _logfmt_line(index):
     """A ~200-byte logfmt line with no sensitive class: the shape of an ordinary receiver log line."""
     line = (
