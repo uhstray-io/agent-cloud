@@ -285,13 +285,14 @@ def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp
     assert "CUSTOM STATS" not in proc.stdout or "step_result" not in proc.stdout, proc.stdout
 
 
-# The availability drill input is read by the prepare task that three playbooks import. A
-# launch that sets it as an extra var is refused by the guard before any play, under every
-# templated spelling of the forged value.
+# The availability drill input is read by the prepare task that the deploy and the endpoint drill
+# and its recovery import. A launch that sets it as an extra var is refused by the guard before
+# any play, under every templated spelling of the forged value.
 @needs_ansible
 @pytest.mark.parametrize("path,forge", [
     pytest.param(REPO / "platform/playbooks" / name, f.values[0], id=f"{name}-{f.id}")
-    for name in ("deploy-o11y.yml", "survey-o11y-scrape-baseline.yml", "verify-o11y-profile-pilot.yml")
+    for name in ("deploy-o11y.yml", "survey-o11y-scrape-baseline.yml", "verify-o11y-profile-pilot.yml",
+                 "drill-o11y-endpoint-availability.yml", "recover-o11y-endpoint-drill.yml")
     for f in forgeries.templated_forgeries(
         "_o11y_availability_drill",
         {"target_id": "service:alpha", "status_code": 200},

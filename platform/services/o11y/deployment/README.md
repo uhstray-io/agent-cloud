@@ -930,6 +930,89 @@ drill job and the active alert/contact state is read back. It does not remove
 stored metrics, logs, or traces. This recovery is separate from the paused
 canary's `Restore o11y Alert Baseline (Dev)` workflow.
 
+## Endpoint availability drill
+
+`Drill o11y Endpoint Availability (Dev)` proves that the endpoint availability rule
+(`o11y_endpoint_probe_failed`) fires to Discord for one reviewed availability target. It
+sets that target's only expected status code to 599, which the target never returns, so
+its health probe fails. A second deploy then restores the normal projection. The drill
+sends a real Discord alert, so tell the operator before it runs.
+
+The drill cannot run until availability is enabled and reviewed in production. The census
+refuses it unless `o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed`
+are both set. Tasks 2.3c.1 to 2.3c.3 in
+`plan/development/openspec/changes/estate-wide-observability-instrumentation/tasks.md` must be
+complete first.
+
+The survey takes the reviewed Dev commit (`expected_repository_sha`), the branch both
+deploys clone (`service_branch`, default `dev`), and `availability_drill_target_id`, which
+must name one selected availability target of this receiver. The drill refuses a
+check-mode run, a local-mode run, a run with alerts disabled, and a run with no declared
+Discord channel.
+
+Before it claims anything, the play checks that the controller checkout is at the reviewed
+commit with no uncommitted files. It refuses to start while the paused-canary markers
+(`config/scrape.d/o11y-prod-canary.yml` and `config/.o11y-alert-canary-active`) or an
+active alert drill's markers (`config/.o11y-active-alert-drill` and
+`config/scrape.d/o11y-prod-alert-drill.yml`) exist in the receiver's deploy directory, or
+while an earlier endpoint drill marker exists. It also requires the rule to exist and be
+unpaused, the Grafana contact point `o11y_ops_discord` to exist exactly once, and the Discord
+credentials to be usable: the bot token must be present, the stored alert webhook must be a
+Discord webhook URL, and the channel's message history must be readable. The census then
+requires the named target to be one selected availability target of this receiver. The target's
+health probe must read 1 and its endpoint alert must not be firing or pending now. Every
+drill-specific refusal (target, availability, markers, rule, contact, Discord, current target
+health and alert) happens before the marker is claimed, so a refused run leaves nothing to recover.
+
+Only then does the play create the marker, an empty directory named `.o11y-endpoint-drill`
+in the parent of the monorepo checkout on the receiver. It sits outside the checkout, so
+placing the monorepo never touches it. The drilled deploy imports `deploy-o11y.yml` with the
+internal input `_o11y_availability_drill`, which names the target and status code 599. The
+census replaces only that target's expected status codes in the projection it prepares.
+
+The shared alert probe (`tasks/o11y-alert-probe.yml`) then waits for three things, in order.
+The `probe_success` series for the target reads 0. Grafana reports the rule's alert as
+firing for the target. A Discord message newer than the last one seen before the probe
+names the drill's delivery marker and carries a ` - instance = <target_id>` line. Each wait
+has a fixed retry budget in `tasks/o11y-alert-probe.yml`. The waits run inside a block with a rescue. A pass
+records the outcome `passed`. A failure records `failed` and does not stop the run, so the
+restore still runs.
+
+The second import of `deploy-o11y.yml`, without the drill input, restores the normal
+projection. If either deploy fails, the run stops there and the marker stays.
+
+The final play waits for one fresh `probe_success` series for the target to read 1, and for
+Grafana to stop reporting the rule as firing for the target. If either proof fails, the run
+says the marker stays and fails. Otherwise it removes the marker with `rmdir`, prints the
+census command only when the outcome is `passed`, and fails unless the outcome is `passed`.
+The marker is removed before that last check. A run whose restored projection is proven but
+whose Discord proof failed therefore clears the marker and still fails.
+
+A passed drill still needs its census, because the drill does not launch the strict health
+receipt or the census. From a workstation, the operator runs:
+
+```bash
+python3 scripts/o11y-coverage-refresh.py --url <semaphore-https-origin> \
+  --reviewed-dev-sha <reviewed-sha> --target-signal <target_id>:health < <token-file>
+```
+
+The script reads the Semaphore token from standard input, so the command ends with a
+redirect from a token file. It requires the local checkout to be
+on `dev` at the reviewed commit with no uncommitted files, and it refuses unless
+`receipt_bindings[<target_id>][health]` is declared in the `estate_coverage_inventory` that
+the Semaphore inventory holds. Task 2.3c.1 covers that declaration. Each binding carries the id of the
+`Verify o11y Target Receipt` template and a positive `observation_window_seconds`, and
+`task_id` is optional.
+
+A run that stops after the marker is claimed leaves `.o11y-endpoint-drill` in place, and the
+next drill refuses to start. Run `Recover o11y Endpoint Drill (Dev)` with the reviewed commit.
+It needs a clean reviewed checkout and a real production run with alerts still enabled. It
+runs a normal `deploy-o11y.yml` import, then removes the marker. It does not check endpoint
+health, so a target that is really down can still be recovered. A normal deploy does not
+refuse on this marker, because a deploy is the recovery path. Other Deploy o11y refusals, and a
+dev move during the drill, can stop the drilled or the restoring deploy after the marker is
+claimed; Recover o11y Endpoint Drill (Dev) is the path back.
+
 ## Fault drills (`o11y Fault Drill (Dev)`)
 
 `platform/playbooks/o11y-fault-drill.yml` induces one bounded fault, proves the alert
