@@ -16,7 +16,10 @@ JOURNAL_DESTINATIONS = {"/var/log/journal", "/run/log/journal"}
 JOURNAL_SOURCES = {"/var/log/journal", "/run/log/journal"}
 # Receiver containers whose journald content is classified. The journal collector is deliberately absent.
 CONTENT_CONTAINERS = ("node-exporter", "prometheus", "loki", "alloy", "tempo", "pyroscope", "grafana")
-CONTENT_CAP = 200
+# Newest journald entries per receiver container that the content scan reads (journalctl -n). A window that
+# reaches the cap is reported capped and refuses the collector gate, so the cap must exceed one receiver's
+# 15-minute volume. At 200, grafana and pyroscope reached it on 2026-11-07.
+CONTENT_CAP = 5000
 # Fixed content classes. Only counts leave this process; the matched text never does.
 CONTENT_PATTERNS = {
     # The lookbehind anchors each match at the start of a local-part run. Without it the engine retries
@@ -54,7 +57,9 @@ BLOCKING_CLASSES = (
 )
 
 
-def run(argv, timeout=8):
+# Podman calls take the 20-second default. At 8 seconds a running receiver's container metadata went unreadable
+# (container_metadata_unavailable) on 2026-11-07, with every receiver container up.
+def run(argv, timeout=20):
     try:
         result = subprocess.run(
             argv,
@@ -288,7 +293,8 @@ def content_survey(names, drivers):
                 str(CONTENT_CAP),
                 f"CONTAINER_NAME={name}",
             ],
-            timeout=12,
+            # Wait long enough for a full CONTENT_CAP-entry read; the metadata read keeps its own bound.
+            timeout=45,
         )
         scanned = content_scan(output, name) if rc == 0 else None
         if scanned is None:

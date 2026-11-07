@@ -215,6 +215,19 @@
       {{ (_journal_content_survey.stdout | from_json).content_survey | default({}) | dict2items
          | selectattr('key', 'in', _journal_content_shorts) | items2dict
          if (_journal_content_survey.rc | default(1)) == 0 else {} }}
+    # The survey's fixed refusal reasons (survey-o11y-log-source.yml). The gate names one of them, or "unclassified".
+    _journal_survey_refusal_reasons:
+      - container_metadata_unavailable
+      - no_running_o11y_containers
+      - alloy_source_unverified
+      - survey_failed
+    # Read with a regex, never from_json, so the message renders for any output. The assert refuses output
+    # that is not one JSON object before its from_json conditions run.
+    _journal_survey_reason_raw: >-
+      {{ 'survey_failed' if (_journal_content_survey.rc | default(1)) != 0
+         else (_journal_content_survey.stdout | default('') | regex_findall('"reason": "([a-z0-9_]+)"') | first | default('', true)) }}
+    _journal_survey_reason: >-
+      {{ _journal_survey_reason_raw if _journal_survey_reason_raw in _journal_survey_refusal_reasons else 'unclassified' }}
     _journal_mount: /var/log/journal
     _journal_image: docker.io/grafana/alloy:v1.9.2
     _journal_proof_marker: agent-cloud-o11y-journal-proof-v1
@@ -284,11 +297,13 @@
       ansible.builtin.assert:
         that:
           - (_journal_content_survey.rc | default(1)) == 0
+          # Output that is not one JSON object stops here, with the named reason, before from_json can raise.
+          - (_journal_content_survey.stdout | default('')) is regex('^\\{.*\\}$')
           - (_journal_content_survey.stdout | from_json).status == 'observed'
           - (_journal_content_survey.stdout | from_json).content_survey is mapping
         fail_msg: >-
-          The receiver log-content survey did not observe the receiver. The journal
-          collector was refused before any host change.
+          The receiver log-content survey did not observe the receiver ({{ _journal_survey_reason }}).
+          The journal collector was refused before any host change.
         quiet: true
       tags: [always]
 

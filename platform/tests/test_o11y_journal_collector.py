@@ -7497,8 +7497,12 @@ def test_content_gate_is_the_first_work_after_the_stop_check_and_is_never_skippe
         assert "content_survey_status" not in json.dumps(task), task.get("name")
         if "register" in task:
             assert task["register"].startswith("_"), task.get("name")
-    for assertion in (gate[1], gate[3]):
-        assert "{{" not in assertion["ansible.builtin.assert"]["fail_msg"], assertion.get("name")
+    observed_fail_msg = gate[1]["ansible.builtin.assert"]["fail_msg"]
+    # The observed gate names one fixed survey reason and reads no survey output into its message.
+    assert re.findall(r"\{\{\s*(.*?)\s*\}\}", observed_fail_msg) == ["_journal_survey_reason"]
+    assert "stdout" not in observed_fail_msg
+    assert "from_json" not in observed_fail_msg
+    assert "{{" not in gate[3]["ansible.builtin.assert"]["fail_msg"], gate[3].get("name")
     assert "content_survey_status" not in json.dumps(play["vars"])
 
 
@@ -7506,6 +7510,92 @@ def test_content_gate_cohort_containers_are_all_surveyed_containers():
     assert LOG_SURVEY.O11Y_PREFIX == "o11y-"
     shorts = [row["container"].removeprefix(LOG_SURVEY.O11Y_PREFIX) for row in declared_cohort()]
     assert shorts and set(shorts) <= set(LOG_SURVEY.CONTENT_CONTAINERS)
+
+
+# Ansible's templar renders the observed gate's play vars and fail_msg as the playbook writes them, in the order
+# the play resolves them: the reason expressions first, then the message that names the reason.
+_SURVEY_REASON_EVALUATE = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+outcomes = []
+for case in job["cases"]:
+    variables = {"_journal_content_survey": case["survey"], "_journal_survey_refusal_reasons": job["reasons"]}
+    for name, expression in (("_journal_survey_reason_raw", job["raw"]), ("_journal_survey_reason", job["reason"])):
+        variables[name] = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression))
+    outcomes.append(Templar(loader=DataLoader(), variables=variables).template(trust_as_template(job["msg"])))
+print(json.dumps(outcomes))
+"""
+
+
+@needs_ansible
+def test_observed_gate_names_only_a_fixed_survey_reason_and_never_free_text():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    play = _apply_play(plays)
+    tasks = {task.get("name"): task for task in _walk(play["tasks"])}
+    reasons = play["vars"]["_journal_survey_refusal_reasons"]
+    assert reasons == [
+        "container_metadata_unavailable",
+        "no_running_o11y_containers",
+        "alloy_source_unverified",
+        "survey_failed",
+    ]
+    survey_plays = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-log-source.yml").read_text(encoding="utf-8"))
+    assert reasons == next(
+        survey["vars"]["_survey_refusal_reasons"]
+        for survey in survey_plays
+        if "_survey_refusal_reasons" in survey.get("vars", {})
+    )
+    sentinel = "ops@example.com"
+    cases = [
+        (
+            f"survey names {reason}",
+            {"rc": 0, "stdout": json.dumps({"reason": reason, "status": "unavailable"}, sort_keys=True)},
+            reason,
+        )
+        for reason in reasons
+    ] + [
+        (
+            "helper exits 1 after naming a reason",
+            {"rc": 1, "stdout": json.dumps({"reason": "alloy_source_unverified", "status": "unavailable"})},
+            "survey_failed",
+        ),
+        ("helper exits 1 with no output", {"rc": 1, "stdout": ""}, "survey_failed"),
+        (
+            "reason outside the fixed list",
+            {"rc": 0, "stdout": json.dumps({"reason": "something_else", "status": "unavailable"})},
+            "unclassified",
+        ),
+        (
+            "reason holds free text",
+            {"rc": 0, "stdout": json.dumps({"reason": f"contact {sentinel}", "status": "unavailable"})},
+            "unclassified",
+        ),
+        ("empty output with exit 0", {"rc": 0, "stdout": ""}, "unclassified"),
+        ("output is not JSON", {"rc": 0, "stdout": f"not json {sentinel}"}, "unclassified"),
+        ("truncated JSON", {"rc": 0, "stdout": '{"reason": "container_metadata_unavail'}, "unclassified"),
+        ("observed report without a reason", {"rc": 0, "stdout": json.dumps({"status": "observed"})}, "unclassified"),
+    ]
+    job = {
+        "raw": play["vars"]["_journal_survey_reason_raw"],
+        "reason": play["vars"]["_journal_survey_reason"],
+        "msg": tasks["Require an observed receiver log-content survey"]["ansible.builtin.assert"]["fail_msg"],
+        "reasons": reasons,
+        "cases": [{"name": name, "survey": survey} for name, survey, _ in cases],
+    }
+    result = subprocess.run(
+        [ansible_python(), "-c", _SURVEY_REASON_EVALUATE],
+        input=json.dumps(job), text=True, capture_output=True, check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+    )
+    assert result.returncode == 0, result.stderr
+    messages = json.loads(result.stdout)
+    assert len(messages) == len(cases)
+    for (name, _survey, expected), message in zip(cases, messages, strict=True):
+        assert f"did not observe the receiver ({expected})." in message, name
+        assert sentinel not in message, name
+        assert "{{" not in message, name
 
 
 _OBSERVATION_TASKS = (
@@ -7654,3 +7744,15 @@ def test_exact_o11y_alloy_delivery_proof_still_gates_only_the_o11y_alloy_stream(
         assert "_journal_loki_result" not in str(task)
         assert "_journal_loki_proof_query_url" not in str(task)
         assert "_journal_proof_marker" not in str(task)
+
+
+def test_content_gate_refuses_non_object_output_before_parsing_it():
+    # The fail_msg names "unclassified" for empty or non-JSON output only if no condition
+    # raises first: the object-shape check must precede every from_json condition.
+    play = _apply_play(yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8")))
+    task = next(t for t in play["tasks"] if t.get("name") == "Require an observed receiver log-content survey")
+    that = task["ansible.builtin.assert"]["that"]
+    shape = "(_journal_content_survey.stdout | default('')) is regex('^\\\\{.*\\\\}$')"
+    assert that.index(shape) == 1
+    assert all("from_json" in condition for condition in that[2:])
+    assert "from_json" not in "".join(that[:2])

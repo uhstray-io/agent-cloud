@@ -3063,7 +3063,7 @@ templates:
         required: true
     # Reports fixed driver/source categories, receiver container short names, and counts
     # only; no log text, paths, addresses, matched substrings, container IDs, or stderr are exposed.
-    # Content counts are a sample of the newest 200 journald entries per receiver in the last 15 minutes.
+    # Content counts are a sample of the newest 5000 journald entries per receiver in the last 15 minutes.
     # conmon can split a long line into partial entries (CONTAINER_PARTIAL_MESSAGE=true), so a secret that
     # straddles two entries is missed. Entries older than the sample, secrets without a listed keyword or
     # format, and receivers that are not running or not journald (unverified, never read) are not covered.
