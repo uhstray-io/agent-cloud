@@ -22,6 +22,14 @@ MAX_CHILDREN = 32
 MAX_JSON_BYTES = 1_048_576
 MIN_FREE_BYTES = 16 * 1024 * 1024
 MIN_FREE_INODES = 128
+# The reviewed component allowlist is platform/playbooks/vars/o11y-journal-components.yml.
+# Until the deploy passes it with --components, only o11y_alloy is admitted, as before.
+ALLOY_ID = "o11y_alloy"
+DEFAULT_JOURNAL_COMPONENTS = (ALLOY_ID,)
+JOURNAL_COMPONENTS = DEFAULT_JOURNAL_COMPONENTS
+MAX_JOURNAL_COMPONENTS = 16
+_JOURNAL_COMPONENT_RE = re.compile(r"o11y_[a-z_]+")
+_JOURNAL_ENTRY_KEYS = frozenset({"presence", "cursor_presence", "cursor_checked", "cursor_valid"})
 _VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]{1,32})?\Z")
 _CREATED_AT_RE = re.compile(
     r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
@@ -84,6 +92,12 @@ def _container_names(value):
 _METADATA_SCRIPT = r'''import hashlib,json,os,re,stat,sys,time
 root=sys.argv[1]
 read_cursor=sys.argv[2]=="true"
+journal_ids=json.loads(sys.argv[3]) if len(sys.argv)>3 else ["o11y_alloy"]
+if (not isinstance(journal_ids,list) or "o11y_alloy" not in journal_ids or len(journal_ids)>16
+        or len(set(journal_ids))!=len(journal_ids)
+        or any(not isinstance(item,str) or re.fullmatch(r"o11y_[a-z_]+",item) is None for item in journal_ids)):
+    raise ValueError("journal components")
+journal_dirs={"loki.source.journal."+item:item for item in journal_ids}
 def mount_id(path):
     best=(-1,None)
     with open("/proc/self/mountinfo",encoding="utf-8") as stream:
@@ -112,7 +126,7 @@ def scalar(value):
     if len(value)>=2 and value[0]==value[-1]=="'": return value[1:-1].replace("''", "'")
     if len(value)>=2 and value[0]==value[-1]=='"': return json.loads(value)
     return value
-def journal_cursor(data):
+def journal_cursor(data,component="loki.source.journal.o11y_alloy"):
     try: content=data.decode("utf-8")
     except UnicodeDecodeError: return False
     match=re.fullmatch(
@@ -121,7 +135,7 @@ def journal_cursor(data):
     if not match: return False
     path,labels,cursor=(scalar(value) for value in match.groups())
     cursor_format=r"s=[0-9a-f]+;i=[0-9a-f]+;b=[0-9a-f]+;m=[0-9a-f]+;t=[0-9a-f]+;x=[0-9a-f]+"
-    return (path=="cursor-loki.source.journal.o11y_alloy" and labels==""
+    return (path=="cursor-"+component and labels==""
         and re.fullmatch(cursor_format, cursor) is not None)
 def role_observation(root_path, root_stat, root_mount, name, observed_mount, expected_stat):
     result={"owner":"unverified","access":"unverified","acl":"unverified",
@@ -483,9 +497,8 @@ for observation_attempt in range(2):
     acl_found=acl(root)
     child_mount=False
     component_layout=st.st_mode & (0o022|0o7000) == 0
-    cursor_valid=False
-    cursor_presence="absent"
-    cursor_checked=False
+    journal_states={journal_dirs[name]:{"presence":"absent","cursor_presence":"absent",
+        "cursor_checked":False,"cursor_valid":False} for name in journal_dirs}
     free=os.statvfs(root)
     free_bytes=free.f_bavail*free.f_frsize
     free_inodes=free.f_favail
@@ -495,6 +508,8 @@ for observation_attempt in range(2):
         item_mount=mount_id(path)
         child_mount=child_mount or item_mount[0]!=root_mount[0]
         acl_found=acl_found or acl(path)
+        if name in journal_dirs:
+            journal_states[journal_dirs[name]]["presence"]="directory" if stat.S_ISDIR(item.st_mode) else "other"
         if name=="remotecfg":
             top_level["remotecfg_component"]+=1
             if stat.S_ISDIR(item.st_mode):
@@ -521,7 +536,8 @@ for observation_attempt in range(2):
                 and item.st_uid==0 and item.st_gid==0 and item.st_nlink==1
                 # Alloy v1.9.2 writes its seed 0644; forbid write/execute, not read-only bits.
                 and item.st_mode & 0o7133 == 0)
-        elif stat.S_ISDIR(item.st_mode) and name=="loki.source.journal.o11y_alloy":
+        elif stat.S_ISDIR(item.st_mode) and name in journal_dirs:
+            state=journal_states[journal_dirs[name]]
             top_level["journal_component"]+=1
             component_layout=(component_layout and item.st_uid==0 and item.st_gid==0
                 and item.st_nlink==2 and item.st_mode & 0o700 == 0o700
@@ -550,9 +566,9 @@ for observation_attempt in range(2):
                     and nested_stat.st_mode & 0o077 == 0
                     and nested_stat.st_mode & 0o7133 == 0)
                 if nested_name=="positions.yml":
-                    cursor_presence="present"
+                    state["cursor_presence"]="present"
                     component_layout=(component_layout and safe_file)
-                    cursor_valid=False
+                    state["cursor_valid"]=False
                     if (read_cursor and safe_file and not mount_exact and not acl_found
                             and st.st_uid==0 and st.st_gid==0
                             and st.st_mode & 0o700 == 0o700
@@ -602,11 +618,11 @@ for observation_attempt in range(2):
                                         and mount_id(path)==item_mount and mount_id(nested_path)==nested_mount
                                         and len(data)==opened.st_size)
                                     if stable_read:
-                                        cursor_valid=journal_cursor(data)
-                                        cursor_checked=True
+                                        state["cursor_valid"]=journal_cursor(data,name)
+                                        state["cursor_checked"]=True
                             finally: os.close(fd)
                         except OSError:
-                            cursor_valid=False
+                            state["cursor_valid"]=False
                 elif re.fullmatch(r"\.positions\.yml[0-9]{1,19}",nested_name):
                     temp_names.append(nested_name)
                     component_layout=(component_layout and safe_file)
@@ -642,6 +658,10 @@ for observation_attempt in range(2):
             elif stat.S_ISLNK(item.st_mode): top_level["other_symlinks"]+=1
             else: top_level["other_kinds"]+=1
         children.append(sig(name,item))
+    alloy_state=journal_states["o11y_alloy"]
+    cursor_presence=alloy_state["cursor_presence"]
+    cursor_checked=alloy_state["cursor_checked"]
+    cursor_valid=alloy_state["cursor_valid"]
     report = {
         "status":"observed",
         "root":{"uid":st.st_uid, "gid":st.st_gid, "mode":stat.S_IMODE(st.st_mode),
@@ -659,6 +679,7 @@ for observation_attempt in range(2):
         "journal_cursor_presence":cursor_presence,
         "cursor_checked":cursor_checked,
         "journal_cursor_valid":cursor_valid,
+        "journal_components":journal_states,
         "free_bytes":free_bytes,
         "free_inodes":free_inodes,
     }
@@ -800,7 +821,7 @@ finally:
 
 def _inspect_metadata(path, read_cursor=False, run=subprocess.run):
     result = _call(["podman", "unshare", "python3", "-c", _METADATA_SCRIPT, path,
-                    "true" if read_cursor else "false"], run=run)
+                    "true" if read_cursor else "false", json.dumps(list(JOURNAL_COMPONENTS))], run=run)
     value = _json(result)
     if result is None or result.returncode != 0 or not isinstance(value, dict):
         return None
@@ -1334,6 +1355,44 @@ def _safe_metadata(found):
     )
 
 
+def _journal_entry(metadata, component):
+    source = metadata.get("journal_components") if isinstance(metadata, dict) else None
+    entry = source.get(component) if isinstance(source, dict) else None
+    if not isinstance(entry, dict) or set(entry) != _JOURNAL_ENTRY_KEYS:
+        return None
+    if entry["presence"] not in ("absent", "directory", "other"):
+        return None
+    if entry["cursor_presence"] not in ("absent", "present"):
+        return None
+    if type(entry["cursor_checked"]) is not bool or type(entry["cursor_valid"]) is not bool:
+        return None
+    return entry
+
+
+def _journal_directory_present(metadata, component):
+    entry = _journal_entry(metadata, component)
+    return entry is not None and entry["presence"] == "directory"
+
+
+def _journal_components_safe(metadata, require_cursor):
+    # Default allowlist: the alloy checks above are the whole gate, exactly as before.
+    if tuple(JOURNAL_COMPONENTS) == DEFAULT_JOURNAL_COMPONENTS:
+        return True
+    source = metadata.get("journal_components")
+    if not isinstance(source, dict) or set(source) != set(JOURNAL_COMPONENTS):
+        return False
+    for component in JOURNAL_COMPONENTS:
+        entry = _journal_entry(metadata, component)
+        if entry is None or entry["presence"] == "other":
+            return False
+        # An absent position is allowed for a declared component: it starts without one.
+        # A present position must be read and valid.
+        if (component != ALLOY_ID and require_cursor and entry["cursor_presence"] == "present"
+                and not (entry["cursor_checked"] and entry["cursor_valid"])):
+            return False
+    return True
+
+
 def _live_safe_metadata(found, require_cursor=True):
     metadata = found.get("metadata")
     if not isinstance(metadata, dict) or metadata.get("status") != "observed":
@@ -1354,6 +1413,7 @@ def _live_safe_metadata(found, require_cursor=True):
                 and metadata.get("journal_cursor_valid") is True
             )
         )
+        and _journal_components_safe(metadata, require_cursor)
         and metadata.get("acl") is False
         and metadata.get("root_is_mount") is False
         and metadata.get("child_mount") is False
@@ -1380,6 +1440,11 @@ def _live_failed_checks(found):
         checks.append("cursor_presence")
     if metadata.get("cursor_checked") is True and metadata.get("journal_cursor_valid") is not True:
         checks.append("cursor_validity")
+    for component in JOURNAL_COMPONENTS:
+        entry=_journal_entry(metadata,component)
+        if (entry is not None and entry["cursor_presence"]=="present" and entry["cursor_checked"]
+                and not entry["cursor_valid"] and "cursor_validity" not in checks):
+            checks.append("cursor_validity")
     if isinstance(root,dict) and not _access(metadata):
         checks.append("positions_access")
     return checks
@@ -1664,6 +1729,27 @@ def _summary(found):
     }
 
 
+_PRESENCE_CATEGORY = {"absent": "absent", "directory": "present", "other": "not_directory"}
+
+
+def _journal_components_summary(found):
+    # Survey only: verify, verify-live and the repair actions keep their exact outputs.
+    metadata = found.get("metadata")
+    observed = isinstance(metadata, dict) and metadata.get("status") == "observed"
+    summary = {}
+    for component in JOURNAL_COMPONENTS:
+        entry = _journal_entry(metadata, component) if observed else None
+        if entry is None:
+            summary[component] = {"presence": "unverified", "cursor_validity": "unverified"}
+        elif entry["cursor_presence"] == "absent":
+            summary[component] = {"presence": _PRESENCE_CATEGORY[entry["presence"]], "cursor_validity": "absent"}
+        else:
+            validity = ("unverified" if not entry["cursor_checked"]
+                        else "valid" if entry["cursor_valid"] else "invalid")
+            summary[component] = {"presence": _PRESENCE_CATEGORY[entry["presence"]], "cursor_validity": validity}
+    return summary
+
+
 def survey(discover_fn=None, *, read_cursor=False):
     default_discovery = discover_fn is None
     found = discover(diagnostics=True, read_cursor=read_cursor) if default_discovery else discover_fn()
@@ -1673,6 +1759,7 @@ def survey(discover_fn=None, *, read_cursor=False):
     elif default_discovery:
         summary["survey_diagnostics"] = _unverified_diagnostics()
     summary["pending_repair_diagnostic"] = _pending_diagnostic(found)
+    summary["journal_components"] = _journal_components_summary(found)
     summary["live_diagnostic"] = {
         **_live_diagnostic(found),
         "host_uid_map": "not_run",
@@ -2201,7 +2288,9 @@ def _pending_nocopy_resume_safe(found):
         and version.get("client") == "4.9.3"
         and isinstance(top_level, dict)
         and type(top_level.get("seed_file")) is int and top_level["seed_file"] == 1
-        and type(top_level.get("journal_component")) is int and top_level["journal_component"] == 1
+        and type(top_level.get("journal_component")) is int
+        and 1 <= top_level["journal_component"] <= len(JOURNAL_COMPONENTS)
+        and _journal_directory_present(metadata, ALLOY_ID)
         and type(top_level.get("remotecfg_component")) is int
         and top_level["remotecfg_component"] in (0, 1)
         and all(type(top_level.get(name)) is int and top_level[name] == 0 for name in (
@@ -2357,7 +2446,20 @@ def retire_legacy_collector(run=subprocess.run):
     return {"status": "retired", "reason": "legacy_collector_removed_volume_preserved"}
 
 
+def parse_components(value):
+    ids = value.split(",")
+    if (
+        len(ids) > MAX_JOURNAL_COMPONENTS
+        or len(set(ids)) != len(ids)
+        or ALLOY_ID not in ids
+        or any(_JOURNAL_COMPONENT_RE.fullmatch(item) is None for item in ids)
+    ):
+        return None
+    return tuple(ids)
+
+
 def main():
+    global JOURNAL_COMPONENTS
     actions = {
         "survey": survey,
         "survey-cursor": lambda: survey(read_cursor=True),
@@ -2367,7 +2469,16 @@ def main():
         "verify-network": verify_network,
         "retire-legacy": retire_legacy_collector,
     }
-    action = sys.argv[1] if len(sys.argv) == 2 else ""
+    args = sys.argv[1:]
+    components = DEFAULT_JOURNAL_COMPONENTS
+    if len(args) == 3 and args[1] == "--components":
+        components = parse_components(args[2])
+        if components is None:
+            print(json.dumps({"status": "refused", "reason": "invalid_components"}, sort_keys=True))
+            return
+        args = args[:1]
+    JOURNAL_COMPONENTS = components
+    action = args[0] if len(args) == 1 else ""
     try:
         result = actions[action]() if action in actions else {"status": "refused", "reason": "invalid_action"}
     except Exception:
@@ -2376,6 +2487,7 @@ def main():
             "reason": "survey_failed",
             "survey_diagnostics": _unverified_diagnostics(),
             "pending_repair_diagnostic": _pending_diagnostic({}),
+            "journal_components": _journal_components_summary({}),
             "live_diagnostic": {
                 **_live_diagnostic({"status": "unavailable"}),
                 "helper_reason": "survey_failed",
