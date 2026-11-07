@@ -195,7 +195,7 @@ and why.
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
-| 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana's own SQLite store failing reads (lock contention suspected), with Prometheus healthy | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
+| 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -5755,7 +5755,7 @@ itself: every `Deploy OPA` sends `PUT /v1/data/agentcloud_write_probe`, a path n
 fails unless OPA refuses it. The deploy runs `opa test --bundle`, so its tests load the tree the
 way the server does, and a test refuses any data file in the tree that bundle mode would skip.
 
-### 10.34 A liveness watcher blamed Prometheus for Grafana's database, and paged on one sample
+### 10.34 A liveness watcher blamed Prometheus for a Grafana-side error, and paged on one sample
 
 **What happened.** `Check o11y Liveness (Dev)` repeatedly posted `o11y liveness watcher:
 prometheus datasource unhealthy (status 500)` to Discord. On 2026-11-07, with the receiver
@@ -5764,16 +5764,19 @@ healthy, Grafana's own metrics showed the opposite of the message. Over 14 days
 `SELECT 1` database check) in 26 separate hours, and the datasource health handler
 answered 500 in at least 4. Prometheus answered no 5xx, and
 `grafana_plugin_request_total{endpoint="checkHealth",plugin_id="prometheus"}` had no error
-series. The 500s had never reached Prometheus.
+series. That metric counts only a failed plugin call as an error, so it rules out that one
+500 path; it does not establish which of the others fired.
 
 **Root cause.** Two layers. Grafana 11.4 keeps its state in SQLite with `wal=false` and
 `query_retries=0` (`conf/defaults.ini`), so a read that meets a write's lock fails at once.
 Lock contention is the suspected cause of the database-check 503s, not confirmed from a log:
 Grafana's container logs are not in Loki, and the health check reports only that `SELECT 1`
-failed. `CheckDatasourceHealthWithUID` (`pkg/api/datasources.go`) answers 500 when it cannot
-load the datasource or plugin context from that store, or when the plugin call fails; with no
-plugin `checkHealth` errors recorded, these 500s were the store reads. It answers 400 when
-Prometheus returns an unhealthy verdict. The watcher's failure mapping treated every answer other than 200/OK as
+failed. `CheckDatasourceHealthWithUID` and `checkDatasourceHealth` (`pkg/api/datasources.go`)
+answer 500 when the datasource fails to load from that store, when the plugin context cannot be
+built, when the plugin call fails, or when the plugin's detail payload cannot be parsed. Which
+of these produced the observed 500s is not established; a store read failing beside the
+database-check 503s is suspected. Grafana answers 400 when Prometheus returns an unhealthy
+verdict. The watcher's failure mapping treated every answer other than 200/OK as
 `prometheus datasource unhealthy` and posted after a single request. Its tests faked only a 400,
 so no test exercised a Grafana-side failure or a transient one.
 
@@ -5787,8 +5790,10 @@ tests include a transient failure that must not page.
 as a Grafana-side failure, one 503/500 blip per probe posts nothing,
 and a persistent failure is probed three times before one post. All three fail against the
 previous playbook. `compose.yml` sets `GF_DATABASE_WAL=true` and
-`GF_DATABASE_QUERY_RETRIES=5` (asserted in `test_service_o11y.bats`). Whether that removes the
-503s, and so confirms the suspected cause, is a production measurement, recorded in the o11y README against this baseline.
+`GF_DATABASE_QUERY_RETRIES=10` (asserted in `test_service_o11y.bats`). Whether the 503s and 500s
+drop is a production measurement, recorded in the o11y README against this baseline. A drop
+would be consistent with the suspected cause, not proof of it; only Grafana's own error log
+would confirm it.
 
 ## 11. The largest one
 

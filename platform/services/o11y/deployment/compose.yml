@@ -156,11 +156,12 @@ services:
       # 11.4 conf/defaults.ini) fail a read the moment a write holds the file lock.
       # Observed: /api/health 503 (its SELECT 1 database check failing) and datasource
       # health 500 a few times a day. Suspected, not log-confirmed: lock contention.
-      # WAL lets reads proceed beside a writer; the retries back off (10 ms to 1 s) on
-      # a lock that remains, and need a value of 2 or more to retry at all. Escalation
-      # if the 503s persist: an external Postgres for Grafana.
+      # WAL lets reads proceed beside a writer. On a lock that remains, the value is the
+      # number of attempts (pkg/util/retryer): 10 gives nine waits doubling from 10 ms to
+      # the 1 s cap, about 3.3 s in all; 1 would not retry at all. Escalation if the 503s
+      # persist: an external Postgres for Grafana.
       GF_DATABASE_WAL: "true"
-      GF_DATABASE_QUERY_RETRIES: "5"
+      GF_DATABASE_QUERY_RETRIES: "10"
     volumes:
       - ./config/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./config/grafana/dashboards:/var/lib/grafana/dashboards:ro

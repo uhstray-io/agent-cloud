@@ -30,10 +30,11 @@
 #
 # Reading a datasource health status (Grafana 11.4 pkg/api/datasources.go):
 #   400  Grafana reached Prometheus and Prometheus answered unhealthy
-#   500  Grafana errored before Prometheus gave a verdict: the datasource or plugin
-#        context failed to load from Grafana's own database, or the plugin call itself
-#        failed (translatePluginRequestErrorToAPIError). The message names Grafana;
-#        grafana_plugin_request_total{endpoint="checkHealth"} tells the two apart
+#   500  Grafana itself errored, which is not Prometheus's unhealthy verdict: loading the
+#        datasource from Grafana's database, building the plugin context, the plugin
+#        call (translatePluginRequestErrorToAPIError) or parsing the plugin's details
+#        failed. The message names Grafana and claims no more;
+#        grafana_plugin_request_total{endpoint="checkHealth"} shows only the plugin-call case
 #
 # Check mode probes and reports but posts nothing.
 

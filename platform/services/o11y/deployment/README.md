@@ -883,18 +883,21 @@ retried twice, `o11y_watch_retry_delay` seconds apart (default 10), before it co
 page means about 20 s of failure rather than one lost request. A datasource health 500 is
 reported as Grafana-side (`grafana datasource health errored`): Grafana 11.4 answers 400
 when Prometheus returns an unhealthy verdict, and 500 when Grafana itself errored (loading
-the datasource or plugin context, or the plugin call). `grafana_plugin_request_total{endpoint="checkHealth"}`
-shows whether the plugin call failed.
+the datasource, building the plugin context, the plugin call, or parsing its details).
+`grafana_plugin_request_total{endpoint="checkHealth"}` shows only whether the plugin call
+failed.
 
 Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
 that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed
 (Grafana's container logs are not in Loki). What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
 `/api/health` 503 (database check) in 26 separate hours and datasource health 500 in at least 4, with
-zero Prometheus plugin `checkHealth` errors, so those 500s failed before the plugin call; the
-watcher, then unretried, paged on any single 500. `compose.yml`
-sets `GF_DATABASE_WAL=true` and `GF_DATABASE_QUERY_RETRIES=5`. To judge the fix, compare
+zero Prometheus plugin `checkHealth` errors, which rules out a failed plugin call but not the
+other 500 paths; the watcher, then unretried, paged on any single 500. `compose.yml` sets
+`GF_DATABASE_WAL=true` and `GF_DATABASE_QUERY_RETRIES=10` (10 attempts, waits doubling from
+10 ms to the 1 s cap, about 3.3 s in all, per Grafana's `pkg/util/retryer`). To judge the fix, compare
 `sum by (handler, status_code) (increase(grafana_http_request_duration_seconds_count{status_code=~"5.."}[7d]))`
-for a week after the deploy against that baseline. If the 503s persist, the next step is an
+for a week after the deploy against that baseline. A drop is consistent with the suspected
+cause, not proof of it; Grafana's error log would confirm it. If the 503s persist, the next step is an
 external Postgres for Grafana.
 
 ## Production alert-delivery drill
