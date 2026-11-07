@@ -7744,3 +7744,15 @@ def test_exact_o11y_alloy_delivery_proof_still_gates_only_the_o11y_alloy_stream(
         assert "_journal_loki_result" not in str(task)
         assert "_journal_loki_proof_query_url" not in str(task)
         assert "_journal_proof_marker" not in str(task)
+
+
+def test_content_gate_refuses_non_object_output_before_parsing_it():
+    # The fail_msg names "unclassified" for empty or non-JSON output only if no condition
+    # raises first: the object-shape check must precede every from_json condition.
+    play = _apply_play(yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8")))
+    task = next(t for t in play["tasks"] if t.get("name") == "Require an observed receiver log-content survey")
+    that = task["ansible.builtin.assert"]["that"]
+    shape = "(_journal_content_survey.stdout | default('')) is regex('^\\\\{.*\\\\}$')"
+    assert that.index(shape) == 1
+    assert all("from_json" in condition for condition in that[2:])
+    assert "from_json" not in "".join(that[:2])

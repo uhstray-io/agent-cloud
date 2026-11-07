@@ -221,7 +221,8 @@
       - no_running_o11y_containers
       - alloy_source_unverified
       - survey_failed
-    # Read with a regex, never from_json: a malformed or empty survey output cannot make the message itself fail.
+    # Read with a regex, never from_json, so the message renders for any output. The assert refuses output
+    # that is not one JSON object before its from_json conditions run.
     _journal_survey_reason_raw: >-
       {{ 'survey_failed' if (_journal_content_survey.rc | default(1)) != 0
          else (_journal_content_survey.stdout | default('') | regex_findall('"reason": "([a-z0-9_]+)"') | first | default('', true)) }}
@@ -296,6 +297,8 @@
       ansible.builtin.assert:
         that:
           - (_journal_content_survey.rc | default(1)) == 0
+          # Output that is not one JSON object stops here, with the named reason, before from_json can raise.
+          - (_journal_content_survey.stdout | default('')) is regex('^\\{.*\\}$')
           - (_journal_content_survey.stdout | from_json).status == 'observed'
           - (_journal_content_survey.stdout | from_json).content_survey is mapping
         fail_msg: >-
