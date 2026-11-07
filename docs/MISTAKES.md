@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) | Unverified claim | 4 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) | Unverified claim | 5 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
@@ -1182,7 +1182,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 4** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05
+**Occurrences: 5** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1239,6 +1239,18 @@ have caught it either: it covers OpenSpec task characterisations, not a review d
 operation. **Widened proposal:** a review or incident document that attributes an outcome to a named
 task run must cite that run's output or the ledger entry for the incident it falls in. Not built:
 the proposal is to add that requirement to `plan/architecture/00-foundation-standards.md`.
+
+**Occurrence 5 — 2026-11-07.** PR 884 (pin ruff in CI) failed its own `Python core` job at
+`platform/tests/test_merge_when_green.py:57`, which asserts the workflow file's blob equals
+`PI_MOVED_WORKFLOW_BLOB_SHA`. In a question asking the operator how to unblock four PRs, I described the
+recommended fix as "update `PI_MOVED_WORKFLOW_BLOB_SHA` to the new blob", from that assertion line alone.
+The operator chose that option. Reading `scripts/merge-when-green.py` next showed the constant is one state
+of an exact-blob state machine: `check_workflow_change` accepts a PR only when its base and head blobs are
+reviewed states joined by a declared transition. Changing the constant in place would have made the guard
+refuse PR 884 itself, whose base still carries the old blob. The real fix adds a new state and a transition,
+as commit `cc016427` did for the previous one. I corrected the description to the operator before any change
+was made. Why the rule did not fire: the claim was in a question's option text, read as a summary of the
+choice rather than as a statement about what code does.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
