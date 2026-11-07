@@ -360,7 +360,7 @@
           Record the census receipt from a workstation with
           scripts/o11y-coverage-refresh.py --url <semaphore-https-origin>
           --reviewed-dev-sha {{ expected_repository_sha }}
-          --target-signal {{ _endpoint_drill_target.target_id }}:health
+          --target-signal {{ _endpoint_drill_target.target_id }}:health < <your-operator-token-file>
       when: _endpoint_drill_outcome == 'passed'
 
     - name: Require the endpoint alert proof to have passed
