@@ -2133,7 +2133,7 @@ compose = yaml.safe_load((deploy / 'compose.yml').read_text())
 local_overlay = yaml.safe_load((deploy / 'compose.local.yml').read_text())
 assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 'true'
 assert compose['services']['grafana']['environment']['GF_DATABASE_WAL'] == 'true'
-assert int(compose['services']['grafana']['environment']['GF_DATABASE_QUERY_RETRIES']) > 0
+assert int(compose['services']['grafana']['environment']['GF_DATABASE_QUERY_RETRIES']) >= 2
 pyroscope = compose['services']['pyroscope']
 assert pyroscope['image'].endswith('grafana/pyroscope:2.2.0}')
 assert './config/pyroscope-config.yml:/etc/pyroscope/config.yml:ro' in pyroscope['volumes']

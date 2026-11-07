@@ -96,7 +96,7 @@ def test_healthy_receiver_posts_nothing(tmp_path):
     [
         ({"grafana": "down"}, "grafana /api/health failed (status 502)"),
         ({"datasource": "down"}, "prometheus datasource unhealthy (status 400)"),
-        ({"datasource": "db-error"}, "grafana could not load the prometheus datasource (status 500"),
+        ({"datasource": "db-error"}, "grafana datasource health errored (status 500"),
         ({"token": "synthetic-stale-token"}, "watcher token rejected by Grafana (status 401)"),
         ({"token": ""}, "watcher_token is not in secret/services/o11y"),
     ],

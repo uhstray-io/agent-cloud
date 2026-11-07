@@ -5761,13 +5761,17 @@ series. The 500s had never reached Prometheus.
 
 **Root cause.** Two layers. Grafana 11.4 keeps its state in SQLite with `wal=false` and
 `query_retries=0` (`conf/defaults.ini`), so a read that meets a write's lock fails at once.
-`CheckDatasourceHealthWithUID` (`pkg/api/datasources.go`) answers 500 when it cannot load the
-datasource or plugin context, both reads from that store. It answers 400 when Prometheus
-answers unhealthy. The watcher's failure mapping treated every answer other than 200/OK as
+Lock contention is the suspected cause of the database-check 503s, not confirmed from a log:
+Grafana's container logs are not in Loki, and the health check reports only that `SELECT 1`
+failed. `CheckDatasourceHealthWithUID` (`pkg/api/datasources.go`) answers 500 when it cannot
+load the datasource or plugin context from that store, or when the plugin call fails; with no
+plugin `checkHealth` errors recorded, these 500s were the store reads. It answers 400 when
+Prometheus returns an unhealthy verdict. The watcher's failure mapping treated every answer other than 200/OK as
 `prometheus datasource unhealthy` and posted after a single request. Its tests faked only a 400,
 so no test exercised a Grafana-side failure or a transient one.
 
-**The rule.** A health probe that goes through an intermediary must name the layer that failed.
+**The rule.** A health probe that goes through an intermediary must name the layer that failed,
+and claim no more about the cause than the status proves.
 Read the intermediary's status contract and map each status to the component that produces it.
 A watcher that pages people confirms the failure with a bounded re-probe before posting. Its
 tests include a transient failure that must not page.
@@ -5777,7 +5781,7 @@ as a Grafana-side failure, one 503/500 blip per probe posts nothing,
 and a persistent failure is probed three times before one post. All three fail against the
 previous playbook. `compose.yml` sets `GF_DATABASE_WAL=true` and
 `GF_DATABASE_QUERY_RETRIES=5` (asserted in `test_service_o11y.bats`). Whether that removes the
-503s is a production measurement, recorded in the o11y README against this baseline.
+503s, and so confirms the suspected cause, is a production measurement, recorded in the o11y README against this baseline.
 
 ## 11. The largest one
 

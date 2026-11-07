@@ -153,11 +153,12 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_METRICS_ENABLED: "true"
       # Grafana's store is SQLite. Its defaults (wal=false, query_retries=0, Grafana
-      # 11.4 conf/defaults.ini) fail a read the moment a write holds the file lock, so
-      # /api/health answered 503 and datasource lookups 500 a few times a day while
-      # alert-state writes ran. WAL lets reads proceed beside a writer; the retries
-      # back off (10 ms to 1 s) on any lock that remains. Escalation if the 503s
-      # persist: an external Postgres for Grafana.
+      # 11.4 conf/defaults.ini) fail a read the moment a write holds the file lock.
+      # Observed: /api/health 503 (its SELECT 1 database check failing) and datasource
+      # health 500 a few times a day. Suspected, not log-confirmed: lock contention.
+      # WAL lets reads proceed beside a writer; the retries back off (10 ms to 1 s) on
+      # a lock that remains, and need a value of 2 or more to retry at all. Escalation
+      # if the 503s persist: an external Postgres for Grafana.
       GF_DATABASE_WAL: "true"
       GF_DATABASE_QUERY_RETRIES: "5"
     volumes:

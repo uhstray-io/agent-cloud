@@ -30,9 +30,10 @@
 #
 # Reading a datasource health status (Grafana 11.4 pkg/api/datasources.go):
 #   400  Grafana reached Prometheus and Prometheus answered unhealthy
-#   500  Grafana failed BEFORE contacting Prometheus (datasource or plugin context could
-#        not be loaded from Grafana's own database); the message names Grafana, not
-#        Prometheus, so triage starts in the right container
+#   500  Grafana errored before Prometheus gave a verdict: the datasource or plugin
+#        context failed to load from Grafana's own database, or the plugin call itself
+#        failed (translatePluginRequestErrorToAPIError). The message names Grafana;
+#        grafana_plugin_request_total{endpoint="checkHealth"} tells the two apart
 #
 # Check mode probes and reports but posts nothing.
 
@@ -180,8 +181,8 @@
                else (['watcher token rejected by Grafana (status ' ~ _prom_status ~ ')']
                      if (_prom_status | int) in [401, 403]
                      else ([] if (_prom_status | int) == 200 and _prom_verdict == 'OK'
-                           else (['grafana could not load the prometheus datasource (status '
-                                  ~ _prom_status ~ '; Grafana-side, Prometheus not contacted)']
+                           else (['grafana datasource health errored (status '
+                                  ~ _prom_status ~ '; a Grafana-side error, not a Prometheus unhealthy verdict)']
                                  if (_prom_status | int) == 500
                                  else ['prometheus datasource unhealthy (status ' ~ _prom_status ~ ')']))))
           }}
