@@ -121,4 +121,4 @@ This phase is the last phase of the plan, and it runs only after the gates in Ph
 - [ ] 7.7 Remove the OPA entry, the inventory group and the docs rows that describe tududi.
 - [ ] 7.8 Update `AGENTS.md`. Update the workflows, the secrets layout and the deployment status tables, and add the Plane sub-directory docs line. Remove the tududi lines. Scenario "AGENTS.md lists Plane and drops tududi" holds after this step.
 - [ ] 7.9 Verify the teardown. No tududi containers, route, DNS record, OIDC application or GitHub App remain. The final archive is in site-config and its checksum matched before teardown.
-- [ ] 7.10 Validation gate: scenario "Retirement leaves no tududi surface" holds, and so does "Sync app is uninstalled after the refresher is gone".
+- [ ] 7.10 Validation gate: scenarios "Retirement leaves no tududi surface", "Final archive precedes teardown" and "Sync app is uninstalled after the refresher is gone" hold.

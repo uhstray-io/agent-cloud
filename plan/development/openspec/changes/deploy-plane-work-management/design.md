@@ -106,11 +106,11 @@ The existing tududi-to-GitHub sync is built from n8n workflows and a dedicated G
 
 **Supersedes.** The 2026-10-23 decision to migrate open tasks into Plane under the label `migrated-from-tududi`, each carrying its tududi task id. The migration task (7.1), the migration verification in tasks 7.9 and 7.10, and the migration requirement and scenarios in the spec are struck or removed, not deleted from history. Where this design still describes migration, the text is marked superseded inline (the spike 0.14 row, risk 5 and D8).
 
-**Why.** Joe decided this on 2026-11-07. Plane's GitHub sync rebuilds work from GitHub issues, so a migrated copy of tududi's open tasks is not needed. The migration playbook was estimated at about one day of work. Tududi retirement now proceeds ahead of phases 3 to 6. Plane's GitHub integration (tasks 3.3 to 3.7) stays separate and later.
+**Why.** Joe decided this on 2026-11-07, choosing the option stated as: archive the data, import nothing, and let Plane start clean while its GitHub integration (Phase 3, still to come) brings work in from the issues. Migrating the open tasks was estimated in that session at about one extra day. Tududi retirement now proceeds ahead of phases 3 to 6.
 
 **Rejected alternative.** Migrate the open tasks into Plane under `migrated-from-tududi`, as the 2026-10-23 decision said. Joe rejected it on 2026-11-07.
 
-**Recorded gap.** Risk 10 and the open item on a tududi restore procedure still stand. After teardown, the site-config archive is the only copy of tududi's data, and the approved plan records no restore procedure for it.
+**Restore procedure: explicitly absent.** The archive is cold recovery material only. Because the data is discarded by decision, no restore procedure is written; this answers risk 10 and the open item on a tududi restore procedure. After teardown the site-config archive is the only copy.
 
 ## Phase 0 Findings
 
