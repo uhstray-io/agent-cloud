@@ -26,7 +26,8 @@
         'limits': o11y_availability_probe_limits | default(none),
         'receiver_environment': o11y_environment | default('local' if (local_mode | default(false) | bool) else 'prod'),
         'cluster': o11y_cluster | default('agent-cloud-local'),
-        'shared_sample_limit': o11y_scrape_sample_limit | default(2000)
+        'shared_sample_limit': o11y_scrape_sample_limit | default(2000),
+        'drill': _o11y_availability_drill | default(none)
       } | to_json }}
   register: _o11y_availability_validation
   changed_when: false

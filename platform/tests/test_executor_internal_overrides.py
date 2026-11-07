@@ -285,6 +285,27 @@ def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp
     assert "CUSTOM STATS" not in proc.stdout or "step_result" not in proc.stdout, proc.stdout
 
 
+# The availability drill input is read by the prepare task that three playbooks import. A
+# launch that sets it as an extra var is refused by the guard before any play, under every
+# templated spelling of the forged value.
+@needs_ansible
+@pytest.mark.parametrize("path,forge", [
+    pytest.param(REPO / "platform/playbooks" / name, f.values[0], id=f"{name}-{f.id}")
+    for name in ("deploy-o11y.yml", "survey-o11y-scrape-baseline.yml", "verify-o11y-profile-pilot.yml")
+    for f in forgeries.templated_forgeries(
+        "_o11y_availability_drill",
+        {"target_id": "service:alpha", "status_code": 200},
+        {"target_id": "service:alpha", "status_code": 503},
+    )
+])
+def test_the_availability_drill_input_is_refused_as_a_launch_extra_var(path, forge, tmp_path):
+    proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", forge(tmp_path), "--check")
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "Refusing to run: _o11y_availability_drill set from outside the playbook" in proc.stdout, (
+        proc.stdout + proc.stderr)
+    assert proc.stdout.count("PLAY [") == 1, proc.stdout
+
+
 # The `_` prefix is RESERVED: hostvars also holds inventory vars, so an inventory that defined an
 # underscore variable would be refused like a forged extra var. The example inventories define
 # none (resolved by ansible-inventory, group vars merged), and a collision names the rule.
