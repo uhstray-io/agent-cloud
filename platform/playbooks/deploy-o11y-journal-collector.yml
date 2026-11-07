@@ -209,6 +209,12 @@
   vars:
     _journal_components_arg: "{{ o11y_journal_components | map(attribute='component') | join(',') }}"
     _journal_directory: "{{ o11y_journal_directory | default('') | string }}"
+    _journal_content_helper: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-log-source.py') }}"
+    _journal_content_shorts: "{{ o11y_journal_components | map(attribute='container') | map('regex_replace', '^o11y-', '') | list }}"
+    _journal_content_declared: >-
+      {{ (_journal_content_survey.stdout | from_json).content_survey | default({}) | dict2items
+         | selectattr('key', 'in', _journal_content_shorts) | items2dict
+         if (_journal_content_survey.rc | default(1)) == 0 else {} }}
     _journal_mount: /var/log/journal
     _journal_image: docker.io/grafana/alloy:v1.9.2
     _journal_proof_marker: agent-cloud-o11y-journal-proof-v1
@@ -261,6 +267,50 @@
     - name: Leave the apply play when the reviewed action is stop
       ansible.builtin.meta: end_host
       when: journal_collector_action | default('apply') != 'apply'
+      tags: [always]
+
+    - name: Survey declared receiver log content before any change
+      ansible.builtin.command:
+        argv: [python3, -]
+        stdin: "{{ _journal_content_helper }}"
+        stdin_add_newline: false
+      register: _journal_content_survey
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      tags: [always]
+
+    - name: Require an observed receiver log-content survey
+      ansible.builtin.assert:
+        that:
+          - (_journal_content_survey.rc | default(1)) == 0
+          - (_journal_content_survey.stdout | from_json).status == 'observed'
+          - (_journal_content_survey.stdout | from_json).content_survey is mapping
+        fail_msg: >-
+          The receiver log-content survey did not observe the receiver. The journal
+          collector was refused before any host change.
+        quiet: true
+      tags: [always]
+
+    - name: Report declared receiver log-content statuses
+      ansible.builtin.debug:
+        msg: "Declared receiver log-content statuses: {{ _journal_content_declared }}"
+      changed_when: false
+      tags: [always]
+
+    - name: Require every declared receiver container to be clear or without entries
+      ansible.builtin.assert:
+        that:
+          - _journal_content_declared | length == _journal_content_shorts | length
+          - >-
+            _journal_content_declared | dict2items
+            | rejectattr('value.status', 'in', ['clear', 'no_entries']) | list | length == 0
+        fail_msg: >-
+          A declared receiver container's log content is blocked, unverified or not surveyed.
+          The journal collector was refused before any host change. Remove the reviewed
+          sensitive content with a reviewed drop or redaction rule, or remove the container
+          from vars/o11y-journal-components.yml, then re-run.
+        quiet: true
       tags: [always]
 
     - name: Validate receiver and journal TLS files before journal config or container changes

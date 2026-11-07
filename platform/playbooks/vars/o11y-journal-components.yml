@@ -2,16 +2,18 @@
 # o11y-journal-components.yml — the receiver containers whose journald output the journal
 # collector may read, one loki.source.journal component each. The one reviewed list: the
 # positions helper (files/o11y-journal-positions.py --components) admits only these component
-# directories under the collector's state volume, and the collector template and deploy are
-# meant to render the same list, so they cannot diverge.
+# directories under the collector's state volume, the collector template renders this same
+# list, and the deploy's validation checks it, so they cannot diverge.
 #
 # o11y_alloy is first and keeps its id, so its existing cursor survives. Each container name
 # below is the compose container_name in platform/services/o11y/deployment/compose.yml; each
 # service is the compose service that Loki labels as service="o11y/<name>". Never add
 # o11y-journal-collector: the collector must not read its own journal.
 #
-# Until the deploy passes this list to the helper, the helper's default (o11y_alloy alone)
-# applies and the single-component behaviour is unchanged.
+# The deploy passes this list to the positions helper with --components on every call. The
+# helper's own default (o11y_alloy alone) applies only when that argument is absent. The apply
+# play's log-content gate (deploy-o11y-journal-collector.yml) also reads each declared
+# container's journal content and refuses unless every one is `clear` or `no_entries`.
 
 o11y_journal_components:
   - component: o11y_alloy

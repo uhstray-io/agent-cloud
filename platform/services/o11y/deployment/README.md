@@ -1396,7 +1396,9 @@ helper's `--components` allowlist and the input to the deploy's validation, so t
 cannot diverge. The deploy refuses before it touches any host unless the list has
 `o11y_alloy` first with `o11y-alloy` and `o11y/alloy`, no duplicate component or
 container, container names of the form `o11y-<name>`, no `o11y-journal-collector`, and
-each service `o11y/<name>`. `o11y_alloy` remains the delivery proof: its exact
+each service `o11y/<name>`. The same apply first runs the receiver log-content survey
+afresh and refuses before any host change unless every declared container is `clear` or
+`no_entries` (`platform/playbooks/README.md`). `o11y_alloy` remains the delivery proof: its exact
 `service="o11y/alloy"` marker gates apply as before. A newly declared source has no
 cursor and replays at most its 15-minute `max_age` window, never history. After apply,
 a read-only observation queries Loki once per non-alloy source over the last 300 seconds,

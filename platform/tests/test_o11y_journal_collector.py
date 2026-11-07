@@ -36,6 +36,10 @@ COMPOSE_HELPER = ROOT / "platform/playbooks/files/verify-o11y-journal-compose.py
 COMPOSE_SPEC = importlib.util.spec_from_file_location("o11y_journal_compose", COMPOSE_HELPER)
 COMPOSE = importlib.util.module_from_spec(COMPOSE_SPEC)
 COMPOSE_SPEC.loader.exec_module(COMPOSE)
+LOG_SURVEY_HELPER = ROOT / "platform/playbooks/files/survey-o11y-log-source.py"
+LOG_SURVEY_SPEC = importlib.util.spec_from_file_location("o11y_log_source_gate", LOG_SURVEY_HELPER)
+LOG_SURVEY = importlib.util.module_from_spec(LOG_SURVEY_SPEC)
+LOG_SURVEY_SPEC.loader.exec_module(LOG_SURVEY)
 
 
 def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
@@ -7281,6 +7285,209 @@ def test_every_positions_helper_call_passes_the_declared_cohort_and_the_helper_a
         "verify", "verify", "verify-live", "retire-legacy", "verify-network",
         "repair-positions", "{{ journal_collector_action }}",
     ])
+
+
+_CONTENT_GATE_TASKS = (
+    "Survey declared receiver log content before any change",
+    "Require an observed receiver log-content survey",
+    "Report declared receiver log-content statuses",
+    "Require every declared receiver container to be clear or without entries",
+)
+# Ansible's assert, with its templar: the first false condition refuses and later ones are not evaluated.
+# The shorts and declared expressions are the playbook's own play vars, templated in the order the tasks run.
+_CONTENT_GATE_EVALUATE = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+
+
+def template(expression, variables):
+    return Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression))
+
+
+def admitted(conditions, variables):
+    templar = Templar(loader=DataLoader(), variables=variables)
+    return all(templar.evaluate_conditional(trust_as_template(item)) for item in conditions)
+
+
+outcomes = []
+for case in job["cases"]:
+    variables = {"o11y_journal_components": case["cohort"], "_journal_content_survey": case["survey"]}
+    outcome = {"refused_at": None, "shorts": None, "statuses": None}
+    try:
+        variables["_journal_content_shorts"] = template(job["shorts"], variables)
+        outcome["shorts"] = variables["_journal_content_shorts"]
+        if not admitted(job["assert_observed"], variables):
+            outcome["refused_at"] = "observed"
+        else:
+            variables["_journal_content_declared"] = template(job["declared"], variables)
+            outcome["statuses"] = variables["_journal_content_declared"]
+            if not admitted(job["assert_admitted"], variables):
+                outcome["refused_at"] = "admitted"
+    except Exception as error:
+        outcome["refused_at"] = "error: " + type(error).__name__
+    outcomes.append(outcome)
+print(json.dumps(outcomes))
+"""
+
+
+def _content_gate_expressions():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    play = _apply_play(plays)
+    tasks = {task.get("name"): task for task in _walk(play["tasks"])}
+    return {
+        "shorts": play["vars"]["_journal_content_shorts"],
+        "declared": play["vars"]["_journal_content_declared"],
+        "assert_observed": tasks["Require an observed receiver log-content survey"]["ansible.builtin.assert"]["that"],
+        "assert_admitted": tasks[_CONTENT_GATE_TASKS[3]]["ansible.builtin.assert"]["that"],
+    }
+
+
+def _content_report(monkeypatch, running, messages=None, alloy=True):
+    """The real helper's survey() over a faked receiver: journalctl returns the given MESSAGE values."""
+    messages = messages or {}
+
+    def run(argv, timeout=8):
+        if argv[0] != "journalctl":
+            raise AssertionError("unexpected command")
+        name = argv[-1].removeprefix("CONTAINER_NAME=")
+        return 0, "\n".join(json.dumps({"CONTAINER_NAME": name, "MESSAGE": text}) for text in messages.get(name, []))
+
+    monkeypatch.setattr(LOG_SURVEY, "running_containers", lambda: list(running))
+    monkeypatch.setattr(LOG_SURVEY, "default_driver", lambda: "journald")
+    monkeypatch.setattr(LOG_SURVEY, "inspect", lambda name: {
+        "State": {"Running": True}, "HostConfig": {"LogConfig": {"Type": "journald"}}, "Mounts": [],
+    })
+    monkeypatch.setattr(LOG_SURVEY, "journal_status", lambda names, drivers: ("no_entries", 0))
+    monkeypatch.setattr(LOG_SURVEY, "alloy_source", lambda: True if alloy else None)
+    monkeypatch.setattr(LOG_SURVEY, "run", run)
+    return LOG_SURVEY.survey()
+
+
+def _content_gate_cases(monkeypatch):
+    """(name, cohort, survey result as the playbook registers it, expected refusal or None)."""
+    cohort = declared_cohort()
+    everything = [f"o11y-{short}" for short in LOG_SURVEY.CONTENT_CONTAINERS]
+    clean = {name: ["scrape completed"] for name in everything}
+
+    def registered(report, rc=0):
+        return {"rc": rc, "stdout": json.dumps(report, sort_keys=True)}
+
+    observed = _content_report(monkeypatch, everything, clean)
+    return [
+        ("all seven clear", cohort, registered(observed), None),
+        (
+            "loki without entries", cohort,
+            registered(_content_report(monkeypatch, everything, {**clean, "o11y-loki": []})), None,
+        ),
+        (
+            "alloy blocked", cohort,
+            registered(_content_report(monkeypatch, everything, {**clean, "o11y-alloy": ["mail ops@example.com"]})),
+            "admitted",
+        ),
+        (
+            "grafana not running", cohort,
+            registered(_content_report(monkeypatch, [n for n in everything if n != "o11y-grafana"], clean)),
+            "admitted",
+        ),
+        (
+            "declared container missing from survey", cohort + [_row("o11y_extra")],
+            registered(observed), "admitted",
+        ),
+        (
+            "undeclared prometheus blocked", cohort[:1],
+            registered(_content_report(
+                monkeypatch, everything, {**clean, "o11y-prometheus": ["mail ops@example.com"]},
+            )),
+            None,
+        ),
+        (
+            "survey unavailable", cohort,
+            registered(_content_report(monkeypatch, everything, clean, alloy=False)), "observed",
+        ),
+        (
+            "unavailable status over clean content", cohort,
+            registered({**observed, "status": "unavailable", "reason": "alloy_source_unverified"}), "observed",
+        ),
+        (
+            "helper failed with rc 1", cohort,
+            {"rc": 1, "stdout": json.dumps({"status": "unavailable", "reason": "survey_failed"}, sort_keys=True)},
+            "observed",
+        ),
+        ("helper failed with no output", cohort, {"rc": 1, "stdout": ""}, "observed"),
+    ]
+
+
+@needs_ansible
+def test_content_gate_admits_only_declared_clear_or_empty_containers_on_an_observed_survey(monkeypatch):
+    cases = _content_gate_cases(monkeypatch)
+    job = {
+        **_content_gate_expressions(),
+        "cases": [{"name": name, "cohort": cohort, "survey": survey} for name, cohort, survey, _ in cases],
+    }
+    result = subprocess.run(
+        [ansible_python(), "-c", _CONTENT_GATE_EVALUATE],
+        input=json.dumps(job), text=True, capture_output=True, check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+    )
+    assert result.returncode == 0, result.stderr
+    outcomes = dict(zip((name for name, *_ in cases), json.loads(result.stdout), strict=True))
+    for name, _cohort, _survey, expected in cases:
+        assert outcomes[name]["refused_at"] == expected, name
+    # The gate reads the declared containers only: an undeclared blocked receiver neither refuses nor is printed.
+    assert outcomes["undeclared prometheus blocked"]["statuses"].keys() == {"alloy"}
+    assert set(outcomes["all seven clear"]["statuses"]) == set(LOG_SURVEY.CONTENT_CONTAINERS)
+    # The top-level aggregate is never the gate: both non-clear aggregates below are admitted.
+    reports = {name: json.loads(survey["stdout"]) for name, _c, survey, _e in cases if survey["stdout"]}
+    assert reports["loki without entries"]["content_survey_status"] == "incomplete"
+    assert reports["undeclared prometheus blocked"]["content_survey_status"] == "blocked"
+    assert outcomes[cases[0][0]]["shorts"] == [row["container"].removeprefix("o11y-") for row in declared_cohort()]
+
+
+def test_content_gate_is_the_first_work_after_the_stop_check_and_is_never_skipped():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    play = _apply_play(plays)
+    tasks = play["tasks"]
+    names = [task.get("name") for task in tasks]
+    assert names[0] == "Leave the apply play when the reviewed action is stop"
+    gate_end = 1 + len(_CONTENT_GATE_TASKS)
+    assert names[1:gate_end] == list(_CONTENT_GATE_TASKS)
+    for host_write in (
+        "Place the reviewed monorepo on the receiver through the shared mechanism",
+        "Verify positions volume identity and access before apply",
+        "Render a candidate journal config with the private receiver endpoint",
+    ):
+        assert names.index(host_write) >= gate_end, host_write
+
+    gate = tasks[1:gate_end]
+    survey = gate[0]
+    assert survey["ansible.builtin.command"]["argv"] == ["python3", "-"]
+    assert survey["ansible.builtin.command"]["stdin"] == "{{ _journal_content_helper }}"
+    assert survey["register"] == "_journal_content_survey"
+    assert survey["changed_when"] is False
+    assert survey["failed_when"] is False
+    assert survey["check_mode"] is False
+    assert play["vars"]["_journal_content_helper"] == (
+        "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-log-source.py') }}"
+    )
+    assert LOG_SURVEY_HELPER.is_file()
+    for task in gate:
+        assert task.get("tags") == ["always"], task.get("name")
+        assert "when" not in task, task.get("name")
+        assert "no_log" not in task, task.get("name")
+        assert "content_survey_status" not in json.dumps(task), task.get("name")
+        if "register" in task:
+            assert task["register"].startswith("_"), task.get("name")
+    for assertion in (gate[1], gate[3]):
+        assert "{{" not in assertion["ansible.builtin.assert"]["fail_msg"], assertion.get("name")
+    assert "content_survey_status" not in json.dumps(play["vars"])
+
+
+def test_content_gate_cohort_containers_are_all_surveyed_containers():
+    assert LOG_SURVEY.O11Y_PREFIX == "o11y-"
+    shorts = [row["container"].removeprefix(LOG_SURVEY.O11Y_PREFIX) for row in declared_cohort()]
+    assert shorts and set(shorts) <= set(LOG_SURVEY.CONTENT_CONTAINERS)
 
 
 _OBSERVATION_TASKS = (
