@@ -2414,6 +2414,61 @@ templates:
         type: string
         required: true
 
+  # Sends a REAL Discord alert. The endpoint availability rule fires for the one named
+  # target, whose health probe is failed on purpose with a status code it never returns.
+  # Tell the operator before launching. A second deploy restores the projection; an
+  # interrupted run is recovered with Recover o11y Endpoint Drill (Dev).
+  - name: Drill o11y Endpoint Availability (Dev)
+    playbook: platform/playbooks/drill-o11y-endpoint-availability.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the controller playbook and both deploys"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the receiver by the drilled and restoring deploys"
+        type: string
+        required: true
+        default_value: "dev"
+      - name: availability_drill_target_id
+        title: "Availability target id"
+        description: "One reviewed availability target_id; its health probe is failed on purpose"
+        type: string
+        required: true
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match"
+        type: string
+        required: false
+        default_value: "false"
+
+  # Restores the normal projection and clears the endpoint drill marker. Run it after an
+  # interrupted Drill o11y Endpoint Availability (Dev). It does not check endpoint health.
+  - name: Recover o11y Endpoint Drill (Dev)
+    playbook: platform/playbooks/recover-o11y-endpoint-drill.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the recovery playbook and its deploy"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the receiver by the restoring deploy"
+        type: string
+        required: true
+        default_value: "dev"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Verify o11y Production Budgets (Dev)
     playbook: platform/playbooks/verify-o11y-production-budgets.yml
     repository: agent-cloud dev

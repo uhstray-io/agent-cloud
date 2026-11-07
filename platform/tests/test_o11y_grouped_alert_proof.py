@@ -469,3 +469,37 @@ def test_endpoint_discord_receipt_with_one_instance_needs_instance_lines_off():
     }
     assert rendered["grouped_message_count"].strip() == "1"
     assert rendered["grouped_details_present"] == "True"
+
+
+def test_a_one_instance_receipt_without_its_instance_line_fails_with_the_flag_off():
+    # The first instance line is always checked; the flag only releases the second one, which a
+    # one-instance receipt does not have. Flag off must not mean "no instance line needed".
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    wait = _task(probe, "Wait for the matching Discord webhook message")
+    facts = _task(probe, "Count the matching Discord receipt without retaining its content")[
+        "ansible.builtin.set_fact"
+    ]["_discord_receipt_summary"]
+    marker = f"o11y-delivery-status=firing service={ENDPOINT_SERVICE}"
+    content = (
+        f"{marker}\n**Firing**\nLabels:\n - alertname = {ENDPOINT_TITLE}\n"
+        f"Annotations:\n - dashboard_url = /d/service-overview?var-service={ENDPOINT_SERVICE}"
+    )
+    context = {
+        "_discord_messages": {"json": [{"webhook_id": "owned", "content": content}]},
+        "_webhook_id": "owned",
+        "_delivery_marker": marker,
+        "_probe_expected_instances": [ENDPOINT_TARGET],
+        "expected_service": ENDPOINT_SERVICE,
+        "o11y_grouped_probe": True,
+        "_alert_probe_instance_lines": False,
+    }
+    env = Environment(undefined=StrictUndefined, trim_blocks=True, lstrip_blocks=True)
+    env.filters["bool"] = bool
+    env.tests["search"] = lambda value, pattern: re.search(pattern, value) is not None
+    assert not _expression(wait["until"], context)
+    assert env.from_string(facts["grouped_details_present"]).render(context).strip() == "False"
+
+    context["_discord_messages"]["json"][0]["content"] = content.replace(
+        "Labels:\n", f"Labels:\n - instance = {ENDPOINT_TARGET}\n")
+    assert _expression(wait["until"], context)
+    assert env.from_string(facts["grouped_details_present"]).render(context).strip() == "True"

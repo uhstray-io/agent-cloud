@@ -1,0 +1,369 @@
+---
+# Production drill for the endpoint availability alert (rule o11y_endpoint_probe_failed).
+# It fails ONE reviewed availability target's health probe on purpose: the census takes a
+# status code the target never returns (599, census drill input), a second deploy restores
+# the normal projection, and the drill proves the rule fired and the Discord receipt names
+# that target. It sends a real Discord alert. An interruption leaves a marker outside the
+# checkout; Recover o11y Endpoint Drill (Dev) clears it after a normal deploy.
+#
+# deploy-o11y.yml does not refuse on that marker on purpose: a deploy is the recovery path.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout before the endpoint drill
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _endpoint_controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _endpoint_controller_revision.stdout == expected_repository_sha
+        fail_msg: "Semaphore checked out a different revision; no endpoint drill was started."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _endpoint_controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _endpoint_controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; no endpoint drill was started."
+
+# Everything that can refuse runs before the marker is claimed, so a refusal leaves nothing
+# to recover. The claim is the last step before the first deploy.
+- name: Validate the endpoint drill target and claim the drill marker
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # Outside the checkout, so placing the monorepo never touches it.
+    _endpoint_marker: "{{ _monorepo_dir | dirname }}/.o11y-endpoint-drill"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+  tasks:
+    - name: Require a real production endpoint drill
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - o11y_alerts_enabled | default(false) | bool
+          - o11y_alert_discord_channel_id | default('') | string is match('^[0-9]{17,21}$')
+        fail_msg: "The endpoint availability drill requires a real production Semaphore run with alerts enabled and a declared Discord channel."
+
+    - name: Require one named availability target id
+      ansible.builtin.assert:
+        that:
+          - availability_drill_target_id | default('') | length > 0
+          - availability_drill_target_id | default('') is match('^[a-z0-9:._/-]+$')
+        fail_msg: "Name one reviewed availability target_id in the survey field availability_drill_target_id."
+
+    - name: Inspect the unfinished paused-canary markers
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _deploy_dir }}/config/scrape.d/o11y-prod-canary.yml"
+        - "{{ _deploy_dir }}/config/.o11y-alert-canary-active"
+      register: _endpoint_canary_markers
+
+    - name: Require the paused-canary workflow to be settled
+      ansible.builtin.assert:
+        that: _endpoint_canary_markers.results | selectattr('stat.exists') | list | length == 0
+        fail_msg: "Paused-canary recovery is unfinished; run Restore o11y Alert Baseline (Dev) first."
+
+    - name: Inspect an unfinished active alert drill
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ _deploy_dir }}/config/.o11y-active-alert-drill"
+        - "{{ _deploy_dir }}/config/scrape.d/o11y-prod-alert-drill.yml"
+      register: _endpoint_active_drill_markers
+
+    - name: Require no active alert drill to be in progress
+      ansible.builtin.assert:
+        that: _endpoint_active_drill_markers.results | selectattr('stat.exists') | list | length == 0
+        fail_msg: "An active alert drill is in progress; use Recover o11y Active Alert Drill (Dev)."
+
+    - name: Inspect an unfinished endpoint drill
+      ansible.builtin.stat:
+        path: "{{ _endpoint_marker }}"
+      register: _endpoint_drill_marker
+
+    - name: Require no endpoint drill to be in progress
+      ansible.builtin.assert:
+        that: not _endpoint_drill_marker.stat.exists
+        fail_msg: "An endpoint availability drill is marked in progress; use Recover o11y Endpoint Drill (Dev)."
+
+    - name: Read the endpoint availability rule without displaying its settings
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_endpoint_probe_failed
+      register: _endpoint_rule
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require the endpoint availability rule to be provisioned and active
+      ansible.builtin.assert:
+        that:
+          - (_endpoint_rule.stdout | from_json).uid == 'o11y_endpoint_probe_failed'
+          - not ((_endpoint_rule.stdout | from_json).isPaused | bool)
+        fail_msg: "The endpoint availability rule is absent or paused; no fault was injected. Deploy a reviewed availability target first."
+      no_log: true
+
+    - name: Read production contacts without displaying webhook settings
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/contact-points
+      register: _endpoint_contacts
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Count the declared Discord contact point without retaining its settings
+      ansible.builtin.set_fact:
+        _endpoint_contact_count: >-
+          {{ _endpoint_contacts.stdout | from_json |
+             selectattr('uid', 'equalto', 'o11y_ops_discord') | list | length }}
+      no_log: true
+
+    - name: Require the declared Discord contact point exactly once
+      ansible.builtin.assert:
+        that: _endpoint_contact_count | int == 1
+        fail_msg: "The production Discord contact point is absent or duplicated; no fault was injected."
+      no_log: true
+
+    - name: Refuse cleartext OpenBao before reading Discord credentials
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Verify Discord receipt credentials and history access
+      ansible.builtin.include_tasks: tasks/o11y-alert-delivery-preflight.yml
+
+    # The census validates the named target and refuses one it cannot drill. It runs
+    # read-only checks on the receiver, and it runs before the claim so a refusal claims nothing.
+    - name: Validate the named target through the bounded availability projection
+      ansible.builtin.include_tasks: tasks/prepare-o11y-availability.yml
+      vars:
+        _o11y_availability_drill:
+          target_id: "{{ availability_drill_target_id }}"
+          status_code: 599
+
+    - name: Collect the one drilled target from the validated projection
+      ansible.builtin.set_fact:
+        _endpoint_drill_matches: >-
+          {{ _o11y_availability.targets |
+             selectattr('target_id', 'equalto', availability_drill_target_id) | list }}
+      no_log: true
+
+    - name: Require exactly one drilled target in the validated projection
+      ansible.builtin.assert:
+        that: _endpoint_drill_matches | length == 1
+        fail_msg: "The named availability target is not one selected deployed target of this receiver."
+      no_log: true
+
+    - name: Keep the one drilled target for the probe and the recovery proof
+      ansible.builtin.set_fact:
+        _endpoint_drill_target: "{{ _endpoint_drill_matches | first }}"
+      no_log: true
+
+    - name: Bind the endpoint probe selector the readiness waits query
+      ansible.builtin.set_fact:
+        _endpoint_probe_query: >-
+          probe_success{job="o11y-availability",instance="{{ _endpoint_drill_target.target_id }}",service="{{ _endpoint_drill_target.service_identity }}",target_id="{{ _endpoint_drill_target.target_id }}",environment="{{ _endpoint_drill_target.environment }}",cluster="{{ _endpoint_drill_target.cluster }}"}
+      no_log: true
+
+    - name: Atomically claim the endpoint-drill interruption marker
+      ansible.builtin.command:
+        argv: [mkdir, "{{ _endpoint_marker }}"]
+      changed_when: true
+      when: not ansible_check_mode
+
+# The drilled deploy: the one census change is the named target's expected status code.
+- name: Deploy the endpoint drill projection
+  ansible.builtin.import_playbook: deploy-o11y.yml
+  vars:
+    _extra_var_guard_nested: true
+    _o11y_availability_drill:
+      target_id: "{{ availability_drill_target_id }}"
+      status_code: 599
+
+- name: Prove the endpoint alert fires and reaches Discord
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _channel_id: "{{ o11y_alert_discord_channel_id | default('') | string }}"
+    _delivery_marker: "o11y-delivery-status=firing service={{ _endpoint_drill_target.service_identity }}"
+    _drill_cluster: "{{ _endpoint_drill_target.cluster }}"
+    _drill_environment: "{{ _endpoint_drill_target.environment }}"
+    expected_service: "{{ _endpoint_drill_target.service_identity }}"
+    expected_instance: "{{ _endpoint_drill_target.target_id }}"
+  tasks:
+    - name: Start the outcome as not run; only a completed proof sets passed
+      ansible.builtin.set_fact:
+        _endpoint_drill_outcome: not-run
+
+    - name: Prove the endpoint alert fires and the Discord receipt names the target
+      block:
+        - name: Run the shared failed-target, active-rule, and Discord receipt checks
+          ansible.builtin.include_tasks: tasks/o11y-alert-probe.yml
+          vars:
+            o11y_production_static_probe: true
+            drill_expect_alert: true
+            o11y_alerts_enabled: true
+            o11y_grouped_probe: true
+            o11y_probe_expected_instances:
+              - "{{ _endpoint_drill_target.target_id }}"
+            _alert_probe_kind: endpoint
+            _alert_probe_rule_uid: o11y_endpoint_probe_failed
+            _alert_probe_ready_query: "{{ _endpoint_probe_query }}"
+            _alert_probe_instance_lines: false
+
+        - name: Record the endpoint proof as passed
+          ansible.builtin.set_fact:
+            _endpoint_drill_outcome: passed
+      rescue:
+        # Recovery and the marker clear still run; the failure is reported by the last task.
+        - name: Record the endpoint proof as failed without failing the host yet
+          ansible.builtin.set_fact:
+            _endpoint_drill_outcome: failed
+
+# The normal deploy restores the projection the drill changed. A failed deploy stops the run
+# here, and the marker stays for Recover o11y Endpoint Drill (Dev).
+- name: Restore the normal o11y projection
+  ansible.builtin.import_playbook: deploy-o11y.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Prove recovery and clear the endpoint-drill marker
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _endpoint_marker: "{{ _monorepo_dir | dirname }}/.o11y-endpoint-drill"
+  tasks:
+    - name: Prove the normal projection restored the endpoint probe and resolved the alert
+      block:
+        - name: Wait for a fresh successful endpoint probe after the normal projection
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - wget
+              - -q
+              - -O
+              - "-"
+              - "http://prometheus:9090/api/v1/query?query={{ _endpoint_probe_query | urlencode }}"
+          register: _endpoint_probe_recovered
+          changed_when: false
+          check_mode: false
+          # Podman discovery, the scrape interval, and rule evaluation may span a minute.
+          retries: 24
+          delay: 5
+          no_log: true
+          until: >-
+            _endpoint_probe_recovered.rc == 0 and
+            ((_endpoint_probe_recovered.stdout | from_json).data.result |
+             selectattr('value.1', 'equalto', '1') | list | length) == 1
+
+        - name: Wait for the endpoint alert to resolve in Grafana
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+                curl -fsS --config - http://127.0.0.1:3000/api/prometheus/grafana/api/v1/alerts
+          register: _endpoint_alerts_resolved
+          changed_when: false
+          check_mode: false
+          retries: 60
+          delay: 10
+          no_log: true
+          # The state filter is the one the fault drill's resolved-alert check uses.
+          until: >-
+            _endpoint_alerts_resolved.rc == 0 and
+            ((_endpoint_alerts_resolved.stdout | from_json).data.alerts |
+             selectattr('labels.alertname', 'defined') |
+             selectattr('labels.alertname', 'equalto', (_endpoint_rule.stdout | from_json).title) |
+             selectattr('labels.target_id', 'defined') |
+             selectattr('labels.target_id', 'equalto', _endpoint_drill_target.target_id) |
+             selectattr('state', 'match', '^(Alerting|firing)$') | list | length) == 0
+          when: not ansible_check_mode
+      rescue:
+        # The marker stays: the target may really be down, so Recover does not gate on health.
+        - name: Name the recovery when the restored projection is not proven
+          ansible.builtin.fail:
+            msg: "The normal projection did not restore the endpoint probe or resolve the alert. The drill marker stays; once the target is healthy, run Recover o11y Endpoint Drill (Dev)."
+
+    - name: Clear the endpoint-drill marker after the recovery checks pass
+      ansible.builtin.command:
+        argv: [rmdir, "{{ _endpoint_marker }}"]
+        removes: "{{ _endpoint_marker }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: Name the census receipt the operator records for a passed drill
+      ansible.builtin.debug:
+        msg: >-
+          Endpoint availability drill passed for {{ _endpoint_drill_target.target_id }}.
+          Record the census receipt from a workstation with
+          scripts/o11y-coverage-refresh.py --url <semaphore-https-origin>
+          --reviewed-dev-sha {{ expected_repository_sha }}
+          --target-signal {{ _endpoint_drill_target.target_id }}:health
+      when: _endpoint_drill_outcome == 'passed'
+
+    - name: Require the endpoint alert proof to have passed
+      ansible.builtin.assert:
+        that: _endpoint_drill_outcome == 'passed'
+        fail_msg: "The endpoint alert did not fire to Discord. The normal projection was restored and the marker cleared; investigate the receipt before drilling again."

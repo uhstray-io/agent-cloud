@@ -10,9 +10,10 @@
 #   _alert_probe_rule_uid        provisioned rule read for its pause state and firing
 #                                title (default o11y_service_down).
 #   _alert_probe_ready_query     PromQL for the readiness wait (default up{service=...}).
-#   _alert_probe_instance_lines  false skips the " - instance = " Discord lines for every
-#                                expected instance. They index _probe_expected_instances[1],
-#                                which a one-instance endpoint drill does not have (default true).
+#   _alert_probe_instance_lines  false skips the " - instance = " Discord line for the SECOND
+#                                expected instance only. The first is always checked, so a
+#                                one-instance receipt must name its instance (default true:
+#                                both lines are checked, as before).
 # The Discord marker is the caller's _delivery_marker, which every caller defines.
 - name: Create a unique identity for this drill run
   ansible.builtin.command:
@@ -247,13 +248,13 @@
              selectattr('content', 'search', _delivery_marker) |
              map(attribute='content') | list | first | default('')).splitlines() |
              select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length) and
-          (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[0]) in
+          ((' - instance = ' ~ _probe_expected_instances[0]) in
              (_discord_messages.json | default([]) |
                selectattr('webhook_id', 'defined') |
                selectattr('webhook_id', 'equalto', _webhook_id) |
                selectattr('content', 'defined') |
                selectattr('content', 'search', _delivery_marker) |
-               map(attribute='content') | list | first | default('')).splitlines())) and
+               map(attribute='content') | list | first | default('')).splitlines()) and
           (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[1]) in
              (_discord_messages.json | default([]) |
                selectattr('webhook_id', 'defined') |
@@ -301,7 +302,7 @@
             {%- set content = owned[0].content if owned | length == 1 else '' -%}
             {{ not (o11y_grouped_probe | default(false) | bool) or (owned | length == 1 and
                (content.splitlines() | select('equalto', _delivery_marker) | list | length == (_probe_expected_instances | length)) and
-               (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[0]) in content.splitlines())) and
+               ((' - instance = ' ~ _probe_expected_instances[0]) in content.splitlines()) and
                (not (_alert_probe_instance_lines | default(true) | bool) or ((' - instance = ' ~ _probe_expected_instances[1]) in content.splitlines())) and
                (content.splitlines() | select('search', '/d/service-overview[?]var-service=' ~ expected_service ~ '$') | list | length > 0)) }}
       no_log: true
