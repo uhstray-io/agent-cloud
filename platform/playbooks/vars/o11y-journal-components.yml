@@ -14,6 +14,12 @@
 # helper's own default (o11y_alloy alone) applies only when that argument is absent. The apply
 # play's log-content gate (deploy-o11y-journal-collector.yml) also reads each declared
 # container's journal content and refuses unless every one is `clear` or `no_entries`.
+#
+# o11y_grafana is held out. The first production log-content survey (Semaphore task 13414,
+# 2026-11-07) found no sensitive content in any receiver container, but grafana's scan hit
+# the 200-entry cap in its 15-minute window, so the gate would refuse it: a new source
+# replays that whole window and the entries past the cap were never read. Add it back once
+# an uncapped survey reports it clear, or once a reviewed drop rule bounds its volume.
 
 o11y_journal_components:
   - component: o11y_alloy
@@ -31,9 +37,6 @@ o11y_journal_components:
   - component: o11y_pyroscope
     container: o11y-pyroscope
     service: o11y/pyroscope
-  - component: o11y_grafana
-    container: o11y-grafana
-    service: o11y/grafana
   - component: o11y_node_exporter
     container: o11y-node-exporter
     service: o11y/node-exporter
