@@ -115,7 +115,7 @@ def test_reports_only_driver_counts_and_bounded_journal_metadata(monkeypatch):
     assert f"--since={SURVEY.JOURNAL_WINDOW}" in metadata_argv[0]
     assert "-n" in metadata_argv[0] and "100" in metadata_argv[0]
     assert "MESSAGE" not in " ".join(metadata_argv[0])
-    assert content_argv[0][content_argv[0].index("-n") + 1] == str(SURVEY.CONTENT_CAP)
+    assert content_argv[0][content_argv[0].index("-n") + 1] == "5000"
     assert content_argv[0][-1] == "CONTAINER_NAME=o11y-loki"
     assert "--all" in content_argv[0]
     assert content["loki"] == {
@@ -635,6 +635,82 @@ def receiver_host(monkeypatch, *, running, messages=None, failing=(), drivers=No
         raise AssertionError("unexpected command")
 
     monkeypatch.setattr(SURVEY, "run", run)
+
+
+def _survey_timeouts(monkeypatch, *, running):
+    """Run the real survey() over fake podman and journalctl, faked one layer down at subprocess.run.
+
+    Returns every (argv, timeout) the helper hands to subprocess.run, so a default timeout is observed as applied.
+    """
+    timeouts = []
+
+    def fake_run(argv, **kwargs):
+        timeouts.append((argv, kwargs["timeout"]))
+        if argv[:3] == ["podman", "info", "--format"]:
+            stdout = '{"host":{"logDriver":"journald"}}'
+        elif argv[:2] == ["podman", "ps"]:
+            stdout = json.dumps([{"Names": [name]} for name in running])
+        elif argv[:5] == ["podman", "inspect", "--type", "container", "--format"]:
+            mounts = []
+            if argv[-1] == "o11y-alloy":
+                mounts = [{"Destination": "/var/log/journal", "RW": False, "Source": "/var/log/journal"}]
+            stdout = json.dumps(
+                [{"State": {"Running": True}, "HostConfig": {"LogConfig": {"Type": "journald"}}, "Mounts": mounts}]
+            )
+        elif argv[:2] == ["podman", "exec"]:
+            stdout = "readable"
+        elif argv[0] == "journalctl":
+            stdout = ""
+        else:
+            raise AssertionError("unexpected command")
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(SURVEY.subprocess, "run", fake_run)
+    SURVEY.survey()
+    return timeouts
+
+
+def test_journal_reads_pin_their_timeouts_content_at_45_and_metadata_at_12(monkeypatch):
+    timeouts = _survey_timeouts(monkeypatch, running=["o11y-loki"])
+    kinds = {
+        ("content" if "--output-fields=CONTAINER_NAME,MESSAGE" in argv else "metadata", timeout)
+        for argv, timeout in timeouts
+        if argv[0] == "journalctl"
+    }
+    assert kinds == {("content", 45), ("metadata", 12)}
+
+
+def _logfmt_line(index):
+    """A ~200-byte logfmt line with no sensitive class: the shape of an ordinary receiver log line."""
+    line = (
+        f"ts=2026-11-07T12:{index % 60:02d}:{index % 59:02d}Z level=info caller=scrape.go:{index % 997} "
+        f'msg="scrape completed" job=o11y-grafana target=grafana:3000 duration_ms={index % 500} '
+        f"samples={index % 4000}"
+    )
+    return line.ljust(200, ".")
+
+
+@pytest.mark.parametrize(("entries", "capped"), [(4999, False), (5000, True)], ids=["below-5000", "at-5000"])
+def test_content_survey_caps_at_5000_entries_per_receiver(monkeypatch, entries, capped):
+    receiver_host(
+        monkeypatch,
+        running=[f"o11y-{short}" for short in RECEIVERS],
+        messages={"o11y-prometheus": [_logfmt_line(index) for index in range(entries)]},
+    )
+    prometheus = SURVEY.survey()["content_survey"]["prometheus"]
+    assert prometheus["entries"] == entries
+    assert prometheus["capped"] is capped
+
+
+def test_content_scan_reads_a_full_5000_entry_window_well_inside_its_bound():
+    output = "\n".join(
+        json.dumps({"CONTAINER_NAME": "o11y-grafana", "MESSAGE": _logfmt_line(index)}) for index in range(5000)
+    )
+    started = time.perf_counter()
+    scanned = SURVEY.content_scan(output, "o11y-grafana")
+    elapsed = time.perf_counter() - started
+    assert scanned == {"entries": 5000, "unscanned": 0, "classes": ZERO_CLASSES}
+    assert elapsed < 2.0, f"content scan took {elapsed:.3f}s on 5000 entries"
 
 
 def test_content_allowlist_is_the_seven_receiver_containers_without_the_collector():
