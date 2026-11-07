@@ -9,10 +9,8 @@ read the files; they do not run the playbook:
 - the declared-name refusal comes before any uri, and before the runtime token is resolved, and the
   destination is the fixed loopback API, not a survey-controlled URL.
 
-test_retired_names_are_not_declared is xfail(strict=True): until the declarations of the retired
-templates are removed from templates.yml and templates-local.yml (chore/retire-tududi-sync), it
-fails as expected. Once that merges it passes, strict turns that into a failure, and the xfail
-marker must be removed.
+test_retired_names_are_not_declared reads the real catalog: a retired name must not be declared,
+so the change that retires a template removes its declaration in the same PR.
 """
 
 from __future__ import annotations
@@ -98,7 +96,6 @@ def test_declaration_reasons_are_one_nonblank_line():
 # ── (b) real files: a retired name is no longer declared ─────────────────────
 
 
-@pytest.mark.xfail(strict=True, reason="sync declarations removed on chore/retire-tududi-sync")
 def test_retired_names_are_not_declared_including_dev_variants():
     retired = {entry["name"] for entry in _declaration()}
     still_declared = sorted(retired & _declared_names())
