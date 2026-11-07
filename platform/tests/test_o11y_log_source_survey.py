@@ -810,7 +810,11 @@ def test_each_content_class_counts_its_own_hit(message, label):
 
 
 _BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-_RANDOM_BASE64 = "".join(random.Random(0).choice(_BASE64) for _ in range(48000))
+# One generator for the whole string: a Random(0) per character returns the same first draw every time.
+_RNG = random.Random(0)
+_RANDOM_BASE64 = "".join(_RNG.choice(_BASE64) for _ in range(48000))
+# The case is only distinct from "letters" if the line really mixes the alphabet.
+assert set(_RANDOM_BASE64) == set(_BASE64)
 
 
 @pytest.mark.parametrize(

@@ -94,6 +94,7 @@ and why.
 | 2.32 | The provisioner's update echoed a stale `environment_ids`, which v2.19 binds from; the fixture applied `environment_id` and passed; production refused at readback (widens 2.22) | False-green fixture | 1 | Test (`test_scoped_publication.py`) |
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
+| 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -2356,6 +2357,25 @@ at the end of the window is the other half.
 that Deploy Plane's Phase 4 runs it after the API probe and before Report. Mutation-checked on the restart, status,
 one-shot, first-pass, listing, gate and failed-inspect guards and on the wiring. Wired into Deploy Plane only; other services stay
 `Convention` until they include the task.
+
+### 2.35 A "random" fixture that was one repeated letter
+
+**What happened.** PR #880 added a linearity test for the log-content classifier
+(`platform/tests/test_o11y_log_source_survey.py`) with three 48 KB inputs: letters, repeated base64 and "random
+base64". The random input was `"".join(random.Random(0).choice(_BASE64) for _ in range(48000))`. Each character
+built a new generator with the same seed and took its first draw, so the line was 48 000 copies of `x`: one distinct
+character, the same shape as the letters case. The test passed, CI passed, the PR was reviewed and merged. A
+`/simplify` pass during a grounding checkpoint on 2026-11-07 found it, and `len(set(...))` returned 1.
+
+**Root cause.** The seed was placed inside the generator expression, so seeding happened per draw instead of once. The
+test asserted only on the classifier's behaviour, never on its own input, so a degenerate fixture was invisible: a
+single repeated letter is also a valid input that runs in linear time.
+
+**The rule.** A fixture generated to exercise a distinct case asserts the property that makes it distinct (here, that
+it spans the alphabet), next to where it is built. Seed a generator once and draw from that instance.
+
+**Enforced by.** Test: the module asserts `set(_RANDOM_BASE64) == set(_BASE64)` at import, and restoring the
+per-character seed fails collection (mutation-checked). The class rule stays `Convention`.
 
 ## 3. Acting on live state
 
