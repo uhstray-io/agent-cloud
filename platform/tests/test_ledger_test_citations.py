@@ -141,9 +141,10 @@ def unresolved(text: str, root: Path) -> list[str]:
                 pool = cited or test_files
                 if not any(p.stem == s or (p.suffix == ".py" and _defines(p, s)) for p in pool):
                     bad.append(s)
-            elif cited_bats and not _FILE.fullmatch(s) and _looks_like_bats_name(s):
-                if not any(s in _bats_names(p) for p in cited_bats):
-                    bad.append(s)
+            elif cited_bats and not _FILE.fullmatch(s) and _looks_like_bats_name(s) and not any(
+                s in _bats_names(p) for p in cited_bats
+            ):
+                bad.append(s)
         bad[bad_before:] = [f"{entry} {s}" for s in bad[bad_before:]]
     return bad
 
