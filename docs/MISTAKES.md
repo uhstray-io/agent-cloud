@@ -142,7 +142,7 @@ and why.
 | 5.16 | Merged on a PR status rollup that still showed the previous head's checks; CI on the merged head was running | Process | 1 | Convention (operator-side script; `dev` has no required checks) |
 | 5.17 | Upgraded production's ansible-core before CI ran the playbooks on the new version; 2.20 templates `delegate_to` strictly, a probe drill dry run failed | Process | 1 | Test (`test_delegate_to_strict_undefined.py`) + CI pin + Convention (upgrade ordering) |
 | 5.18 | ansible-core 2.20 rejects template delimiters inside a conditional; the Authentik promotion guard's `'{{ '{{' }}'` broke Deploy Authentik on every branch | Process | 1 | Test (`test_no_template_delimiters_in_conditionals.py`) |
-| 5.19 | A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine | Process | 1 | Convention (PreToolUse hook proposed) |
+| 5.19 | **x2** — A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine (x2: a reviewer agent pattern-killed its own test run, 2026-11-07) | Process | 2 | Convention (PreToolUse hook proposed) |
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
@@ -195,7 +195,7 @@ and why.
 | 10.31 | A token rotation updated one workstation's copy and left site-config's recovery copy stale; the second operator used it, got 401, and the runner deploy stalled two more days | Mechanism never exercised | 1 | Convention |
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
-| 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana's own SQLite store failing a read under lock, with Prometheus healthy | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
+| 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana's own SQLite store failing reads (lock contention suspected), with Prometheus healthy | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -3962,7 +3962,7 @@ reproduction of the 2.20 error where the installed ansible-core is 2.20 or newer
 
 ### 5.19 A worker killed other sessions' test runs by process-name pattern
 
-**Occurrences: 1** — 2026-10-12
+**Occurrences: 2** — 2026-10-12, 2026-11-07
 
 **What happened.** On 2026-10-12 a wave-3 service-deploy worker cleaned up its own test runs
 with `pkill -f bats` and `pkill -f "pytest -q -n auto"`. On the shared machine those patterns
@@ -3979,6 +3979,13 @@ in the worker's brief said the machine was shared, and nothing stopped the comma
 operator-private and not visible in this repository, so the only repo-visible guard is the
 proposed one: a PreToolUse hook refusing `pkill`, `killall` and `kill $(pgrep ...)`. Related:
 5.10, 5.14.
+
+**Occurrence 2 — 2026-11-07.** The read-only reviewer agent for PR #889 stopped its own
+backgrounded guard-test run with `pkill -f`, scoped to a pattern naming its temporary
+directory, and reported it. Nothing else was affected. The rule did not fire because the
+reviewer's brief did not restate it and the agent judged a narrow pattern safe. A pattern is
+still a pattern: it matches any process whose arguments contain it. The proposed hook remains
+the guard; Convention has now failed twice.
 
 ### 5.20 A promotion merged a head newer than the one its review covered (widens 5.16)
 
