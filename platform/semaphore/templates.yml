@@ -3177,6 +3177,14 @@ templates:
   # To run a template against `dev` instead of `main`, give it
   # `repository: agent-cloud dev` here — do NOT flip a shared record's branch.
 
+  # Deletes the templates that platform/semaphore/retired-templates.yml declares retired, and
+  # their schedules. setup-templates.yml never deletes, so this is the only removal path. Run the
+  # Dev variant in Semaphore's Dry run first: it lists what would be deleted and deletes nothing.
+  # No survey: the declaration is the input.
+  - name: Retire Semaphore Templates
+    playbook: platform/playbooks/retire-semaphore-templates.yml
+    dev_variant: true
+
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
 
