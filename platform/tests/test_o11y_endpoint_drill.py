@@ -192,6 +192,16 @@ def test_the_claim_is_the_last_step_before_the_first_deploy_and_follows_every_re
     # The validation that can refuse on the named target runs before the claim too.
     assert names.index("Validate the named target through the bounded availability projection") < claim
     assert names.index("Verify Discord receipt credentials and history access") < claim
+    # The current target health and alert are checked before the claim, after the selector exists.
+    health = [
+        "Read the drilled target's health probe series before the drill",
+        "Require the drilled target's health probe to be succeeding before the drill",
+        "Read the Grafana alerts before the drill without displaying them",
+        "Require the drilled target's endpoint alert to be quiet before the drill",
+    ]
+    for name in health:
+        assert names.index(name) < claim, name
+    assert names.index("Bind the endpoint probe selector the readiness waits query") < names.index(health[0])
 
 
 def test_the_claim_refuses_when_the_marker_exists_and_creates_it_atomically():
@@ -439,3 +449,96 @@ def test_the_normal_projection_renders_drill_as_null_so_the_census_sees_no_drill
     proc = _ansible(tmp_path, importer)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert json.loads(out.read_text())["drill"] is None
+
+
+# ---- pre-claim health and alert checks, the census hint, and the no_log scope ----------------
+
+
+def _claim_task(name):
+    return _named(_tasks_of(DRILL, "Validate the endpoint drill target and claim the drill marker"), name)
+
+
+def _probe_before(rc=0, values=("1",)):
+    result = [{"metric": {"instance": TARGET["target_id"]}, "value": ["0", value]} for value in values]
+    return {"rc": rc, "stdout": json.dumps({"data": {"result": result}})}
+
+
+def _alert(alertname="Endpoint health check failed", target=TARGET["target_id"], state="Alerting"):
+    return {"labels": {"alertname": alertname, "target_id": target}, "state": state}
+
+
+def _alerts(*alerts, rc=0):
+    return {"rc": rc, "stdout": json.dumps({"data": {"alerts": list(alerts)}}) if rc == 0 else ""}
+
+
+ALERT_CONTEXT = {
+    "_endpoint_rule": {"stdout": json.dumps({"title": "Endpoint health check failed"})},
+    "_endpoint_drill_target": {"target_id": TARGET["target_id"]},
+}
+
+
+def test_the_pre_claim_probe_check_passes_only_for_one_series_reading_one():
+    that = _claim_task("Require the drilled target's health probe to be succeeding before the drill")[
+        "ansible.builtin.assert"]["that"]
+    assert _expr(that, {"_endpoint_probe_before": _probe_before()}) is True
+    assert _expr(that, {"_endpoint_probe_before": _probe_before(values=("0",))}) is False
+    assert _expr(that, {"_endpoint_probe_before": _probe_before(values=())}) is False
+    assert _expr(that, {"_endpoint_probe_before": _probe_before(values=("1", "1"))}) is False
+    assert _expr(that, {"_endpoint_probe_before": _probe_before(values=("1", "0"))}) is False
+    # A failed query has no JSON to read; the rc check must stop before from_json runs.
+    assert _expr(that, {"_endpoint_probe_before": {"rc": 1, "stdout": ""}}) is False
+
+
+def test_the_pre_claim_alert_check_passes_only_when_no_matching_alert_is_active():
+    that = _claim_task("Require the drilled target's endpoint alert to be quiet before the drill")[
+        "ansible.builtin.assert"]["that"]
+
+    def ctx(*alerts):
+        return {**ALERT_CONTEXT, "_endpoint_alerts_before": _alerts(*alerts)}
+
+    assert _expr(that, ctx()) is True
+    assert _expr(that, ctx(_alert(state="Alerting"))) is False
+    assert _expr(that, ctx(_alert(state="firing"))) is False
+    assert _expr(that, ctx(_alert(state="Pending"))) is False
+    assert _expr(that, ctx(_alert(state="pending"))) is False
+    assert _expr(that, ctx(_alert(state="Normal"))) is True
+    assert _expr(that, ctx(_alert(target="service:other-health"))) is True
+    assert _expr(that, ctx(_alert(alertname="Service telemetry scrape failed"))) is True
+    assert _expr(that, {**ALERT_CONTEXT, "_endpoint_alerts_before": _alerts(rc=1)}) is False
+
+
+def test_the_census_hint_prints_only_for_a_passed_drill():
+    hint = _named(_tasks_of(DRILL, "Prove recovery and clear the endpoint-drill marker"),
+                  "Name the census receipt the operator records for a passed drill")
+    assert hint["when"] == "_endpoint_drill_outcome == 'passed'"
+    assert _expr(hint["when"], {"_endpoint_drill_outcome": "passed"}) is True
+    assert _expr(hint["when"], {"_endpoint_drill_outcome": "failed"}) is False
+    assert _expr(hint["when"], {"_endpoint_drill_outcome": "not-run"}) is False
+
+
+def test_no_log_hides_only_the_tasks_that_hold_a_private_endpoint_or_a_secret():
+    claim_tasks = _tasks_of(DRILL, "Validate the endpoint drill target and claim the drill marker")
+    final_tasks = _tasks_of(DRILL, "Prove recovery and clear the endpoint-drill marker")
+    visible = [
+        (claim_tasks, "Require the declared Discord contact point exactly once"),
+        (claim_tasks, "Require exactly one drilled target in the validated projection"),
+        (claim_tasks, "Bind the endpoint probe selector the readiness waits query"),
+        (claim_tasks, "Read the drilled target's health probe series before the drill"),
+        (claim_tasks, "Require the drilled target's health probe to be succeeding before the drill"),
+        (claim_tasks, "Require the drilled target's endpoint alert to be quiet before the drill"),
+        (final_tasks, "Wait for a fresh successful endpoint probe after the normal projection"),
+    ]
+    for tasks, name in visible:
+        assert "no_log" not in _named(tasks, name), name
+    hidden = [
+        (claim_tasks, "Read the endpoint availability rule without displaying its settings"),
+        (claim_tasks, "Require the endpoint availability rule to be provisioned and active"),
+        (claim_tasks, "Read production contacts without displaying webhook settings"),
+        (claim_tasks, "Count the declared Discord contact point without retaining its settings"),
+        (claim_tasks, "Collect the one drilled target from the validated projection"),
+        (claim_tasks, "Keep the one drilled target for the probe and the recovery proof"),
+        (claim_tasks, "Read the Grafana alerts before the drill without displaying them"),
+        (final_tasks, "Wait for the endpoint alert to resolve in Grafana"),
+    ]
+    for tasks, name in hidden:
+        assert _named(tasks, name).get("no_log") is True, name

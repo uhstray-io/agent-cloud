@@ -52,7 +52,8 @@
         that: _endpoint_controller_changes.stdout | length == 0
         fail_msg: "Candidate checkout has uncommitted files; no endpoint drill was started."
 
-# Everything that can refuse runs before the marker is claimed, so a refusal leaves nothing
+# Every drill-specific refusal (target, availability, markers, rule, contact, Discord, current
+# target health and alert) runs before the marker is claimed, so such a refusal leaves nothing
 # to recover. The claim is the last step before the first deploy.
 - name: Validate the endpoint drill target and claim the drill marker
   hosts: o11y_svc
@@ -172,7 +173,6 @@
       ansible.builtin.assert:
         that: _endpoint_contact_count | int == 1
         fail_msg: "The production Discord contact point is absent or duplicated; no fault was injected."
-      no_log: true
 
     - name: Refuse cleartext OpenBao before reading Discord credentials
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -202,7 +202,6 @@
       ansible.builtin.assert:
         that: _endpoint_drill_matches | length == 1
         fail_msg: "The named availability target is not one selected deployed target of this receiver."
-      no_log: true
 
     - name: Keep the one drilled target for the probe and the recovery proof
       ansible.builtin.set_fact:
@@ -213,7 +212,62 @@
       ansible.builtin.set_fact:
         _endpoint_probe_query: >-
           probe_success{job="o11y-availability",instance="{{ _endpoint_drill_target.target_id }}",service="{{ _endpoint_drill_target.service_identity }}",target_id="{{ _endpoint_drill_target.target_id }}",environment="{{ _endpoint_drill_target.environment }}",cluster="{{ _endpoint_drill_target.cluster }}"}
+
+    # Read-only health checks before the claim: a drill on a target that is already failing or
+    # alerting cannot prove its own alert, and its recovery proof would be meaningless.
+    - name: Read the drilled target's health probe series before the drill
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - wget
+          - -q
+          - -O
+          - "-"
+          - "http://prometheus:9090/api/v1/query?query={{ _endpoint_probe_query | urlencode }}"
+      register: _endpoint_probe_before
+      changed_when: false
+      check_mode: false
+
+    - name: Require the drilled target's health probe to be succeeding before the drill
+      ansible.builtin.assert:
+        that: >-
+          _endpoint_probe_before.rc == 0 and
+          ((_endpoint_probe_before.stdout | from_json).data.result | length) == 1 and
+          ((_endpoint_probe_before.stdout | from_json).data.result |
+           selectattr('value.1', 'equalto', '1') | list | length) == 1
+        fail_msg: "The drilled target's health probe is not succeeding now. Restore the target before a drill: the recovery proof needs a healthy target to pass."
+
+    # The alert list holds every Grafana alert, and some alert labels carry inventory instance
+    # addresses (alerts.yml.j2), so this read keeps no_log; the assert below stays visible.
+    - name: Read the Grafana alerts before the drill without displaying them
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - o11y-grafana
+          - sh
+          - -c
+          - >-
+            printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+            curl -fsS --config - http://127.0.0.1:3000/api/prometheus/grafana/api/v1/alerts
+      register: _endpoint_alerts_before
+      changed_when: false
+      check_mode: false
       no_log: true
+
+    - name: Require the drilled target's endpoint alert to be quiet before the drill
+      ansible.builtin.assert:
+        that: >-
+          _endpoint_alerts_before.rc == 0 and
+          ((_endpoint_alerts_before.stdout | from_json).data.alerts |
+           selectattr('labels.alertname', 'defined') |
+           selectattr('labels.alertname', 'equalto', (_endpoint_rule.stdout | from_json).title) |
+           selectattr('labels.target_id', 'defined') |
+           selectattr('labels.target_id', 'equalto', _endpoint_drill_target.target_id) |
+           selectattr('state', 'match', '^(Alerting|Pending|firing|pending)$') | list | length) == 0
+        fail_msg: "The drilled target's endpoint alert is firing or pending now. Let it resolve before a drill: a drill on an alerting target cannot prove its own alert."
 
     - name: Atomically claim the endpoint-drill interruption marker
       ansible.builtin.command:
@@ -307,7 +361,6 @@
           # Podman discovery, the scrape interval, and rule evaluation may span a minute.
           retries: 24
           delay: 5
-          no_log: true
           until: >-
             _endpoint_probe_recovered.rc == 0 and
             ((_endpoint_probe_recovered.stdout | from_json).data.result |
