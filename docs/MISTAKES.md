@@ -114,6 +114,7 @@ and why.
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
 | 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
+| 3.20 | Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task and the four scheduled ones that started with it | Live state | 1 | Convention (launch away from schedule slots); per-task inventory proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -3024,6 +3025,32 @@ every diagnostic that the restart does not need until after the service is verif
 every remote command in a recovery with `timeout`.
 
 **Enforced by.** Convention.
+
+### 3.20 Launched production tasks into the scheduled burst and broke the shared inventory
+
+**What happened.** On 2026-11-07, running the journal collector rollout (2.3b.5), I launched
+`Deploy o11y Journal Collector (Dev)` at 21:00:10 UTC (task 13410) and its dry-run apply at 22:00:36
+UTC (task 13433). Both failed at the pre-flight with "The inventory could not be parsed or contained
+no hosts". The four scheduled tasks started at 22:00:00 (13429 Collect Service Conformance, 13430
+Refresh Console GitHub Token, 13431 Check o11y Liveness, 13432 Refresh tududi-sync GitHub Token) all
+failed in the same minute, two of them at the OpenBao AppRole login. Every scheduled task in the
+hours before had passed, and the same templates passed again on their next slot.
+
+**Root cause.** Semaphore tasks in one project share one inventory file under
+`/tmp/semaphore/project_1/`, and the first task to finish removes it before the others have parsed
+it. `platform/playbooks/tasks/require-parsed-inventory.yml` names this cause and its remedy (re-run
+alone). Schedules declared in `platform/semaphore/templates.yml` start several tasks on the same
+minute (:00, :15, :30, :45, and the liveness check every 10 minutes), so a manual launch in that
+minute joins the race. That the scheduled tasks' failures came from this race, rather than from
+OpenBao itself, is inferred from the timing and from the next slot passing; it was not proven.
+
+**The rule.** Launch a manual production task away from the declared schedule slots: start it about
+a minute after a :x0 slot and never on :00, :15, :30 or :45. If a task fails on an empty inventory,
+re-run it alone, and check whether scheduled tasks started in the same minute failed too.
+
+**Enforced by.** Convention. Proposed: `scripts/semaphore-launch.py` refuses a launch within a
+minute of a schedule declared in `templates.yml`, and the foundational fix is a per-task copy of
+the inventory so no task can remove another's.
 
 ## 4. Data handling
 
