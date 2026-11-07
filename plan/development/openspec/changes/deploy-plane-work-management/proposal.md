@@ -15,7 +15,7 @@ Plane replaces tududi as the work tracker. It gives the team one place where a G
 - **Plane MCP server for harnesses.** The MCP server runs in OAuth mode behind Caddy, so each edit is attributed to the signed-in user. weft uses a service identity, a personal access token held in OpenBao.
 - **Forge Discord app.** A second composable service on the Plane VM posts notifications, answers slash commands and unfurls links. It uses the platform bot token, read from the shared store and never copied.
 - **tududi teardown.** The teardown is the final phase. It runs behind an explicit confirmation value, after a final backup, and it removes the tududi containers, route, DNS record, identity client, the tududi sync GitHub App and inventory entries.
-- **BREAKING for tududi.** tududi stops being the tracker. Open tasks migrate into Plane under the `migrated-from-tududi` label.
+- **BREAKING for tududi.** tududi stops being the tracker. Its open tasks are not migrated: tududi's data is archived to site-config and discarded (decided 2026-11-07, superseding the 2026-10-23 migration decision).
 - **Documentation.** `AGENTS.md` loses the tududi lines and gains the Plane entries in Phase 7.
 
 ## Capabilities
