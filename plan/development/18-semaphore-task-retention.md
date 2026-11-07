@@ -36,16 +36,12 @@ without bound, and it adds the disk alert that 1.18 proposed and nobody built.
    |---|---|---|---|
    | Check o11y Liveness (Dev) | `*/10 * * * *` | 258 | 144 |
    | Collect Service Conformance (Dev) | `*/15 * * * *` | 1430 | 96 |
-   | Refresh tududi-sync GitHub Token | `*/45 * * * *` | 692 | 48 |
    | Renew Internal Certs (Dev) | `17 4 * * *` | 949 | 1 |
    | Stock GitHub Runner JIT (Dev) | `*/10 * * * *` | 3166 | 144 |
 
-   Without the JIT template the rows total 289 a day, and with it 433. The `*/45` row is two runs an
-   hour, because cron fires at minutes 0 and 45 (`templates.yml:686-689` says so in its own
-   comment). The tududi refresh is a main-bound base with `dev_variant: true` (`templates.yml:690`).
-   Per `platform/semaphore/setup-templates.yml:373-374`, schedules attach to the base template only,
-   and a (Dev) variant never inherits one, so this schedule runs on the main-bound base alone. Production
-   task history for 2026-10-26 and 2026-10-27 shows about 288 tasks a day, with no JIT runs. Phase 0
+   Without the JIT template the rows total 241 a day, and with it 385. The tududi refresh row (48 a day)
+   was removed 2026-11-07 with the tududi sync. Production task history for 2026-10-26 and 2026-10-27
+   shows about 288 tasks a day, with no JIT runs. Phase 0 measures the real count.
    measures the real count.
 
 2. **Semaphore has no age-based retention.** Its only built-in control is `max_tasks_per_template`,

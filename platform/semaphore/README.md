@@ -20,7 +20,7 @@ workstation OpenBao login before work that an existing Semaphore template can
 execute. Never export the controller AppRole from the browser or use backup
 credentials to manufacture workstation access.
 
-**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)`,
+**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)` (template retired 2026-11-07),
 authenticated through the controller AppRole, read runtime secrets, checked the
 GitHub App's repository coverage and reached n8n. It stopped at an absent
 credential-visible sync workflow with `changed=0`; it did not verify task/issue
@@ -278,7 +278,7 @@ The declared **Publish Semaphore Template Surveys (Dev)** template runs
 Its required survey input is `semaphore_template_names_json`, for example:
 
 ```json
-["Store tududi API Token (Dev)"]
+["Store n8n API Key (Dev)"]
 ```
 
 It uses the controller AppRole to read the fixed OpenBao

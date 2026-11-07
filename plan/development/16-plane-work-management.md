@@ -121,5 +121,5 @@ Two points raised while writing this plan were resolved on 2026-10-23, and one s
 - [`12-rbac-user-provisioning.md`](12-rbac-user-provisioning.md): the group model that D3 maps to Plane roles.
 - [`15-service-deployment-workflow-agents.md`](15-service-deployment-workflow-agents.md): the service-deployment workflow and its step results.
 - [`openspec/changes/deploy-plane-work-management/`](openspec/changes/deploy-plane-work-management/): the proposal, design, tasks and specs for this plan.
-- `platform/services/tududi/sync/github-mapping.yml`: the nine repository pairs that seed the projects declaration in Phase 4.
+- The nine repository pairs that seed the projects declaration in Phase 4 (`platform/services/plane/projects.yml`); the tududi sync mapping they mirrored was deleted 2026-11-07.
 - `plan/architecture/01-automation-model.md`, section 5: the FORCED and DEBT classification used for UI-only configuration.

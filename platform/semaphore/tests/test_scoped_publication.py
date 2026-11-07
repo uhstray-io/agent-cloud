@@ -21,7 +21,7 @@ from fake_semaphore import template_write  # noqa: E402 - the shared v2.19 templ
 sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
 from publication import survey_enum_option_problems  # noqa: E402
 
-NAME = "Store tududi API Token (Dev)"
+NAME = "Store n8n API Key (Dev)"
 CONFORMANCE_NAME = "Collect Service Conformance (Dev)"
 TEMPLATE = {
     "id": 206,
@@ -31,12 +31,25 @@ TEMPLATE = {
     "inventory_id": 37,
     "environment_id": 42,
     "environment_ids": [42],
-    "playbook": "platform/playbooks/store-tududi-api-token.yml",
+    "playbook": "platform/playbooks/store-n8n-api-key.yml",
     "app": "ansible",
     "arguments": '["--limit", "tududi"]',
     "autorun": False,
     "view_id": 9,
     "survey_vars": [],
+}
+
+
+# The survey tests publish one declared survey whose first default is "true". The real
+# catalog no longer declares NAME (its tududi survey was retired 2026-11-07), so they pass
+# this declaration explicitly through _all_templates.
+SURVEY_DECLARATION = {
+    "name": NAME,
+    "repository": "agent-cloud dev",
+    "playbook": TEMPLATE["playbook"],
+    "survey_vars": [{"name": "fixture_validate_only", "title": "Validate existing token only",
+                     "description": "fixture: prove the stored value and stop", "type": "string",
+                     "required": False, "default_value": "true"}],
 }
 
 
@@ -751,7 +764,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.records[0]["description"] = "preserve detail-only setting"
         original = copy.deepcopy(self.records)
         code, output = self.run_play(semaphore_project_id="", semaphore_inventory_id="",
-                                     semaphore_environment_id="")
+                                     semaphore_environment_id="", _all_templates=[SURVEY_DECLARATION])
         self.assertEqual(code, 0, output)
         self.assertEqual(self.writes, [("PUT", "/api/project/1/templates/206")])
         self.assertEqual(self.records[1], original[1])
@@ -760,7 +773,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertIn(("POST", "/v1/auth/approle/login"), self.requests)
         self.assertIn(("GET", "/v1/secret/data/services/semaphore"), self.requests)
         self.assertFalse(any("schedules" in path for _, path in self.requests))
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertEqual(code, 0, output)
         self.assertEqual(len(self.writes), 1, "Identical second publication must perform no writes")
 
@@ -869,27 +882,27 @@ class ScopedPublicationTests(unittest.TestCase):
                     self.records[0]["repository_id"] = 1
                 else:
                     self.records[0]["playbook"] = "unrelated.yml"
-                code, _ = self.run_play()
+                code, _ = self.run_play(_all_templates=[SURVEY_DECLARATION])
                 self.assertNotEqual(code, 0)
                 self.assertEqual(self.writes, [])
 
     def test_repository_branch_drift_refuses_before_write(self):
         self.repositories[1]["git_branch"] = "main"
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("differs from repositories.yml", output)
         self.assertEqual(self.writes, [])
 
     def test_success_response_without_saved_survey_fails_readback(self):
         type(self).ignore_write = True
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("Scoped publication readback failed", output)
 
     def test_lost_detail_only_setting_fails_readback(self):
         self.records[0]["description"] = "preserve this setting"
         type(self).drop_setting = True
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("Scoped publication readback failed", output)
 
@@ -916,13 +929,13 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_denied_runtime_read_is_named_and_secret_free(self):
         type(self).deny_secret = True
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("Runtime Semaphore access is unavailable", output)
         self.assertEqual(self.writes, [])
 
     def test_public_cleartext_refuses_before_authentication(self):
-        code, _ = self.run_play(_semaphore_url="http://semaphore.example.test")
+        code, _ = self.run_play(_semaphore_url="http://semaphore.example.test", _all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertEqual(self.requests, [])
 

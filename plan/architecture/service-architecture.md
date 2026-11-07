@@ -341,8 +341,8 @@ Notable edges, each recorded where it lives:
   planned (OpenSpec change `skynet-launch-containment`).
 - **agentgateway to OpenRouter.** A model declared with `provider: openrouter` is served through the
   gateway with a key only the gateway holds; it is optional and absent unless declared [16].
-- **n8n to tududi and GitHub.** The two-way task and issue sync runs as n8n workflows; it ends with
-  tududi's teardown in Plane's final phase [23][39].
+- **n8n to tududi and GitHub.** The two-way task and issue sync was retired on 2026-11-07; Plane's
+  native GitHub integration replaces it [23][39].
 - **Semaphore to NetBox.** A device creation proposed by skynet and allowed by OPA is executed by
   the `Create NetBox Device` playbook with a scoped NetBox token [3]. The OPA check is the one skynet's
   own client makes; Semaphore does not make it. skynet cannot currently launch this playbook, because
@@ -663,7 +663,7 @@ document; for long, frequently edited documents the section name is given as wel
 36. `plan/architecture/05-platform-infra.md:352-394` (MCP endpoint and the one admin list)
 37. `platform/services/openbao/deployment/config/policies/nemoclaw-read.hcl:3-6`; `platform/services/openbao/deployment/config/policies/semaphore-read.hcl:8-10`
 38. `platform/playbooks/deploy-tududi.yml:1-157`
-39. `platform/services/tududi/context/github-sync-contract.md:1-30`
+39. Retired 2026-11-07: the tududi GitHub sync contract (file deleted with the sync).
 40. `plan/development/15-service-deployment-workflow-agents.md:40-180` (Decisions, Design principles, Architecture, Workflow table)
 41. `plan/development/06-inference-skynet.md:1-30` and `:236-300`
 42. `platform/workflows/service-onboarding/registry.yml` (23 step ids)
