@@ -305,8 +305,14 @@
           - >-
             _journal_content_declared | dict2items
             | rejectattr('value.status', 'in', ['clear', 'no_entries']) | list | length == 0
+          # A scan stopped at the survey's entry cap read only the newest entries, while a new
+          # source replays its whole max_age window; only a complete scan admits a container.
+          - >-
+            _journal_content_declared | dict2items
+            | rejectattr('value.capped', 'sameas', false) | list | length == 0
         fail_msg: >-
-          A declared receiver container's log content is blocked, unverified or not surveyed.
+          A declared receiver container's log content is blocked, unverified, not surveyed, or
+          capped (more entries in the window than the survey reads).
           The journal collector was refused before any host change. Remove the reviewed
           sensitive content with a reviewed drop or redaction rule, or remove the container
           from vars/o11y-journal-components.yml, then re-run.

@@ -7387,6 +7387,13 @@ def _content_gate_cases(monkeypatch):
             "admitted",
         ),
         (
+            "grafana clear but capped", cohort,
+            registered(_content_report(
+                monkeypatch, everything, {**clean, "o11y-grafana": ["scrape completed"] * LOG_SURVEY.CONTENT_CAP},
+            )),
+            "admitted",
+        ),
+        (
             "grafana not running", cohort,
             registered(_content_report(monkeypatch, [n for n in everything if n != "o11y-grafana"], clean)),
             "admitted",

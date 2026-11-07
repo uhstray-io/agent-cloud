@@ -1398,7 +1398,7 @@ cannot diverge. The deploy refuses before it touches any host unless the list ha
 container, container names of the form `o11y-<name>`, no `o11y-journal-collector`, and
 each service `o11y/<name>`. The same apply first runs the receiver log-content survey
 afresh and refuses before any host change unless every declared container is `clear` or
-`no_entries` (`platform/playbooks/README.md`). `o11y_alloy` remains the delivery proof: its exact
+`no_entries` from an uncapped scan (`platform/playbooks/README.md`). `o11y_alloy` remains the delivery proof: its exact
 `service="o11y/alloy"` marker gates apply as before. A newly declared source has no
 cursor and replays at most its 15-minute `max_age` window, never history. After apply,
 a read-only observation queries Loki once per non-alloy source over the last 300 seconds,
