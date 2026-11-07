@@ -1,0 +1,218 @@
+---
+# retire-semaphore-templates.yml — delete the Semaphore templates that
+# platform/semaphore/retired-templates.yml declares retired, together with their schedules.
+#
+# setup-templates.yml only publishes; it never deletes. Removing a template from templates.yml
+# leaves the live template in Semaphore, and its schedule keeps firing. This playbook is the
+# code-managed removal. The declaration is the authority, and the change that retires a template
+# removes its declaration and adds its entry in the same PR, so no name is declared and live at once.
+#
+# Order, and why:
+#   1. A retired name that templates.yml or templates-local.yml still declares (a generated
+#      "(Dev)" twin included) is refused BEFORE anything authenticates.
+#   2. The runtime token is resolved as the publisher resolves it (platform/semaphore/tasks/
+#      runtime-access.yml). The destination is the controller's fixed loopback API.
+#   3. A retired name matching more than one live template is refused: choosing which one to
+#      delete would be a guess.
+#   4. Each matched template's schedules are deleted first, then the templates. An absent name is
+#      already done, so a re-run converges.
+#   5. Both lists are read back. The run fails if a retired name, or a schedule bound to a deleted
+#      template, is still live.
+#
+# Check mode is a dry run: the GETs run (they only read), the DELETEs are skipped. Run the Dev
+# template in Semaphore's Dry run first and read the report.
+#
+# Template names and ids are printed. The token is never printed.
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Retire declared Semaphore templates and their schedules"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # The controller API listens here in the declared Semaphore container. Fixed, as in
+    # publish-semaphore-templates.yml: the token this run reads goes nowhere else.
+    _semaphore_url: "http://127.0.0.1:3000"
+    _project_id: "{{ semaphore_project_id | default(1, true) }}"
+    _retired: "{{ (lookup('file', playbook_dir + '/../semaphore/retired-templates.yml') | from_yaml).retired_templates | default([], true) }}"
+    _retired_names: "{{ _retired | map(attribute='name') | list }}"
+    _declared_base: >-
+      {{ (lookup('file', playbook_dir + '/../semaphore/templates.yml') | from_yaml).templates
+         + (lookup('file', playbook_dir + '/../semaphore/templates-local.yml') | from_yaml).templates }}
+    _declared_names_json: >-
+      {% set names = [] %}
+      {% for template in _declared_base %}
+      {% set _ = names.append(template.name) %}
+      {% if template.dev_variant | default(false) | bool %}
+      {% set _ = names.append(template.name ~ ' (Dev)') %}
+      {% endif %}
+      {% endfor %}
+      {{ names | to_json }}
+    _declared_names: "{{ _declared_names_json | from_json }}"
+
+  tasks:
+    - name: "Require a nonempty declaration of exact, unique template names"
+      ansible.builtin.assert:
+        that:
+          - _retired | length > 0
+          - _retired | selectattr('name', 'defined') | selectattr('name', 'string') | map(attribute='name') | map('trim') | reject('equalto', '') | list | length == _retired | length
+          - _retired_names | unique | list | length == _retired | length
+        fail_msg: "platform/semaphore/retired-templates.yml must list at least one template, each with a nonempty exact name, and no name twice."
+
+    - name: "Refuse to retire a template that is still declared"
+      ansible.builtin.assert:
+        that: _still_declared | length == 0
+        fail_msg: >-
+          Still declared in templates.yml or templates-local.yml, so retiring it would delete a
+          template the declaration publishes: {{ _still_declared | join(', ') }}. Remove the
+          declaration first; it and its retired-templates.yml entry belong in the same change.
+      vars:
+        _still_declared: "{{ _retired_names | intersect(_declared_names) | sort }}"
+
+    - name: "Resolve approved Semaphore runtime access"
+      ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
+
+    - name: "Validate environment"
+      ansible.builtin.assert:
+        that:
+          - _semaphore_url | length > 0
+          - _token | length > 0
+        fail_msg: "Semaphore endpoint or resolved runtime token is missing; see platform/semaphore/README.md."
+
+    - name: "Get the live template catalog"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _templates_before
+      check_mode: false
+      changed_when: false
+
+    - name: "Get the live schedules"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _schedules_before
+      check_mode: false
+      changed_when: false
+
+    - name: "Refuse an ambiguous retirement (a retired name on more than one live template)"
+      ansible.builtin.assert:
+        that: _ambiguous_names | length == 0
+        fail_msg: >-
+          More than one live template carries: {{ _ambiguous_names | join(', ') }}. Resolve it in
+          Semaphore by hand; this playbook will not choose which one to delete.
+      vars:
+        # Counted with select/length, not list.count(): under Ansible templating count() returned 0
+        # for two equal names (observed on the fixture run, 2026-11-07).
+        _ambiguous_names_json: >-
+          {% set live = _templates_before.json | map(attribute='name') | list %}
+          {% set found = [] %}
+          {% for name in _retired_names %}
+          {% if (live | select('equalto', name) | list | length) > 1 %}
+          {% set _ = found.append(name) %}
+          {% endif %}
+          {% endfor %}
+          {{ found | to_json }}
+        _ambiguous_names: "{{ _ambiguous_names_json | from_json }}"
+
+    - name: "Plan the retirement from the live state"
+      ansible.builtin.set_fact:
+        _present_templates: "{{ _templates_before.json | selectattr('name', 'in', _retired_names) | list }}"
+        _absent_names: "{{ _retired_names | reject('in', _templates_before.json | map(attribute='name') | list) | list }}"
+
+    - name: "Plan the schedules bound to those templates"
+      ansible.builtin.set_fact:
+        _present_names: "{{ _present_templates | map(attribute='name') | list }}"
+        _present_template_ids: "{{ _present_templates | map(attribute='id') | list }}"
+        _retire_schedules: "{{ _schedules_before.json | selectattr('template_id', 'in', _present_templates | map(attribute='id') | list) | list }}"
+
+    - name: "Plan the schedule ids"
+      ansible.builtin.set_fact:
+        _retire_schedule_ids: "{{ _retire_schedules | map(attribute='id') | list }}"
+
+    - name: "Report the retirement plan (names and ids only)"
+      ansible.builtin.debug:
+        msg:
+          - >-
+            Templates to retire ({{ _present_templates | length }}):
+            {% for t in _present_templates %}{{ t.name }} (id {{ t.id }}); {% endfor %}
+          - >-
+            Schedules to delete ({{ _retire_schedules | length }}):
+            {% for s in _retire_schedules %}id {{ s.id }} on template {{ s.template_id }} ({{ s.cron_format }}, active {{ s.active }}); {% endfor %}
+          - "Already absent, no-op ({{ _absent_names | length }}): {{ _absent_names | join(', ') }}"
+
+    - name: "Delete each retired template's schedule"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules/{{ item }}"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [204]
+      loop: "{{ _retire_schedule_ids }}"
+      loop_control:
+        label: "schedule {{ item }}"
+      when: not ansible_check_mode
+
+    - name: "Delete each retired template"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ item }}"
+        method: DELETE
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+        status_code: [204]
+      loop: "{{ _present_template_ids }}"
+      loop_control:
+        label: "template {{ item }}"
+      when: not ansible_check_mode
+
+    - name: "Read the live template catalog back after the deletes"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _templates_after
+      check_mode: false
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: "Read the live schedules back after the deletes"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _schedules_after
+      check_mode: false
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: "Require the retired names and their schedules to be gone"
+      ansible.builtin.assert:
+        that:
+          - _templates_after.json | map(attribute='name') | select('in', _retired_names) | list | length == 0
+          - _schedules_after.json | selectattr('template_id', 'in', _present_template_ids) | list | length == 0
+        fail_msg: "A retired template, or a schedule bound to one, is still live after the deletes. Check the Semaphore catalog by hand."
+      when: not ansible_check_mode
+
+    - name: "Summarise the retirement"
+      ansible.builtin.debug:
+        msg:
+          - "Mode: {{ 'dry run (check mode), nothing deleted' if ansible_check_mode else 'live' }}"
+          - "Templates {{ 'that would be deleted' if ansible_check_mode else 'deleted' }} ({{ _present_names | length }}): {{ _present_names | join(', ') }}"
+          - "Schedules {{ 'that would be deleted' if ansible_check_mode else 'deleted' }}: {{ _retire_schedule_ids | length }}"
+          - "Already absent, no-op ({{ _absent_names | length }}): {{ _absent_names | join(', ') }}"
