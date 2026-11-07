@@ -1372,7 +1372,7 @@ def test_journal_component_vars_file_is_the_reviewed_allowlist():
     rows = yaml.safe_load(path.read_text())["o11y_journal_components"]
     assert [row["component"] for row in rows] == [
         "o11y_alloy", "o11y_prometheus", "o11y_loki", "o11y_tempo",
-        "o11y_pyroscope", "o11y_grafana", "o11y_node_exporter",
+        "o11y_pyroscope", "o11y_node_exporter",
     ]
     compose = (O11Y / "compose.yml").read_text()
     for row in rows:
@@ -7168,7 +7168,7 @@ def test_journal_template_renders_one_source_per_declared_component_in_declared_
     cohort = declared_cohort()
     rendered = render_journal(cohort)
     sources = re.findall(r'loki\.source\.journal "([^"]+)" \{\n(.*?)\n\}', rendered, re.S)
-    assert len(cohort) == 7
+    assert len(cohort) == 6
     assert [name for name, _ in sources] == [row["component"] for row in cohort]
     for (_name, body), row in zip(sources, cohort, strict=True):
         labels = (
@@ -7376,7 +7376,7 @@ def _content_gate_cases(monkeypatch):
 
     observed = _content_report(monkeypatch, everything, clean)
     return [
-        ("all seven clear", cohort, registered(observed), None),
+        ("all declared clear", cohort, registered(observed), None),
         (
             "loki without entries", cohort,
             registered(_content_report(monkeypatch, everything, {**clean, "o11y-loki": []})), None,
@@ -7387,15 +7387,23 @@ def _content_gate_cases(monkeypatch):
             "admitted",
         ),
         (
-            "grafana clear but capped", cohort,
+            "pyroscope clear but capped", cohort,
             registered(_content_report(
-                monkeypatch, everything, {**clean, "o11y-grafana": ["scrape completed"] * LOG_SURVEY.CONTENT_CAP},
+                monkeypatch, everything, {**clean, "o11y-pyroscope": ["scrape completed"] * LOG_SURVEY.CONTENT_CAP},
             )),
             "admitted",
         ),
         (
-            "grafana not running", cohort,
-            registered(_content_report(monkeypatch, [n for n in everything if n != "o11y-grafana"], clean)),
+            # Production task 13414: grafana capped, every declared container clear or empty.
+            "undeclared grafana capped", cohort,
+            registered(_content_report(
+                monkeypatch, everything, {**clean, "o11y-grafana": ["scrape completed"] * LOG_SURVEY.CONTENT_CAP},
+            )),
+            None,
+        ),
+        (
+            "pyroscope not running", cohort,
+            registered(_content_report(monkeypatch, [n for n in everything if n != "o11y-pyroscope"], clean)),
             "admitted",
         ),
         (
@@ -7444,7 +7452,10 @@ def test_content_gate_admits_only_declared_clear_or_empty_containers_on_an_obser
         assert outcomes[name]["refused_at"] == expected, name
     # The gate reads the declared containers only: an undeclared blocked receiver neither refuses nor is printed.
     assert outcomes["undeclared prometheus blocked"]["statuses"].keys() == {"alloy"}
-    assert set(outcomes["all seven clear"]["statuses"]) == set(LOG_SURVEY.CONTENT_CONTAINERS)
+    assert set(outcomes["all declared clear"]["statuses"]) == {
+        row["container"].removeprefix("o11y-") for row in declared_cohort()
+    }
+    assert "grafana" not in outcomes["undeclared grafana capped"]["statuses"]
     # The top-level aggregate is never the gate: both non-clear aggregates below are admitted.
     reports = {name: json.loads(survey["stdout"]) for name, _c, survey, _e in cases if survey["stdout"]}
     assert reports["loki without entries"]["content_survey_status"] == "incomplete"
@@ -7560,7 +7571,7 @@ def test_loki_observation_queries_each_source_by_its_own_service_label_over_the_
         input=json.dumps(job), text=True, capture_output=True, check=True, timeout=120,
     )
     urls = json.loads(result.stdout)
-    assert len(urls) == len(items) == 6
+    assert len(urls) == len(items) == len(declared_cohort()) - 1
     for row, url in zip(items, urls, strict=True):
         encoded = row["service"].replace("/", "%2F")
         assert url == (
