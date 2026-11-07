@@ -33,6 +33,16 @@
     that: (local_mode | default(false) | bool) or (o11y_production_static_probe | default(false) | bool)
     fail_msg: "The unreachable-endpoint drill needs local mode or the production static probe."
 
+# The uid is interpolated into a sh -c script inside the Grafana container, which holds the
+# admin password; only a plain identifier may reach it, whoever sets the input.
+- name: Require a plain alert rule uid
+  ansible.builtin.assert:
+    that:
+      - (_alert_probe_rule_uid | default('o11y_service_down')) | length > 0
+      - (_alert_probe_rule_uid | default('o11y_service_down')) is not search('[^A-Za-z0-9_-]')
+    fail_msg: "The alert probe's rule uid must be letters, digits, '_' or '-'."
+    quiet: true
+
 - name: Bind the expected scrape instances for this probe
   ansible.builtin.set_fact:
     _probe_expected_instances: "{{ o11y_probe_expected_instances | default([expected_instance]) }}"

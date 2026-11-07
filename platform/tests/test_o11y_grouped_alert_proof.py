@@ -335,6 +335,31 @@ def test_alert_probe_defaults_keep_the_scrape_drill_urls():
     assert "pilot" not in substituted
 
 
+@pytest.mark.parametrize(
+    ("uid", "admitted"),
+    [
+        (None, True),
+        ("o11y_endpoint_probe_failed", True),
+        ("o11y-service-down", True),
+        ("x; id", False),
+        ("x$(id)", False),
+        ("x`id`", False),
+        ("x/../y", False),
+        ("ok\nx", False),
+        ("ok\n", False),
+        ("", False),
+    ],
+)
+def test_alert_probe_admits_only_a_plain_rule_uid(uid, admitted):
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    names = [task.get("name") for task in probe]
+    guard = _task(probe, "Require a plain alert rule uid")
+    assert names.index("Require a plain alert rule uid") < names.index(
+        "Read the provisioned service-down rule before the alert drill")
+    context = {} if uid is None else {"_alert_probe_rule_uid": uid}
+    assert all(_expression(c, context) for c in guard["ansible.builtin.assert"]["that"]) is admitted
+
+
 def test_alert_probe_gates_default_to_the_scrape_drill():
     probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
     refusal = _task(probe, "Require the onboarding verifier to refuse the named endpoint")
