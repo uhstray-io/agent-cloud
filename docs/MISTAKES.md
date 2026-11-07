@@ -60,6 +60,7 @@ and why.
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) | Unverified claim | 5 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
+| 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1276,6 +1277,34 @@ from code behaviour to platform and tool behaviour.
 
 **Enforced by.** Convention. The DEVIATION RULE caught it again: a worker re-checked a fact from
 its brief and reported the contradiction. Related: 1.29, 2.31.
+
+### 1.31 Called five branches unmerged from their commits-ahead count; each had been squash-merged
+
+**Occurrences: 1** — 2026-11-07
+
+**What happened.** Asked to review every site-config branch and merge the clean ones, I classified
+each branch by `git rev-list --count origin/main..<branch>` and `git merge-tree`. Four branches
+showed commits ahead and conflicts, and one showed commits ahead whose keys were already on
+`main`. I told the operator the four "need rebasing by their owner" and the fifth was "already on
+`main` another way", and the operator asked me to rebase the four and open PRs. Replaying the
+first one hit conflicts against commits titled "Record DHCP refusal drill and single-router
+authority (#23)" on `main`. All five had been squash-merged (#23, #24, #18, #2, #43): each
+branch's diff from its merge base had the same `git patch-id --stable` as its squash commit on
+`main`. Nothing was rebased or pushed; the branches were deleted on request.
+
+**Root cause.** A squash merge writes a new commit, so the branch's own commits are never
+ancestors of `main` and every ancestry-based test (`rev-list`, `branch --merged`, merge-base)
+reports the branch as unmerged forever. The repository squash-merged before it switched to merge
+commits, so its oldest branches are exactly the ones this test gets wrong. I used an ancestry
+count as a content question and did not look for the PR.
+
+**The rule.** "Is this branch merged?" is answered by its pull request's state (`gh pr list
+--head <branch> --state all`), and, where there is no PR, by comparing the branch's diff from its
+merge base to `main`'s commits with `git patch-id --stable`. A commits-ahead count alone never
+supports "unmerged".
+
+**Enforced by.** Convention. Related: 1.19 (a negative claim from evidence that cannot establish
+it).
 
 ## 2. Tests that would have passed for the wrong reason
 
