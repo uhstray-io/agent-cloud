@@ -18,10 +18,18 @@ TOKEN = "synthetic-watcher-token-value"
 HOOK_SECRET = "synthetic-webhook-secret-value"
 
 
-def make_handler(grafana="up", datasource="ok", token=TOKEN):
+def make_handler(grafana="up", datasource="ok", token=TOKEN, blips=0):
+    """blips: how many first answers from each Grafana probe fail before it recovers."""
+
     class Handler(FakeBao):
         requests = []
         posts = []
+        failed = {}
+
+        def blip(self):
+            count = type(self).failed.get(self.path, 0)
+            type(self).failed[self.path] = count + 1
+            return count < blips
 
         def do_POST(self):
             self.record("POST")
@@ -45,14 +53,20 @@ def make_handler(grafana="up", datasource="ok", token=TOKEN):
                     data["watcher_token"] = token
                 return self.reply({"data": {"data": data}})
             if self.path == "/api/health":
+                if self.blip():
+                    return self.reply({"database": "failing"}, 503)
                 if grafana == "down":
                     return self.reply({"message": "bad gateway"}, 502)
                 return self.reply({"database": "ok"})
             if self.path == "/api/datasources/uid/prometheus/health":
                 if self.headers.get("Authorization") != f"Bearer {TOKEN}":
                     return self.reply({"message": "invalid API key"}, 401)
+                if self.blip():
+                    return self.reply({"message": "Unable to load datasource metadata"}, 500)
                 if datasource == "down":
                     return self.reply({"status": "ERROR", "message": "connection refused"}, 400)
+                if datasource == "db-error":
+                    return self.reply({"message": "Unable to load datasource metadata"}, 500)
                 return self.reply({"status": "OK"})
             return self.reply({}, 404)
 
@@ -62,7 +76,7 @@ def make_handler(grafana="up", datasource="ok", token=TOKEN):
 def run(tmp_path, handler, verbose=True):
     with serve(handler) as addr:
         handler.addr = addr
-        extra = {"o11y_watch_url": addr, "o11y_watch_webhook_hosts": ["127.0.0.1"]}
+        extra = {"o11y_watch_url": addr, "o11y_watch_webhook_hosts": ["127.0.0.1"], "o11y_watch_retry_delay": 0}
         rc, out = run_seed(tmp_path, PLAYBOOK, addr, extra=extra, verbose=verbose)
     for secret in (TOKEN, HOOK_SECRET):
         assert secret not in out
@@ -82,6 +96,7 @@ def test_healthy_receiver_posts_nothing(tmp_path):
     [
         ({"grafana": "down"}, "grafana /api/health failed (status 502)"),
         ({"datasource": "down"}, "prometheus datasource unhealthy (status 400)"),
+        ({"datasource": "db-error"}, "grafana could not load the prometheus datasource (status 500"),
         ({"token": "synthetic-stale-token"}, "watcher token rejected by Grafana (status 401)"),
         ({"token": ""}, "watcher_token is not in secret/services/o11y"),
     ],
@@ -97,6 +112,32 @@ def test_each_failure_posts_one_named_message(tmp_path, kwargs, named):
     assert named in out
 
 
+def test_persistent_failure_is_probed_three_times_before_posting(tmp_path):
+    handler = make_handler(grafana="down")
+    rc, _ = run(tmp_path, handler)
+    assert rc != 0
+    assert handler.requests.count(("GET", "/api/health")) == 3
+    assert len(handler.posts) == 1
+
+
+def test_one_transient_blip_on_each_probe_posts_nothing(tmp_path):
+    # Grafana's SQLite store answered a lone 503/500 while a write held the lock; one
+    # lost race must not page anyone.
+    handler = make_handler(blips=1)
+    rc, out = run(tmp_path, handler)
+    assert rc == 0, out
+    assert "o11y liveness OK" in out
+    assert handler.posts == []
+    assert handler.requests.count(("GET", "/api/health")) == 2
+    assert handler.requests.count(("GET", "/api/datasources/uid/prometheus/health")) == 2
+
+
+def test_rejected_token_is_not_retried(tmp_path):
+    handler = make_handler(token="synthetic-stale-token")
+    run(tmp_path, handler)
+    assert handler.requests.count(("GET", "/api/datasources/uid/prometheus/health")) == 1
+
+
 def test_check_mode_posts_nothing(tmp_path):
     handler = make_handler(grafana="down")
     with serve(handler) as addr:
@@ -105,7 +146,7 @@ def test_check_mode_posts_nothing(tmp_path):
         inventory.write_text(json.dumps({"all": {"vars": {"openbao_addr": addr}}}))
         env = {k: v for k, v in os.environ.items() if k not in ("OPENBAO_ADDR", "BAO_ROLE_ID", "BAO_SECRET_ID")}
         env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
-        extra = {**ROLE, "o11y_watch_url": addr, "o11y_watch_webhook_hosts": ["127.0.0.1"]}
+        extra = {**ROLE, "o11y_watch_url": addr, "o11y_watch_webhook_hosts": ["127.0.0.1"], "o11y_watch_retry_delay": 0}
         result = subprocess.run(
             ["ansible-playbook", "--check", "-i", str(inventory), "-c", "local", PLAYBOOK, "-e", json.dumps(extra)],
             cwd=ROOT, env=env, text=True, capture_output=True, timeout=120, stdin=subprocess.DEVNULL,

@@ -878,7 +878,21 @@ the `dev` to `main` promotion.
 
 A full Grafana or Prometheus outage is covered by the external liveness watcher
 (`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs
-from the Semaphore host and does not depend on Grafana's rule evaluation.
+from the Semaphore host and does not depend on Grafana's rule evaluation. Each probe is
+retried twice, `o11y_watch_retry_delay` seconds apart (default 10), before it counts, so a
+page means about 20 s of failure rather than one lost request. A datasource health 500 is
+reported as Grafana-side (`grafana could not load the prometheus datasource`): Grafana 11.4
+answers 400 when Prometheus itself is unhealthy and 500 only when it failed before
+contacting Prometheus.
+
+Grafana's store is SQLite. Its defaults (`wal=false`, `query_retries=0`) failed reads
+while a write held the lock: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
+`/api/health` 503 (database check) in 26 separate hours and datasource health 500 in at least 4, with
+zero Prometheus `checkHealth` errors; the watcher, then unretried, paged on any single 500. `compose.yml`
+sets `GF_DATABASE_WAL=true` and `GF_DATABASE_QUERY_RETRIES=5`. To judge the fix, compare
+`sum by (handler, status_code) (increase(grafana_http_request_duration_seconds_count{status_code=~"5.."}[7d]))`
+for a week after the deploy against that baseline. If the 503s persist, the next step is an
+external Postgres for Grafana.
 
 ## Production alert-delivery drill
 
