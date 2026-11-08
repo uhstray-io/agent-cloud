@@ -5,6 +5,8 @@
 mod access;
 mod access_api;
 mod api;
+mod cicd;
+mod cicd_api;
 mod compute;
 mod empty;
 mod gateway;
@@ -27,6 +29,8 @@ mod settings;
 mod settings_api;
 mod shell;
 mod status;
+mod telemetry;
+mod telemetry_api;
 mod topology;
 mod work;
 mod work_detail;
@@ -34,8 +38,9 @@ mod work_detail;
 use dioxus::prelude::*;
 
 use access::Access;
+use cicd::CiCd;
 use compute::Compute;
-use empty::{CiCd, Dashboard, NotFound, Telemetry};
+use empty::{Dashboard, NotFound};
 use gateway::{AiGateway, LlmAccess};
 use policy::Policy;
 use profile::Profile;
@@ -45,6 +50,7 @@ use secrets::Secrets;
 use services::{ServiceDetail, Services};
 use settings::{OrgSettings, TenantSettings};
 use shell::Shell;
+use telemetry::Telemetry;
 use topology::Topology;
 use work::Home;
 

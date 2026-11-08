@@ -74,8 +74,8 @@ pub const TELEMETRY: PageMeta = PageMeta {
     id: "telemetry",
     title: "Telemetry",
     icon: "activity",
-    purpose: "Rollups by tenant, org, site and cluster. Per-asset charts stay in Grafana.",
-    authority: "Prometheus, Loki, Grafana",
+    purpose: "Target health and Grafana alerts by environment, cluster and service. Per-asset charts stay in Grafana.",
+    authority: "Prometheus, Grafana",
 };
 
 pub const CICD: PageMeta = PageMeta {
@@ -114,16 +114,6 @@ pub fn EmptyPage(page: PageMeta) -> Element {
 #[component]
 pub fn Dashboard() -> Element {
     rsx! { EmptyPage { page: DASHBOARD } }
-}
-
-#[component]
-pub fn Telemetry() -> Element {
-    rsx! { EmptyPage { page: TELEMETRY } }
-}
-
-#[component]
-pub fn CiCd() -> Element {
-    rsx! { EmptyPage { page: CICD } }
 }
 
 /// Any path the router does not know. It renders outside the shell, so it

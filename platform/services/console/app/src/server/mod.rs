@@ -5,6 +5,7 @@ pub mod api;
 pub mod auth;
 pub mod catalog;
 pub mod config;
+pub mod delivery;
 pub mod gateway;
 pub mod github;
 pub mod grafana;
@@ -18,6 +19,7 @@ pub mod scope;
 pub mod secrets;
 pub mod semaphore;
 pub mod sessions;
+pub mod telemetry;
 pub mod work;
 
 use std::fs;
@@ -78,6 +80,12 @@ pub struct AppState {
     /// The OPA and OpenBao policy files for the Policy page (plan 17, 8.4, D36). The refresh task writes it;
     /// `/v1/policies` only reads it.
     pub policies: tokio::sync::RwLock<policies::PoliciesCache>,
+    /// Required checks, the promotion path and open pull requests for the CI/CD page (plan 17, 9.1, D42). The
+    /// refresh task writes it; `/v1/delivery` only reads it.
+    pub delivery: tokio::sync::RwLock<delivery::DeliveryCache>,
+    /// Target health and Grafana alerts by environment, cluster and service for the Telemetry page (plan 17, 9.2,
+    /// D43). The refresh task writes it; `/v1/telemetry/rollups` only reads it.
+    pub telemetry: tokio::sync::RwLock<telemetry::TelemetryCache>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -144,6 +152,10 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         None => access::RoleMap::empty(),
     };
     let policies_cache = policies::PoliciesCache::new(openbao.is_some() && config.github.is_some());
+    let delivery_cache = delivery::DeliveryCache::new(openbao.is_some() && config.github.is_some());
+    let telemetry_cache = telemetry::TelemetryCache::new(
+        config.grafana_token.is_some() && config.grafana_url.is_some(),
+    );
     let inventory_cache =
         inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
@@ -171,6 +183,8 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         access: tokio::sync::RwLock::new(access_cache),
         role_map,
         policies: tokio::sync::RwLock::new(policies_cache),
+        delivery: tokio::sync::RwLock::new(delivery_cache),
+        telemetry: tokio::sync::RwLock::new(telemetry_cache),
     }))
 }
 
@@ -285,6 +299,8 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/secrets", get(secrets::get_secrets))
         .route("/v1/access", get(access::get_access))
         .route("/v1/policies", get(policies::get_policies))
+        .route("/v1/delivery", get(delivery::get_delivery))
+        .route("/v1/telemetry/rollups", get(telemetry::get_telemetry))
         .route("/v1/{*rest}", any(api::v1_unmatched))
         .with_state(state)
 }
@@ -384,6 +400,8 @@ mod tests {
             access: tokio::sync::RwLock::new(access::AccessCache::new(false)),
             role_map: access::RoleMap::empty(),
             policies: tokio::sync::RwLock::new(policies::PoliciesCache::new(false)),
+            delivery: tokio::sync::RwLock::new(delivery::DeliveryCache::new(false)),
+            telemetry: tokio::sync::RwLock::new(telemetry::TelemetryCache::new(false)),
         })
     }
 
@@ -520,6 +538,8 @@ mod tests {
             "/v1/roles",
             "/v1/secrets",
             "/v1/policies",
+            "/v1/delivery",
+            "/v1/telemetry/rollups",
             "/v1/nope",
         ] {
             let reply = call(addr, "GET", path, None, "").await;
