@@ -2048,14 +2048,15 @@ empty secret lists.
 `loki.source.journal` components, and the positions helper's tests wrote only Alloy's one-cursor
 `positions.yml` shape (`_cursor_text`). Pinned Alloy v1.9.2 saves its whole positions map every sync
 period, so a source that has read no entry writes `positions: {}\n` (`positions.go` `save`,
-`write_positions_unix.go` yaml.v2 `Marshal`; bytes reproduced with `go run` on gopkg.in/yaml.v2).
+`write_positions_unix.go` yaml `Marshal`; Alloy builds against the `rfratto/go-yaml` fork of yaml.v2, and
+`go run` on that fork reproduces the bytes).
 The helper read that file as an invalid cursor. The first production apply (Semaphore task 13472)
 started the new collector healthy, then its live positions check refused on `cursor_validity`
 and the apply removed the collector, leaving the receiver with no journal collector until the
 fix. The dry run (13471) passed because check mode never starts the collector. Why the rule did
 not fire: the fixture was written against the shape the helper already parsed, and nobody asked
 what the pinned provider writes before its first read. The helper now accepts exactly those
-bytes for a newly declared non-alloy component (`o11y_alloy` stays strict), and the test fixture is
+bytes for any declared non-alloy component, as it already accepted an absent file (`o11y_alloy` stays strict), and the test fixture is
 the reproduced bytes, with both halves mutation-checked.
 
 ### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous

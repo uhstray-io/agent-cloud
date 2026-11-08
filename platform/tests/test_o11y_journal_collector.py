@@ -1177,8 +1177,8 @@ def _embedded_metadata(root, *args):
     return json.loads(result.stdout)
 
 
-# Exact bytes Alloy v1.9.2 writes for a journal source with no position yet (go run with
-# gopkg.in/yaml.v2: yaml.Marshal(File{Positions: map[Entry]string{}})).
+# Exact bytes Alloy v1.9.2 writes for a journal source with no position yet: yaml.Marshal of
+# File{Positions: map[Entry]string{}} with the rfratto/go-yaml fork of yaml.v2 Alloy builds against.
 _EMPTY_POSITIONS = "positions: {}\n"
 
 def _cursor_text(component, cursor="s=1a;i=2b;b=3c;m=4d;t=5e;x=6f"):
