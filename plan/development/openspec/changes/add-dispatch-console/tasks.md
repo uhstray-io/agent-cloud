@@ -128,7 +128,7 @@ Decision D28. These are platform-wide views, so they answer `platform-admins` on
 - [x] 8.5 Change controls are disabled, with the reason shown, until Phase 4. Validation gate: the canary test and computer-use tests pass.
   - Done 2026-11-07, signed in, after deploy 12424. Every change control on Policy, Organization settings, Tenant settings, Request a service, Access, Secrets and LLM access is a disabled button, and each names the reason in its tooltip: "… arrive with proposals (Phase 4)". The Settings pages also say so in the page text. No page has an enabled change control. AI Gateway, Services and the role pages have none.
   - The canary test `server::secrets::tests::the_canary_never_leaves_the_api` passed in CI on the last console change (#863 head, run 41961700631: 509 passed, 0 failed).
-  - Method: Orca's built-in browser, driven by its CLI, rather than the Brave session D30 names; see 6.6.
+  - Method: Orca's built-in browser, driven by its CLI, an accepted session under D30 as amended 2026-11-07.
 
 ## Phase 6 checklist: delivery and telemetry
 
