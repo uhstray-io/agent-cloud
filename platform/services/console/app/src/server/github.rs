@@ -25,7 +25,7 @@ use super::openbao::OpenbaoError;
 /// The GitHub REST origin. Production always passes this; tests pass a local origin.
 pub const GITHUB_API: &str = "https://api.github.com";
 /// The web origin the file links point at.
-const GITHUB_WEB: &str = "https://github.com";
+pub(crate) const GITHUB_WEB: &str = "https://github.com";
 
 const OPA_DIR: &str = "platform/services/opa/deployment/policies/";
 const OPENBAO_DIR: &str = "platform/services/openbao/deployment/config/policies/";
@@ -258,7 +258,7 @@ struct Entry {
 
 /// The URL of `api` followed by `segments`. Each segment is percent-encoded by the URL crate. A `.`,
 /// a `..` or an empty segment is refused before a URL exists, so no path can leave its endpoint.
-fn endpoint(api: &str, segments: &[&str]) -> Result<Url, FetchError> {
+pub(crate) fn endpoint(api: &str, segments: &[&str]) -> Result<Url, FetchError> {
     if segments
         .iter()
         .any(|segment| segment.is_empty() || *segment == "." || *segment == "..")
@@ -274,7 +274,7 @@ fn endpoint(api: &str, segments: &[&str]) -> Result<Url, FetchError> {
 }
 
 /// The HTML page of one file on the configured ref, `https://github.com/{repo}/blob/{ref}/{path}`.
-fn html_url(source: &GithubConfig, path: &str) -> Result<String, FetchError> {
+pub(crate) fn html_url(source: &GithubConfig, path: &str) -> Result<String, FetchError> {
     let (owner, name) = source.repo.split_once('/').ok_or(FetchError::Decode)?;
     let mut segments = vec![owner, name, "blob"];
     segments.extend(source.git_ref.split('/'));
@@ -283,15 +283,26 @@ fn html_url(source: &GithubConfig, path: &str) -> Result<String, FetchError> {
 }
 
 /// Requests one read may send. Every request, including a failed one, is counted before it is sent.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     http: &'a reqwest::Client,
     token: &'a Secret,
     left: usize,
 }
 
+impl<'a> Reader<'a> {
+    /// A reader that may send `left` requests. The read that owns it counts every request against that bound.
+    pub(crate) fn new(http: &'a reqwest::Client, token: &'a Secret, left: usize) -> Self {
+        Reader { http, token, left }
+    }
+}
+
 impl Reader<'_> {
     /// One GET with the token, the API version and the given `Accept`. A non-2xx answer is an error.
-    async fn send(&mut self, url: Url, accept: &str) -> Result<reqwest::Response, FetchError> {
+    pub(crate) async fn send(
+        &mut self,
+        url: Url,
+        accept: &str,
+    ) -> Result<reqwest::Response, FetchError> {
         self.left = self.left.checked_sub(1).ok_or(FetchError::Bound)?;
         let response = self
             .http
@@ -310,7 +321,7 @@ impl Reader<'_> {
         Ok(response)
     }
 
-    async fn json<T: DeserializeOwned>(&mut self, url: Url) -> Result<T, FetchError> {
+    pub(crate) async fn json<T: DeserializeOwned>(&mut self, url: Url) -> Result<T, FetchError> {
         let bytes = self
             .send(url, JSON_ACCEPT)
             .await?
@@ -320,7 +331,7 @@ impl Reader<'_> {
         serde_json::from_slice(&bytes).map_err(|_| FetchError::Decode)
     }
 
-    async fn raw(&mut self, url: Url) -> Result<String, FetchError> {
+    pub(crate) async fn raw(&mut self, url: Url) -> Result<String, FetchError> {
         let bytes = self
             .send(url, RAW_ACCEPT)
             .await?
