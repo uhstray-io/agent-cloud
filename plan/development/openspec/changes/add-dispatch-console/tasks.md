@@ -114,10 +114,21 @@ Decision D28. These are platform-wide views, so they answer `platform-admins` on
 - [x] 8.2 The Access page: Authentik users and groups through a view-only token declared by blueprint, and the role map.
   - Token (#839): role `console-directory-reader` (view_user, view_group), account `svc-console-directory`. Deploy Authentik (Dev) task 12019 proved it live: users and groups 200, group create 403.
   - Page (#845 server, #840 UI): read over the LAN (site-config #145 declares the console as an allowed source on the Authentik host); deploy 12036; signed in, the page lists Authentik people, service accounts and groups, and the role map pinned to `plan/architecture/04-credentials-access.md`.
-- [ ] 8.3 The AI Gateway and LLM access pages: `agw_clients` rendered at deploy into `config/gateway.json`, and usage through Grafana (D26). Role pages list only that role's work.
+- [x] 8.3 The AI Gateway and LLM access pages: `agw_clients` rendered at deploy into `config/gateway.json`, and usage through Grafana (D26). Role pages list only that role's work.
   - 8.3a done 2026-11-04: `config/gateway.json` (#838) and both pages (#837), deploy 12024; signed in, LLM access lists the gateway's clients with tier, hourly budget and allowed models, and AI Gateway lists the models with the clients allowed on each. Open: usage through Grafana (D26) and the role pages.
-- [ ] 8.4 The Policy page lists the policy files through the GitHub API (D36). Organization settings reads business-domain tags as NetBox tags, and Tenant settings shows the tenant's structure (D37). Request a service shows the catalog derived from the deploy templates (D38).
-- [ ] 8.5 Change controls are disabled, with the reason shown, until Phase 4. Validation gate: the canary test and computer-use tests pass.
+  - 8.3b done 2026-11-07, signed in through Authentik in Orca's built-in browser after the Phase 5 redeploy 12424 (usage and role pages #860).
+    - LLM access shows each client's last-hour usage, read through Grafana's Prometheus proxy (`server/grafana.rs:10-13`). The figures match the same query run against production Prometheus: `o11y-probe` about 220 to 240 tokens, `opencode` 0, and no series for the clients shown `—`.
+    - All five role pages list their steps and gateway client. Each shows no active work, because every production job on the board belongs to the `operator` role. The filter itself is proven by `ui::roles::tests::a_role_page_lists_only_its_own_board_strips`, which passed in CI on the last console change (#863 head, run 41961700631).
+- [x] 8.4 The Policy page lists the policy files through the GitHub API (D36). Organization settings reads business-domain tags as NetBox tags, and Tenant settings shows the tenant's structure (D37). Request a service shows the catalog derived from the deploy templates (D38).
+  - Done 2026-11-07, signed in, after deploy 12424 (#859, #861, #863):
+    - Policy lists the OPA and OpenBao policy files as they are on dev, read from GitHub, each with its last commit.
+    - Organization settings lists the organization's sites and their NetBox mapping, and the five business-domain tags from NetBox (Ensure NetBox Business Domains (Dev), task 12362).
+    - Tenant settings shows the tenant and its one organization, with three sites of which one is mapped to NetBox.
+    - Request a service lists the services from the deploy templates, marking the ones running here.
+- [x] 8.5 Change controls are disabled, with the reason shown, until Phase 4. Validation gate: the canary test and computer-use tests pass.
+  - Done 2026-11-07, signed in, after deploy 12424. Every change control on Policy, Organization settings, Tenant settings, Request a service, Access, Secrets and LLM access is a disabled button, and each names the reason in its tooltip: "… arrive with proposals (Phase 4)". The Settings pages also say so in the page text. No page has an enabled change control. AI Gateway, Services and the role pages have none.
+  - The canary test `server::secrets::tests::the_canary_never_leaves_the_api` passed in CI on the last console change (#863 head, run 41961700631: 509 passed, 0 failed).
+  - Method: Orca's built-in browser, driven by its CLI, rather than the Brave session D30 names; see 6.6.
 
 ## Phase 6 checklist: delivery and telemetry
 
