@@ -456,6 +456,59 @@ pub async fn refresh(app: &AppState) {
 
 #[cfg(test)]
 mod tests {
+
+    /// The Telemetry page parses exactly what this route serves, including a failed alerts read, so a renamed key or
+    /// state word on either side fails here rather than reading as a default.
+    #[test]
+    fn the_telemetry_page_reads_every_field_the_route_serves() {
+        use crate::ui::telemetry_api as page;
+        let counts = Counts {
+            targets_up: 1,
+            targets_total: 2,
+            firing: 3,
+            pending: 4,
+        };
+        let mut cache = TelemetryCache::new(true);
+        cache.record_ok(
+            vec![Environment {
+                name: "prod".into(),
+                counts,
+                clusters: vec![Cluster {
+                    name: "agent-cloud-prod".into(),
+                    counts,
+                    services: vec![Service {
+                        name: "o11y/grafana".into(),
+                        counts,
+                        grafana_url: Some("https://grafana.test/d/service-overview".into()),
+                    }],
+                }],
+            }],
+            Some("Grafana answered HTTP 403".into()),
+            "2026-11-08T00:00:00Z".into(),
+        );
+        let wire = serde_json::to_string(&cache.body()).expect("serialize");
+        let read: page::TelemetryBody =
+            serde_json::from_str(&wire).expect("the page parses the route");
+        assert_eq!(read.state, page::TelemetryState::Ok);
+        assert_eq!(read.alerts.state, page::AlertsState::Error);
+        assert!(read.alerts.error.is_some());
+        let env = &read.environments[0];
+        assert_eq!(env.name, "prod");
+        let service = &env.clusters[0].services[0];
+        assert_eq!(service.name, "o11y/grafana");
+        assert_eq!(
+            (
+                service.counts.targets_up,
+                service.counts.targets_total,
+                service.counts.firing,
+                service.counts.pending
+            ),
+            (1, 2, 3, 4)
+        );
+        assert!(service.grafana_url.is_some());
+        assert_eq!(read.refreshed_at.as_deref(), Some("2026-11-08T00:00:00Z"));
+    }
+
     use super::*;
     use std::sync::{Arc, Mutex};
 

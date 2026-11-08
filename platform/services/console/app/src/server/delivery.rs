@@ -28,9 +28,9 @@ use super::{AppState, SharedState};
 pub const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
 /// GitHub requests one refresh may send. The ruleset, the comparison and the two pull lists come first (four),
 /// then two per pull request (its check runs and its reviews). With `PULLS_PER_LIST` in each list the most is
-/// 4 + 2 * 60 = 124, so the bound stops a refresh with more than 38 open pull requests across both lists, and that
-/// read fails and keeps the last good one.
-pub const MAX_REQUESTS: usize = 80;
+/// 4 + 2 * 60 = 124, so the bound equals that most and a full refresh always completes; it is a backstop that a
+/// test lowers to prove it holds.
+pub const MAX_REQUESTS: usize = 124;
 /// Open pull requests asked for per list (into the ref, and into `main`).
 const PULLS_PER_LIST: &str = "30";
 /// The branch a promotion ends at.
@@ -633,6 +633,88 @@ fn is_promotion(head_ref: &str, head_repo: Option<&str>, repo: &str, git_ref: &s
 
 #[cfg(test)]
 mod tests {
+
+    /// The CI/CD page parses exactly what this route serves: every field reaches the page's own type with its
+    /// value, so a renamed key or state word on either side fails here rather than reading as a default.
+    #[test]
+    fn the_cicd_page_reads_every_field_the_route_serves() {
+        use crate::ui::cicd_api as page;
+        let pull = Pull {
+            number: 7,
+            title: "Promote".into(),
+            author: "someone".into(),
+            base: "main".into(),
+            head: "dev".into(),
+            draft: true,
+            url: "https://github.com/o/r/pull/7".into(),
+            updated_at: "2026-11-08T00:00:00Z".into(),
+            review: "changes_requested",
+            checks: Counts {
+                passed: 1,
+                failed: 2,
+                pending: 3,
+                skipped: 4,
+            },
+            required: vec![RequiredState {
+                name: "Unit Tests".into(),
+                state: "missing",
+            }],
+        };
+        let mut cache = DeliveryCache::new(true);
+        cache.record_ok(
+            &GithubConfig {
+                repo: "o/r".into(),
+                git_ref: "dev".into(),
+            },
+            Delivery {
+                required: vec!["Unit Tests".into()],
+                ruleset_url: "https://github.com/o/r/blob/dev/x.json".into(),
+                promotion: Promotion {
+                    base: "main",
+                    head: "dev".into(),
+                    ahead_by: 5,
+                    behind_by: 1,
+                    compare_url: "https://github.com/o/r/compare/main...dev".into(),
+                    pull: Some(pull.clone()),
+                },
+                pulls: vec![pull],
+            },
+            "2026-11-08T00:00:00Z".into(),
+        );
+        let wire = serde_json::to_string(&cache.body()).expect("serialize");
+        let read: page::DeliveryBody =
+            serde_json::from_str(&wire).expect("the page parses the route");
+        assert_eq!(read.state, page::DeliveryState::Ok);
+        assert_eq!(read.repo.as_deref(), Some("o/r"));
+        assert_eq!(read.git_ref.as_deref(), Some("dev"));
+        assert_eq!(read.required_checks, vec!["Unit Tests".to_string()]);
+        assert!(read.ruleset_url.is_some());
+        let promotion = read.promotion.expect("promotion");
+        assert_eq!(
+            (
+                promotion.base.as_str(),
+                promotion.ahead_by,
+                promotion.behind_by
+            ),
+            ("main", 5, 1)
+        );
+        let shown = promotion.pull.expect("promotion pull");
+        assert_eq!(shown.review, page::ReviewState::ChangesRequested);
+        assert!(shown.draft);
+        assert_eq!(
+            (
+                shown.checks.passed,
+                shown.checks.failed,
+                shown.checks.pending,
+                shown.checks.skipped
+            ),
+            (1, 2, 3, 4)
+        );
+        assert_eq!(shown.required[0].state, page::RequiredState::Missing);
+        assert_eq!(read.pulls.len(), 1);
+        assert_eq!(read.refreshed_at.as_deref(), Some("2026-11-08T00:00:00Z"));
+    }
+
     use super::*;
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicUsize, Ordering};
