@@ -126,7 +126,8 @@ pub struct Config {
     /// Grafana origin for deep links, no trailing slash. `None` leaves every link null.
     pub grafana_url: Option<String>,
     /// Grafana API token for the gateway usage read (D39, a Viewer service account's). Present only with
-    /// `grafana_url` (see `from_lookup`). Read only by the refresh task in `grafana.rs`. `None` leaves usage unconfigured.
+    /// `grafana_url` (see `from_lookup`). Read only by the refresh tasks in `grafana.rs` and `telemetry.rs`. `None` leaves usage and
+    /// telemetry unconfigured.
     pub grafana_token: Option<Secret>,
     /// Authentik directory for the Access page. `None` leaves `/v1/access` answering `unconfigured`.
     pub authentik: Option<AuthentikConfig>,

@@ -442,6 +442,10 @@ mod tests {
             access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
             role_map: crate::server::access::RoleMap::empty(),
             policies: tokio::sync::RwLock::new(PoliciesCache::new(configured)),
+            delivery: tokio::sync::RwLock::new(crate::server::delivery::DeliveryCache::new(false)),
+            telemetry: tokio::sync::RwLock::new(crate::server::telemetry::TelemetryCache::new(
+                false,
+            )),
         })
     }
 

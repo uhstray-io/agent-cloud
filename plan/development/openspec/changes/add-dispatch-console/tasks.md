@@ -134,9 +134,15 @@ Decision D28. These are platform-wide views, so they answer `platform-admins` on
 
 Decision D26. Admin-only (D25).
 
-- [ ] 9.1 The CI/CD page: reviews, required checks and the promotion path. The required-check names come from `.github/rulesets/protect-main.json` through the GitHub API (D27 token).
-- [ ] 9.2 The Telemetry page: rollups through the Grafana data-source proxy, with Grafana deep links. No per-asset chart.
-- [ ] 9.3 Validation gate: the check names match the ruleset (test), and computer-use tests pass.
+- [ ] 9.1 The CI/CD page (D42): `GET /v1/delivery` and the page.
+  - Server: required-check names from `.github/rulesets/protect-main.json` through the GitHub API (D34 token), the promotion path (`compare/main...<ref>` and the open ref → `main` pull request), and open pull requests into the ref and into `main` with check runs and review state. Refreshed every 15 minutes into a cache, as the Policy page.
+  - UI: required checks, the promotion path, and the pull-request table, each with a GitHub link. Re-run disabled with its Phase 4 reason.
+- [ ] 9.2 The Telemetry page (D43): `GET /v1/telemetry/rollups` and the page.
+  - Server: `up` through the Grafana Prometheus proxy and Grafana alert instances, grouped by environment, cluster and service. Refreshed every 5 minutes into a cache.
+  - UI: the rollup tree with targets up of total and firing and pending alerts, and a `service-overview` Grafana link per service. No chart.
+- [ ] 9.3 Validation gate:
+  - A unit test parses the committed `protect-main.json` and gets exactly its required-check names.
+  - Deploy console (Dev) in production, then computer-use tests of both pages signed in.
 
 ## Phase 7 checklist: harden and promote
 
