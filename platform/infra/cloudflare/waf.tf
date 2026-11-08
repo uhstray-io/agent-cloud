@@ -206,9 +206,13 @@ resource "cloudflare_ruleset" "custom_firewall" {
     # (the MCP SDK in Claude Code and pi tries `/.well-known/oauth-authorization-server/http` and two
     # openid-configuration forms, never the root document); the server serves it only at the root,
     # so the lookup misses and the SDK falls back to `/authorize`, `/token` and `/register` at the
-    # root (PR 866 review). So the skip covers both MCP endpoints, `/token` and `/register`, and the
-    # two `.well-known/oauth-*` families by prefix, so a path-inserted lookup gets the origin's own
-    # answer instead of a challenge page. `/authorize` runs in the user's browser, which passes a
+    # root (PR 866 review). Claude Code 2.1.319 resolves them relative to the issuer instead: its
+    # sign-in POSTed to `/http/register` and was challenged (Joseph, 2026-11-07, "Dynamic Client
+    # Registration rejected (HTTP 403)"), and the origin serves registration at both `/register` and
+    # `/http/register` (201 from each, probed on the VM). So the skip covers both MCP endpoints,
+    # `/token` and `/register` at the root and under `/http`, and the `.well-known` documents at the
+    # root and under `/http` by prefix, so a path-inserted lookup gets the origin's own answer instead
+    # of a challenge page. `/authorize` runs in the user's browser, which passes a
     # challenge, and stays challenged with every other path. Authentication stays at the origin: both MCP
     # endpoints refuse an anonymous call (401, the deploy's verify probe), `/token` needs a client
     # and a code, and Plane OAuth runs through Authentik.
@@ -217,7 +221,7 @@ resource "cloudflare_ruleset" "custom_firewall" {
       action      = "skip"
       enabled     = true
       description = "Plane MCP + its OAuth machine endpoints - bypass challenge for non-browser clients"
-      expression  = "(http.host eq \"plane-mcp.uhstray.io\" and (http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\"} or starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\") or starts_with(http.request.uri.path, \"/.well-known/oauth-authorization-server\")))"
+      expression  = "(http.host eq \"plane-mcp.uhstray.io\" and (http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\" \"/http/token\" \"/http/register\"} or starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\") or starts_with(http.request.uri.path, \"/.well-known/oauth-authorization-server\") or starts_with(http.request.uri.path, \"/http/.well-known/\")))"
       action_parameters = {
         phases   = ["http_request_sbfm"]
         products = ["bic", "securityLevel"]
