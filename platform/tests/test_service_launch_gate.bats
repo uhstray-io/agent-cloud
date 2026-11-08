@@ -73,11 +73,16 @@ setup() {
   assert_grep -qxF '      - label=disable' "$DEPLOY_DIR/compose.local.yml"
 }
 
-@test "launch-gate: the local overlay joins local-dev with a memory cap and does not republish the ports" {
+@test "launch-gate: the local overlay joins local-dev with a memory cap, a local uid and the TLS-name alias, and does not republish the ports" {
   assert_grep -qxF '    mem_limit: 128m' "$DEPLOY_DIR/compose.local.yml"
-  assert_grep -qxF '      - local-dev' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '    user: "1001:0"' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '      local-dev:' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '        aliases:' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '          - ${LAUNCH_GATE_TLS_NAME:?set by the deploy}' "$DEPLOY_DIR/compose.local.yml"
   assert_grep -qF 'external: true' "$DEPLOY_DIR/compose.local.yml"
   refute_grep -qE '^[[:space:]]+ports:' "$DEPLOY_DIR/compose.local.yml"
+  # The alias is a local-dev fact only: the base file names none, and production never loads the overlay.
+  refute_grep -qE 'aliases|LAUNCH_GATE_TLS_NAME' "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.prod.yml"
 }
 
 @test "launch-gate: the rendered env, config and certificates are gitignored" {
@@ -120,6 +125,7 @@ setup() {
   assert_grep -qxF 'LAUNCH_GATE_IMAGE={{ _launch_gate_image }}' "$f"
   assert_grep -qxF 'LAUNCH_GATE_BIND={{ _launch_gate_bind }}' "$f"
   assert_grep -qxF 'LAUNCH_GATE_PORT={{ _launch_gate_port }}' "$f"
+  assert_grep -qxF 'LAUNCH_GATE_TLS_NAME={{ _launch_gate_tls_name }}' "$f"
   assert_grep -qxF 'LAUNCH_GATE_SEMAPHORE_TOKEN={{ secrets.semaphore_api_token }}' "$f"
 }
 
@@ -140,4 +146,9 @@ setup() {
   [ -L "$DEPLOY_DIR/AGENTS.md" ]
   [ "$(readlink "$DEPLOY_DIR/AGENTS.md")" = "CLAUDE.md" ]
   [ -f "$DEPLOY_DIR/CLAUDE.md" ]
+}
+
+@test "launch-gate: an init process runs as PID 1, so a stop delivers SIGTERM instead of waiting out the timeout" {
+  # Python as PID 1 ignores SIGTERM; the first local deploy's stop ended in SIGKILL (exit 137) after 10 s.
+  assert_grep -qxF '    init: true' "$DEPLOY_DIR/compose.yml"
 }

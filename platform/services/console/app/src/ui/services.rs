@@ -2,8 +2,9 @@
 //! detail page for one service.
 //!
 //! The rows are the tenant's VMs that carry workflow fields. The RAG is the
-//! server's. The domain tiles count the rows by NetBox tag, which the inventory
-//! answer carries as the tag name; nothing is computed from console-local data.
+//! server's. The domain tiles come from the inventory answer: the domains NetBox
+//! holds, each counted by the domain slugs the service rows carry. The browser
+//! matches nothing by name.
 
 use dioxus::prelude::*;
 
@@ -13,7 +14,7 @@ use super::inventory::{
     count_text, mb_text, meta_of, poll_admin, services_in_scope, view, Admin, ScopedServices,
     Snapshot, View, ViewNotice, SEP,
 };
-use super::inventory_api::{self, ServiceBody, ServiceRow};
+use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
 use super::shell::Ctx;
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, Freshness, Notice, Rag, RagBadge, StepList,
@@ -21,48 +22,25 @@ use super::status::{
 };
 use super::Route;
 
-/// The five business domains an organization's services are tagged with in NetBox.
-pub const DOMAIN_TAGS: [&str; 5] = [
-    "Products",
-    "Professional Services",
-    "Automation",
-    "Administration",
-    "IT",
-];
-
-/// A tag in slug form: lower case, runs of whitespace as one hyphen. NetBox
-/// slugs and tag names compare equal under this form.
-pub fn slug(text: &str) -> String {
-    text.split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-/// True when a NetBox tag names this domain, matched case-insensitively by name or slug.
-pub fn tag_matches(tag: &str, domain: &str) -> bool {
-    slug(tag) == slug(domain)
-}
-
-/// Services per domain, in `DOMAIN_TAGS` order, and the count of services with no
-/// domain tag at all. A service with two domain tags counts in both.
-pub fn domain_counts(rows: &[ServiceRow]) -> (Vec<(&'static str, usize)>, usize) {
-    let counts = DOMAIN_TAGS
+/// Services per declared domain, in the answer's order, and the count of services that carry no
+/// declared domain. A service with two domains counts in both. Matched by slug.
+pub fn domain_counts(rows: &[ServiceRow], domains: &[Domain]) -> (Vec<(Domain, usize)>, usize) {
+    let counts = domains
         .iter()
         .map(|domain| {
             let n = rows
                 .iter()
-                .filter(|row| row.tags.iter().any(|tag| tag_matches(tag, domain)))
+                .filter(|row| row.domains.contains(&domain.slug))
                 .count();
-            (*domain, n)
+            (domain.clone(), n)
         })
         .collect();
     let untagged = rows
         .iter()
         .filter(|row| {
-            !row.tags
+            !row.domains
                 .iter()
-                .any(|tag| DOMAIN_TAGS.iter().any(|domain| tag_matches(tag, domain)))
+                .any(|slug| domains.iter().any(|domain| &domain.slug == slug))
         })
         .count();
     (counts, untagged)
@@ -151,19 +129,33 @@ fn ServicesContent(snap: Snapshot) -> Element {
             if let Some(message) = unconfigured {
                 Notice { message }
             }
-            ServicesPanel { rows, recorded: body.services.len() }
+            ServicesPanel {
+                rows,
+                recorded: body.services.len(),
+                domains: snap.inventory.as_ref().map(|inv| inv.domains.clone()),
+                domains_error: meta_of(&snap).and_then(inventory_api::domains_error),
+            }
         },
     }
 }
 
 /// The domain tiles, the filters and the table. The filters are held here, so
-/// they survive a poll that replaces the rows.
+/// they survive a poll that replaces the rows. `domains` is `None` when the
+/// inventory answer has not loaded, so the tiles say so rather than read zero.
 #[component]
-fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize) -> Element {
+fn ServicesPanel(
+    rows: Vec<ServiceRow>,
+    recorded: usize,
+    domains: Option<Vec<Domain>>,
+    /// The admin's reason for a failed tag read, or `None`. Members never have one.
+    domains_error: Option<String>,
+) -> Element {
     let filter = use_signal(ServiceFilter::default);
     let mut filter_w = filter;
     let current = filter.read().clone();
-    let (counts, untagged) = domain_counts(&rows);
+    let loaded = domains.is_some();
+    let declared = domains.unwrap_or_default();
+    let (counts, untagged) = domain_counts(&rows, &declared);
     let shown = filter_services(&rows, &current);
     let rag_value = current.rag.map_or("", Rag::wire).to_string();
     let none_match = shown.is_empty() && !rows.is_empty();
@@ -175,19 +167,26 @@ fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize) -> Element {
                 span { class: "faint", "{total}" }
             }
             div { class: "card-b stack",
-                div { class: "tiles",
-                    for (domain, n) in counts.iter() {
-                        div { class: "tile", key: "{domain}",
-                            b { "{n}" }
-                            small { "{domain}" }
+                if let Some(reason) = domains_error {
+                    Notice { message: reason }
+                }
+                if loaded {
+                    div { class: "tiles",
+                        for (domain, n) in counts.iter() {
+                            DomainTile { key: "{domain.slug}", domain: domain.clone(), count: *n }
+                        }
+                        div { class: "tile",
+                            b { "{untagged}" }
+                            small { "No domain" }
                         }
                     }
-                    div { class: "tile",
-                        b { "{untagged}" }
-                        small { "Untagged" }
+                    if let Some(line) = inventory_api::no_domains_line(&declared) {
+                        p { class: "hint", "{line}" }
                     }
+                    p { class: "hint", "A service with two domains counts in both." }
+                } else {
+                    Notice { message: "The business domains could not be loaded, so the domain counts are not shown.".to_string() }
                 }
-                p { class: "hint", "A service with two domain tags counts in both." }
             }
         }
         div { class: "filters", role: "search", aria_label: "Filter services",
@@ -251,6 +250,35 @@ fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize) -> Element {
                 p { class: "empty", "No service is recorded for this tenant." }
             } else if rows.is_empty() {
                 p { class: "empty", "No service in this scope." }
+            }
+        }
+    }
+}
+
+/// A domain's colour swatch, drawn only when NetBox gave a valid colour. Shared with the
+/// settings pages, so a domain looks the same wherever it is listed.
+#[component]
+pub fn DomainSwatch(domain: Domain) -> Element {
+    let swatch = domain.css_color();
+    rsx! {
+        if let Some(color) = swatch {
+            span {
+                style: "display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: {color};",
+                aria_hidden: "true",
+            }
+        }
+    }
+}
+
+/// One domain tile: the count, and the name with its colour swatch.
+#[component]
+fn DomainTile(domain: Domain, count: usize) -> Element {
+    rsx! {
+        div { class: "tile",
+            b { "{count}" }
+            small {
+                DomainSwatch { domain: domain.clone() }
+                "{domain.name}"
             }
         }
     }
@@ -443,50 +471,61 @@ fn ServiceCard(body: ServiceBody, reason: String) -> Element {
 mod tests {
     use super::*;
 
-    fn row(name: &str, rag: &str, tags: &[&str], failed: &[&str]) -> ServiceRow {
+    /// A service row carrying the given domain slugs.
+    fn row(name: &str, rag: &str, domains: &[&str], failed: &[&str]) -> ServiceRow {
         ServiceRow {
             name: name.into(),
             site: "dc1".into(),
             cluster: "pve-prod".into(),
             rag: rag.into(),
-            tags: tags.iter().map(|t| t.to_string()).collect(),
+            domains: domains.iter().map(|d| d.to_string()).collect(),
             failed_steps: failed.iter().map(|s| s.to_string()).collect(),
             ..ServiceRow::default()
         }
     }
 
-    #[test]
-    fn a_tag_matches_its_domain_by_name_or_slug_in_any_case() {
-        assert!(tag_matches("Products", "Products"));
-        assert!(tag_matches("products", "Products"));
-        assert!(tag_matches(
-            "professional-services",
-            "Professional Services"
-        ));
-        assert!(tag_matches(
-            "Professional Services",
-            "Professional Services"
-        ));
-        assert!(tag_matches("it", "IT"));
-        assert!(!tag_matches("Product", "Products"), "no prefix matches");
-        assert!(!tag_matches("tududi-sync", "Automation"));
+    fn domain(slug: &str, name: &str) -> Domain {
+        Domain {
+            name: name.into(),
+            slug: slug.into(),
+            color: "2196f3".into(),
+        }
     }
 
     #[test]
-    fn domain_tiles_count_each_service_once_per_domain_and_the_rest_as_untagged() {
-        let rows = vec![
-            row("a", "green", &["Products"], &[]),
-            row("b", "red", &["Products", "IT"], &[]),
-            row("c", "amber", &["tududi-sync"], &[]),
-            row("d", "grey", &[], &[]),
+    fn domain_tiles_count_each_service_once_per_domain_and_the_rest_as_no_domain() {
+        let declared = vec![
+            domain("domain-it", "IT"),
+            domain("domain-products", "Products"),
+            domain("domain-automation", "Automation"),
         ];
-        let (counts, untagged) = domain_counts(&rows);
-        assert_eq!(counts.len(), 5);
-        let get = |name: &str| counts.iter().find(|(d, _)| *d == name).unwrap().1;
-        assert_eq!(get("Products"), 2);
-        assert_eq!(get("IT"), 1);
-        assert_eq!(get("Automation"), 0);
-        assert_eq!(untagged, 2, "c and d have no domain tag");
+        let rows = vec![
+            row("a", "green", &["domain-products"], &[]),
+            row("b", "red", &["domain-products", "domain-it"], &[]),
+            row("c", "amber", &[], &[]),
+            row("d", "grey", &["domain-ghost"], &[]),
+        ];
+        let (counts, untagged) = domain_counts(&rows, &declared);
+        assert_eq!(counts.len(), 3, "one tile per declared domain");
+        let get = |slug: &str| counts.iter().find(|(d, _)| d.slug == slug).unwrap().1;
+        assert_eq!(get("domain-products"), 2);
+        assert_eq!(get("domain-it"), 1);
+        assert_eq!(get("domain-automation"), 0);
+        assert_eq!(
+            untagged, 2,
+            "c has no domain and d's domain is not declared"
+        );
+    }
+
+    #[test]
+    fn with_no_declared_domains_every_service_is_no_domain_and_there_are_no_tiles() {
+        let rows = vec![
+            row("a", "green", &["domain-it"], &[]),
+            row("b", "grey", &[], &[]),
+        ];
+        let (counts, untagged) = domain_counts(&rows, &[]);
+        assert!(counts.is_empty());
+        assert_eq!(untagged, 2);
     }
 
     #[test]
@@ -560,11 +599,5 @@ mod tests {
         assert_eq!(ServiceFilter::default().text, "");
         let rows = vec![row("a", "red", &[], &[]), row("b", "grey", &[], &[])];
         assert_eq!(filter_services(&rows, &ServiceFilter::default()).len(), 2);
-    }
-
-    #[test]
-    fn slug_joins_words_with_hyphens() {
-        assert_eq!(slug("Professional   Services"), "professional-services");
-        assert_eq!(slug(" IT "), "it");
     }
 }

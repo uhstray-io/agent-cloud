@@ -150,7 +150,12 @@
       ansible.builtin.import_tasks: tasks/prepare-o11y-availability.yml
 
     - name: Derive the reviewed Alloy candidate digest from the committed renderer
-      when: _o11y_source_review_required | bool
+      # Skipped on purpose in a dry run: check mode skips tempfile, so the render had no
+      # directory to write into and every dry run failed here (task 12612). The digest feeds
+      # only the source review and the post-apply readback, which a dry run skips as well.
+      when:
+        - not ansible_check_mode
+        - _o11y_source_review_required | bool
       block:
         - name: Allocate private controller candidate workspace
           ansible.builtin.tempfile:
@@ -1909,10 +1914,12 @@
         # Same uid order on both sides (asserted above), so each field compares rule by
         # rule; absent or null maps compare as empty maps. The durations are strings in
         # the 11.4 AlertRuleNotificationSettings schema.
-        - name: Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's
+        - name: Require each live rule's pause, error states, labels, annotations and duration to equal the provisioned rule's
           ansible.builtin.assert:
             that:
               - _o11y_rules | map(attribute='isPaused', default='') | list == _o11y_expected_rules | map(attribute='isPaused', default='') | list
+              - _o11y_rules | map(attribute='execErrState', default='') | list == _o11y_expected_rules | map(attribute='execErrState', default='') | list
+              - _o11y_rules | map(attribute='noDataState', default='') | list == _o11y_expected_rules | map(attribute='noDataState', default='') | list
               - >-
                 _o11y_rules | map(attribute='labels', default={}) | map('default', {}, true) | list ==
                 _o11y_expected_rules | map(attribute='labels', default={}) | map('default', {}, true) |
@@ -1924,7 +1931,7 @@
                 _o11y_expected_rules | map(attribute='for', default='') | list
             fail_msg: >-
               Live Grafana rules differ from the provisioned file in pause state,
-              labels, annotations or duration.
+              error or no-data state, labels, annotations or duration.
 
         - name: Require each live rule's notification settings to equal the provisioned rule's
           ansible.builtin.assert:

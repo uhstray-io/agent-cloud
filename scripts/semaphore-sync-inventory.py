@@ -90,25 +90,19 @@ def release_payload_writer(fifo_path: str, writer: threading.Thread) -> None:
     writer.join(timeout=CHILD_CLEANUP_TIMEOUT_SECONDS)
 
 
-def _raise_interrupt(_signum: int, _frame: object) -> None:
-    """Turn a termination signal into the KeyboardInterrupt arm that stops the child."""
-    raise KeyboardInterrupt
-
-
 def install_interrupt_handlers() -> dict[int, object]:
     """Route SIGTERM and SIGHUP to the Ctrl-C path and return the handlers they replace.
 
     The child has its own session, so neither signal reaches it from the terminal or a supervisor.
     signal.signal works only on the main thread; an in-process caller on another thread keeps its handlers.
     """
-    previous: dict[int, object] = {}
     if threading.current_thread() is not threading.main_thread():
-        return previous
-    for name in ("SIGTERM", "SIGHUP"):
-        signum = getattr(signal, name, None)
-        if signum is not None:
-            previous[signum] = signal.signal(signum, _raise_interrupt)
-    return previous
+        return {}
+    # default_int_handler raises KeyboardInterrupt, the same arm Ctrl-C takes.
+    return {
+        signum: signal.signal(signum, signal.default_int_handler)
+        for signum in (signal.SIGTERM, signal.SIGHUP)
+    }
 
 
 def fail(apply: bool, check_text: str, apply_lead: str, code: int = 1) -> int:

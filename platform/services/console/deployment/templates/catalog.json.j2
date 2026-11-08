@@ -1,0 +1,38 @@
+{#- catalog.json: the services the Request a service page lists (plan 17, task 8.4, D38). Rendered by deploy-console.yml
+    to config/catalog.json, ALWAYS: an empty list when no deploy template qualifies. NAMES AND COUNTS ONLY. The input is
+    the deploy templates (_console_catalog_templates, read from platform/semaphore/templates.yml on the controller) and the
+    deploy playbooks beside this play (playbook_dir/deploy-<service>.yml, read for their `hosts:` line only). No key,
+    address, port or other field of a template, a playbook or a host is read.
+
+    A template qualifies when:
+    - its name is `Deploy <name>`. A trailing " (Dev)" is dropped before the match;
+    - it is not `Deploy All Services` (it deploys every service, so it is not one of them);
+    - its playbook basename is `deploy-<service>.yml`.
+    One entry per service. When two templates name the same service, the one without " (Dev)" is kept, else the first.
+    The entry's name is the display name (the part after "Deploy "), its template is the full template name, and its
+    deployed_hosts is the number of hosts in the group the service's playbook targets: the `hosts:` of its first play
+    that is a literal `<name>_svc`. A playbook that names no such literal (templated, absent, or only `localhost`) falls
+    back to `<service with - as _>_svc`. A group the inventory lacks counts as 0.
+    The list sorts by name with Jinja's default case-insensitive sort. Do NOT edit by hand: re-run deploy-console.yml. -#}
+{%- set _candidates = [] -%}
+{%- for t in _console_catalog_templates | default([]) -%}
+{%- set _template = t.name | default('', true) | string -%}
+{%- set _base = _template | regex_replace(' [(]Dev[)]$', '') -%}
+{%- set _pb = t.playbook | default('', true) | string | basename -%}
+{#- Slices, not regex_search with a group: that filter returns a one-item list once it is given a backreference. -#}
+{%- if (_base is match('^Deploy .+$')) and (_pb is match('^deploy-.+[.]yml$')) and (_base != 'Deploy All Services') -%}
+{%- set _service = _pb[7:-4] -%}
+{#- A missing playbook reads as no plays (errors='ignore'), so the name rule below applies. -#}
+{%- set _plays = (lookup('ansible.builtin.file', playbook_dir ~ '/' ~ _pb, errors='ignore') | default('', true) | from_yaml) or [] -%}
+{%- set _literal = _plays | selectattr('hosts', 'defined') | map(attribute='hosts') | select('string') | select('match', '^[a-z0-9_]+_svc$') | list -%}
+{%- set _group = _literal[0] if _literal else (_service | replace('-', '_')) ~ '_svc' -%}
+{%- set _ = _candidates.append({'service': _service, 'name': _base[7:], 'template': _template, 'deployed_hosts': (groups[_group] | default([])) | length}) -%}
+{%- endif -%}
+{%- endfor -%}
+{%- set _entries = [] -%}
+{%- for _service in _candidates | map(attribute='service') | unique | list -%}
+{%- set _same = _candidates | selectattr('service', 'equalto', _service) | list -%}
+{%- set _prod = _same | rejectattr('template', 'match', '^.* [(]Dev[)]$') | list -%}
+{%- set _ = _entries.append((_prod or _same) | first) -%}
+{%- endfor -%}
+{{ {'services': _entries | sort(attribute='name')} | to_nice_json }}

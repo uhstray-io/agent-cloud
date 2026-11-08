@@ -1,0 +1,42 @@
+---
+# o11y-journal-components.yml — the receiver containers whose journald output the journal
+# collector may read, one loki.source.journal component each. The one reviewed list: the
+# positions helper (files/o11y-journal-positions.py --components) admits only these component
+# directories under the collector's state volume, the collector template renders this same
+# list, and the deploy's validation checks it, so they cannot diverge.
+#
+# o11y_alloy is first and keeps its id, so its existing cursor survives. Each container name
+# below is the compose container_name in platform/services/o11y/deployment/compose.yml; each
+# service is the compose service that Loki labels as service="o11y/<name>". Never add
+# o11y-journal-collector: the collector must not read its own journal.
+#
+# The deploy passes this list to the positions helper with --components on every call. The
+# helper's own default (o11y_alloy alone) applies only when that argument is absent. The apply
+# play's log-content gate (deploy-o11y-journal-collector.yml) also reads each declared
+# container's journal content and refuses unless every one is `clear` or `no_entries`.
+#
+# o11y_grafana is held out. The first production log-content survey (Semaphore task 13414,
+# 2026-11-07) found no sensitive content in any receiver container, but grafana's scan hit
+# the then 200-entry cap in its 15-minute window, so the gate would refuse it: a new source
+# replays that whole window and the entries past the cap were never read. Add it back once
+# an uncapped survey reports it clear, or once a reviewed drop rule bounds its volume.
+
+o11y_journal_components:
+  - component: o11y_alloy
+    container: o11y-alloy
+    service: o11y/alloy
+  - component: o11y_prometheus
+    container: o11y-prometheus
+    service: o11y/prometheus
+  - component: o11y_loki
+    container: o11y-loki
+    service: o11y/loki
+  - component: o11y_tempo
+    container: o11y-tempo
+    service: o11y/tempo
+  - component: o11y_pyroscope
+    container: o11y-pyroscope
+    service: o11y/pyroscope
+  - component: o11y_node_exporter
+    container: o11y-node-exporter
+    service: o11y/node-exporter

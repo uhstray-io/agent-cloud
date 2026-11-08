@@ -94,6 +94,35 @@ The upstream default is `LOG_PAYLOADS=true` (`plane_mcp/server.py`). That logs e
 - Don't append `/http` or a trailing slash to `PLANE_OAUTH_PROVIDER_BASE_URL`. The server appends `/http` itself.
 - Don't generate or read secrets in `deploy.sh`. Critical Deployment Rule 2.
 
+## Harness clients
+
+`scripts/plane-mcp-client.py` writes one secret-free entry, `plane`, into each harness's user-level configuration. The entry carries the URL and nothing else: no header, no token, no helper. Each harness runs Plane's OAuth sign-in itself. The templates are `platform/services/plane-mcp/context/clients/claude-code.json` and `pi-mcp.json`.
+
+```bash
+# Production (needs the `plane-mcp-bypass-challenge` WAF rule applied; see Production edge)
+python3 scripts/plane-mcp-client.py --host plane-mcp.uhstray.io
+
+# Local (the local Caddy serves Plane MCP on :8443)
+python3 scripts/plane-mcp-client.py --host plane-mcp.agent-cloud.test:8443
+```
+
+- `--host` takes a bare hostname with an optional `:port`, and reads `PLANE_MCP_HOST` when the flag is absent. A scheme or a path is refused.
+- `--harness claude|pi|both` (default `both`), `--dry-run` reports and changes nothing, `--remove` deletes exactly `plane` from each harness. Output names only.
+- Claude Code: user scope, through `claude mcp add-json -s user plane` with `{"type": "http", "url": "https://<host>/http/mcp"}`.
+- pi: `mcpServers.plane` = `{"url": "https://<host>/http/mcp"}` in `~/.pi/agent/mcp.json`, a merge-only edit. Other servers and keys are kept. An unparseable file is refused and left untouched.
+- Why pi needs no helper: the pi-mcp-adapter 5.1.0 package documents that a URL-only HTTP server gets OAuth automatically (its `docs/auth.md`, lines 43-49), and that manual sign-in is the default flow (its `docs/auth.md`, lines 118-126). The config file it reads is `~/.pi/agent/mcp.json` (its `README.md`, line 81).
+
+Sign-in, after the entry exists:
+
+- Claude Code: `claude mcp login plane` (the `login` subcommand is listed in `claude mcp --help` for Claude Code 2.1.318).
+- pi: `/mcp-auth plane` in an interactive session (pi-mcp-adapter `docs/auth.md`, lines 120-126).
+
+Notes:
+
+- `/http/api-key/mcp` is a different endpoint with a workspace token. weft's builder entry for it is task 5.4, in the weft repository. This script does not write it.
+- Local TLS uses the local step-ca certificate. `make local-tls-trust` trusts that root in the macOS keychain (`LOCAL-DEV-README.md:83`). Whether each harness's TLS stack honours that trust is unverified here.
+- Prod sign-in from a harness is untested until the `plane-mcp-bypass-challenge` rule is applied (see Production edge).
+
 ## Related
 
 - Plane: `platform/services/plane/deployment/CLAUDE.md`
@@ -108,6 +137,4 @@ Locally Caddy reaches `plane-mcp:8211` on `local-dev`. Production needs, in site
 allow on the published port from Caddy, a `caddy_managed_sites` route, the Cloudflare DNS record, and a decision on the
 Cloudflare challenge for non-browser MCP clients (the `/v1/*` precedent is `inference-api-bypass-challenge` in `waf.tf`).
 
-**Deferred to task 5.3 (2026-11-03):** the zone challenges every `plane-mcp.uhstray.io` path today
-(`/http/mcp` and `/http/api-key/mcp` answer 403 `cf-mitigated: challenge`). A skip rule for the MCP
-paths widens the edge, so it is decided with the harness client entry, not with the DNS records.
+**Harness client entry (task 5.3) is in this repository** (`scripts/plane-mcp-client.py`, see Harness clients). The zone challenges every `plane-mcp.uhstray.io` path today (observed 2026-11-03: `/http/mcp` and `/http/api-key/mcp` answer 403 `cf-mitigated: challenge`). The skip for the MCP machine paths is the `plane-mcp-bypass-challenge` rule in `platform/infra/cloudflare/waf.tf`, applied with Apply Cloudflare Tofu. It widens the edge, so it was reviewed on its own.

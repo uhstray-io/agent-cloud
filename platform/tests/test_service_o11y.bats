@@ -1370,6 +1370,68 @@ assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule
 PY
 }
 
+@test "o11y: alert-evaluation meta rule pages on sustained failure and stays paused while local or canaried" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+canary = 'o11y-fault-probe-' + 'b' * 12
+
+
+def render(**values):
+    return yaml.safe_load(template.render(o11y_expected_metrics_targets=[], **values))
+
+
+def meta(doc):
+    groups = [group for group in doc['groups'] if group['name'] == 'alerting-health']
+    assert len(groups) == 1, [group['name'] for group in doc['groups']]
+    assert groups[0]['orgId'] == 1 and groups[0]['folder'] == 'agent-cloud' and groups[0]['interval'] == '60s'
+    assert [rule['uid'] for rule in groups[0]['rules']] == ['o11y_alert_evaluations_failing']
+    return groups[0]['rules'][0]
+
+
+# The meta rule sits after service-telemetry, so the uid list pinned on groups[0] is unchanged.
+prod_doc = render(local_mode=False, o11y_alerts_enabled=True, o11y_cluster='test-cluster',
+                  o11y_environment='prod')
+assert [group['name'] for group in prod_doc['groups']][:2] == ['service-telemetry', 'alerting-health']
+assert 'o11y_alert_evaluations_failing' not in [rule['uid'] for rule in prod_doc['groups'][0]['rules']]
+
+rule = meta(prod_doc)
+assert rule['title'] == 'Alert rule evaluations failing'
+assert rule['condition'] == 'B' and rule['for'] == '15m'
+assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'Alerting'
+assert rule['data'][0]['datasourceUid'] == 'prometheus'
+assert rule['data'][0]['relativeTimeRange'] == {'from': 300, 'to': 0}
+assert rule['data'][0]['model']['instant'] is True
+assert rule['data'][0]['model']['expr'] == (
+    'sum(increase(grafana_alerting_rule_evaluation_failures_total{job="grafana"}[5m]))')
+assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [5]}
+assert rule['labels'] == {
+    'severity': 'warning', 'service': 'o11y/grafana', 'owner': 'platform-operations',
+    'environment': 'prod', 'cluster': 'test-cluster',
+}
+assert rule['isPaused'] is False
+assert rule['notification_settings'] == {
+    'receiver': 'agent-cloud-ops', 'group_by': ['service', 'environment', 'cluster', 'alertname'],
+    'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h',
+}
+
+# Paused and unrouted while local, with alerts off, or while a canary runs: the same
+# gating as the paging rules, so the deploy readback holds in every rollout state.
+for values in (dict(local_mode=True, o11y_alerts_enabled=True), dict(local_mode=False),
+               dict(local_mode=False, o11y_alerts_enabled=True, o11y_alert_canary_service=canary)):
+    paused = meta(render(**values))
+    assert paused['isPaused'] is True and 'notification_settings' not in paused, values
+PY
+}
+
 @test "o11y: endpoint health alerts preserve scrape failure and missing-series distinctions" {
   python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
 import json
@@ -1807,7 +1869,7 @@ tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
 set_check = by_name['Require the live rule set to equal the provisioned rules']
-field_check = by_name["Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's"]
+field_check = by_name["Require each live rule's pause, error states, labels, annotations and duration to equal the provisioned rule's"]
 settings_check = by_name["Require each live rule's notification settings to equal the provisioned rule's"]
 query_check = by_name['Require live endpoint-health and scheduled-job PromQL to equal the provisioned expressions']
 live_rules = by_name['Read live o11y alert rules']
@@ -1818,6 +1880,8 @@ assert tasks.index(scope) < tasks.index(set_check) < tasks.index(query_check) < 
 assert slurp['register'] == '_provisioned_rules_file' and not block.get('no_log', False)
 assert live_rules['no_log'] is True and folders['no_log'] is True
 assert 'no_log' not in field_check and 'no_log' not in settings_check
+assert {'execErrState', 'noDataState', 'isPaused', 'for'} <= set(
+    re.findall(r"attribute='(\w+)'", json.dumps(field_check['ansible.builtin.assert']['that']))), 'readback must compare error and no-data states'
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
@@ -1919,6 +1983,11 @@ assert not verify_rules(swap(ns(mute_time_intervals=['maintenance'])), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, labels=r['labels'] | {'owner': 'unexpected'})), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, annotations=r['annotations'] | {'dashboard_url': '/unexpected'})), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, **{'for': '45s'})), inf_doc)
+# The readback compares the error and no-data states too: a rendered KeepLast rule
+# read back as Alerting (or the reverse) is drift, as is a rendered OK no-data state.
+assert routed['execErrState'] == 'KeepLast' and routed['noDataState'] == 'OK', routed['uid']
+assert not verify_rules(swap(lambda r: dict(r, execErrState='Alerting')), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, noDataState='Alerting')), inf_doc)
 # Routing values come from the file, not a parallel list: rendered 45s vs live 30s fails,
 # and a file that says 45s passes when live says 45s.
 wait45 = {**inf_doc, 'groups': [dict(g, rules=[dict(r, notification_settings=r['notification_settings'] | {'group_wait': '45s'})
@@ -2063,6 +2132,8 @@ for job in scrapes:
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
 local_overlay = yaml.safe_load((deploy / 'compose.local.yml').read_text())
 assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 'true'
+assert compose['services']['grafana']['environment']['GF_DATABASE_WAL'] == 'true'
+assert int(compose['services']['grafana']['environment']['GF_DATABASE_QUERY_RETRIES']) >= 2
 pyroscope = compose['services']['pyroscope']
 assert pyroscope['image'].endswith('grafana/pyroscope:2.2.0}')
 assert './config/pyroscope-config.yml:/etc/pyroscope/config.yml:ro' in pyroscope['volumes']
@@ -3297,9 +3368,9 @@ def seconds(value):
 
 
 def own(groups):
-    # The Loki-backed platform groups and the always-provisioned trace rule render
-    # regardless of the DGX scrape; tested separately.
-    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca', 'agentgateway-traces')]
+    # The Loki-backed platform groups, the always-provisioned trace rule and the
+    # alerting-health meta rule render regardless of the DGX scrape; tested separately.
+    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca', 'agentgateway-traces', 'alerting-health')]
 
 
 for scrape in (False, True):
@@ -3405,7 +3476,7 @@ assert sorted(entry['uid'] for entry in enabled['deleteRules']) == [
 for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(local_mode=True)):
     disabled = yaml.safe_load(template.render(**values))
     assert [group['name'] for group in disabled['groups']
-            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry', 'agentgateway-traces'], values
+            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry', 'alerting-health', 'agentgateway-traces'], values
     assert all(not rule['uid'].startswith('inference_')
                for group in disabled['groups'] for rule in group['rules']), values
     assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(
@@ -3483,7 +3554,7 @@ def loki_rules(doc):
 
 
 default = render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[])
-assert [group['name'] for group in default['groups']] == ['service-telemetry', 'agentgateway-traces', 'scheduled-jobs', 'internal-ca']
+assert [group['name'] for group in default['groups']] == ['service-telemetry', 'alerting-health', 'agentgateway-traces', 'scheduled-jobs', 'internal-ca']
 assert all(group['interval'] == '5m' for group in default['groups'] if group['name'] in LOKI_GROUPS)
 rules = loki_rules(default)
 assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expiring',
@@ -3519,7 +3590,7 @@ for rule in rules.values():
     query = rule['data'][0]
     assert query['datasourceUid'] == 'loki' and query['model']['queryType'] == 'instant'
     assert rule['condition'] == 'B' and rule['data'][1]['datasourceUid'] == '__expr__'
-    assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'Alerting'
+    assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'KeepLast'
     assert rule['for'] == '5m' and rule['labels']['owner'] == 'platform-operations'
 
 # Active and routed exactly when alerts are enabled and no canary is running, in local
@@ -3756,7 +3827,7 @@ for values in (dict(local_mode=True), dict(local_mode=True, o11y_alerts_enabled=
         for rule in group['rules']:
             seen += 1
             assert set(rule) <= RULE, (rule['uid'], set(rule) - RULE)
-            assert rule['execErrState'] == 'Alerting' and 'executionErrorState' not in rule, rule['uid']
+            assert rule['execErrState'] == ('Alerting' if rule['uid'] == 'o11y_alert_evaluations_failing' else 'KeepLast') and 'executionErrorState' not in rule, rule['uid']
             assert rule['noDataState'] in ('OK', 'Alerting', 'NoData'), rule['uid']
             for query in rule['data']:
                 assert set(query) <= QUERY, (rule['uid'], set(query) - QUERY)

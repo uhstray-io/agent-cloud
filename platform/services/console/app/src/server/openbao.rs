@@ -152,9 +152,8 @@ impl Openbao {
         body.get("data").cloned().ok_or(OpenbaoError::Decode)
     }
 
-    /// The `data.data` object at `secret/data/services/console/<name>`: the secret values.
-    // Consumed by the GitHub token read (Phase 6).
-    #[allow(dead_code)]
+    /// The `data.data` object at `secret/data/services/console/<name>`: the secret values. The Policy
+    /// refresh reads `github` on every run for the GitHub token (plan 17, D36, `server/policies.rs`).
     pub async fn read_console_secret(
         &self,
         http: &reqwest::Client,

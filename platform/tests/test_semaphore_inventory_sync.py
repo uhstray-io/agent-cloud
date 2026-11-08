@@ -28,6 +28,8 @@ BASE = {
     "id": 17, "name": "production", "project_id": 1, "type": "static-yaml",
     "inventory": "old: {}\n", "ssh_key_id": 23, "become_key_id": 29,
 }
+# Shared by the child-deadline and interrupt tests: stderr for a preview (no write) and for an apply (uncertain write).
+DEADLINE_OUTCOMES = [([], "no write was requested"), (["--apply"], "write outcome is uncertain")]
 
 
 class FakeSemaphore(DrainingHandler):
@@ -148,15 +150,26 @@ def ansible_bin(name):
     pytest.fail(f"{name} is required for the inventory-sync integration tests")
 
 
-def _sync_env(tmp_path, path_prefix, temp_prefix):
-    """Environment for one sync run: private Ansible temp dirs and a sync-owned TMPDIR under tmp_path."""
+def _load_script(name):
+    """Import the frontend script as a module under a test-chosen name, without running its main block."""
+    spec = importlib.util.spec_from_file_location(name, SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _sync_env(tmp_path, path_prefix, temp_prefix, base=None):
+    """Environment for one sync run: private Ansible temp dirs and a sync-owned TMPDIR under tmp_path.
+
+    `base` is the environment to start from; the default is the test process's own environment.
+    """
     local_tmp = tmp_path / f"{temp_prefix}-local"
     remote_tmp = tmp_path / f"{temp_prefix}-remote"
     local_tmp.mkdir(exist_ok=True)
     remote_tmp.mkdir(exist_ok=True)
     sync_tmp = tmp_path / "sync-tmp"
     sync_tmp.mkdir(exist_ok=True)
-    env = os.environ.copy()
+    env = os.environ.copy() if base is None else dict(base)
     env["ANSIBLE_LOCAL_TEMP"] = str(local_tmp)
     env["ANSIBLE_REMOTE_TEMP"] = str(remote_tmp)
     env["TMPDIR"] = str(sync_tmp)
@@ -177,7 +190,19 @@ def run_sync(tmp_path, url, inventory, *options, token=TOKEN, path=None, env_ove
     )
 
 
-def _deadline_driver(tmp_path, child_source, options, timeout=0.25):
+def _fake_child_source(pidfile):
+    """A fake ansible-playbook: records its pid, leaks both canaries, then sleeps past any deadline."""
+    return (
+        "#!/usr/bin/env python3\n"
+        "import os,sys,time\n"
+        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
+        f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
+        f"print({(PRIVATE + ' ' + TOKEN)!r}, file=sys.stderr, flush=True)\n"
+        "time.sleep(60)\n"
+    )
+
+
+def _deadline_driver(tmp_path, child_source, options, timeout=0.25, wait_for=None):
     bindir = tmp_path / "deadline-bin"
     bindir.mkdir()
     child = bindir / "ansible-playbook"
@@ -185,6 +210,27 @@ def _deadline_driver(tmp_path, child_source, options, timeout=0.25):
     child.chmod(0o755)
     source = tmp_path / "deadline inventory.yml"
     source.write_text(VALID)
+    gate = ""
+    if wait_for is not None:
+        # Runs in the driver: the deadline clock starts only once the grandchild has recorded its pid, so the
+        # short deadline always fires on a live process tree. Capped at 10 s; a pid that never appears falls
+        # through to the real communicate, and the caller's own assertion reports it.
+        gate = (
+            "import subprocess, time\n"
+            "class _GatedPopen(subprocess.Popen):\n"
+            "    def communicate(self, input=None, timeout=None):\n"
+            "        end = time.monotonic() + 10\n"
+            "        while time.monotonic() < end:\n"
+            "            try:\n"
+            f"                text = open({str(wait_for)!r}).read().strip()\n"
+            "            except OSError:\n"
+            "                text = ''\n"
+            "            if text.isdigit():\n"
+            "                break\n"
+            "            time.sleep(0.02)\n"
+            "        return super().communicate(input=input, timeout=timeout)\n"
+            "subprocess.Popen = _GatedPopen\n"
+        )
     driver = tmp_path / "deadline-driver.py"
     driver.write_text(
         "import importlib.util, io, signal, sys\n"
@@ -194,6 +240,7 @@ def _deadline_driver(tmp_path, child_source, options, timeout=0.25):
         "spec = importlib.util.spec_from_file_location('sync_inventory_deadline', script)\n"
         "module = importlib.util.module_from_spec(spec)\n"
         "spec.loader.exec_module(module)\n"
+        f"{gate}"
         f"module.CHILD_TIMEOUT_SECONDS = {timeout!r}\n"
         f"sys.argv = [script, '--url', 'http://127.0.0.1:9', '--inventory', {str(source)!r}, *{options!r}]\n"
         f"sys.stdin = io.StringIO({(TOKEN + chr(10))!r})\n"
@@ -202,9 +249,8 @@ def _deadline_driver(tmp_path, child_source, options, timeout=0.25):
     return driver, _sync_env(tmp_path, bindir, "deadline")
 
 
-@contextmanager
-def _run_deadline_driver(tmp_path, driver, env, limit=4):
-    process = subprocess.Popen(
+def _spawn_driver(driver, env):
+    return subprocess.Popen(
         [sys.executable, str(driver)],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -214,48 +260,46 @@ def _run_deadline_driver(tmp_path, driver, env, limit=4):
         cwd=ROOT,
         start_new_session=True,
     )
+
+
+def _reap_driver(process, tmp_path):
+    """Kill the driver's owned sessions and close its pipes, whether or not the driver has already exited."""
+    # Kill the owned session even if its leader already exited but a descendant remains.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    if process.poll() is None:
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+    for pidfile in tmp_path.glob("owned-*.pid"):
+        try:
+            os.killpg(int(pidfile.read_text()), signal.SIGKILL)
+        except (ProcessLookupError, ValueError):
+            pass
+
+
+@contextmanager
+def _run_deadline_driver(tmp_path, driver, env, limit=4):
+    process = _spawn_driver(driver, env)
     try:
         yield process.communicate(timeout=limit), process.returncode
     finally:
-        # Kill the owned session even if its leader already exited but a descendant remains.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        if process.poll() is None:
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None:
-                stream.close()
-        for pidfile in tmp_path.glob("owned-*.pid"):
-            try:
-                os.killpg(int(pidfile.read_text()), signal.SIGKILL)
-            except (ProcessLookupError, ValueError):
-                pass
+        _reap_driver(process, tmp_path)
 
 
-@pytest.mark.parametrize(
-    ("options", "expected"),
-    [([], "no write was requested"), (["--apply"], "write outcome is uncertain")],
-)
+@pytest.mark.parametrize(("options", "expected"), DEADLINE_OUTCOMES)
 def test_child_deadline_returns_fixed_safe_preview_or_uncertain_apply(
     tmp_path, options, expected,
 ):
     pidfile = tmp_path / "owned-child.pid"
-    driver, env = _deadline_driver(
-        tmp_path,
-        "#!/usr/bin/env python3\n"
-        "import os,sys,time\n"
-        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
-        f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
-        f"print({(PRIVATE + ' ' + TOKEN)!r}, file=sys.stderr, flush=True)\n"
-        "time.sleep(60)\n",
-        options,
-    )
+    driver, env = _deadline_driver(tmp_path, _fake_child_source(pidfile), options)
     with _run_deadline_driver(tmp_path, driver, env) as ((stdout, stderr), returncode):
         assert returncode == 1
         assert stdout == ""
@@ -274,7 +318,9 @@ def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
         f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
         "time.sleep(60)\n"
     )
-    # Five seconds covers two interpreter startups under load; the harness bound must outlast it.
+    # The deadline starts once the grandchild has recorded its pid (wait_for), so the 0.25 s default deadline
+    # fires on the live tree. limit is an upper bound, not a sleep: it must outlast that deadline plus the
+    # 5 s child wait in stop_child_group, which runs whenever the group kill leaves the child running.
     driver, env = _deadline_driver(
         tmp_path,
         "#!/usr/bin/env python3\n"
@@ -283,10 +329,11 @@ def test_child_deadline_kills_owned_grandchild_holding_output_pipes(tmp_path):
         f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], stdout=sys.stdout, stderr=sys.stderr)\n"
         "time.sleep(60)\n",
         ["--apply"],
-        timeout=5.0,
+        wait_for=grandchild_pidfile,
     )
     with _run_deadline_driver(tmp_path, driver, env, limit=20) as ((stdout, stderr), returncode):
         assert returncode == 1
+        assert "exceeded its fixed deadline" in stderr
         assert "write outcome is uncertain" in stderr
         assert stdout == ""
         assert TOKEN not in stdout + stderr and PRIVATE not in stdout + stderr
@@ -331,33 +378,11 @@ def _gone_within(pid, limit=3):
         pytest.param(signal.SIGHUP, id="SIGHUP"),
     ],
 )
-@pytest.mark.parametrize(
-    ("options", "expected"),
-    [([], "no write was requested"), (["--apply"], "write outcome is uncertain")],
-)
+@pytest.mark.parametrize(("options", "expected"), DEADLINE_OUTCOMES)
 def test_interrupt_stops_child_and_reports_fixed_outcome(tmp_path, options, expected, sent):
     pidfile = tmp_path / "owned-child.pid"
-    driver, env = _deadline_driver(
-        tmp_path,
-        "#!/usr/bin/env python3\n"
-        "import os,sys,time\n"
-        f"open({str(pidfile)!r}, 'w').write(str(os.getpid()))\n"
-        f"print({(TOKEN + ' ' + PRIVATE)!r}, flush=True)\n"
-        f"print({(PRIVATE + ' ' + TOKEN)!r}, file=sys.stderr, flush=True)\n"
-        "time.sleep(60)\n",
-        options,
-        timeout=30,
-    )
-    process = subprocess.Popen(
-        [sys.executable, str(driver)],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-        cwd=ROOT,
-        start_new_session=True,
-    )
+    driver, env = _deadline_driver(tmp_path, _fake_child_source(pidfile), options, timeout=30)
+    process = _spawn_driver(driver, env)
     try:
         child_pid = _wait_for_pid(pidfile)
         # The child has its own session, so only the driver gets this signal, as Ctrl-C, hang-up or SIGTERM would.
@@ -366,19 +391,7 @@ def test_interrupt_stops_child_and_reports_fixed_outcome(tmp_path, options, expe
         child_gone = _gone_within(child_pid)
     finally:
         # Kill the owned sessions even if the driver already exited while a descendant survived.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait(timeout=3)
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None:
-                stream.close()
-        for owned in tmp_path.glob("owned-*.pid"):
-            try:
-                os.killpg(int(owned.read_text()), signal.SIGKILL)
-            except (ProcessLookupError, ValueError):
-                pass
+        _reap_driver(process, tmp_path)
 
     assert child_gone, "the sync child survived the interrupt"
     assert process.returncode == 130
@@ -389,9 +402,7 @@ def test_interrupt_stops_child_and_reports_fixed_outcome(tmp_path, options, expe
 
 
 def test_payload_writer_never_creates_a_file(tmp_path):
-    module_spec = importlib.util.spec_from_file_location("sync_inventory_writer", SCRIPT)
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    module = _load_script("sync_inventory_writer")
     # A FIFO already unlinked by cleanup must not come back as a regular file holding the token.
     missing = tmp_path / "missing"
     module.write_payload(str(missing), TOKEN.encode())
@@ -447,9 +458,7 @@ def test_actual_child_fifo_is_only_token_channel_and_path_is_json(tmp_path, fake
 
 
 def test_child_environment_overrides_inherited_ansible_debug_and_callback_settings(monkeypatch):
-    module_spec = importlib.util.spec_from_file_location("sync_inventory_child_env", SCRIPT)
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    module = _load_script("sync_inventory_child_env")
     inherited_log = "/private/tmp/inherited-private-ansible.log"
     for name, value in {
         "ANSIBLE_CONFIG": "/tmp/inherited-ansible.cfg",
@@ -627,9 +636,7 @@ def test_frontend_refuses_empty_url_and_template_token_before_any_auth_or_api(tm
 
 
 def test_frontend_refuses_tty_before_reading_token(monkeypatch, capsys):
-    module_spec = importlib.util.spec_from_file_location("sync_inventory_tty", SCRIPT)
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    module = _load_script("sync_inventory_tty")
 
     class TtyInput:
         def isatty(self):
@@ -676,7 +683,7 @@ def test_defined_empty_or_nonstring_sync_token_never_falls_back_to_environment(t
     "semaphore_url",
     ["http://example.invalid", "http://user:pw@127.0.0.1:1", "https://user:pw@127.0.0.1:9"],
 )
-def test_sync_token_route_refuses_cleartext_transport_before_any_request(tmp_path, semaphore_url):
+def test_sync_token_route_refuses_cleartext_transport_before_any_request(monkeypatch, tmp_path, semaphore_url):
     # The canonical play runs directly because the frontend hides child output. Only the transport
     # check can print this message, and it runs before any request, so example.invalid is never contacted.
     source = tmp_path / "preflight-inventory.yml"
@@ -686,11 +693,10 @@ def test_sync_token_route_refuses_cleartext_transport_before_any_request(tmp_pat
         "sync_inventory_token": TOKEN, "semaphore_url": semaphore_url, "semaphore_project_id": 1,
         "inventory_name": "production", "inventory_source": str(source),
     }))
-    env = _sync_env(tmp_path, Path(ansible_bin("ansible-playbook")).parent, "preflight")
-    env.pop("SEMAPHORE_TOKEN", None)
-    env["ANSIBLE_CONFIG"] = str(ROOT / "ansible.cfg")
-    env["ANSIBLE_STDOUT_CALLBACK"] = "redact_requests"
-    env["ANSIBLE_CALLBACK_PLUGINS"] = str(ROOT / "callback_plugins")
+    monkeypatch.delenv("SEMAPHORE_TOKEN", raising=False)
+    # The production child environment, so this preflight sees the Ansible settings the frontend gives the play.
+    base = _load_script("sync_inventory_preflight").ansible_child_environment()
+    env = _sync_env(tmp_path, Path(ansible_bin("ansible-playbook")).parent, "preflight", base=base)
     result = subprocess.run(
         [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--check",
          "--extra-vars", "@" + str(payload)],
@@ -870,9 +876,7 @@ def test_actual_uri_module_tempfile_red_without_pipelining_green_with_pipelining
     monkeypatch.setenv("ANSIBLE_LOCAL_TEMP", str(local_tmp))
     monkeypatch.setenv("ANSIBLE_REMOTE_TEMP", str(remote_tmp))
     monkeypatch.setenv("PATH", f"{Path(ansible_bin('ansible-playbook')).parent}:{os.environ.get('PATH', '')}")
-    module_spec = importlib.util.spec_from_file_location("sync_inventory_under_test", SCRIPT)
-    module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    module = _load_script("sync_inventory_under_test")
     original_environment = module.ansible_child_environment
 
     def unprotected_environment():

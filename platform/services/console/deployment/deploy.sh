@@ -95,7 +95,8 @@ step_verify_inputs() {
   [ -f "${SCRIPT_DIR}/config/proxmox-ca.pem" ] || error "${SCRIPT_DIR}/config/proxmox-ca.pem not found. Run Ansible deploy-console.yml first."
   [ -f "${SCRIPT_DIR}/config/gateway.json" ] || error "${SCRIPT_DIR}/config/gateway.json not found. Run Ansible deploy-console.yml first."
   [ -f "${SCRIPT_DIR}/config/role-map.json" ] || error "${SCRIPT_DIR}/config/role-map.json not found. Run Ansible deploy-console.yml first."
-  info "  .env, config/scope.json, config/workflow.json, config/flows.json, config/proxmox-ca.pem, config/gateway.json and config/role-map.json present."
+  [ -f "${SCRIPT_DIR}/config/catalog.json" ] || error "${SCRIPT_DIR}/config/catalog.json not found. Run Ansible deploy-console.yml first."
+  info "  .env, config/scope.json, config/workflow.json, config/flows.json, config/proxmox-ca.pem, config/gateway.json, config/role-map.json and config/catalog.json present."
 }
 
 step_build() {
@@ -110,11 +111,11 @@ step_start() {
   # compose_up_if_changed hashes .env, the compose files and the inputs named here, and recreates
   # only when that digest or the image ID changed. A rebuilt image has a new ID, so it is picked
   # up; an unchanged re-run recreates nothing and prints DEPLOY_CHANGED=true|false.
-  # config/flows.json, config/proxmox-ca.pem, config/gateway.json and config/role-map.json are bind-mounted too, so a change to any recreates.
+  # config/flows.json, config/proxmox-ca.pem, config/gateway.json, config/role-map.json and config/catalog.json are bind-mounted too, so a change to any recreates.
   if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
-    compose_up_if_changed config/scope.json config/workflow.json config/flows.json config/proxmox-ca.pem config/gateway.json config/role-map.json certs/step-ca-bundle.crt
+    compose_up_if_changed config/scope.json config/workflow.json config/flows.json config/proxmox-ca.pem config/gateway.json config/role-map.json config/catalog.json certs/step-ca-bundle.crt
   else
-    compose_up_if_changed config/scope.json config/workflow.json config/flows.json config/proxmox-ca.pem config/gateway.json config/role-map.json
+    compose_up_if_changed config/scope.json config/workflow.json config/flows.json config/proxmox-ca.pem config/gateway.json config/role-map.json config/catalog.json
   fi
 }
 

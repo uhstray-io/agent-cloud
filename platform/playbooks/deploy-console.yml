@@ -12,13 +12,16 @@
 #          config/gateway.json (task 8.3a: the agentgateway clients, budgets and models, names and figures only; always,
 #          empty lists when no agentgateway_svc host). The gateway file reads the agentgateway host's vars through the
 #          _console_gw_* expressions below, never a key, a client_<name> field, an address or a port. Also
-#          config/role-map.json (always; the Access page's role map, from vars/access-role-map.yml). The Authentik
+#          config/role-map.json (always; the Access page's role map, from vars/access-role-map.yml). Also
+#          config/catalog.json (always; the Request a service page's list, 8.4 D38: names and host counts from the deploy
+#          templates in platform/semaphore/templates.yml, never an address). The Authentik
 #          directory token (8.2b) is shared-read only when console_authentik_api_url is set.
 #          Phase 3 (D22-D24) reads NetBox and Proxmox only when their URL vars are set, and refuses a
 #          netbox_site slug declared on two sites or a private key given as the Proxmox CA.
 #          The console's own AppRole (D27) is shared-read only when console_openbao_url is set. The Grafana Viewer
 #          token (D26) is shared-read only when console_grafana_api_enabled is true AND console_grafana_url is set;
-#          console_grafana_url alone is only the deep-link base and reads nothing.
+#          console_grafana_url alone is only the deep-link base and reads nothing. The Policy page's GitHub repo and ref
+#          (D36) render with the OpenBao block, and a value the console would refuse is refused here by name.
 # Phase 2: deploy.sh — builds the image on THIS host from platform/services/console (there is no
 #          registry), then container lifecycle (compose_up_if_changed, wait healthy).
 # Phase 3: Verify inside the container: `probe /healthz 200`, and an unauthenticated `/v1/me`
@@ -115,9 +118,18 @@
       - { src: gateway.json.j2, dest: config/gateway.json, mode: "0644" }
       # The Access page's role map (8.2b): the authoritative table as data, always rendered. Not a secret.
       - { src: role-map.json.j2, dest: config/role-map.json, mode: "0644" }
+      # The Request a service page's list (8.4, D38): names and host counts only, always rendered (an empty list when no
+      # deploy template qualifies). Bind-mounted read-only (compose.yml); deploy.sh hashes it.
+      - { src: catalog.json.j2, dest: config/catalog.json, mode: "0644" }
     # The role map (8.2b) is read on the controller. Its source is pinned against the authoritative table in
     # plan/architecture/04-credentials-access.md by platform/tests/test_console_access_role_map.py.
     _access_role_map: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/vars/access-role-map.yml') | from_yaml }}"
+    # The deploy templates the Request a service page lists (8.4, D38), read on the controller. catalog.json.j2 keeps
+    # the `Deploy <name>` templates whose playbook is deploy-<service>.yml (not Deploy All Services), counts each
+    # service's hosts in the group its playbook targets (else <service>_svc), and keeps one entry per service.
+    # NOT a rotation pin: templates.yml changes many times a week, and the catalog holds names and counts, not code.
+    # Pinning it would make the monthly rotation refuse, and the secret_id would expire while the rotation waited.
+    _console_catalog_templates: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates.yml') | from_yaml).templates }}"
     # Flow inputs (D24). The authentik apps mirror deploy-authentik.yml: an undefined authentik_apps on the
     # authentik host means the whole catalog, and an explicit [] is an empty selection. No authentik host
     # means no oidc edges. Only names are read: never an address, never a port.
@@ -239,6 +251,25 @@
           - not (console_grafana_api_enabled | default(false) | bool) or (console_grafana_url | default('', true) | string | trim | length) > 0
         fail_msg: "console_grafana_api_enabled is true but console_grafana_url is unset. Set the URL or unset the switch."
         quiet: true
+
+    # The Policy page's GitHub source (D36) is rendered only with the OpenBao block (env.j2). A value the console would
+    # refuse at startup is refused here first, by the same rules (server/config.rs: github_repo_valid and
+    # github_ref_valid), so a bad inventory value fails before anything is placed. Checked only when OpenBao is set.
+    - name: "Refuse a console_github_repo or console_github_ref the console would refuse"
+      ansible.builtin.assert:
+        # Trimmed first, as server/config.rs trims the value it reads.
+        that:
+          - (console_github_repo | default('uhstray-io/agent-cloud') | string | trim) is match('^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$')
+          - (console_github_repo | default('uhstray-io/agent-cloud') | string | trim).split('/')[1] not in ['.', '..']
+          - (console_github_ref | default('dev') | string | trim) is match('^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$')
+          - "'..' not in (console_github_ref | default('dev') | string | trim)"
+          - (console_github_ref | default('dev') | string | trim).split('/') | select('equalto', '.') | list | length == 0
+        fail_msg: >-
+          console_github_repo must be owner/name (letters, digits and hyphens; letters, digits, dots, underscores and
+          hyphens, never . or ..) and console_github_ref a branch or tag name (slash-separated segments of letters,
+          digits, dots, underscores and hyphens, no empty or . segment, no ..). Refusing to deploy the console.
+        quiet: true
+      when: (console_openbao_url | default('', true) | string | trim | length) > 0
 
     # Read-only check of the credential path before anything is written: a refused run must not
     # have already placed the repo or written a secret (deploy-skynet.yml pattern).

@@ -67,6 +67,25 @@ pub struct Links {
 pub struct Diagnostics {
     /// NetBox rows dropped because their own scope did not match the query that returned them.
     pub dropped_mismatched: u64,
+    /// Why the business domains did not refresh, as one sentence, or `null` after a good read.
+    /// Shown to admins as a notice; the NetBox source stays `ok`.
+    pub domains_error: Option<String>,
+}
+
+/// The text of the empty state for a domain list: the list is empty, not failed.
+pub const NO_DOMAINS: &str = "No business domains to show.";
+
+/// The line a domain list shows when it has nothing to list: `None` when it has domains.
+pub fn no_domains_line(declared: &[Domain]) -> Option<&'static str> {
+    declared.is_empty().then_some(NO_DOMAINS)
+}
+
+/// The admin's reason for a failed tag read, from an envelope. `None` for a member, whose
+/// envelope has no diagnostics, and after a good read.
+pub fn domains_error(meta: &Meta) -> Option<String> {
+    meta.diagnostics
+        .as_ref()
+        .and_then(|found| found.domains_error.clone())
 }
 
 /// The envelope every inventory, services, network and flows answer starts with.
@@ -83,12 +102,34 @@ pub struct Meta {
     pub diagnostics: Option<Diagnostics>,
 }
 
+/// A business domain: a NetBox tag whose slug starts with `domain-` (D37). Platform-wide.
+#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(default)]
+pub struct Domain {
+    pub name: String,
+    pub slug: String,
+    /// The colour as the server sends it, or empty. Only `css_color` decides whether it is drawn.
+    pub color: String,
+}
+
+impl Domain {
+    /// The colour as a CSS colour, or `None` unless it is exactly six hex digits. The value
+    /// goes into a `style` attribute, so anything else is refused rather than passed through.
+    pub fn css_color(&self) -> Option<String> {
+        let hex = self.color.as_str();
+        (hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .then(|| format!("#{hex}"))
+    }
+}
+
 /// `GET /v1/tenants/{t}/inventory`.
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 #[serde(default)]
 pub struct Inventory {
     #[serde(flatten)]
     pub meta: Meta,
+    /// The business domains NetBox holds, sorted by name. The same for every tenant.
+    pub domains: Vec<Domain>,
     pub sites: Vec<Site>,
 }
 
@@ -182,6 +223,8 @@ pub struct ServiceRow {
     pub failed_steps: Vec<String>,
     pub last_run: Option<String>,
     pub tags: Vec<String>,
+    /// The slugs of the business domains this service carries, matched against `Domain::slug`.
+    pub domains: Vec<String>,
 }
 
 /// `GET /v1/tenants/{t}/services`.
@@ -315,6 +358,7 @@ mod tests {
             "stale": false,
             "updated_at": {"netbox": "2026-10-26T12:01:00Z", "proxmox": null},
             "links": {"grafana": "https://grafana.example.test", "grafana_conformance": null},
+            "domains": [{"name": "IT", "slug": "domain-it", "color": "4caf50"}],
             "sites": [
                 {
                     "id": "dc1", "name": "DC 1", "org": "ops",
@@ -355,6 +399,8 @@ mod tests {
             Some("https://grafana.example.test")
         );
         assert_eq!(inv.sites.len(), 2);
+        assert_eq!(inv.domains[0].slug, "domain-it");
+        assert_eq!(inv.domains[0].css_color().as_deref(), Some("#4caf50"));
         let dc1 = &inv.sites[0];
         assert!(dc1.mapped);
         let node = &dc1.clusters[0].nodes[0];
@@ -409,7 +455,8 @@ mod tests {
             "services": [{
                 "name": "tududi", "grafana_url": null, "site": "dc1", "cluster": "pve-prod",
                 "live_status": null, "rag": "amber", "failed_steps": ["step-b"],
-                "last_run": "2026-10-26T12:00:00Z", "tags": ["Products"]
+                "last_run": "2026-10-26T12:00:00Z", "tags": ["Products"],
+                "domains": ["domain-products"]
             }]
         });
         let Read::Ok(list) = classify::<ServicesBody>(&reply(200, body)) else {
@@ -423,6 +470,7 @@ mod tests {
         );
         assert_eq!(list.services[0].rag, "amber");
         assert_eq!(list.services[0].live_status, None);
+        assert_eq!(list.services[0].domains, ["domain-products"]);
 
         let single = json!({
             "source": {"netbox": "ok"}, "stale": false,
@@ -519,7 +567,9 @@ mod tests {
     fn diagnostics_are_read_for_admins_and_absent_for_members() {
         let admin = json!({
             "source": {"netbox": "ok"}, "stale": false,
-            "diagnostics": {"dropped_mismatched": 2}, "sites": []
+            "diagnostics": {"dropped_mismatched": 2,
+                            "domains_error": "NetBox tags could not be read: HTTP 403. Showing no domains."},
+            "sites": []
         });
         let Read::Ok(inv) = classify::<Inventory>(&reply(200, admin)) else {
             panic!("expected Ok");
@@ -527,7 +577,10 @@ mod tests {
         assert_eq!(
             inv.meta.diagnostics,
             Some(Diagnostics {
-                dropped_mismatched: 2
+                dropped_mismatched: 2,
+                domains_error: Some(
+                    "NetBox tags could not be read: HTTP 403. Showing no domains.".into()
+                ),
             })
         );
         let member = json!({"source": {"netbox": "ok"}, "sites": []});
@@ -535,6 +588,65 @@ mod tests {
             panic!("expected Ok");
         };
         assert_eq!(inv.meta.diagnostics, None);
+        assert_eq!(domains_error(&inv.meta), None, "a member is never told why");
+    }
+
+    #[test]
+    fn the_domains_reason_is_the_admins_and_none_after_a_good_read() {
+        let failing = json!({
+            "source": {"netbox": "ok"},
+            "diagnostics": {"dropped_mismatched": 0,
+                            "domains_error": "NetBox tags could not be read: HTTP 403. Showing the last good domains."},
+            "sites": []
+        });
+        let Read::Ok(inv) = classify::<Inventory>(&reply(200, failing)) else {
+            panic!("expected Ok");
+        };
+        assert_eq!(
+            domains_error(&inv.meta).as_deref(),
+            Some("NetBox tags could not be read: HTTP 403. Showing the last good domains.")
+        );
+
+        let recovered = json!({
+            "source": {"netbox": "ok"},
+            "diagnostics": {"dropped_mismatched": 0, "domains_error": null},
+            "sites": []
+        });
+        let Read::Ok(inv) = classify::<Inventory>(&reply(200, recovered)) else {
+            panic!("expected Ok");
+        };
+        assert_eq!(domains_error(&inv.meta), None, "a good read has no reason");
+    }
+
+    #[test]
+    fn the_empty_domain_line_shows_only_for_an_empty_list() {
+        assert_eq!(no_domains_line(&[]), Some("No business domains to show."));
+        let one = [Domain {
+            name: "IT".into(),
+            slug: "domain-it".into(),
+            color: String::new(),
+        }];
+        assert_eq!(no_domains_line(&one), None);
+    }
+
+    #[test]
+    fn a_domain_colour_is_css_only_when_it_is_six_hex_digits() {
+        let colour = |color: &str| {
+            Domain {
+                color: color.into(),
+                ..Domain::default()
+            }
+            .css_color()
+        };
+        assert_eq!(colour("2196f3").as_deref(), Some("#2196f3"));
+        assert_eq!(colour(""), None, "no colour is no swatch");
+        assert_eq!(colour("red"), None);
+        assert_eq!(
+            colour("2196f3;x"),
+            None,
+            "nothing rides into a style attribute"
+        );
+        assert_eq!(colour("zz96f3"), None);
     }
 
     #[test]

@@ -24,11 +24,14 @@
 # Listener TLS (every mode, the gate has no plain-HTTP listener): internal_leaves declares one entry named
 # launch_gate_server_leaf (profile server, reload none, this host, dir <deploy>/certs/<leaf>, sans including
 # launch_gate_tls_server_name). The gate re-reads its certificate itself, so a renewal needs no reload.
-# Local-dev declares that entry in a later change; until then a local deploy refuses here, by design.
+# Local-dev declares that entry on launch_gate_svc in bootstrap-local-dev.yml's local inventory; a local deploy
+# whose inventory lacks it refuses here, by design. (Renewal reads internal_leaves on the CA host, not here: see
+# CLAUDE.md, "Local-dev".)
 #
 # Deploy order on a host: provision-launch-gate-semaphore-access.yml (once, writes the token this deploy reads) ->
-# Deploy launch-gate -> skynet's route to the gate (a later change). The caller tokens are generated here and
-# handed to each caller out of band (Back Up Credentials to site-config).
+# Deploy launch-gate -> Deploy skynet with skynet_launch_gate_url set (deploy-skynet.yml shared-reads
+# caller_skynet_token from this service's OpenBao path). Back Up Credentials to site-config keeps a copy of the
+# caller tokens.
 #
 # Plan: openspec change skynet-launch-containment, tasks 3.2 and 3.3 (plan/development/openspec/changes/
 # skynet-launch-containment/tasks.md).
@@ -197,6 +200,27 @@
         quiet: true
       when: not _launch_gate_local_mode
 
+    # compose.yml sets init: true, and podman's --init bind-mounts catatonit from the host. On Ubuntu catatonit is
+    # only a Recommends of podman, and tasks/install-podman-compose.yml installs nothing on a host that already has
+    # podman, so a host can lack it; the container would then fail at creation. Read-only check, refused here.
+    - name: "Look for podman's init binary (catatonit) on a production host"
+      ansible.builtin.shell: "command -v catatonit >/dev/null 2>&1 || test -x /usr/libexec/podman/catatonit"
+      register: _launch_gate_init_bin
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not _launch_gate_local_mode
+
+    - name: "Refuse a production host without catatonit (the gate runs with init: true)"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_init_bin.rc == 0
+        fail_msg: >-
+          podman's init binary (catatonit) is missing on this host, and the gate's container runs with init: true.
+          Run Install Podman, which installs it, then re-run this deploy.
+        quiet: true
+      when: not _launch_gate_local_mode
+
     # The server leaf is declared once, for this host, in site-config's internal_leaves. The mint and the
     # distribution below read that declaration, so the directory and the SAN are fixed here, before anything is
     # issued. Every check is a refusal before anything changes.
@@ -213,8 +237,8 @@
         fail_msg: >-
           internal_leaves must declare `{{ _launch_gate_server_leaf }}` once (profile server, host
           {{ inventory_hostname }}, dir {{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}, reload none, sans
-          including {{ _launch_gate_tls_name }}). Local-dev declares it in a later change; until then a local
-          deploy refuses here.
+          including {{ _launch_gate_tls_name }}). Local-dev declares it in bootstrap-local-dev.yml (launch_gate_svc);
+          a local inventory without it refuses here.
         quiet: true
       vars:
         _lg_leaf_decl: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _launch_gate_server_leaf) | list }}"
@@ -257,15 +281,27 @@
     - name: "Manage secrets and template the env file and config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
+    # Local-dev has no Renew Internal Certs run, and a local Clean Deploy keeps certs/ (clean-service removes
+    # the checkout only in production), so the local deploy renews the leaf itself when it has under 7 days left.
+    # rc 0 = still valid then; rc 1 = expiring, or no current leaf yet (issuance follows either way). Read-only.
+    - name: "Local-dev: is the gate's leaf valid for at least 7 more days"
+      ansible.builtin.command:
+        argv: [openssl, x509, -checkend, "604800", -noout, -in, "{{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}/current/cert.pem"]
+      register: _launch_gate_leaf_fresh
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _launch_gate_local_mode
+
     # The server leaf: key generated on this host, signed by the one step_ca_svc host (production) or by the
-    # local CA on this host (local_mode). An issued leaf is kept (_mint_reissue false); renewal is Renew Internal
-    # Certs' job. Safe under --check.
+    # local CA on this host (local_mode). In production an issued leaf is kept; renewal is Renew Internal Certs'
+    # job. In local-dev a leaf with under 7 days left is re-issued (above). Safe under --check.
     - name: "Issue the server leaf (key here, signed on the CA host)"
       ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
       vars:
         _mint_name: "{{ _launch_gate_server_leaf }}"
         _mint_ca_host: "{{ groups['step_ca_svc'] | first if not _launch_gate_local_mode else inventory_hostname }}"
-        _mint_reissue: false
+        _mint_reissue: "{{ _launch_gate_local_mode and (_launch_gate_leaf_fresh.rc | default(0)) != 0 }}"
 
     # The trust bundle (root + intermediate) the verify play and the gate's own CA check read from ./certs.
     - name: "Distribute the step-ca trust bundle into ./certs"
@@ -340,8 +376,16 @@
     _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1') | string }}"
     _launch_gate_port: "{{ launch_gate_port | default('8443') | string }}"
     _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
-    # curl, not uri: --resolve sends the declared name to the bind address, while the certificate is still
-    # verified against that name and the step-ca bundle. The body is discarded; only the status is read.
+    # Local-dev, by the same derivation as Phase 1. These probes run in the Semaphore container, and the gate's
+    # port is published on the Mac's loopback, which that container cannot reach. So a local probe dials the TLS
+    # name on the container's own port (8443: config.json.j2 listen_port) through the local-dev network alias
+    # (compose.local.yml), and sends no --resolve. Production keeps --resolve to the declared bind and port.
+    _launch_gate_local_mode: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    _launch_gate_probe_port: "{{ '8443' if _launch_gate_local_mode else _launch_gate_port }}"
+    _launch_gate_plain_host: "{{ _launch_gate_tls_name if _launch_gate_local_mode else _launch_gate_bind }}"
+    # curl, not uri: --resolve (production only) sends the declared name to the bind address, while the certificate
+    # is still verified against that name and the step-ca bundle. The body is discarded; only the status is read.
+    _tls_resolve: "{{ [] if _launch_gate_local_mode else ['--resolve', _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ ':' ~ _launch_gate_bind] }}"
     _tls_args:
       - curl
       - --silent
@@ -352,15 +396,13 @@
       - /dev/null
       - --write-out
       - "%{http_code}"
-      - --resolve
-      - "{{ _launch_gate_tls_name }}:{{ _launch_gate_port }}:{{ _launch_gate_bind }}"
       - --cacert
       - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
 
   tasks:
     - name: "Health over TLS from this host (GET /healthz -> 200, against the step-ca bundle)"
       ansible.builtin.command:
-        argv: "{{ _tls_args + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ '/healthz'] }}"
+        argv: "{{ _tls_args + _tls_resolve + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_probe_port ~ '/healthz'] }}"
       register: _launch_gate_health
       changed_when: false
       failed_when: false
@@ -390,7 +432,7 @@
           - "%{http_code}"
           - --max-time
           - "10"
-          - "http://{{ _launch_gate_bind }}:{{ _launch_gate_port }}/healthz"
+          - "http://{{ _launch_gate_plain_host }}:{{ _launch_gate_probe_port }}/healthz"
       register: _launch_gate_plain_http
       changed_when: false
       failed_when: false
@@ -400,7 +442,7 @@
       ansible.builtin.assert:
         that:
           - _launch_gate_plain_http.stdout | trim != '200'
-        fail_msg: "The launch-gate listener answered plain HTTP with 200 on {{ _launch_gate_bind }}:{{ _launch_gate_port }}; TLS is not enforced."
+        fail_msg: "The launch-gate listener answered plain HTTP with 200 on {{ _launch_gate_plain_host }}:{{ _launch_gate_probe_port }}; TLS is not enforced."
         quiet: true
 
     # Every probe runs INSIDE the container and reads the caller token from the container's environment. The
