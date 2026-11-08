@@ -252,8 +252,22 @@ fn shown(name: Option<&str>) -> String {
     name.unwrap_or("(none)").to_string()
 }
 
-/// The rollup of one refresh. Targets are counted per group, and alert instances add to the group of their labels,
-/// so a group that only has alerts still gets a row, with no targets. Every level is sorted by name, and each
+/// Whether an alert instance is firing or pending, or neither. Grafana names its instance states `Alerting` and
+/// `Pending`, with a suffix such as ` (NoData)`; `firing` is accepted too, as the o11y alert probe accepts it
+/// (`platform/playbooks/tasks/o11y-alert-probe.yml`).
+fn alert_activity(state: &str) -> Option<bool> {
+    if state.starts_with("Alerting") || state == "firing" {
+        Some(true)
+    } else if state.starts_with("Pending") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The rollup of one refresh. Targets are counted per group, and firing or pending alert instances add to the group
+/// of their labels, so a group that only has active alerts still gets a row, with no targets. An instance in any
+/// other state adds nothing, not even an empty row. Every level is sorted by name, and each
 /// environment and cluster total is the sum of its children.
 fn rollup(targets: &[UpTarget], alerts: &[AlertInstance], base: &str) -> Vec<Environment> {
     let mut groups: BTreeMap<Group, Counts> = BTreeMap::new();
@@ -265,10 +279,13 @@ fn rollup(targets: &[UpTarget], alerts: &[AlertInstance], base: &str) -> Vec<Env
         }
     }
     for alert in alerts {
+        let Some(firing) = alert_activity(&alert.state) else {
+            continue;
+        };
         let counts = groups.entry(group_of(&alert.labels)).or_default();
-        if alert.state.starts_with("Alerting") {
+        if firing {
             counts.firing += 1;
-        } else if alert.state.starts_with("Pending") {
+        } else {
             counts.pending += 1;
         }
     }
@@ -651,6 +668,27 @@ mod tests {
         assert_eq!(
             envs[0].counts.pending, 2,
             "Pending and its suffix, nothing else"
+        );
+    }
+
+    #[test]
+    fn an_inactive_alert_makes_no_row_and_firing_counts_as_alerting() {
+        let lone = [
+            ("environment", "prod"),
+            ("cluster", "c"),
+            ("service", "quiet"),
+        ];
+        let normal = ["Normal", "Normal (NoData, KeepLast)", "NoData", "Error"]
+            .map(|state| alert(&lone, state));
+        assert!(
+            rollup(&[], &normal, BASE).is_empty(),
+            "an inactive instance with no target adds no row"
+        );
+        let group = [("environment", "prod"), ("cluster", "c"), ("service", "a")];
+        let envs = rollup(&[], &[alert(&group, "firing")], BASE);
+        assert_eq!(
+            envs[0].counts.firing, 1,
+            "firing is the probe's word for Alerting"
         );
     }
 
