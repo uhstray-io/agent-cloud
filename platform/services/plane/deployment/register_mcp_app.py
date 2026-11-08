@@ -110,7 +110,8 @@ else:
 if not app_id:
     fail(f"application {app_slug} has no id to install")
 status, _, _ = call("POST", f"{base_path}{app_id}/install/")
-if status != 200:
+# 200 is what v3.3.3 answers; 201 is accepted too, in case a first install reports the created row.
+if status not in (200, 201):
     fail(f"installing application {app_slug} in {ws} refused ({status})")
 result["installed"] = True
 print(json.dumps(result))

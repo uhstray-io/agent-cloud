@@ -356,3 +356,25 @@ def test_a_created_app_without_an_id_is_refused_before_install(plane):
     assert json.loads(out.stdout) == {"error": f"application {APP} has no id to install"}
     assert INSTALL not in state["calls"]
     assert SECRET not in out.stdout + out.stderr
+
+
+def test_a_refused_install_of_an_existing_app_fails_without_regenerating_or_printing_a_secret(plane):
+    # The path a running deployment takes: the app is listed and its secret is held.
+    state, base = plane
+    state["apps"] = [app_row()]
+    state["install"] = (403, {"error": "leak-me-not"})
+    out = run(base, have_secret=True)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert json.loads(out.stdout) == {"error": f"installing application {APP} in {WS} refused (403)"}
+    assert state["calls"] == [INSTALL]
+    assert SECRET not in out.stdout + out.stderr and STORED not in out.stdout + out.stderr
+    assert "leak-me-not" not in out.stdout + out.stderr
+
+
+def test_a_first_install_answering_created_is_accepted(plane):
+    state, base = plane
+    state["apps"] = [app_row()]
+    state["install"] = (201, {"status": "installed"})
+    out = run(base, have_secret=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert the_line(out)["installed"] is True
