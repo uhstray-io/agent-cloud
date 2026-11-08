@@ -1502,8 +1502,7 @@ a live journal or dashboard coverage receipt.
 Receiver container cohort. The collector reads one `loki.source.journal` component
 per receiver container declared in `platform/playbooks/vars/o11y-journal-components.yml`
 (`o11y_journal_components`): `o11y_alloy` first, then prometheus, loki, tempo,
-pyroscope and node-exporter (grafana is held out until an uncapped survey admits it; see the
-vars file). Each source matches `CONTAINER_NAME=<container>`
+pyroscope, grafana and node-exporter. Each source matches `CONTAINER_NAME=<container>`
 and labels its entries `service="o11y/<name>"`, `signal="container"` and
 `target_id="service:o11y"`. The same list is the template's loop input, the positions
 helper's `--components` allowlist and the input to the deploy's validation, so the three

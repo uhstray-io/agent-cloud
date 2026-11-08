@@ -1391,7 +1391,7 @@ def test_journal_component_vars_file_is_the_reviewed_allowlist():
     rows = yaml.safe_load(path.read_text())["o11y_journal_components"]
     assert [row["component"] for row in rows] == [
         "o11y_alloy", "o11y_prometheus", "o11y_loki", "o11y_tempo",
-        "o11y_pyroscope", "o11y_node_exporter",
+        "o11y_pyroscope", "o11y_grafana", "o11y_node_exporter",
     ]
     compose = (O11Y / "compose.yml").read_text()
     for row in rows:
@@ -7187,7 +7187,7 @@ def test_journal_template_renders_one_source_per_declared_component_in_declared_
     cohort = declared_cohort()
     rendered = render_journal(cohort)
     sources = re.findall(r'loki\.source\.journal "([^"]+)" \{\n(.*?)\n\}', rendered, re.S)
-    assert len(cohort) == 6
+    assert len(cohort) == 7
     assert [name for name, _ in sources] == [row["component"] for row in cohort]
     for (_name, body), row in zip(sources, cohort, strict=True):
         labels = (
@@ -7413,12 +7413,12 @@ def _content_gate_cases(monkeypatch):
             "admitted",
         ),
         (
-            # Production task 13414: grafana capped, every declared container clear or empty.
-            "undeclared grafana capped", cohort,
+            # Production task 13414's shape: grafana capped is refused now that grafana is declared.
+            "grafana clear but capped", cohort,
             registered(_content_report(
                 monkeypatch, everything, {**clean, "o11y-grafana": ["scrape completed"] * LOG_SURVEY.CONTENT_CAP},
             )),
-            None,
+            "admitted",
         ),
         (
             "pyroscope not running", cohort,
@@ -7474,7 +7474,7 @@ def test_content_gate_admits_only_declared_clear_or_empty_containers_on_an_obser
     assert set(outcomes["all declared clear"]["statuses"]) == {
         row["container"].removeprefix("o11y-") for row in declared_cohort()
     }
-    assert "grafana" not in outcomes["undeclared grafana capped"]["statuses"]
+    assert outcomes["grafana clear but capped"]["statuses"]["grafana"]["capped"] is True
     # The top-level aggregate is never the gate: both non-clear aggregates below are admitted.
     reports = {name: json.loads(survey["stdout"]) for name, _c, survey, _e in cases if survey["stdout"]}
     assert reports["loki without entries"]["content_survey_status"] == "incomplete"
