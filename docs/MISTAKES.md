@@ -198,6 +198,7 @@ and why.
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
 | 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
+| 10.35 | The Plane MCP edge skip was merged and applied from a reading of the client SDK's source; Claude Code registers at the issuer-relative `/http/register`, which stayed challenged, so the first real sign-in failed with "Dynamic Client Registration rejected (HTTP 403)" | Mechanism never exercised | 1 | Test (`test_cloudflare_mcp_edge.bats` pins the issuer-relative paths) + Convention for the live client run |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -5860,6 +5861,34 @@ previous playbook. `compose.yml` sets `GF_DATABASE_WAL=true` and
 drop is a production measurement, recorded in the o11y README against this baseline. A drop
 would be consistent with the suspected cause, not proof of it; only Grafana's own error log
 would confirm it.
+
+### 10.35 An edge rule for a client sign-in flow shipped without one real client signing in
+
+**What happened.** PR #866 added the Cloudflare `skip` rule `plane-mcp-bypass-challenge` so that
+harnesses could reach Plane's MCP server. Its path set came from the server's discovery documents
+and from a review's reading of the MCP SDK source: for issuer `https://plane-mcp.uhstray.io/http`
+the SDK was said to fall back to `/authorize`, `/token` and `/register` at the host root. The rule
+skipped those root paths, was merged, and was applied (Apply Cloudflare Tofu (Dev), task 12411)
+with a zero-diff re-plan. The probes after the apply exercised the MCP endpoints and the root
+documents with curl, not a client. Joseph's first sign-in from Claude Code 2.1.319 (2026-11-07)
+failed with `SDK auth failed: Dynamic Client Registration rejected (HTTP 403)` and Cloudflare's
+challenge page. Probed afterwards: `POST /http/register` and
+`GET /http/.well-known/oauth-authorization-server` were challenged at the edge, and the origin
+serves registration at both `/register` and `/http/register` (201 each). Fixed by PR #910.
+
+**Root cause.** The behaviour that mattered was the client's, and it was established by reading
+source rather than by running the client. The PR listed a live sign-in as unverified, but the
+rule's comment stated the SDK's fallback as fact, and nothing between merge and apply ran a
+harness against the edge. curl probes of chosen paths prove only the paths someone thought of.
+
+**The rule.** An edge or proxy rule written for a client protocol flow is verified by one real
+client completing that flow through the edge, before the change is called done. Probes of
+individual paths supplement that run; they do not replace it. Client behaviour read from source
+is a hypothesis, and the rule's comments say so until a client run confirms it.
+
+**Enforced by.** Test: `platform/tests/test_cloudflare_mcp_edge.bats` pins the issuer-relative
+`/http/register`, `/http/token` and `/http/.well-known/` paths alongside the root ones, and
+refutes `/authorize`. The live-client run itself is Convention.
 
 ## 11. The largest one
 
