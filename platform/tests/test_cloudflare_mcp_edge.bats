@@ -56,12 +56,14 @@ _rule() {
   # The machine paths, exact: both MCP endpoints and the token and registration endpoints; the
   # protected-resource and authorization-server documents by prefix, so the SDK's path-inserted
   # lookups reach the origin (PR 866 review).
-  assert_contains "$e" 'http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\"}'
+  assert_contains "$e" 'http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\" \"/http/token\" \"/http/register\"}'
   assert_contains "$e" 'starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\")'
   assert_contains "$e" 'starts_with(http.request.uri.path, \"/.well-known/oauth-authorization-server\")'
+  # Claude Code resolves the endpoints and documents relative to the issuer `/http` (2026-11-07).
+  assert_contains "$e" 'starts_with(http.request.uri.path, \"/http/.well-known/\")'
   # The browser step stays challenged, and no broader prefix opens the host.
   refute_contains "$e" '/authorize'
-  [ "$(grep -o 'starts_with' <<<"$e" | wc -l | tr -d ' ')" -eq 2 ]
+  [ "$(grep -o 'starts_with' <<<"$e" | wc -l | tr -d ' ')" -eq 3 ]
   refute_contains "$e" 'contains('
   # Last in the ruleset, so no existing rule moves.
   [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 1 | cut -d'"' -f2)" = "plane-mcp-bypass-challenge" ]
