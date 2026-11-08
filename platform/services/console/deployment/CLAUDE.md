@@ -172,6 +172,7 @@ Routes and scoping:
 | `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
 | `GET /v1/access` | `platform-admins` only; 401 signed out, 403 otherwise | Authentik users and groups from a background read, plus the Access Level -> per-service `role_map` (8.2b). See "Access" below |
 | `GET /v1/policies` | `platform-admins` only; 401 signed out, 403 otherwise | The OPA and OpenBao policy files on `CONSOLE_GITHUB_REF` of `CONSOLE_GITHUB_REPO`, read from GitHub every 15 minutes with the console's read-only token from OpenBao: name, kind, last commit and a link per file. No decision counts (D36). See "Policy" below |
+| `GET /v1/delivery` | `platform-admins` only; 401 signed out, 403 otherwise | The CI/CD page's delivery state from GitHub on `CONSOLE_GITHUB_REF` of `CONSOLE_GITHUB_REPO`, read every 15 minutes with the console's read-only token from OpenBao: the required checks named by `.github/rulesets/protect-main.json`, the ref's comparison with `main` and its promotion pull, and the open pull requests into the ref and into `main` with review state, check counts and, into `main`, each required check. Reads the cache only (plan 17 9.1, D42). See "CI/CD" below |
 
 A tenant the caller may not see answers `404 unknown_tenant`, byte-identical to an unknown one. Prefixes never appear in a tenant answer: a prefix with no site names no tenant (D16). Devices are site-scoped, so they do.
 
@@ -209,6 +210,18 @@ Deep links: each VM and service row carries `grafana_url`, the Service Overview 
 - **Token.** The `token` field of `secret/services/console/github`, read from OpenBao on every refresh and sent to the GitHub API origin only. It is never cached and never echoed in an error.
 - **No decision counts.** The console has no source for them: OPA authz refuses data reads, so the page says so and shows none.
 - **Gate.** `work::admin_only`, the same gate as `/v1/secrets`.
+
+## CI/CD (GitHub, plan 17 9.1, D42)
+
+`GET /v1/delivery` answers `{state, repo, ref, required_checks, ruleset_url, promotion, pulls, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GITHUB_*`, or no `CONSOLE_OPENBAO_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/delivery.rs` (cache, refresh and the reads over the parsed responses) and `app/src/server/github.rs` (the REST client it shares with the Policy page); the response contract is the serde types and the module header, not this section.
+
+- **Source.** REST only, every 15 minutes (`REFRESH_INTERVAL`). One refresh reads: `.github/rulesets/protect-main.json` on the ref (the `required_status_checks` contexts, in ruleset order); `compare/main...<ref>` (`ahead_by`, `behind_by`); the open pull requests into the ref and, unless the ref is `main`, into `main` (30 per list, `PULLS_PER_LIST`, in the order GitHub returns them); and for each pull request its head commit's check runs and its reviews (one page of 100 each).
+- **Checks.** Only the newest run of each check name counts: the highest run id, so a re-run wins. A run that is not completed is `pending`; `success` is `passed`; `skipped` and `neutral` are `skipped`; any other conclusion is `failed`. A pull request into `main` lists each required check by name as `passed`, `failed`, `pending` or `missing` (no run of that name on its head). Other pull requests carry an empty `required`. Commit statuses are not read.
+- **Review.** The latest review of each reviewer other than the pull request's author, ignoring `COMMENTED`, `DISMISSED` and `PENDING`. Any `CHANGES_REQUESTED` makes it `changes_requested`; else any `APPROVED` makes it `approved`; else `none`.
+- **Promotion.** `promotion.pull` is the open pull request into `main` whose head is the ref in the configured repository. A fork's branch of the same name does not count. The same pull request also appears in `pulls`.
+- **Bound.** At most `MAX_REQUESTS` (80) GitHub requests per refresh: four fixed requests, then two per pull request. A refresh with more than 38 open pull requests across both lists reaches the bound, fails, and keeps the last good read. A failed request fails the whole read; no partial read is shown.
+- **Token and errors.** The `token` field of `secret/services/console/github`, read from OpenBao on every refresh and sent to the GitHub API origin only. A failed read keeps the last good read and says why. No URL, response body or token reaches an error or a log line.
+- **Gate.** `work::admin_only`, the same gate as `/v1/policies`.
 
 ## Shared credentials (plan 17, D26-D27)
 
