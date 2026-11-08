@@ -31,8 +31,12 @@ Plane's app list reads from a replica: an immediate re-run can miss an applicati
 moment ago. The create then answers 400 on the slug, and this script refuses with a named error
 (not a duplicate), so the caller re-runs once the replica catches up.
 
+Then it installs the application into the workspace (POST .../{id}/install/), every pass: Plane
+refuses a member's authorization until a workspace admin has installed the app, and a repeat install
+only sets the installation back to installed.
+
 Prints ONE JSON line {"client_id", "client_secret" (only when created or regenerated), "created",
-"regenerated", "patched": [field names]}. client_secret is the credential output, so the playbook
+"regenerated", "patched": [field names], "installed": true}. client_secret is the credential output, so the playbook
 shows only the non-secret fields. A refusal prints {"error"} and exits 1. A refused write prints the
 HTTP status only, never a response body, because a body can carry a secret.
 """
@@ -76,9 +80,11 @@ if match is None:
         fail(f"application slug {app_slug} exists but was not listed; re-run")
     if status != 201 or not isinstance(created, dict) or not created.get("client_secret"):
         fail(f"creating application {app_slug} refused ({status})")  # no body: it carries the secret
-    print(json.dumps({"client_id": created["client_id"], "client_secret": created["client_secret"],
-                      "created": True, "regenerated": False, "patched": []}))
+    app_id = created.get("id")
+    result = {"client_id": created["client_id"], "client_secret": created["client_secret"],
+              "created": True, "regenerated": False, "patched": []}
 else:
+    app_id = match.get("id")
     patch = {}
     if set((match.get("redirect_uris") or "").split()) != set(redirect.split()):
         patch["redirect_uris"] = redirect
@@ -95,4 +101,16 @@ else:
         if status != 200 or not isinstance(rotated, dict) or not rotated.get("client_secret"):
             fail(f"regenerating the secret of {app_slug} refused ({status})")
         result.update(client_secret=rotated["client_secret"], regenerated=True)
-    print(json.dumps(result))
+
+# Install the application into the workspace. Plane lets a member authorize an app only once a
+# workspace member allowed to install integrations has installed it ("A workspace member with
+# permission to install integrations must install the application first"); the automation account
+# is the workspace's admin. A repeat POST only sets the existing installation back to installed, so
+# this runs on every pass (OAuthApplicationInstallEndpoint, Plane v3.3.3).
+if not app_id:
+    fail(f"application {app_slug} has no id to install")
+status, _, _ = call("POST", f"{base_path}{app_id}/install/")
+if status != 200:
+    fail(f"installing application {app_slug} in {ws} refused ({status})")
+result["installed"] = True
+print(json.dumps(result))
