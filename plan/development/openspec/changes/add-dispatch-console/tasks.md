@@ -74,7 +74,18 @@ Decisions D22–D25. Every source is all-or-none in the environment. A source th
   - The network view (prefixes) and the admin-only data-flows view.
   - Compute levels, the Services table, service detail, the resource panel and business-domain tiles.
   - Every status shows an icon and a label. Every per-asset view links to Grafana and draws no chart.
-- [ ] 6.6 Validation gate: on local-dev and in production, every host, VM and service shown exists in NetBox or Proxmox, and computer-use browser tests pass (D30).
+- [x] 6.6 Validation gate: on local-dev and in production, every host, VM and service shown exists in NetBox or Proxmox, and computer-use browser tests pass (D30).
+  - Local-dev (2026-11-03): Deploy console (Local) through the local Semaphore, task 10657; signed in as the local platform admin, Topology, Compute, Services and Network show NetBox and Proxmox as not configured with 0 nodes, VMs and services, and Data flows render from the inventory declarations.
+  - Production (2026-11-04, after the node-list fix #820, deploy 11757 and later redeploys): signed in through Brave, Compute lists the 11 nodes of `uhstray-cluster` with both sources `Read ok`, matching the Proxmox cluster's node count.
+  - Production hosts, VMs and services (2026-11-07, after the Phase 5 redeploy 12424): signed in through Authentik in Orca's built-in browser, driven by its CLI (an accepted session under D30 as amended 2026-11-07). The Brave session had lost its accessibility grant. Topology, Compute and Services each show NetBox and Proxmox `Read ok`. The Network and Data flows tabs were opened by clicking them.
+    - Hosts: Topology lists 13 NetBox devices for the mapped site, the 11 hypervisors that match the 11 Proxmox nodes plus 2 pfSense devices.
+    - VMs: Compute lists 40 VM rows under 33 names. 24 rows carry a Proxmox VM ID and live state (12 running, 12 stopped); the other 16 show no live state.
+    - Services: the Services table lists 18 services, each the name of a VM row above.
+    - Data flows render from the inventory declarations, and Network lists one NetBox prefix.
+  - How existence is established: every VM row is built from a NetBox record (`cluster_view`, `server/inventory.rs:574`), and live state comes only from a unique Proxmox guest-name match (`unique_guest`, `server/inventory.rs:498`). So a row shown is a NetBox record, and a VM ID shown is a Proxmox guest. No independent by-name read was available: NetBox's UI needs a local login, and production Prometheus has no `pve_*` metrics.
+  - Findings, left for separate work:
+    - NetBox holds two VM records under each of 7 platform names: agentgateway, dns, gh-runner-01, gh-runner-02, o11y, openbao and step-ca. The console withholds live state from a name held twice (`duplicate_vm_names`, `server/netbox.rs:282`), so all 14 rows show none, although these services run. Cause not established.
+    - console, opa and skynet are `planned` in NetBox but `running` in Proxmox, so they show amber.
 
 ## Phase 4 checklist: proposals
 
@@ -90,8 +101,9 @@ Decisions D26–D28. This replaces Phase 1 task 5.3, which never ran.
   - Its credentials are stored at `secret/services/approles/console`.
   - `Rotate Console Credentials (Dev)` rotates the secret ID monthly, well inside its 90-day TTL, and redeploys the console.
 - [x] 8.0a Grafana Viewer service-account token `secret/services/o11y:console_grafana_token`, minted through the Grafana admin API by `provision-console-grafana-token.yml` (D32: 90-day lifetime, renewed under 30 days). `deploy-console.yml` shared-reads it when `console_grafana_api_enabled` is true.
-- [ ] 8.0b `platform/lib/github_app_token.py` accepts a downscoping `permissions` body, with tests.
+- [x] 8.0b `platform/lib/github_app_token.py` accepts a downscoping `permissions` body, with tests.
   - `refresh-console-github-token.yml`, scheduled every 45 minutes, writes a read-only installation token to `secret/services/console/github:token`.
+  - Done 2026-11-04: GitHub App `uhstray-dispatch-console` created from a manifest (read on contents, checks, actions, pull requests and metadata; no webhook events), installed on `agent-cloud` only. Its client id and private key were seeded to `secret/services/github` through Seed OpenBao Key (Dev), the key as base64 (#844), tasks 12250 and 12251. `Refresh Console GitHub Token (Dev)` ran in check mode (12264) and for real (12266), writing a token whose reported grant is agent-cloud with read permissions only; its 45-minute schedule is active.
 - [x] 8.0c The console server logs in to OpenBao with its AppRole at run time and again on demand, reading `CONSOLE_OPENBAO_*`. `platform/services/console/deployment/templates/env.j2:55-63` renders those variables and says the server reads them from Phase 5, so they stay unread until this task lands. Needed by 8.1 and the GitHub token read. Done: `server/openbao.rs`; first consumer is 8.1.
 
 ## Phase 5 checklist: governance pages
@@ -99,9 +111,12 @@ Decisions D26–D28. This replaces Phase 1 task 5.3, which never ran.
 Decision D28. These are platform-wide views, so they answer `platform-admins` only (D25).
 
 - [x] 8.1 The Secrets page: OpenBao metadata only (path, versions, timestamps). A canary test proves no value ever leaves the API.
-- [ ] 8.2 The Access page: Authentik users and groups through a view-only token declared by blueprint, and the role map.
+- [x] 8.2 The Access page: Authentik users and groups through a view-only token declared by blueprint, and the role map.
+  - Token (#839): role `console-directory-reader` (view_user, view_group), account `svc-console-directory`. Deploy Authentik (Dev) task 12019 proved it live: users and groups 200, group create 403.
+  - Page (#845 server, #840 UI): read over the LAN (site-config #145 declares the console as an allowed source on the Authentik host); deploy 12036; signed in, the page lists Authentik people, service accounts and groups, and the role map pinned to `plan/architecture/04-credentials-access.md`.
 - [ ] 8.3 The AI Gateway and LLM access pages: `agw_clients` rendered at deploy into `config/gateway.json`, and usage through Grafana (D26). Role pages list only that role's work.
-- [ ] 8.4 The Policy page lists the policy files through the GitHub API. The Tenant and Organization settings pages read business-domain tags as NetBox tags. Request a service shows the catalog.
+  - 8.3a done 2026-11-04: `config/gateway.json` (#838) and both pages (#837), deploy 12024; signed in, LLM access lists the gateway's clients with tier, hourly budget and allowed models, and AI Gateway lists the models with the clients allowed on each. Open: usage through Grafana (D26) and the role pages.
+- [ ] 8.4 The Policy page lists the policy files through the GitHub API (D36). Organization settings reads business-domain tags as NetBox tags, and Tenant settings shows the tenant's structure (D37). Request a service shows the catalog derived from the deploy templates (D38).
 - [ ] 8.5 Change controls are disabled, with the reason shown, until Phase 4. Validation gate: the canary test and computer-use tests pass.
 
 ## Phase 6 checklist: delivery and telemetry
