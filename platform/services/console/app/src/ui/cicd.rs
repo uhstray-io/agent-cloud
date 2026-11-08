@@ -180,7 +180,7 @@ fn RequiredCard(checks: Vec<String>, ruleset_url: Option<String>) -> Element {
     rsx! {
         section { class: "card",
             div { class: "card-h",
-                h2 { "Required checks on main" }
+                h2 { "Required checks in the ruleset file" }
                 if let Some(url) = ruleset_url {
                     a {
                         href: "{url}",
@@ -221,7 +221,7 @@ fn PullsCard(pulls: Vec<Pull>, now_ms: Option<i64>) -> Element {
                             th { "Author" }
                             th { "Review" }
                             th { "Checks" }
-                            th { "Required" }
+                            th { "Required (ruleset file)" }
                             th { "Updated" }
                             th { "Action" }
                         }
