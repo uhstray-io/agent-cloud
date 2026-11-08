@@ -618,7 +618,12 @@ for observation_attempt in range(2):
                                         and mount_id(path)==item_mount and mount_id(nested_path)==nested_mount
                                         and len(data)==opened.st_size)
                                     if stable_read:
-                                        state["cursor_valid"]=journal_cursor(data,name)
+                                        # Alloy v1.9.2 writes its whole positions map every sync period, so a
+                                        # declared source that has read no entry yet writes exactly this
+                                        # (positions.go save, write_positions_unix.go yaml.v2 Marshal). That
+                                        # means "no cursor yet" for a new component; o11y_alloy stays strict.
+                                        state["cursor_valid"]=(journal_cursor(data,name) or
+                                            (journal_dirs[name]!="o11y_alloy" and data==b"positions: {}\n"))
                                         state["cursor_checked"]=True
                             finally: os.close(fd)
                         except OSError:
