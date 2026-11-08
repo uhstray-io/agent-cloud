@@ -7,7 +7,8 @@
 //!
 //! Query values are encoded by `reqwest::Url`, so a service name cannot add a parameter.
 //!
-//! The usage read (plan 17, task 8.3, D39) is the one call the console makes to Grafana. With
+//! The usage read (plan 17, task 8.3, D39) is one of the console's calls to Grafana; the telemetry read
+//! (plan 17, 9.2, D43, `telemetry.rs`) is the other. With
 //! `CONSOLE_GRAFANA_TOKEN` set, a background task asks Grafana's Prometheus proxy for the gateway's
 //! token use per identity over the last hour, every `REFRESH_INTERVAL`, with a Viewer token (D32).
 //! `GET /v1/gateway` reads the cache and never Grafana. A failed read keeps the last good figures and
@@ -34,7 +35,7 @@ pub const REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 pub const USAGE_QUERY: &str = r#"sum by (identity) (increase(agentgateway_gen_ai_client_token_usage_sum{job="agentgateway"}[1h]))"#;
 
 /// Grafana's Prometheus datasource (uid `prometheus`, `datasources.yml`), queried through the API proxy.
-const USAGE_PATH: &str = "/api/datasources/proxy/uid/prometheus/api/v1/query";
+pub(super) const USAGE_PATH: &str = "/api/datasources/proxy/uid/prometheus/api/v1/query";
 
 /// Why one usage read failed. Fixed text only: a reqwest error names the request URL, and a body can echo the
 /// token, so neither is shown (`access.rs` does the same).
@@ -82,12 +83,25 @@ impl fmt::Display for ReadError {
 /// loopback or RFC1918 host) and carry no query or fragment, so the path cannot be moved into one. Config checks
 /// the origin at load; this check repeats it, because a test `AppState` can carry any origin.
 pub fn usage_url(base: &str) -> Result<Url, ReadError> {
+    guarded_url(base, USAGE_PATH, &[("query", USAGE_QUERY)])
+}
+
+/// `path` on `base`, with `query` as its pairs. The guard `usage_url` applies, for every Grafana read the console
+/// makes: the origin passes the transport rule and carries no query or fragment.
+pub(super) fn guarded_url(
+    base: &str,
+    path: &str,
+    query: &[(&str, &str)],
+) -> Result<Url, ReadError> {
     let parsed = Url::parse(base).map_err(|_| ReadError::Refused)?;
     if !transport_allowed(base) || parsed.query().is_some() || parsed.fragment().is_some() {
         return Err(ReadError::Refused);
     }
-    let mut url = Url::parse(&format!("{base}{USAGE_PATH}")).map_err(|_| ReadError::Refused)?;
-    url.query_pairs_mut().append_pair("query", USAGE_QUERY);
+    let mut url = Url::parse(&format!("{base}{path}")).map_err(|_| ReadError::Refused)?;
+    // An empty query leaves no `?` behind: `query_pairs_mut` alone would add one.
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(query);
+    }
     Ok(url)
 }
 
@@ -98,7 +112,17 @@ pub async fn fetch_usage(
     base: &str,
     token: &Secret,
 ) -> Result<HashMap<String, u64>, ReadError> {
-    let url = usage_url(base)?;
+    read_answer(http, usage_url(base)?, token, parse_usage).await
+}
+
+/// One GET of `url` with the Viewer token as a bearer, then `parse` of the body. A status that is not success
+/// fails the read by its code, and the body is never shown.
+pub(super) async fn read_answer<T>(
+    http: &reqwest::Client,
+    url: Url,
+    token: &Secret,
+    parse: impl FnOnce(&[u8]) -> Result<T, ReadError>,
+) -> Result<T, ReadError> {
     let response = http
         .get(url)
         .header(
@@ -114,7 +138,7 @@ pub async fn fetch_usage(
         return Err(ReadError::Status(status.as_u16()));
     }
     let body = response.bytes().await.map_err(transport_error)?;
-    parse_usage(&body)
+    parse(&body)
 }
 
 /// reqwest's own Display names the request URL, so the error is classified, not shown (as `access.rs` does).
@@ -148,25 +172,35 @@ struct Series {
     value: (IgnoredAny, String),
 }
 
-/// The per-identity token counts of one instant-query answer, rounded to whole tokens. A series with no
-/// `identity` label, or a sample that is not a finite non-negative number, is skipped: its client then reads
-/// as no figure, never as a wrong one. An identity named twice refuses the whole answer.
-pub fn parse_usage(body: &[u8]) -> Result<HashMap<String, u64>, ReadError> {
+/// One series of an instant-vector answer: its labels, and its sample as Prometheus sends it.
+pub(super) type InstantSample = (HashMap<String, String>, String);
+
+/// The series of a Prometheus instant-vector answer, each as its labels and its sample text. A body that is not
+/// JSON is `Decode`. A status that is not `success`, or a result that is not a vector, is `Shape`. The usage read
+/// and the telemetry read both parse their answers here.
+pub(super) fn instant_vector(body: &[u8]) -> Result<Vec<InstantSample>, ReadError> {
     let answer: Answer = serde_json::from_slice(body).map_err(|_| ReadError::Decode)?;
     let data = match answer.data {
         Some(data) if answer.status == "success" && data.result_type == "vector" => data,
         _ => return Err(ReadError::Shape),
     };
+    Ok(data
+        .result
+        .into_iter()
+        .map(|series| (series.metric, series.value.1))
+        .collect())
+}
+
+/// The per-identity token counts of one instant-query answer, rounded to whole tokens. A series with no
+/// `identity` label, or a sample that is not a finite non-negative number, is skipped: its client then reads
+/// as no figure, never as a wrong one. An identity named twice refuses the whole answer.
+pub fn parse_usage(body: &[u8]) -> Result<HashMap<String, u64>, ReadError> {
     let mut tokens = HashMap::new();
-    for series in data.result {
-        let Some(identity) = series
-            .metric
-            .get("identity")
-            .filter(|name| !name.is_empty())
-        else {
+    for (metric, sample) in instant_vector(body)? {
+        let Some(identity) = metric.get("identity").filter(|name| !name.is_empty()) else {
             continue;
         };
-        let Ok(sample) = series.value.1.parse::<f64>() else {
+        let Ok(sample) = sample.parse::<f64>() else {
             continue;
         };
         if !sample.is_finite() || sample < 0.0 {
