@@ -79,6 +79,9 @@ The upstream default is `LOG_PAYLOADS=true` (`plane_mcp/server.py`). That logs e
   the credentials in OpenBao (`plane_mcp_client_id`, `plane_mcp_client_secret`), renders `.env` from `templates/env.j2`, runs
   `deploy.sh`, and verifies the token endpoint. It records no service-deploy step result (that is keyed by the host's service,
   `plane`).
+- The playbook also installs the application into the workspace on every pass, as the automation account (the workspace
+  admin). Plane refuses a member's authorization until an admin has installed the app ("This app can only be installed after
+  a workspace admin installs it"); a repeat install only sets the installation back to installed.
 - Plane shows the client secret only at create or regenerate. The playbook reuses the stored one only when OpenBao's
   `plane_mcp_client_id` is the id Plane lists; otherwise it regenerates, so a new id is never paired with an old secret.
 - Locally, `validate-all.yml` runs inside the Semaphore container, where `*.agent-cloud.test` resolves to the container's own
