@@ -1177,6 +1177,10 @@ def _embedded_metadata(root, *args):
     return json.loads(result.stdout)
 
 
+# Exact bytes Alloy v1.9.2 writes for a journal source with no position yet: yaml.Marshal of
+# File{Positions: map[Entry]string{}} with the rfratto/go-yaml fork of yaml.v2 Alloy builds against.
+_EMPTY_POSITIONS = "positions: {}\n"
+
 def _cursor_text(component, cursor="s=1a;i=2b;b=3c;m=4d;t=5e;x=6f"):
     return (
         "positions:\n  ? path: cursor-" + component + "\n    labels: \"\"\n  : \"" + cursor + "\"\n"
@@ -1257,13 +1261,17 @@ def test_embedded_positions_validate_each_declared_component_cursor(tmp_path):
         "absent": (None, "absent", False, False),
         "valid": ("loki.source.journal.o11y_prometheus", "present", True, True),
         "wrong_component": ("loki.source.journal.o11y_alloy", "present", True, False),
+        # Alloy v1.9.2's bytes for a source that has read no entry (yaml.v2 Marshal of an empty map).
+        "no_cursor_yet": (_EMPTY_POSITIONS, "present", True, True),
+        "empty_but_not_alloys_form": ("positions: {}\nextra: true\n", "present", True, False),
     }
     for case, (content_component, presence, checked, valid) in cases.items():
         positions = prometheus / "positions.yml"
         if positions.exists():
             positions.unlink()
         if content_component is not None:
-            positions.write_text(_cursor_text(content_component))
+            text = content_component if content_component.startswith("positions:") else _cursor_text(content_component)
+            positions.write_text(text)
             os.chmod(positions, 0o600)
         metadata = _embedded_metadata(root, "true", '["o11y_alloy", "o11y_prometheus"]')
         assert metadata["component_layout"] is True, case
@@ -1276,6 +1284,17 @@ def test_embedded_positions_validate_each_declared_component_cursor(tmp_path):
             "cursor_checked": checked, "cursor_valid": valid,
         }, case
 
+
+
+def test_embedded_positions_keep_the_alloy_cursor_strict_for_empty_positions(tmp_path):
+    # The no-cursor-yet form admits a newly declared component only; the alloy cursor stays required.
+    root = _declared_root(tmp_path, "o11y_alloy", "o11y_prometheus")
+    alloy_positions = root / "loki.source.journal.o11y_alloy" / "positions.yml"
+    alloy_positions.write_text(_EMPTY_POSITIONS)
+    os.chmod(alloy_positions, 0o600)
+    metadata = _embedded_metadata(root, "true", '["o11y_alloy", "o11y_prometheus"]')
+    assert metadata["journal_components"]["o11y_alloy"]["cursor_valid"] is False
+    assert metadata["journal_cursor_valid"] is False
 
 _JOURNAL_ENTRY_ABSENT = {
     "presence": "absent", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False,

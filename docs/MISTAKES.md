@@ -81,7 +81,7 @@ and why.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
-| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list | False-green fixture | 1 | Shared filter test + playbook fixture |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x2** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back) | False-green fixture | 2 | Shared filter test + playbook fixture |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x3** (widened by 2.31) | Wrong-reason pass | 3 | Image references: `test_compose_image_qualified.py`; class: proposal in 2.31 |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
@@ -2018,6 +2018,8 @@ Widened in 2.25.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
+**Occurrences: 2** — (first undated), 2026-11-08
+
 **What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
 provisioner from `dev`, then refused its newly created isolated environment as
 unreadable. Its GET response omitted `secrets`; the fixture always returned
@@ -2041,6 +2043,21 @@ empty secret lists.
 **Status 2026-10-02.** The first test named under Enforced by was renamed to `test_the_clean_environment_rule_refuses_any_address_pin` in `platform/tests/test_semaphore_seed_input.py` by `03888eee`; the old name stays above as written and is listed in `platform/tests/ledger_citation_ratchet.txt`. Fixture shape widened in 2.26.
 
 **Widened 2026-10-30 by 2.32.** The provider's write behaviour, not only its response shape.
+
+**Occurrence 2 — 2026-11-08.** The journal collector cohort (PR 887) declared new
+`loki.source.journal` components, and the positions helper's tests wrote only Alloy's one-cursor
+`positions.yml` shape (`_cursor_text`). Pinned Alloy v1.9.2 saves its whole positions map every sync
+period, so a source that has read no entry writes `positions: {}\n` (`positions.go` `save`,
+`write_positions_unix.go` yaml `Marshal`; Alloy builds against the `rfratto/go-yaml` fork of yaml.v2, and
+`go run` on that fork reproduces the bytes).
+The helper read that file as an invalid cursor. The first production apply (Semaphore task 13472)
+started the new collector healthy, then its live positions check refused on `cursor_validity`
+and the apply removed the collector, leaving the receiver with no journal collector until the
+fix. The dry run (13471) passed because check mode never starts the collector. Why the rule did
+not fire: the fixture was written against the shape the helper already parsed, and nobody asked
+what the pinned provider writes before its first read. The helper now accepts exactly those
+bytes for any declared non-alloy component, as it already accepted an absent file (`o11y_alloy` stays strict), and the test fixture is
+the reproduced bytes, with both halves mutation-checked.
 
 ### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
 
