@@ -84,7 +84,7 @@ Decisions D22–D25. Every source is all-or-none in the environment. A source th
     - Data flows render from the inventory declarations, and Network lists one NetBox prefix.
   - How existence is established: every VM row is built from a NetBox record (`cluster_view`, `server/inventory.rs:574`), and live state comes only from a unique Proxmox guest-name match (`unique_guest`, `server/inventory.rs:498`). So a row shown is a NetBox record, and a VM ID shown is a Proxmox guest. No independent by-name read was available: NetBox's UI needs a local login, and production Prometheus has no `pve_*` metrics.
   - Findings, left for separate work:
-    - NetBox holds two VM records under each of 7 platform names: agentgateway, dns, gh-runner-01, gh-runner-02, o11y, openbao and step-ca. The console withholds live state from a name held twice (`duplicate_vm_names`, `server/netbox.rs:282`), so all 14 rows show none, although these services run. Cause not established.
+    - NetBox holds two VM records under each of 7 platform names: agentgateway, dns, gh-runner-01, gh-runner-02, o11y, openbao and step-ca. The console withholds live state from a name held twice (`duplicate_vm_names`, `server/netbox.rs:282`), so all 14 rows show none, although these services run. Cause not established. `Reconcile NetBox Duplicate VMs` (`reconcile-netbox-duplicate-vms.yml`) removes one known kind of pair, a bare workflow record beside discovery's record. Whether these 7 pairs are that kind has not been checked, and the template has not been run for them.
     - console, opa and skynet are `planned` in NetBox but `running` in Proxmox, so they show amber.
 
 ## Phase 4 checklist: proposals
