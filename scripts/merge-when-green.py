@@ -4,10 +4,12 @@
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 from urllib.parse import urlencode
 
 REPO = "uhstray-io/agent-cloud"
@@ -36,6 +38,14 @@ DOCKERFILES = {
     "platform/services/inference-hunyuan3d/deployment/Dockerfile",
 }
 SHA = re.compile(r"^[0-9a-f]{40}$")
+# The one rule set for pull request titles (plan 20), loaded from the sibling script so the two cannot disagree.
+SEMVER = Path(__file__).resolve().with_name("semver.py")
+_semver_spec = importlib.util.spec_from_file_location("semver_for_merge_guard", SEMVER)
+semver = importlib.util.module_from_spec(_semver_spec)
+_semver_spec.loader.exec_module(semver)
+# release-version.yml runs these with contents: write on every push to dev and main (plan 20), so a pull
+# request that changes either one is merged by the operator, never through this gate.
+RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv")
 
 
 class Refusal(Exception):
@@ -103,6 +113,19 @@ def get_pr(api, number):
     return api.api(f"repos/{REPO}/pulls/{number}")
 
 
+def check_title(pr):
+    # The Version job reads the title when it runs, and a title edit does not run it again, so the guard
+    # reads the live title at merge: a title edited after a green Version run is refused here.
+    title = pr.get("title")
+    try:
+        if not isinstance(title, str):
+            raise semver.InvalidTitle("the title is missing or is not text")
+        semver.classify_title(title)
+    except semver.InvalidTitle as error:
+        raise Refusal(f"PR title is not a Conventional Commits title ({error}); "
+                      "fix the title and re-run the Version job") from error
+
+
 def check_pr(pr, number, sha):
     if not isinstance(pr, dict):
         raise Refusal("PR response is incomplete")
@@ -115,6 +138,7 @@ def check_pr(pr, number, sha):
             or not isinstance(base.get("sha"), str) or not SHA.fullmatch(base["sha"])
             or head["repo"].get("full_name") != REPO or head.get("sha") != sha):
         raise Refusal("PR must be open, ready, same-repository, target dev, and match --head with a pinned base SHA")
+    check_title(pr)
     return base["sha"]
 
 
@@ -134,6 +158,8 @@ def changed_files(api, number):
     paths = [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
     if any(path.startswith(".github/workflows/") and path != WORKFLOW for path in paths):
         raise Refusal("PR changes another protected workflow path")
+    if any(path in RELEASE_SCRIPTS for path in paths):
+        raise Refusal("PR changes a release script that runs with a write token; the operator merges it")
     return paths, files
 
 

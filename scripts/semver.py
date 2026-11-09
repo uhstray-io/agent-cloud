@@ -17,7 +17,7 @@ from typing import NamedTuple
 
 TABLE = Path(__file__).resolve().parent / "semver-backfill.tsv"
 LOG_FORMAT = "%H%x1f%P%x1f%s%x1f%b%x1e"
-TITLE_RE = re.compile(r"^(?P<type>[a-z]+)(\((?P<scope>[^()\s][^()]*)\))?(?P<bang>!)?: (?P<desc>\S.*)$")
+TITLE_RE = re.compile(r"(?P<type>[a-z]+)(\((?P<scope>[^()\s][^()]*)\))?(?P<bang>!)?: (?P<desc>\S.*)")
 MERGE_RE = re.compile(r"^Merge pull request #(\d+) from ([^/\s]+)/(\S+)$")
 SQUASH_RE = re.compile(r"^(.+) \(#(\d+)\)$")
 RELEASE_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -67,7 +67,8 @@ def _git(repo, *args, check=True):
 
 def classify_title(title):
     """The bump one pull request title asks for. Raises InvalidTitle for a title not in the form."""
-    match = TITLE_RE.match(title)
+    # fullmatch, not match: match would accept a valid title followed by trailing text such as a newline.
+    match = TITLE_RE.fullmatch(title)
     if match is None:
         raise InvalidTitle(
             "want type(scope)!: description, a lower-case type, one space after the colon, "
@@ -128,8 +129,7 @@ def _records(output):
 
 def _pull_request(parents, subject, body):
     """(number, title) when a commit is a pull request merge or a squash merge, else None."""
-    if subject.startswith("Merge branch "):  # the main-to-dev sync: never a pull request
-        return None
+    # The main-to-dev sync merge ("Merge remote-tracking branch 'origin/main' into dev") matches neither form.
     merge = MERGE_RE.match(subject)
     if merge and len(parents) > 1:
         if merge[3] == "dev":  # a promotion (dev to main) is not a pull request of its own
@@ -158,14 +158,6 @@ def _pull_requests(repo, rev_range, first_parent):
 def pr_titles(repo, rev_range, first_parent):
     """(number, title) for each pull request in rev_range, oldest first."""
     return [(number, title) for _sha, number, title in _pull_requests(repo, rev_range, first_parent)]
-
-
-def _is_pull_request(repo, ref):
-    records = list(_records(_git(repo, "log", "-1", f"--format={LOG_FORMAT}", ref).stdout))
-    if not records:
-        return False
-    _sha, parents, subject, body = records[0]
-    return _pull_request(parents, subject, body) is not None
 
 
 def _dev_max(repo, version):
@@ -249,8 +241,6 @@ def cmd_title(_repo, args):
 
 
 def cmd_next(repo, args):
-    if args.require_pr_merge and not _is_pull_request(repo, args.ref):
-        return 0
     base, tag = last_release(repo, args.ref)
     rev_range = f"{tag}..{args.ref}" if tag else args.ref
     prs = pr_titles(repo, rev_range, first_parent=args.channel == "dev")
@@ -342,11 +332,6 @@ def _parser():
     nxt.add_argument("--channel", choices=("dev", "main"), required=True)
     nxt.add_argument("--ref", default="HEAD")
     nxt.add_argument("--title", help="one more pull request, not yet merged")
-    nxt.add_argument(
-        "--require-pr-merge",
-        action="store_true",
-        help="print nothing unless REF is itself a pull request merge or squash",
-    )
     dev_tags_cmd = commands.add_parser("dev-tags", help="the dev tags still owed on REF's first-parent chain")
     dev_tags_cmd.add_argument("--ref", default="HEAD")
     notes = commands.add_parser("notes", help="pull request titles in a range, as a Markdown list")

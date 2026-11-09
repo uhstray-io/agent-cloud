@@ -16,9 +16,10 @@ name: Release Version
 # Its triggers are pushes to dev and main, and a manual dispatch.
 #
 # WHY THE MERGE GUARD REFUSES A PULL REQUEST THAT TOUCHES THIS FILE: scripts/merge-when-green.py
-# refuses any pull request that changes a workflow other than lint-and-test.yml
-# (scripts/merge-when-green.py:134-135). A workflow that can push tags is exactly what that rule
-# keeps out of the guarded path, so the operator merges the pull request that adds or changes it.
+# refuses any pull request that changes a workflow other than lint-and-test.yml (changed_files()).
+# A workflow that can push tags is exactly what that rule keeps out of the guarded path, so the
+# operator merges the pull request that adds or changes it. The same function refuses a pull request
+# that changes scripts/semver.py or scripts/semver-backfill.tsv, which this workflow runs with a write token.
 #
 # THE MAJOR GATE: automation never produces a new major version. The `major` job runs only on a
 # dispatch from main with the `major` input set, and it waits in the `release-major` environment
@@ -42,17 +43,18 @@ on:
 permissions:
   contents: read
 
-# One run at a time, and a running one is never cancelled. A pending run is still replaced by a
-# newer pending run (GitHub's default for concurrency groups, docs: using-concurrency).
-concurrency:
-  group: release-version
-  cancel-in-progress: false
-
 jobs:
   tag:
     name: Tag the push
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    # One run at a time per branch, and a running one is never cancelled. Per ref, so a push to dev cannot
+    # replace a pending run on main. A newer pending run of the same ref still replaces an older one (GitHub
+    # keeps only the newest pending run): dev-tags catches up the merges a replaced dev run skipped, and on
+    # main the next run counts every pull request since the last release.
+    concurrency:
+      group: release-version-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -136,6 +138,10 @@ jobs:
     name: Manual major release
     if: github.event_name == 'workflow_dispatch' && inputs.major && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # Its own group, so a run waiting for the release-major approval holds nothing that a tag run needs.
+    concurrency:
+      group: release-version-major
+      cancel-in-progress: false
     # Required reviewer: the operator (.github/environments/release-major.json). A job that names an
     # environment which does not exist creates it with no protection rules, so run
     # .github/environments/apply.sh --apply before the first major dispatch.

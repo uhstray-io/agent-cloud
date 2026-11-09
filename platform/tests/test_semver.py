@@ -170,6 +170,8 @@ def test_bang_marks_a_breaking_change_on_any_known_type(title):
         "feat(): add",
         "feat: ",
         "feat!add: x",
+        "feat: add\n",
+        "feat: add\nmore",
         "",
     ],
 )
@@ -255,7 +257,7 @@ def test_dev_ignores_the_main_to_dev_sync_merge(tmp_path):
     repo.checkout("main")
     repo.commit("docs: main only")
     repo.checkout("dev")
-    repo.merge_raw("Merge branch 'main' into dev", "feat: sync title", "main")
+    repo.merge_raw("Merge remote-tracking branch 'origin/main' into dev", "feat: sync title", "main")
     result = _run(repo, "next", "--channel", "dev", "--ref", "dev")
     assert result.stdout == "v0.1.1-dev.1\n"
 
@@ -267,7 +269,7 @@ def test_merge_and_squash_formats_are_both_read_and_promotions_are_skipped(tmp_p
     repo.checkout("dev")
     repo.feature("feat-a", "feat: a")
     repo.merge_pr("feat-a", 12, "feat: a")
-    repo.merge_raw("Merge branch 'main' into dev", "feat: sync title", "main")
+    repo.merge_raw("Merge remote-tracking branch 'origin/main' into dev", "feat: sync title", "main")
     repo.feature("fix-b", "fix: b")
     repo.squash_pr("fix-b", 13, "fix: b")
     repo.checkout("main")
@@ -283,22 +285,6 @@ def test_promotion_alone_does_not_count_on_main(tmp_path):
     repo.checkout("main")
     repo.merge_raw("Merge pull request #51 from uhstray-io/dev", "feat: promoted", "dev")
     assert _run(repo, "next", "--channel", "main", "--ref", "main").stdout == ""
-
-
-def test_require_pr_merge_prints_nothing_for_a_direct_commit(tmp_path):
-    repo = _dev_repo(tmp_path)
-    repo.commit("fix: direct")
-    assert _run(repo, "next", "--channel", "dev", "--ref", "dev", "--require-pr-merge").stdout == ""
-    repo.feature("fix-x", "fix: x")
-    repo.merge_pr("fix-x", 20, "fix: x")
-    assert _run(repo, "next", "--channel", "dev", "--ref", "dev", "--require-pr-merge").stdout == (
-        "v0.1.1-dev.1\n"
-    )
-    repo.feature("fix-y", "fix: y")
-    repo.squash_pr("fix-y", 21, "fix: y")
-    assert _run(repo, "next", "--channel", "dev", "--ref", "dev", "--require-pr-merge").stdout == (
-        "v0.1.1-dev.1\n"
-    )
 
 
 def test_dev_tags_catches_up_untagged_merges_in_order_with_n_counting(tmp_path):
@@ -362,7 +348,7 @@ def test_dev_tags_skips_the_main_to_dev_sync_merge(tmp_path):
     repo.checkout("main")
     repo.commit("docs: main only")
     repo.checkout("dev")
-    repo.merge_raw("Merge branch 'main' into dev", "feat: sync title", "main")
+    repo.merge_raw("Merge remote-tracking branch 'origin/main' into dev", "feat: sync title", "main")
     repo.feature("fix-b", "fix: b")
     repo.merge_pr("fix-b", 31, "fix: b")
     b = repo.head()

@@ -81,7 +81,7 @@ class FakeGitHub:
             "number": PR, "state": "open", "draft": False, "merged": False,
             "base": {"ref": "dev", "sha": BASE, "repo": {"full_name": guard.REPO}},
             "head": {"sha": HEAD, "repo": {"full_name": guard.REPO}},
-            "user": {"login": "author"},
+            "user": {"login": "author"}, "title": "feat: x",
         }
         self.files = ["docs/change.md"]
         self.reviews = [{"user": {"login": "reviewer"}, "state": "APPROVED",
@@ -929,6 +929,26 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         api.files = [".github/workflows/other.yml"]
         run_refusal(self, api, "another protected workflow path")
+
+    def test_release_scripts_refuse_because_they_run_with_a_write_token(self):
+        for path in guard.RELEASE_SCRIPTS:
+            with self.subTest(path=path):
+                api = FakeGitHub()
+                api.files = [path]
+                run_refusal(self, api, "release script that runs with a write token")
+
+    def test_invalid_live_title_refuses(self):
+        for title in ("Feat: x", "frobnicate: x", "feat: x\n", "", None, 7):
+            with self.subTest(title=title):
+                api = FakeGitHub()
+                api.pr["title"] = title
+                run_refusal(self, api, "not a Conventional Commits title")
+
+    def test_title_edited_after_a_green_version_run_is_refused_at_merge(self):
+        api = FakeGitHub()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        api.pr["title"] = "Feat: x"
+        run_refusal(self, api, "not a Conventional Commits title")
 
     def test_pinned_workflow_blob_tree_and_mode_evidence_fail_closed(self):
         cases = [

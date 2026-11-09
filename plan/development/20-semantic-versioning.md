@@ -101,11 +101,11 @@ One script holds every rule, so the pull request check and the release job canno
 - `backfill [--apply] [--push]`: creates each tag in the committed table `scripts/semver-backfill.tsv` that does not exist yet; every row is checked first, and a tag pointing elsewhere refuses the whole run, so no tag is ever moved.
 - `major [--ref REF]`: prints the next major version on `main`, for the manual release only. Computes only; the workflow tags.
 
-**Reading pull requests from git.** A merge commit `Merge pull request #N from OWNER/BRANCH` carries the title as the first body line; a squash merge's subject is `TITLE (#N)`. Promotion merges (branch `dev`) and the main-to-dev sync merge (`Merge branch 'main' into dev`) are skipped, so a promotion is never counted as a pull request of its own. `dev` reads its first-parent chain since the last release tag; `main` reads every commit since the last release tag.
+**Reading pull requests from git.** A merge commit `Merge pull request #N from OWNER/BRANCH` carries the title as the first body line; a squash merge's subject is `TITLE (#N)`. Promotion merges (branch `dev`) are skipped, so a promotion is never counted as a pull request of its own. The main-to-dev sync merge, which `sync-main-to-dev.yml` writes as `Merge remote-tracking branch 'origin/main' into dev`, matches neither form and is ignored. `dev` reads its first-parent chain since the last release tag; `main` reads every commit since the last release tag.
 
 **Pre-release numbering on `dev`.** The next version is the last release tag reachable from `dev` bumped by the pull requests merged since, with a floor of a patch (anything merged after a release is at least a patch candidate). `N` is one more than the highest existing `-dev.N` tag for that version, starting at 1. When a feature lifts the next version (say from `0.14.1` to `0.15.0`), numbering restarts at `-dev.1`; semver precedence still orders them (`0.14.1-dev.3 < 0.15.0-dev.1`).
 
-**Catch-up.** The release workflow runs one at a time (a `concurrency` group), and GitHub keeps only the newest pending run, cancelling an older pending one. A burst of merges can therefore skip a run. `dev-tags` covers that: each run tags every pull request merge after the newest commit that already carries a `-dev` tag, in order. When no commit since the last release carries one (the first run, or the first after a release), it tags only `HEAD`, so the first run does not tag every merge since `v0.13.0`.
+**Catch-up.** The release workflow runs one at a time per branch (a `concurrency` group keyed by ref), and GitHub keeps only the newest pending run of a group, cancelling an older pending one. A burst of merges can therefore skip a run. `dev-tags` covers that: each run tags every pull request merge after the newest commit that already carries a `-dev` tag, in order. When no commit since the last release carries one (the first run, or the first after a release), it tags only `HEAD`, so the first run does not tag every merge since `v0.13.0`.
 
 ### Pull request check: a `Version` job in `lint-and-test.yml`
 
@@ -116,14 +116,14 @@ The merge guard pins `lint-and-test.yml` by blob SHA, so this is the guard's **e
 ### Release job: `.github/workflows/release-version.yml`
 
 - Triggers: `push` to `dev` and `main`; `workflow_dispatch` for the manual major release.
-- `permissions: contents: write`; one run at a time (`concurrency`, never cancelled).
+- `permissions: contents: write`. Concurrency is per branch (`release-version-<ref>`), so a push to `dev` never replaces a pending run on `main`, and a running run is never cancelled. The manual major release has its own group (`release-version-major`), so a run waiting for approval holds nothing else. A pending run of the same branch is replaced by a newer one: on `dev`, `dev-tags` tags the merges the replaced run skipped; on `main`, the next run counts every pull request since the last release. The first runs on `dev` and `main` at the same moment could both try the backfill; the remote refuses the second tag push (`already exists`), and a re-run finds the tags and converges.
 - Checks out full history and tags, runs `backfill --apply --push`, then `next` for the branch pushed. On `dev` it tags only when `HEAD` is a pull request merge; on `main` it tags and creates a GitHub Release with `notes`.
 - The manual major release runs in the GitHub environment **`release-major`**, whose required reviewer is the operator, so no major version is cut without that approval.
 - Tags are annotated, made as `github-actions[bot]` (`41898282+github-actions[bot]@users.noreply.github.com`).
 
 The environment is configuration as code: `.github/environments/release-major.json` and `.github/environments/apply.sh`, the same pattern as `.github/rulesets/`.
 
-**Merging this change.** The guard refuses any pull request that adds or changes a workflow other than `lint-and-test.yml` (`scripts/merge-when-green.py:134-135`). A workflow that can push tags is exactly what that rule exists for, so the pull request that adds `release-version.yml` is merged by the operator, not through the guard. Every later pull request goes through the guard as before.
+**Merging this change.** The guard refuses any pull request that adds or changes a workflow other than `lint-and-test.yml` (`changed_files()` in `scripts/merge-when-green.py`). A workflow that can push tags is exactly what that rule exists for, so the pull request that adds `release-version.yml` is merged by the operator, not through the guard. The guard also refuses any pull request that changes `scripts/semver.py` or `scripts/semver-backfill.tsv`, because this workflow runs them with a write token on every push to `dev` and `main`; those pull requests are operator-merged too. Every later pull request goes through the guard as before. At merge the guard reads the live title again and refuses one that is not in the form: the `Version` job does not run again on a title edit, so a merge outside the guard relies on the `Version` run, which a later title edit does not refresh.
 
 ## Implementation phases
 
@@ -152,6 +152,11 @@ The environment is configuration as code: `.github/environments/release-major.js
 - **Untrusted text.** The pull request title is read into an environment variable and passed to the script as an argument, never interpolated into a shell line, so a crafted title cannot run a command.
 - **Tags are not moved.** `backfill` refuses a tag that points elsewhere; a released version's contents never change (semver.org rule 3).
 - **The promotion.** Phase 5's pull request carries every `dev` change since #656 (247 pull requests) to `main`, which `main`-bound Semaphore templates then run. Merging it is a production promotion and the operator's decision, separate from versioning.
+
+## Known limits
+
+- **A breaking change after 1.0.0.** Once the last release is 1.x or later, `scripts/semver.py next` exits 3 whenever a `!` change counts. The `!` pull request therefore fails its own `Version` check on `dev`, so the guard refuses it. A `!` pull request merged by hand makes the `dev` channel exit 3 for every later `dev` pull request and every `dev` release run, until it is promoted and the manual major release is cut. Revisit before 1.0.0 (for example, name `dev` pre-releases of the next major).
+- **A squashed promotion.** A promotion squashed to scrub sensitive content leaves one commit on `main`, whose subject is the promotion's `promote:` title, so the pull requests inside it are invisible to `next` and no release tag is created. Add the release by hand through a row in `scripts/semver-backfill.tsv` in the follow-up pull request. A merge-style promotion is unaffected.
 
 ## Cross-references
 
