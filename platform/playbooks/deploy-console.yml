@@ -444,7 +444,8 @@
          if not (local_mode | default(false) | bool) else [] }}
     _console_gate_probe_argv: >-
       {{ ['curl', '--silent', '--show-error', '--max-time', '10', '--output', '/dev/null', '--write-out', '%{http_code}',
-          '--request', 'POST', '--cacert', _deploy_dir ~ '/certs/step-ca-bundle.crt']
+          '--request', 'POST', '--header', 'Content-Type: application/json', '--data', '{}',
+          '--cacert', _deploy_dir ~ '/certs/step-ca-bundle.crt']
          + _console_gate_probe_resolve + [_console_gate_probe_url] }}
 
   tasks:
@@ -472,7 +473,9 @@
     # The launch gate (D49), probed from this host when declared. The console image is distroless (no curl), and its
     # probe subcommand speaks plain HTTP to 127.0.0.1 only, so the gate cannot be reached from inside the container. curl
     # verifies the gate's leaf against the step-ca bundle this play distributed. The probe is POST, because the gate
-    # answers GET with 405 before it checks the token. The body is discarded and only the status is read. Skipped under
+    # answers GET with 405 before it checks the token. The POST carries an empty JSON object: the gate answers a POST
+    # with no Content-Length 400 before it checks the token, so a bodiless probe never reads the 401 (MISTAKES 10.17).
+    # The body is discarded and only the status is read. Skipped under
     # --check: the bundle is written only by a real run, so a dry run has nothing to probe against.
     - name: "Launch gate refuses a request with no token (POST /v1/launch -> 401, from this host)"
       ansible.builtin.command:
