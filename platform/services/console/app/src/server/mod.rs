@@ -1474,11 +1474,13 @@ mod tests {
     }
 
     /// A fake launch gate. `decide` and `launch` answer their queued replies in order, and past the queue `decide`
-    /// allows and `launch` creates task 4217. Each records the body it received. `launch` waits 300 ms before it
-    /// counts nothing and answers, so two approvals can overlap.
+    /// allows and `launch` creates task 4217. Each records the body it received. `decide` waits for its queued delay
+    /// (0 past the queue) and `launch` waits 300 ms, so two calls can overlap. Each call takes its reply and its delay
+    /// before it waits, so the queues follow arrival order.
     #[derive(Default)]
     struct FakeGate {
         decide_replies: std::sync::Mutex<std::collections::VecDeque<(u16, serde_json::Value)>>,
+        decide_delays_ms: std::sync::Mutex<std::collections::VecDeque<u64>>,
         launch_replies: std::sync::Mutex<std::collections::VecDeque<(u16, serde_json::Value)>>,
         decide_bodies: std::sync::Mutex<Vec<serde_json::Value>>,
         launch_bodies: std::sync::Mutex<Vec<serde_json::Value>>,
@@ -1490,6 +1492,13 @@ mod tests {
             .expect("bodies")
             .push(serde_json::from_str(&body).unwrap_or(serde_json::Value::Null));
         let queued = fake.decide_replies.lock().expect("replies").pop_front();
+        let delay = fake
+            .decide_delays_ms
+            .lock()
+            .expect("delays")
+            .pop_front()
+            .unwrap_or(0);
+        tokio::time::sleep(Duration::from_millis(delay)).await;
         let (status, reply) = queued.unwrap_or((
             200,
             serde_json::json!({"decision": {"allowed": true, "reason": "read-only"}}),
@@ -1804,7 +1813,7 @@ mod tests {
             "POST",
             approve.into(),
             Some(ada.clone()),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(reply.status, 409);
@@ -1825,12 +1834,17 @@ mod tests {
         .await;
         assert_eq!(edited.status, 200, "{}", edited.body);
         assert_eq!(json_of(&edited)["preview"]["state"], "allowed");
+        assert_eq!(
+            json_of(&edited)["revision"],
+            2,
+            "an edit bumps the revision"
+        );
         let reply = send(
             addr,
             "POST",
             approve.into(),
             Some(ada),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 2}"#.into(),
         )
         .await;
         assert_eq!(reply.status, 200, "{}", reply.body);
@@ -1863,7 +1877,7 @@ mod tests {
             "POST",
             "/v1/proposals/p1/approve".into(),
             Some(ada.clone()),
-            r#"{"note": "  go  "}"#.into(),
+            r#"{"note": "  go  ", "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(approved.status, 200, "{}", approved.body);
@@ -1900,7 +1914,7 @@ mod tests {
             "POST",
             "/v1/proposals/p1/approve".into(),
             Some(grace.clone()),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(again.status, 409);
@@ -1916,7 +1930,7 @@ mod tests {
             "POST",
             "/v1/proposals/p2/approve".into(),
             Some(grace),
-            r#"{}"#.into(),
+            r#"{"revision": 1}"#.into(),
         )
         .await;
         assert_eq!(other.status, 200, "{}", other.body);
@@ -1968,7 +1982,7 @@ mod tests {
             "POST",
             "/v1/proposals/p1/approve".into(),
             Some(ada.clone()),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(refused.status, 200, "{}", refused.body);
@@ -1983,7 +1997,7 @@ mod tests {
             "POST",
             "/v1/proposals/p2/approve".into(),
             Some(ada.clone()),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(json_of(&denied)["state"], "launch_failed");
@@ -1997,7 +2011,7 @@ mod tests {
             "POST",
             "/v1/proposals/p3/approve".into(),
             Some(ada),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(json_of(&unanswered)["state"], "launch_failed");
@@ -2093,7 +2107,7 @@ mod tests {
             "POST",
             "/v1/proposals/p1/deny".into(),
             Some(grace.clone()),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 2}"#.into(),
         )
         .await;
         assert_eq!(denied.status, 200, "{}", denied.body);
@@ -2106,7 +2120,7 @@ mod tests {
             "POST",
             "/v1/proposals/p1/approve".into(),
             Some(grace.clone()),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 2}"#.into(),
         )
         .await;
         assert_eq!(late_approve.status, 409);
@@ -2158,14 +2172,14 @@ mod tests {
                 "POST",
                 "/v1/proposals/p1/approve".into(),
                 Some(ada.clone()),
-                r#"{"note": null}"#.into()
+                r#"{"note": null, "revision": 1}"#.into()
             ),
             send(
                 addr,
                 "POST",
                 "/v1/proposals/p1/approve".into(),
                 Some(ada),
-                r#"{"note": null}"#.into()
+                r#"{"note": null, "revision": 1}"#.into()
             ),
         );
         let mut statuses = [first.status, second.status];
@@ -2241,7 +2255,7 @@ mod tests {
                 ("Origin", "https://evil.test"),
                 ("Content-Type", "application/json"),
             ],
-            r#"{"note": null}"#,
+            r#"{"note": null, "revision": 1}"#,
         )
         .await;
         assert_eq!(cross_approve.status, 403);
@@ -2255,7 +2269,7 @@ mod tests {
                 ("Origin", "https://evil.test"),
                 ("Content-Type", "application/json"),
             ],
-            r#"{"note": null}"#,
+            r#"{"note": null, "revision": 1}"#,
         )
         .await;
         assert_eq!(cross_deny.status, 403);
@@ -2303,7 +2317,7 @@ mod tests {
             "POST",
             "/v1/proposals/p2/deny".into(),
             Some(grace),
-            r#"{"note": "not now"}"#.into(),
+            r#"{"note": "not now", "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(denied.status, 200, "{}", denied.body);
@@ -2349,11 +2363,312 @@ mod tests {
             "POST",
             "/v1/proposals/p9/approve".into(),
             Some(ada),
-            r#"{"note": null}"#.into(),
+            r#"{"note": null, "revision": 1}"#.into(),
         )
         .await;
         assert_eq!(no_row.status, 404);
         assert_eq!(no_row.body, r#"{"error":"not_found"}"#);
+    }
+
+    /// The stale answer's exact body (D53): the approver reviewed an older revision.
+    fn stale_body() -> serde_json::Value {
+        serde_json::json!({
+            "error": "stale",
+            "detail": "The proposal changed since you loaded it. Review it again."
+        })
+    }
+
+    #[tokio::test]
+    async fn a_concurrent_edit_keeps_only_the_newest_revisions_preview() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        assert_eq!(json_of(&created)["revision"], 1);
+
+        // The first edit's decide (revision 2) is slow and allows. The second's (revision 3) answers at once and denies.
+        decide_replies(
+            &fake,
+            [
+                (
+                    200,
+                    serde_json::json!({"decision": {"allowed": true, "reason": "for the first edit"}}),
+                ),
+                (
+                    200,
+                    serde_json::json!({"decision": {"allowed": false, "reason": "for the second edit"}}),
+                ),
+            ],
+        );
+        fake.decide_delays_ms
+            .lock()
+            .expect("delays")
+            .extend([500, 0]);
+        let seen = fake.decide_bodies.lock().expect("bodies").len();
+
+        let slow = tokio::spawn(send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": true, "note": "first"}"#.into(),
+        ));
+        // Wait until the slow decide has arrived, so the second edit's decide overtakes it.
+        while fake.decide_bodies.lock().expect("bodies").len() == seen {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let fast = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": "second"}"#.into(),
+        )
+        .await;
+        assert_eq!(fast.status, 200, "{}", fast.body);
+        let slow = slow.await.expect("the slow edit finishes");
+        assert_eq!(slow.status, 200, "{}", slow.body);
+
+        let shown = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(shown["revision"], 3, "one revision per edit");
+        assert_eq!(shown["note"], "second");
+        assert_eq!(shown["check_mode"], false);
+        assert_eq!(
+            shown["preview"]["state"], "denied",
+            "only the newest revision's verdict is stored"
+        );
+        assert_eq!(shown["preview"]["reason"], "for the second edit");
+        assert_eq!(
+            json_of(&slow)["preview"]["reason"],
+            "for the second edit",
+            "the slow edit's reply re-reads the row"
+        );
+        assert_eq!(json_of(&slow)["revision"], 3);
+    }
+
+    #[tokio::test]
+    async fn an_approval_at_an_old_revision_is_stale_and_launches_nothing() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let edited = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": "edited"}"#.into(),
+        )
+        .await;
+        assert_eq!(edited.status, 200, "{}", edited.body);
+        assert_eq!(json_of(&edited)["revision"], 2);
+
+        // Grace reviewed revision 1 before the edit, so her approval names it: stale, and the gate is never asked.
+        let stale = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(grace.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(stale.status, 409, "{}", stale.body);
+        assert_eq!(json_of(&stale), stale_body());
+        assert!(
+            fake.launch_bodies.lock().expect("bodies").is_empty(),
+            "a stale approval launches nothing"
+        );
+        let still = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(
+            still["state"], "awaiting",
+            "a stale approval changes nothing"
+        );
+
+        // Revision 2 is what she reviewed now: it launches.
+        let approved = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(grace.clone()),
+            r#"{"note": "reviewed", "revision": 2}"#.into(),
+        )
+        .await;
+        assert_eq!(approved.status, 200, "{}", approved.body);
+        assert_eq!(json_of(&approved)["state"], "launched");
+        assert_eq!(json_of(&approved)["decision"]["self_approved"], false);
+        assert_eq!(fake.launch_bodies.lock().expect("bodies").len(), 1);
+
+        // Once launched, an old revision is not_awaiting, not stale: the row has left awaiting altogether.
+        let late = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/approve".into(),
+            Some(ada),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(late.status, 409);
+        assert_eq!(late.body, r#"{"error":"not_awaiting"}"#);
+        assert_eq!(
+            fake.launch_bodies.lock().expect("bodies").len(),
+            1,
+            "one launch in all"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_denial_at_an_old_revision_is_stale_until_it_names_the_current_one() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let edited = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada.clone()),
+            r#"{"check_mode": false, "note": "edited"}"#.into(),
+        )
+        .await;
+        assert_eq!(edited.status, 200, "{}", edited.body);
+
+        let stale = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/deny".into(),
+            Some(grace.clone()),
+            r#"{"note": null, "revision": 1}"#.into(),
+        )
+        .await;
+        assert_eq!(stale.status, 409, "{}", stale.body);
+        assert_eq!(json_of(&stale), stale_body());
+        let still = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(still["state"], "awaiting", "a stale denial changes nothing");
+
+        let denied = send(
+            addr,
+            "POST",
+            "/v1/proposals/p1/deny".into(),
+            Some(grace),
+            r#"{"note": "not this one", "revision": 2}"#.into(),
+        )
+        .await;
+        assert_eq!(denied.status, 200, "{}", denied.body);
+        assert_eq!(json_of(&denied)["state"], "denied");
+        assert_eq!(json_of(&denied)["decision"]["note"], "not this one");
+    }
+
+    #[tokio::test]
+    async fn an_approval_or_denial_must_name_a_revision() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        for (path, body) in [
+            ("/v1/proposals/p1/approve", r#"{"note": null}"#),
+            ("/v1/proposals/p1/approve", r#"{}"#),
+            (
+                "/v1/proposals/p1/approve",
+                r#"{"note": null, "revision": "1"}"#,
+            ),
+            (
+                "/v1/proposals/p1/approve",
+                r#"{"note": null, "revision": 1, "extra": 1}"#,
+            ),
+            ("/v1/proposals/p1/deny", r#"{"note": null}"#),
+        ] {
+            let reply = send(addr, "POST", path.into(), Some(ada.clone()), body.into()).await;
+            assert_eq!(reply.status, 400, "{path} {body}: {}", reply.body);
+            assert_eq!(json_of(&reply)["error"], "bad_request", "{path} {body}");
+        }
+        assert!(fake.launch_bodies.lock().expect("bodies").is_empty());
+        let shown = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(shown["state"], "awaiting", "a refused body changed nothing");
     }
 
     #[tokio::test]

@@ -51,7 +51,7 @@ const INTERRUPTED: &str = "the launch was interrupted before the gate answered; 
 const CREATE_SHAPE: &str = r#"request body must be JSON {"kind", "service", "check_mode", "note"}"#;
 const EDIT_SHAPE: &str = r#"request body must be JSON {"check_mode", "note"}"#;
 const COMMENT_SHAPE: &str = r#"request body must be JSON {"text"}"#;
-const DECISION_SHAPE: &str = r#"request body must be JSON {"note"}"#;
+const DECISION_SHAPE: &str = r#"request body must be JSON {"note", "revision"}"#;
 const KIND_RULE: &str = "kind must be assess or verify";
 const SERVICE_RULE: &str =
     "service must be 1 to 63 characters: a-z, 0-9 and -, starting with a lowercase letter or digit";
@@ -68,6 +68,7 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS proposals (
     check_mode INTEGER NOT NULL,
     note TEXT NOT NULL,
     state TEXT NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
     proposer_sub TEXT NOT NULL,
     proposer_name TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -89,7 +90,7 @@ CREATE INDEX IF NOT EXISTS proposal_comments_by_proposal ON proposal_comments (p
 
 /// The columns `read_row` reads, in one place so every query selects the same shape.
 const COLUMNS: &str =
-    "id, kind, service, template, agent, step, survey_json, check_mode, note, state, \
+    "id, kind, service, template, agent, step, survey_json, check_mode, note, state, revision, \
     proposer_sub, proposer_name, created_at, updated_at, preview_json, decision_json, launch_json";
 
 /// Creates the proposal tables. Called from `Prefs::from_connection`, beside the sessions table.
@@ -215,6 +216,8 @@ pub struct Comment {
 #[derive(Debug, Clone, Serialize)]
 pub struct Proposal {
     pub id: String,
+    /// Starts at 1 and goes up by one on every edit. An approval or denial names the revision it reviewed (D53).
+    pub revision: i64,
     pub kind: String,
     pub service: String,
     pub template: String,
@@ -251,6 +254,8 @@ pub struct NewProposal {
 pub enum Refusal {
     Missing,
     NotAwaiting,
+    /// The proposal was edited after the approver loaded it: its revision moved on.
+    Stale,
     PreviewNotAllowed,
 }
 
@@ -287,9 +292,9 @@ impl ProposalStore {
         let conn = self.conn.lock().await;
         let preview = Preview::pending(at.to_string());
         conn.execute(
-            "INSERT INTO proposals (kind, service, template, agent, step, survey_json, check_mode, note, state,
+            "INSERT INTO proposals (kind, service, template, agent, step, survey_json, check_mode, note, state, revision,
                 proposer_sub, proposer_name, created_at, updated_at, preview_state, preview_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'awaiting', ?9, ?10, ?11, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'awaiting', 1, ?9, ?10, ?11, ?11, ?12, ?13)",
             params![
                 new.kind,
                 new.service,
@@ -309,14 +314,21 @@ impl ProposalStore {
         Ok(conn.last_insert_rowid())
     }
 
-    /// Stores a preview after a decide. Used by a create, right after its insert.
-    pub async fn set_preview(&self, id: i64, preview: &Preview) -> rusqlite::Result<()> {
+    /// Stores the preview of `revision`, and only while the row is awaiting at that revision. False when a later edit
+    /// has moved the row on: that preview is stale and is dropped, and the caller re-reads the row.
+    pub async fn set_preview(
+        &self,
+        id: i64,
+        revision: i64,
+        preview: &Preview,
+    ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().await;
-        conn.execute(
-            "UPDATE proposals SET preview_state = ?1, preview_json = ?2, updated_at = ?3 WHERE id = ?4",
-            params![preview.state, to_json(preview)?, preview.at, id],
+        let changed = conn.execute(
+            "UPDATE proposals SET preview_state = ?1, preview_json = ?2, updated_at = ?3
+             WHERE id = ?4 AND state = 'awaiting' AND revision = ?5",
+            params![preview.state, to_json(preview)?, preview.at, id, revision],
         )?;
-        Ok(())
+        Ok(changed == 1)
     }
 
     pub async fn get(&self, id: i64) -> rusqlite::Result<Option<Proposal>> {
@@ -330,77 +342,87 @@ impl ProposalStore {
         load_list(&conn, filter)
     }
 
-    /// Replaces the edited values and their new preview, together, while the row is awaiting. Returns false when
-    /// the row is not awaiting, so the caller answers `not_awaiting`.
-    pub async fn update_values(
+    /// Starts an edit (D51): in one UPDATE while the row is awaiting, it writes the values, bumps the revision and resets
+    /// the preview to the placeholder. The placeholder keeps every approval refused until the new preview is stored, so
+    /// no approval pairs the new values with the old verdict. Returns the row at its new revision.
+    pub async fn begin_edit(
         &self,
         id: i64,
         check_mode: bool,
         note: &str,
-        preview: &Preview,
-    ) -> rusqlite::Result<bool> {
+        at: &str,
+    ) -> rusqlite::Result<Result<Proposal, Refusal>> {
         let conn = self.conn.lock().await;
+        let placeholder = Preview::pending(at.to_string());
         let changed = conn.execute(
-            "UPDATE proposals SET check_mode = ?1, note = ?2, preview_state = ?3, preview_json = ?4, updated_at = ?5
+            "UPDATE proposals SET check_mode = ?1, note = ?2, revision = revision + 1,
+                 preview_state = ?3, preview_json = ?4, updated_at = ?5
              WHERE id = ?6 AND state = 'awaiting'",
             params![
                 check_mode,
                 note,
-                preview.state,
-                to_json(preview)?,
-                preview.at,
+                placeholder.state,
+                to_json(&placeholder)?,
+                at,
                 id
             ],
         )?;
-        Ok(changed == 1)
-    }
-
-    /// The approval's one transition (D53): `awaiting` to `launching`, with the decision recorded in the same
-    /// UPDATE. It applies only while the preview is `allowed`. On success it returns the row, so the launch uses the
-    /// values as they were at the claim. Otherwise it says why, from the same lock.
-    pub async fn claim(
-        &self,
-        id: i64,
-        decision: &Decision,
-    ) -> rusqlite::Result<Result<Proposal, Refusal>> {
-        let conn = self.conn.lock().await;
-        let changed = conn.execute(
-            "UPDATE proposals SET state = 'launching', decision_json = ?1, updated_at = ?2
-             WHERE id = ?3 AND state = 'awaiting' AND preview_state = 'allowed'",
-            params![to_json(decision)?, decision.at, id],
-        )?;
         if changed == 1 {
             return Ok(load(&conn, id)?.ok_or(Refusal::Missing));
         }
-        let refusal = match stored_state(&conn, id)?.as_deref() {
-            None => Refusal::Missing,
-            Some(AWAITING) => Refusal::PreviewNotAllowed,
-            Some(_) => Refusal::NotAwaiting,
-        };
-        Ok(Err(refusal))
-    }
-
-    /// The denial's transition: `awaiting` to `denied`, one guarded UPDATE.
-    pub async fn deny(
-        &self,
-        id: i64,
-        decision: &Decision,
-    ) -> rusqlite::Result<Result<Proposal, Refusal>> {
-        let conn = self.conn.lock().await;
-        let changed = conn.execute(
-            "UPDATE proposals SET state = 'denied', decision_json = ?1, updated_at = ?2
-             WHERE id = ?3 AND state = 'awaiting'",
-            params![to_json(decision)?, decision.at, id],
-        )?;
-        if changed == 1 {
-            return Ok(load(&conn, id)?.ok_or(Refusal::Missing));
-        }
-        let refusal = if stored_state(&conn, id)?.is_some() {
+        let refusal = if stored_row(&conn, id)?.is_some() {
             Refusal::NotAwaiting
         } else {
             Refusal::Missing
         };
         Ok(Err(refusal))
+    }
+
+    /// The approval's one transition (D53): `awaiting` to `launching`, with the decision recorded in the same UPDATE.
+    /// It applies only while the preview is `allowed` and the row is still at `revision`, the one the approver
+    /// reviewed. On success it returns the row, so the launch uses the values as they were at the claim. Otherwise it
+    /// says why, from the same lock.
+    pub async fn claim(
+        &self,
+        id: i64,
+        revision: i64,
+        decision: &Decision,
+    ) -> rusqlite::Result<Result<Proposal, Refusal>> {
+        let conn = self.conn.lock().await;
+        let changed = conn.execute(
+            "UPDATE proposals SET state = 'launching', decision_json = ?1, updated_at = ?2
+             WHERE id = ?3 AND state = 'awaiting' AND preview_state = 'allowed' AND revision = ?4",
+            params![to_json(decision)?, decision.at, id, revision],
+        )?;
+        if changed == 1 {
+            return Ok(load(&conn, id)?.ok_or(Refusal::Missing));
+        }
+        Ok(Err(refused(
+            &conn,
+            id,
+            revision,
+            Refusal::PreviewNotAllowed,
+        )?))
+    }
+
+    /// The denial's transition: `awaiting` to `denied`, one guarded UPDATE at the revision the denier reviewed.
+    pub async fn deny(
+        &self,
+        id: i64,
+        revision: i64,
+        decision: &Decision,
+    ) -> rusqlite::Result<Result<Proposal, Refusal>> {
+        let conn = self.conn.lock().await;
+        let changed = conn.execute(
+            "UPDATE proposals SET state = 'denied', decision_json = ?1, updated_at = ?2
+             WHERE id = ?3 AND state = 'awaiting' AND revision = ?4",
+            params![to_json(decision)?, decision.at, id, revision],
+        )?;
+        if changed == 1 {
+            return Ok(load(&conn, id)?.ok_or(Refusal::Missing));
+        }
+        // A denial has no preview gate, so an awaiting row at this revision cannot reach the last arm.
+        Ok(Err(refused(&conn, id, revision, Refusal::NotAwaiting)?))
     }
 
     /// Records the gate's answer to a claimed row. False when the row is no longer `launching`.
@@ -429,7 +451,7 @@ impl ProposalStore {
         text: &str,
     ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().await;
-        if stored_state(&conn, id)?.is_none() {
+        if stored_row(&conn, id)?.is_none() {
             return Ok(false);
         }
         conn.execute(
@@ -460,11 +482,30 @@ fn json_opt<T: DeserializeOwned>(row: &Row<'_>, name: &str) -> rusqlite::Result<
         .transpose()
 }
 
-fn stored_state(conn: &Connection, id: i64) -> rusqlite::Result<Option<String>> {
-    conn.query_row("SELECT state FROM proposals WHERE id = ?1", [id], |row| {
-        row.get(0)
-    })
+/// The state and revision of a row, or `None` when there is no such proposal.
+fn stored_row(conn: &Connection, id: i64) -> rusqlite::Result<Option<(String, i64)>> {
+    conn.query_row(
+        "SELECT state, revision FROM proposals WHERE id = ?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
     .optional()
+}
+
+/// Why a guarded UPDATE changed no row. The row is missing, no longer awaiting, or at a newer revision than the one
+/// the caller reviewed. Once none of those holds, the caller's own guard is what refused it, and `otherwise` names it.
+fn refused(
+    conn: &Connection,
+    id: i64,
+    revision: i64,
+    otherwise: Refusal,
+) -> rusqlite::Result<Refusal> {
+    Ok(match stored_row(conn, id)? {
+        None => Refusal::Missing,
+        Some((state, _)) if state != AWAITING => Refusal::NotAwaiting,
+        Some((_, current)) if current != revision => Refusal::Stale,
+        Some(_) => otherwise,
+    })
 }
 
 /// One row as the API shapes it, with the numeric id kept beside it for the comments query.
@@ -484,6 +525,7 @@ fn read_row(row: &Row<'_>) -> rusqlite::Result<(i64, Proposal)> {
     };
     let proposal = Proposal {
         id: format!("p{id}"),
+        revision: row.get("revision")?,
         kind: row.get("kind")?,
         service: row.get("service")?,
         template: row.get("template")?,
@@ -594,19 +636,30 @@ fn note_text(raw: &str) -> Result<String, &'static str> {
     Ok(note.to_string())
 }
 
-/// An approval's or denial's note: trimmed, `None` when empty, and within the bound. The error is the 400 detail.
-fn decision_note(
-    body: Result<Json<DecisionBody>, JsonRejection>,
-) -> Result<Option<String>, &'static str> {
+/// An approval's or denial's body: the note, trimmed (`None` when empty) and within the bound, and the revision the
+/// decider reviewed. The error is the 400 detail.
+fn decision_body(body: Result<Json<DecisionBody>, JsonRejection>) -> Result<Decided, &'static str> {
     let Json(body) = body.map_err(|_| DECISION_SHAPE)?;
-    match body
+    let note = body
         .note
         .map(|note| note.trim().to_string())
-        .filter(|note| !note.is_empty())
+        .filter(|note| !note.is_empty());
+    if note
+        .as_ref()
+        .is_some_and(|note| note.chars().count() > NOTE_MAX)
     {
-        Some(note) if note.chars().count() > NOTE_MAX => Err(NOTE_RULE),
-        note => Ok(note),
+        return Err(NOTE_RULE);
     }
+    Ok(Decided {
+        note,
+        revision: body.revision,
+    })
+}
+
+/// What an approval or denial carries: the note and the revision the decider reviewed.
+struct Decided {
+    note: Option<String>,
+    revision: i64,
 }
 
 /// The request a proposal makes of the gate. `dry_run` is the proposal's check mode (D52).
@@ -736,10 +789,24 @@ fn unavailable() -> Response {
     api::error(StatusCode::INTERNAL_SERVER_ERROR, "proposals_unavailable")
 }
 
+/// 409 `stale`: the approver reviewed an older revision. Distinct from `not_awaiting`, which means the row has moved on
+/// from awaiting altogether.
+fn stale() -> Response {
+    (
+        StatusCode::CONFLICT,
+        Json(json!({
+            "error": "stale",
+            "detail": "The proposal changed since you loaded it. Review it again.",
+        })),
+    )
+        .into_response()
+}
+
 fn refusal_response(refusal: Refusal) -> Response {
     match refusal {
         Refusal::Missing => not_found(),
         Refusal::NotAwaiting => not_awaiting(),
+        Refusal::Stale => stale(),
         Refusal::PreviewNotAllowed => api::error(StatusCode::CONFLICT, "preview_not_allowed"),
     }
 }
@@ -857,7 +924,11 @@ pub async fn create_proposal(
     };
     let verdict = gate_client.decide(&call_of(&proposal)).await;
     if store
-        .set_preview(id, &Preview::from_verdict(verdict, now()))
+        .set_preview(
+            id,
+            proposal.revision,
+            &Preview::from_verdict(verdict, now()),
+        )
         .await
         .is_err()
     {
@@ -920,21 +991,21 @@ pub async fn edit_proposal(
     let Some(gate_client) = app.gate.as_ref() else {
         return gate_unconfigured();
     };
+    // The revision moves and the preview resets before the decide runs, so no approval can pair the new values with
+    // the old verdict while the decide is in flight.
+    let edited = match store.begin_edit(num, body.check_mode, &note, &now()).await {
+        Ok(Ok(proposal)) => proposal,
+        Ok(Err(refusal)) => return refusal_response(refusal),
+        Err(_) => return unavailable(),
+    };
     let call = GateCall {
         dry_run: body.check_mode,
-        ..call_of(&current)
+        ..call_of(&edited)
     };
     let preview = Preview::from_verdict(gate_client.decide(&call).await, now());
-    match store
-        .update_values(num, body.check_mode, &note, &preview)
-        .await
-    {
-        Ok(true) => reply(&store, num, StatusCode::OK).await,
-        Ok(false) => match store.get(num).await {
-            Ok(Some(_)) => not_awaiting(),
-            Ok(None) => not_found(),
-            Err(_) => unavailable(),
-        },
+    // A preview for an older revision is dropped by the guard in `set_preview`. The reply re-reads the row either way.
+    match store.set_preview(num, edited.revision, &preview).await {
+        Ok(_) => reply(&store, num, StatusCode::OK).await,
         Err(_) => unavailable(),
     }
 }
@@ -978,6 +1049,8 @@ pub async fn add_comment(
 #[serde(deny_unknown_fields)]
 pub struct DecisionBody {
     note: Option<String>,
+    /// The revision the decider reviewed. Required: a decision names what it approves (D53).
+    revision: i64,
 }
 
 /// `POST /v1/proposals/{id}/approve` (D52, D53): claims the row once, then launches through the gate. Only the
@@ -995,8 +1068,8 @@ pub async fn approve_proposal(
     let Some(num) = parse_id(&id) else {
         return not_found();
     };
-    let note = match decision_note(body) {
-        Ok(note) => note,
+    let decided = match decision_body(body) {
+        Ok(decided) => decided,
         Err(detail) => return bad_request(detail),
     };
     // Checked before the claim: a row claimed with no gate configured would stay `launching` with nowhere to go.
@@ -1009,8 +1082,14 @@ pub async fn approve_proposal(
         Ok(None) => return not_found(),
         Err(_) => return unavailable(),
     };
-    let decision = Decision::new(APPROVED, person(&user), &current.proposer, note, now());
-    let claimed = match store.claim(num, &decision).await {
+    let decision = Decision::new(
+        APPROVED,
+        person(&user),
+        &current.proposer,
+        decided.note,
+        now(),
+    );
+    let claimed = match store.claim(num, decided.revision, &decision).await {
         Ok(Ok(proposal)) => proposal,
         Ok(Err(refusal)) => return refusal_response(refusal),
         Err(_) => return unavailable(),
@@ -1036,8 +1115,8 @@ pub async fn deny_proposal(
     let Some(num) = parse_id(&id) else {
         return not_found();
     };
-    let note = match decision_note(body) {
-        Ok(note) => note,
+    let decided = match decision_body(body) {
+        Ok(decided) => decided,
         Err(detail) => return bad_request(detail),
     };
     let store = app.prefs.proposal_store();
@@ -1046,8 +1125,14 @@ pub async fn deny_proposal(
         Ok(None) => return not_found(),
         Err(_) => return unavailable(),
     };
-    let decision = Decision::new(DENIED, person(&user), &current.proposer, note, now());
-    match store.deny(num, &decision).await {
+    let decision = Decision::new(
+        DENIED,
+        person(&user),
+        &current.proposer,
+        decided.note,
+        now(),
+    );
+    match store.deny(num, decided.revision, &decision).await {
         Ok(Ok(proposal)) => (StatusCode::OK, Json(proposal)).into_response(),
         Ok(Err(refusal)) => refusal_response(refusal),
         Err(_) => unavailable(),
@@ -1116,7 +1201,7 @@ mod tests {
         assert_eq!((first, second, third), (1, 2, 3));
         let denial = Decision::new(DENIED, grace(), &ada(), None, T1.into());
         store
-            .deny(second, &denial)
+            .deny(second, 1, &denial)
             .await
             .expect("db")
             .expect("denied");
@@ -1148,39 +1233,59 @@ mod tests {
         let id = store.insert(&new_row("honcho"), T0).await.expect("insert");
 
         // The placeholder preview is not allowed, so the claim refuses and the row stays awaiting.
-        let refused = store.claim(id, &approval(grace())).await.expect("db").err();
+        let refused = store
+            .claim(id, 1, &approval(grace()))
+            .await
+            .expect("db")
+            .err();
         assert_eq!(refused, Some(Refusal::PreviewNotAllowed));
         assert_eq!(
             store.get(id).await.expect("get").expect("row").state,
             AWAITING
         );
 
-        assert!(store
-            .update_values(id, false, "edited", &allowed(T1))
+        // An edit moves the row to revision 2 with its values written. The preview stays the placeholder until stored.
+        let edited = store
+            .begin_edit(id, false, "edited", T1)
             .await
-            .expect("db"));
+            .expect("db")
+            .expect("the edit applies");
+        assert_eq!(edited.revision, 2);
+        assert!(store.set_preview(id, 2, &allowed(T1)).await.expect("db"));
         let claimed = store
-            .claim(id, &approval(grace()))
+            .claim(id, 2, &approval(grace()))
             .await
             .expect("db")
             .expect("the first claim launches");
         assert_eq!(claimed.note, "edited");
         assert!(!claimed.check_mode);
 
-        let again = store.claim(id, &approval(grace())).await.expect("db").err();
+        let again = store
+            .claim(id, 2, &approval(grace()))
+            .await
+            .expect("db")
+            .err();
         assert_eq!(
             again,
             Some(Refusal::NotAwaiting),
-            "a second claim launches nothing"
+            "a second claim launches nothing, and is not stale"
         );
         let denial = Decision::new(DENIED, grace(), &ada(), None, T1.into());
-        let late_denial = store.deny(id, &denial).await.expect("db").err();
+        let late_denial = store.deny(id, 2, &denial).await.expect("db").err();
         assert_eq!(late_denial, Some(Refusal::NotAwaiting));
-        assert!(!store
-            .update_values(id, true, "late", &allowed(T1))
+        assert!(
+            store
+                .begin_edit(id, true, "late", T1)
+                .await
+                .expect("db")
+                .is_err(),
+            "a launching row takes no edit"
+        );
+        let missing = store
+            .claim(99, 1, &approval(grace()))
             .await
-            .expect("db"));
-        let missing = store.claim(99, &approval(grace())).await.expect("db").err();
+            .expect("db")
+            .err();
         assert_eq!(missing, Some(Refusal::Missing));
 
         let launch = Launch::Launched {
@@ -1223,12 +1328,9 @@ mod tests {
     async fn a_row_left_launching_reads_as_launch_failed_and_is_never_claimed_again() {
         let store = store().await;
         let id = store.insert(&new_row("honcho"), T0).await.expect("insert");
-        assert!(store
-            .update_values(id, false, "", &allowed(T0))
-            .await
-            .expect("db"));
+        assert!(store.set_preview(id, 1, &allowed(T0)).await.expect("db"));
         store
-            .claim(id, &approval(grace()))
+            .claim(id, 1, &approval(grace()))
             .await
             .expect("db")
             .expect("claimed");
@@ -1249,11 +1351,85 @@ mod tests {
         );
         assert!(
             store
-                .claim(id, &approval(grace()))
+                .claim(id, 1, &approval(grace()))
                 .await
                 .expect("db")
                 .is_err(),
             "a restart must not reopen the launch (D53)"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_edit_moves_the_revision_and_holds_approval_until_its_preview_is_stored() {
+        let store = store().await;
+        let id = store.insert(&new_row("honcho"), T0).await.expect("insert");
+        assert!(store.set_preview(id, 1, &allowed(T0)).await.expect("db"));
+
+        let edited = store
+            .begin_edit(id, true, "second", T1)
+            .await
+            .expect("db")
+            .expect("the edit applies");
+        assert_eq!(edited.revision, 2);
+        assert_eq!(
+            edited.preview.state, "unavailable",
+            "the old verdict goes with the old values"
+        );
+        // An approval during the decide is refused, not launched on the verdict of the values it replaced.
+        assert_eq!(
+            store
+                .claim(id, 2, &approval(grace()))
+                .await
+                .expect("db")
+                .err(),
+            Some(Refusal::PreviewNotAllowed)
+        );
+        // A decide for revision 1 that finishes late is dropped. Revision 2's preview is stored.
+        assert!(!store.set_preview(id, 1, &allowed(T1)).await.expect("db"));
+        assert!(store.set_preview(id, 2, &allowed(T1)).await.expect("db"));
+        assert_eq!(
+            store
+                .claim(id, 1, &approval(grace()))
+                .await
+                .expect("db")
+                .err(),
+            Some(Refusal::Stale),
+            "an approver who reviewed revision 1 is refused"
+        );
+        assert_eq!(
+            store.get(id).await.expect("get").expect("row").state,
+            AWAITING,
+            "a stale claim moves nothing"
+        );
+        assert!(store
+            .claim(id, 2, &approval(grace()))
+            .await
+            .expect("db")
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_denial_at_an_old_revision_is_stale_and_moves_nothing() {
+        let store = store().await;
+        let id = store.insert(&new_row("honcho"), T0).await.expect("insert");
+        store
+            .begin_edit(id, false, "again", T1)
+            .await
+            .expect("db")
+            .expect("the edit applies");
+        let denial = Decision::new(DENIED, grace(), &ada(), None, T1.into());
+        assert_eq!(
+            store.deny(id, 1, &denial).await.expect("db").err(),
+            Some(Refusal::Stale)
+        );
+        assert_eq!(
+            store.get(id).await.expect("get").expect("row").state,
+            AWAITING
+        );
+        assert!(store.deny(id, 2, &denial).await.expect("db").is_ok());
+        assert_eq!(
+            store.get(id).await.expect("get").expect("row").state,
+            DENIED
         );
     }
 
