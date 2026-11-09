@@ -433,6 +433,9 @@
     _engine: "{{ container_engine | default('podman') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    # Play vars do not reach the next play, so the verify play derives the gate flag again, exactly as Phase 1 does
+    # (docs/MISTAKES.md 10.17; platform/tests/test_play_vars_scope.py).
+    _console_launch_gate_declared: "{{ (console_launch_gate_url | default('', true) | string | trim | length) > 0 }}"
     # The launch-gate probe's argv (D49), used only when the gate is declared. --resolve sends the declared name to the
     # declared address; it is omitted in local mode, where the name resolves on its own.
     _console_gate_probe_url: "{{ console_launch_gate_url | default('', true) | string | trim | regex_replace('/+$', '') }}/v1/launch"

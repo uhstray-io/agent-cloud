@@ -50,7 +50,7 @@ and why.
 | 1.18 | **x2** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer) | Unverified claim | 2 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
-| 1.21 | **x3** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe) | Unverified claim | 3 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed |
+| 1.21 | **x4** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 4 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
@@ -182,7 +182,7 @@ and why.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | 1 | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | 1 | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | 1 | Test (real evaluation, current ansible-core) |
-| 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) (widened by 10.32) | Mechanism never exercised | 2 | Test (`test_manage_secrets_scope.py`) |
+| 10.17 | A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) (widened by 10.32) — **x2** — **x3** (2026-11-09: deploy-console.yml's verify play read a flag defined only in Phase 1's `vars:`, so console deploys after #934 would fail; found by check-mode task 14234) | Mechanism never exercised | 3 | Test (`test_manage_secrets_scope.py`, `test_play_vars_scope.py`) |
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
@@ -996,7 +996,7 @@ live rule and contact state", "real deploy verifies every provisioned dashboard 
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
 
-**Occurrences: 3** — 2026-10-04, 2026-10-13, 2026-10-28
+**Occurrences: 4** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09
 
 **Occurrence 2 — 2026-10-13.** Verify o11y Service (Dev) tasks 5257 and 5262 passed with the
 agentgateway canary, and the operator was told the Loki line read back "is a span log", so
@@ -1029,6 +1029,32 @@ assumption about an unmanaged record; a held publishing step means "not live yet
 occurrence `Convention` is retired for the live-probe form; proposed guard: a WAF skip for exactly
 `console.uhstray.io/healthz` (the shape of the inference `/health` rule in `waf.tf`), so Verify
 Service Health probes the public URL through the edge.
+
+**Occurrence 4 — 2026-11-09.** After `Deploy skynet (Dev)` task 14142 passed, I told the operator
+"production skynet now launches through the gate" and wrote the same claim into the launch-gate
+status entry in `AGENTS.md` on the evidence PR (#932). The check behind it was the deploy's two
+in-container gate probes: `POST /v1/launch` with no token answered 401, and with skynet's caller
+token and an empty JSON object (`{}`) as the body answered 400 `bad_request` (`deploy-skynet.yml`, the two "Launch gate"
+verify tasks). Those select reachability over TLS, the name mapping and authentication. A launch
+is outside them: the gate refuses that body, which names no template, before it reads a template, asks OPA or calls
+Semaphore, and no skynet-initiated launch had gone through the gate in either environment (checked
+the same day: production's last 200 tasks, ids 14008 to 14207, span the gate's whole life from
+deploy task 14113, and the only `skynet`-tagged one is task 14118, the dry-run task the gate's probe created; locally,
+skynet had no gate client before skynet#14 merged (2026-11-09 UTC), and the local end-to-end proof,
+`skynet-launch-containment` task 4.4, was still open). The gate's own allow path
+was proven separately by `Probe launch-gate (Dev)` task 14117, which posts from inside the gate's
+container with a fixed probe request, not through skynet's client. The `pr-reviewer` round on #932
+caught the wording before merge, and the entry now says the gate is skynet's only launch path and
+that no skynet-initiated launch has run through it yet. The rule did not fire because I read the
+probe's result, not its scope, at the moment of reporting: the deploy's `Report` line and the
+probe names ("Launch gate refuses a request with no token", "Launch gate accepts the caller
+token") read like the end-to-end claim. The
+correction reached the operator in the next message. Proposed guard, replacing `Convention` for
+this form: a check-mode launch made through skynet's own client (the shape of `Probe launch-gate
+(Dev)`, but driven by skynet's `SemaphoreClient` inside the skynet container) that must return a
+task tagged `skynet <workflow_id> <step>`, so "skynet launches through the gate" is the probe's
+own selection rather than an inference from its neighbours; until it exists, that claim is not
+made for any environment where the probe has not run.
 
 ### 1.22 A runner's tool version stated twice without reading the running system
 
@@ -5395,7 +5421,7 @@ general case.
 
 ### 10.17 A guard that could never pass in production, tested only where it is switched off
 
-**Occurrences: 2** — 2026-09-23, 2026-09-29
+**Occurrences: 3** — 2026-09-23, 2026-09-29, 2026-11-09
 
 **What happened.** `deploy-agentgateway.yml` refuses to deploy when the upstream key is empty,
 unless `agw_upstream_requires_key: false`. It read `secrets.vllm_api_key`. `manage-secrets.yml`
@@ -5447,6 +5473,8 @@ already names it.
 
 **Widened 2026-10-30 by 10.32.** A guard proven in its enabled form, but only in a test
 execution environment production's templates do not run in.
+
+**Occurrence 3 — 2026-11-09.** Agent-cloud PR #934 (Dispatch Console Phase 4) gave `deploy-console.yml` an optional launch-gate wiring. The flag `_console_launch_gate_declared` was defined in Phase 1's play `vars:`, and the verify play (Phase 3) read it in three `when:` conditions. A play's `vars:` do not reach the next play, so Phase 3 failed with "'_console_launch_gate_declared' is undefined" whether or not the gate was declared: every console deploy after #934 would fail at its verify. The first production run found it in check mode (Semaphore task 14234), before any real change. The PR's tests checked the playbook's structure and rendered its templates, and none evaluated Phase 3's conditions; its review and the two reviews of its fixes read the code and did not catch the scope either. Why the rule did not fire: the existing guard only covers `secrets`, the one name it was written for, so a fact read across plays under any other name was still carried by memory. **Enforced by** now includes `platform/tests/test_play_vars_scope.py`: in every playbook, an internal name one play defines in its `vars:` may be read by another play only when that play defines it too, or when the file sets it as a host fact (`set_fact`, `register`, `add_host`). It found this case and none other; `configure-host-network.yml` passes its value through `add_host`, which carries.
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 

@@ -1,4 +1,4 @@
-# skynet — launch-gate overlay. deploy.sh appends it outside LOCAL_MODE, and only when .env carries
+# skynet — launch-gate overlay. deploy.sh adds it ahead of compose.prod.yml outside LOCAL_MODE, and only when .env carries
 # SKYNET_LAUNCH_GATE_HOSTNAME. templates/env.j2 renders that line outside local mode, and only when the
 # inventory declares skynet_launch_gate_url. .env is the one decision point, so this file and the
 # variables it needs cannot disagree.

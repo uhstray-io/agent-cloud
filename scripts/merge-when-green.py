@@ -4,10 +4,12 @@
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import re
 import subprocess
 import sys
+from pathlib import Path
 from urllib.parse import urlencode
 
 REPO = "uhstray-io/agent-cloud"
@@ -20,12 +22,13 @@ CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA = "ccd27624f66f4923bacea51976f708fa4b870a3
 RUNS_PARTITIONED_WORKFLOW_BLOB_SHA = "466828e11b7bf29958d7de7a505dad908ae8b3cd"
 PI_MOVED_WORKFLOW_BLOB_SHA = "15a15a96bad6b35ee53d36ac7a37deea9cf298d0"
 RUFF_PINNED_WORKFLOW_BLOB_SHA = "98e7aca96851979464f36bffc48444eba93d39f0"
+VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
     "Python Playbook Safety", "Python Agentgateway",
     "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
     "Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)", "Rust (console)",
-    "Python Playbook Runs",
+    "Python Playbook Runs", "Version",
 }
 GO_PATH = "platform/services/uhhcraft/deployment/"
 GO_WORKFLOW = WORKFLOW
@@ -35,6 +38,14 @@ DOCKERFILES = {
     "platform/services/inference-hunyuan3d/deployment/Dockerfile",
 }
 SHA = re.compile(r"^[0-9a-f]{40}$")
+# The one rule set for pull request titles (plan 20), loaded from the sibling script so the two cannot disagree.
+SEMVER = Path(__file__).resolve().with_name("semver.py")
+_semver_spec = importlib.util.spec_from_file_location("semver_for_merge_guard", SEMVER)
+semver = importlib.util.module_from_spec(_semver_spec)
+_semver_spec.loader.exec_module(semver)
+# release-version.yml runs these with contents: write on every push to dev and main (plan 20), so a pull
+# request that changes either one is merged by the operator, never through this gate.
+RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv")
 
 
 class Refusal(Exception):
@@ -59,9 +70,12 @@ class GitHub:
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
             raise Refusal(f"GitHub read failed for {endpoint}") from error
 
-    def merge(self, pr, sha):
+    def merge(self, pr, sha, title):
+        # --body is the title this run validated. semver reads the merge body for the version, and GitHub's
+        # default body carries the title as it stands when the merge happens, so an edit after the last read
+        # would reach history unchecked. The title is one argv element, never a shell string.
         command = ["gh", "pr", "merge", str(pr), "--repo", REPO,
-                   "--merge", "--match-head-commit", sha]
+                   "--merge", "--match-head-commit", sha, "--body", title]
         self.calls.append(command)
         try:
             return subprocess.run(command, capture_output=True, text=True, check=True)
@@ -102,6 +116,19 @@ def get_pr(api, number):
     return api.api(f"repos/{REPO}/pulls/{number}")
 
 
+def check_title(pr):
+    # The Version job reads the title when it runs, and a title edit does not run it again, so the guard
+    # reads the live title at merge: a title edited after a green Version run is refused here.
+    title = pr.get("title")
+    try:
+        if not isinstance(title, str):
+            raise semver.InvalidTitle("the title is missing or is not text")
+        semver.classify_title(title)
+    except semver.InvalidTitle as error:
+        raise Refusal(f"PR title is not a Conventional Commits title ({error}); "
+                      "fix the title and re-run the Version job") from error
+
+
 def check_pr(pr, number, sha):
     if not isinstance(pr, dict):
         raise Refusal("PR response is incomplete")
@@ -114,6 +141,7 @@ def check_pr(pr, number, sha):
             or not isinstance(base.get("sha"), str) or not SHA.fullmatch(base["sha"])
             or head["repo"].get("full_name") != REPO or head.get("sha") != sha):
         raise Refusal("PR must be open, ready, same-repository, target dev, and match --head with a pinned base SHA")
+    check_title(pr)
     return base["sha"]
 
 
@@ -133,6 +161,8 @@ def changed_files(api, number):
     paths = [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
     if any(path.startswith(".github/workflows/") and path != WORKFLOW for path in paths):
         raise Refusal("PR changes another protected workflow path")
+    if any(path in RELEASE_SCRIPTS for path in paths):
+        raise Refusal("PR changes a release script that runs with a write token; the operator merges it")
     return paths, files
 
 
@@ -144,7 +174,7 @@ def required_jobs(files):
         "Python core": True, "Python Playbook Safety": True, "Python Agentgateway": True,
         "Python Semaphore": True, "Python NetBox": True,
         "Bash Tests": True, "Rego Tests": True, "Unit Tests": True, "Rust (console)": True,
-        "Python Playbook Runs": True,
+        "Python Playbook Runs": True, "Version": True,
         "Go lint (uhhcraft)": go, "Go test (uhhcraft)": go,
         "Go build (uhhcraft image)": go_build,
     }
@@ -190,7 +220,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False):
+                          pi_moved=False, versioned=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -202,16 +232,18 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         "test": "Unit Tests", "go-lint": "Go lint (uhhcraft)",
         "go-test": "Go test (uhhcraft)", "go-build": "Go build (uhhcraft image)",
     }
-    if partitioned or agw or node or console or runs or pi_moved:
+    if partitioned or agw or node or console or runs or pi_moved or versioned:
         expected["python-playbook-safety"] = "Python Playbook Safety"
-    if agw or node or console or runs or pi_moved:
+    if agw or node or console or runs or pi_moved or versioned:
         expected["python-agentgateway"] = "Python Agentgateway"
     if node or console or runs:
         expected["node-pi-provider"] = "Node pi provider"
-    if console or runs or pi_moved:
+    if console or runs or pi_moved or versioned:
         expected["rust-console"] = "Rust (console)"
-    if runs or pi_moved:
+    if runs or pi_moved or versioned:
         expected["python-playbook-runs"] = "Python Playbook Runs"
+    if versioned:
+        expected["version"] = "Version"
     jobs = {}
     current = None
     in_jobs = False
@@ -400,11 +432,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Pi-moved workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RUFF_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == VERSIONED_WORKFLOW_BLOB_SHA:
+            # Same job set as ruff-pinned plus the Version job; each side is checked against its own state.
+            check_workflow_policy(base, pi_moved=True)
+            check_workflow_policy(candidate, versioned=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != RUFF_PINNED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed ruff-pinned workflow")
         check_workflow_policy(base, pi_moved=True)
         if base != candidate or workflow_records:
             raise Refusal("Ruff-pinned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == VERSIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != VERSIONED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed versioned workflow")
+        check_workflow_policy(base, versioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Versioned workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
@@ -637,7 +685,7 @@ def validate(api, number, sha, receipt_path):
     if current_base_sha != base_sha or current_pr["head"]["sha"] != pr["head"]["sha"]:
         raise Refusal("PR base or head moved while collecting merge evidence")
     return {"checks": checks, "approvals": approvals, "receipt": receipt, "comments": len(comments),
-            "base_sha": base_sha, "head_sha": sha}
+            "base_sha": base_sha, "head_sha": sha, "title": current_pr["title"]}
 
 
 def main(argv=None, api=None):
@@ -668,7 +716,7 @@ def main(argv=None, api=None):
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
         try:
-            api.merge(args.pr, args.head)
+            api.merge(args.pr, args.head, refreshed["title"])
         except Refusal:
             pr = get_pr(api, args.pr)
             if (isinstance(pr, dict) and pr.get("merged")

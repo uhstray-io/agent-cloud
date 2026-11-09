@@ -104,7 +104,7 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
   The verify also sends skynet's transport a `PUT` to `/v1/data/agentcloud_write_probe` on OPA, which must get 401: OPA's authorization policy admits only decisions and health.
 - **Launch gate** (when `skynet_launch_gate_url` is set): the gate's leaf is an internal-CA leaf too,
   so the bundles above already trust it. In production its name has no DNS record either:
-  `deploy.sh` appends `compose.launch-gate.yml` outside LOCAL_MODE when `.env` carries
+  `deploy.sh` adds `compose.launch-gate.yml` ahead of `compose.prod.yml` outside LOCAL_MODE when `.env` carries
   `SKYNET_LAUNCH_GATE_HOSTNAME`, and that overlay maps the name to `skynet_launch_gate_ip`. It is a
   separate file because `compose.prod.yml` requires its variables, which would refuse every production
   deploy without the gate. Local-dev reaches the gate by its network alias on `local-dev`. The verify
