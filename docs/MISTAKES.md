@@ -1037,7 +1037,10 @@ in-container gate probes: `POST /v1/launch` with no token answered 401, and with
 token and an empty body answered 400 `bad_request` (`deploy-skynet.yml`, the two "Launch gate"
 verify tasks). Those select reachability over TLS, the name mapping and authentication. A launch
 is outside them: the gate refuses an empty body before it reads a template, asks OPA or calls
-Semaphore, and no skynet run had been started in either environment. The gate's own allow path
+Semaphore, and no skynet-initiated launch had gone through the gate in either environment (checked
+the same day: production's last 200 tasks, ids 14008 to 14207, span the gate's whole life from
+deploy task 14113, and the only `skynet`-tagged one is the gate's own probe task 14118; locally,
+skynet had no gate client before skynet#14 merged that day). The gate's own allow path
 was proven separately by `Probe launch-gate (Dev)` task 14117, which posts from inside the gate's
 container with a fixed probe request, not through skynet's client. The `pr-reviewer` round on #932
 caught the wording before merge, and the entry now says the gate is skynet's only launch path and
