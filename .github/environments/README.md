@@ -12,7 +12,7 @@ edit the JSON, run the script, and re-running converges instead of duplicating.
 
 ### `release-major`
 
-- **Required reviewer:** the operator, user id `24553698` (`jestyr27`). A `major` run
+- **Required reviewer:** the operator, by numeric user id (`24553698`). A `major` run
   waits for this approval before its job starts.
 - **Deployment branch policy:** only the branch `main` may deploy to this environment
   (`protected_branches: false`, `custom_branch_policies: true`, one policy named `main`).
