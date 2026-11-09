@@ -28,13 +28,10 @@
 # receiver stayed down for about 20 s, not that one request lost a race. Grafana caches
 # its database verdict for 5 s, so the delay stays above that.
 #
-# Reading a datasource health status (Grafana 11.4 pkg/api/datasources.go):
-#   400  Grafana reached Prometheus and Prometheus answered unhealthy
-#   500  Grafana itself errored, which is not Prometheus's unhealthy verdict: loading the
-#        datasource from Grafana's database, building the plugin context, the plugin
-#        call (translatePluginRequestErrorToAPIError) or parsing the plugin's details
-#        failed. The message names Grafana and claims no more;
-#        grafana_plugin_request_total{endpoint="checkHealth"} shows only the plugin-call case
+# Datasource health (Grafana 11.4 pkg/api/datasources.go): only a 400 is Prometheus's own
+# unhealthy verdict, so only a 400 names Prometheus. A 500 is Grafana erroring; any other
+# status (a 502 from the edge, a refused connection) is the probe path failing. Both name
+# the datasource uid. Detail: the o11y README's liveness watcher paragraph.
 #
 # Check mode probes and reports but posts nothing.
 
@@ -177,15 +174,17 @@
             ([] if (_grafana_health.status | default(-1)) == 200
                    and (_grafana_health.json | default({})).database | default('') == 'ok'
              else ['grafana /api/health failed (status ' ~ (_grafana_health.status | default(-1)) ~ ')'])
-            + (['watcher_token is not in secret/services/o11y; run Provision o11y Watcher Token']
-               if _watch_token | length == 0
-               else (['watcher token rejected by Grafana (status ' ~ _prom_status ~ ')']
-                     if (_prom_status | int) in [401, 403]
-                     else ([] if (_prom_status | int) == 200 and _prom_verdict == 'OK'
-                           else (['grafana datasource health errored (status '
-                                  ~ _prom_status ~ '; a Grafana-side error, not a Prometheus unhealthy verdict)']
-                                 if (_prom_status | int) == 500
-                                 else ['prometheus datasource unhealthy (status ' ~ _prom_status ~ ')']))))
+            + ([_prom_failure] if _prom_failure | length > 0 else [])
+          }}
+      vars:
+        _prom_failure: >-
+          {{
+            'watcher_token is not in secret/services/o11y; run Provision o11y Watcher Token' if _watch_token | length == 0
+            else '' if (_prom_status | int) == 200 and _prom_verdict == 'OK'
+            else 'watcher token rejected by Grafana (status ' ~ _prom_status ~ ')' if (_prom_status | int) in [401, 403]
+            else 'prometheus datasource unhealthy (status 400)' if (_prom_status | int) == 400
+            else 'grafana datasource health errored (status 500, uid ' ~ _prom_uid ~ '; a Grafana-side error, not a Prometheus unhealthy verdict)' if (_prom_status | int) == 500
+            else 'grafana datasource health probe failed (status ' ~ _prom_status ~ ', uid ' ~ _prom_uid ~ ')'
           }}
 
     - name: Report the probe result
