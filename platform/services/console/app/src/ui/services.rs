@@ -8,13 +8,15 @@
 
 use dioxus::prelude::*;
 
+use super::api::{self, Me};
 use super::empty::SERVICES;
 use super::icons::icon;
 use super::inventory::{
-    count_text, mb_text, meta_of, poll_admin, services_in_scope, view, Admin, ScopedServices,
-    Snapshot, View, ViewNotice, POLL_MS, SEP,
+    count_text, end_session, mb_text, meta_of, poll_admin, services_in_scope, view, Admin,
+    ScopedServices, Snapshot, View, ViewNotice, POLL_MS, SEP,
 };
 use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
+use super::proposals_api::{self, Kind, Proposal};
 use super::shell::{no_tenant_message, Ctx};
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, Freshness, Notice, Rag, RagBadge, StepList,
@@ -374,7 +376,10 @@ fn ServiceView(tenant: String, name: String) -> Element {
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
-            rsx! { ServiceCard { body, reason } }
+            rsx! {
+                ServiceCard { body, reason }
+                ProposalActions { service: name }
+            }
         }
     }
 }
@@ -466,6 +471,144 @@ fn ServiceCard(body: ServiceBody, reason: String) -> Element {
                 }
             }
         }
+    }
+}
+
+/// What a proposal action on this page reports.
+#[derive(Debug, Clone, PartialEq)]
+enum ProposeResult {
+    Created(String),
+    Failed(String),
+}
+
+/// Posts one proposal. A press while one is in flight does nothing. A 401 ends the session, and any other
+/// failure keeps the sentence the server sent.
+fn propose(
+    kind: Kind,
+    service: String,
+    check_mode: bool,
+    note: String,
+    mut busy: Signal<bool>,
+    mut result: Signal<Option<ProposeResult>>,
+    me: Signal<Me>,
+) {
+    if busy() {
+        return;
+    }
+    busy.set(true);
+    result.set(None);
+    spawn(async move {
+        let reply = proposals_api::create(kind, &service, check_mode, &note).await;
+        busy.set(false);
+        if reply.status == 401 {
+            end_session(me);
+            return;
+        }
+        let done = if (200..=299).contains(&reply.status) {
+            match api::parse::<Proposal>(&reply) {
+                Some(proposal) => ProposeResult::Created(proposal.id),
+                None => ProposeResult::Failed(proposals_api::GENERIC_FAILURE.to_string()),
+            }
+        } else {
+            ProposeResult::Failed(proposals_api::error_text(&reply))
+        };
+        result.set(Some(done));
+    });
+}
+
+/// The Assess resource and Verify health actions on a service's page (plan 17, D48). Each one makes a proposal
+/// for a platform admin to review on the Dashboard. Nothing runs from this page: the gate runs an action only
+/// after an approval.
+#[component]
+fn ProposalActions(service: String) -> Element {
+    let ctx = use_context::<Ctx>();
+    let me = ctx.me;
+    let mut check_mode = use_signal(|| false);
+    let mut note = use_signal(String::new);
+    let busy = use_signal(|| false);
+    let result = use_signal(|| None::<ProposeResult>);
+
+    let assess_service = service.clone();
+    let on_assess = move |_: MouseEvent| {
+        propose(
+            Kind::Assess,
+            assess_service.clone(),
+            check_mode(),
+            note(),
+            busy,
+            result,
+            me,
+        );
+    };
+    let verify_service = service.clone();
+    let on_verify = move |_: MouseEvent| {
+        propose(
+            Kind::Verify,
+            verify_service.clone(),
+            check_mode(),
+            note(),
+            busy,
+            result,
+            me,
+        );
+    };
+
+    rsx! {
+        section { class: "card", aria_labelledby: "svc-actions-h",
+            div { class: "card-h",
+                h2 { id: "svc-actions-h", "Actions" }
+            }
+            div { class: "card-b stack",
+                p { class: "hint", "Each action makes a proposal. A platform admin reviews it on the Dashboard, and nothing runs until they approve." }
+                label { class: "choice",
+                    input {
+                        r#type: "checkbox",
+                        checked: check_mode(),
+                        onchange: move |evt: FormEvent| check_mode.set(evt.checked()),
+                    }
+                    span { "Check mode (dry run)" }
+                }
+                label { class: "field",
+                    span { class: "label", "Note (optional)" }
+                    input {
+                        class: "input",
+                        r#type: "text",
+                        maxlength: "2000",
+                        value: "{note}",
+                        oninput: move |evt: FormEvent| note.set(evt.value()),
+                    }
+                }
+                div { class: "row wrap",
+                    button { r#type: "button", class: "btn primary", onclick: on_assess, "Assess resource" }
+                    button { r#type: "button", class: "btn", onclick: on_verify, "Verify health" }
+                }
+                if busy() {
+                    p { class: "hint", role: "status", "Creating the proposal\u{2026}" }
+                }
+                if let Some(done) = result() {
+                    ProposeStatus { result: done }
+                }
+            }
+        }
+    }
+}
+
+/// What a proposal action said: the new proposal's id with a link to the Dashboard, or the failure.
+#[component]
+fn ProposeStatus(result: ProposeResult) -> Element {
+    match result {
+        ProposeResult::Created(id) => rsx! {
+            p { class: "st ok", role: "status",
+                {icon("circle-check")}
+                span { "Proposal {id} created. Review it on the " Link { to: Route::Dashboard {}, "Dashboard" } "." }
+            }
+        },
+        ProposeResult::Failed(text) => rsx! {
+            p { class: "st crit", role: "alert",
+                {icon("octagon-x")}
+                span { "{text}" }
+            }
+        },
     }
 }
 
