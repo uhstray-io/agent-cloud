@@ -227,6 +227,7 @@ class CoverageCensusTests(unittest.TestCase):
                     "method": "GET", "valid_status_codes": [200],
                     "follow_redirects": False, "proxy_from_environment": False,
                     "body_size_limit": "4096B",
+                    "headers": {"Host": "health.example.invalid"},
                     "tls_config": {
                         "insecure_skip_verify": False,
                         "server_name": "health.example.invalid",
@@ -248,6 +249,7 @@ class CoverageCensusTests(unittest.TestCase):
             "server_name": "health.example.invalid",
             "ca_file": "/certs/step-ca-bundle.crt",
         })
+        self.assertEqual(ca_module["http"]["headers"], {"Host": "health.example.invalid"})
 
     def test_availability_requires_literal_rfc1918_http_target_and_exact_contract(self):
         cases = [
@@ -279,6 +281,8 @@ class CoverageCensusTests(unittest.TestCase):
         )
         http_config = json.loads(prepared["targets"][0]["blackbox_config"])["modules"]["health_01"]["http"]
         self.assertNotIn("tls_config", http_config)
+        # A plain-HTTP probe keeps the literal address as its Host; only HTTPS names the site.
+        self.assertNotIn("headers", http_config)
 
     def test_availability_rejects_status_booleans_bad_tls_and_over_budget_values(self):
         invalid = []
