@@ -1101,6 +1101,8 @@ base = {
 cases = {
     "off": dict(base),
     "on": {**base, "skynet_tls": True, "dns_site": "site", "dns_zone": "example.test"},
+    "declared": {**base, "skynet_tls": True, "dns_site": "site", "dns_zone": "example.test",
+                 "skynet_bind": "203.0.113.30", "skynet_port": 9443},
 }
 for name, values in cases.items():
     values["env_dest"] = f"{tmp}/tls-{name}.env"
@@ -1108,9 +1110,12 @@ for name, values in cases.items():
         json.dump(values, fh)
 PY
   local name
-  for name in off on; do
+  for name in off on declared; do
     ansible-playbook "$BATS_TEST_TMPDIR/render.yml" -e "@$BATS_TEST_TMPDIR/tls-vars-$name.json" >/dev/null
   done
+  # skynet_bind and skynet_port (the renewal row's names) win over the plain API's bind.
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_BIND=203.0.113.30' "$BATS_TEST_TMPDIR/tls-declared.env"
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_PORT=9443' "$BATS_TEST_TMPDIR/tls-declared.env"
   refute_grep -qE '^SKYNET_TLS_' "$BATS_TEST_TMPDIR/tls-off.env"
   assert_grep -qx 'SKYNET_TLS_CERT_FILE=/certs/skynet-server/current/cert.pem' "$BATS_TEST_TMPDIR/tls-on.env"
   assert_grep -qx 'SKYNET_TLS_KEY_FILE=/certs/skynet-server/current/key.pem' "$BATS_TEST_TMPDIR/tls-on.env"
