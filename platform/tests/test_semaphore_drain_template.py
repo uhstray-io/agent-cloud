@@ -28,17 +28,18 @@ TASK_PATH = re.compile(r"/api/project/1/tasks/(\d+)")
 STAMP = "2026-11-01T00:00:00Z"
 
 
-def tasks(first_id, count, status="success"):
-    return [{"id": first_id + n, "status": status, "created": STAMP} for n in range(count)]
+def tasks(first_id, count, template_id, status="success"):
+    return [{"id": first_id + n, "status": status, "created": STAMP, "template_id": template_id} for n in range(count)]
 
 
-def task(task_id, status):
-    return {"id": task_id, "status": status, "created": STAMP}
+def task(task_id, status, template_id):
+    return {"id": task_id, "status": status, "created": STAMP, "template_id": template_id}
 
 
 class FakeSemaphore(DrainingHandler):
     """state: templates {id: [task rows, newest first]}, delete_reply {task id: (status, removed)},
-    redirect {template id} (its page answers 302 to itself), requests [(method, path)]."""
+    redirect {template id} (its first page answers 302 to itself), endless {template id} (every
+    page is new work, so only the page cap can end the drain), requests [(method, path)]."""
 
     def log_message(self, _format, *_args):
         return
@@ -74,6 +75,14 @@ class FakeSemaphore(DrainingHandler):
             location = f"http://127.0.0.1:{self.server.server_address[1]}{self.path}&moved=1"
             self._reply(302, None, headers=[("Location", location)])
             return
+        if template_id in self.state["endless"]:
+            self.state["served"] += 1
+            base = 100000 + 10 * self.state["served"]
+            rows = [
+                {"id": base + n, "status": "success", "created": STAMP, "template_id": template_id} for n in range(3)
+            ]
+            self._reply(200, rows)
+            return
         rows = self.state["templates"].get(template_id)
         if rows is None:
             self._reply(404, {"error": "no template"})
@@ -96,12 +105,14 @@ class FakeSemaphore(DrainingHandler):
 def fake():
     servers = []
 
-    def start(templates, delete_reply=None, redirect=()):
+    def start(templates, delete_reply=None, redirect=(), endless=()):
         state = {
             "requests": [],
             "templates": templates,
             "delete_reply": dict(delete_reply or {}),
             "redirect": set(redirect),
+            "endless": set(endless),
+            "served": 0,
         }
         handler = type("Handler", (FakeSemaphore,), {"state": state})
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -136,7 +147,7 @@ def requests_of(srv, method):
 
 
 def test_drains_every_task_over_three_pages_then_stops(fake, tmp_path):
-    srv = fake({7: tasks(1000, 450)})
+    srv = fake({7: tasks(1000, 450, 7)})
     result = drain(tmp_path, srv.url, "--template-id", "7")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {"dry_run": False, "templates": {"7": {"deleted": 450, "pages": 3}}}
@@ -148,7 +159,7 @@ def test_drains_every_task_over_three_pages_then_stops(fake, tmp_path):
 
 
 def test_a_task_already_gone_is_not_an_error(fake, tmp_path):
-    srv = fake({7: tasks(1000, 3)}, delete_reply={1001: (404, True)})
+    srv = fake({7: tasks(1000, 3, 7)}, delete_reply={1001: (404, True)})
     result = drain(tmp_path, srv.url, "--template-id", "7")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["templates"] == {"7": {"deleted": 2, "pages": 1}}
@@ -157,17 +168,30 @@ def test_a_task_already_gone_is_not_an_error(fake, tmp_path):
 
 def test_a_400_for_a_task_the_list_no_longer_carries_is_gone(fake, tmp_path):
     # Semaphore answers 400 for a missing task too (plan/development/18, "Why a presence check").
-    srv = fake({7: tasks(1000, 3)}, delete_reply={1001: (400, True)})
+    srv = fake({7: tasks(1000, 3, 7)}, delete_reply={1001: (400, True)})
     result = drain(tmp_path, srv.url, "--template-id", "7")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["templates"] == {"7": {"deleted": 2, "pages": 1}}
 
 
 def test_a_400_for_a_task_still_listed_is_a_failure(fake, tmp_path):
-    srv = fake({7: tasks(1000, 3)}, delete_reply={1001: (400, False)})
+    srv = fake({7: tasks(1000, 3, 7)}, delete_reply={1001: (400, False)})
     result = drain(tmp_path, srv.url, "--template-id", "7")
     assert result.returncode == 4, result.stderr
     assert "1001" in result.stderr
+
+
+@pytest.mark.parametrize("status", [404, 204], ids=["gone-but-still-listed", "deleted-but-still-listed"])
+def test_a_page_that_makes_no_progress_stops_the_drain(fake, tmp_path, status):
+    # Every delete answers, yet the next listing is the same three tasks: another round would repeat it.
+    srv = fake(
+        {7: tasks(1000, 3, 7)},
+        delete_reply={1000: (status, False), 1001: (status, False), 1002: (status, False)},
+    )
+    result = drain(tmp_path, srv.url, "--template-id", "7")
+    assert result.returncode == 7, result.stderr
+    assert "no task was deleted" in result.stderr
+    assert len(requests_of(srv, "DELETE")) == 3
 
 
 @pytest.mark.parametrize(
@@ -175,7 +199,7 @@ def test_a_400_for_a_task_still_listed_is_a_failure(fake, tmp_path):
     ["running", "waiting", "starting", "stopping", "waiting_confirmation", "confirmed", "rejected", "never-seen", None],
 )
 def test_a_running_or_queued_task_on_any_template_refuses_before_any_delete(fake, tmp_path, status):
-    srv = fake({7: tasks(1000, 5), 8: tasks(2000, 2) + [task(2999, status)]})
+    srv = fake({7: tasks(1000, 5, 7), 8: tasks(2000, 2, 8) + [task(2999, status, 8)]})
     result = drain(tmp_path, srv.url, "--template-id", "7", "--template-id", "8")
     assert result.returncode == 3, result.stderr
     assert "2999" in result.stderr
@@ -185,7 +209,7 @@ def test_a_running_or_queued_task_on_any_template_refuses_before_any_delete(fake
 
 
 def test_a_task_that_starts_running_mid_drain_stops_the_drain(fake, tmp_path):
-    rows = tasks(1000, 200) + [task(1500, "running")] + tasks(1200, 10)
+    rows = tasks(1000, 200, 7) + [task(1500, "running", 7)] + tasks(1200, 10, 7)
     srv = fake({7: rows})
     result = drain(tmp_path, srv.url, "--template-id", "7")
     assert result.returncode == 3, result.stderr
@@ -193,8 +217,33 @@ def test_a_task_that_starts_running_mid_drain_stops_the_drain(fake, tmp_path):
     assert len(requests_of(srv, "DELETE")) == 200
 
 
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"id": 1500, "status": "success", "created": STAMP, "template_id": 8},
+        {"id": 1500, "status": "success", "created": STAMP},
+        {"id": 1500, "status": "success", "created": STAMP, "template_id": "7"},
+    ],
+    ids=["another-template", "no-template-id", "string-template-id"],
+)
+def test_a_row_that_is_not_this_templates_task_refuses_the_page_before_any_delete(fake, tmp_path, row):
+    srv = fake({7: tasks(1000, 2, 7) + [row]})
+    result = drain(tmp_path, srv.url, "--template-id", "7")
+    assert result.returncode == 6, result.stderr
+    assert "1500" in result.stderr
+    assert requests_of(srv, "DELETE") == []
+
+
+def test_a_foreign_row_on_a_later_page_stops_before_that_page_is_deleted(fake, tmp_path):
+    rows = tasks(1000, 200, 7) + [task(1500, "success", 8)] + tasks(1200, 10, 7)
+    srv = fake({7: rows})
+    result = drain(tmp_path, srv.url, "--template-id", "7")
+    assert result.returncode == 6, result.stderr
+    assert len(requests_of(srv, "DELETE")) == 200
+
+
 def test_dry_run_reads_the_first_page_and_deletes_nothing(fake, tmp_path):
-    srv = fake({7: tasks(1000, 450)})
+    srv = fake({7: tasks(1000, 450, 7)})
     result = drain(tmp_path, srv.url, "--template-id", "7", "--dry-run")
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout) == {
@@ -218,18 +267,18 @@ def test_dry_run_reads_the_first_page_and_deletes_nothing(fake, tmp_path):
     ],
 )
 def test_a_non_loopback_destination_is_refused_before_any_request(fake, tmp_path, pattern):
-    srv = fake({7: tasks(1000, 3)})
+    srv = fake({7: tasks(1000, 3, 7)})
     result = drain(tmp_path, pattern.format(port=srv.port), "--template-id", "7")
     assert result.returncode == 2, result.stderr
     assert srv.state["requests"] == []
 
 
 def test_the_token_is_never_printed(fake, tmp_path):
-    success = fake({7: tasks(1000, 2)})
+    success = fake({7: tasks(1000, 2, 7)})
     ok = drain(tmp_path, success.url, "--template-id", "7")
-    failure = fake({7: tasks(1000, 3)}, delete_reply={1001: (500, False)})
+    failure = fake({7: tasks(1000, 3, 7)}, delete_reply={1001: (500, False)})
     bad = drain(tmp_path, failure.url, "--template-id", "7")
-    running = fake({7: tasks(1000, 2) + [task(1500, "running")]})
+    running = fake({7: tasks(1000, 2, 7) + [task(1500, "running", 7)]})
     refused = drain(tmp_path, running.url, "--template-id", "7")
     for result in (ok, bad, refused):
         assert TOKEN not in result.stdout
@@ -237,15 +286,16 @@ def test_the_token_is_never_printed(fake, tmp_path):
     assert (ok.returncode, bad.returncode, refused.returncode) == (0, 4, 3)
 
 
-def test_max_pages_stops_a_drain_that_never_empties(fake, tmp_path):
-    srv = fake({7: tasks(1000, 3)}, delete_reply={1000: (404, False), 1001: (404, False), 1002: (404, False)})
+def test_max_pages_stops_a_drain_that_keeps_finding_new_work(fake, tmp_path):
+    # Each page is new tasks that the deletes do remove, so there is progress and only the cap can stop it.
+    srv = fake({}, endless=[7])
     result = drain(tmp_path, srv.url, "--template-id", "7", "--max-pages", "3", timeout=30)
     assert result.returncode == 5, result.stderr
     assert "--max-pages 3" in result.stderr
 
 
 def test_an_empty_token_file_is_refused_before_any_request(fake, tmp_path):
-    srv = fake({7: tasks(1000, 3)})
+    srv = fake({7: tasks(1000, 3, 7)})
     result = drain(tmp_path, srv.url, "--template-id", "7", token_text=" \n")
     assert result.returncode == 2, result.stderr
     assert srv.state["requests"] == []
@@ -261,14 +311,14 @@ def test_an_empty_token_file_is_refused_before_any_request(fake, tmp_path):
     ],
 )
 def test_bad_arguments_are_refused_before_any_request(fake, tmp_path, extra):
-    srv = fake({7: tasks(1000, 3)})
+    srv = fake({7: tasks(1000, 3, 7)})
     result = drain(tmp_path, srv.url, *extra)
     assert result.returncode == 2, result.stderr
     assert srv.state["requests"] == []
 
 
 def test_a_proxy_in_the_environment_is_not_used(fake, tmp_path):
-    srv = fake({7: tasks(1000, 2)})
+    srv = fake({7: tasks(1000, 2, 7)})
     env = {"HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1"}
     result = drain(tmp_path, srv.url, "--template-id", "7", env=env)
     assert result.returncode == 0, result.stderr
@@ -276,7 +326,7 @@ def test_a_proxy_in_the_environment_is_not_used(fake, tmp_path):
 
 
 def test_a_redirect_is_refused_so_the_token_does_not_follow_it(fake, tmp_path):
-    srv = fake({7: tasks(1000, 2)}, redirect=[7])
+    srv = fake({7: tasks(1000, 2, 7)}, redirect=[7])
     result = drain(tmp_path, srv.url, "--template-id", "7")
     assert result.returncode == 6, result.stderr
     assert requests_of(srv, "DELETE") == []

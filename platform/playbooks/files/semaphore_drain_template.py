@@ -20,7 +20,8 @@ Output: progress lines on stderr (counts and ids only). The final JSON object on
 
 Exit codes: 0 done or dry run; 2 refused input; 3 a task is running or queued; 4 a task DELETE
 returned an unexpected status; 5 --max-pages reached with history left; 6 an unexpected GET
-status, a malformed reply, or a transport failure.
+status, a malformed reply (including a row of another template), or a transport failure; 7 a page
+lists every task of the page before it, so the deletes made no progress.
 """
 
 import argparse
@@ -121,6 +122,15 @@ def history_page(base, project, template_id, token):
         raise Stop(6, f"template {template_id}: history page is not JSON") from None
     if not isinstance(tasks, list) or not all(isinstance(t, dict) and isinstance(t.get("id"), int) for t in tasks):
         raise Stop(6, f"template {template_id}: history page has an unexpected shape")
+    # A page lists only this template's tasks. A row that names another template, or none, means the
+    # reply is not the one asked for, so nothing on the page is deleted.
+    for task in tasks:
+        if type(task.get("template_id")) is not int or task["template_id"] != template_id:
+            raise Stop(
+                6,
+                f"template {template_id}: history page lists task {task['id']} with template_id "
+                f"{task.get('template_id')!r}; nothing was deleted from this page",
+            )
     return tasks
 
 
@@ -130,6 +140,7 @@ def running_ids(tasks):
 
 def drain_template(base, project, template_id, token, max_pages, progress):
     pages = deleted = 0
+    previous = None
     while True:
         tasks = history_page(base, project, template_id, token)
         running = running_ids(tasks)
@@ -142,6 +153,17 @@ def drain_template(base, project, template_id, token, max_pages, progress):
             )
         if not tasks:
             return {"deleted": deleted, "pages": pages}
+        listed = {task["id"] for task in tasks}
+        # Progress is a task of the page before this one no longer being listed: deleted, or gone.
+        # If every one of them is still listed, the deletes changed nothing, and another round would
+        # repeat the same deletes until the page cap.
+        if previous is not None and previous <= listed:
+            raise Stop(
+                7,
+                f"template {template_id}: page {pages + 1} lists every task of the page before it; "
+                f"no task was deleted or confirmed gone, so the drain stopped ({deleted} deleted)",
+            )
+        previous = listed
         pages += 1
         if pages > max_pages:
             raise Stop(

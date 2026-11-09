@@ -332,3 +332,48 @@ def test_preview_counts_every_unfinished_status_as_running():
     text = PLAYBOOK.read_text()
     assert "rejectattr('status', 'in', ['success', 'error', 'stopped'])" in text
     assert "selectattr('status', 'in'" not in text
+
+
+def _user_index(tasks: list) -> int:
+    found = [i for i, task in enumerate(tasks) if _is_request(task, "GET", "/api/user/")]
+    assert len(found) == 1, "one logged-in-user read"
+    return found[0]
+
+
+def test_admin_gate_precedes_every_delete_in_both_modes():
+    tasks = _play()["tasks"]
+    user = _user_index(tasks)
+    assert tasks[user].get("check_mode") is False, "the admin read must run under --check"
+    assert tasks[user].get("changed_when") is False, "the admin read changes nothing"
+    assert tasks[user].get("register") == "_user"
+    deletes = [
+        i
+        for i, task in enumerate(tasks)
+        if any(key in task and str(task[key].get("method", "")).upper() == "DELETE" for key in URI)
+    ]
+    drain = tasks.index(_drain_block(tasks))
+    assert user < min(deletes), "the admin gate must precede every schedule and template delete"
+    assert user < drain, "the admin gate must precede the task-history drain"
+
+
+def test_admin_gate_applies_only_when_task_history_must_go_and_names_admin():
+    tasks = _play()["tasks"]
+    gates = [
+        task
+        for task in tasks
+        if "ansible.builtin.assert" in task and "_user.json.admin" in str(task["ansible.builtin.assert"])
+    ]
+    assert len(gates) == 1, "one admin assert"
+    checks = " ".join(str(item) for item in gates[0]["ansible.builtin.assert"]["that"])
+    assert "first_page" in checks and "'gt', 0" in checks, "the gate applies only to templates with history"
+    assert "admin" in str(gates[0]["ansible.builtin.assert"]["fail_msg"]), "the refusal names the admin need"
+    assert tasks.index(gates[0]) > _user_index(tasks), "the assert reads the admin GET it depends on"
+
+
+def test_drain_changed_when_requires_a_zero_return_code_before_parsing_stdout():
+    block = _drain_block(_play()["tasks"])
+    commands = [child for child in block["block"] if _has_module(child, "command", "ansible.builtin.command")]
+    assert len(commands) == 1, "one drain command"
+    assert str(commands[0]["changed_when"]).startswith("_drain_run.rc == 0 and "), (
+        "a failed run must short-circuit before from_json reads its stdout"
+    )

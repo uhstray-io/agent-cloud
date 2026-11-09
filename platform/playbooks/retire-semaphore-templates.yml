@@ -217,6 +217,26 @@
           {{ _drain_plan | selectattr('running_ids') | list | to_json }}. Let them finish, or stop
           them in Semaphore, then run this again.
 
+    - name: "Read the logged-in user (deleting task history needs a Semaphore admin)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/user/"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _user
+      check_mode: false
+      changed_when: false
+
+    - name: "Refuse before any delete if task history must go and the token is not a Semaphore admin"
+      ansible.builtin.assert:
+        that:
+          - (_drain_plan | selectattr('first_page', 'gt', 0) | list | length == 0) or (_user.json.admin | bool)
+        fail_msg: >-
+          A retired template has task history, and deleting task history needs a Semaphore admin
+          token: upstream RemoveTask is admin-only. This token is not an admin, so nothing was
+          deleted. Use an admin token, or retire templates that have no history.
+
     - name: "Delete each retired template's schedule"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules/{{ item }}"
@@ -260,7 +280,7 @@
                   '--token-file=' ~ _drain_tmp.path ~ '/token']
                  + (_present_template_ids | map('string') | map('regex_replace', '^', '--template-id=') | list) }}
           register: _drain_run
-          changed_when: (_drain_run.stdout | from_json).templates.values() | map(attribute='deleted') | sum > 0
+          changed_when: _drain_run.rc == 0 and (_drain_run.stdout | from_json).templates.values() | map(attribute='deleted') | sum > 0
       always:
         - name: "Remove the scratch directory that held the token file"
           ansible.builtin.file:
