@@ -1,11 +1,11 @@
 ---
 # retire-tududi.yml — ONE-WAY teardown of the tududi to-do app: stop it, archive its data to
-# site-config and prove the archive there, wipe the service, destroy its VM.
+# site-config and prove the archive there, then destroy its VM.
 #
 # Spec: plan/development/openspec/changes/deploy-plane-work-management/specs/platform/
 # plane-work-management/spec.md, "tududi retires in a fixed order": the teardown refuses,
 # before any backup or destructive step, unless its confirmation equals the VM id; the
-# archive is taken from STOPPED volumes; nothing is removed before the archive's checksum
+# archive is taken from STOPPED volumes; the VM is destroyed only after the archive's checksum
 # has been read back from site-config.
 #
 # Order (each play fails the run before the next starts):
@@ -23,17 +23,29 @@
 #                            require the remote copy's sha256 to equal the VM's. On failure:
 #                            restart tududi if this run stopped it. Scratch dirs (deploy key,
 #                            clone, the VM's archive copy) are wiped in `always`.
-#   4. tududi_svc WIPE       tasks/clean-service.yml: compose down -v, container removal,
-#                            clone removal. Reached only when play 3 passed.
-#   5. VM DESTROY            destroy-vm.yml with target_service=tududi. It re-checks the live
-#                            VM (vmid AND name AND node) and refuses on a mismatch.
+#   4. VM DESTROY            destroy-vm.yml with target_service=tududi. It re-checks the live
+#                            VM (vmid AND name AND node), then purges the VM and its disks.
+#
+# No separate wipe step. destroy-vm purges the VM and its disks, which removes the tududi
+# volumes with them. A container-level clean first would add a teardown path this VM does not
+# need.
 #
 # WHY THE STOP COMES BEFORE THE ARCHIVE. The spec requires the container stopped before the
-# archive, so the SQLite file cannot change under the copy. A stopped container loses no data;
-# the destructive steps are the wipe (4) and the destroy (5), both behind the read-back.
+# archive, so the SQLite file cannot change under the copy. A stopped container loses no data.
 #
-# NO CLEANUP GAP ON FAILURE. Play 2 and play 3 each restart tududi if this run stopped it and
-# then fail. Play 4 and play 5 are never reached, so the volumes and the VM are untouched.
+# IF DESTROY-VM REFUSES. destroy-vm's live identity check (vmid, name, node on the cluster) runs
+# after the archive is proven. A refusal there changes nothing on the VM: the volumes are
+# intact and tududi stays STOPPED. This playbook deliberately does NOT restart it on that path.
+# The mismatch means the declaration or the live cluster is wrong, so the operator investigates
+# before anything runs again. Nothing is lost: the archive is already on site-config. Fix the
+# cause, then rerun.
+#
+# NO CLEANUP GAP ON FAILURE BEFORE THE DESTROY. Play 2 and play 3 each restart tududi if this
+# run stopped it and then fail, so the service returns as it was.
+#
+# WHAT THE ARCHIVE HOLDS. The archive is tududi's SQLite database and its uploads. The database
+# holds user accounts with their password hashes and session records. The archive is committed
+# to the private site-config repository, the accepted location for this teardown's archive.
 #
 # OPERATOR PREREQUISITE. This template runs in its own isolated Semaphore environment,
 # `Retire tududi inputs`, because destroy-vm.yml refuses the shared environment's plaintext
@@ -68,15 +80,20 @@
     _rt_decl: "{{ hostvars[_rt_host] | default({}) }}"
     _rt_vmid: "{{ _rt_decl.vm_vmid | default('') }}"
   tasks:
-    # destroy-vm.yml takes its target from these names. An extra var outranks an import's own
-    # vars, so a launch that set one could point the destroy at another service or another
-    # declaration than the one this gate checked. Refused by name, before anything else.
-    - name: "Refuse a launch that redirects the declaration or the destroy"
+    # Extra vars outrank hostvars, so a launch that set vm_vmid, vm_name or vm_node would replace
+    # the inventory's declaration: this gate would compare the confirmation to a value the launch
+    # chose, and destroy-vm.yml would destroy the VM that value names. target_* steer the destroy
+    # import. container_engine, service_name and monorepo_deploy_path steer what this playbook
+    # reads on the VM. All are refused by name, before anything else.
+    - name: "Refuse a launch that redirects the declaration, the destroy, or the VM's engine and paths"
       ansible.builtin.assert:
         that:
-          - (['target_service', 'target_host', 'target_vmid', 'target_node'] | intersect('' | extra_var_names) | length) == 0
+          - >-
+            (['target_service', 'target_host', 'target_vmid', 'target_node', 'vm_vmid', 'vm_name', 'vm_node',
+            'container_engine', 'service_name', 'monorepo_deploy_path'] | intersect('' | extra_var_names) | length) == 0
         fail_msg: >-
-          Refusing: target_service, target_host, target_vmid and target_node are fixed by this
+          Refusing: target_service, target_host, target_vmid, target_node, vm_vmid, vm_name, vm_node,
+          container_engine, service_name and monorepo_deploy_path are fixed by the inventory and this
           template. Remove them from the launch. Nothing was changed.
         quiet: true
 
@@ -478,7 +495,7 @@
                 get_checksum: true
               register: _rt_remote_stat
 
-            # The destroy gate: nothing below the wipe runs unless this passes.
+            # The destroy gate: nothing below, the VM destroy included, runs unless this passes.
             - name: "Require the remote copy to match the VM's archive (the gate before any removal)"
               ansible.builtin.assert:
                 that:
@@ -523,48 +540,10 @@
           delegate_to: "{{ _rt_host | default(inventory_hostname) }}"
           when: hostvars[_rt_host]._rt_host_wd is defined
 
-# ── 4. WIPE (tududi_svc) ────────────────────────────────────────────────────
-# Reached only when play 3 passed, which is the proof that the archive is on site-config.
-- name: "Wipe tududi (only after the archive is proven on site-config)"
-  hosts: tududi_svc
-  gather_facts: false
-  become: false
-  any_errors_fatal: true
-  vars:
-    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
-  tasks:
-    # The confirmation is this play's own host list, not inventory_hostname, which an extra var
-    # could set. The gate in play 1 is the vmid check; this one satisfies clean-service's own
-    # refusal with the value that is true by construction.
-    - name: "Destroy the containers, volumes and clone"
-      ansible.builtin.include_tasks: tasks/clean-service.yml
-      vars:
-        confirm_reset: "{{ ansible_play_hosts_all | sort | join(',') }}"
-
-    - name: "Record that the wipe ran on this host"
-      ansible.builtin.set_fact:
-        _rt_wiped: true
-      when: not ansible_check_mode
-
-# An UNREACHABLE host is skipped by play 4 without failing the run, so the destroy below would
-# otherwise run after no wipe. This gate names that case and stops the run first.
-- name: "Require the wipe to have run before the VM is destroyed"
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  become: false
-  vars:
-    _rt_host: "{{ groups['tududi_svc'] | default([]) | first | default('') }}"
-  tasks:
-    - name: "Require the wipe step to have completed on the VM"
-      ansible.builtin.assert:
-        that:
-          - hostvars[_rt_host]._rt_wiped | default(false) | bool
-        fail_msg: "The wipe did not run on {{ _rt_host }} (unreachable or skipped). The VM was not destroyed."
-        quiet: true
-      when: not ansible_check_mode
-
-# ── 5. DESTROY THE VM ───────────────────────────────────────────────────────
+# ── 4. DESTROY THE VM ───────────────────────────────────────────────────────
+# Reached only when play 3 passed, which is the proof that the archive is on site-config. An
+# UNREACHABLE tududi_svc host would not fail the run on its own, so play 2's fingerprint and play
+# 3's read-back are what stop this import from running after no archive.
 - name: "Destroy the declared tududi VM (destroy-vm re-checks vmid, name and node on the live cluster)"
   ansible.builtin.import_playbook: destroy-vm.yml
   vars:

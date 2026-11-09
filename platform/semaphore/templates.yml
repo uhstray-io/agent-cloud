@@ -1433,10 +1433,11 @@ templates:
         default_value: "main"
 
   # ONE-WAY. Stops tududi, archives its volumes to site-config and proves the archive there (sha256
-  # read back from a fresh clone), wipes the service, then destroys the declared VM. Refuses before
-  # any backup or destructive step unless confirm_destroy is the declared vm_vmid. Dry run first.
+  # read back from a fresh clone), then destroys the declared VM. Refuses before any backup or
+  # destructive step unless confirm_destroy is the declared vm_vmid. Dry run first. If the destroy
+  # refuses, tududi stays stopped and the archive is already on site-config: investigate, then rerun.
   # Its own isolated environment, not Destroy VM's: publication refuses one environment shared by two
-  # templates. Provision Seed Environment must bind its AppRole inputs before the first run.
+  # templates.
   - name: Retire tududi
     playbook: platform/playbooks/retire-tududi.yml
     isolated_environment: Retire tududi inputs
@@ -1444,7 +1445,11 @@ templates:
     survey_vars:
       - name: confirm_destroy
         title: "Confirm: tududi VM id to destroy"
-        description: "Type the declared vm_vmid of the tududi host. Anything else refuses before any archive or removal. No default on purpose."
+        description: >-
+          Type the declared vm_vmid of the tududi host. Anything else refuses before any archive or removal.
+          No default on purpose. Operator: before the first run, Provision Seed Environment with seed_template
+          'Retire tududi' (and seed_variant dev for the (Dev) twin) binds the environment's AppRole inputs.
+          Until then this template cannot authenticate.
         type: string
         required: true
 

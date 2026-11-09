@@ -97,10 +97,15 @@ def test_the_play_order_is_fixed():
         ("import", O11Y_PREFLIGHT),
         ("play", "tududi_svc"),
         ("play", "localhost"),
-        ("play", "tududi_svc"),
-        ("play", "localhost"),
         ("import", DESTROY),
     ]
+
+
+def test_no_clean_service_include_anywhere():
+    # clean-service's prod branch runs compose under become, and destroy-vm purges the VM and its
+    # disks anyway. A teardown that includes it is a second path this playbook does not need.
+    assert "clean-service" not in json.dumps(PLAYS)
+    assert not [t for _, _, t, _ in STEPS if t is not None and "clean-service" in _text(t)]
 
 
 def test_the_extra_var_guard_is_the_first_entry():
@@ -121,12 +126,28 @@ def test_the_confirmation_must_equal_the_declared_vmid():
     assert PLAYS[1]["vars"]["_rt_decl"] == "{{ hostvars[_rt_host] | default({}) }}"
 
 
-def test_the_preflight_refuses_a_launch_that_redirects_the_destroy():
+REFUSED_LAUNCH_NAMES = (
+    "target_service",
+    "target_host",
+    "target_vmid",
+    "target_node",
+    "vm_vmid",
+    "vm_name",
+    "vm_node",
+    "container_engine",
+    "service_name",
+    "monorepo_deploy_path",
+)
+
+
+def test_the_preflight_refuses_every_launch_name_that_outranks_the_inventory():
+    # Extra vars outrank hostvars: a launch-supplied vm_vmid would replace the declaration this gate
+    # reads, so each name is refused by name, in the first assert of the preflight.
     first = PLAYS[1]["tasks"][0]
     expr = _asserts(first)[0]
-    for name in ("target_service", "target_host", "target_vmid", "target_node"):
-        assert f"'{name}'" in expr, name
     assert "extra_var_names" in expr
+    for name in REFUSED_LAUNCH_NAMES:
+        assert f"'{name}'" in expr, name
 
 
 def test_nothing_before_the_gate_changes_state():
@@ -160,22 +181,22 @@ def test_nothing_is_removed_before_the_archive_is_read_back_from_site_config():
     export = _find(lambda t: (_argv(t) or [])[:3] == ["podman", "volume", "export"], "podman volume export")
     host_fingerprint = _find(lambda t: t.get("register") == "_rt_archive_stat", "archive fingerprint on the VM")
     readback = _find(lambda t: "_rt_remote_stat.stat.checksum" in _text(t), "remote checksum gate")
-    wipe = _find(lambda t: t.get("ansible.builtin.include_tasks") == "tasks/clean-service.yml", "clean-service include")
-    wiped_fact = _find(lambda t: "_rt_wiped" in _text(t) and "ansible.builtin.set_fact" in t, "wipe recorded")
-    wipe_gate = _find(lambda t: "_rt_wiped" in _text(t) and "ansible.builtin.assert" in t, "wipe gate on localhost")
     destroy = next(
         i
         for i, (_, play, task, _) in enumerate(STEPS)
         if task is None and play.get("ansible.builtin.import_playbook") == DESTROY
     )
-    assert stop < export < host_fingerprint < readback < wipe < wiped_fact < wipe_gate < destroy
+    assert stop < export < host_fingerprint < readback < destroy
 
 
-def test_the_read_back_gate_lives_in_the_delivery_play_and_the_wipe_in_the_host_play():
+def test_the_destroy_follows_the_read_back_gate_and_is_the_last_step():
     readback = _find(lambda t: "_rt_remote_stat.stat.checksum" in _text(t), "remote checksum gate")
-    wipe = _find(lambda t: t.get("ansible.builtin.include_tasks") == "tasks/clean-service.yml", "clean-service include")
     assert STEPS[readback][0] == 4 and PLAYS[4]["hosts"] == "localhost"
-    assert STEPS[wipe][0] == 5 and PLAYS[5]["hosts"] == "tududi_svc"
+    assert PLAYS[5]["ansible.builtin.import_playbook"] == DESTROY
+    after = STEPS[readback + 1 :]
+    # After the gate come only the deliver play's own failure and scratch cleanup, then the destroy.
+    assert {index for index, _, _, _ in after} <= {4, 5}, "nothing outside the deliver play runs before the destroy"
+    assert after[-1][0] == 5 and after[-1][2] is None, "the destroy import is the last step"
 
 
 def test_the_archive_proof_gate_refuses_when_the_archive_step_did_not_complete():
@@ -261,14 +282,14 @@ def test_no_log_marks_only_the_credential_reads():
     assert marked == CREDENTIAL_READS
 
 
-# ── restore on failure, destroy and wipe wiring ─────────────────────────────
+# ── restore on failure and destroy wiring ───────────────────────────────────
 
 
 def _rescue_argvs(task):
     return [_argv(t) for t in task.get("rescue", []) if isinstance(t, dict)]
 
 
-def test_a_failure_before_the_wipe_restarts_tududi_when_this_run_stopped_it():
+def test_a_failure_before_the_destroy_restarts_tududi_when_this_run_stopped_it():
     archive = next(t for t in PLAYS[3]["tasks"] if "block" in t)
     assert ["podman", "start", "{{ _rt_container }}"] in _rescue_argvs(archive)
     deliver = next(t for t in PLAYS[4]["tasks"] if "block" in t)
@@ -276,16 +297,19 @@ def test_a_failure_before_the_wipe_restarts_tududi_when_this_run_stopped_it():
 
 
 def test_the_destroy_is_pinned_to_the_tududi_service_and_skips_the_nested_guard():
-    imp = PLAYS[7]
+    imp = PLAYS[5]
     assert imp["ansible.builtin.import_playbook"] == DESTROY
     assert imp["vars"]["target_service"] == "tududi"
     assert imp["vars"]["_extra_var_guard_nested"] is True
     assert imp["vars"]["target_host"].startswith("{{ groups['tududi_svc']")
 
 
-def test_the_wipe_confirms_only_its_own_host_list():
-    wipe = next(t for t in PLAYS[5]["tasks"] if t.get("ansible.builtin.include_tasks") == "tasks/clean-service.yml")
-    assert wipe["vars"]["confirm_reset"] == "{{ ansible_play_hosts_all | sort | join(',') }}"
+def test_a_destroy_refusal_does_not_restart_tududi():
+    # destroy-vm.yml is the last import, so no rescue follows it: a refusal there leaves tududi
+    # stopped on purpose (the archive is proven; the operator investigates before any rerun).
+    assert PLAYS[5]["ansible.builtin.import_playbook"] == DESTROY
+    assert "rescue" not in PLAYS[5] and "block" not in PLAYS[5], "the destroy import carries no restart"
+    assert PLAYS[-1] is PLAYS[5], "the destroy is the last play"
 
 
 def test_the_always_wipes_remove_scratch_only_when_it_exists():
@@ -311,6 +335,14 @@ def test_the_template_runs_the_playbook_in_its_own_environment_with_a_required_c
     assert survey["name"] == "confirm_destroy"
     assert survey["required"] is True
     assert "default_value" not in survey
+
+
+def test_the_operator_note_about_the_environment_is_in_the_survey_the_operator_sees():
+    # setup-templates.yml publishes the survey description, not a template-level description key, so the
+    # provisioning instruction lives in the survey text Semaphore shows at launch.
+    (survey,) = _template()["survey_vars"]
+    assert "Provision Seed Environment" in survey["description"]
+    assert "seed_template 'Retire tududi'" in survey["description"]
 
 
 def test_no_other_template_shares_the_isolated_environment():
