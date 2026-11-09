@@ -70,6 +70,22 @@ The OIDC client secret is Authentik's (`secret/services/authentik:plane_oidc_cli
 injected into the provider by `blueprints/plane-oidc.yaml`). The deploy shared-reads it, only when
 `plane_authentik_base` is set, and never stores a copy under `secret/services/plane`.
 
+The Pro licence key is the operator's, at `plane_license_key`, and the deploy never generates it.
+Seed it through the isolated seed environment, with the value in a file, never in argv:
+
+```bash
+scripts/semaphore-seed-input.py --template "Seed OpenBao Key" --variant dev \
+  --set bao_path=services/plane --set bao_key=plane_license_key \
+  --input BAO_VALUE=<key-file> --inventory <id> --url <semaphore> [--apply] < <token-file>
+```
+
+Phase 3c of `deploy-plane.yml` (`activate_license.py`) then signs in as the workspace owner (the
+automation account; billing needs the owner, so no person needs Admin first), reads the plan,
+and only when it is not `plane_license_plan` (default `PRO`) posts the key to
+`/api/payments/workspaces/<slug>/licenses/` — the route the Billing page calls; Plane documents
+no other — and reads the plan back. No key stored: the phase reports that and skips. A refusal
+reports the HTTP status only, because Plane's error body can echo the key.
+
 Plane ships **working default credentials** in `variables.env` and in its Compose fallbacks,
 identical on every install. `env.j2` refuses to render if any of them comes out empty or
 equal to the shipped value. Note the RabbitMQ trap: Plane's Compose reads `RABBITMQ_PASSWORD`,
