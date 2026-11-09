@@ -554,6 +554,9 @@
           ansible.builtin.command:
             argv: [podman, start, "{{ _rt_container }}"]
           delegate_to: "{{ _rt_host | default(inventory_hostname) }}"
+          # An unreachable VM would otherwise skip the rest of rescue AND the always wipes below,
+          # leaving the deploy key and the archive copies on the runner (review of #936).
+          ignore_unreachable: true
           changed_when: true
           when: hostvars[_rt_host]._tududi_stopped | default(false) | bool and not ansible_check_mode
 
@@ -581,6 +584,7 @@
             path: "{{ hostvars[_rt_host]._rt_host_wd }}"
             state: absent
           delegate_to: "{{ _rt_host | default(inventory_hostname) }}"
+          ignore_unreachable: true
           when: hostvars[_rt_host]._rt_host_wd is defined
 
 # ── 4. DESTROY THE VM ───────────────────────────────────────────────────────

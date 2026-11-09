@@ -452,3 +452,18 @@ def test_the_agents_table_lists_the_playbook():
     rows = [line for line in AGENTS.read_text().splitlines() if line.startswith("| Retire tududi |")]
     assert len(rows) == 1
     assert "`retire-tududi.yml`" in rows[0]
+
+
+def test_delegated_cleanup_survives_an_unreachable_vm():
+    """An UNREACHABLE delegated task skips the rest of rescue and the always section, which would leave
+    the deploy key and the archive copies on the runner. The two delegated cleanup tasks tolerate it."""
+    text = PLAYBOOK.read_text()
+    for name in (
+        "Restart tududi if this run stopped it (the service returns as it was)",
+        "Wipe the VM's archive scratch dir (it holds a copy of the database)",
+    ):
+        blocks = [part.split("\n        - name:", 1)[0] for part in text.split(f'- name: "{name}"')[1:]]
+        delegated = [block for block in blocks if "delegate_to:" in block]
+        assert delegated, f"no delegated copy of {name}"
+        for block in delegated:
+            assert "ignore_unreachable: true" in block, name
