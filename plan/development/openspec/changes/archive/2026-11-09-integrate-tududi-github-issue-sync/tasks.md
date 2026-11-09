@@ -1,5 +1,7 @@
 # Tasks: integrate-tududi-github-issue-sync
 
+> Superseded 2026-11-09: tududi and its GitHub sync were retired; Plane replaces them (`deploy-plane-work-management`).
+
 > Sequenced strictly after `complete-n8n-composable-deployment` — nothing below
 > starts until the n8n substrate (API key in OpenBao, credential-provisioning
 > pattern) is live in prod.
