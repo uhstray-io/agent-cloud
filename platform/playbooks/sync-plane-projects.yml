@@ -1,8 +1,15 @@
 ---
-# sync-plane-projects.yml — every enabled repository's open OpenSpec tasks become Plane work items.
+# sync-plane-projects.yml — every declared project exists in Plane, and every enabled repository's
+# open OpenSpec tasks become its work items.
 #
-# For each repository enabled in platform/services/plane/projects.yml:
-#   project       one Plane project per repository (identifier and name declared there)
+# The declaration is platform/services/plane/projects.yml (names already public) plus the
+# plane_svc host's `plane_projects_private` in site-config (names that must stay private), merged.
+# Every declared project is created; `enabled` decides only whether its repository's OpenSpec
+# tasks are read. An entry with no `repo` is a project with no repository: it is created, never
+# read, and its external_id is `project:<name>`.
+#
+# For each repository enabled in the declaration:
+#   project       one Plane project per entry (identifier and name declared there)
 #   schema        the states and labels in platform/services/plane/schema.yml (created, or their
 #                 declared fields patched; never deleted)
 #   module        one per OpenSpec change (changes/<change>/)
@@ -54,7 +61,9 @@
   connection: local
   gather_facts: false
   vars:
-    _declared: "{{ (lookup('file', playbook_dir ~ '/../services/plane/projects.yml') | from_yaml).plane_projects }}"
+    _declared_public: "{{ (lookup('file', playbook_dir ~ '/../services/plane/projects.yml') | from_yaml).plane_projects }}"
+    _declared_private: "{{ hostvars[groups['plane_svc'][0]].plane_projects_private | default([]) }}"
+    _declared: "{{ _declared_public + _declared_private }}"
     _enabled: "{{ _declared | selectattr('enabled') | list }}"
     _parser: "{{ playbook_dir }}/../services/plane/lib/openspec_to_plane.py"
   tasks:
@@ -73,6 +82,23 @@
           - _schema.labels | default([]) is sequence and _schema.labels | default([]) is not string
           - _schema.item_labels | default([]) is sequence and _schema.item_labels | default([]) is not string
         fail_msg: "platform/services/plane/schema.yml must be a mapping with states, labels and item_labels lists."
+        quiet: true
+
+    - name: "The declaration is well formed"
+      ansible.builtin.assert:
+        that:
+          - _declared | rejectattr('name', 'defined') | list | length == 0
+          - _declared | rejectattr('identifier', 'defined') | list | length == 0
+          - _declared | rejectattr('enabled', 'defined') | list | length == 0
+          - _declared | map(attribute='identifier') | reject('match', '^[A-Z0-9]{1,10}$') | list | length == 0
+          - _declared | map(attribute='identifier') | unique | list | length == _declared | length
+          - _declared | map(attribute='name') | unique | list | length == _declared | length
+          - _declared | selectattr('repo', 'defined') | map(attribute='repo') | unique | list | length == _declared | selectattr('repo', 'defined') | list | length
+          - _declared | rejectattr('repo', 'defined') | selectattr('enabled') | list | length == 0
+        fail_msg: >-
+          projects.yml plus plane_projects_private: every entry needs a name, an identifier
+          (1-10 uppercase letters or digits) and enabled; identifiers, names and repos are unique; an entry
+          without a repo cannot be enabled.
         quiet: true
 
     - name: "Refuse an enabled private repository until the plane-compose App exists"
@@ -112,6 +138,11 @@
           {%- set d = r.stdout | from_json -%}
           {%- set _ = out.append({'repo': r.item.repo, 'identifier': r.item.identifier,
                                   'name': r.item.name, 'modules': d.modules}) -%}
+          {%- endfor -%}
+          {#- Declared but not read: the project is created with no modules. -#}
+          {%- for p in _declared | rejectattr('enabled') -%}
+          {%- set _ = out.append({'repo': p.repo | default('project:' ~ p.name), 'identifier': p.identifier,
+                                  'name': p.name, 'modules': []}) -%}
           {%- endfor -%}
           {{ out }}
         _skipped_count: "{{ _parsed.results | map(attribute='stdout') | map('from_json') | map(attribute='skipped') | map('length') | sum }}"
