@@ -1370,7 +1370,7 @@ assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule
 PY
 }
 
-@test "o11y: alert-evaluation meta rule pages on sustained failure and stays paused while local or canaried" {
+@test "o11y: alerting-health meta rules page on sustained failure and stay paused while local or canaried" {
   python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
 import json
 import sys
@@ -1389,12 +1389,21 @@ def render(**values):
     return yaml.safe_load(template.render(o11y_expected_metrics_targets=[], **values))
 
 
-def meta(doc):
+def alerting_health(doc):
     groups = [group for group in doc['groups'] if group['name'] == 'alerting-health']
     assert len(groups) == 1, [group['name'] for group in doc['groups']]
     assert groups[0]['orgId'] == 1 and groups[0]['folder'] == 'agent-cloud' and groups[0]['interval'] == '60s'
-    assert [rule['uid'] for rule in groups[0]['rules']] == ['o11y_alert_evaluations_failing']
-    return groups[0]['rules'][0]
+    return groups[0]
+
+
+def meta(doc):
+    rules = alerting_health(doc)['rules']
+    assert [rule['uid'] for rule in rules] == ['o11y_alert_evaluations_failing', 'o11y_grafana_db_check_failing']
+    return rules[0]
+
+
+def db(doc):
+    return alerting_health(doc)['rules'][1]
 
 
 # The meta rule sits after service-telemetry, so the uid list pinned on groups[0] is unchanged.
@@ -1423,12 +1432,31 @@ assert rule['notification_settings'] == {
     'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h',
 }
 
+# The database-check rule: a one-hour count of Grafana's own /api/health 5xx, routed like
+# the sibling and gated the same way.
+check = db(prod_doc)
+assert check['uid'] == 'o11y_grafana_db_check_failing'
+assert check['title'] == 'Grafana database check failing'
+assert check['condition'] == 'B' and check['for'] == '15m'
+assert check['noDataState'] == 'OK' and check['execErrState'] == 'KeepLast'
+assert check['data'][0]['datasourceUid'] == 'prometheus'
+assert check['data'][0]['relativeTimeRange'] == {'from': 3600, 'to': 0}
+assert check['data'][0]['model']['instant'] is True
+assert check['data'][0]['model']['expr'] == (
+    'sum(increase(grafana_http_request_duration_seconds_count{job="grafana",handler="/api/health",status_code=~"5.."}[1h]))')
+assert check['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [4]}
+assert check['labels'] == rule['labels']
+assert check['isPaused'] is False
+assert check['notification_settings'] == rule['notification_settings']
+
 # Paused and unrouted while local, with alerts off, or while a canary runs: the same
 # gating as the paging rules, so the deploy readback holds in every rollout state.
 for values in (dict(local_mode=True, o11y_alerts_enabled=True), dict(local_mode=False),
                dict(local_mode=False, o11y_alerts_enabled=True, o11y_alert_canary_service=canary)):
     paused = meta(render(**values))
     assert paused['isPaused'] is True and 'notification_settings' not in paused, values
+    paused_check = db(render(**values))
+    assert paused_check['isPaused'] is True and 'notification_settings' not in paused_check, values
 PY
 }
 

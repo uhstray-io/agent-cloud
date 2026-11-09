@@ -47,7 +47,7 @@ and why.
 | 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
 | 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
-| 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
+| 1.18 | **x2** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer) | Unverified claim | 2 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | **x3** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe) | Unverified claim | 3 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed |
@@ -894,6 +894,8 @@ scoping exists. Otherwise report the status code and the endpoint, not a cause.
 
 ### 1.18 Listed an auth failure's causes from the code, missed the database error, and chased credentials for two hours
 
+**Occurrences: 2** — 2026-09-26, 2026-11-07
+
 **What happened.** Production Semaphore began answering every API call with an empty-body 401
 and the operator could not log in ("Failed to create session"). I read `api/auth.go` at
 v2.19.11 and reported that it rejects a Bearer token only when the token is missing, revoked or
@@ -917,6 +919,18 @@ including the error branch, before ruling causes out.
 
 **Enforced by.** Convention. Proposed guard: an o11y disk-usage alert for the Semaphore host
 (and every orchestrator-class host), which would have fired before Postgres ran out of room.
+
+**Occurrence 2 — 2026-11-07.** While fixing the o11y liveness watcher's misleading page (10.34),
+the first draft of PR #889 said Grafana answers a datasource health check with 500 "only" when it
+fails before contacting Prometheus, from reading one handler in `pkg/api/datasources.go`. The
+same file returns 500 from two more branches: building the plugin context, and parsing the
+plugin's detail payload after the call. The watcher message even said "Prometheus not
+contacted". The same draft described Grafana's lock retries as backing off "10 ms to 1 s"
+without reading `pkg/util/retryer`, where the setting counts attempts, so the chosen value of 5
+waited only about 150 ms. Two review rounds (CodeRabbit, then an independent reviewer) caught
+both before merge; the fix moved to 10 attempts and dropped the cause claim. The rule did not
+fire because it is worded for auth paths and 401s; the habit it names, listing every branch
+that produces a status before ruling causes out, applies to any status read from source.
 
 ### 1.19 A negative claim about a host's state, made from evidence that cannot establish it (widens 1.6)
 
