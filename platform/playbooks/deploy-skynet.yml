@@ -226,9 +226,9 @@
     - name: "Refuse skynet_launch_gate_url unless it is https"
       ansible.builtin.assert:
         that:
-          - (skynet_launch_gate_url | string) is match('^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?(/[^?#]*)?$')
+          - (skynet_launch_gate_url | string) is match('^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?/?\Z')
         fail_msg: >-
-          skynet_launch_gate_url must be an https:// URL with a host name, an optional port and path, and no user info
+          skynet_launch_gate_url must be an https origin: https://<host>[:port][/], with no user info, path, query, fragment or whitespace
           (the launch gate skynet calls over TLS). Set it in the inventory and re-run, or remove it to leave the gate undeclared.
       when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
