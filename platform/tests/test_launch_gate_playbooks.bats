@@ -87,6 +87,44 @@ for name in ("Refuse launch_gate_semaphore_url unless it is https (http only und
 PY
 }
 
+@test "launch-gate deploy: production refuses launch_gate_opa_ip unless it is one non-wildcard IPv4 address, and the OPA URL names a host the overlay can map" {
+  python3 - "$DEPLOY" <<'PY'
+import re, sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+names = [t.get("name", "") for t in play["tasks"]]
+tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
+ip = tasks["Refuse launch_gate_opa_ip unless it is one non-wildcard IPv4 address in production"]
+assert ip["when"] == "not _launch_gate_local_mode", ip.get("when")
+checks = ip["ansible.builtin.assert"]["that"]
+assert "(?!0[.]0[.]0[.]0$)" in checks[0] and checks[1] == "(_launch_gate_opa_ip | length) <= 15", checks
+assert checks[2] == "((_launch_gate_opa_ip.split('.')) | map('int') | max) <= 255", checks
+# The task's own regex is applied as Jinja's match test applies it (re.match), with the length and octet checks
+# alongside, so the refusal is exercised in fact and not only read as text.
+ip_re = re.search(r"is match\('(.+)'\)$", checks[0]).group(1)
+def ip_passes(value):
+    return bool(re.match(ip_re, value)) and len(value) <= 15 and max(int(o) for o in value.split('.')) <= 255
+for good in ("192.0.2.20", "198.51.100.1", "255.255.255.255"):
+    assert ip_passes(good), good
+for bad in ("0.0.0.0", "", "opa.example.internal", "256.1.1.1", "198.51.100", "1.2.3.4.5"):
+    assert not ip_passes(bad), bad
+host = tasks["Refuse a production launch_gate_opa_url whose host is not a DNS name the container can map"]
+assert host["when"] == "not _launch_gate_local_mode", host.get("when")
+assert host["vars"]["_launch_gate_opa_host"] == "{{ _launch_gate_opa_url | urlsplit('hostname') | default('', true) | string }}", host["vars"]
+dns, not_ip = host["ansible.builtin.assert"]["that"]
+name_re = re.search(r"is match\('(.+)'\)$", dns).group(1)
+ip_literal_re = re.search(r"is not match\('(.+)'\)$", not_ip).group(1)
+def host_passes(value):
+    return bool(re.match(name_re, value)) and not re.match(ip_literal_re, value)
+for good in ("opa.dc1.example.internal", "opa"):
+    assert host_passes(good), good
+for bad in ("", "192.0.2.20", "[::1]", "-bad.example"):
+    assert not host_passes(bad), bad
+# Both refusals sit after the URL's https refusal and before anything is issued.
+assert names.index("Refuse launch_gate_opa_url unless it is https (http only under local_mode)") < names.index(ip["name"]) < names.index("Issue the server leaf (key here, signed on the CA host)")
+assert names.index(host["name"]) < names.index("Issue the server leaf (key here, signed on the CA host)")
+PY
+}
+
 @test "launch-gate deploy: callers are refused unless each has a literal token and a non-empty agent list" {
   python3 - "$DEPLOY" <<'PY'
 import sys, yaml
@@ -297,6 +335,35 @@ assert asserted == [
     "'other-template 403 template_not_allowed' in _launch_gate_probes.stdout_lines",
     "'allowed-template 400 undeclared_field' in _launch_gate_probes.stdout_lines",
 ], asserted
+PY
+}
+
+@test "launch-gate deploy: Phase 3 proves OPA's /health from inside the container, through the gate's own trust bundle and name map, after the caller probes" {
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][2]
+names = [t.get("name", "") for t in play["tasks"]]
+probe = names.index("Probe the gate from inside its container (401, 403 and 400 from its own listener)")
+opa = names.index("OPA answers the gate's container (GET <opa_url>/health -> 200 through the gate's own trust and name mapping)")
+assert probe < opa < names.index("Assert OPA answered the gate's container 200 to /health") < names.index("Record the service-deploy step result"), names
+task = play["tasks"][opa]
+argv = task["ansible.builtin.command"]["argv"]
+assert len(argv) == 7 and argv[:6] == ["{{ _engine }}", "exec", "launch-gate", "python", "-I", "-c"], argv[:6]
+script = argv[6]
+# The gate's trust bundle and URL come from its own config, read in the container, so the probe uses what the gate uses.
+for needle in ('open("/etc/launch-gate/config.json"', 'config["opa_ca_bundle"]', 'config["opa_url"].rstrip("/") + "/health"',
+               'ssl.TLSVersion.TLSv1_2', 'urllib.request.ProxyHandler({})', 'print("opa-health", response.status)',
+               'print("opa-health", exc.code)', 'print("opa-health error", type(exc).__name__)'):
+    assert needle in script, needle
+# Labels only: the exception's message (which can echo a URL or a body) is never printed, and no credential is read.
+assert "exc)" not in script.replace("type(exc)", "") and "Bearer" not in script and "LAUNCH_GATE_" not in script, script
+assert task["changed_when"] is False and task["check_mode"] is False, task
+assert task["register"] == "_launch_gate_opa_health", task.get("register")
+assert task["when"] == "not ansible_check_mode", task.get("when")
+assert "no_log" not in task, task
+asserted = [t for t in play["tasks"] if t.get("name") == "Assert OPA answered the gate's container 200 to /health"][0]
+assert asserted["ansible.builtin.assert"]["that"] == ["'opa-health 200' in _launch_gate_opa_health.stdout_lines"], asserted
+assert asserted["when"] == "not ansible_check_mode", asserted.get("when")
 PY
 }
 

@@ -176,12 +176,14 @@ def test_the_repository_skynet_agent_is_refused_because_it_names_no_templates():
 
 
 def _jinja_env():
-    """Ansible's template settings: trim_blocks, keep_trailing_newline, its own to_nice_json and bool filters."""
+    """Ansible's template settings: trim_blocks, keep_trailing_newline, and its own to_nice_json, bool and urlsplit filters."""
     jinja2 = pytest.importorskip("jinja2")
     core = pytest.importorskip("ansible.plugins.filter.core")
+    urls = pytest.importorskip("ansible.plugins.filter.urlsplit")
     env = jinja2.Environment(undefined=jinja2.StrictUndefined, trim_blocks=True, keep_trailing_newline=True)
     env.filters["to_nice_json"] = core.to_nice_json
     env.filters["bool"] = core.to_bool
+    env.filters["urlsplit"] = urls.split_url
     return env
 
 
@@ -212,6 +214,7 @@ def test_env_template_renders_the_fixed_keys_and_one_token_per_caller():
         "caller_skynet_token": "A" * 48,
         "caller_security-agent_token": "B" * 48,
     }
+    # Local mode: the OPA name map is production-only (test_env_template_maps_the_opa_name_outside_local_mode_only).
     out = _render(
         "env.j2",
         _launch_gate_image=IMAGE,
@@ -219,6 +222,7 @@ def test_env_template_renders_the_fixed_keys_and_one_token_per_caller():
         _launch_gate_port=8443,
         _launch_gate_tls_name="launch-gate.local.agent-cloud.test",
         _launch_gate_callers={"skynet": ["security-agent"], "security-agent": ["security-agent"]},
+        _launch_gate_local_mode=True,
         secrets=secrets,
     )
     assert _env_values(out) == {
@@ -241,6 +245,7 @@ def test_env_template_with_no_callers_renders_only_the_fixed_keys():
         _launch_gate_port=8443,
         _launch_gate_tls_name="launch-gate.local.agent-cloud.test",
         _launch_gate_callers={},
+        _launch_gate_local_mode=True,
         secrets={"semaphore_api_token": SEMAPHORE_TOKEN},
     )
     assert sorted(_env_values(out)) == [
@@ -250,6 +255,31 @@ def test_env_template_with_no_callers_renders_only_the_fixed_keys():
         "LAUNCH_GATE_SEMAPHORE_TOKEN",
         "LAUNCH_GATE_TLS_NAME",
     ]
+
+
+def test_env_template_maps_the_opa_name_outside_local_mode_only():
+    # Production: the OPA host name and the declared address reach compose.prod.yml's extra_hosts through .env.
+    common = {
+        "_launch_gate_image": IMAGE,
+        "_launch_gate_bind": "192.0.2.10",
+        "_launch_gate_port": 8443,
+        "_launch_gate_tls_name": "launch-gate.dc1.example.internal",
+        "_launch_gate_callers": {},
+        "_launch_gate_opa_url": "https://opa.dc1.example.internal:8181",
+        "_launch_gate_opa_ip": "192.0.2.20",
+        "secrets": {"semaphore_api_token": SEMAPHORE_TOKEN},
+    }
+    prod = _env_values(_render("env.j2", _launch_gate_local_mode=False, **common))
+    assert prod["LAUNCH_GATE_OPA_HOSTNAME"] == "opa.dc1.example.internal"
+    assert prod["LAUNCH_GATE_OPA_IP"] == "192.0.2.20"
+    # Port and userinfo are not part of the host name the mapping needs.
+    alt = dict(common, _launch_gate_opa_url="https://user@opa.dc1.example.internal:8181/base")
+    assert _env_values(_render("env.j2", _launch_gate_local_mode=False, **alt))["LAUNCH_GATE_OPA_HOSTNAME"] == (
+        "opa.dc1.example.internal"
+    )
+    # Local mode: neither key is rendered, and the URL and address are not read at all.
+    local = _env_values(_render("env.j2", _launch_gate_local_mode=True, **common))
+    assert not [key for key in local if key.startswith("LAUNCH_GATE_OPA_")], local
 
 
 def test_config_template_renders_a_config_the_app_loads_and_accepts(tmp_path):

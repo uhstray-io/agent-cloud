@@ -6,9 +6,17 @@
 # the process stays non-root and owns the key it reads. It needs podman 4.3 or later, the same
 # requirement compose.tls.yml states for OPA.
 #
+# extra_hosts maps the OPA name to the address the inventory declares (launch_gate_opa_ip). OPA's leaf is
+# signed for a name that has no production DNS record, so without this mapping the gate's decision call
+# fails name resolution. The two values reach this file through .env (LAUNCH_GATE_OPA_HOSTNAME,
+# LAUNCH_GATE_OPA_IP), rendered outside local mode by templates/env.j2. Both are required (:?), so compose
+# refuses to start without them. skynet's compose.prod.yml does the same for its OPA call.
+#
 # This overlay does not declare `command`: the base command stands.
 
 services:
   launch-gate:
     user: "1000:1000"
     userns_mode: "keep-id:uid=1000,gid=1000"
+    extra_hosts:
+      - "${LAUNCH_GATE_OPA_HOSTNAME:?set launch_gate_opa_url in the inventory}:${LAUNCH_GATE_OPA_IP:?set launch_gate_opa_ip in the inventory}"

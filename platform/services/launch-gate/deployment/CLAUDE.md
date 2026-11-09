@@ -35,7 +35,7 @@ does not run it yet. The open tasks of the `skynet-launch-containment` change
 | File | Role |
 |------|------|
 | `compose.yml` | The base: one container, `restart: always`, the HTTPS port on `${LAUNCH_GATE_BIND:-127.0.0.1}:${LAUNCH_GATE_PORT:-8443}`, read-only mounts of `./app`, `./config.json` and `./certs`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, and `init: true` (an init process as PID 1, so a stop delivers SIGTERM; production hosts need catatonit, which the deploy checks). |
-| `compose.prod.yml` | Production overlay, loaded by `deploy.sh` outside `LOCAL_MODE`: `user: "1000:1000"` and `userns_mode: keep-id:uid=1000,gid=1000`, so the non-root process reads the 0600 TLS key. |
+| `compose.prod.yml` | Production overlay, loaded by `deploy.sh` outside `LOCAL_MODE`: `user: "1000:1000"` and `userns_mode: keep-id:uid=1000,gid=1000`, so the non-root process reads the 0600 TLS key; `extra_hosts` maps the OPA host name to `launch_gate_opa_ip` (see "Production inventory"). |
 | `compose.local.yml` | Local-dev overlay (`LOCAL_MODE=true`, appended by `platform/lib/common.sh`): memory cap, `label=disable`, the `local-dev` network. It does not republish ports. |
 | `deploy.sh` | Container lifecycle only. Checks the inputs exist, pulls, starts with `compose_up_if_changed app config.json certs/step-ca-bundle.crt`, waits for the container to be running. It generates no secret. |
 | `templates/env.j2` | Renders `.env`: the image, bind and port, the Semaphore token, one caller token per caller. |
@@ -93,6 +93,19 @@ caller, in sorted order, from `secrets['caller_<name>_token']`.
   directory. A renewal must not recreate the container. A changed bundle does recreate it, because the OPA
   client reads its CA bundle once, when it is constructed, at start.
 - The bundle is the only `certs/` file in the digest. Hashing all of `certs/` would make every renewal a restart.
+
+## Production inventory
+
+Outside local-dev the deploy refuses to run unless these are declared on `launch_gate_svc:vars` in site-config's inventory:
+
+- `launch_gate_opa_url`: the OPA decision API, `https://`. Set it to the same URL as `skynet_opa_url`: skynet's OPA call
+  already reaches OPA under that host name (`deploy-skynet.yml`, its OPA decision probe).
+- `launch_gate_opa_ip`: one IPv4 address, the OPA host's. The OPA leaf is signed for a name with no production DNS
+  record, so `compose.prod.yml` maps that name to this address inside the container. `0.0.0.0` is refused. The URL's
+  host must be a DNS name, not an IP address, because the mapping needs a name.
+
+Phase 3 proves the mapping: `GET <launch_gate_opa_url>/health` from inside the container must answer 200 through the
+gate's own trust bundle (`opa-health 200`). A failure names the status or the exception class, never the body.
 
 ## Local-dev
 
