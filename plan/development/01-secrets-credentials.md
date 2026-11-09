@@ -15,7 +15,7 @@
 # OpenBao HA & Resilience Deployment Plan
 
 > **Location:** `plan/development/01-secrets-credentials.md`
-> **Date:** 2026-06-14 · **Status:** ACTIVE (Phase A1 landed 2026-06-14; `platform/services/openbao/deployment/config/openbao.hcl` configures `storage "raft"`, checked 2026-11-04) · **Owner:** uhstray-io
+> **Date:** 2026-06-14 · **Status:** ACTIVE (Phase A1 landed 2026-06-14; local-dev OpenBao uses the `file` storage backend, `platform/playbooks/bootstrap-local-dev.yml:237`, checked 2026-11-09) · **Owner:** uhstray-io
 >
 > **Context:** OpenBao is the platform's root of trust — every deploy, every AppRole login, and every service `.env` flows from it (root `CLAUDE.md` → Secrets Management). Yet it is today the least-resilient component in the stack. Local-dev *was* in-memory (a `podman machine` restart wiped all secrets and bricked every stateful volume — see [[local-openbao-is-in-memory-vm-restart-resets-all-secrets]]); that is now fixed with a persistent file backend (Track A, Phase A1 — landed). Production runs a **single-node Raft** vault with **manual Shamir unseal** (sealed after every reboot — a standing "High" risk in `IMPLEMENTATION_PLAN.md:1616` and a manual SSH operation in `ACCESS-BOUNDARIES.md:57`), **no TLS** (`tls_disable = 1`), **no snapshots**, and a **legacy bash `deploy.sh`** that generates secrets + writes policies + creates AppRoles itself — a direct violation of Critical Rules #2/#4. This plan makes local-dev resilient for testing and brings production to a convenient, self-healing HA cluster.
 >

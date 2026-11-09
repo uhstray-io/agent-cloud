@@ -289,7 +289,7 @@ secret/services/approles/uhhcraft       role_id + secret_id (for the Go app to r
 
 1. Use the existing `platform/services/openbao/deployment/config/policies/uhhcraft.hcl` (read access to its own secret paths only; check it covers only those paths).
 2. Use the existing `inference-comfyui.hcl` and `inference-hunyuan3d.hcl` policies in the same directory.
-3. Create `platform/playbooks/apply-policy-uhhcraft.yml` (and the two inference equivalents) following the `apply-policy-orb-agent.yml` shape.
+3. Use the existing `apply-policy-uhhcraft.yml`, `apply-policy-inference-comfyui.yml` and `apply-policy-inference-hunyuan3d.yml` playbooks in `platform/playbooks/`.
 4. Decide AppRole vs. one-shot Ansible-only access:
    - **Recommended:** Ansible-only for now. The Go app reads its config from the templated `.env`; it does not call OpenBao at runtime. Future need (token rotation) can add an AppRole later via `tasks/manage-approle.yml`.
 5. List `_secret_definitions` per service in the deploy playbooks (Phase 4) so `tasks/manage-secrets.yml` can generate any missing secrets on first deploy.
@@ -809,7 +809,7 @@ For the inference sidecars (`secret/services/inference-comfyui`, `secret/service
 
 - [ ] CloudFlare: `uhhcraft.uhstray.io` A record → the `caddy_svc` public IP (and any `/generated/*` routing is via Caddy, same host).
 - [ ] CloudFlare API token for **DNS-01** ACME present in OpenBao / Caddy env (central Caddy issues the Let's Encrypt cert via DNS-01).
-- [ ] **Central Caddy host must be running** before the per-site fragment is distributed. ⚠️ See **Section I** — the repo has `deploy-caddy.yml` and the local **Deploy Caddy (Local)** template (`platform/semaphore/templates-local.yml`), but no shared-catalog Caddy template; the repo does not prove how `caddy_svc` runs in production, so confirm that first.
+- [ ] **Central Caddy host must be running** before the per-site fragment is distributed. ⚠️ See **Section I** — the repo has `deploy-caddy.yml` and the local **Deploy Caddy (Local)** template (`platform/semaphore/templates-local.yml`), but no shared Deploy Caddy template. Production Caddy is a rootless service from a legacy standalone directory with restart policy `always` (`AGENTS.md:538`), and its routes are placed by `Manage Caddy Sites` (`AGENTS.md:527`).
 - [ ] The `uhhcraft` deploy renders `templates/caddy-site.j2` → `sites/uhhcraft.caddy` and `tasks/distribute-caddy-site.yml` pushes it to the Caddy host + validates + reloads.
 
 ### B6. Inventory + Semaphore
@@ -893,7 +893,7 @@ Run each as its Semaphore template. Order matters (sidecars before the app, so t
 
 ## I. Open gaps to close before/while executing
 
-1. **Central Caddy host deploy path is unclear.** There are deploy playbooks/templates for `uhhcraft` and both sidecars, and a per-site fragment distributor — but the repo has `deploy-caddy.yml` and the local **Deploy Caddy (Local)** template, and no shared-catalog Caddy template. Confirm how `caddy_svc` itself runs in production (manual? an existing service?). The per-site fragment distribution assumes a *running* Caddy. **This must be resolved before B5 / Section C step 5.**
+1. **Central Caddy host deploy path is unclear.** There are deploy playbooks/templates for `uhhcraft` and both sidecars, and a per-site fragment distributor — but the repo has `deploy-caddy.yml` and the local **Deploy Caddy (Local)** template, and no shared Deploy Caddy template. Production Caddy is a rootless service from a legacy standalone directory with restart policy `always` (`AGENTS.md:538`), and its routes are placed by `Manage Caddy Sites` (`AGENTS.md:527`). The per-site fragment distribution assumes a *running* Caddy. **This must be resolved before B5 / Section C step 5.**
 2. **No `clean-deploy` for the inference sidecars** (only `uhhcraft` has one) — fine for go-live, but note it for destructive resets.
 3. **Confirm CI pushes the image to GHCR on merge** (A3) and that VMs can `podman pull` it (login/pull-secret if private).
 4. **Stripe webhook path** — confirm the exact route the handler listens on so the dashboard endpoint URL is correct.
@@ -1032,7 +1032,7 @@ Per the plan §C ordering. For each: I trigger the Semaphore template, poll the 
 3. `Deploy UhhCraft` (5-phase: secrets → containers → migrations → Caddy fragment → verify).
 4. Confirm `sites/uhhcraft.caddy` distributed + Caddy reloaded clean.
 
-> ⚠️ **Open gap (plan §I):** `deploy-caddy` exists as a playbook and as the local **Deploy Caddy (Local)** template, with no shared-catalog template — confirm how `caddy_svc` itself is running **before** step 3's fragment distribution. We resolve this when we hit it.
+> ⚠️ **Open gap (plan §I):** `deploy-caddy` exists as a playbook and as the local **Deploy Caddy (Local)** template, with no shared Deploy Caddy template. Production Caddy is a rootless service from a legacy standalone directory with restart policy `always` (`AGENTS.md:538`), and its routes are placed by `Manage Caddy Sites` (`AGENTS.md:527`); confirm the Caddy host is running **before** step 3's fragment distribution. We resolve this when we hit it.
 
 *Hand-off: "start the deploy" → I run them one at a time and report after each.*
 

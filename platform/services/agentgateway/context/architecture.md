@@ -250,7 +250,7 @@ false failure (#631).
 
 ## Upstream
 
-Source paths under `crates/`, `entrypoints/`, `management/` and `http/`, and upstream project documentation under `docs/`, refer to the respective upstream agentgateway, vLLM or Pi repositories, not this repository. The repository-local `docs/MISTAKES.md` references remain local.
+Source paths under `crates/`, `entrypoints/`, `management/` and `http/`, and upstream project documentation under `docs/`, refer to the respective upstream agentgateway, vLLM, Pi or dgx-spark repositories, not this repository. The repository-local `docs/MISTAKES.md` references remain local.
 
 `custom` provider, `formats: [{type: completions}, {type: responses}]`, `params.baseUrl` from inventory
 `agw_upstream_base_url`, one model entry per name in `agw_models` (an optional

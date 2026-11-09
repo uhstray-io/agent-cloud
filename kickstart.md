@@ -23,7 +23,7 @@ Real IPs, production inventory, and credential backups live in a **separate priv
 
 ```
 AI Layer          NemoClaw, NetClaw, Claude Cowork, WisBot
-                  Backed by skynet (planned OpenAI-compatible /v1; placement + policy gates)
+                  Orchestrated by skynet (deployed 2026-10-30); models via the agentgateway edge (/v1, vLLM on DGX Spark)
 
 Guardrail Layer   OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                   AI proposes -> guardrails validate -> automation runs
@@ -418,7 +418,7 @@ Model everything on `platform/services/netbox/deployment/` + `platform/playbooks
 | **WebSmith** | Website builder | `agents/websmith/` | Prompt-only — walks users through a 5-phase workflow producing a signed `SPEC.md` for a new website service |
 | **WisBot** | Community interface | [separate repo](https://github.com/uhstray-io/WisBot) | Discord voice/chat bot |
 
-The intended inference backbone is **skynet**: a local-first, policy-gated endpoint exposing an OpenAI-compatible `/v1` API (placement scheduling + policy gates), reached through the OpenBao indirection `secret/services/inference/endpoint` ([plan/development/06-inference-skynet.md](plan/development/06-inference-skynet.md)). Per the deployment status in the root `AGENTS.md`, the skynet orchestration API is deployed in production (2026-10-30) on its own VM; its Semaphore identity has been read-only (guest) since 2026-10-31; and the gateway's `/skynet/` route is not yet live in production. The Ollama + Open WebUI stack is **legacy, superseded by skynet**, and lives in the WisAI repo (its `infrastructure/`); this repo has only a `platform/services/inference/` placeholder (a README, no deployment).
+The intended inference backbone is **skynet**: a local-first, policy-gated orchestration API, reached through the OpenBao indirection `secret/services/inference/endpoint` ([plan/development/06-inference-skynet.md](plan/development/06-inference-skynet.md)). As built, skynet calls models through the agentgateway inference edge, whose `/v1` fronts vLLM on DGX Spark. Per the deployment status in the root `AGENTS.md`, the skynet orchestration API is deployed in production (2026-10-30) on its own VM; its Semaphore identity has been read-only (guest) since 2026-10-31; and the gateway's `/skynet/` route is not yet live in production. The Ollama + Open WebUI stack is **legacy, superseded by skynet**, and lives in the WisAI repo (its `infrastructure/`); this repo has only a `platform/services/inference/` placeholder (a README, no deployment).
 
 Each agent's `context/` directory follows the same shape:
 - `architecture/` — system docs the agent grounds itself in

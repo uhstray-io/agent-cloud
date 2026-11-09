@@ -39,7 +39,7 @@ onboarded — never click-configured in the UI (that would drift from code).
 Every member of `platform-admins` (the Authentik superuser group, the top role in every
 SSO'd app) is declared in ONE list, `platform_admins`, and rendered from it: the account
 blueprint (`deployment/templates/platform-admins.yaml.j2` → `blueprints-active/platform-admins.yaml`),
-the worker env's password lines (`templates/env.j2`) and the OpenBao password fields
+the worker env's password lines (`deployment/templates/env.j2`) and the OpenBao password fields
 (`platform/playbooks/vars/secret-declarations/authentik.yml`) are all looped over the same
 entries. The gateway deploy derives a per-person identity from the same list
 (`platform/playbooks/vars/platform-admins.yml` is the shared reader). There are no fixed

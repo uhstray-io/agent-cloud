@@ -3,6 +3,7 @@
 **Date:** 2026-10-24
 **Status:** ACTIVE
 > **Parent plan:** [Observability](05-observability.md)
+
 **Context:** The isolated-restore coordination guard now has source policy for one fixed KV v2 record, but policy source alone does not prove what the Semaphore controller's injected AppRole can do. This plan adds a reviewed, read-only Dev workflow to compare the effective role grants and the stored policy to the exact reviewed source before any guarded writer is activated.
 
 ## Problem

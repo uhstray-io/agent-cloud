@@ -36,9 +36,7 @@ Every privileged change flows top-to-bottom and **never the inverse**. The diagr
 as-built state recorded in [service-architecture.md](plan/architecture/service-architecture.md)
 and [network-architecture.md](plan/architecture/network-architecture.md), which are the
 recorded as-built sources; this document did not re-verify live state. The inference route state is as recorded
-on 2026-10-14 and was not re-checked live for this document. AGENTS.md still describes the
-pre-switch direct Caddy-to-vLLM route. That conflict is open; this diagram follows the
-architecture records and does not edit AGENTS.md.
+on 2026-10-14 and was not re-checked live for this document.
 
 ```mermaid
 flowchart TB
@@ -60,6 +58,7 @@ flowchart TB
         OPA["OPA (policy decisions)"]
         AUTH["Authentik (identity)"]
         KYV["Kyverno (planned)"]
+        LG["launch gate (live 2026-11-09)"]
     end
 
     subgraph AU["Automation layer: executes"]
@@ -67,7 +66,6 @@ flowchart TB
         ANS["Ansible playbooks"]
         N8N["n8n (workflows, queue mode)"]
         RUN["GitHub runners (no enforced per-job isolation)"]:::risk
-        LG["launch gate (planned, not deployed)"]
     end
 
     subgraph PL["Platform layer: hosts"]
@@ -95,12 +93,13 @@ flowchart TB
     CADDY -->|"routing: production"| AGW
     CADDY -.->|"routing: rollback to direct vLLM"| VLLM
     SK -->|"policy decision"| OPA
-    LG -.->|"policy decision (not deployed)"| OPA
-    LG -.->|"launch (not deployed)"| SEM
+    LG -->|"asks OPA for a decision"| OPA
+    LG -->|"launch on allow"| SEM
     ANS -->|"credential retrieval (manage-secrets)"| BAO
     SEM -->|"deployment"| ANS
     ANS -->|"deployment"| PVE
     SK -.->|"launches refused since 2026-10-31"| SEM
+    SK -.->|"launch request (wired; no launch yet)"| LG
     AUTH -->|"identity (OIDC, forward_auth)"| SEM
     AUTH -->|"identity (OIDC, forward_auth)"| CADDY
     STEP -->|"identity (mTLS leaves)"| AGW
@@ -177,7 +176,7 @@ jump to that doc.
 | **agentgateway** | Inference edge: per-client keys and token budgets in front of the external vLLM; route switched 2026-10-14 | AI | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **n8n** | Workflow automation, queue mode; production since 2026-09-02 | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **GitHub runners** | Self-hosted CI for private repos; no enforced per-job isolation | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
-| **launch gate** | Planned as the only path from agents to Semaphore launches; not deployed | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **launch gate** | The only path from agents to Semaphore launches; live in production since 2026-11-09 | Guardrail | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **orb-agent** | NetBox discovery worker; runs privileged on the host network | Infrastructure | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **vLLM (DGX Spark)** | Model serving on the GPU pair; external, owned by the dgx-spark repository | Infrastructure (external) | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **Hosted workloads** | honcho, Postiz, ERPNext, UhhCraft, Dispatch Console, OpenHands, tududi (retired), NocoDB (retiring), Plane (deploy run recorded, live unverified); not a layer | Hosted | [service-architecture.md](plan/architecture/service-architecture.md) |

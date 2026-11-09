@@ -3,7 +3,7 @@
 **Date:** 2026-10-10
 **Status:** IMPLEMENTED
 > **Parent plan:** [Guardrails and governance](03-guardrails-governance.md)
-> **Historical record:** This plan records the merge-guard implementation and CI policy through 2026-11-02. Check the current script and workflow before relying on these details.
+> **Historical record:** This plan records the merge-guard implementation and CI policy. Check the current script and workflow before relying on these details.
 
 **Context:** PR #531 was merged while checks for its final head were still running. Dev intentionally has no required-check rule because the main-to-Dev reconciliation workflow pushes directly to `dev`.
 

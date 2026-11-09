@@ -21,11 +21,11 @@
 
 ---
 
-## Current CI (verified 2026-11-04)
+## Current CI (verified 2026-11-09)
 
-Source: `.github/workflows/lint-and-test.yml`. It defines 16 jobs and runs on `pull_request` to `main` and `dev`, with `permissions: contents: read` at the top level.
+Source: `.github/workflows/lint-and-test.yml`. It defines these jobs and runs on `pull_request` to `main` and `dev`, with `permissions: contents: read` at the top level.
 
-- Jobs: `changes`, `lint` (Static Analysis), `security` (Security Scan), `python-core`, `python-playbook-safety`, `python-agentgateway`, `python-playbook-runs`, `python-semaphore`, `python-netbox`, `bats`, `rego`, `test` (Unit Tests), `go-lint`, `go-test`, `go-build`, `rust-console`.
+- Jobs: `changes`, `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python-core`, `python-playbook-safety`, `python-agentgateway`, `python-playbook-runs`, `python-semaphore`, `python-netbox`, `bats`, `rego`, `test` (Unit Tests), `go-lint`, `go-test`, `go-build`, `rust-console`.
 - `changes` gates the Go jobs: `go-lint` and `go-test` run only on Go changes, and `go-build` runs on Go or Dockerfile changes.
 - `test` (Unit Tests) runs `if: always()` and needs nine jobs: the six Python groups, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded.
 - Required on `main`: `.github/rulesets/protect-main.json` (`enforcement: active`) requires the contexts `Static Analysis`, `Security Scan`, `Unit Tests` and `Promotion source (dev -> main)`. `.github/rulesets/protect-dev.json` (`enforcement: active`) defines no required status check.
@@ -37,7 +37,7 @@ Source: `.github/workflows/lint-and-test.yml`. It defines 16 jobs and runs on `p
 
 ### What Exists
 
-The CI pipeline (`.github/workflows/lint-and-test.yml`) now runs 16 jobs on every pull request to `main` and `dev` (see *Current CI* below). As of 2026-05-06, Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provided functional coverage for NetBox workers and shared libraries.
+The CI pipeline (`.github/workflows/lint-and-test.yml`) now runs 16 jobs on every pull request to `main` and `dev` (see *Current CI* above). As of 2026-05-06, Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provided functional coverage for NetBox workers and shared libraries.
 
 | Component | Test Coverage | Notes |
 |-----------|---------------|-------|

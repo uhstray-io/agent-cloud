@@ -3,6 +3,7 @@
 **Date:** 2026-10-20
 **Status:** IMPLEMENTED (source and tests; live acceptance remains open)
 > **Parent plan:** [Observability](05-observability.md)
+
 **Context:** The Dev-bound seven-day capacity survey returned its existing `source_series_ambiguous` refusal. This plan adds bounded, sanitized evidence to help diagnose that refusal without changing source selection or capacity acceptance.
 
 ---

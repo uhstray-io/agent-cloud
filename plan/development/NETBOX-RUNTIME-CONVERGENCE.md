@@ -3,6 +3,7 @@
 **Date:** 2026-09-23  
 **Status:** ACTIVE (runtime convergence source implemented; IPAM readiness remains open)  
 > **Parent plan:** [NetBox discovery](04-netbox-discovery.md)
+
 **Context:** Production NetBox blocks authoritative IP allocation for the observability receiver. This plan records the measured outage and the review gates for restoring the existing stack through source-controlled automation.
 
 ## Problem

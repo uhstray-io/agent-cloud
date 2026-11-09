@@ -17,9 +17,8 @@
 > first apply was log-only on 2026-09-15 (Semaphore task 885), that the block
 > rule was then enabled and proven live the same night, and that the log twin
 > was removed to free the second Pro rule slot. AGENTS.md records the same
-> 2026-09-15 date for the live rate limit (tasks 884–886). The two sources give
-> different dates for when the block rule was enabled (`ratelimit.tf` cites
-> task 906, brought forward from 2026-09-28); reconcile against Cloudflare. These
+> 2026-09-15 date for the live rate limit (tasks 884–886). The block rule was enabled on 2026-09-15 (`AGENTS.md:527`), brought forward from
+> a 2026-09-28 target (task 906, `ratelimit.tf:30-37`). These
 > are repo records and have not been checked against the live zone. A second
 > rule, `mcp-api-ratelimit-log` (`/mcp`, log mode, provisional), is declared in
 > `ratelimit.tf`; the repo does not record whether it has been applied. The managed set is now `http_request_firewall_custom`, platform DNS,

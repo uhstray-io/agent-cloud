@@ -124,7 +124,7 @@ agent-cloud/
       step-ca/            Internal CA (Smallstep; production has no ACME provisioner)
       caddy/              Reverse proxy
       authentik/          Central IdP / SSO (server+worker+Postgres+Redis)
-      inference/          Placeholder only (.gitkeep); skynet is deployed in production
+      inference/          README only, no deployment
       inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
       inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
       uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
@@ -284,7 +284,7 @@ SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, OpenTofu (Cloudflare edge as code), ArgoCD (planned)
 DATA                  PostgreSQL, SQLite, MinIO, DuckDB
 AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
-INFERENCE             skynet (deployed in production; Semaphore launch rights are guest-only since 2026-10-31)
+INFERENCE             agentgateway inference edge (/v1); skynet orchestration API calls through it (deployed in production; Semaphore launch rights are guest-only since 2026-10-31)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
 ```
@@ -299,8 +299,8 @@ Production DGX Spark scrape targets are rendered from private inventory by
 |------|-----------|---------|
 | [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
 | [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
-| [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Deployed production inference backbone + agent framework — OpenAI-compatible `/v1` (placement + policy gates); its Semaphore launch rights are guest-only since 2026-10-31; supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework |
-| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (its compose stack is in that repo's `infrastructure/`), superseded by skynet `/v1`; non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
+| [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Orchestration API (deployed in production 2026-10-30), which asks OPA for each decision and calls models through the agentgateway inference edge; its Semaphore launch rights are guest-only since 2026-10-31; supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework |
+| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (its compose stack is in that repo's `infrastructure/`), superseded by skynet (production `/v1` is the agentgateway inference edge, in front of vLLM); non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
 
 ## Contributing
 

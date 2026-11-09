@@ -3,6 +3,7 @@
 **Date:** 2026-10-21
 **Status:** PROPOSED
 > **Parent plan:** [Observability](05-observability.md)
+
 **Context:** A reviewed Dev-bound backup readiness inspection already reads the declared o11y VM and backup-job list. Its candidate output exposes job identifiers and does not correlate the private declared job with current o11y membership. This plan adds a bounded, GET-only selection summary without changing backup-job mutation or schedule behavior.
 
 ---

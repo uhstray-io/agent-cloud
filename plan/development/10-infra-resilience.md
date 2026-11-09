@@ -13,7 +13,7 @@
 # Dev Proxmox Cluster Plan
 
 **Date:** 2026-04-25
-**Status:** Not started
+**Status:** PLANNING
 **Context:** Build a separate "dev" Proxmox cluster for testing breaking changes, automation development, and upgrade rehearsals before applying them to the production cluster.
 
 > **Full plan with network topology, IP allocations, and node configurations lives in the private `site-config` repository at `plan/DEV-PROXMOX-CLUSTER-PLAN.md`.** This stub exists in the public repo for cross-referencing only.
@@ -63,7 +63,7 @@ graph TD
 # Disaster Recovery Plan
 
 **Date:** 2026-05-06
-**Status:** In progress -- Stub document. Full procedures to be developed.
+**Status:** PLANNING -- Stub document. Full procedures to be developed.
 **Context:** The agent-cloud platform currently has no documented disaster recovery procedures. When critical infrastructure fails (Semaphore down, OpenBao sealed, VM lost), operators rely on tribal knowledge and ad-hoc SSH access. This plan will codify recovery procedures for each failure scenario.
 
 **References:**

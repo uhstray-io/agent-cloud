@@ -340,7 +340,7 @@ carries the vLLM API key in clear.** On the inference path the agentgateway-to-v
 Spark host) does not meet the rule above: it is plain HTTP and the upstream key travels unencrypted.
 Compensating control: the GPU host's firewall admits only the gateway host to the vLLM port - that
 control is enforced outside this repository and is not verifiable from this checkout. Fix: internal-CA
-TLS for that hop, decided 2026-10-16 (ADR-0017, as cited in
+TLS for that hop, decided 2026-10-16 (dgx-spark ADR-0017, as cited in
 [plan/architecture/network-architecture.md](plan/architecture/network-architecture.md)), pending - the
 agent-cloud build is not started. This exception ends when that TLS lands, and it must be reviewed no
 later than 2027-02-05. The rule above is unchanged.
