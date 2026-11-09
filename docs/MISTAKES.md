@@ -1288,9 +1288,10 @@ showed commits ahead and conflicts, and one showed commits ahead whose keys were
 `main`. I told the operator the four "need rebasing by their owner" and the fifth was "already on
 `main` another way", and the operator asked me to rebase the four and open PRs. Replaying the
 first one hit conflicts against commits titled "Record DHCP refusal drill and single-router
-authority (#23)" on `main`. All five had been squash-merged (#23, #24, #18, #2, #43): each
-branch's diff from its merge base had the same `git patch-id --stable` as its squash commit on
-`main`. Nothing was rebased or pushed; the branches were deleted on request.
+authority (#23)" on `main`. All five had been squash-merged (#23, #24, #18, #2, #43): each PR
+targeted `main` and merged the exact commit that was still the branch tip, and each branch's diff
+from its merge base matched its squash commit's diff line for line (`git diff -U0`, `index` lines
+aside). Nothing was rebased or pushed; the branches were deleted on request.
 
 **Root cause.** A squash merge writes a new commit, so the branch's own commits are never
 ancestors of `main` and every ancestry-based test (`rev-list`, `branch --merged`, merge-base)
@@ -1298,10 +1299,13 @@ reports the branch as unmerged forever. The repository squash-merged before it s
 commits, so its oldest branches are exactly the ones this test gets wrong. I used an ancestry
 count as a content question and did not look for the PR.
 
-**The rule.** "Is this branch merged?" is answered by its pull request's state (`gh pr list
---head <branch> --state all`), and, where there is no PR, by comparing the branch's diff from its
-merge base to `main`'s commits with `git patch-id --stable`. A commits-ahead count alone never
-supports "unmerged".
+**The rule.** "Is this branch merged into `main`?" is answered from its pull request: the PR
+is merged, its base is `main`, and the head it merged (`headRefOid`) is still the branch tip, so no
+commit landed after the merge. With no PR, or to confirm content, compare the branch's diff from
+its merge base with the candidate commit's diff exactly (`git diff -U0`, ignoring only `index`
+lines). `git patch-id --stable` only finds candidates: it ignores whitespace, so `"ab"` and
+`"a b"` match. A commits-ahead count alone never supports "unmerged", and a patch-id match alone
+never supports "merged".
 
 **Enforced by.** Convention. Related: 1.19 (a negative claim from evidence that cannot establish
 it).
