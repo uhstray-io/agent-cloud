@@ -810,6 +810,72 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
         return "producer_evidence_invalid"
 
 
+# Must match AVAILABILITY_NAMESPACE_REASONS in files/summarize-o11y-scrape-baseline.py;
+# test_o11y_availability_namespace_survey.py compares the two sets.
+AVAILABILITY_NAMESPACE_REASONS = frozenset({
+    "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
+    "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
+    "namespace_runtime_unreadable", "namespace_unverified",
+})
+_NAMESPACE_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def o11y_availability_namespace_diagnostic(result: Any) -> str:
+    """Reduce a protected namespace-gate command result to one fixed category.
+
+    Returns "isolated" only for a clean, well-formed isolated result, the refusal reason for a
+    well-formed unverified result, and "namespace_unverified" for anything else. No value from
+    the protected stdout is returned, so a caller can print the answer without printing the
+    result it was computed from.
+    """
+    generic = "namespace_unverified"
+    try:
+        if not isinstance(result, Mapping):
+            return generic
+        rc, stdout = result.get("rc"), result.get("stdout")
+        if isinstance(rc, bool) or not isinstance(rc, int) or rc not in {0, 2}:
+            return generic
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 4096:
+            return generic
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate JSON key")
+                value[key] = item
+            return value
+
+        def reject_nonfinite(value: str) -> Any:
+            raise ValueError("non-finite JSON number")
+
+        readback = json.loads(stdout, object_pairs_hook=unique_object, parse_constant=reject_nonfinite)
+        if not isinstance(readback, Mapping):
+            return generic
+        if (
+            rc == 0
+            and set(readback) == {"status", "reason", "container_count", "namespace_snapshot_sha256",
+                                  "runtime_context_sha256", "provider", "provider_version"}
+            and readback.get("status") == "isolated"
+            and readback.get("reason") == "distinct_kernel_namespaces"
+            and isinstance(readback.get("namespace_snapshot_sha256"), str)
+            and _NAMESPACE_SHA256.fullmatch(readback["namespace_snapshot_sha256"])
+            and isinstance(readback.get("runtime_context_sha256"), str)
+            and _NAMESPACE_SHA256.fullmatch(readback["runtime_context_sha256"])
+        ):
+            return "isolated"
+        if (
+            rc == 2
+            and set(readback) == {"status", "reason"}
+            and readback.get("status") == "unverified"
+            and readback.get("reason") in AVAILABILITY_NAMESPACE_REASONS
+        ):
+            return readback["reason"]
+        return generic
+    except (ValueError, TypeError, RecursionError):
+        return generic
+
+
 class FilterModule:
     """Expose the pure preview as an Ansible filter."""
 
@@ -820,4 +886,5 @@ class FilterModule:
             "o11y_source_scrape_limit_coverage": o11y_source_scrape_limit_coverage,
             "o11y_availability_source_coverage": o11y_availability_source_coverage,
             "o11y_availability_source_gate_diagnostic": o11y_availability_source_gate_diagnostic,
+            "o11y_availability_namespace_diagnostic": o11y_availability_namespace_diagnostic,
         }
