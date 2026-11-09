@@ -117,7 +117,7 @@ The merge guard pins `lint-and-test.yml` by blob SHA, so this is the guard's **e
 
 - Triggers: `push` to `dev` and `main`; `workflow_dispatch` for the manual major release.
 - `permissions: contents: write`. Concurrency is per branch (`release-version-<ref>`), so a push to `dev` never replaces a pending run on `main`, and a running run is never cancelled. The manual major release has its own group (`release-version-major`), so a run waiting for approval holds nothing else. A pending run of the same branch is replaced by a newer one: on `dev`, `dev-tags` tags the merges the replaced run skipped; on `main`, the next run counts every pull request since the last release. The first runs on `dev` and `main` at the same moment could both try the backfill; the remote refuses the second tag push (`already exists`), and a re-run finds the tags and converges.
-- Checks out full history and tags, runs `backfill --apply --push`, then `next` for the branch pushed. On `dev` it tags only when `HEAD` is a pull request merge; on `main` it tags and creates a GitHub Release with `notes`.
+- Checks out full history and tags, runs `backfill --apply --push`, then tags the branch pushed. On `dev` it tags what `dev-tags` lists (see catch-up above); on `main` it tags what `next --channel main` prints and creates a GitHub Release with `notes`.
 - The manual major release runs in the GitHub environment **`release-major`**, whose required reviewer is the operator, so no major version is cut without that approval.
 - Tags are annotated, made as `github-actions[bot]` (`41898282+github-actions[bot]@users.noreply.github.com`).
 
