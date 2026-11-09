@@ -9,7 +9,8 @@
 # Phase 1: Place the repo; refuse unless Plane is running; read the automation password and any
 #          stored MCP client credentials from OpenBao; register or repair Plane's OAuth app inside
 #          plane-api (register_mcp_app.py: created once, redirect URIs and scopes patched when they
-#          differ, the secret regenerated only when OpenBao has none); store new credentials
+#          differ, the secret regenerated only when OpenBao has none, and installed into the
+#          workspace on every pass, which members' authorization requires); store new credentials
 #          (tasks/bao-merge-keys.yml); render .env.
 # Phase 2: deploy.sh — container lifecycle only.
 # Phase 3: Verify inside the container: the token endpoint refuses an anonymous call, and lists

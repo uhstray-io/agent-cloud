@@ -1,13 +1,16 @@
-// Reads one explicitly allowlisted user-journal container and sends it over
-// the receiver's existing private OTLP/gRPC listener.
-loki.source.journal "o11y_alloy" {
+// Reads the user-journal entries of each container in the declared receiver cohort
+// (o11y_journal_components) and sends them over the receiver's existing private
+// OTLP/gRPC listener.
+{% for c in o11y_journal_components %}
+loki.source.journal "{{ c.component }}" {
   path       = "/var/log/journal"
-  matches    = "CONTAINER_NAME=o11y-alloy"
+  matches    = "CONTAINER_NAME={{ c.container }}"
   max_age    = "15m"
-  labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }
+  labels     = { service = "{{ c.service }}", signal = "container", target_id = "service:o11y" }
   forward_to = [otelcol.receiver.loki.journal.receiver]
 }
 
+{% endfor %}
 otelcol.receiver.loki "journal" {
   output {
     logs = [otelcol.processor.attributes.journal_labels.input]

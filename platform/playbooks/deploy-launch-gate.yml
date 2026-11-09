@@ -3,19 +3,22 @@
 # (skynet-launch-containment, Phase 3, tasks 3.2 and 3.3).
 #
 # Phase 1: Refuse invalid inputs before anything changes. Compute the template allowlist from OPA's catalog
-#          (policies/agentcloud/data.json) and platform/semaphore/templates.yml through the launch_gate_allowlist
-#          filter (drift in either file fails the run here). Place the repo. manage-secrets: caller_skynet_token
-#          is generated once into OpenBao and reused; semaphore_api_token is the svc-launch-gate account's token,
+#          (policies/agentcloud/data.json) and platform/semaphore/templates.yml, plus templates-local.yml under
+#          local mode only, through the launch_gate_allowlist filter (drift in either file fails the run here). Place the repo. manage-secrets: each
+#          caller_<name>_token (skynet, console) is generated once into OpenBao and reused; semaphore_api_token is the svc-launch-gate account's token,
 #          read and never generated (provision-launch-gate-semaphore-access.yml must run first). Template .env (the
 #          tokens, as environment) and config.json (URLs, allowlist, caller map, no token). Issue the listener's
-#          server leaf from step-ca (the key is made on this host) and distribute the trust bundle into ./certs.
+#          server leaf from step-ca (the key is made on this host) and distribute the trust bundle into ./certs. Outside
+#          local_mode, template .env also carries the OPA name map (launch_gate_opa_ip, compose.prod.yml's extra_hosts).
 # Phase 2: deploy.sh (container lifecycle only): pull, change-aware start, wait for running.
 # Phase 3: Verify through the TLS listener. From this host: /healthz answers 200 against the step-ca bundle, and
 #          plain HTTP does not answer 200. Inside the container, with the caller token read from the container's
 #          own environment (never from argv or the task output): an unauthenticated launch is refused 401
 #          unauthorized, a caller launching a template outside the allowlist is refused 403 template_not_allowed,
 #          and a launch of an allowlisted template with an undeclared survey field is refused 400 undeclared_field
-#          (the gate reads the template from Semaphore on that path, and creates no task).
+#          (the gate reads the template from Semaphore on that path, and creates no task). Then the gate's own route to
+#          OPA: GET <launch_gate_opa_url>/health answers 200 from inside the container, through the gate's trust bundle
+#          and the name map compose.prod.yml gives it (outside local_mode, the OPA name has no DNS record).
 #
 # The listener publishes on launch_gate_bind:launch_gate_port (127.0.0.1:8443 by default); the container listens on
 # 8443. Production declares the VM's LAN address, which the host firewall admits to the callers only. Outside
@@ -24,11 +27,14 @@
 # Listener TLS (every mode, the gate has no plain-HTTP listener): internal_leaves declares one entry named
 # launch_gate_server_leaf (profile server, reload none, this host, dir <deploy>/certs/<leaf>, sans including
 # launch_gate_tls_server_name). The gate re-reads its certificate itself, so a renewal needs no reload.
-# Local-dev declares that entry in a later change; until then a local deploy refuses here, by design.
+# Local-dev declares that entry on launch_gate_svc in bootstrap-local-dev.yml's local inventory; a local deploy
+# whose inventory lacks it refuses here, by design. (Renewal reads internal_leaves on the CA host, not here: see
+# CLAUDE.md, "Local-dev".)
 #
 # Deploy order on a host: provision-launch-gate-semaphore-access.yml (once, writes the token this deploy reads) ->
-# Deploy launch-gate -> skynet's route to the gate (a later change). The caller tokens are generated here and
-# handed to each caller out of band (Back Up Credentials to site-config).
+# Deploy launch-gate -> Deploy skynet with skynet_launch_gate_url set (deploy-skynet.yml shared-reads
+# caller_skynet_token from this service's OpenBao path). Back Up Credentials to site-config keeps a copy of the
+# caller tokens.
 #
 # Plan: openspec change skynet-launch-containment, tasks 3.2 and 3.3 (plan/development/openspec/changes/
 # skynet-launch-containment/tasks.md).
@@ -76,19 +82,23 @@
     _launch_gate_semaphore_url: "{{ launch_gate_semaphore_url | default('', true) | string }}"
     _launch_gate_semaphore_project: "{{ launch_gate_semaphore_project | default('', true) | string }}"
     _launch_gate_opa_url: "{{ launch_gate_opa_url | default('', true) | string }}"
+    _launch_gate_opa_ip: "{{ launch_gate_opa_ip | default('', true) | string }}"
     _launch_gate_server_leaf: "{{ launch_gate_server_leaf | default('launch-gate-server') | string }}"
     _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
+    # The five role identities. skynet and the Dispatch Console (console, D49) act as the same roles.
+    _launch_gate_role_agents: ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']
     # Callers and the agents each may act as. Adding a caller is an inventory change AND a change to
     # _launch_gate_token_callers below: each caller's token is a literal secret definition (check-secrets reads
     # this file as text, so a computed declaration cannot be evaluated there).
-    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']}, true) }}"
-    _launch_gate_token_callers: ['skynet']
+    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': _launch_gate_role_agents, 'console': _launch_gate_role_agents}, true) }}"
+    _launch_gate_token_callers: ['skynet', 'console']
     # The OpenBao path is secret/services/launch-gate (manage-secrets derives it from service_name).
-    # caller_skynet_token is generated once and reused; semaphore_api_token is type existing, NEVER generated: it
+    # Each caller_<name>_token is generated once and reused; semaphore_api_token is type existing, NEVER generated: it
     # is written by provision-launch-gate-semaphore-access.yml, and _required_existing_secrets stops the run before any
     # OpenBao write when it is absent. The monorepo is already placed by then, which is harmless and re-run safe.
     _secret_definitions:
       - { name: caller_skynet_token, type: random, length: 48 }
+      - { name: caller_console_token, type: random, length: 48 }
       - { name: semaphore_api_token, type: existing }
     _required_existing_secrets: [semaphore_api_token]
     _env_templates:
@@ -162,6 +172,33 @@
           launch_gate_opa_url must be an https:// URL (the OPA decision API the gate asks before each launch). It
           may be http:// only under local_mode. Set it in the inventory and re-run.
 
+    # Production reaches OPA over https with the step-ca leaf issued for launch_gate_opa_url's host name, which has no
+    # production DNS record. compose.prod.yml maps that name to launch_gate_opa_ip inside the container, as skynet does
+    # for OPA. Both refusals run before anything changes.
+    - name: "Refuse launch_gate_opa_ip unless it is one non-wildcard IPv4 address in production"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_opa_ip is match('^(?!0[.]0[.]0[.]0$)((0|[1-9][0-9]{0,2})[.]){3}(0|[1-9][0-9]{0,2})$')
+          - (_launch_gate_opa_ip | length) <= 15
+          - ((_launch_gate_opa_ip.split('.')) | map('int') | max) <= 255
+        fail_msg: >-
+          launch_gate_opa_ip must be the IPv4 address of the OPA host. The production OPA name has no DNS record, so
+          the container maps that name to this address. 0.0.0.0 is refused. Set it in the inventory and re-run.
+      when: not _launch_gate_local_mode
+
+    - name: "Refuse a production launch_gate_opa_url whose host is not a DNS name the container can map"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_opa_host is match('^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$')
+          - _launch_gate_opa_host is not match('^((0|[1-9][0-9]{0,2})[.]){3}(0|[1-9][0-9]{0,2})$')
+        fail_msg: >-
+          launch_gate_opa_url must name OPA by a DNS name, not an IP address or a bracketed IPv6 literal: the container
+          maps that name to launch_gate_opa_ip, so a mapping needs a name. Use the same URL as skynet_opa_url, so the
+          name matches OPA's leaf. Set it in the inventory and re-run.
+      vars:
+        _launch_gate_opa_host: "{{ _launch_gate_opa_url | urlsplit('hostname') | default('', true) | string }}"
+      when: not _launch_gate_local_mode
+
     - name: "Refuse launch_gate_semaphore_project unless it is a positive integer id"
       ansible.builtin.assert:
         that:
@@ -197,6 +234,27 @@
         quiet: true
       when: not _launch_gate_local_mode
 
+    # compose.yml sets init: true, and podman's --init bind-mounts catatonit from the host. On Ubuntu catatonit is
+    # only a Recommends of podman, and tasks/install-podman-compose.yml installs nothing on a host that already has
+    # podman, so a host can lack it; the container would then fail at creation. Read-only check, refused here.
+    - name: "Look for podman's init binary (catatonit) on a production host"
+      ansible.builtin.shell: "command -v catatonit >/dev/null 2>&1 || test -x /usr/libexec/podman/catatonit"
+      register: _launch_gate_init_bin
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: not _launch_gate_local_mode
+
+    - name: "Refuse a production host without catatonit (the gate runs with init: true)"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_init_bin.rc == 0
+        fail_msg: >-
+          podman's init binary (catatonit) is missing on this host, and the gate's container runs with init: true.
+          Run Install Podman, which installs it, then re-run this deploy.
+        quiet: true
+      when: not _launch_gate_local_mode
+
     # The server leaf is declared once, for this host, in site-config's internal_leaves. The mint and the
     # distribution below read that declaration, so the directory and the SAN are fixed here, before anything is
     # issued. Every check is a refusal before anything changes.
@@ -213,15 +271,17 @@
         fail_msg: >-
           internal_leaves must declare `{{ _launch_gate_server_leaf }}` once (profile server, host
           {{ inventory_hostname }}, dir {{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}, reload none, sans
-          including {{ _launch_gate_tls_name }}). Local-dev declares it in a later change; until then a local
-          deploy refuses here.
+          including {{ _launch_gate_tls_name }}). Local-dev declares it in bootstrap-local-dev.yml (launch_gate_svc);
+          a local inventory without it refuses here.
         quiet: true
       vars:
         _lg_leaf_decl: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _launch_gate_server_leaf) | list }}"
 
     # The allowlist is the one place a template name reaches the gate's config. It is built from OPA's catalog
     # (the filter's source of truth) and templates.yml, and the filter fails on any name either file does not
-    # declare, so a drifted catalog stops the run before the config is rendered.
+    # declare, so a drifted catalog stops the run before the config is rendered. Under local mode only it also
+    # reads templates-local.yml and adds the " (Local)" variants that file declares, which skynet's local catalog
+    # launches; a production deploy never reads that file.
     - name: "Hold the agent identities the callers may act as"
       ansible.builtin.set_fact:
         _launch_gate_agents: "{{ _launch_gate_callers.values() | list | flatten | unique | list }}"
@@ -231,7 +291,9 @@
         _launch_gate_allowlist: >-
           {{ lookup('ansible.builtin.file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json
              | launch_gate_allowlist(lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates.yml') | from_yaml,
-                                      _launch_gate_agents) }}
+                                      _launch_gate_agents,
+                                      (lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates-local.yml') | from_yaml)
+                                      if (_launch_gate_local_mode | bool) else none) }}
 
     - name: "Refuse an empty launch allowlist"
       ansible.builtin.assert:
@@ -240,11 +302,13 @@
         fail_msg: "The launch allowlist is empty for the callers' agents: the gate would refuse every launch. Check the caller map."
         quiet: true
 
-    # Phase 3 probes through these: a caller, its first agent, and the first allowlisted template. The
-    # allowlist is sorted, so the choice is stable across runs.
+    # Phase 3 probes through these: a caller, its first agent, and the first allowlisted template. The caller is
+    # skynet whenever skynet is one of the callers, so the 401, 403 and 400 probes keep proving skynet's token; a
+    # callers map without skynet falls back to its first sorted name. The allowlist is sorted, so the template choice
+    # is stable across runs.
     - name: "Hold the caller and template the verify play probes with"
       ansible.builtin.set_fact:
-        _launch_gate_probe_caller: "{{ _launch_gate_callers.keys() | list | sort | first }}"
+        _launch_gate_probe_caller: "{{ 'skynet' if 'skynet' in _launch_gate_callers else (_launch_gate_callers.keys() | list | sort | first) }}"
         _launch_gate_probe_template: "{{ _launch_gate_allowlist[0] }}"
 
     - name: "Hold the agent the verify play probes with (the probe caller's first agent)"
@@ -257,15 +321,27 @@
     - name: "Manage secrets and template the env file and config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 
+    # Local-dev has no Renew Internal Certs run, and a local Clean Deploy keeps certs/ (clean-service removes
+    # the checkout only in production), so the local deploy renews the leaf itself when it has under 7 days left.
+    # rc 0 = still valid then; rc 1 = expiring, or no current leaf yet (issuance follows either way). Read-only.
+    - name: "Local-dev: is the gate's leaf valid for at least 7 more days"
+      ansible.builtin.command:
+        argv: [openssl, x509, -checkend, "604800", -noout, -in, "{{ _deploy_dir }}/certs/{{ _launch_gate_server_leaf }}/current/cert.pem"]
+      register: _launch_gate_leaf_fresh
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _launch_gate_local_mode
+
     # The server leaf: key generated on this host, signed by the one step_ca_svc host (production) or by the
-    # local CA on this host (local_mode). An issued leaf is kept (_mint_reissue false); renewal is Renew Internal
-    # Certs' job. Safe under --check.
+    # local CA on this host (local_mode). In production an issued leaf is kept; renewal is Renew Internal Certs'
+    # job. In local-dev a leaf with under 7 days left is re-issued (above). Safe under --check.
     - name: "Issue the server leaf (key here, signed on the CA host)"
       ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
       vars:
         _mint_name: "{{ _launch_gate_server_leaf }}"
         _mint_ca_host: "{{ groups['step_ca_svc'] | first if not _launch_gate_local_mode else inventory_hostname }}"
-        _mint_reissue: false
+        _mint_reissue: "{{ _launch_gate_local_mode and (_launch_gate_leaf_fresh.rc | default(0)) != 0 }}"
 
     # The trust bundle (root + intermediate) the verify play and the gate's own CA check read from ./certs.
     - name: "Distribute the step-ca trust bundle into ./certs"
@@ -340,8 +416,16 @@
     _launch_gate_bind: "{{ launch_gate_bind | default('127.0.0.1') | string }}"
     _launch_gate_port: "{{ launch_gate_port | default('8443') | string }}"
     _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
-    # curl, not uri: --resolve sends the declared name to the bind address, while the certificate is still
-    # verified against that name and the step-ca bundle. The body is discarded; only the status is read.
+    # Local-dev, by the same derivation as Phase 1. These probes run in the Semaphore container, and the gate's
+    # port is published on the Mac's loopback, which that container cannot reach. So a local probe dials the TLS
+    # name on the container's own port (8443: config.json.j2 listen_port) through the local-dev network alias
+    # (compose.local.yml), and sends no --resolve. Production keeps --resolve to the declared bind and port.
+    _launch_gate_local_mode: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    _launch_gate_probe_port: "{{ '8443' if _launch_gate_local_mode else _launch_gate_port }}"
+    _launch_gate_plain_host: "{{ _launch_gate_tls_name if _launch_gate_local_mode else _launch_gate_bind }}"
+    # curl, not uri: --resolve (production only) sends the declared name to the bind address, while the certificate
+    # is still verified against that name and the step-ca bundle. The body is discarded; only the status is read.
+    _tls_resolve: "{{ [] if _launch_gate_local_mode else ['--resolve', _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ ':' ~ _launch_gate_bind] }}"
     _tls_args:
       - curl
       - --silent
@@ -352,15 +436,13 @@
       - /dev/null
       - --write-out
       - "%{http_code}"
-      - --resolve
-      - "{{ _launch_gate_tls_name }}:{{ _launch_gate_port }}:{{ _launch_gate_bind }}"
       - --cacert
       - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
 
   tasks:
     - name: "Health over TLS from this host (GET /healthz -> 200, against the step-ca bundle)"
       ansible.builtin.command:
-        argv: "{{ _tls_args + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ '/healthz'] }}"
+        argv: "{{ _tls_args + _tls_resolve + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_probe_port ~ '/healthz'] }}"
       register: _launch_gate_health
       changed_when: false
       failed_when: false
@@ -390,7 +472,7 @@
           - "%{http_code}"
           - --max-time
           - "10"
-          - "http://{{ _launch_gate_bind }}:{{ _launch_gate_port }}/healthz"
+          - "http://{{ _launch_gate_plain_host }}:{{ _launch_gate_probe_port }}/healthz"
       register: _launch_gate_plain_http
       changed_when: false
       failed_when: false
@@ -400,7 +482,7 @@
       ansible.builtin.assert:
         that:
           - _launch_gate_plain_http.stdout | trim != '200'
-        fail_msg: "The launch-gate listener answered plain HTTP with 200 on {{ _launch_gate_bind }}:{{ _launch_gate_port }}; TLS is not enforced."
+        fail_msg: "The launch-gate listener answered plain HTTP with 200 on {{ _launch_gate_plain_host }}:{{ _launch_gate_probe_port }}; TLS is not enforced."
         quiet: true
 
     # Every probe runs INSIDE the container and reads the caller token from the container's environment. The
@@ -477,6 +559,54 @@
           {{ _launch_gate_probes.stdout_lines | default([]) | join(' | ') }}. An unauthenticated launch must be 401
           unauthorized, an off-allowlist template 403 template_not_allowed, and an undeclared survey field 400
           undeclared_field.
+        quiet: true
+      when: not ansible_check_mode
+
+    # The gate's own route to OPA, from inside its container, through the trust bundle and the name map the gate itself
+    # uses (config.json's opa_url and opa_ca_bundle, compose.prod.yml's extra_hosts). Without it, an unreachable OPA shows
+    # only as a 503 on the first real launch. The script prints the HTTP status, or the class name of the exception
+    # (never its message), and reads no secret. The opener matches app/launch_gate.py's _opener: no environment proxy.
+    - name: "OPA answers the gate's container (GET <opa_url>/health -> 200 through the gate's own trust and name mapping)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - launch-gate
+          - python
+          - -I
+          - -c
+          - |
+            import json
+            import ssl
+            import urllib.error
+            import urllib.request
+
+            with open("/etc/launch-gate/config.json", encoding="utf-8") as handle:
+                config = json.load(handle)
+            context = ssl.create_default_context(cafile=config["opa_ca_bundle"])
+            context.minimum_version = ssl.TLSVersion.TLSv1_2
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=context))
+            try:
+                with opener.open(config["opa_url"].rstrip("/") + "/health", timeout=10) as response:
+                    print("opa-health", response.status)
+            except urllib.error.HTTPError as exc:
+                print("opa-health", exc.code)
+            except Exception as exc:
+                print("opa-health error", type(exc).__name__)
+      register: _launch_gate_opa_health
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: "Assert OPA answered the gate's container 200 to /health"
+      ansible.builtin.assert:
+        that:
+          - "'opa-health 200' in _launch_gate_opa_health.stdout_lines"
+        fail_msg: >-
+          launch-gate could not get OPA's /health from its own container (labels and statuses only):
+          {{ _launch_gate_opa_health.stdout_lines | default([]) | join(' | ') }}. A status other than 200, or an error class,
+          names the cause: the trust bundle (the gate's opa_ca_bundle), the name map in compose.prod.yml (the OPA name
+          and launch_gate_opa_ip), or OPA's firewall, which must admit this gate's host.
         quiet: true
       when: not ansible_check_mode
 

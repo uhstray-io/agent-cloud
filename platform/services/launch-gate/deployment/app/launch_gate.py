@@ -496,6 +496,9 @@ MAX_RESPONSE = 16 * 1024 * 1024
 SEMAPHORE_TIMEOUT = 15.0
 OPA_TIMEOUT = 5.0
 DECISION_PATH = "/v1/data/agentcloud/decision"
+# The gate's own routes. LAUNCH_PATH creates a task; DECIDE_PATH answers the same checks and creates nothing.
+LAUNCH_PATH = "/v1/launch"
+DECIDE_PATH = "/v1/decide"
 UNCERTAIN = "submission outcome uncertain; a task may be running, check the template's tasks before launching again"
 Log = Callable[[dict[str, Any]], None]
 
@@ -716,6 +719,18 @@ def _stderr(line: str) -> None:
         pass
 
 
+@dataclass(frozen=True)
+class _Verdict:
+    """What the shared checks establish about one request: the caller, the parsed request, the template as
+    Semaphore declares it, the values to launch with, and OPA's reason for allowing it."""
+
+    caller: str
+    req: LaunchRequest
+    template: dict[str, Any]
+    values: dict[str, str]
+    reason: str
+
+
 class Gate:
     """The request flow, in design decision 4's order. Each check is a core function; this class sequences them."""
 
@@ -737,14 +752,18 @@ class Gate:
     def handle(self, method: str, path: str, headers: Mapping[str, str], body: bytes) -> tuple[int, dict[str, Any]]:
         if method == "GET" and path == "/healthz":
             return 200, {"status": "ok"}
-        if path != "/v1/launch":
+        if path not in (LAUNCH_PATH, DECIDE_PATH):
             return 404, {"error": "not_found"}
         if method != "POST":
             return 405, {"error": "method_not_allowed"}
 
-        event: dict[str, Any] = {"event": "launch"}
+        deciding = path == DECIDE_PATH
+        event: dict[str, Any] = {"event": "decide" if deciding else "launch"}
         try:
-            status, payload = self._launch(headers, body, event)
+            if deciding:
+                status, payload = self._decide(headers, body, event)
+            else:
+                status, payload = self._launch(headers, body, event)
         except Refusal as exc:
             status, payload = exc.status, {"error": exc.code, "detail": exc.detail}
             if isinstance(exc, Denied):
@@ -755,7 +774,8 @@ class Gate:
             status, payload = 500, {"error": "internal"}
             event["exception"] = type(exc).__name__
         event["outcome"] = status
-        event["error"] = None if status == 201 else payload["error"]
+        # Both routes answer 2xx on success: a launch 201, a decision 200 (an OPA deny is a 200 answer too).
+        event["error"] = None if status < 300 else payload["error"]
         try:
             self._log(event)
         except Exception:
@@ -764,9 +784,14 @@ class Gate:
             _stderr("launch-gate: log write failed")
         return status, payload
 
-    def _launch(self, headers: Mapping[str, str], body: bytes, event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    def _judge(self, headers: Mapping[str, str], body: bytes, event: dict[str, Any], *, creates_task: bool) -> _Verdict:
+        """The checks a launch and a decision share, in order, up to and including OPA. Raises Denied when OPA
+        says no. Both routes call this one method, so they cannot drift. ``creates_task`` only decides whether the
+        log event carries a task_id key: a decision never creates a task, so its event has none."""
         caller = authenticate(_authorization(headers), self._config)
-        event.update(caller=caller, reason=None, task_id=None)
+        event.update(caller=caller, reason=None)
+        if creates_task:
+            event["task_id"] = None
         req = parse_request(body)
         event.update(
             agent=req.agent,
@@ -787,9 +812,16 @@ class Gate:
                 raise Refusal(400, "dry_run_unverified", f"check mode is not verified for Semaphore {version}")
         reason = self._opa.decide(opa_input(req, repo_branch, values))
         event["reason"] = reason
-        template_id = template["id"]
-        message = task_message(caller, req.workflow_id, req.step)
-        payload = task_body(template_id, self._config.semaphore_project, values, dry_run=req.dry_run, message=message)
+        return _Verdict(caller=caller, req=req, template=template, values=values, reason=reason)
+
+    def _launch(self, headers: Mapping[str, str], body: bytes, event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        verdict = self._judge(headers, body, event, creates_task=True)
+        req = verdict.req
+        template_id = verdict.template["id"]
+        message = task_message(verdict.caller, req.workflow_id, req.step)
+        payload = task_body(
+            template_id, self._config.semaphore_project, verdict.values, dry_run=req.dry_run, message=message
+        )
         with self._template_lock(template_id):
             busy = self._semaphore.running(template_id)
             if busy:
@@ -802,8 +834,19 @@ class Gate:
         return 201, {
             "task_id": task_id,
             "message": message,
-            "decision": {"allowed": True, "reason": reason},
+            "decision": {"allowed": True, "reason": verdict.reason},
         }
+
+    def _decide(self, headers: Mapping[str, str], body: bytes, event: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+        """POST /v1/decide: the launch's checks up to and including OPA, and the answer. It creates no task, takes
+        no template lock and reads no running task, so a preview can neither launch nor wait behind a launch. An
+        OPA deny is the answer, so it is a 200 with allowed false, not a refusal."""
+        try:
+            verdict = self._judge(headers, body, event, creates_task=False)
+        except Denied as exc:
+            event["reason"] = exc.reason
+            return 200, {"decision": {"allowed": False, "reason": exc.reason}}
+        return 200, {"decision": {"allowed": True, "reason": verdict.reason}}
 
     def _check_mode_recorded(self, task_id: int) -> None:
         """Read the task back. Anything short of a positive params.dry_run is a real run: stop it and refuse."""

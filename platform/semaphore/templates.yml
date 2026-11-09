@@ -531,6 +531,14 @@ templates:
         required: false
         default_value: "false"
 
+  # Converge the business-domain tags (plan 17, D37) declared in inventory as netbox_business_domains on the
+  # netbox_svc host. No survey: the list is inventory, never a launch-time value. Creates a missing domain-* tag,
+  # sets the name and description of a declared one that differs, never deletes; an undeclared domain-* tag is
+  # reported by name. Dry run (check mode) reports would-create and would-update and writes nothing.
+  - name: Ensure NetBox Business Domains
+    playbook: platform/playbooks/ensure-netbox-business-domains.yml
+    dev_variant: true
+
   # Converge the conformance collector's NetBox custom fields to their declaration
   # (platform/workflows/service-onboarding/netbox-custom-fields.yml). Idempotent;
   # "Dry run" reports without writing.
@@ -680,63 +688,6 @@ templates:
     # n8n's public-API key into secret/services/n8n:n8n_api_key. Idempotent:
     # re-runs recapture the key from n8n's own Postgres instead of re-minting.
     # Never printed; all key-bearing steps no_log.
-    dev_variant: true
-
-  - name: Store tududi API Token
-    playbook: platform/playbooks/store-tududi-api-token.yml
-    # DB-side initial mint only; existing access is never revoked/replaced.
-    # Validation-only proves the stored identity/token without writing OpenBao.
-    dev_variant: true
-    survey_vars:
-      - name: tududi_token_validate_only
-        title: "Validate existing token only"
-        description: "true = prove stored token and stop; never mint, replace or revoke"
-        type: string
-        required: false
-        default_value: "true"
-
-  - name: Refresh tududi-sync GitHub Token
-    playbook: platform/playbooks/refresh-tududi-sync-github-token.yml
-    # GitHub App installation tokens live ONE HOUR: this mints a fresh one on
-    # the controller (App key from OpenBao via stdin, scope preflight against
-    # github-mapping.yml) and PATCHes the n8n github-sync-api credential in
-    # place. Update-only: creation belongs to the sync provisioning. The
-    # The cadence below is the reviewed cadence — schedules are code. Cron has
-    # no true 45-minute period: `*/45` fires at :00 and :45, so the gaps
-    # alternate 45 and 15 minutes — both inside the token's hour, which is
-    # the property that matters.
-    dev_variant: true
-    schedule:
-      cron: "*/45 * * * *"
-
-  - name: Provision tududi-github Sync
-    playbook: platform/playbooks/provision-tududi-github-sync.yml
-    # Places the whole sync: live-validates BOTH provider credentials (named
-    # failure before the engine changes), upserts the two named credentials,
-    # renders the cycle workflow from the committed nine-pair mapping
-    # (enabled entries), upserts + activates it, deactivates obsolete owned
-    # workflows and preserves every workflow and credential. The kill switch (-e sync_enabled=false)
-    # deactivates owned workflows BEFORE any validation — it works with a
-    # broken mapping and dead credentials by design.
-    dev_variant: true
-    survey_vars:
-      - name: sync_enabled
-        title: "Sync enabled"
-        description: "false = kill switch: deactivate the sync's workflows and stop (no validation, no render)"
-        type: string
-        required: false
-        # A BLANK survey value renders as the empty string, and `'' | bool` is
-        # FALSE — without this default, leaving the field untouched would
-        # silently trip the kill switch. The playbook preserves blank-as-default
-        # while also accepting an actual boolean false as a kill switch.
-        default_value: "true"
-
-  - name: Verify tududi-github Sync
-    playbook: platform/playbooks/verify-tududi-github-sync.yml
-    # The per-pair promotion gate (read-only, exit pass/fail per enabled
-    # pair): last cycle green + the exact embedded engine reports convergence
-    # + zero sync trace outside the declaration. A pair is enabled or kept
-    # enabled only while this passes.
     dev_variant: true
 
   - name: Provision n8n Postiz Credential
@@ -1172,6 +1123,20 @@ templates:
       - name: agw_isolation_control
         title: "Control identity"
         description: "The identity that must stay served (leave blank for the first other declared identity)"
+        type: string
+        required: false
+
+  # Read-only allow-path probe of the launch gate (skynet-launch-containment task 5.5): one dry-run
+  # Snapshot Service Assessment (Dev) launch as the probe identity (skynet, acting as service-agent), then the
+  # same request again at once, which the gate must refuse already_running. Runs inside the gate's container;
+  # never prints the caller token. Dev-bound until promotion.
+  - name: Probe launch-gate (Dev)
+    playbook: platform/playbooks/probe-launch-gate.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_target_service
+        title: "Target group"
+        description: "Inventory group the probe snapshots, a populated <name>_svc group (blank for opa_svc)"
         type: string
         required: false
 
@@ -1901,6 +1866,14 @@ templates:
         type: string
         required: true
 
+  # Read-only proof that secret/services/github:pat can pull the private GHCR images (live,
+  # read:packages, each declared package readable). The registry login and the pre-flight pulls
+  # are skipped in check mode, so no deploy dry run proves the token. Reports statuses and
+  # scopes only; the token is read and sent in no_log tasks. Dev-bound until promotion.
+  - name: Verify GitHub PAT (Dev)
+    playbook: platform/playbooks/verify-github-pat.yml
+    repository: agent-cloud dev
+
   - name: Seed Discovery Credentials
     playbook: platform/playbooks/seed-discovery-credentials.yml
 
@@ -2122,6 +2095,18 @@ templates:
         type: string
         required: false
         default_value: "false"
+
+  # The member reconcile on its schedule (change task 2.7): an APPLYING run every hour, because
+  # a schedule cannot answer a survey and the base template only reports unless apply=true. The
+  # wrapper sets apply for the imported reconcile; its mass-removal refusal still holds. Dev-bound
+  # like the console token refresh: a schedule on a main-bound base would run `main`, which has
+  # no copy of the wrapper until promotion. Registered after the production apply succeeded
+  # (task 11753).
+  - name: Reconcile Plane Members Scheduled (Dev)
+    playbook: platform/playbooks/reconcile-plane-members-scheduled.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "23 * * * *"
 
   - name: Sync Plane Projects
     playbook: platform/playbooks/sync-plane-projects.yml
@@ -2394,6 +2379,61 @@ templates:
         type: string
         required: true
 
+  # Sends a REAL Discord alert. The endpoint availability rule fires for the one named
+  # target, whose health probe is failed on purpose with a status code it never returns.
+  # Tell the operator before launching. A second deploy restores the projection; an
+  # interrupted run is recovered with Recover o11y Endpoint Drill (Dev).
+  - name: Drill o11y Endpoint Availability (Dev)
+    playbook: platform/playbooks/drill-o11y-endpoint-availability.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the controller playbook and both deploys"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the receiver by the drilled and restoring deploys"
+        type: string
+        required: true
+        default_value: "dev"
+      - name: availability_drill_target_id
+        title: "Availability target id"
+        description: "One reviewed availability target_id; its health probe is failed on purpose"
+        type: string
+        required: true
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match"
+        type: string
+        required: false
+        default_value: "false"
+
+  # Restores the normal projection and clears the endpoint drill marker. Run it after an
+  # interrupted Drill o11y Endpoint Availability (Dev). It does not check endpoint health.
+  - name: Recover o11y Endpoint Drill (Dev)
+    playbook: platform/playbooks/recover-o11y-endpoint-drill.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the recovery playbook and its deploy"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Target branch"
+        description: "Branch cloned onto the receiver by the restoring deploy"
+        type: string
+        required: true
+        default_value: "dev"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate every container even when inputs and images match"
+        type: string
+        required: false
+        default_value: "false"
+
   - name: Verify o11y Production Budgets (Dev)
     playbook: platform/playbooks/verify-o11y-production-budgets.yml
     repository: agent-cloud dev
@@ -2446,6 +2486,19 @@ templates:
         type: string
         required: true
     # Reports only fixed statuses/reasons and bounded counts; target identities stay protected.
+
+  - name: Survey o11y Availability Gate (Dev)
+    playbook: platform/playbooks/survey-o11y-availability-gate.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only availability namespace gate survey"
+        type: string
+        required: true
+    # Proves the pre-placement namespace gate in enabled mode and reports one fixed category
+    # (isolated, or the refusal decision point). Never reads o11y_availability_probes_enabled,
+    # places nothing, and prints no container, process or namespace identity.
 
   - name: Diagnose o11y Host Storage (Dev)
     playbook: platform/playbooks/diagnose-o11y-host-storage.yml
@@ -2986,8 +3039,12 @@ templates:
         description: "Exact reviewed Dev revision for the read-only log-source survey"
         type: string
         required: true
-    # Reports fixed driver/source categories and counts only; no logs, paths,
-    # addresses, container identities, or stderr are exposed.
+    # Reports fixed driver/source categories, receiver container short names, and counts
+    # only; no log text, paths, addresses, matched substrings, container IDs, or stderr are exposed.
+    # Content counts are a sample of the newest 5000 journald entries per receiver in the last 15 minutes.
+    # conmon can split a long line into partial entries (CONTAINER_PARTIAL_MESSAGE=true), so a secret that
+    # straddles two entries is missed. Entries older than the sample, secrets without a listed keyword or
+    # format, and receivers that are not running or not journald (unverified, never read) are not covered.
 
   - name: Survey o11y Alloy Health (Dev)
     playbook: platform/playbooks/survey-o11y-alloy-health.yml
@@ -3209,6 +3266,14 @@ templates:
   #
   # To run a template against `dev` instead of `main`, give it
   # `repository: agent-cloud dev` here — do NOT flip a shared record's branch.
+
+  # Deletes the templates that platform/semaphore/retired-templates.yml declares retired, and
+  # their schedules. setup-templates.yml never deletes, so this is the only removal path. Run the
+  # Dev variant in Semaphore's Dry run first: it lists what would be deleted and deletes nothing.
+  # No survey: the declaration is the input.
+  - name: Retire Semaphore Templates
+    playbook: platform/playbooks/retire-semaphore-templates.yml
+    dev_variant: true
 
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
@@ -3453,6 +3518,44 @@ templates:
         description: "Type the declared vm_vmid. Anything else refuses. No default on purpose."
         type: string
         required: true
+
+  - name: Migrate VM
+    playbook: platform/playbooks/migrate-vm.yml
+    # Isolated environment: this managed VM writer checks the o11y restore-target reservation
+    # and refuses the shared environment's plaintext credential extra vars, logging in with the
+    # AppRole as env secrets only (PR #728). `Provision Seed Environment (Dev)` gives the (Dev)
+    # copy its own environment holding an encrypted AppRole (plan 03 / pbs-vm-and-restore-gate).
+    isolated_environment: Migrate VM inputs
+    # OFFLINE MOVE of ONE existing declared VM to the node its inventory declares (vm_node). A
+    # running guest is SHUT DOWN for the move and started again on its declared node. A stopped guest
+    # is started there too by default (start_after defaults to true; false keeps it stopped).
+    # confirm_migrate must name the declared vmid. Does not change the CPU model: Resize VM converges
+    # vm_cpu afterwards.
+    dev_variant: true
+    survey_vars:
+      - name: target_service
+        title: "Target service"
+        description: "Service whose <name>_svc group holds the declaration (e.g. plane)"
+        type: string
+        required: true
+      - name: target_host
+        title: "Target host"
+        description: "Which declared host — REQUIRED when the group declares more than one"
+        type: string
+        required: false
+      - name: confirm_migrate
+        title: "Confirm: vmid to migrate"
+        description: "Type the declared vm_vmid. Anything else refuses. The VM is SHUT DOWN for the move when it is running. No default on purpose."
+        type: string
+        required: true
+      - name: start_after
+        title: "Start after the move"
+        description: >-
+          true (default): the guest ends RUNNING on its declared node, including one that was stopped before the run.
+          false: a stopped guest stays stopped; a running guest is always started again after the move.
+        type: string
+        required: false
+        default_value: "true"
 
   - name: Provision VM
     playbook: platform/playbooks/provision-vm.yml

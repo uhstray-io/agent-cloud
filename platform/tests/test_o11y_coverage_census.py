@@ -10,6 +10,8 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import yaml
+
 SCRIPT = Path(__file__).parents[1] / "playbooks/files/o11y-coverage-census.py"
 SPEC = importlib.util.spec_from_file_location("o11y_coverage_census", SCRIPT)
 CENSUS = importlib.util.module_from_spec(SPEC)
@@ -225,6 +227,7 @@ class CoverageCensusTests(unittest.TestCase):
                     "method": "GET", "valid_status_codes": [200],
                     "follow_redirects": False, "proxy_from_environment": False,
                     "body_size_limit": "4096B",
+                    "headers": {"Host": "health.example.invalid"},
                     "tls_config": {
                         "insecure_skip_verify": False,
                         "server_name": "health.example.invalid",
@@ -246,6 +249,7 @@ class CoverageCensusTests(unittest.TestCase):
             "server_name": "health.example.invalid",
             "ca_file": "/certs/step-ca-bundle.crt",
         })
+        self.assertEqual(ca_module["http"]["headers"], {"Host": "health.example.invalid"})
 
     def test_availability_requires_literal_rfc1918_http_target_and_exact_contract(self):
         cases = [
@@ -277,6 +281,8 @@ class CoverageCensusTests(unittest.TestCase):
         )
         http_config = json.loads(prepared["targets"][0]["blackbox_config"])["modules"]["health_01"]["http"]
         self.assertNotIn("tls_config", http_config)
+        # A plain-HTTP probe keeps the literal address as its Host; only HTTPS names the site.
+        self.assertNotIn("headers", http_config)
 
     def test_availability_rejects_status_booleans_bad_tls_and_over_budget_values(self):
         invalid = []
@@ -393,6 +399,108 @@ class CoverageCensusTests(unittest.TestCase):
         tls = json.loads(target_output["blackbox_config"])["modules"]["health_01"]["http"]["tls_config"]
         self.assertEqual(tls["insecure_skip_verify"], False)
         self.assertNotIn("password", result.stdout.lower())
+
+    def _drill_fixture(self):
+        alpha = availability_target()
+        beta = availability_target(target_id="service:beta", identity="beta")
+        common = {
+            "enabled": True, "reviewed": True,
+            "limits": {"max_targets": 2, "max_total_timeout_seconds": 20, "max_series": 12},
+            "receiver_environment": "production", "cluster": "prod-cluster",
+            "shared_sample_limit": 2000,
+        }
+        return alpha, beta, common
+
+    def test_availability_drill_changes_only_the_named_targets_module_code_list(self):
+        alpha, beta, common = self._drill_fixture()
+        baseline = prepare_availability([alpha, beta], **common)
+        drilled = prepare_availability(
+            [alpha, beta], drill={"target_id": "service:alpha", "status_code": 503}, **common,
+        )
+
+        self.assertNotIn("drill", baseline)
+        self.assertEqual(drilled["drill"], {"target_id": "service:alpha", "status_code": 503})
+        self.assertEqual(drilled["limits"], baseline["limits"])
+        drilled_alpha, drilled_beta = drilled["targets"]
+        base_alpha, base_beta = baseline["targets"]
+
+        self.assertEqual(drilled_alpha["expected_status_codes"], [503])
+        drilled_module = json.loads(drilled_alpha["blackbox_config"])["modules"]["health_01"]
+        base_module = json.loads(base_alpha["blackbox_config"])["modules"]["health_01"]
+        self.assertEqual(drilled_module["http"]["valid_status_codes"], [503])
+        drilled_module["http"]["valid_status_codes"] = [200]
+        self.assertEqual(drilled_module, base_module)
+        self.assertEqual(
+            {k: v for k, v in drilled_alpha.items() if k not in {"expected_status_codes", "blackbox_config"}},
+            {k: v for k, v in base_alpha.items() if k not in {"expected_status_codes", "blackbox_config"}},
+        )
+        self.assertEqual(drilled_beta, base_beta)
+        self.assertEqual(json.loads(drilled_beta["blackbox_config"])["modules"]["health_02"]["http"][
+            "valid_status_codes"], [200])
+        self.assertEqual(alpha["signals"]["health"]["expected_status_codes"], [200])
+
+    def test_availability_drill_absent_or_null_is_byte_identical_to_today(self):
+        declaration = availability_target()
+        payload = {
+            "targets": [declaration],
+            "inventory_revision": CENSUS.canonical_inventory_revision([declaration]),
+            "enabled": True,
+            "reviewed": True,
+            "limits": {"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            "receiver_environment": "production",
+            "cluster": "prod-cluster",
+            "shared_sample_limit": 2000,
+        }
+
+        def run(extra):
+            return subprocess.run(
+                ["python3", str(SCRIPT), "--prepare-availability"],
+                input=json.dumps({**payload, **extra}), text=True, capture_output=True, check=True,
+            ).stdout
+
+        absent = run({})
+        self.assertEqual(run({"drill": None}), absent)
+        self.assertNotIn('"drill"', absent)
+        drilled = json.loads(run({"drill": {"target_id": "service:alpha", "status_code": 503}}))
+        self.assertEqual(drilled["drill"], {"target_id": "service:alpha", "status_code": 503})
+        self.assertEqual(json.loads(absent)["targets"][0]["expected_status_codes"], [200])
+        self.assertEqual(drilled["targets"][0]["expected_status_codes"], [503])
+
+    def test_availability_drill_rejects_every_unsafe_or_undeclared_input(self):
+        alpha, beta, common = self._drill_fixture()
+        gamma = target(target_id="service:gamma", identity="gamma")
+        valid = {"target_id": "service:alpha", "status_code": 503}
+        cases = [
+            ("requires enabled availability", [alpha, beta], valid, {"enabled": False}),
+            ("requires reviewed availability", [alpha, beta], valid, {"reviewed": False}),
+            ("undeclared target", [alpha, beta], {"target_id": "service:missing", "status_code": 503}, {}),
+            ("declared but not selected", [alpha, beta, gamma],
+             {"target_id": "service:gamma", "status_code": 503}, {}),
+            ("declared code", [alpha, beta], {"target_id": "service:alpha", "status_code": 200}, {}),
+            ("code below range", [alpha, beta], {"target_id": "service:alpha", "status_code": 99}, {}),
+            ("code above range", [alpha, beta], {"target_id": "service:alpha", "status_code": 600}, {}),
+            ("boolean code", [alpha, beta], {"target_id": "service:alpha", "status_code": True}, {}),
+            ("string code", [alpha, beta], {"target_id": "service:alpha", "status_code": "503"}, {}),
+            ("float code", [alpha, beta], {"target_id": "service:alpha", "status_code": 503.0}, {}),
+            ("missing code", [alpha, beta], {"target_id": "service:alpha"}, {}),
+            ("extra field", [alpha, beta], {**valid, "expected_status_codes": [503]}, {}),
+            ("empty target", [alpha, beta], {"target_id": "", "status_code": 503}, {}),
+            ("non-string target", [alpha, beta], {"target_id": 7, "status_code": 503}, {}),
+            ("list of drills", [alpha, beta], [valid, {"target_id": "service:beta", "status_code": 503}], {}),
+        ]
+        for label, targets, drill, overrides in cases:
+            with self.subTest(label), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                prepare_availability(targets, drill=drill, **{**common, **overrides})
+
+    def test_availability_task_forwards_the_drill_input_as_null_or_one_named_target(self):
+        tasks = yaml.safe_load(
+            (Path(__file__).parents[1] / "playbooks/tasks/prepare-o11y-availability.yml").read_text(encoding="utf-8"),
+        )
+        prepare = next(
+            task for task in tasks
+            if task.get("name") == "Validate and privately prepare the reviewed availability projection"
+        )
+        self.assertIn("'drill': _o11y_availability_drill | default(none)", prepare["ansible.builtin.command"]["stdin"])
 
     def test_optional_profiles_signal_preserves_the_existing_four_signal_contract(self):
         declaration = target(signals={name: signal_excluded(name) for name in CENSUS.SIGNALS})

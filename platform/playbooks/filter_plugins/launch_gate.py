@@ -1,17 +1,24 @@
 """The launch gate's template allowlist, derived from OPA's catalog (skynet-launch-containment, design decision 3).
 
-The gate may launch only the templates that the agent identities its callers act as are allowed, plus
-their (Dev) variants. OPA's data file stays the one source: this list only narrows what reaches OPA, and it
-never names a template OPA does not. It is the union over every agent the callers act as, and it keeps the
-base name beside each (Dev) variant, so it admits names OPA still refuses for a given agent or branch (another
-agent's template; a base name whose workflow step is unreviewed and so may not run from main). That is by
-design: per-agent and per-branch permission is OPA's decision, made on every launch; the allowlist only keeps
-everything outside the catalog, and every destructive template, away from OPA.
+The gate may launch only the templates that the agent identities its callers act as are allowed, plus their
+(Dev) variants, and on local-dev their (Local) variants. OPA's data file stays the one source: this list only
+narrows what reaches OPA, and it never names a template OPA does not. It is the union over every agent the
+callers act as, and it keeps the base name beside each (Dev) variant, so it admits names OPA still refuses for
+a given agent or branch (another agent's template; a base name whose workflow step is unreviewed and so may
+not run from main). That is by design: per-agent and per-branch permission is OPA's decision, made on every
+launch; the allowlist only keeps everything outside the catalog, and every destructive template, away from
+OPA.
 
 Two kinds of template never reach the gate's config:
 
   * a name in catalog.semaphore.destructive_templates, and
   * any name that starts with "Clean Deploy" (the destructive family, whether or not it is listed).
+
+(Local) names are added only when the caller passes ``local_templates_doc`` (the parsed
+platform/semaphore/templates-local.yml), which deploy-launch-gate.yml does under local mode only, and only
+for a kept name whose " (Local)" variant that file declares. Without it the result is the production list,
+unchanged. skynet's local catalog launches "<base> (Local)" and OPA trims that suffix
+(agent_actions.rego _base_template), so a local gate without these names refuses every skynet launch.
 
 Fail closed. An empty agent list, an agent that is not in the catalog, an agent with no allowed_templates
 list, a name that templates.yml does not declare (catalog drift), or a template name declared twice raises
@@ -25,14 +32,17 @@ from ansible.errors import AnsibleFilterError
 
 CLEAN_DEPLOY_PREFIX = "Clean Deploy"
 DEV_SUFFIX = " (Dev)"
+LOCAL_SUFFIX = " (Local)"
 
 
-def launch_gate_allowlist(catalog_doc, templates_doc, agents):
+def launch_gate_allowlist(catalog_doc, templates_doc, agents, local_templates_doc=None):
     """Sorted, unique template names the gate may launch for these agent identities.
 
     catalog_doc    the parsed OPA data document (policies/agentcloud/data.json): {"catalog": {...}}
     templates_doc  the parsed platform/semaphore/templates.yml: {"templates": [...]}
     agents         the agent identities the gate's callers may act as, e.g. ["security-agent"]
+    local_templates_doc  the parsed platform/semaphore/templates-local.yml, passed on local-dev only;
+                   None keeps the production list
     """
     catalog = _section(catalog_doc, "catalog", "catalog_doc")
     dev_variants = _dev_variants(templates_doc)
@@ -67,6 +77,9 @@ def launch_gate_allowlist(catalog_doc, templates_doc, agents):
 
     out = set(kept)
     out.update(name + DEV_SUFFIX for name in kept if dev_variants[name])
+    if local_templates_doc is not None:
+        local_names = _local_names(local_templates_doc)
+        out.update(name + LOCAL_SUFFIX for name in kept if name + LOCAL_SUFFIX in local_names)
     return sorted(out)
 
 
@@ -96,6 +109,21 @@ def _dev_variants(templates_doc):
             raise AnsibleFilterError(f"template name {name!r} is declared twice in templates.yml")
         out[name] = bool(entry.get("dev_variant", False))
     return out
+
+
+def _local_names(local_templates_doc):
+    """Every template name templates-local.yml declares. A duplicate name is refused, as in templates.yml."""
+    templates = local_templates_doc.get("templates") if isinstance(local_templates_doc, Mapping) else None
+    if not isinstance(templates, list):
+        raise AnsibleFilterError("local_templates_doc has no templates list (is it templates-local.yml?)")
+    names = set()
+    for entry in templates:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str) or not entry["name"]:
+            raise AnsibleFilterError("every templates-local.yml entry needs a name")
+        if entry["name"] in names:
+            raise AnsibleFilterError(f"template name {entry['name']!r} is declared twice in templates-local.yml")
+        names.add(entry["name"])
+    return names
 
 
 class FilterModule:

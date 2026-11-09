@@ -2,67 +2,47 @@
 //! detail page for one service.
 //!
 //! The rows are the tenant's VMs that carry workflow fields. The RAG is the
-//! server's. The domain tiles count the rows by NetBox tag, which the inventory
-//! answer carries as the tag name; nothing is computed from console-local data.
+//! server's. The domain tiles come from the inventory answer: the domains NetBox
+//! holds, each counted by the domain slugs the service rows carry. The browser
+//! matches nothing by name.
 
 use dioxus::prelude::*;
 
+use super::api::{self, Me};
 use super::empty::SERVICES;
 use super::icons::icon;
 use super::inventory::{
-    count_text, mb_text, meta_of, poll_admin, services_in_scope, view, Admin, ScopedServices,
-    Snapshot, View, ViewNotice, SEP,
+    count_text, end_session, mb_text, meta_of, poll_admin, services_in_scope, view, Admin,
+    ScopedServices, Snapshot, View, ViewNotice, POLL_MS, SEP,
 };
-use super::inventory_api::{self, ServiceBody, ServiceRow};
-use super::shell::Ctx;
+use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
+use super::proposals_api::{self, Kind, Proposal};
+use super::shell::{is_platform_admin, no_tenant_message, Ctx};
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, Freshness, Notice, Rag, RagBadge, StepList,
     DASH,
 };
 use super::Route;
 
-/// The five business domains an organization's services are tagged with in NetBox.
-pub const DOMAIN_TAGS: [&str; 5] = [
-    "Products",
-    "Professional Services",
-    "Automation",
-    "Administration",
-    "IT",
-];
-
-/// A tag in slug form: lower case, runs of whitespace as one hyphen. NetBox
-/// slugs and tag names compare equal under this form.
-pub fn slug(text: &str) -> String {
-    text.split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join("-")
-}
-
-/// True when a NetBox tag names this domain, matched case-insensitively by name or slug.
-pub fn tag_matches(tag: &str, domain: &str) -> bool {
-    slug(tag) == slug(domain)
-}
-
-/// Services per domain, in `DOMAIN_TAGS` order, and the count of services with no
-/// domain tag at all. A service with two domain tags counts in both.
-pub fn domain_counts(rows: &[ServiceRow]) -> (Vec<(&'static str, usize)>, usize) {
-    let counts = DOMAIN_TAGS
+/// Services per declared domain, in the answer's order, and the count of services that carry no
+/// declared domain. A service with two domains counts in both. Matched by slug.
+pub fn domain_counts(rows: &[ServiceRow], domains: &[Domain]) -> (Vec<(Domain, usize)>, usize) {
+    let counts = domains
         .iter()
         .map(|domain| {
             let n = rows
                 .iter()
-                .filter(|row| row.tags.iter().any(|tag| tag_matches(tag, domain)))
+                .filter(|row| row.domains.contains(&domain.slug))
                 .count();
-            (*domain, n)
+            (domain.clone(), n)
         })
         .collect();
     let untagged = rows
         .iter()
         .filter(|row| {
-            !row.tags
+            !row.domains
                 .iter()
-                .any(|tag| DOMAIN_TAGS.iter().any(|domain| tag_matches(tag, domain)))
+                .any(|slug| domains.iter().any(|domain| &domain.slug == slug))
         })
         .count();
     (counts, untagged)
@@ -151,19 +131,33 @@ fn ServicesContent(snap: Snapshot) -> Element {
             if let Some(message) = unconfigured {
                 Notice { message }
             }
-            ServicesPanel { rows, recorded: body.services.len() }
+            ServicesPanel {
+                rows,
+                recorded: body.services.len(),
+                domains: snap.inventory.as_ref().map(|inv| inv.domains.clone()),
+                domains_error: meta_of(&snap).and_then(inventory_api::domains_error),
+            }
         },
     }
 }
 
 /// The domain tiles, the filters and the table. The filters are held here, so
-/// they survive a poll that replaces the rows.
+/// they survive a poll that replaces the rows. `domains` is `None` when the
+/// inventory answer has not loaded, so the tiles say so rather than read zero.
 #[component]
-fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize) -> Element {
+fn ServicesPanel(
+    rows: Vec<ServiceRow>,
+    recorded: usize,
+    domains: Option<Vec<Domain>>,
+    /// The admin's reason for a failed tag read, or `None`. Members never have one.
+    domains_error: Option<String>,
+) -> Element {
     let filter = use_signal(ServiceFilter::default);
     let mut filter_w = filter;
     let current = filter.read().clone();
-    let (counts, untagged) = domain_counts(&rows);
+    let loaded = domains.is_some();
+    let declared = domains.unwrap_or_default();
+    let (counts, untagged) = domain_counts(&rows, &declared);
     let shown = filter_services(&rows, &current);
     let rag_value = current.rag.map_or("", Rag::wire).to_string();
     let none_match = shown.is_empty() && !rows.is_empty();
@@ -175,19 +169,26 @@ fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize) -> Element {
                 span { class: "faint", "{total}" }
             }
             div { class: "card-b stack",
-                div { class: "tiles",
-                    for (domain, n) in counts.iter() {
-                        div { class: "tile", key: "{domain}",
-                            b { "{n}" }
-                            small { "{domain}" }
+                if let Some(reason) = domains_error {
+                    Notice { message: reason }
+                }
+                if loaded {
+                    div { class: "tiles",
+                        for (domain, n) in counts.iter() {
+                            DomainTile { key: "{domain.slug}", domain: domain.clone(), count: *n }
+                        }
+                        div { class: "tile",
+                            b { "{untagged}" }
+                            small { "No domain" }
                         }
                     }
-                    div { class: "tile",
-                        b { "{untagged}" }
-                        small { "Untagged" }
+                    if let Some(line) = inventory_api::no_domains_line(&declared) {
+                        p { class: "hint", "{line}" }
                     }
+                    p { class: "hint", "A service with two domains counts in both." }
+                } else {
+                    Notice { message: "The business domains could not be loaded, so the domain counts are not shown.".to_string() }
                 }
-                p { class: "hint", "A service with two domain tags counts in both." }
             }
         }
         div { class: "filters", role: "search", aria_label: "Filter services",
@@ -256,6 +257,35 @@ fn ServicesPanel(rows: Vec<ServiceRow>, recorded: usize) -> Element {
     }
 }
 
+/// A domain's colour swatch, drawn only when NetBox gave a valid colour. Shared with the
+/// settings pages, so a domain looks the same wherever it is listed.
+#[component]
+pub fn DomainSwatch(domain: Domain) -> Element {
+    let swatch = domain.css_color();
+    rsx! {
+        if let Some(color) = swatch {
+            span {
+                style: "display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: {color};",
+                aria_hidden: "true",
+            }
+        }
+    }
+}
+
+/// One domain tile: the count, and the name with its colour swatch.
+#[component]
+fn DomainTile(domain: Domain, count: usize) -> Element {
+    rsx! {
+        div { class: "tile",
+            b { "{count}" }
+            small {
+                DomainSwatch { domain: domain.clone() }
+                "{domain.name}"
+            }
+        }
+    }
+}
+
 /// One row of the services table.
 #[component]
 fn ServiceTableRow(row: ServiceRow) -> Element {
@@ -301,7 +331,9 @@ pub fn ServiceDetail(name: String) -> Element {
             ServiceView { key: "{tenant}/{name}", tenant, name: name.clone() }
         },
         None => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see this service.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see this service."),
+            }
         },
     };
     rsx! {
@@ -340,11 +372,17 @@ fn ServiceView(tenant: String, name: String) -> Element {
             Notice { message: "Your session ended. Sign in again to see this service.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
-            Notice { message: format!("The service could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }
+            Notice { message: format!("The service could not be loaded: {reason}. It retries every {} seconds while this tab is visible.", POLL_MS / 1000) }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
-            rsx! { ServiceCard { body, reason } }
+            let proposing = shows_proposal_actions(&ctx.me.read());
+            rsx! {
+                ServiceCard { body, reason }
+                if proposing {
+                    ProposalActions { service: name }
+                }
+            }
         }
     }
 }
@@ -439,54 +477,237 @@ fn ServiceCard(body: ServiceBody, reason: String) -> Element {
     }
 }
 
+/// What a proposal action on this page reports.
+#[derive(Debug, Clone, PartialEq)]
+enum ProposeResult {
+    Created(String),
+    Failed(String),
+}
+
+/// Posts one proposal. A press while one is in flight does nothing. A 401 ends the session, and any other
+/// failure keeps the sentence the server sent.
+fn propose(
+    kind: Kind,
+    service: String,
+    check_mode: bool,
+    note: String,
+    mut busy: Signal<bool>,
+    mut result: Signal<Option<ProposeResult>>,
+    me: Signal<Me>,
+) {
+    if busy() {
+        return;
+    }
+    busy.set(true);
+    result.set(None);
+    spawn(async move {
+        let reply = proposals_api::create(kind, &service, check_mode, &note).await;
+        busy.set(false);
+        if reply.status == 401 {
+            end_session(me);
+            return;
+        }
+        let done = if (200..=299).contains(&reply.status) {
+            match api::parse::<Proposal>(&reply) {
+                Some(proposal) => ProposeResult::Created(proposal.id),
+                None => ProposeResult::Failed(proposals_api::GENERIC_FAILURE.to_string()),
+            }
+        } else {
+            ProposeResult::Failed(proposals_api::error_text(&reply))
+        };
+        result.set(Some(done));
+    });
+}
+
+/// Whether the Actions card is drawn: only for a platform admin, the same check the shell uses for the admin pages.
+/// The server answers every proposal route 403 to anyone else (D25), so this keeps the card off the page; it is not
+/// the control.
+pub fn shows_proposal_actions(me: &Me) -> bool {
+    matches!(me, Me::SignedIn(account) if is_platform_admin(&account.claims))
+}
+
+/// The Assess resource and Verify health actions on a service's page (plan 17, D48). Each one makes a proposal
+/// for a platform admin to review on the Dashboard. Nothing runs from this page: the gate runs an action only
+/// after an approval.
+#[component]
+fn ProposalActions(service: String) -> Element {
+    let ctx = use_context::<Ctx>();
+    let me = ctx.me;
+    let mut check_mode = use_signal(|| false);
+    let mut note = use_signal(String::new);
+    let busy = use_signal(|| false);
+    let result = use_signal(|| None::<ProposeResult>);
+
+    let assess_service = service.clone();
+    let on_assess = move |_: MouseEvent| {
+        propose(
+            Kind::Assess,
+            assess_service.clone(),
+            check_mode(),
+            note(),
+            busy,
+            result,
+            me,
+        );
+    };
+    let verify_service = service.clone();
+    let on_verify = move |_: MouseEvent| {
+        propose(
+            Kind::Verify,
+            verify_service.clone(),
+            check_mode(),
+            note(),
+            busy,
+            result,
+            me,
+        );
+    };
+
+    rsx! {
+        section { class: "card", aria_labelledby: "svc-actions-h",
+            div { class: "card-h",
+                h2 { id: "svc-actions-h", "Actions" }
+            }
+            div { class: "card-b stack",
+                p { class: "hint", "Each action makes a proposal. A platform admin reviews it on the Dashboard, and nothing runs until they approve." }
+                label { class: "choice",
+                    input {
+                        r#type: "checkbox",
+                        checked: check_mode(),
+                        onchange: move |evt: FormEvent| check_mode.set(evt.checked()),
+                    }
+                    span { "Check mode (dry run)" }
+                }
+                label { class: "field",
+                    span { class: "label", "Note (optional)" }
+                    input {
+                        class: "input",
+                        r#type: "text",
+                        maxlength: "2000",
+                        value: "{note}",
+                        oninput: move |evt: FormEvent| note.set(evt.value()),
+                    }
+                }
+                div { class: "row wrap",
+                    button { r#type: "button", class: "btn primary", onclick: on_assess, "Assess resource" }
+                    button { r#type: "button", class: "btn", onclick: on_verify, "Verify health" }
+                }
+                if busy() {
+                    p { class: "hint", role: "status", "Creating the proposal\u{2026}" }
+                }
+                if let Some(done) = result() {
+                    ProposeStatus { result: done }
+                }
+            }
+        }
+    }
+}
+
+/// What a proposal action said: the new proposal's id with a link to the Dashboard, or the failure.
+#[component]
+fn ProposeStatus(result: ProposeResult) -> Element {
+    match result {
+        ProposeResult::Created(id) => rsx! {
+            p { class: "st ok", role: "status",
+                {icon("circle-check")}
+                span { "Proposal {id} created. Review it on the " Link { to: Route::Dashboard {}, "Dashboard" } "." }
+            }
+        },
+        ProposeResult::Failed(text) => rsx! {
+            p { class: "st crit", role: "alert",
+                {icon("octagon-x")}
+                span { "{text}" }
+            }
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::api::{Account, Claims, Preferences};
 
-    fn row(name: &str, rag: &str, tags: &[&str], failed: &[&str]) -> ServiceRow {
+    #[test]
+    fn only_a_platform_admin_sees_the_proposal_actions() {
+        let signed_in = |groups: &[&str]| {
+            Me::SignedIn(Account {
+                claims: Claims {
+                    sub: "s".into(),
+                    email: None,
+                    name: None,
+                    username: None,
+                    groups: groups.iter().map(|g| g.to_string()).collect(),
+                },
+                preferences: Preferences::default(),
+            })
+        };
+        assert!(shows_proposal_actions(&signed_in(&[
+            "ops",
+            "platform-admins"
+        ])));
+        assert!(!shows_proposal_actions(&signed_in(&["ops"])));
+        assert!(!shows_proposal_actions(&signed_in(&[
+            "platform-admins-old"
+        ])));
+        assert!(!shows_proposal_actions(&Me::SignedOut));
+        assert!(!shows_proposal_actions(&Me::Loading));
+    }
+
+    /// A service row carrying the given domain slugs.
+    fn row(name: &str, rag: &str, domains: &[&str], failed: &[&str]) -> ServiceRow {
         ServiceRow {
             name: name.into(),
             site: "dc1".into(),
             cluster: "pve-prod".into(),
             rag: rag.into(),
-            tags: tags.iter().map(|t| t.to_string()).collect(),
+            domains: domains.iter().map(|d| d.to_string()).collect(),
             failed_steps: failed.iter().map(|s| s.to_string()).collect(),
             ..ServiceRow::default()
         }
     }
 
-    #[test]
-    fn a_tag_matches_its_domain_by_name_or_slug_in_any_case() {
-        assert!(tag_matches("Products", "Products"));
-        assert!(tag_matches("products", "Products"));
-        assert!(tag_matches(
-            "professional-services",
-            "Professional Services"
-        ));
-        assert!(tag_matches(
-            "Professional Services",
-            "Professional Services"
-        ));
-        assert!(tag_matches("it", "IT"));
-        assert!(!tag_matches("Product", "Products"), "no prefix matches");
-        assert!(!tag_matches("tududi-sync", "Automation"));
+    fn domain(slug: &str, name: &str) -> Domain {
+        Domain {
+            name: name.into(),
+            slug: slug.into(),
+            color: "2196f3".into(),
+        }
     }
 
     #[test]
-    fn domain_tiles_count_each_service_once_per_domain_and_the_rest_as_untagged() {
-        let rows = vec![
-            row("a", "green", &["Products"], &[]),
-            row("b", "red", &["Products", "IT"], &[]),
-            row("c", "amber", &["tududi-sync"], &[]),
-            row("d", "grey", &[], &[]),
+    fn domain_tiles_count_each_service_once_per_domain_and_the_rest_as_no_domain() {
+        let declared = vec![
+            domain("domain-it", "IT"),
+            domain("domain-products", "Products"),
+            domain("domain-automation", "Automation"),
         ];
-        let (counts, untagged) = domain_counts(&rows);
-        assert_eq!(counts.len(), 5);
-        let get = |name: &str| counts.iter().find(|(d, _)| *d == name).unwrap().1;
-        assert_eq!(get("Products"), 2);
-        assert_eq!(get("IT"), 1);
-        assert_eq!(get("Automation"), 0);
-        assert_eq!(untagged, 2, "c and d have no domain tag");
+        let rows = vec![
+            row("a", "green", &["domain-products"], &[]),
+            row("b", "red", &["domain-products", "domain-it"], &[]),
+            row("c", "amber", &[], &[]),
+            row("d", "grey", &["domain-ghost"], &[]),
+        ];
+        let (counts, untagged) = domain_counts(&rows, &declared);
+        assert_eq!(counts.len(), 3, "one tile per declared domain");
+        let get = |slug: &str| counts.iter().find(|(d, _)| d.slug == slug).unwrap().1;
+        assert_eq!(get("domain-products"), 2);
+        assert_eq!(get("domain-it"), 1);
+        assert_eq!(get("domain-automation"), 0);
+        assert_eq!(
+            untagged, 2,
+            "c has no domain and d's domain is not declared"
+        );
+    }
+
+    #[test]
+    fn with_no_declared_domains_every_service_is_no_domain_and_there_are_no_tiles() {
+        let rows = vec![
+            row("a", "green", &["domain-it"], &[]),
+            row("b", "grey", &[], &[]),
+        ];
+        let (counts, untagged) = domain_counts(&rows, &[]);
+        assert!(counts.is_empty());
+        assert_eq!(untagged, 2);
     }
 
     #[test]
@@ -560,11 +781,5 @@ mod tests {
         assert_eq!(ServiceFilter::default().text, "");
         let rows = vec![row("a", "red", &[], &[]), row("b", "grey", &[], &[])];
         assert_eq!(filter_services(&rows, &ServiceFilter::default()).len(), 2);
-    }
-
-    #[test]
-    fn slug_joins_words_with_hyphens() {
-        assert_eq!(slug("Professional   Services"), "professional-services");
-        assert_eq!(slug(" IT "), "it");
     }
 }

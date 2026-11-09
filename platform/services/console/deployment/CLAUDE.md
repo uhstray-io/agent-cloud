@@ -49,6 +49,7 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_WORKFLOW_FILE=/etc/console/workflow.json` | fixed path; the file is `config/workflow.json` |
 | `CONSOLE_FLOWS_FILE=/etc/console/flows.json` | fixed path; the file is `config/flows.json` (always rendered) |
 | `CONSOLE_GATEWAY_FILE=/etc/console/gateway.json` | fixed path; the file is `config/gateway.json` (always rendered, empty lists without an `agentgateway_svc` host). Names and figures only (task 8.3a) |
+| `CONSOLE_CATALOG_FILE=/etc/console/catalog.json` | fixed path; the file is `config/catalog.json` (always rendered, an empty list when no deploy template qualifies). Names, template names and host counts only (task 8.4, D38) |
 | `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | `console_netbox_url`; the token is `secrets.console_api_token`, a shared read of `secret/services/netbox`. The group renders only when the URL is set (Phase 3, see below) |
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | `console_proxmox_url`; id and secret are shared reads of `secret/services/proxmox` (`console_token_id`, `console_token`). All-or-none, like the NetBox group |
 | `CONSOLE_PROXMOX_CA_FILE=/etc/console/proxmox-ca.pem` | set only when `console_proxmox_ca_pem` is set; the file is always mounted (empty when unset) |
@@ -56,6 +57,7 @@ There is no registry. `deploy.sh` runs `build_console_image`:
 | `CONSOLE_GRAFANA_TOKEN` | `secrets.console_grafana_token`, a shared read of `secret/services/o11y`. Rendered only when `console_grafana_api_enabled` is true AND `console_grafana_url` is set |
 | `CONSOLE_AUTHENTIK_URL`, `CONSOLE_AUTHENTIK_TOKEN` | `console_authentik_api_url`; the token is `secrets.console_directory_token`, a shared read of `secret/services/authentik`. All-or-none, rendered only when the URL is set (Access page, see below) |
 | `CONSOLE_ROLE_MAP_FILE=/etc/console/role-map.json` | fixed path; the file is `config/role-map.json`, always rendered |
+| `CONSOLE_GITHUB_REPO`, `CONSOLE_GITHUB_REF` | `console_github_repo` (default `uhstray-io/agent-cloud`) and `console_github_ref` (default `dev`). Rendered only with `console_openbao_url`: the token is read from OpenBao (`secret/services/console/github`, field `token`) on every policy refresh and is never rendered. A malformed value is refused by name at deploy and at startup |
 
 `config/scope.json` (rendered from `templates/scope.json.j2`, mode 0644) is the tenant tree: `console_tenants` (a list of tenants, each with the Authentik `groups` allowed to see it, and orgs, each org with sites and their `envs`; a tenant with no `groups` is visible to `platform-admins` only) and `console_scope_is_example`. It is not a secret.
 
@@ -102,8 +104,6 @@ Each authority is read with the smallest credential, and only when its URL var i
 
 Inputs are bind-mounted read-only like `scope.json` and `workflow.json`, and `deploy.sh` recreates the container when any of them changes.
 
-Not yet done here: `config.rs` does not read the `CONSOLE_NETBOX_*`, `CONSOLE_PROXMOX_*`, `CONSOLE_FLOWS_FILE` or `CONSOLE_GRAFANA_URL` variables. The server work reads them, so this wiring is inert until that lands.
-
 ## Active Work (Semaphore, read-only)
 
 The server reads Semaphore's task list and serves it at `/v1/work` (plan 17 D17-D20). Read it with the code, not this section: `platform/services/console/app/src/server/work.rs` (joins, lanes) and `platform/services/console/app/src/server/semaphore.rs` (the one read).
@@ -136,21 +136,23 @@ The window is Semaphore's newest 200 tasks of the project (`tasks/last`). A run 
 
 ## Inventory (NetBox and Proxmox, read-only, Phase 3)
 
-The server reads NetBox (sites, clusters, VMs, devices, prefixes) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The response contract is in `platform/services/console/app/docs/phase3-api.md` in this repository. The code is `platform/services/console/app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links).
+The server reads NetBox (sites, clusters, VMs, devices, prefixes, tags) and Proxmox (nodes and guests) and joins them for the tenant views (plan 17 D22-D25). The tags read keeps the business domains: NetBox tags whose slug starts with `domain-` (D37). It stands apart from the site and prefix reads: a refused or failed tag read never fails the NetBox source. It keeps the last good domains and sets `diagnostics.domains_error` for platform admins. NetBox tags are global, so the domains are platform-wide and every tenant gets the same list. The response contract is `app/docs/phase3-api.md`. The code is `app/src/server/inventory.rs` (join, RAG, routes), `netbox.rs` and `proxmox.rs` (the two reads), and `grafana.rs` (deep links and the gateway usage read).
 
 | Source | Credential | Read |
 |--------|------------|------|
-| NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to |
+| NetBox | `CONSOLE_NETBOX_TOKEN`, view-only. An `nbt_` token is sent as `Bearer`, a legacy token as `Token` | sites by declared slug, their clusters and VMs, devices; every prefix, with the site it is scoped to; every tag, keeping the `domain-` slugs. The `console` profile grants `extras.tag` view (`platform/playbooks/provision-netbox-automation-token.yml:74`); that the grant covers `/api/extras/tags/` is unverified against a live NetBox |
 | Proxmox | `CONSOLE_PROXMOX_TOKEN_ID` and `CONSOLE_PROXMOX_TOKEN`, a PVEAuditor token | `cluster/resources`: nodes and guests, joined to a VM by name |
 
-Environment, read by `platform/services/console/app/src/server/config.rs` in this repository. The deploy does not set these yet (see Open items):
+Environment, read by `app/src/server/config.rs`. `templates/env.j2` renders NetBox and Proxmox only when `console_netbox_url` or `console_proxmox_url` is set. `CONSOLE_PROXMOX_CA_FILE` is rendered only with the Proxmox group and when `console_proxmox_ca_pem` is set. The Grafana rows below follow their own inputs. `CONSOLE_FLOWS_FILE` is always rendered.
 
 | Variable | Meaning |
 |----------|---------|
 | `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | all-or-none. Unset: `source.netbox` is `unconfigured` |
 | `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | all-or-none. `CONSOLE_PROXMOX_CA_FILE` (optional PEM roots for a self-signed API) counts as a member, so alone it names the missing URL |
 | `CONSOLE_FLOWS_FILE` | optional JSON array of `{kind, from, to, label}`, rendered from declarations. Names only: an extra key fails startup |
-| `CONSOLE_GRAFANA_URL` | optional Grafana origin for deep links. Unset: every link is `null` |
+| `CONSOLE_GRAFANA_URL` | optional Grafana origin: the deep-link base, and the origin of the usage read. Unset: every link is `null` and no usage read runs. Cleartext `http://` only to a loopback or RFC1918 host |
+| `CONSOLE_GRAFANA_TOKEN` | optional Grafana API token, a Viewer service account's (D32), for the gateway usage read (D39). Requires `CONSOLE_GRAFANA_URL`: alone it names the missing URL. The deploy renders it only with `console_grafana_api_enabled` and `console_grafana_url` both set. Unset: `usage.state` is `unconfigured` and every client's `tokens_last_hour` is `null` |
+| `CONSOLE_GITHUB_REPO`, `CONSOLE_GITHUB_REF` | optional, all-or-none, validated by `github_repo_valid` and `github_ref_valid`. Unset: `/v1/policies` is `unconfigured`. Set without `CONSOLE_OPENBAO_*`, the policy read still stays `unconfigured`: the token comes from OpenBao |
 
 Infrastructure URLs take `https://` always, and `http://` only to loopback or RFC1918. Anything else fails startup and names the variable. Certificate verification is never turned off. Without a CA file, Proxmox is verified against reqwest's bundled roots, so a self-signed API shows as `source.proxmox: "error"`.
 
@@ -160,13 +162,18 @@ Routes and scoping:
 
 | Route | Who | Carries |
 |-------|-----|---------|
-| `GET /v1/tenants/{t}/inventory` | members of `t` | sites, with clusters, nodes, VMs (with RAG) and devices. Node CPU, memory and uptime only for platform admins |
+| `GET /v1/tenants/{t}/inventory` | members of `t` | the business `domains` (platform-wide), sites, with clusters, nodes, VMs (with RAG, and the domain slugs each VM carries) and devices. Node CPU, memory and uptime only for platform admins |
 | `GET /v1/tenants/{t}/services`, `/services/{name}` | members of `t` | VMs that carry workflow fields; one VM |
 | `GET /v1/network` | `platform-admins` only; 403 otherwise | every prefix, global ones included |
 | `GET /v1/flows` | `platform-admins` only; 403 otherwise | the flow catalogue |
-| `GET /v1/gateway` | `platform-admins` only; 403 otherwise | `{state, clients, models}` from `config/gateway.json`: each agentgateway client with its tier, its hourly token figure, where that figure comes from (`client`, `tier`, `default`) and its allowed models; `state` is `ok` or `unconfigured`. Names and figures only, never a key. Internal identities (mcp-self, legacy-shared, pool identities) are not listed. Admin-only identities are not listed either (task 8.3a) |
+| `GET /v1/gateway` | `platform-admins` only; 403 otherwise | `{state, clients, models, usage}` from `config/gateway.json`: each agentgateway client with its tier, its hourly token figure, where that figure comes from (`client`, `tier`, `default`), its allowed models and `tokens_last_hour` (the usage read's figure for its name, or `null`); `state` is `ok` or `unconfigured`. `usage` is `{state, refreshed_at, error}`, its `state` one of `ok`, `unconfigured`, `loading`, `error`. Names and figures only, never a key. Internal identities (mcp-self, legacy-shared, pool identities) are not listed. Admin-only identities are not listed either (task 8.3a) |
+| `GET /v1/catalog` | any signed-in member; 401 signed out | `{state, services}` from `config/catalog.json`: each service the platform can deploy, with `service`, `name`, `template` and `running` (whether any host carries it). Platform admins also get `deployed_hosts` per service; a member's body has no such key. `state` is `ok` or `unconfigured`. The menu is not sensitive, so it is open to members (task 8.4, D38) |
+| `GET /v1/roles` | `platform-admins` only; 403 otherwise | `{roles}`: one role per distinct owner in the workflow registry (`CONSOLE_WORKFLOW_FILE`), sorted by name, each with its `steps` (`{id, order, label}`) in order. Empty without the registry (D40) |
 | `GET /v1/secrets` | `platform-admins` only; 403 otherwise | OpenBao metadata from a background walk: path, current version, versions kept, created and updated time. No secret values or custom metadata (D25, D35) |
 | `GET /v1/access` | `platform-admins` only; 401 signed out, 403 otherwise | Authentik users and groups from a background read, plus the Access Level -> per-service `role_map` (8.2b). See "Access" below |
+| `GET /v1/policies` | `platform-admins` only; 401 signed out, 403 otherwise | The OPA and OpenBao policy files on `CONSOLE_GITHUB_REF` of `CONSOLE_GITHUB_REPO`, read from GitHub every 15 minutes with the console's read-only token from OpenBao: name, kind, last commit and a link per file. No decision counts (D36). See "Policy" below |
+| `GET /v1/delivery` | `platform-admins` only; 401 signed out, 403 otherwise | The CI/CD page's delivery state from GitHub on `CONSOLE_GITHUB_REF` of `CONSOLE_GITHUB_REPO`, read every 15 minutes with the console's read-only token from OpenBao: the required checks named by `.github/rulesets/protect-main.json`, the ref's comparison with `main` and its promotion pull, and the open pull requests into the ref and into `main` with review state, check counts and, into `main`, each required check. Reads the cache only (plan 17 9.1, D42). See "CI/CD" below |
+| `GET /v1/telemetry/rollups` | `platform-admins` only; 401 signed out, 403 otherwise | `{state, refreshed_at, error, alerts, environments}` from Grafana every 5 minutes with the Viewer token (D43): target health (`up`) and alert counts per environment, Prometheus cluster and service label, with a Service Overview link per service. `alerts` is `{state, error}`. Names, counts and Grafana dashboard links only, never a token or an upstream API URL. See "Telemetry" below |
 
 A tenant the caller may not see answers `404 unknown_tenant`, byte-identical to an unknown one. Prefixes never appear in a tenant answer: a prefix with no site names no tenant (D16). Devices are site-scoped, so they do.
 
@@ -183,6 +190,10 @@ RAG (`inventory::rag`), first match wins: `red` when a workflow step failed, or 
 
 Deep links: each VM and service row carries `grafana_url`, the Service Overview dashboard with `var-service` and `var-log_service` set to the VM name. `links.grafana_conformance` is the conformance dashboard. Both use the dashboard uids in `platform/services/o11y/deployment/config/grafana/dashboards/`.
 
+**Gateway usage (D39).** With `CONSOLE_GRAFANA_TOKEN` and its URL, one background read runs every 5 minutes (`grafana.rs`): an instant query of the gateway's token counter per identity over the last hour, sent through Grafana's Prometheus proxy (datasource uid `prometheus`) with the Viewer token as a bearer. A client's `tokens_last_hour` is the figure under its name. The count is the metric of the same traffic, not the gateway's own budget counter (the gateway enforces its rolling budget in its own Postgres), so the LLM access page labels it approximate. A failed read keeps the last good figures and sets `usage.error` to a sentence that names the reason. The reason is fixed text: never a URL, a body or the token. The origin is refused for cleartext to a public host, at startup and again at request time.
+
+**Agent roles (D40).** The roles are the distinct owners of the registry steps, derived by the server (`work::roles_from`). The sidebar reads `GET /v1/roles` once, for platform admins only, and links each role to `/roles/:role`. That page shows the role's steps, its Active Work strips (one per job, as the board shows them), and the gateway client of the same name, or says there is none.
+
 ## Access (Authentik directory and role map, plan 17 8.2b)
 
 `GET /v1/access` answers `{state, users, groups, role_map, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_AUTHENTIK_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The console source path in this repository is `platform/services/console/app/src/server/access.rs`; the response contract is its module header and serde types, not this section.
@@ -191,6 +202,106 @@ Deep links: each VM and service row carries `grafana_url`, the Service Overview 
 - **Role map.** `config/role-map.json` is rendered from `platform/playbooks/vars/access-role-map.yml`, which mirrors the table "Access Level -> Per-Service Role Mapping" in `plan/architecture/04-credentials-access.md`. `platform/tests/test_console_access_role_map.py` pins every cell against that table and the serde names against the rendered JSON. Edit the table and the vars file together. The vars file is a D31 pinned input, so a rotation refuses while the controller's copy differs from the deployed commit.
 - **Gate.** `work::admin_only`, the same gate as `/v1/network` and `/v1/secrets`.
 
+## Policy (GitHub, plan 17 8.4, D36)
+
+`GET /v1/policies` answers `{state, repo, ref, files, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GITHUB_*`, or no `CONSOLE_OPENBAO_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/policies.rs` (cache and refresh) and `app/src/server/github.rs` (the reads); the response contract is the serde types and the module headers, not this section.
+
+- **Source.** Two sets of files on one ref: OPA (`*.rego`, `*_test.rego` and `*.json` under `platform/services/opa/deployment/policies/`, any depth) and OpenBao (`*.hcl` directly in `platform/services/openbao/deployment/config/policies/`). The tree is read at the ref's tip, and each file's last commit comes from that same tip.
+- **Bounds.** At most 80 files: the first 80 by path are shown, and `error` says the list was cut. At most 200 GitHub requests per refresh. A truncated tree is an error, never a partial list. The refresh runs every 15 minutes and keeps the last good list on failure.
+- **Token.** The `token` field of `secret/services/console/github`, read from OpenBao on every refresh and sent to the GitHub API origin only. It is never cached and never echoed in an error.
+- **No decision counts.** The console has no source for them: OPA authz refuses data reads, so the page says so and shows none.
+- **Gate.** `work::admin_only`, the same gate as `/v1/secrets`.
+
+## CI/CD (GitHub, plan 17 9.1, D42)
+
+`GET /v1/delivery` answers `{state, repo, ref, required_checks, ruleset_url, promotion, pulls, refreshed_at, error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GITHUB_*`, or no `CONSOLE_OPENBAO_*`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/delivery.rs` (cache, refresh and the reads over the parsed responses) and `app/src/server/github.rs` (the REST client it shares with the Policy page); the response contract is the serde types and the module header, not this section.
+
+- **Source.** REST only, every 15 minutes (`REFRESH_INTERVAL`). One refresh reads: `.github/rulesets/protect-main.json` on the ref (the `required_status_checks` contexts, in ruleset order); `compare/main...<ref>` (`ahead_by`, `behind_by`); the open pull requests into the ref and, unless the ref is `main`, into `main` (30 per list, `PULLS_PER_LIST`, in the order GitHub returns them); and for each pull request its head commit's check runs and its reviews (one page of 100 each).
+- **Checks.** Only the newest run of each check name counts: the highest run id, so a re-run wins. A run that is not completed is `pending`; `success` is `passed`; `skipped` and `neutral` are `skipped`; any other conclusion is `failed`. A pull request into `main` lists each required check by name as `passed`, `failed`, `pending`, `skipped` or `missing` (no run of that name on its head). Other pull requests carry an empty `required`. Commit statuses are not read.
+- **Review.** The latest review of each reviewer other than the pull request's author, ignoring `COMMENTED`, `DISMISSED` and `PENDING`. Any `CHANGES_REQUESTED` makes it `changes_requested`; else any `APPROVED` makes it `approved`; else `none`.
+- **Promotion.** `promotion.pull` is the open pull request into `main` whose head is the ref in the configured repository. A fork's branch of the same name does not count. The same pull request also appears in `pulls`.
+- **Bound.** At most `MAX_REQUESTS` (124) GitHub requests per refresh: four fixed requests, then two per pull request, which with 30 pull requests in each list is exactly 124. A refresh that reached the bound would fail and keep the last good read. A failed request fails the whole read; no partial read is shown.
+- **Token and errors.** The `token` field of `secret/services/console/github`, read from OpenBao on every refresh and sent to the GitHub API origin only. A failed read keeps the last good read and says why. No URL, response body or token reaches an error or a log line.
+
+## Telemetry (Grafana, plan 17 9.2, D43)
+
+`GET /v1/telemetry/rollups` answers `{state, refreshed_at, error, alerts, environments}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GRAFANA_TOKEN` or no `CONSOLE_GRAFANA_URL`), `loading` (before the first read finishes) or `error` (no read has finished and the newest failed). The code is `app/src/server/telemetry.rs`; the response contract is the serde types and the module header, not this section.
+
+- **Reads.** Every 5 minutes, two GETs with the Viewer token (D32): the `up` series through Grafana's Prometheus proxy (the usage read's path in `grafana.rs`), and the alert instances from Grafana's alerting API. Both pass the origin guard the usage read passes: https, or cleartext to a loopback or RFC1918 host, and no query or fragment.
+- **Rollup.** Targets are grouped by the `environment`, `cluster` and `service` labels; a missing or empty label is shown as `(none)`. `targets_total` counts every `up` series and `targets_up` those whose sample is 1. An alert in `Alerting` (any suffix) or `firing` counts as `firing`, one in `Pending` (any suffix) as `pending`, and an alert in any other state adds nothing. A group that has firing or pending alerts and no targets still gets a row. Every level is sorted by name, and each environment and cluster total is the sum of its children. A service's `grafana_url` is its Service Overview link; `(none)` has `null`.
+- **Errors.** A failed `up` read keeps the last good rollup and sets `error` to `The newest telemetry read failed: <reason>. Showing the last good read.`, or `The telemetry read failed: <reason>.` before any good read. A failed alerts read sets `alerts` to `{"state":"error","error":"Grafana alerts could not be read: <reason>."}` and leaves that refresh's alert counts at zero. The `alerts` block describes the rollup on the page: when the `up` read fails, the block keeps the outcome of the rollup it is shown beside, so a failed alerts read during a failed `up` read is not shown as its own status. The reasons are fixed text: never a URL, a body or the token.
+- **Gate.** `work::admin_only`, the same gate as `/v1/policies`.
+
+## Launch gate (plan 17 D49, D53)
+
+The console calls the launch gate's `POST /v1/launch` with its own caller token (D49). The deploy wires the gate in only when the inventory declares it. Undeclared, nothing below renders, no task reads a token, and no launch-gate check runs.
+
+**Inventory (`console_svc` host vars, in site-config).**
+
+| Var | Required | Meaning |
+|-----|----------|---------|
+| `console_launch_gate_url` | no | The gate's base URL, `https://<host>[:<port>]`. Declaring it enables the gate. Refused by name unless it is https with a host name |
+| `console_launch_gate_ip` | when declared, outside local mode | One non-wildcard IPv4 address: the gate host. The console maps the gate's name to it (`compose.launch-gate.yml`). Refused by name when unset, empty, `0.0.0.0` or not an address |
+| `console_launch_dev_variants` | no, default `true` | D53: the console launches each template's `(Dev)` variant. Rendered always, so the flag is never implicit. Turn it off at promotion |
+
+Outside local mode a declared gate also needs a `step_ca_svc` host: the CA root is read from that group, and the play refuses by name when the group is empty.
+
+**Secret.** `caller_console_token` is a shared read of `secret/services/launch-gate`. The read happens only when the gate is declared, and this deploy never writes the token back. The launch-gate deploy must generate the token first. On this base it does not: `deploy-launch-gate.yml` lists only `skynet` in `_launch_gate_token_callers` (line 92) and refuses a `launch_gate_callers` entry with no token caller (line 214). That change belongs to the launch-gate deploy and is not in this change.
+
+**Environment** (`templates/env.j2`):
+
+- `CONSOLE_LAUNCH_GATE_URL` and `CONSOLE_LAUNCH_GATE_TOKEN`: when declared, in every mode.
+- `CONSOLE_LAUNCH_GATE_HOSTNAME` and `CONSOLE_LAUNCH_GATE_IP`: when declared, outside local mode only. They feed the overlay's `extra_hosts`.
+- `CONSOLE_LAUNCH_DEV_VARIANTS`: always, `true` or `false`.
+- `CONSOLE_EXTRA_CA_FILE` is never rendered into `.env`. Only the overlay sets it.
+
+**Overlay** (`compose.launch-gate.yml`). `deploy.sh` loads it only outside `LOCAL_MODE` and only when `.env` carries `CONSOLE_LAUNCH_GATE_HOSTNAME`. It maps the gate's name with `extra_hosts` (both variables required, `:?`), mounts `./certs/step-ca-bundle.crt` read-only at `/etc/ssl/certs/step-ca-bundle.crt`, and sets `CONSOLE_EXTRA_CA_FILE` to that path. `deploy.sh` refuses to start when the overlay is loaded and the bundle is missing, because a missing bind-mount source would be created as a directory. The bundle is a recreate input only with the overlay, since the console reads its roots once, at startup.
+
+**Trust.** Production distributes the step-ca root and intermediate from the `step_ca_svc` host into `certs/step-ca-bundle.crt` (`tasks/distribute-ca-root.yml`, without the combined public-roots bundle). `server/mod.rs` `client_with_roots` adds that bundle to the client's roots, and reqwest keeps its built-in roots by default, so the public OIDC issuer still verifies. The same client serves every upstream the console calls (OIDC, Semaphore, NetBox, Grafana, the Authentik directory). The bundle therefore trusts those upstreams too, not only the gate. The step-ca name policy limits which names the CA can sign.
+
+**Probe** (Phase 3, when declared). The verify play runs `curl --request POST --cacert <deploy>/certs/step-ca-bundle.crt` against `<console_launch_gate_url>/v1/launch` with no token, and requires HTTP 401. The probe runs from the host, not the container, for two reasons: the image is distroless (no curl), and the `probe` subcommand speaks plain HTTP to 127.0.0.1 only. Outside local mode `--resolve` sends the declared name to `console_launch_gate_ip`. The probe is `POST` because the gate answers `GET` with 405 before it checks the token. The address is never printed. The probe is skipped under `--check`. It proves the gate answers over TLS against the bundle. It does not prove the console container has the `extra_hosts` mapping. The gate host's firewall must admit `console_svc`, or the probe fails with status 000.
+
+**Outside this deploy.** The console reads the variables through `server/config.rs` and calls the gate through `server/gate.rs` (see Proposals below). The launch-gate deploy generates `caller_console_token` and lists `console` among its callers (`deploy-launch-gate.yml`); a production site-config that overrides `launch_gate_callers` must keep `console`, and the gate host's firewall must admit `console_svc`.
+
+## Proposals (plan 17 D48-D53)
+
+Proposals are the console's only write path. A platform admin proposes one registry action, the launch gate previews it, and an approval launches it through the gate. The store is `app/src/server/proposals.rs` and the gate client is `app/src/server/gate.rs`. The rows live in `prefs.db` beside the preferences (D50).
+
+| Route | Answers |
+|-------|---------|
+| `GET /v1/proposals` (`?state=awaiting`, `decided` or `all`; default `all`) | `{"proposals": [...]}`, newest first, at most 200. `decided` is every row that is not awaiting, so it includes a row still `launching` |
+| `POST /v1/proposals` | 201 with the proposal. Body `{"kind", "service", "check_mode", "note"}`; `kind` is `assess` or `verify`; the note is trimmed and at most 2000 characters |
+| `GET /v1/proposals/{id}` | the proposal |
+| `PUT /v1/proposals/{id}` | 200 with the proposal after its preview runs again. Body `{"check_mode", "note"}`; only while awaiting; only for its proposer (403 `not_proposer` for anyone else); bumps `revision` |
+| `POST /v1/proposals/{id}/comments` | 201 with the proposal. Body `{"text"}`, 1 to 2000 characters after trimming; any state |
+| `POST /v1/proposals/{id}/approve` | 200 with the proposal, now `launched` or `launch_failed`. Body `{"note", "revision"}`: `note` is null or text; `revision` is required and is the revision the approver reviewed |
+| `POST /v1/proposals/{id}/deny` | 200 with the proposal, now `denied`. Body `{"note", "revision"}`, both as for approve; no gate call |
+
+An id is `p` followed by the row number. Every proposal carries `revision` at the top level of its JSON: it starts at 1 and rises by one on every edit. Every route is platform-admin only: 401 without a session, 403 without the group. Every write under `/v1/` also passes the origin check (D53): `Origin` must equal the console's origin, the scheme, host and port of `CONSOLE_BASE_URL` serialized as a browser sends it (`Config::base_origin`; a lowercase host, the default port dropped), and the body must be `application/json`. The header is compared exactly, never normalized; a base URL that does not parse refuses every write, and load refuses it.
+
+Errors: 400 `bad_request` with a `detail` (an unknown kind, a service name outside `[a-z0-9][a-z0-9-]{0,62}`, a service whose group is not a valid `target_service` (a name that starts with a digit, such as `9lives`; the detail names the service), a service the inventory does not list, an over-long note); 403 `not_proposer` (edit only, a caller who is not the proposer: `{"error": "not_proposer", "detail": "Only the person who proposed this can edit it."}`, answered before any change); 404 `not_found`; 409 `not_awaiting`; 409 `stale` (approve and deny, when the `revision` named is not the proposal's current one: `{"error": "stale", "detail": "The proposal changed since you loaded it. Review it again."}`; a row that is no longer awaiting answers `not_awaiting` instead); 409 `preview_not_allowed` (approve only, when the preview is not `allowed`); 503 `gate_unconfigured` on create, edit and approve when `CONSOLE_LAUNCH_GATE_*` is unset; 500 `proposals_unavailable` when the store fails.
+
+**Lifecycle.**
+
+- **Create** stores the proposal as `awaiting`, then asks the gate's `/v1/decide` with the proposal's template, role, step, survey and check mode. No task is created. The answer is stored as the preview: `allowed`, `denied` (with OPA's own reason), `refused` (the gate's code and detail) or `unavailable`. The proposal exists whatever the preview says.
+- **Placeholder.** Until its first decide answers, a new proposal shows the preview `unavailable` with the detail "the preview has not finished". If the process stops in that window, the row keeps the placeholder until it is edited, and approval refuses it as `preview_not_allowed`.
+- **Proposer only.** Only the proposer edits. Anyone else gets 403 `not_proposer`, checked after the row is read and before its state, so nothing changes. The Dashboard offers Edit only to the proposer (`proposals_api::can_edit`), and maps the 403 to its sentence. An approval by the proposer is still allowed and recorded as self-approved (D52).
+- **Edit** (`PUT`) takes three steps. First, one UPDATE while the row is awaiting writes the values, bumps `revision` and resets the preview to the placeholder, so an approval during the decide is refused. Second, the decide runs. Third, its preview is stored only for the revision it was asked about: a decide that finishes after a later edit is dropped, and the reply re-reads the row, which holds the newest revision's verdict.
+- **Approve** moves the row from `awaiting` to `launching` in one guarded UPDATE. That UPDATE also requires the stored preview to be `allowed` and the row to be at the `revision` the approver named, and it records the decision. An approver who reviewed an older revision gets 409 `stale` and nothing launches (D53). Only the request that moves the row launches; a second approval of the same row gets 409 `not_awaiting`. The launch then goes through the gate's `/v1/launch`, whose own decision is the one that counts. The outcome is `launched` (the task id, message and reason from the gate), or `launch_failed` with `error` holding `status`, `code`, `detail` and `reason`. An OPA denial is status 403 with code `opa_denied` and OPA's reason; any other refusal keeps the gate's status and code; a launch the gate never answered is status 0 with code `gate_unavailable`.
+- **`launching` is read by age.** A row in `launching` answers state `launching`, with no `launch` object, while its `updated_at` (the approval's claim time) is at most 150 s old. The gate's launch call is capped at 120 s (`gate.rs`), so a launch in flight reads this way until the gate answers. Older than 150 s, the row answers `launch_failed` with `launch` `{"error": {"status": 0, "code": "interrupted", "detail": "The launch did not finish; check Active Work before proposing again.", "reason": null}}`. A restart leaves such a row unlaunched; nothing relaunches it (D53).
+- **The launch is detached from the request.** The gate call and its record run in a spawned task that the approve handler awaits. A dropped request (the approver's connection closing) therefore cannot abandon the launch between the claim and its record. A panic in that task records `launch_failed` with code `interrupted`, the same answer a row past the window reads as.
+- **Deny** moves the row from `awaiting` to `denied` in one guarded UPDATE, at the `revision` the denier named; an older revision gets 409 `stale`.
+- **Self-approval** (D52): an approval by the person who proposed it records `self_approved: true`. A denial always records `self_approved: false`.
+- **Comments** do not change `updated_at`. Every other change does.
+
+**Service check.** Create refuses a service the inventory does not list. A listed service is a NetBox VM with workflow fields, in a scope site that maps to a NetBox site the last read covered, across every tenant. That rule is repeated in `proposals.rs` (`known_service`) because `services_of` in `inventory.rs` is private; a shared helper there would remove the copy. Until the first NetBox read finishes, create answers 400 and says the inventory has not been read.
+
+**Actions.** `assess` launches `Snapshot Service Assessment` at step `service-assess`; `verify` launches `Verify Service Health` at step `service-validate`. Both use role `service-agent`. The survey `target_service` is the service's group: the name with `-` read as `_`, then `_svc` (`step-ca` becomes `step_ca_svc`; `target_group` in `proposals.rs`). That is the derivation `step_results.py` uses for a deploy playbook's group. The result must match OPA's `^[a-z][a-z0-9_]*_svc$` (`agent_actions.rego`), so a name with no such group (one starting with a digit) is refused at create, before the gate is asked. With `CONSOLE_LAUNCH_DEV_VARIANTS` true (the default, D53) the template name carries ` (Dev)`. The name is fixed when the proposal is created.
+
+**Gate limits.** The gate client sets 30 s on decide and 120 s on launch, per call (`gate.rs`). The gate's own Semaphore calls each time out at 15 s (`platform/services/launch-gate/deployment/app/launch_gate.py`, `SEMAPHORE_TIMEOUT`), and a launch makes several of them.
+
+**Work board.** The gate tags the task it creates `console <proposal id> <step>`. The Work board reads that tag as launcher `console` and links the item to its proposal (D49).
+
 ## Shared credentials (plan 17, D26-D27)
 
 Three credentials serve the console. Each has its own provisioning playbook, and the deploy reads the first two into `.env`. The GitHub token is read by the console at run time (Phase 5), not by the deploy. (1) The console AppRole: `secret/services/approles/console` holds `role_id` and `secret_id`. `provision-console-approle.yml` writes it, and `rotate-console-credentials.yml` rotates `secret_id` monthly. (2) The Grafana Viewer token: `secret/services/o11y:console_grafana_token`, from `provision-console-grafana-token.yml`, renewed by the rotation. (3) The read-only GitHub token: `secret/services/console/github`, refreshed every 45 minutes by `refresh-console-github-token.yml` on a Dev schedule. Setting `console_openbao_url` in the inventory reads (1) into `CONSOLE_OPENBAO_*`. Setting `console_grafana_api_enabled: true` together with `console_grafana_url` reads (2) into `CONSOLE_GRAFANA_TOKEN`; `console_grafana_url` alone is only the deep-link base. Each read fails by name when its source is missing. Production order: Provision Console AppRole, Provision Console Grafana Token, set the URLs and `console_grafana_api_enabled` in site-config, then Deploy console. The rotation renders `.env` from the controller checkout (`manage-secrets.yml:205`) while the image stays at the commit it pins; its drift check refuses a rotation whose controller inputs differ from that commit. While `dev`'s console inputs are ahead of the deployed commit, every monthly rotation refuses by name; redeploy the console from `dev` within the 90-day secret ID lifetime, or the stored secret ID expires and the console loses OpenBao.
@@ -198,7 +309,7 @@ Three credentials serve the console. Each has its own provisioning playbook, and
 ## Runtime notes
 
 - **No compose healthcheck; readiness is an exec probe.** The compose file declares no `healthcheck:`. On prod, podman-compose 1.0.6 (tag `v1.0.6`, `podman_compose.py`, the healthcheck translation) wraps every `healthcheck.test` in `/bin/sh -c`, and the runtime image is distroless (`cc-debian12`, no `/bin/sh`). Prod Semaphore task 9892 built and started the container, which logged `OIDC discovery ready`, yet podman reported it `unhealthy`, and `wait_for_healthy` failed the deploy. So `deploy.sh` step 4 runs `podman exec console /usr/local/app/server probe /healthz 200` every 5 s until a 300 s wall-clock deadline, then dumps the container's diagnostics and fails. Each exec is bounded by `timeout 15` where coreutils `timeout` exists, because a stalled `podman exec` would otherwise hold the loop past its deadline. Phase 3 of `deploy-console.yml` repeats the same probe. The probe is the server binary's own subcommand, so no curl or wget is assumed. The shell-less gateway in `agentgateway` is probed the same way.
-- **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`: preferences and login sessions). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
+- **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`: preferences, login sessions and proposals). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
 - **Sessions** are rows in the same `prefs.db` (table `sessions`, one connection shared with preferences). A restart keeps every unexpired session. Expired rows are swept at startup and at most hourly. The cookie `console_session` expires after 8h of inactivity.
 - **Local-dev overlay** (`compose.local.yml`, `LOCAL_MODE=true`): joins the `local-dev` network so central Caddy reaches `console:8080` by name, mounts `certs/step-ca-bundle.crt`, and sets `CONSOLE_EXTRA_CA_FILE` to it for OIDC calls to the internal IdP. Prod's IdP uses a public chain, so the overlay is not applied there.
 - **Probes** run inside the container with `podman exec`, so they do not depend on the published port or on Caddy.
@@ -224,12 +335,14 @@ deployment/
 ├── deploy.sh               container lifecycle + host image build (lib/common.sh)
 ├── compose.yml             single container, env-parameterized image/bind/port, console-data volume
 ├── compose.local.yml       local overlay: local-dev network, step-ca bundle, CONSOLE_EXTRA_CA_FILE
+├── compose.launch-gate.yml production launch-gate overlay: gate name mapping, step-ca bundle (loaded only with CONSOLE_LAUNCH_GATE_HOSTNAME)
 ├── templates/
 │   ├── env.j2              .env (non-secret config + shared OIDC secret + Semaphore token)
 │   ├── scope.json.j2       config/scope.json from console_tenants
 │   ├── workflow.json.j2    config/workflow.json from the service-onboarding registry
 │   ├── flows.json.j2       config/flows.json from the authentik, caddy and o11y declarations (names only)
 │   ├── gateway.json.j2     config/gateway.json from the agentgateway host's vars: clients, budgets, models (names and figures only; task 8.3a)
+│   ├── catalog.json.j2     config/catalog.json from platform/semaphore/templates.yml: one entry per service, names, template names and host counts only; the count is the group the service's deploy playbook targets (task 8.4)
 │   └── proxmox-ca.pem.j2   config/proxmox-ca.pem from console_proxmox_ca_pem (empty when unset)
 ├── .gitignore              .env, config/, certs/ (rendered per deploy)
 ├── AGENTS.md -> CLAUDE.md
@@ -250,7 +363,7 @@ The `Containerfile` is part of this change. It sits next to this file and builds
 
 ## Open items
 
-- **Phase 3 wiring (not in this change).** The server reads the Phase 3 variables above, but nothing sets them. `templates/env.j2` and `deploy-console.yml` do not render them. No playbook provisions the NetBox token: `provision-netbox-automation-token.yml` has no `console` entry yet. `provision-console-proxmox-token.yml` does not exist. Until these land, a deploy answers `unconfigured` for both sources.
+- **Phase 3 inputs.** `templates/env.j2` renders the NetBox and Proxmox variables only when `console_netbox_url` or `console_proxmox_url` is set. `deploy-console.yml` shared-reads their tokens on the same conditions: `console_api_token` from `netbox`, and `console_token_id` with `console_token` from `proxmox`. The NetBox token's `console` profile is in `provision-netbox-automation-token.yml`, and `provision-console-proxmox-token.yml` exists. Without those URL inputs, a deploy answers `unconfigured` for both sources. Whether either token is provisioned in a given environment is not checked here.
 
 - **Authentik side** (in this change): the `console` OAuth2 provider and application are declared in `platform/services/authentik/deployment/blueprints/console-oidc.yaml`, and `console_oidc_client_secret` is a generated secret in `platform/playbooks/vars/secret-declarations/authentik.yml`. Deploy Authentik before the console, otherwise the Phase 1 shared read fails.
 - **Containerfile and `../app`** (in this change): the Containerfile must copy only the paths it needs. `deployment/Containerfile.dockerignore` keeps `.env`, `config/`, `certs/` and `app/target` out of the build context; podman 5.8.2 honors it (verified with a scratch build). A Containerfile with `COPY . .` would still bake in whatever remains.

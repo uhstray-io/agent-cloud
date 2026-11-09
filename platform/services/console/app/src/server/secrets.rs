@@ -525,9 +525,14 @@ mod tests {
                 openbao: None,
                 flows_file: None,
                 gateway_file: None,
+                catalog_file: None,
                 grafana_url: None,
+                grafana_token: None,
                 authentik: None,
                 role_map_file: None,
+                github: None,
+                launch_gate: None,
+                launch_dev_variants: true,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -539,10 +544,18 @@ mod tests {
             proxmox_http: reqwest::Client::new(),
             flows: FlowSet::unconfigured(),
             gateway: crate::server::gateway::GatewaySet::unconfigured(),
+            catalog: crate::server::catalog::CatalogSet::unconfigured(),
+            usage: tokio::sync::RwLock::new(crate::server::grafana::UsageCache::new(false)),
             openbao,
             secrets: tokio::sync::RwLock::new(SecretsCache::new(configured)),
             access: tokio::sync::RwLock::new(crate::server::access::AccessCache::new(false)),
             role_map: crate::server::access::RoleMap::empty(),
+            policies: tokio::sync::RwLock::new(crate::server::policies::PoliciesCache::new(false)),
+            delivery: tokio::sync::RwLock::new(crate::server::delivery::DeliveryCache::new(false)),
+            telemetry: tokio::sync::RwLock::new(crate::server::telemetry::TelemetryCache::new(
+                false,
+            )),
+            gate: None,
         })
     }
 

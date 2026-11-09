@@ -1,5 +1,5 @@
 //! Active Work: Semaphore tasks as work items, joined to the service-onboarding
-//! registry. The decisions (lane map, skynet message, target service, joins,
+//! registry. The decisions (lane map, agent message, target service, joins,
 //! timestamps) are pure functions with unit tests. The poller and the two GET
 //! handlers only wrap them.
 //!
@@ -7,7 +7,7 @@
 //! Semaphore's RFC3339 strings do not compare safely as text: Go drops trailing
 //! fractional zeros, so `…:00Z` would sort after `…:00.1Z`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use dioxus::server::axum::extract::{Path, State};
@@ -169,16 +169,22 @@ pub fn lane_for(status: &str) -> &'static str {
     }
 }
 
-/// `skynet <run_id> <step_id>`, exactly: three tokens, single spaces, no other
-/// whitespace. Anything else was not launched by skynet.
-pub fn parse_skynet_message(message: &str) -> Option<(String, String)> {
+/// `<caller> <run_id> <step_id>`, exactly, where the caller is `skynet` or `console`: three tokens, single spaces,
+/// no other whitespace. Anything else was not launched by a tagged caller. The gate writes `console <proposal> <step>`
+/// for the console's proposals (D49).
+pub fn parse_agent_message(message: &str) -> Option<(&'static str, String, String)> {
     let parts: Vec<&str> = message.split(' ').collect();
     let (prefix, run, step) = match parts.as_slice() {
         [prefix, run, step] => (*prefix, *run, *step),
         _ => return None,
     };
+    let caller = match prefix {
+        "skynet" => "skynet",
+        "console" => "console",
+        _ => return None,
+    };
     let plain = |token: &str| !token.is_empty() && !token.chars().any(char::is_whitespace);
-    (prefix == "skynet" && plain(run) && plain(step)).then(|| (run.to_string(), step.to_string()))
+    (plain(run) && plain(step)).then(|| (caller, run.to_string(), step.to_string()))
 }
 
 /// `target_service` from a task's environment JSON, and nothing else. Only that key
@@ -205,16 +211,16 @@ pub fn stream_key(template_id: Option<i64>, service: Option<&str>, task_id: u64)
     }
 }
 
-/// Who launched a task, first match wins: a skynet message, a person (a non-empty user
-/// name), a schedule, an integration. Anything else is `unknown`.
+/// Who launched a task, first match wins: a tagged message (its caller, `skynet` or `console`), a person (a
+/// non-empty user name), a schedule, an integration. Anything else is `unknown`.
 pub fn launcher(
-    skynet: bool,
+    caller: Option<&str>,
     user_name: Option<&str>,
     schedule_id: Option<i64>,
     integration_id: Option<i64>,
 ) -> String {
-    if skynet {
-        "skynet".to_string()
+    if let Some(caller) = caller {
+        caller.to_string()
     } else if let Some(name) = user_name.filter(|name| !name.is_empty()) {
         name.to_string()
     } else if schedule_id.is_some() {
@@ -281,11 +287,11 @@ pub fn stream_history(items: &[WorkItem], stream: &str, limit: usize) -> Vec<His
         .collect()
 }
 
-/// One task as an item. A skynet-launched task gets its run, step and registry owner
+/// One task as an item. A tagged task (skynet or console) gets its run, step and registry owner
 /// as role. Title is the template name, plus the service when one is known. A lone
 /// item is its own stream's only and latest run; `build_items` corrects the counts.
 pub fn build_item(task: &Task, steps: &[Step], ui_url: &str, project: u32) -> WorkItem {
-    let skynet = parse_skynet_message(task.message.as_deref().unwrap_or(""));
+    let tagged = parse_agent_message(task.message.as_deref().unwrap_or(""));
     let service = task.environment.as_deref().and_then(target_service);
     let template = task.tpl_alias.clone().unwrap_or_default();
     let title = match &service {
@@ -294,13 +300,13 @@ pub fn build_item(task: &Task, steps: &[Step], ui_url: &str, project: u32) -> Wo
     };
     let stream = stream_key(task.template_id, service.as_deref(), task.id);
     let launched_by = launcher(
-        skynet.is_some(),
+        tagged.as_ref().map(|(caller, _, _)| *caller),
         task.user_name.as_deref(),
         task.schedule_id,
         task.integration_id,
     );
-    let (run_id, step) = match skynet {
-        Some((run_id, step)) => (Some(run_id), Some(step)),
+    let (run_id, step) = match tagged {
+        Some((_, run_id, step)) => (Some(run_id), Some(step)),
         None => (None, None),
     };
     let role = step
@@ -455,6 +461,64 @@ pub async fn get_work_item(
     .into_response()
 }
 
+/// One agent role (D40): a registry owner, with the steps it owns in registry order. The roles are derived from
+/// the registry alone, so a role exists exactly when a step names it as owner.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Role {
+    pub name: String,
+    pub steps: Vec<RoleStep>,
+}
+
+/// One registry step as a role lists it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RoleStep {
+    pub id: String,
+    pub order: u32,
+    pub label: String,
+}
+
+/// What `GET /v1/roles` answers: the roles, sorted by name.
+#[derive(Debug, Serialize)]
+pub struct RoleList {
+    pub roles: Vec<Role>,
+}
+
+/// The distinct non-empty owners of the registry steps, sorted by name, each with its steps in `order`.
+pub fn roles_from(steps: &[Step]) -> Vec<Role> {
+    let mut by_owner: BTreeMap<&str, Vec<RoleStep>> = BTreeMap::new();
+    for step in steps.iter().filter(|step| !step.owner.trim().is_empty()) {
+        by_owner
+            .entry(step.owner.as_str())
+            .or_default()
+            .push(RoleStep {
+                id: step.id.clone(),
+                order: step.order,
+                label: step.label.clone(),
+            });
+    }
+    by_owner
+        .into_iter()
+        .map(|(name, mut owned)| {
+            owned.sort_by_key(|step| step.order);
+            Role {
+                name: name.to_string(),
+                steps: owned,
+            }
+        })
+        .collect()
+}
+
+/// `GET /v1/roles`: the registry's roles. Platform admins only, like `/v1/work`.
+pub async fn list_roles(State(app): State<SharedState>, session: Session) -> Response {
+    if let Err(response) = admin_only(&session).await {
+        return response;
+    }
+    Json(RoleList {
+        roles: roles_from(&app.workflow),
+    })
+    .into_response()
+}
+
 /// Starts the poll when Semaphore is configured. The first poll runs at once; a
 /// missed tick is skipped, not replayed. The cache lock is held only to store a result.
 pub fn spawn_poller(state: SharedState) {
@@ -550,10 +614,18 @@ mod tests {
     }
 
     #[test]
-    fn skynet_message_must_be_exactly_three_single_spaced_tokens() {
+    fn agent_message_must_be_exactly_three_single_spaced_tokens_from_a_tagged_caller() {
         assert_eq!(
-            parse_skynet_message("skynet service_onboarding:0a1b step-2"),
-            Some(("service_onboarding:0a1b".to_string(), "step-2".to_string()))
+            parse_agent_message("skynet service_onboarding:0a1b step-2"),
+            Some((
+                "skynet",
+                "service_onboarding:0a1b".to_string(),
+                "step-2".to_string()
+            ))
+        );
+        assert_eq!(
+            parse_agent_message("console p42 service-assess"),
+            Some(("console", "p42".to_string(), "service-assess".to_string()))
         );
         for bad in [
             "",
@@ -568,8 +640,18 @@ mod tests {
             "deploy skynet run step",
             "skynet run ",
             " skynet run step",
+            "console",
+            "console p42",
+            "console  p42 step",
+            "console p42 step extra",
+            "console p42\tstep",
+            "Console p42 step",
+            "consoles p42 step",
+            "console p42 ",
+            "infra-agent p42 step",
+            "netclaw run step",
         ] {
-            assert_eq!(parse_skynet_message(bad), None, "{bad:?}");
+            assert_eq!(parse_agent_message(bad), None, "{bad:?}");
         }
     }
 
@@ -745,15 +827,38 @@ mod tests {
 
     #[test]
     fn launcher_takes_the_first_source_that_applies() {
-        assert_eq!(launcher(true, Some("stray"), Some(4), Some(2)), "skynet");
-        assert_eq!(launcher(false, Some("stray"), Some(4), Some(2)), "stray");
         assert_eq!(
-            launcher(false, Some(""), Some(4), Some(2)),
+            launcher(Some("skynet"), Some("stray"), Some(4), Some(2)),
+            "skynet"
+        );
+        assert_eq!(
+            launcher(Some("console"), Some("stray"), Some(4), Some(2)),
+            "console",
+            "a console tag outranks the user who approved the launch"
+        );
+        assert_eq!(launcher(None, Some("stray"), Some(4), Some(2)), "stray");
+        assert_eq!(
+            launcher(None, Some(""), Some(4), Some(2)),
             "schedule",
             "an empty user name is no user"
         );
-        assert_eq!(launcher(false, None, None, Some(2)), "integration");
-        assert_eq!(launcher(false, None, None, None), "unknown");
+        assert_eq!(launcher(None, None, None, Some(2)), "integration");
+        assert_eq!(launcher(None, None, None, None), "unknown");
+    }
+
+    #[test]
+    fn console_task_is_labelled_console_and_linked_to_its_proposal_run() {
+        let t = task(
+            41,
+            "waiting",
+            Some("console p42 step-b"),
+            Some(r#"{"target_service":"tududi"}"#),
+        );
+        let item = build_item(&t, &registry(), "https://semaphore.test:8443/", 7);
+        assert_eq!(item.launched_by, "console");
+        assert_eq!(item.run_id.as_deref(), Some("p42"));
+        assert_eq!(item.step.as_deref(), Some("step-b"));
+        assert_eq!(item.role.as_deref(), Some("service-agent"));
     }
 
     #[test]
@@ -852,6 +957,28 @@ mod tests {
         assert_eq!(cache.error.as_deref(), Some("Semaphore answered HTTP 500"));
         assert_eq!(cache.updated_at.as_deref(), Some("t1"));
         assert_eq!(cache.items.len(), 1);
+    }
+
+    #[test]
+    fn roles_are_the_distinct_owners_sorted_with_their_steps_in_order() {
+        let steps = vec![
+            step("step-c", 3, "security-agent", "Verify"),
+            step("step-b", 2, "service-agent", "Build"),
+            step("step-a", 1, "infra-agent", "Plan"),
+            step("step-d", 4, "service-agent", "Deploy"),
+            step("step-x", 5, "  ", "Unowned"),
+        ];
+        let roles = roles_from(&steps);
+        let names: Vec<&str> = roles.iter().map(|role| role.name.as_str()).collect();
+        assert_eq!(names, ["infra-agent", "security-agent", "service-agent"]);
+        let service = roles
+            .iter()
+            .find(|role| role.name == "service-agent")
+            .expect("role");
+        let ids: Vec<&str> = service.steps.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["step-b", "step-d"]);
+        assert_eq!(service.steps[0].label, "Build");
+        assert!(roles_from(&[]).is_empty(), "no registry, no roles");
     }
 
     #[test]

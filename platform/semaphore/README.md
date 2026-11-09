@@ -20,7 +20,7 @@ workstation OpenBao login before work that an existing Semaphore template can
 execute. Never export the controller AppRole from the browser or use backup
 credentials to manufacture workstation access.
 
-**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)`,
+**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)` (template retired 2026-11-07; what it showed is recorded here because the task may not survive the template's deletion),
 authenticated through the controller AppRole, read runtime secrets, checked the
 GitHub App's repository coverage and reached n8n. It stopped at an absent
 credential-visible sync workflow with `changed=0`; it did not verify task/issue
@@ -220,6 +220,47 @@ Without a token, the operator launches from the UI and the agent hands over the
 exact template name, survey values and verification commands. Do not fabricate
 access by reading the controller's own token out of OpenBao from a workstation.
 
+### Synchronize an existing inventory record
+
+Use `scripts/semaphore-sync-inventory.py` to preview the canonical inventory-sync
+play with your own Semaphore API token. Preview is the default; `--apply` is
+required to update a differing record. The token is read from stdin and passed
+to Ansible as JSON through a named pipe in a private (0700) temporary directory, so
+it never reaches the child's argv, environment or a file on disk. ansible-core resolves
+symlinks in `--extra-vars @path`, so Linux's `/dev/stdin` cannot carry it. The sync child
+disables privilege escalation
+and debug logging, removes inherited log destinations and callback overrides,
+pins the repository config and redacting callback, enables supported module
+pipelining, and disables kept remote files. The local Ansible child has a fixed
+five-minute deadline; on timeout, apply reports an uncertain write outcome for
+read-only reconciliation. Child output is captured and only a fixed outcome is
+printed. SIGTERM and SIGHUP are handled like Ctrl-C: the child is stopped and the fixed
+interrupted outcome is printed. The script never creates records or changes key bindings.
+
+```sh
+python3 scripts/semaphore-sync-inventory.py \
+  --url https://semaphore.example \
+  --inventory "$HOME/site-config/inventory/production.yml" \
+  --name production \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+Apply a reviewed preview explicitly:
+
+```sh
+python3 scripts/semaphore-sync-inventory.py \
+  --apply \
+  --url https://semaphore.example \
+  --inventory "$HOME/site-config/inventory/production.yml" \
+  --name production \
+  < "$HOME/.config/semaphore/operator-token"
+```
+
+If an apply reports an uncertain outcome, use a read-only check of the existing
+record before any retry; a failed process does not prove the server rejected a
+write. Existing direct `ansible-playbook platform/semaphore/sync-inventory.yml`
+callers continue to use `SEMAPHORE_TOKEN` or the controller AppRole.
+
 ## Two catalog rules, enforced by tests
 
 - **A step template new with the service deployment workflow has a `(Dev)` variant.** Its
@@ -239,7 +280,7 @@ The declared **Publish Semaphore Template Surveys (Dev)** template runs
 Its required survey input is `semaphore_template_names_json`, for example:
 
 ```json
-["Store tududi API Token (Dev)"]
+["Store n8n API Key (Dev)"]
 ```
 
 It uses the controller AppRole to read the fixed OpenBao
@@ -286,6 +327,37 @@ never from documentation, since they are site-specific.
 A later full-catalog publication also creates the main-bound base template.
 Do not run that base until the publisher code has been selectively promoted to
 `main`; the scoped bootstrap installs the Dev variant only.
+
+## Retire a template
+
+`setup-templates.yml` publishes and never deletes. Removing a template from
+`templates.yml` leaves its live copy in Semaphore, and its schedule keeps firing.
+Retirement is declared as code too:
+
+1. In the same PR that removes the declaration from `templates.yml` or
+   `templates-local.yml`, add an entry to
+   [`retired-templates.yml`](retired-templates.yml): the exact name as published,
+   the date, and one line of reason. List each published name separately. A
+   `dev_variant` template's `(Dev)` twin is its own entry.
+2. Merge. Run **Retire Semaphore Templates (Dev)** with Semaphore's **Dry run**
+   option first. Dry run is `--check`. The report lists the matching templates and
+   schedules and deletes nothing.
+3. Run it again without Dry run. It deletes each matching template's schedules,
+   then the template, and reads both back.
+
+Before any API call, the playbook refuses a name that `templates.yml` or
+`templates-local.yml` still declares. Before any deletion, it refuses a name that
+matches more than one live template. A name with no live template is reported as
+already absent, so a re-run converges.
+
+The playbook does not check a template's task history or running tasks before it
+deletes the template. Whether Semaphore keeps a deleted template's task history is
+**unverified**: this change does not check it.
+
+The Dev template itself is an operator step, done once. Create it through the
+scoped publisher (see [Publish selected survey fields](#publish-selected-survey-fields)),
+with `semaphore_allow_scoped_create` and the project, inventory and environment IDs
+read from a live `(Dev)` template on that instance.
 
 ## Bootstrap the missing entry point once
 
@@ -438,8 +510,8 @@ effective role capabilities, target readiness, backup/restore evidence, or autho
 disk, retention, or deployment writes. Keep the protected extra-var refusal in each
 target playbook; do not repair the shared environment or pass credentials as survey data.
 
-The five general VM writers (Provision VM, Resize VM, Destroy VM, Snapshot VM and Create VM
-Template) run the same restore-target guard, so each declares its own `isolated_environment`
+The six general VM writers (Provision VM, Resize VM, Migrate VM, Destroy VM, Snapshot VM and
+Create VM Template) run the same restore-target guard, so each declares its own `isolated_environment`
 as well. Give each `(Dev)` copy its environment with `Provision Seed Environment (Dev)`
 (`seed_template` = the base name, `seed_variant` = `dev`), the same reviewed provisioner the
 seed templates use. Bound to the shared environment they fail at the preflight on every

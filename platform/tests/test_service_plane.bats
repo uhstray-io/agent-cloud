@@ -38,7 +38,9 @@ setup() {
 @test "plane: the overlay switches optional services off with a profile, not replicas" {
   # podman-compose 1.6.0 ignores deploy.replicas: 0 and would start Plane AI, Argus and email.
   local svc
-  for svc in importer-worker email pi-api pi-beat pi-worker pi-agent-worker argus pi-db-init pi-migrator argus-migrator; do
+  # runner: Plane ships it on, but its image needs x86-64-v3, which no production node that can
+  # hold Plane backs (docs/MISTAKES.md 2.34).
+  for svc in importer-worker email pi-api pi-beat pi-worker pi-agent-worker argus pi-db-init pi-migrator argus-migrator runner; do
     python3 - "$OVERLAY" "$svc" <<'PY'
 import sys, yaml
 class L(yaml.SafeLoader): pass

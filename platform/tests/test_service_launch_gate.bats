@@ -64,6 +64,31 @@ setup() {
   assert_grep -qxF '    user: "1000:1000"' "$DEPLOY_DIR/compose.prod.yml"
 }
 
+@test "launch-gate: the production overlay maps the OPA name to the declared address, and both values are required" {
+  assert_grep -qxF '    extra_hosts:' "$DEPLOY_DIR/compose.prod.yml"
+  assert_grep -qxF '      - "${LAUNCH_GATE_OPA_HOSTNAME:?set launch_gate_opa_url in the inventory}:${LAUNCH_GATE_OPA_IP:?set launch_gate_opa_ip in the inventory}"' "$DEPLOY_DIR/compose.prod.yml"
+}
+
+@test "launch-gate: the local overlay maps no host name, so local-dev reaches the gate by its network alias only" {
+  refute_grep -qE 'extra_hosts|LAUNCH_GATE_OPA' "$DEPLOY_DIR/compose.local.yml"
+}
+
+@test "launch-gate: env.j2 renders the OPA name map inside one local-mode guard, and nowhere else" {
+  python3 - "$DEPLOY_DIR/templates/env.j2" <<'PY'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+opens = [i for i, line in enumerate(lines) if line == "{% if not _launch_gate_local_mode %}"]
+assert len(opens) == 1, opens
+start = opens[0]
+end = next(i for i in range(start + 1, len(lines)) if lines[i] == "{% endif %}")
+inside = [line for line in lines[start + 1:end] if line.startswith("LAUNCH_GATE_OPA_")]
+assert inside == ["LAUNCH_GATE_OPA_HOSTNAME={{ _launch_gate_opa_url | urlsplit('hostname') }}",
+                  "LAUNCH_GATE_OPA_IP={{ _launch_gate_opa_ip }}"], inside
+outside = [line for i, line in enumerate(lines) if (i < start or i > end) and "LAUNCH_GATE_OPA" in line]
+assert outside == [], outside
+PY
+}
+
 @test "launch-gate: no overlay declares command, so the base command stands" {
   refute_grep -qE '^[[:space:]]+command:' "$DEPLOY_DIR/compose.prod.yml" "$DEPLOY_DIR/compose.local.yml"
 }
@@ -73,11 +98,16 @@ setup() {
   assert_grep -qxF '      - label=disable' "$DEPLOY_DIR/compose.local.yml"
 }
 
-@test "launch-gate: the local overlay joins local-dev with a memory cap and does not republish the ports" {
+@test "launch-gate: the local overlay joins local-dev with a memory cap, a local uid and the TLS-name alias, and does not republish the ports" {
   assert_grep -qxF '    mem_limit: 128m' "$DEPLOY_DIR/compose.local.yml"
-  assert_grep -qxF '      - local-dev' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '    user: "1001:0"' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '      local-dev:' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '        aliases:' "$DEPLOY_DIR/compose.local.yml"
+  assert_grep -qxF '          - ${LAUNCH_GATE_TLS_NAME:?set by the deploy}' "$DEPLOY_DIR/compose.local.yml"
   assert_grep -qF 'external: true' "$DEPLOY_DIR/compose.local.yml"
   refute_grep -qE '^[[:space:]]+ports:' "$DEPLOY_DIR/compose.local.yml"
+  # The alias is a local-dev fact only: the base file names none, and production never loads the overlay.
+  refute_grep -qE 'aliases|LAUNCH_GATE_TLS_NAME' "$DEPLOY_DIR/compose.yml" "$DEPLOY_DIR/compose.prod.yml"
 }
 
 @test "launch-gate: the rendered env, config and certificates are gitignored" {
@@ -120,6 +150,7 @@ setup() {
   assert_grep -qxF 'LAUNCH_GATE_IMAGE={{ _launch_gate_image }}' "$f"
   assert_grep -qxF 'LAUNCH_GATE_BIND={{ _launch_gate_bind }}' "$f"
   assert_grep -qxF 'LAUNCH_GATE_PORT={{ _launch_gate_port }}' "$f"
+  assert_grep -qxF 'LAUNCH_GATE_TLS_NAME={{ _launch_gate_tls_name }}' "$f"
   assert_grep -qxF 'LAUNCH_GATE_SEMAPHORE_TOKEN={{ secrets.semaphore_api_token }}' "$f"
 }
 
@@ -140,4 +171,9 @@ setup() {
   [ -L "$DEPLOY_DIR/AGENTS.md" ]
   [ "$(readlink "$DEPLOY_DIR/AGENTS.md")" = "CLAUDE.md" ]
   [ -f "$DEPLOY_DIR/CLAUDE.md" ]
+}
+
+@test "launch-gate: an init process runs as PID 1, so a stop delivers SIGTERM instead of waiting out the timeout" {
+  # Python as PID 1 ignores SIGTERM; the first local deploy's stop ended in SIGKILL (exit 137) after 10 s.
+  assert_grep -qxF '    init: true' "$DEPLOY_DIR/compose.yml"
 }

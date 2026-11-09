@@ -1,7 +1,7 @@
 # projects.yml — repository -> Plane project declaration for the OpenSpec sync
 # (sync-plane-projects, plan/development/openspec/changes/deploy-plane-work-management, task 4.1).
 #
-# One entry per repository in platform/services/tududi/sync/github-mapping.yml. The sync reads
+# One entry per repository Plane tracks. The sync reads
 # each repository's OpenSpec changes with platform/services/plane/lib/openspec_to_plane.py and
 # creates modules and work items. It is create-only: an item that already exists is never
 # changed, so status, assignees and labels set in Plane survive a re-run.

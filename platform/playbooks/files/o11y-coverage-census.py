@@ -324,12 +324,35 @@ def validate(targets, receipt_bindings=None):
     return ids, {key: values for key, values in identities.items() if len(values) > 1}
 
 
+def _validate_availability_drill(drill):
+    """Return the one internal failure drill, or None when the caller names none."""
+    if drill is None:
+        return None
+    if not isinstance(drill, dict) or set(drill) != {"target_id", "status_code"}:
+        fail("availability drill must name exactly one target_id and one status_code")
+    target_id = drill["target_id"]
+    status_code = drill["status_code"]
+    if not isinstance(target_id, str) or not target_id:
+        fail("availability drill target_id must name one selected availability target")
+    if not isinstance(status_code, int) or isinstance(status_code, bool) or not 100 <= status_code <= 599:
+        fail("availability drill status_code must be an HTTP status integer between 100 and 599")
+    return {"target_id": target_id, "status_code": status_code}
+
+
 def prepare_availability_targets(targets, *, enabled, reviewed, limits,
                                  receiver_environment, cluster, shared_sample_limit,
-                                 inventory_revision=None):
-    """Return the private, bounded native-probe projection for one receiver."""
+                                 inventory_revision=None, drill=None):
+    """Return the private, bounded native-probe projection for one receiver.
+
+    `drill` is the internal failure drill: one selected target's module expects only a
+    status code its service never returns, so its probe fails on purpose. Every other
+    target, the declaration and the inventory revision are unchanged.
+    """
     if not isinstance(enabled, bool) or not isinstance(reviewed, bool):
         fail("availability enabled and reviewed switches must be explicit YAML booleans")
+    drill = _validate_availability_drill(drill)
+    if drill is not None and not (enabled and reviewed):
+        fail("availability drill requires enabled and reviewed availability")
     if not enabled:
         return {"enabled": False, "targets": [], "limits": {}}
     if not isinstance(targets, list):
@@ -392,6 +415,13 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
             })
     if not selected:
         fail("enabled availability probes require at least one deployed applicable reviewed target")
+    if drill is not None:
+        drilled = [target for target in selected if target["target_id"] == drill["target_id"]]
+        if len(drilled) != 1:
+            fail("availability drill target_id must name one selected availability target")
+        if drill["status_code"] in drilled[0]["expected_status_codes"]:
+            fail("availability drill status_code must be one the drilled target never declares")
+        drilled[0]["expected_status_codes"] = [drill["status_code"]]
     if len(selected) > limits["max_targets"]:
         fail("availability target count exceeds the reviewed maximum")
     timeout_sum = sum(target["probe_timeout_seconds"] for target in selected)
@@ -412,6 +442,10 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
             if target["trust"] == "internal-ca":
                 tls["ca_file"] = "/certs/step-ca-bundle.crt"
             http["tls_config"] = tls
+            # The endpoint is a literal address, so without this the request carries the IP as
+            # its Host and a name-routed proxy (Caddy) matches no site. blackbox_exporter at the
+            # commit Alloy v1.9.2 bundles sets request.Host from this header (prober/http.go).
+            http["headers"] = {"Host": target["tls_server_name"]}
         module = {
             "prober": "http",
             "timeout": f'{target["probe_timeout_seconds"]}s',
@@ -422,7 +456,10 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
             sort_keys=True,
             separators=(",", ":"),
         )
-    return {"enabled": True, "targets": selected, "limits": limits.copy()}
+    result = {"enabled": True, "targets": selected, "limits": limits.copy()}
+    if drill is not None:
+        result["drill"] = drill
+    return result
 
 
 def receipt_status(target, signal, inventory_revision, repository_sha, now,
@@ -1022,10 +1059,13 @@ def main():
             payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
         except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
             fail("availability input must be JSON with unique object keys")
-        if not isinstance(payload, dict) or set(payload) != {
+        availability_fields = {
             "targets", "inventory_revision", "enabled", "reviewed", "limits",
             "receiver_environment", "cluster", "shared_sample_limit",
-        }:
+        }
+        if not isinstance(payload, dict) or set(payload) not in (
+            availability_fields, availability_fields | {"drill"},
+        ):
             fail("availability input must contain the fixed private declaration and reviewed gate fields")
         print(json.dumps(prepare_availability_targets(
             payload["targets"],
@@ -1036,6 +1076,7 @@ def main():
             cluster=payload["cluster"],
             shared_sample_limit=payload["shared_sample_limit"],
             inventory_revision=payload["inventory_revision"],
+            drill=payload.get("drill"),
         ), sort_keys=True))
         return
     try:

@@ -213,6 +213,26 @@ deduplicated with the OTLP TLS overlay. Existing self-monitor labels and metrics
 are forwarded through the existing private receiver path. Keep task 3.3 and all
 live acceptance gates open.
 
+**Proving the namespace gate before the first enable.** `Survey o11y Availability Gate (Dev)`
+(`survey-o11y-availability-gate.yml`) runs the pre-placement namespace proof in enabled mode and
+prints one fixed category. `isolated` means the proof passed for the receiver as it runs at that
+moment. Any other value names the decision point that refused: `namespace_alloy_unavailable` (no
+single project Alloy container running with a start time), `namespace_alloy_host_port`
+(a container publishes host port 12345), `namespace_shared` (the Alloy network namespace equals the
+host's or a project sibling's), `namespace_network_mode` (a network mode that is host, none, or joins
+another namespace), `namespace_provider_unverified` (the compose or podman provider, its version or
+executable identity, or the enabled-mode overlay does not match), `namespace_unstable` (two passes
+disagree, or an expected fingerprint does not match), `namespace_runtime_unreadable` (an inspect,
+`/proc` or listing read failed or was malformed, or a running container had no usable pid), and
+`namespace_unverified` for every other refusal. The producer source gate
+(`--verify-availability-source`) reports `namespace_unverified` in place of the finer categories, so
+its fixed reason set does not change.
+The survey reads no activation switch, places nothing, and prints no container, process or namespace
+identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
+an `isolated` result does not accept availability: the source, placement and post-apply gates still
+apply. Candidate-mode checks of the effective compose file (`deploy.sh --candidate`) keep the generic
+`namespace_unverified` category; the survey covers only the pre-placement runtime proof.
+
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
 candidate object is complete. It compares every fixed public job category in
@@ -848,6 +868,80 @@ contact-point removal from code, removes the webhook line from the existing
 OpenBao is unavailable. Persistent alert enablement is a separate reviewed
 inventory rollout after a successful canary receipt.
 
+## Query errors keep the last state
+
+Alert rules set `execErrState: KeepLast`. When a rule's query errors or runs past
+Grafana's 30s evaluation timeout, the rule keeps the state it had before the error
+instead of moving to `Alerting` and paging as a datasource error. The 2026-11-04
+review found that I/O-wait spikes on the receiver host pushed rule evaluations past
+that timeout, and under the earlier `Alerting` setting every rule paged together for
+those transient timeouts. Most of the Discord firing notifications in that review
+came from them.
+
+A sustained failure still pages once. The `alerting-health` group's rule
+`o11y_alert_evaluations_failing` fires when rule evaluations have failed more than
+five times in a five-minute window, and that holds for fifteen minutes, so only a stall
+that keeps failing for about fifteen minutes pages; a short spike does not. A 14-day
+backtest against production (2026-10-21 to 2026-11-04) gave 4 such episodes; counting
+failures over fifteen minutes instead of five would have paged 17 times. It keeps
+`execErrState: Alerting`, so a prolonged disruption is reported by one alert rather
+than by every rule. Rules whose queries are still failing hold their last state while
+it fires; check the receiver host's I/O wait and Prometheus health.
+
+The same group's `o11y_grafana_db_check_failing` warns when Grafana's own database check
+(`/api/health` answering 503) fails more than four times in an hour and that holds for
+fifteen minutes. The external liveness watcher retries each probe before it pages, so this
+rule is what still reports Grafana's store failing in short bursts. Backtested on the 14
+days before the SQLite fix was deployed (merged 2026-11-07, deployed 2026-11-08; window 2026-10-25 to 2026-11-08), it would have fired twice,
+on 2026-10-30 and 2026-11-07; a threshold of more than three would have fired seven times.
+
+Order matters. Run `Deploy o11y (Dev)` with this change before any alert drill or recover
+template. `Drill o11y Active Alert Delivery (Dev)` and `Recover o11y Active Alert Drill (Dev)`
+validate the live rules against the KeepLast contracts and refuse `live_target_drift` until a
+deploy has re-provisioned them. `Restore o11y Alert Baseline (Dev)` accepts either state, and so
+does the transition check at deploy, so a deploy interrupted between writing the file and
+Grafana's reload can simply be rerun. Main-bound o11y templates cannot apply this change until
+the `dev` to `main` promotion.
+
+A full Grafana or Prometheus outage is covered by the external liveness watcher
+(`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs
+from the Semaphore host and does not depend on Grafana's rule evaluation. Each probe is
+retried twice, `o11y_watch_retry_delay` seconds apart (default 10), before it counts, so a
+page means about 20 s of failure rather than one lost request. Only a datasource health
+400, Prometheus's own unhealthy verdict, is reported as `prometheus datasource unhealthy`.
+A 500 is reported as `grafana datasource health errored`: Grafana itself errored (loading
+the datasource, building the plugin context, the plugin call, or parsing its details), and
+`grafana_plugin_request_total{endpoint="checkHealth"}` shows only whether the plugin call
+failed. A 401 or 403 is reported as `watcher token rejected by Grafana`. Any other status,
+such as a 502 from the edge while Grafana is down, is reported as
+`grafana datasource health probe failed`. The 500 and probe-failure messages name the datasource uid, so a mistyped
+`o11y_watch_prometheus_uid` (Grafana answers it with 500 too) is visible in the message.
+
+Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
+that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed:
+Grafana's logs reach Loki only since the journal collector added it on 2026-11-08 (after
+the fix), and Grafana logs `Database locked, sleeping then retrying` whenever a lock retry
+fires. What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
+`/api/health` 503 (database check) in 26 separate hours and datasource health 500 in at least 4, with
+zero Prometheus plugin `checkHealth` errors, which rules out a failed plugin call but not the
+other 500 paths; the watcher, then unretried, paged on any single 500. `compose.yml` sets
+`GF_DATABASE_WAL=true` and `GF_DATABASE_QUERY_RETRIES=10` (10 attempts, waits doubling from
+10 ms to the 1 s cap, about 3.3 s in all, per Grafana's `pkg/util/retryer`). To judge the fix, compare
+`sum by (handler, status_code) (increase(grafana_http_request_duration_seconds_count{status_code=~"5.."}[7d]))`
+for a week after the deploy against that baseline. A drop is consistent with the suspected
+cause, not proof of it; Grafana's error log would confirm it.
+
+Rolling the setting back does not take the database out of WAL mode. SQLite stores WAL
+mode in the database file and reopens it in WAL ("Persistence of WAL mode",
+<https://www.sqlite.org/wal.html>), and Grafana 11.4 adds `_journal_mode=WAL` to its
+connection only when `wal` is true (`pkg/services/sqlstore/database_config.go`), never
+the reverse. A WAL-mode file with `wal=false` keeps working. Returning to the rollback
+journal means running `PRAGMA journal_mode=DELETE;` on `grafana.db` in the `grafana-data`
+volume with Grafana stopped; no playbook does that yet, so write one before it is needed.
+
+If the 503s persist, the next step is an
+external Postgres for Grafana.
+
 ## Production alert-delivery drill
 
 When production alerts are already enabled, use `Drill o11y Active Alert
@@ -867,6 +961,89 @@ safe to repeat and clears the marker only after Prometheus no longer has the
 drill job and the active alert/contact state is read back. It does not remove
 stored metrics, logs, or traces. This recovery is separate from the paused
 canary's `Restore o11y Alert Baseline (Dev)` workflow.
+
+## Endpoint availability drill
+
+`Drill o11y Endpoint Availability (Dev)` proves that the endpoint availability rule
+(`o11y_endpoint_probe_failed`) fires to Discord for one reviewed availability target. It
+sets that target's only expected status code to 599, which the target never returns, so
+its health probe fails. A second deploy then restores the normal projection. The drill
+sends a real Discord alert, so tell the operator before it runs.
+
+The drill cannot run until availability is enabled and reviewed in production. The census
+refuses it unless `o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed`
+are both set. Tasks 2.3c.1 to 2.3c.3 in
+`plan/development/openspec/changes/estate-wide-observability-instrumentation/tasks.md` must be
+complete first.
+
+The survey takes the reviewed Dev commit (`expected_repository_sha`), the branch both
+deploys clone (`service_branch`, default `dev`), and `availability_drill_target_id`, which
+must name one selected availability target of this receiver. The drill refuses a
+check-mode run, a local-mode run, a run with alerts disabled, and a run with no declared
+Discord channel.
+
+Before it claims anything, the play checks that the controller checkout is at the reviewed
+commit with no uncommitted files. It refuses to start while the paused-canary markers
+(`config/scrape.d/o11y-prod-canary.yml` and `config/.o11y-alert-canary-active`) or an
+active alert drill's markers (`config/.o11y-active-alert-drill` and
+`config/scrape.d/o11y-prod-alert-drill.yml`) exist in the receiver's deploy directory, or
+while an earlier endpoint drill marker exists. It also requires the rule to exist and be
+unpaused, the Grafana contact point `o11y_ops_discord` to exist exactly once, and the Discord
+credentials to be usable: the bot token must be present, the stored alert webhook must be a
+Discord webhook URL, and the channel's message history must be readable. The census then
+requires the named target to be one selected availability target of this receiver. The target's
+health probe must read 1 and its endpoint alert must not be firing or pending now. Every
+drill-specific refusal (target, availability, markers, rule, contact, Discord, current target
+health and alert) happens before the marker is claimed, so a refused run leaves nothing to recover.
+
+Only then does the play create the marker, an empty directory named `.o11y-endpoint-drill`
+in the parent of the monorepo checkout on the receiver. It sits outside the checkout, so
+placing the monorepo never touches it. The drilled deploy imports `deploy-o11y.yml` with the
+internal input `_o11y_availability_drill`, which names the target and status code 599. The
+census replaces only that target's expected status codes in the projection it prepares.
+
+The shared alert probe (`tasks/o11y-alert-probe.yml`) then waits for three things, in order.
+The `probe_success` series for the target reads 0. Grafana reports the rule's alert as
+firing for the target. A Discord message newer than the last one seen before the probe
+names the drill's delivery marker and carries a ` - instance = <target_id>` line. Each wait
+has a fixed retry budget in `tasks/o11y-alert-probe.yml`. The waits run inside a block with a rescue. A pass
+records the outcome `passed`. A failure records `failed` and does not stop the run, so the
+restore still runs.
+
+The second import of `deploy-o11y.yml`, without the drill input, restores the normal
+projection. If either deploy fails, the run stops there and the marker stays.
+
+The final play waits for one fresh `probe_success` series for the target to read 1, and for
+Grafana to stop reporting the rule as firing for the target. If either proof fails, the run
+says the marker stays and fails. Otherwise it removes the marker with `rmdir`, prints the
+census command only when the outcome is `passed`, and fails unless the outcome is `passed`.
+The marker is removed before that last check. A run whose restored projection is proven but
+whose Discord proof failed therefore clears the marker and still fails.
+
+A passed drill still needs its census, because the drill does not launch the strict health
+receipt or the census. From a workstation, the operator runs:
+
+```bash
+python3 scripts/o11y-coverage-refresh.py --url <semaphore-https-origin> \
+  --reviewed-dev-sha <reviewed-sha> --target-signal <target_id>:health < <token-file>
+```
+
+The script reads the Semaphore token from standard input, so the command ends with a
+redirect from a token file. It requires the local checkout to be
+on `dev` at the reviewed commit with no uncommitted files, and it refuses unless
+`receipt_bindings[<target_id>][health]` is declared in the `estate_coverage_inventory` that
+the Semaphore inventory holds. Task 2.3c.1 covers that declaration. Each binding carries the id of the
+`Verify o11y Target Receipt` template and a positive `observation_window_seconds`, and
+`task_id` is optional.
+
+A run that stops after the marker is claimed leaves `.o11y-endpoint-drill` in place, and the
+next drill refuses to start. Run `Recover o11y Endpoint Drill (Dev)` with the reviewed commit.
+It needs a clean reviewed checkout and a real production run with alerts still enabled. It
+runs a normal `deploy-o11y.yml` import, then removes the marker. It does not check endpoint
+health, so a target that is really down can still be recovered. A normal deploy does not
+refuse on this marker, because a deploy is the recovery path. Other Deploy o11y refusals, and a
+dev move during the drill, can stop the drilled or the restoring deploy after the marker is
+claimed; Recover o11y Endpoint Drill (Dev) is the path back.
 
 ## Fault drills (`o11y Fault Drill (Dev)`)
 
@@ -1353,6 +1530,27 @@ because the healthy Alloy process had no recent journal entry; no collector
 start or receiver mutation occurred. The deterministic marker proof is a source
 follow-up to that refusal. It has not been run in production and does not provide
 a live journal or dashboard coverage receipt.
+
+Receiver container cohort. The collector reads one `loki.source.journal` component
+per receiver container declared in `platform/playbooks/vars/o11y-journal-components.yml`
+(`o11y_journal_components`): `o11y_alloy` first, then prometheus, loki, tempo,
+pyroscope, grafana and node-exporter. Each source matches `CONTAINER_NAME=<container>`
+and labels its entries `service="o11y/<name>"`, `signal="container"` and
+`target_id="service:o11y"`. The same list is the template's loop input, the positions
+helper's `--components` allowlist and the input to the deploy's validation, so the three
+cannot diverge. The deploy refuses before it touches any host unless the list has
+`o11y_alloy` first with `o11y-alloy` and `o11y/alloy`, no duplicate component or
+container, container names of the form `o11y-<name>`, no `o11y-journal-collector`, and
+each service `o11y/<name>`. The same apply first runs the receiver log-content survey
+afresh and refuses before any host change unless every declared container is `clear` or
+`no_entries` from an uncapped scan (`platform/playbooks/README.md`). `o11y_alloy` remains the delivery proof: its exact
+`service="o11y/alloy"` marker gates apply as before. A newly declared source has no
+cursor and replays at most its 15-minute `max_age` window, never history. After apply,
+a read-only observation queries Loki once per non-alloy source over the last 300 seconds,
+filtered by that source's own `service` label, and prints one category per service:
+`observed`; `not_yet_observed` (no line in the window yet, expected for a quiet
+container); or `query_unverified` (the request failed or returned an unexpected body).
+The observation never fails the apply and is a report, not a delivery receipt.
 
 First bootstrap requires the v3 volume to be absent: bounded volume inventory
 must prove no exact-name collision, and an all-container query, including stopped

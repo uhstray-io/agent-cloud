@@ -102,6 +102,17 @@
       # OPA decision API — HTTPS for callers (skynet) so they verify it via step-ca; a plain proxy
       # with no edge gate (OPA's Phase 1 stays unauthenticated). Mirrors local-dev.yml.example.
       - {'host': 'opa.{{ _dev_zone }}', 'upstream': 'opa:8181'}
+    # The launch gate's one internal leaf, as a LIST and emitted below with `| string` (the same reason as
+    # _caddy_routes: the ini plugin reads the value back with ast.literal_eval, and a long INI line fails yamllint).
+    # The SAN is <dns_site>.<dns_zone> with dns_site local (launch_gate_svc:vars below). `dir` is the deploy's
+    # certs path, the one deploy-launch-gate.yml's leaf assert requires: <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>.
+    _launch_gate_leaves:
+      - name: launch-gate-server
+        host: launch-gate-local
+        profile: server
+        dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/launch-gate/deployment/certs/launch-gate-server
+        sans: ['launch-gate.local.{{ _dev_zone }}']
+        reload: none
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
@@ -137,6 +148,9 @@
     # 3000, and the validation would never see the mistake.
     _sem_port: "{{ local_semaphore_port | default(3000) }}"
     _sem_url: "http://127.0.0.1:{{ _sem_port }}"
+    # The launch gate's image (launch-gate deployment compose.yml, LAUNCH_GATE_IMAGE): the official Python image,
+    # pinned by digest because deploy-launch-gate.yml refuses a tag. Overridable like local_semaphore_image.
+    _launch_gate_image: "{{ local_launch_gate_image | default('docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30') }}"
     _sem_admin: localadmin
     _sem_admin_password: LOCAL_FAKE_semaphore_admin
     # The Semaphore repository points at the WORKING TREE, not GitHub — local
@@ -976,10 +990,15 @@
       changed_when: "'INSTALLED' in _sem_deps.stdout | default('')"
       when: not ansible_check_mode
 
-    - name: "Install podman client inside Semaphore (root; drives the mounted socket)"
+    # openssl: tasks/issue-internal-leaf.yml makes each leaf's key and request with openssl ON THE CONSUMER, which
+    # for launch_gate_svc (and every local leaf) is this container. The image has no openssl (measured in a
+    # throwaway --rm container on docker.io/semaphoreui/semaphore:v2.19.11, uid 1001 gid 0, Alpine 3.21.7).
+    # `set -e`: with two `||` guards joined by `;` the exit status would be the openssl half's alone, so a failed
+    # podman install would pass silently. With it, a failed `apk add` of either fails the task.
+    - name: "Install podman and openssl inside Semaphore (root; podman drives the mounted socket)"
       ansible.builtin.command: >-
         podman exec --user root {{ _sem_name }} sh -c
-        "command -v podman >/dev/null || apk add --no-cache podman"
+        "set -e; command -v podman >/dev/null || apk add --no-cache podman; command -v openssl >/dev/null || apk add --no-cache openssl"
       register: _sem_podman
       changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
       when: not ansible_check_mode
@@ -1395,6 +1414,34 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          # launch gate (skynet-launch-containment task 3.4) — mirrors local-dev.yml.example's launch_gate_svc. Port
+          # 18443, not 8443: Caddy holds 127.0.0.1:8443 on the Mac. The container still listens on 8443, and the
+          # local probes reach that by the network alias (compose.local.yml), never by this published port.
+          [launch_gate_svc]
+          launch-gate-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [launch_gate_svc:vars]
+          ansible_user=semaphore
+          service_name=launch-gate
+          monorepo_deploy_path=platform/services/launch-gate/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          launch_gate_image={{ _launch_gate_image }}
+          launch_gate_bind=127.0.0.1
+          launch_gate_port=18443
+          launch_gate_semaphore_url=http://{{ _sem_name }}:3000
+          # The live project id (_pid, resolved above by name), not a literal.
+          launch_gate_semaphore_project={{ _pid }}
+          launch_gate_opa_url=http://opa:8181
+          # dns_site local: the gate's TLS name is launch-gate.local.<dns_zone>, the <site>.<zone> shape prod uses.
+          dns_site=local
+          dns_zone={{ _dev_zone }}
+          internal_leaves={{ _launch_gate_leaves | string }}
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [n8n_svc]
           n8n-local ansible_host=127.0.0.1 ansible_connection=local
 
@@ -1452,10 +1499,6 @@
           tududi_port=3402
           tududi_base_url=https://todo.{{ _dev_zone }}:{{ _edge_https_port }}
           tududi_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/tududi/
-          # The GitHub sync acts as the user who OWNS the mapped projects (per-user
-          # scoping — see platform/inventory/local-dev.yml.example); locally the
-          # dev-test project belongs to the break-glass account.
-          tududi_sync_user_email={{ hostvars['tududi-local'].tududi_sync_user_email | default('admin@agent-cloud.test') }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -1607,7 +1650,7 @@
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
           local_mode=true
-          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:36d0bb9e63c888b44be988598dd28c0e15e4b95fcfae9279296a589d4a459596
+          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:7bcd4153bb1c22462bfefad0bcaec740ea51c18249d0fc6f8a94f5d01884578a
           skynet_gateway_url=https://inference.agent-cloud.test
           skynet_model=qwen3.8-flash-next
           skynet_opa_url=https://opa.agent-cloud.test
@@ -1615,6 +1658,8 @@
           # The live project id (_pid, resolved above by name), not a literal.
           skynet_semaphore_project={{ _pid }}
           skynet_semaphore_catalog=local
+          # The launch gate by its local-dev network alias (task 3.6); deploy the gate before skynet.
+          skynet_launch_gate_url=https://launch-gate.local.{{ _dev_zone }}:8443
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

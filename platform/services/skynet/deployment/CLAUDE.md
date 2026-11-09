@@ -43,6 +43,8 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 | inventory `skynet_publish_bind`, `skynet_publish_port` (optional; defaults `127.0.0.1`, `8380`) | `SKYNET_PUBLISH_BIND`, `SKYNET_PUBLISH_PORT`, substituted into compose `ports:` |
 | inventory `skynet_opa_url` (host part) and `skynet_opa_ip` (production only; required, IPv4) | `SKYNET_OPA_HOSTNAME`, `SKYNET_OPA_IP`, substituted into `compose.prod.yml` `extra_hosts` |
 | shared read `secret/services/agentgateway:client_<role>` (`secrets['client_<role>']`) | `SKYNET_GATEWAY_KEY_<ROLE>`, omitted when the key exists but is empty. A missing key stops the deploy (the shared read is all-or-nothing) |
+| shared read `secret/services/launch-gate:caller_skynet_token`, only when `skynet_launch_gate_url` is set | `SKYNET_LAUNCH_GATE_TOKEN` (skynet's bearer at the launch gate; the gate's deploy generates it) |
+| inventory `skynet_launch_gate_url` (optional) | `SKYNET_LAUNCH_GATE_URL`. Production also renders its host part and `skynet_launch_gate_ip` (required then, IPv4) as `SKYNET_LAUNCH_GATE_HOSTNAME`, `SKYNET_LAUNCH_GATE_IP`, substituted into `compose.launch-gate.yml` `extra_hosts` |
 | inventory `skynet_gateway_url`, `skynet_model`, `skynet_opa_url`, `skynet_semaphore_url`, `skynet_semaphore_project`, `skynet_semaphore_catalog`, `skynet_image` | the matching `SKYNET_*` variables |
 
 - The six roles are `infra-agent`, `security-agent`, `o11y-agent`, `service-agent`,
@@ -57,6 +59,10 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
   interim, from 2026-10-31 (the role was `task_runner` until then): launch rights return only through the
   planned narrow launcher, a separate change. Run it before this deploy.
 - `read_token` is generated once, like `api_token`, and never shared-read here.
+- The launch gate (`skynet-launch-containment`) is optional until production deploys it. With
+  `skynet_launch_gate_url` unset, the deploy reads no gate token, renders no gate variable and loads
+  no gate overlay. With it set, the gate must be deployed first: its deploy generates
+  `caller_skynet_token`, and the shared read stops this deploy by name when the key is absent.
 - `skynet_image` has no default. Nothing in this directory names a registry.
 - The inventory publish values are optional. A declared `skynet_publish_bind` must be one
   non-wildcard IPv4 address (`0.0.0.0` is refused), and `skynet_publish_port` a whole number from
@@ -96,6 +102,16 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
   `firewall_allow_groups` names `skynet_svc`; local-dev: the OPA stack is up) before a skynet deploy
   can pass. A failure's message names TLS, resolution, the firewall or the decision contract.
   The verify also sends skynet's transport a `PUT` to `/v1/data/agentcloud_write_probe` on OPA, which must get 401: OPA's authorization policy admits only decisions and health.
+- **Launch gate** (when `skynet_launch_gate_url` is set): the gate's leaf is an internal-CA leaf too,
+  so the bundles above already trust it. In production its name has no DNS record either:
+  `deploy.sh` appends `compose.launch-gate.yml` outside LOCAL_MODE when `.env` carries
+  `SKYNET_LAUNCH_GATE_HOSTNAME`, and that overlay maps the name to `skynet_launch_gate_ip`. It is a
+  separate file because `compose.prod.yml` requires its variables, which would refuse every production
+  deploy without the gate. Local-dev reaches the gate by its network alias on `local-dev`. The verify
+  sends two `POST /v1/launch` requests from inside the container: without a token it must get
+  `401 unauthorized`, and with skynet's token and an empty body `400 bad_request`, which proves the
+  rendered token is the one the gate holds without creating a task. In production the gate's firewall
+  must admit `skynet_svc`.
 
 ## Networks and reachability
 

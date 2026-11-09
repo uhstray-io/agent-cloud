@@ -8,6 +8,9 @@
 //!
 //! `GET /v1/gateway` is platform-wide, like `/v1/flows`: the clients belong to the gateway, not to a tenant.
 //! It is platform admins only (`work::admin_only`, D25).
+//!
+//! Each client also carries its last-hour token count from the Grafana usage read (D39, `grafana.rs`). The
+//! count is the metric of the same traffic, not the gateway's own budget counter, so the page labels it approximate.
 
 use std::path::Path;
 
@@ -17,6 +20,7 @@ use dioxus::server::axum::Json;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
+use super::grafana::{UsageCache, UsageView};
 use super::work;
 use super::SharedState;
 
@@ -60,12 +64,48 @@ pub enum GatewayState {
     Unconfigured,
 }
 
-/// What `GET /v1/gateway` answers. `unconfigured` with empty lists when no file is set.
-#[derive(Debug, Serialize)]
+/// The rendered file as the server holds it. `unconfigured` with empty lists when no file is set.
+#[derive(Debug)]
 pub struct GatewaySet {
     pub state: GatewayState,
     pub clients: Vec<GatewayClient>,
     pub models: Vec<String>,
+}
+
+/// One client as `GET /v1/gateway` answers it: the file's figures, then the last hour's token count from the
+/// usage read. `tokens_last_hour` is null when no read has finished or the identity is not in its result.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ClientRow {
+    #[serde(flatten)]
+    pub client: GatewayClient,
+    pub tokens_last_hour: Option<u64>,
+}
+
+/// What `GET /v1/gateway` answers. `usage` is present in every state, including `unconfigured`.
+#[derive(Debug, Serialize)]
+pub struct GatewayAnswer {
+    pub state: GatewayState,
+    pub clients: Vec<ClientRow>,
+    pub models: Vec<String>,
+    pub usage: UsageView,
+}
+
+/// The file joined with the usage cache. A client's last-hour count is the cache's figure under its name: the
+/// usage read's `identity` label is the gateway client name.
+pub fn answer(set: &GatewaySet, usage: &UsageCache) -> GatewayAnswer {
+    GatewayAnswer {
+        state: set.state,
+        clients: set
+            .clients
+            .iter()
+            .map(|client| ClientRow {
+                client: client.clone(),
+                tokens_last_hour: usage.tokens_for(&client.name),
+            })
+            .collect(),
+        models: set.models.clone(),
+        usage: usage.view(),
+    }
 }
 
 impl GatewaySet {
@@ -97,17 +137,20 @@ pub fn load_gateway(path: &Path) -> Result<GatewayFile, String> {
     serde_json::from_str(&text).map_err(|err| format!("CONSOLE_GATEWAY_FILE: invalid JSON: {err}"))
 }
 
-/// `GET /v1/gateway`: the rendered clients, budgets and models. Platform admins only.
+/// `GET /v1/gateway`: the rendered clients, budgets and models, each with its last-hour count, and the usage
+/// read's state. Platform admins only. Reads the cache, never Grafana.
 pub async fn get_gateway(State(app): State<SharedState>, session: Session) -> Response {
     if let Err(response) = work::admin_only(&session).await {
         return response;
     }
-    Json(&app.gateway).into_response()
+    let usage = app.usage.read().await;
+    Json(answer(&app.gateway, &usage)).into_response()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn gateway_file(name: &str, text: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(format!(
@@ -200,15 +243,60 @@ mod tests {
     }
 
     #[test]
-    fn unconfigured_and_configured_serialize_to_the_wire_shape() {
+    fn unconfigured_answer_has_no_clients_and_still_states_its_usage() {
+        let usage = UsageCache::new(false);
         assert_eq!(
-            serde_json::to_string(&GatewaySet::unconfigured()).expect("json"),
-            r#"{"state":"unconfigured","clients":[],"models":[]}"#
+            serde_json::to_string(&answer(&GatewaySet::unconfigured(), &usage)).expect("json"),
+            r#"{"state":"unconfigured","clients":[],"models":[],"usage":{"state":"unconfigured","refreshed_at":null,"error":null}}"#
         );
-        let set = GatewaySet::configured(load_gateway(&gateway_file("wire", GOOD)).expect("valid"));
+    }
+
+    fn configured_set(name: &str) -> GatewaySet {
+        GatewaySet::configured(load_gateway(&gateway_file(name, GOOD)).expect("valid"))
+    }
+
+    #[test]
+    fn each_client_takes_the_figure_under_its_own_name() {
+        let mut usage = UsageCache::new(true);
+        usage.record_ok(
+            HashMap::from([("alpha".to_string(), 1234), ("ghost".to_string(), 9)]),
+            "2026-11-04T10:00:00Z".into(),
+        );
         assert_eq!(
-            serde_json::to_string(&set).expect("json"),
-            r#"{"state":"ok","clients":[{"name":"alpha","tier":"developer","tokens_per_hour":300000,"budget_source":"tier","allowed_models":["m1"]},{"name":"beta","tier":null,"tokens_per_hour":2000000,"budget_source":"default","allowed_models":[]}],"models":["m1","m2"]}"#
+            serde_json::to_string(&answer(&configured_set("join"), &usage)).expect("json"),
+            r#"{"state":"ok","clients":[{"name":"alpha","tier":"developer","tokens_per_hour":300000,"budget_source":"tier","allowed_models":["m1"],"tokens_last_hour":1234},{"name":"beta","tier":null,"tokens_per_hour":2000000,"budget_source":"default","allowed_models":[],"tokens_last_hour":null}],"models":["m1","m2"],"usage":{"state":"ok","refreshed_at":"2026-11-04T10:00:00Z","error":null}}"#
         );
+    }
+
+    #[test]
+    fn a_client_absent_from_the_read_is_null_and_a_failed_read_keeps_the_figures() {
+        let mut usage = UsageCache::new(true);
+        usage.record_ok(
+            HashMap::from([("alpha".to_string(), 1234)]),
+            "2026-11-04T10:00:00Z".into(),
+        );
+        usage.record_error("Grafana did not answer in time".into());
+        let body = serde_json::to_value(answer(&configured_set("failed"), &usage)).expect("json");
+        assert_eq!(
+            body["clients"][0]["tokens_last_hour"], 1234,
+            "last good figure"
+        );
+        assert!(body["clients"][1]["tokens_last_hour"].is_null());
+        assert_eq!(body["usage"]["state"], "error");
+        assert_eq!(body["usage"]["refreshed_at"], "2026-11-04T10:00:00Z");
+        assert_eq!(
+            body["usage"]["error"],
+            "The newest usage read failed: Grafana did not answer in time. Showing the last good read."
+        );
+    }
+
+    #[test]
+    fn before_the_first_read_every_client_is_null_and_usage_is_loading() {
+        let usage = UsageCache::new(true);
+        let body = serde_json::to_value(answer(&configured_set("loading"), &usage)).expect("json");
+        assert!(body["clients"][0]["tokens_last_hour"].is_null());
+        assert!(body["clients"][1]["tokens_last_hour"].is_null());
+        assert_eq!(body["usage"]["state"], "loading");
+        assert!(body["usage"]["error"].is_null());
     }
 }

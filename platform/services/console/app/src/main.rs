@@ -52,6 +52,10 @@ fn run_server() -> ! {
             server::inventory::spawn_refresh(state.clone());
             server::secrets::spawn_refresh(state.clone());
             server::access::spawn_refresh(state.clone());
+            server::policies::spawn_refresh(state.clone());
+            server::grafana::spawn_refresh(state.clone());
+            server::delivery::spawn_refresh(state.clone());
+            server::telemetry::spawn_refresh(state.clone());
             Ok(server::router(state))
         }
     })

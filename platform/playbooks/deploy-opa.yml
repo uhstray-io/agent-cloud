@@ -237,6 +237,24 @@
       - --cacert
       - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
 
+    # The probe list the two refusal tasks loop over: a policy write, a data read and a decision with
+    # explain, each answered 401 unauthorized by the authorization policy. body is sent as JSON.
+    _opa_refusal_probes:
+      - what: policy write
+        method: PUT
+        path: /v1/data/agentcloud_write_probe
+        body: {}
+      - what: data read
+        method: GET
+        path: /v1/data
+      - what: decision with explain
+        method: POST
+        path: /v1/data/agentcloud/decision?explain=full
+        body:
+          input: {agent: nemoclaw, action: read, service: nocodb}
+    # The TLS probes' curl argv: the same list without --fail (see the TLS refusal task).
+    _opa_tls_probe_args: "{{ _opa_tls_args | reject('equalto', '--fail') | list }}"
+
   tasks:
     # Plain HTTP (local-dev, and any deploy without opa_tls). The TLS set is further down.
     - name: "OPA health (/health -> 200)"
@@ -275,45 +293,30 @@
       when: not ansible_check_mode and not _opa_tls
 
     # OPA answers every request through the authorization policy (--authorization=basic, with
-    # policies/system/authz.rego), which admits the decision API and /health only. A write is
-    # refused there first, with 401 and code unauthorized. A server without that policy would send
-    # the write on to the bundle, which answers 400 invalid_parameter, so this probe fails then too.
-    # The probe path is outside every package, so a write that got through changes no decision.
-    - name: "Policy writes are refused (PUT /v1/data -> 401, authorization policy)"
+    # policies/system/authz.rego), which admits the decision API and /health only. Each probe below is
+    # refused there first, with 401 and code unauthorized. A server without that policy would send the
+    # request on to the handlers instead: the bundle answers a write with 400 invalid_parameter, so the
+    # probe fails then too. The probes:
+    #   policy write (PUT /v1/data/agentcloud_write_probe): the path is outside every package, so a
+    #     write that got through changes no decision.
+    #   data read (GET /v1/data): would return every data document (the agent catalogs and the
+    #     guardrail rules).
+    #   decision with explain (?explain=full): returns the evaluation trace of the policy and its data,
+    #     so it is a data read too; the authorization policy admits a decision only with no query
+    #     parameters.
+    # body_format is json only when a probe has a body: uri would JSON-encode an absent body as null.
+    - name: "Authorization refusals: policy write, data read, decision with explain (each -> 401 unauthorized)"
       ansible.builtin.uri:
-        url: "{{ _opa_url }}/v1/data/agentcloud_write_probe"
-        method: PUT
-        body_format: json
-        body: {}
+        url: "{{ _opa_url }}{{ item.path }}"
+        method: "{{ item.method }}"
+        body_format: "{{ 'json' if item.body is defined else omit }}"
+        body: "{{ item.body | default(omit) }}"
         status_code: [401]
-      register: _opa_write
-      failed_when: _opa_write.status != 401 or (_opa_write.json.code | default('')) != 'unauthorized'
-      when: not ansible_check_mode and not _opa_tls
-
-    # A data read is refused by the same policy: GET /v1/data would return every data document
-    # (the agent catalogs and the guardrail rules), so it must answer 401 unauthorized too.
-    - name: "Data reads are refused (GET /v1/data -> 401, authorization policy)"
-      ansible.builtin.uri:
-        url: "{{ _opa_url }}/v1/data"
-        method: GET
-        status_code: [401]
-      register: _opa_read
-      failed_when: _opa_read.status != 401 or (_opa_read.json.code | default('')) != 'unauthorized'
-      when: not ansible_check_mode and not _opa_tls
-
-    # A decision that asks for engine internals (?explain=full returns the evaluation trace of the
-    # policy and its data) is a data read: the authorization policy admits the decision only with
-    # no query parameters.
-    - name: "Decision with explain is refused (POST /v1/data/agentcloud/decision?explain=full -> 401)"
-      ansible.builtin.uri:
-        url: "{{ _opa_url }}/v1/data/agentcloud/decision?explain=full"
-        method: POST
-        body_format: json
-        body:
-          input: {agent: nemoclaw, action: read, service: nocodb}
-        status_code: [401]
-      register: _opa_explain
-      failed_when: _opa_explain.status != 401 or (_opa_explain.json.code | default('')) != 'unauthorized'
+      loop: "{{ _opa_refusal_probes }}"
+      loop_control:
+        label: "{{ item.what }}"
+      register: _opa_refusal
+      failed_when: _opa_refusal.status != 401 or (_opa_refusal.json.code | default('')) != 'unauthorized'
       when: not ansible_check_mode and not _opa_tls
 
     # ── Listener TLS (opa_tls): the same checks over HTTPS ───────────────────
@@ -377,48 +380,25 @@
       failed_when: _opa_deny_tls.rc != 0 or ((_opa_deny_tls.stdout | from_json).result | default({})).allowed | default(true) | bool
       when: _opa_tls and not ansible_check_mode
 
-    # The same write refusal over TLS. --fail is dropped so the expected 401 exits 0: a non-zero
-    # rc is then a transport failure (connection, TLS). The body comes first and the status on
-    # the last line; both must match the plain path: exactly 401 with code unauthorized.
-    - name: "Policy writes over TLS are refused (PUT /v1/data -> 401, authorization policy)"
+    # The same three probes over TLS. curl drops --fail (through _opa_tls_probe_args) so the expected
+    # 401 exits 0: a non-zero rc is then a transport failure (connection, TLS). The body comes first and
+    # the status on the last line; both must match the plain path: exactly 401 with code unauthorized.
+    - name: "Authorization refusals over TLS: policy write, data read, decision with explain (each -> 401 unauthorized)"
       ansible.builtin.command:
         argv: >-
-          {{ (_opa_tls_args | reject('equalto', '--fail') | list)
-             + ['--write-out', '\n%{http_code}', '--request', 'PUT',
-                '--header', 'Content-Type: application/json', '--data', '{}',
-                _opa_url ~ '/v1/data/agentcloud_write_probe'] }}
-      register: _opa_write_tls
+          {{ _opa_tls_probe_args
+             + ['--write-out', '\n%{http_code}', '--request', item.method]
+             + (['--header', 'Content-Type: application/json', '--data', item.body | to_json]
+                if item.body is defined else [])
+             + [_opa_url ~ item.path] }}
+      loop: "{{ _opa_refusal_probes }}"
+      loop_control:
+        label: "{{ item.what }}"
+      register: _opa_refusal_tls
       changed_when: false
       failed_when: >-
-        _opa_write_tls.rc != 0 or (_opa_write_tls.stdout_lines | last) != '401'
-        or ((_opa_write_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'unauthorized'
-      when: _opa_tls and not ansible_check_mode
-
-    # The data read over TLS, same shape as the write above: no --fail, body then status.
-    - name: "Data reads over TLS are refused (GET /v1/data -> 401, authorization policy)"
-      ansible.builtin.command:
-        argv: >-
-          {{ (_opa_tls_args | reject('equalto', '--fail') | list)
-             + ['--write-out', '\n%{http_code}', _opa_url ~ '/v1/data'] }}
-      register: _opa_read_tls
-      changed_when: false
-      failed_when: >-
-        _opa_read_tls.rc != 0 or (_opa_read_tls.stdout_lines | last) != '401'
-        or ((_opa_read_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'unauthorized'
-      when: _opa_tls and not ansible_check_mode
-
-    - name: "Decision with explain over TLS is refused (?explain=full -> 401)"
-      ansible.builtin.command:
-        argv: >-
-          {{ (_opa_tls_args | reject('equalto', '--fail') | list)
-             + ['--header', 'Content-Type: application/json',
-                '--data', ({'input': {'agent': 'nemoclaw', 'action': 'read', 'service': 'nocodb'}} | to_json),
-                '--write-out', '\n%{http_code}', _opa_url ~ '/v1/data/agentcloud/decision?explain=full'] }}
-      register: _opa_explain_tls
-      changed_when: false
-      failed_when: >-
-        _opa_explain_tls.rc != 0 or (_opa_explain_tls.stdout_lines | last) != '401'
-        or ((_opa_explain_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'unauthorized'
+        _opa_refusal_tls.rc != 0 or (_opa_refusal_tls.stdout_lines | last) != '401'
+        or ((_opa_refusal_tls.stdout_lines[:-1] | join('\n') | from_json).code | default('')) != 'unauthorized'
       when: _opa_tls and not ansible_check_mode
 
     # --bundle, as the server loads it: bundle mode reads only data.json/data.yaml as data, so a

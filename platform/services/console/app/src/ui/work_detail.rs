@@ -8,10 +8,11 @@
 use dioxus::prelude::*;
 use serde::Deserialize;
 
-use super::api;
+use super::api::{self, Me, Reply};
 use super::icons::icon;
+use super::inventory::end_session;
 use super::shell::Ctx;
-use super::work::{age_text, find_item, item_stamp, Lane, Tone, WorkItem};
+use super::work::{age_text, find_item, item_stamp, signs_out, Lane, Tone, WorkItem};
 
 /// Body of `GET /v1/work/{key}`. `run` is null for a task no skynet run started.
 /// `stream_history` is the job's newest runs, newest first, this one included.
@@ -149,6 +150,8 @@ enum DetailState {
     Loading,
     Ready(Box<WorkDetail>),
     Missing,
+    /// 403: the steps are not this account's to see. Not a failed load.
+    Forbidden,
     Failed,
 }
 
@@ -168,26 +171,44 @@ fn recent_for(state: &DetailState, current_key: &str, now_ms: Option<i64>) -> Ve
     }
 }
 
-/// Fetches one item's run. An answer for an item that is no longer the one
-/// asked about (the selection moved, or its stamp changed) is dropped.
+/// What the panel shows for one `GET /v1/work/{key}` reply. A 401 is `Failed` here; the
+/// caller ends the session.
+fn detail_state(reply: &Reply) -> DetailState {
+    match reply.status {
+        200 => api::parse::<WorkDetail>(reply).map_or(DetailState::Failed, |found| {
+            DetailState::Ready(Box::new(found))
+        }),
+        404 => DetailState::Missing,
+        403 => DetailState::Forbidden,
+        _ => DetailState::Failed,
+    }
+}
+
+/// Whether the rail takes focus when it mounts. Only the Hide that just opened it asks for
+/// that, and a rail with nothing selected cannot hold focus (its button is disabled).
+pub fn focus_on_rail_mount(asked: bool, can_open: bool) -> bool {
+    asked && can_open
+}
+
+/// Fetches one item's run. A 401 ends the session, whichever item it was for. Any other
+/// answer for an item that is no longer the one asked about (the selection moved, or its
+/// stamp changed) is dropped.
 async fn load_detail(
     want: Fetched,
     fetched: Signal<Option<Fetched>>,
     mut detail: Signal<DetailState>,
+    me: Signal<Me>,
 ) {
     let path = format!("/v1/work/{}", api::segment(&want.0));
     let reply = api::request("GET", &path, None).await;
+    if signs_out(reply.status) {
+        end_session(me);
+        return;
+    }
     if fetched.peek().as_ref() != Some(&want) {
         return;
     }
-    let next = match reply.status {
-        200 => api::parse::<WorkDetail>(&reply).map_or(DetailState::Failed, |found| {
-            DetailState::Ready(Box::new(found))
-        }),
-        404 => DetailState::Missing,
-        _ => DetailState::Failed,
-    };
-    detail.set(next);
+    detail.set(detail_state(&reply));
 }
 
 /// The details panel for the selected item. It is a labelled region that takes
@@ -197,9 +218,11 @@ pub fn Details(
     selected: Signal<Option<String>>,
     minimized: Signal<bool>,
     now_ms: Option<i64>,
+    focus_rail: Signal<bool>,
 ) -> Element {
     let ctx = use_context::<Ctx>();
     let mut minimized = minimized;
+    let mut focus_rail = focus_rail;
     let mut fetched = use_signal(|| None::<Fetched>);
     let mut detail = use_signal(|| DetailState::Loading);
 
@@ -216,7 +239,7 @@ pub fn Details(
         }
         fetched.set(Some(want.clone()));
         detail.set(DetailState::Loading);
-        spawn(load_detail(want, fetched, detail));
+        spawn(load_detail(want, fetched, detail, ctx.me));
     });
 
     let Some(key) = selected() else {
@@ -243,6 +266,9 @@ pub fn Details(
         },
         DetailState::Missing => rsx! {
             p { class: "faint", role: "status", "This item is no longer in the console's list." }
+        },
+        DetailState::Forbidden => rsx! {
+            p { class: "faint", role: "status", "These steps are not available to this account." }
         },
         DetailState::Ready(found) => match &found.run {
             None => rsx! {
@@ -292,7 +318,11 @@ pub fn Details(
                 button {
                     r#type: "button",
                     class: "btn",
-                    onclick: move |_| minimized.set(true),
+                    onclick: move |_| {
+                        // The rail takes focus when it mounts, so focus does not fall to the body.
+                        focus_rail.set(true);
+                        minimized.set(true);
+                    },
                     "Hide"
                 }
                 button {
@@ -374,8 +404,14 @@ fn RecentRuns(rows: Vec<RecentRow>) -> Element {
 /// The panel minimized: a 44px-wide column with the expand control and the
 /// count per lane. The expand control is disabled while nothing is selected.
 #[component]
-pub fn Rail(counts: Vec<(Lane, usize)>, can_open: bool, minimized: Signal<bool>) -> Element {
+pub fn Rail(
+    counts: Vec<(Lane, usize)>,
+    can_open: bool,
+    minimized: Signal<bool>,
+    focus_rail: Signal<bool>,
+) -> Element {
     let mut minimized = minimized;
+    let mut focus_rail = focus_rail;
     rsx! {
         aside { class: "work-rail", aria_label: "Details, minimized",
             button {
@@ -385,6 +421,17 @@ pub fn Rail(counts: Vec<(Lane, usize)>, can_open: bool, minimized: Signal<bool>)
                 aria_label: "Show details",
                 title: "Show details",
                 onclick: move |_| minimized.set(false),
+                onmounted: move |evt: MountedEvent| {
+                    // Clears the request whatever it was, so a later mount never inherits it.
+                    let asked = focus_rail();
+                    focus_rail.set(false);
+                    if focus_on_rail_mount(asked, can_open) {
+                        let node = evt.data();
+                        spawn(async move {
+                            let _ = node.set_focus(true).await;
+                        });
+                    }
+                },
                 "Details"
             }
             ul { class: "rail-counts", aria_label: "Work per lane",
@@ -397,6 +444,7 @@ pub fn Rail(counts: Vec<(Lane, usize)>, can_open: bool, minimized: Signal<bool>)
                             {icon(lane.look().0)}
                         }
                         span { class: "num", "{count}" }
+                        span { "{lane.label()}" }
                     }
                 }
             }
@@ -618,5 +666,43 @@ mod tests {
         ]);
         assert_eq!(recent_for(&twice, "sem-21", None).len(), 2);
         assert!(recent_for(&DetailState::Loading, "sem-21", None).is_empty());
+    }
+
+    fn reply(status: u16, body: serde_json::Value) -> Reply {
+        Reply { status, body }
+    }
+
+    #[test]
+    fn a_403_on_the_steps_is_its_own_state_not_a_failure() {
+        assert_eq!(
+            detail_state(&reply(403, serde_json::json!({"error": "forbidden"}))),
+            DetailState::Forbidden
+        );
+        assert_eq!(
+            detail_state(&reply(404, serde_json::json!({"error": "not found"}))),
+            DetailState::Missing
+        );
+        assert_eq!(
+            detail_state(&reply(500, serde_json::Value::Null)),
+            DetailState::Failed
+        );
+        assert_eq!(
+            detail_state(&reply(200, serde_json::json!({"nope": 1}))),
+            DetailState::Failed,
+            "an unreadable 200 is a failed load"
+        );
+    }
+
+    #[test]
+    fn the_rail_takes_focus_only_after_hide_with_something_selected() {
+        assert!(focus_on_rail_mount(true, true), "Hide with a selection");
+        assert!(
+            !focus_on_rail_mount(false, true),
+            "a page visit or a poll never moves focus"
+        );
+        assert!(
+            !focus_on_rail_mount(true, false),
+            "a disabled button cannot take focus"
+        );
     }
 }

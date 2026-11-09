@@ -7,9 +7,11 @@
 
 use dioxus::prelude::*;
 
-use super::api::{self, Account, Claims, Me, NamedRef, TenantList, Tree};
+use super::api::{self, Account, Claims, Me, NamedRef, Reply, TenantList, Tree};
 use super::icons::icon;
 use super::inventory::{self, Snapshot};
+use super::roles::load_roles;
+use super::roles_api::RoleState;
 use super::scope::{self, Scope, ScopeBar};
 use super::work::{self, WorkState};
 use super::Route;
@@ -36,6 +38,8 @@ pub struct Ctx {
     pub work: Signal<WorkState>,
     /// The inventory of `tenant`. The inventory poll and a tenant switch write it; the Phase 3 pages read it.
     pub inventory: Signal<Loaded<Snapshot>>,
+    /// The agent roles of the registry (D40). Read once by platform admins; the sidebar and the role page read it.
+    pub roles: Signal<RoleState>,
 }
 
 #[component]
@@ -47,6 +51,7 @@ pub fn Shell() -> Element {
     let scope = use_signal(Scope::default);
     let work = use_signal(|| WorkState::Loading);
     let inventory = use_signal(|| Loaded::Loading);
+    let roles = use_signal(|| RoleState::Loading);
     let ctx = use_context_provider(|| Ctx {
         me,
         tenants,
@@ -55,6 +60,7 @@ pub fn Shell() -> Element {
         scope,
         work,
         inventory,
+        roles,
     });
 
     use_effect(move || {
@@ -128,12 +134,20 @@ pub async fn select_tenant(mut ctx: Ctx, tenant_id: String, saved: Option<String
         inventory::refresh(ctx, refreshed).await;
     });
     let path = format!("/v1/tenants/{}/tree", api::segment(&tenant_id));
-    let reply = api::request("GET", &path, None).await;
+    let answer = classify_tree(&api::request("GET", &path, None).await);
+    // A 401 ends the session, so it is not dropped as stale even when another tenant was picked since.
+    if answer == TreeAnswer::SignedOut {
+        inventory::end_session(ctx.me);
+        return;
+    }
     // A later pick of another tenant wins, so this answer is dropped.
     if ctx.tenant.peek().as_deref() != Some(tenant_id.as_str()) {
         return;
     }
-    let parsed = api::parse::<Tree>(&reply);
+    let parsed = match answer {
+        TreeAnswer::Ready(tree) => Some(tree),
+        TreeAnswer::SignedOut | TreeAnswer::Failed => None,
+    };
     ctx.scope
         .set(scope_after_tree(parsed.as_ref(), saved.as_deref()));
     match parsed {
@@ -154,6 +168,24 @@ pub fn scope_after_tree(tree: Option<&Tree>, saved: Option<&str>) -> Scope {
     match tree {
         Some(tree) => scope::initial(tree, saved),
         None => switch_scope(),
+    }
+}
+
+/// What a tree read answered. A 401 is a session that ended, not a tree that failed to load.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TreeAnswer {
+    Ready(Tree),
+    SignedOut,
+    Failed,
+}
+
+/// Reads `GET /v1/tenants/{t}/tree`, as `api::classify_me` reads the session: 200 with a tree
+/// is ready, 401 is signed out, and any other status or body is a failed read.
+pub fn classify_tree(reply: &Reply) -> TreeAnswer {
+    match reply.status {
+        200 => api::parse::<Tree>(reply).map_or(TreeAnswer::Failed, TreeAnswer::Ready),
+        401 => TreeAnswer::SignedOut,
+        _ => TreeAnswer::Failed,
     }
 }
 
@@ -178,18 +210,33 @@ fn SignIn() -> Element {
 #[component]
 fn Workspace(account: Account) -> Element {
     let ctx = use_context::<Ctx>();
+    let admin = is_platform_admin(&account.claims);
     // Only a signed-in shell polls Active Work, so a signed-out visitor never sends the request.
     // `use_hook` runs its closure once, on the first render of this instance. `use_effect`
     // would run it again whenever a signal read in its body changed, and each run would
     // start another poll loop. The poll's own waits are in the browser (`api::sleep_unless_hidden`).
+    // The agent roles are read once, and only for a platform admin: the server refuses everyone else.
     use_hook(move || {
-        spawn(work::poll(ctx.work));
+        spawn(work::poll(ctx.work, ctx.me));
         spawn(inventory::poll(ctx));
+        if admin {
+            spawn(load_roles(ctx.roles, ctx.me));
+        }
     });
     let no_access = has_no_tenant_access(&ctx.tenants.read());
     // The outlet stays in both cases, so the profile still works without a tenant.
     rsx! {
         div { class: "app",
+            // The first stop on every signed-in page. It moves focus past the sidebar to `main`.
+            a {
+                class: "skip-link",
+                href: "#content",
+                onclick: move |evt: MouseEvent| {
+                    evt.prevent_default();
+                    api::focus("content");
+                },
+                "Skip to content"
+            }
             Sidebar { account: account.clone() }
             div { class: "workspace",
                 if no_access {
@@ -197,7 +244,7 @@ fn Workspace(account: Account) -> Element {
                 } else {
                     ScopeBar {}
                 }
-                main { class: "page", Outlet::<Route> {} }
+                main { class: "page", id: "content", tabindex: "-1", Outlet::<Route> {} }
             }
         }
     }
@@ -206,6 +253,20 @@ fn Workspace(account: Account) -> Element {
 /// True when the caller is signed in and the server lists no tenant for them.
 pub fn has_no_tenant_access(tenants: &Loaded<TenantList>) -> bool {
     matches!(tenants, Loaded::Ready(list) if list.tenants.is_empty())
+}
+
+/// What a tenant page says when no tenant is selected and the list did not load. The shell
+/// does not retry the list on its own: a page reload runs the read again, so the sentence says so.
+pub const TENANT_LIST_FAILED: &str =
+    "The tenant list could not be loaded, so no tenant is selected. Reload the page to try again.";
+
+/// The sentence a tenant page shows with no tenant selected: `pick` while the list is loading or
+/// loaded, and the failure when the list did not load, so the operator is not asked to pick from it.
+pub fn no_tenant_message(tenants: &Loaded<TenantList>, pick: &str) -> String {
+    match tenants {
+        Loaded::Failed => TENANT_LIST_FAILED.to_string(),
+        Loaded::Loading | Loaded::Ready(_) => pick.to_string(),
+    }
 }
 
 /// Signed in, but no tenant names one of the caller's groups. It replaces the
@@ -241,6 +302,7 @@ fn Sidebar(account: Account) -> Element {
                 div { class: "grp", "Infrastructure" }
                 NavItem { to: Route::Topology {}, icon_name: "waypoints", label: "Topology" }
                 NavItem { to: Route::Services {}, icon_name: "boxes", label: "Services" }
+                NavItem { to: Route::RequestService {}, icon_name: "user-round", label: "Request a service" }
                 NavItem { to: Route::Compute {}, icon_name: "server", label: "Compute" }
                 NavItem { to: Route::Telemetry {}, icon_name: "activity", label: "Telemetry" }
                 div { class: "grp", "Governance" }
@@ -251,15 +313,18 @@ fn Sidebar(account: Account) -> Element {
                 NavItem { to: Route::AiGateway {}, icon_name: "door-open", label: "AI Gateway" }
                 NavItem { to: Route::LlmAccess {}, icon_name: "message-square-lock", label: "LLM access" }
                 NavItem { to: Route::CiCd {}, icon_name: "git-pull-request-arrow", label: "CI/CD" }
-                div { class: "grp", "Agent roles" }
-                p { class: "side-note", "Arrives in Phase 5" }
-            }
-            if admin {
-                nav { class: "nav", aria_label: "Settings",
-                    div { class: "grp", "Settings" }
-                    NavItem { to: Route::TenantSettings {}, icon_name: "building", label: "Tenant settings" }
-                    NavItem { to: Route::OrgSettings {}, icon_name: "settings-2", label: "Organization settings" }
+                if admin {
+                    div { class: "grp", "Agent roles" }
+                    RoleLinks {}
                 }
+            }
+            // Both settings pages show to every signed-in user. Each page reads only what the
+            // caller may see (the tenant tree, the tenant's inventory), and says why a control is
+            // disabled. Nothing in this group is admin-only.
+            nav { class: "nav", aria_label: "Settings",
+                div { class: "grp", "Settings" }
+                NavItem { to: Route::TenantSettings {}, icon_name: "building", label: "Tenant settings" }
+                NavItem { to: Route::OrgSettings {}, icon_name: "settings-2", label: "Organization settings" }
             }
             div { class: "side-foot",
                 Link {
@@ -281,6 +346,35 @@ fn Sidebar(account: Account) -> Element {
                 }
             }
         }
+    }
+}
+
+/// One link per agent role, from the roles the shell read. Only shown to platform admins.
+#[component]
+fn RoleLinks() -> Element {
+    let ctx = use_context::<Ctx>();
+    let roles = ctx.roles.read().clone();
+    match roles {
+        RoleState::Loading => rsx! { p { class: "side-note", "Loading roles\u{2026}" } },
+        RoleState::Failed => rsx! { p { class: "side-note", "Roles unavailable" } },
+        RoleState::Forbidden => {
+            rsx! { p { class: "side-note", "Agent roles are limited to platform administrators." } }
+        }
+        RoleState::Ready(list) if list.roles.is_empty() => {
+            rsx! { p { class: "side-note", "No roles in the registry" } }
+        }
+        RoleState::Ready(list) => rsx! {
+            for role in list.roles.iter() {
+                Link {
+                    key: "{role.name}",
+                    to: Route::RoleDetail { role: role.name.clone() },
+                    class: "nav-link",
+                    active_class: "active",
+                    {icon("bot")}
+                    span { "{role.name}" }
+                }
+            }
+        },
     }
 }
 
@@ -309,6 +403,44 @@ fn NavItem(
     }
 }
 
+/// The DOM id of the tenant switch button. Focus returns to it when the menu closes.
+const TENANT_SWITCH_ID: &str = "tenant-switch";
+
+/// A move through the tenant menu's options.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MenuStep {
+    Next,
+    Previous,
+    First,
+    Last,
+}
+
+/// The move a key asks for in the tenant menu: the arrows move one option, Home and End jump
+/// to the ends. Any other key is not a menu move.
+pub fn menu_step(key: &Key) -> Option<MenuStep> {
+    match key {
+        Key::ArrowDown => Some(MenuStep::Next),
+        Key::ArrowUp => Some(MenuStep::Previous),
+        Key::Home => Some(MenuStep::First),
+        Key::End => Some(MenuStep::Last),
+        _ => None,
+    }
+}
+
+/// The option that takes focus after `step` from option `current` of `count`. Next and Previous
+/// wrap past the ends. `None` when the menu has no options.
+pub fn option_after(current: usize, count: usize, step: MenuStep) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match step {
+        MenuStep::Next => (current + 1) % count,
+        MenuStep::Previous => (current + count - 1) % count,
+        MenuStep::First => 0,
+        MenuStep::Last => count - 1,
+    })
+}
+
 /// The tenant switcher. It is the only place the tenant is shown or changed.
 #[component]
 fn TenantSwitch() -> Element {
@@ -334,10 +466,14 @@ fn TenantSwitch() -> Element {
         .map(|t| (t.clone(), current.as_deref() == Some(t.id.as_str())))
         .collect();
     let ready = !rows.is_empty();
+    // The option that takes focus when the menu opens: the selected tenant, else the first.
+    let focus_index = rows.iter().position(|(_, selected)| *selected).unwrap_or(0);
+    let count = rows.len();
 
     rsx! {
         div { class: "tenant",
             button {
+                id: TENANT_SWITCH_ID,
                 r#type: "button",
                 class: "tenant-switch",
                 aria_haspopup: "listbox",
@@ -356,19 +492,43 @@ fn TenantSwitch() -> Element {
                     role: "listbox",
                     aria_label: "Tenants",
                     onkeydown: move |evt: KeyboardEvent| {
-                        if evt.key() == Key::Escape {
+                        // Escape and Tab both close the menu and return to the switch, so Tab never walks
+                        // through every tenant and never leaves an open menu behind.
+                        if closes_menu(&evt.key()) {
+                            evt.prevent_default();
                             open.set(false);
+                            api::focus(TENANT_SWITCH_ID);
                         }
                     },
-                    for (tenant, selected) in rows.iter().cloned() {
+                    for (index, (tenant, selected)) in rows.iter().cloned().enumerate() {
                         li {
                             button {
+                                id: "tenant-option-{index}",
                                 r#type: "button",
                                 role: "option",
                                 class: "tenant-option",
                                 aria_selected: "{selected}",
+                                // One tab stop for the whole menu: the arrows move between options.
+                                tabindex: option_tabindex(index, focus_index),
+                                onmounted: move |evt: MountedEvent| {
+                                    if index == focus_index {
+                                        let node = evt.data();
+                                        spawn(async move {
+                                            let _ = node.set_focus(true).await;
+                                        });
+                                    }
+                                },
+                                onkeydown: move |evt: KeyboardEvent| {
+                                    if let Some(step) = menu_step(&evt.key()) {
+                                        evt.prevent_default();
+                                        if let Some(next) = option_after(index, count, step) {
+                                            api::focus(&format!("tenant-option-{next}"));
+                                        }
+                                    }
+                                },
                                 onclick: move |_| {
                                     open.set(false);
+                                    api::focus(TENANT_SWITCH_ID);
                                     if selected {
                                         return;
                                     }
@@ -411,15 +571,41 @@ pub fn initials(name: &str) -> String {
     letters.to_uppercase()
 }
 
-/// Settings entries show only for members of `platform-admins`. The UI hides
-/// them as a convenience; the API and OPA are the controls.
+/// The Agent roles nav and the role pages show only for members of `platform-admins` (D40). The UI
+/// hides them as a convenience; the server's admin gate on `/v1/roles` and `/v1/work` is the control.
 pub fn is_platform_admin(claims: &Claims) -> bool {
     claims.groups.iter().any(|group| group == "platform-admins")
 }
 
+/// Whether a key closes the open tenant menu and returns focus to its switch.
+fn closes_menu(key: &Key) -> bool {
+    matches!(key, Key::Escape | Key::Tab)
+}
+
+/// The tab index of a tenant option: only the option that takes focus on open is a tab stop (D44).
+fn option_tabindex(index: usize, focus_index: usize) -> &'static str {
+    if index == focus_index {
+        "0"
+    } else {
+        "-1"
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn escape_and_tab_close_the_menu_and_only_one_option_is_a_tab_stop() {
+        assert!(closes_menu(&Key::Escape));
+        assert!(closes_menu(&Key::Tab));
+        assert!(!closes_menu(&Key::ArrowDown));
+        assert!(!closes_menu(&Key::Enter));
+        assert_eq!(option_tabindex(2, 2), "0");
+        assert_eq!(option_tabindex(0, 2), "-1");
+        assert_eq!(option_tabindex(3, 2), "-1");
+    }
+
     use super::*;
+    use serde_json::{json, Value};
 
     fn claims(
         sub: &str,
@@ -435,6 +621,26 @@ mod tests {
             email: email.map(str::to_string),
             groups: groups.iter().map(|g| g.to_string()).collect(),
         }
+    }
+
+    #[test]
+    fn only_an_exact_platform_admins_member_sees_the_agent_roles() {
+        assert!(is_platform_admin(&claims(
+            "a",
+            None,
+            None,
+            None,
+            &["ops", "platform-admins"]
+        )));
+        assert!(!is_platform_admin(&claims(
+            "b",
+            None,
+            None,
+            None,
+            &["platform-admins-old"]
+        )));
+        assert!(!is_platform_admin(&claims("c", None, None, None, &["ops"])));
+        assert!(!is_platform_admin(&claims("d", None, None, None, &[])));
     }
 
     #[test]
@@ -483,25 +689,6 @@ mod tests {
         // Not yet loaded, or failed: that is not the same as "no access".
         assert!(!has_no_tenant_access(&Loaded::Loading));
         assert!(!has_no_tenant_access(&Loaded::Failed));
-    }
-
-    #[test]
-    fn only_platform_admins_see_settings() {
-        assert!(is_platform_admin(&claims(
-            "s",
-            None,
-            None,
-            None,
-            &["users", "platform-admins"]
-        )));
-        assert!(!is_platform_admin(&claims(
-            "s",
-            None,
-            None,
-            None,
-            &["platform-admins-old"]
-        )));
-        assert!(!is_platform_admin(&claims("s", None, None, None, &[])));
     }
 
     fn two_org_tree() -> Tree {
@@ -562,6 +749,101 @@ mod tests {
             scope_after_tree(Some(&tree), Some("gone/away")).org,
             "ops",
             "an unresolved saved default falls back to the first org"
+        );
+    }
+
+    fn reply(status: u16, body: Value) -> Reply {
+        Reply { status, body }
+    }
+
+    #[test]
+    fn a_401_on_the_tree_ends_the_session_and_any_other_failure_is_a_failed_tree() {
+        assert_eq!(
+            classify_tree(&reply(401, Value::Null)),
+            TreeAnswer::SignedOut
+        );
+        assert!(matches!(
+            classify_tree(&reply(200, json!({"orgs": []}))),
+            TreeAnswer::Ready(_)
+        ));
+        assert_eq!(classify_tree(&reply(500, Value::Null)), TreeAnswer::Failed);
+        assert_eq!(classify_tree(&reply(0, Value::Null)), TreeAnswer::Failed);
+        assert_eq!(
+            classify_tree(&reply(200, json!({"example": true}))),
+            TreeAnswer::Failed,
+            "a 200 whose body is not a tree is a failed read"
+        );
+        assert_eq!(
+            classify_tree(&reply(403, json!({"orgs": []}))),
+            TreeAnswer::Failed,
+            "only a 200 carries a tree, whatever the body"
+        );
+    }
+
+    #[test]
+    fn a_failed_tenant_list_says_so_on_a_tenant_page_and_loading_keeps_the_pick_sentence() {
+        let pick = "Pick a tenant in the sidebar to see its settings.";
+        assert_eq!(no_tenant_message(&Loaded::Failed, pick), TENANT_LIST_FAILED);
+        assert!(TENANT_LIST_FAILED.contains("could not be loaded"));
+        assert_eq!(no_tenant_message(&Loaded::Loading, pick), pick);
+        let one = TenantList {
+            example: false,
+            tenants: vec![NamedRef {
+                id: "acme".into(),
+                name: "Acme".into(),
+            }],
+        };
+        assert_eq!(no_tenant_message(&Loaded::Ready(one), pick), pick);
+    }
+
+    #[test]
+    fn the_failure_sentence_names_no_literal_retry_time_and_no_pick() {
+        assert!(
+            !TENANT_LIST_FAILED.chars().any(|c| c.is_ascii_digit()),
+            "a retry time comes from the poll interval, never a literal"
+        );
+        assert!(!TENANT_LIST_FAILED.contains("Pick"));
+    }
+
+    #[test]
+    fn the_arrows_home_and_end_are_menu_moves_and_no_other_key_is_one() {
+        assert_eq!(menu_step(&Key::ArrowDown), Some(MenuStep::Next));
+        assert_eq!(menu_step(&Key::ArrowUp), Some(MenuStep::Previous));
+        assert_eq!(menu_step(&Key::Home), Some(MenuStep::First));
+        assert_eq!(menu_step(&Key::End), Some(MenuStep::Last));
+        assert_eq!(
+            menu_step(&Key::Escape),
+            None,
+            "Escape is handled by the menu"
+        );
+        assert_eq!(menu_step(&Key::Enter), None);
+    }
+
+    #[test]
+    fn next_and_previous_wrap_and_home_and_end_jump() {
+        assert_eq!(option_after(0, 3, MenuStep::Next), Some(1));
+        assert_eq!(
+            option_after(2, 3, MenuStep::Next),
+            Some(0),
+            "Next wraps from the last"
+        );
+        assert_eq!(
+            option_after(0, 3, MenuStep::Previous),
+            Some(2),
+            "Previous wraps from the first"
+        );
+        assert_eq!(option_after(2, 3, MenuStep::Previous), Some(1));
+        assert_eq!(option_after(1, 3, MenuStep::First), Some(0));
+        assert_eq!(option_after(0, 3, MenuStep::Last), Some(2));
+        assert_eq!(
+            option_after(0, 1, MenuStep::Next),
+            Some(0),
+            "one option stays put"
+        );
+        assert_eq!(
+            option_after(0, 0, MenuStep::Next),
+            None,
+            "no options, no move"
         );
     }
 }

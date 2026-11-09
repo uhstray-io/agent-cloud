@@ -28,6 +28,9 @@ APP = "plane-mcp"
 BASE_PATH = f"/api/workspaces/{WS}/applications/"
 REDIRECT = "https://mcp.test/callback"
 APP_ID = "0b9f2c7e-1d2a-4e5b-8c3d-6f7a8b9c0d1e"
+# Every successful pass ends by installing the app into the workspace (Plane refuses a member's
+# authorization until a workspace admin has installed it).
+INSTALL = ("POST", f"{BASE_PATH}{APP_ID}/install/", None)
 
 
 def app_row(owned=True, redirect=REDIRECT, perms=("read", "write")):
@@ -80,6 +83,10 @@ class StubPlane(DrainingHandler):
             s["calls"].append(("POST", self.path, body))
             status, reply = s["create"]
             return self._send(status, reply)
+        if self.path == f"{BASE_PATH}{APP_ID}/install/":
+            s["calls"].append(("POST", self.path, body))
+            status, reply = s["install"]
+            return self._send(status, reply)
         return self._send(404, {})
 
     def do_PATCH(self):
@@ -99,7 +106,8 @@ class StubPlane(DrainingHandler):
 def plane():
     StubPlane.state = {
         "calls": [], "sign_in": "ok", "list_status": 200, "apps": [],
-        "create": (201, {"client_id": "cid-new", "client_secret": SECRET, "slug": APP}),
+        "create": (201, {"id": APP_ID, "client_id": "cid-new", "client_secret": SECRET, "slug": APP}),
+        "install": (200, {"status": "installed"}),
         "regen": (200, {"client_secret": SECRET, "id": APP_ID}),
     }
     server = http.server.HTTPServer(("127.0.0.1", 0), StubPlane)
@@ -136,12 +144,12 @@ def test_a_missing_app_is_created_with_the_exact_body_and_its_secret_printed_onc
     out = run(base)
     assert out.returncode == 0, out.stdout + out.stderr
     assert the_line(out) == {"client_id": "cid-new", "client_secret": SECRET, "created": True,
-                             "regenerated": False, "patched": []}
+                             "regenerated": False, "patched": [], "installed": True}
     assert state["calls"] == [("POST", BASE_PATH, {
         "name": "Plane MCP", "slug": APP, "short_description": "MCP server for Plane",
         "company_name": "Uhstray.io", "redirect_uris": REDIRECT,
         "resource_permissions": ["read", "write"],
-    })]
+    }), INSTALL]
     assert_no_leak(out)
 
 
@@ -150,8 +158,10 @@ def test_an_owned_app_with_the_secret_held_is_left_alone_and_prints_no_secret(pl
     state["apps"] = [app_row()]
     out = run(base, have_secret=True)
     assert out.returncode == 0, out.stdout + out.stderr
-    assert the_line(out) == {"client_id": "cid-123", "created": False, "regenerated": False, "patched": []}
-    assert writes(state) == []
+    assert the_line(out) == {"client_id": "cid-123", "created": False, "regenerated": False, "patched": [],
+                             "installed": True}
+    # The install runs every pass; a repeat only sets the installation back to installed.
+    assert writes(state) == [INSTALL]
     assert SECRET not in out.stdout + out.stderr
     assert STORED not in out.stdout + out.stderr
     assert_no_leak(out)
@@ -163,8 +173,8 @@ def test_an_owned_app_without_the_secret_gets_a_regenerated_one_by_application_i
     out = run(base)
     assert out.returncode == 0, out.stdout + out.stderr
     assert the_line(out) == {"client_id": "cid-123", "client_secret": SECRET, "created": False,
-                             "regenerated": True, "patched": []}
-    assert state["calls"] == [("PATCH", f"{BASE_PATH}{APP_ID}/regenerate-secret/", None)]
+                             "regenerated": True, "patched": [], "installed": True}
+    assert state["calls"] == [("PATCH", f"{BASE_PATH}{APP_ID}/regenerate-secret/", None), INSTALL]
     assert STORED not in out.stdout + out.stderr
     assert_no_leak(out)
 
@@ -185,7 +195,7 @@ def test_differing_redirect_and_permissions_are_patched_together_by_slug(plane):
     assert out.returncode == 0, out.stdout + out.stderr
     assert state["calls"] == [("PATCH", f"{BASE_PATH}{APP}/", {
         "redirect_uris": REDIRECT, "resource_permissions": ["read", "write"],
-    })]
+    }), INSTALL]
     assert the_line(out)["patched"] == ["redirect_uris", "resource_permissions"]
     assert_no_leak(out)
 
@@ -195,7 +205,7 @@ def test_only_the_differing_field_is_in_the_patch(plane):
     state["apps"] = [app_row(redirect="https://old.test/callback")]
     out = run(base, have_secret=True)
     assert out.returncode == 0, out.stdout + out.stderr
-    assert state["calls"] == [("PATCH", f"{BASE_PATH}{APP}/", {"redirect_uris": REDIRECT})]
+    assert state["calls"] == [("PATCH", f"{BASE_PATH}{APP}/", {"redirect_uris": REDIRECT}), INSTALL]
     assert the_line(out)["patched"] == ["redirect_uris"]
 
 
@@ -204,7 +214,7 @@ def test_a_stored_redirect_list_with_an_extra_uri_is_narrowed_to_the_one_asked_f
     state["apps"] = [app_row(redirect=f"{REDIRECT} https://extra.test/callback")]
     out = run(base, have_secret=True)
     assert out.returncode == 0, out.stdout + out.stderr
-    assert state["calls"] == [("PATCH", f"{BASE_PATH}{APP}/", {"redirect_uris": REDIRECT})]
+    assert state["calls"] == [("PATCH", f"{BASE_PATH}{APP}/", {"redirect_uris": REDIRECT}), INSTALL]
 
 
 def test_two_redirect_uris_in_any_order_are_not_patched(plane):
@@ -214,7 +224,7 @@ def test_two_redirect_uris_in_any_order_are_not_patched(plane):
     state["apps"] = [app_row(redirect=" ".join(reversed(pair.split())))]
     out = run(base, have_secret=True, redirect_uri=pair)
     assert out.returncode == 0, out.stdout + out.stderr
-    assert writes(state) == [] and the_line(out)["patched"] == []
+    assert writes(state) == [INSTALL] and the_line(out)["patched"] == []
 
 
 def test_a_held_secret_for_another_client_id_is_regenerated(plane):
@@ -322,3 +332,49 @@ def test_the_joined_source_defines_every_name_it_uses():
             yield from used(child)
 
     assert sorted(set(used(top)) - defined) == []
+
+
+def test_a_refused_install_fails_by_status_and_prints_no_secret(plane):
+    # Without the install every member's authorization is refused, so a refusal fails the run.
+    state, base = plane
+    state["apps"] = []
+    state["install"] = (403, {"error": "leak-me-not"})
+    out = run(base)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert json.loads(out.stdout) == {"error": f"installing application {APP} in {WS} refused (403)"}
+    assert SECRET not in out.stdout + out.stderr
+    assert "leak-me-not" not in out.stdout + out.stderr
+    assert_no_leak(out)
+
+
+def test_a_created_app_without_an_id_is_refused_before_install(plane):
+    state, base = plane
+    state["apps"] = []
+    state["create"] = (201, {"client_id": "cid-new", "client_secret": SECRET, "slug": APP})
+    out = run(base)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert json.loads(out.stdout) == {"error": f"application {APP} has no id to install"}
+    assert INSTALL not in state["calls"]
+    assert SECRET not in out.stdout + out.stderr
+
+
+def test_a_refused_install_of_an_existing_app_fails_without_regenerating_or_printing_a_secret(plane):
+    # The path a running deployment takes: the app is listed and its secret is held.
+    state, base = plane
+    state["apps"] = [app_row()]
+    state["install"] = (403, {"error": "leak-me-not"})
+    out = run(base, have_secret=True)
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert json.loads(out.stdout) == {"error": f"installing application {APP} in {WS} refused (403)"}
+    assert state["calls"] == [INSTALL]
+    assert SECRET not in out.stdout + out.stderr and STORED not in out.stdout + out.stderr
+    assert "leak-me-not" not in out.stdout + out.stderr
+
+
+def test_a_first_install_answering_created_is_accepted(plane):
+    state, base = plane
+    state["apps"] = [app_row()]
+    state["install"] = (201, {"status": "installed"})
+    out = run(base, have_secret=True)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert the_line(out)["installed"] is True

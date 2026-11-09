@@ -87,6 +87,45 @@ for name in ("Refuse launch_gate_semaphore_url unless it is https (http only und
 PY
 }
 
+@test "launch-gate deploy: production refuses launch_gate_opa_ip unless it is one non-wildcard IPv4 address, and the OPA URL names a host the overlay can map" {
+  python3 - "$DEPLOY" <<'PY'
+import re, sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+names = [t.get("name", "") for t in play["tasks"]]
+tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
+ip = tasks["Refuse launch_gate_opa_ip unless it is one non-wildcard IPv4 address in production"]
+assert ip["when"] == "not _launch_gate_local_mode", ip.get("when")
+checks = ip["ansible.builtin.assert"]["that"]
+assert "(?!0[.]0[.]0[.]0$)" in checks[0] and checks[1] == "(_launch_gate_opa_ip | length) <= 15", checks
+assert checks[2] == "((_launch_gate_opa_ip.split('.')) | map('int') | max) <= 255", checks
+# The task's own regex is applied as Jinja's match test applies it (re.match), with the length and octet checks
+# alongside, so the refusal is exercised in fact and not only read as text.
+ip_re = re.search(r"is match\('(.+)'\)$", checks[0]).group(1)
+def ip_passes(value):
+    return bool(re.match(ip_re, value)) and len(value) <= 15 and max(int(o) for o in value.split('.')) <= 255
+for good in ("192.0.2.20", "198.51.100.1", "255.255.255.255"):
+    assert ip_passes(good), good
+for bad in ("0.0.0.0", "", "opa.example.internal", "256.1.1.1", "198.51.100", "1.2.3.4.5"):
+    assert not ip_passes(bad), bad
+host = tasks["Refuse a production launch_gate_opa_url whose host is not a DNS name the container can map"]
+assert host["when"] == "not _launch_gate_local_mode", host.get("when")
+assert host["vars"]["_launch_gate_opa_host"] == "{{ _launch_gate_opa_url | urlsplit('hostname') | default('', true) | string }}", host["vars"]
+dns, not_ip = host["ansible.builtin.assert"]["that"]
+name_re = re.search(r"is match\('(.+)'\)$", dns).group(1)
+ip_literal_re = re.search(r"is not match\('(.+)'\)$", not_ip).group(1)
+def host_passes(value):
+    return bool(re.match(name_re, value)) and not re.match(ip_literal_re, value)
+for good in ("opa.dc1.example.internal", "opa"):
+    assert host_passes(good), good
+# "::1" is what urlsplit('hostname') returns for an https://[::1]/ URL; "[::1]" is the bracketed form.
+for bad in ("", "192.0.2.20", "::1", "[::1]", "-bad.example"):
+    assert not host_passes(bad), bad
+# Both refusals sit after the URL's https refusal and before anything is issued.
+assert names.index("Refuse launch_gate_opa_url unless it is https (http only under local_mode)") < names.index(ip["name"]) < names.index("Issue the server leaf (key here, signed on the CA host)")
+assert names.index(host["name"]) < names.index("Issue the server leaf (key here, signed on the CA host)")
+PY
+}
+
 @test "launch-gate deploy: callers are refused unless each has a literal token and a non-empty agent list" {
   python3 - "$DEPLOY" <<'PY'
 import sys, yaml
@@ -95,7 +134,28 @@ tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
 checks = tasks["Refuse launch_gate_callers unless every caller has a literal token and a non-empty agent list"]["ansible.builtin.assert"]["that"]
 assert any("difference(_launch_gate_token_callers)" in c for c in checks), checks
 assert any("map('length') | min) > 0" in c for c in checks), checks
-assert play["vars"]["_launch_gate_token_callers"] == ["skynet"], play["vars"]["_launch_gate_token_callers"]
+assert play["vars"]["_launch_gate_token_callers"] == ["skynet", "console"], play["vars"]["_launch_gate_token_callers"]
+PY
+}
+
+@test "launch-gate deploy: the console caller acts as the five role agents, and every caller in the default has a token in the list and a secret definition" {
+  python3 - "$DEPLOY" <<'PY'
+import ast, re, sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+v = play["vars"]
+# D49: the console acts as the same five roles skynet does, so its list is the shared role list, not a copy of it.
+assert v["_launch_gate_role_agents"] == ["infra-agent", "security-agent", "o11y-agent", "service-agent", "network-agent"], v["_launch_gate_role_agents"]
+m = re.fullmatch(r"\{\{ launch_gate_callers \| default\((\{.*\}), true\) \}\}", v["_launch_gate_callers"])
+assert m, v["_launch_gate_callers"]
+default = ast.parse(m.group(1), mode="eval").body
+assert isinstance(default, ast.Dict), m.group(1)
+callers = [key.value for key in default.keys]
+assert callers == ["skynet", "console"], callers
+assert [ast.unparse(value) for value in default.values] == ["_launch_gate_role_agents", "_launch_gate_role_agents"], m.group(1)
+# Every caller the default names has its token declared in the list, and that list is exactly the token secrets declared.
+assert v["_launch_gate_token_callers"] == callers, v["_launch_gate_token_callers"]
+token_secrets = [d["name"][len("caller_"):-len("_token")] for d in v["_secret_definitions"] if d["name"].startswith("caller_")]
+assert token_secrets == v["_launch_gate_token_callers"], token_secrets
 PY
 }
 
@@ -108,6 +168,7 @@ v = play["vars"]
 assert isinstance(v["_secret_definitions"], list), v["_secret_definitions"]
 assert v["_secret_definitions"] == [
     {"name": "caller_skynet_token", "type": "random", "length": 48},
+    {"name": "caller_console_token", "type": "random", "length": 48},
     {"name": "semaphore_api_token", "type": "existing"},
 ], v["_secret_definitions"]
 assert v["_required_existing_secrets"] == ["semaphore_api_token"], v["_required_existing_secrets"]
@@ -158,10 +219,30 @@ import sys, yaml
 play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
 tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
 caller = tasks["Hold the caller and template the verify play probes with"]["ansible.builtin.set_fact"]
-assert caller["_launch_gate_probe_caller"] == "{{ _launch_gate_callers.keys() | list | sort | first }}", caller
+assert caller["_launch_gate_probe_caller"] == "{{ 'skynet' if 'skynet' in _launch_gate_callers else (_launch_gate_callers.keys() | list | sort | first) }}", caller
 assert caller["_launch_gate_probe_template"] == "{{ _launch_gate_allowlist[0] }}", caller
 agent = tasks["Hold the agent the verify play probes with (the probe caller's first agent)"]["ansible.builtin.set_fact"]
 assert agent["_launch_gate_probe_agent"] == "{{ _launch_gate_callers[_launch_gate_probe_caller][0] }}", agent
+PY
+}
+
+@test "launch-gate deploy: the verify probes choose skynet whenever skynet is a caller, else the first sorted caller (rendered)" {
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+from jinja2 import Environment
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
+expr = tasks["Hold the caller and template the verify play probes with"]["ansible.builtin.set_fact"]["_launch_gate_probe_caller"]
+assert expr.startswith("{{") and expr.endswith("}}"), expr
+env = Environment()
+def pick(callers):
+    return env.from_string(expr).render(_launch_gate_callers=callers)
+roles = ["infra-agent"]
+assert pick({"skynet": roles, "console": roles}) == "skynet"
+assert pick({"console": roles, "skynet": roles}) == "skynet"
+assert pick({"skynet": roles}) == "skynet"
+assert pick({"console": roles}) == "console"
+assert pick({"zeta": roles, "alpha": roles}) == "alpha"
 PY
 }
 
@@ -176,10 +257,33 @@ assert one["ansible.builtin.assert"]["that"] == ["groups.get('step_ca_svc', []) 
 cond = "groups['step_ca_svc'] | first if not _launch_gate_local_mode else inventory_hostname"
 mint = next(t for t in play["tasks"] if t.get("name") == "Issue the server leaf (key here, signed on the CA host)")
 assert mint["vars"]["_mint_ca_host"] == "{{ " + cond + " }}", mint["vars"]
-assert mint["vars"]["_mint_reissue"] is False and mint["vars"]["_mint_name"] == "{{ _launch_gate_server_leaf }}", mint["vars"]
+# Production keeps an issued leaf (renewal is Renew Internal Certs'); local-dev re-issues one with under 7 days left.
+assert mint["vars"]["_mint_reissue"] == "{{ _launch_gate_local_mode and (_launch_gate_leaf_fresh.rc | default(0)) != 0 }}", mint["vars"]
+assert mint["vars"]["_mint_name"] == "{{ _launch_gate_server_leaf }}", mint["vars"]
 dist = next(t for t in play["tasks"] if t.get("name") == "Distribute the step-ca trust bundle into ./certs")
 assert dist["vars"]["_ca_host"] == "{{ " + cond + " }}", dist["vars"]
 assert dist["vars"]["_ca_root_dest_dir"] == "{{ _deploy_dir }}", dist["vars"]
+PY
+}
+
+@test "launch-gate deploy: production refuses a host without catatonit, the init the compose file's init: true needs" {
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+tasks = play["tasks"]
+names = [t.get("name", "") for t in tasks]
+look = tasks[names.index("Look for podman's init binary (catatonit) on a production host")]
+refuse = tasks[names.index("Refuse a production host without catatonit (the gate runs with init: true)")]
+assert look["ansible.builtin.shell"] == "command -v catatonit >/dev/null 2>&1 || test -x /usr/libexec/podman/catatonit", look
+# Read-only probe: it must run under --check (or the refusal reads an undefined rc) and never fail by itself.
+assert look["check_mode"] is False and look["changed_when"] is False and look["failed_when"] is False, look
+assert look["register"] == "_launch_gate_init_bin", look
+assert refuse["ansible.builtin.assert"]["that"] == ["_launch_gate_init_bin.rc == 0"], refuse
+assert "Install Podman" in refuse["ansible.builtin.assert"]["fail_msg"], refuse
+for t in (look, refuse):
+    assert t["when"] == "not _launch_gate_local_mode", t["when"]
+# Refused before anything is placed or started on the host.
+assert names.index("Refuse a production host without catatonit (the gate runs with init: true)") < names.index("Place the monorepo + ensure podman/compose")
 PY
 }
 
@@ -233,14 +337,17 @@ play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts
 v = play["vars"]
 args = " ".join(str(a) for a in v["_tls_args"])
 assert "--cacert {{ _deploy_dir }}/certs/step-ca-bundle.crt" in args, args
-assert "--resolve {{ _launch_gate_tls_name }}:{{ _launch_gate_port }}:{{ _launch_gate_bind }}" in args, args
+# The --resolve pair is production only: it lives in _tls_resolve, which is empty under local_mode (behaviour pinned in
+# test_launch_gate_local_dev.bats, which renders it).
+assert "--resolve" not in args, args
+assert v["_tls_resolve"] == "{{ [] if _launch_gate_local_mode else ['--resolve', _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ ':' ~ _launch_gate_bind] }}", v["_tls_resolve"]
 assert "%{http_code}" in args, args
 tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
 health = tasks["Health over TLS from this host (GET /healthz -> 200, against the step-ca bundle)"]
-assert health["ansible.builtin.command"]["argv"] == "{{ _tls_args + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_port ~ '/healthz'] }}", health
+assert health["ansible.builtin.command"]["argv"] == "{{ _tls_args + _tls_resolve + ['https://' ~ _launch_gate_tls_name ~ ':' ~ _launch_gate_probe_port ~ '/healthz'] }}", health
 assert health["check_mode"] is False, health
 plain = tasks["Plain HTTP to the TLS listener must not answer 200"]
-assert plain["ansible.builtin.command"]["argv"][-1] == "http://{{ _launch_gate_bind }}:{{ _launch_gate_port }}/healthz", plain
+assert plain["ansible.builtin.command"]["argv"][-1] == "http://{{ _launch_gate_plain_host }}:{{ _launch_gate_probe_port }}/healthz", plain
 assert tasks["Refuse a plain-HTTP 200 from the TLS listener"]["ansible.builtin.assert"]["that"] == ["_launch_gate_plain_http.stdout | trim != '200'"]
 PY
 }
@@ -271,6 +378,35 @@ assert asserted == [
     "'other-template 403 template_not_allowed' in _launch_gate_probes.stdout_lines",
     "'allowed-template 400 undeclared_field' in _launch_gate_probes.stdout_lines",
 ], asserted
+PY
+}
+
+@test "launch-gate deploy: Phase 3 proves OPA's /health from inside the container, through the gate's own trust bundle and name map, after the caller probes" {
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][2]
+names = [t.get("name", "") for t in play["tasks"]]
+probe = names.index("Probe the gate from inside its container (401, 403 and 400 from its own listener)")
+opa = names.index("OPA answers the gate's container (GET <opa_url>/health -> 200 through the gate's own trust and name mapping)")
+assert probe < opa < names.index("Assert OPA answered the gate's container 200 to /health") < names.index("Record the service-deploy step result"), names
+task = play["tasks"][opa]
+argv = task["ansible.builtin.command"]["argv"]
+assert len(argv) == 7 and argv[:6] == ["{{ _engine }}", "exec", "launch-gate", "python", "-I", "-c"], argv[:6]
+script = argv[6]
+# The gate's trust bundle and URL come from its own config, read in the container, so the probe uses what the gate uses.
+for needle in ('open("/etc/launch-gate/config.json"', 'config["opa_ca_bundle"]', 'config["opa_url"].rstrip("/") + "/health"',
+               'ssl.TLSVersion.TLSv1_2', 'urllib.request.ProxyHandler({})', 'print("opa-health", response.status)',
+               'print("opa-health", exc.code)', 'print("opa-health error", type(exc).__name__)'):
+    assert needle in script, needle
+# Labels only: the exception's message (which can echo a URL or a body) is never printed, and no credential is read.
+assert "exc)" not in script.replace("type(exc)", "") and "Bearer" not in script and "LAUNCH_GATE_" not in script, script
+assert task["changed_when"] is False and task["check_mode"] is False, task
+assert task["register"] == "_launch_gate_opa_health", task.get("register")
+assert task["when"] == "not ansible_check_mode", task.get("when")
+assert "no_log" not in task, task
+asserted = [t for t in play["tasks"] if t.get("name") == "Assert OPA answered the gate's container 200 to /health"][0]
+assert asserted["ansible.builtin.assert"]["that"] == ["'opa-health 200' in _launch_gate_opa_health.stdout_lines"], asserted
+assert asserted["when"] == "not ansible_check_mode", asserted.get("when")
 PY
 }
 

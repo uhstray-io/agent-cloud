@@ -2,18 +2,17 @@
 # A verify playbook reads each endpoint under the same name, with the same default, as
 # the playbook that provisions or deploys the thing it verifies.
 #
-# docs/MISTAKES.md 6.4: verify-tududi-github-sync.yml read the tududi API from
+# docs/MISTAKES.md 6.4: a verify gate read the tududi API from
 # `tududi_base_url | default('http://127.0.0.1:3002')`. The baked local inventory already
 # set that name, to the app's PUBLIC base URL behind Caddy, which the orchestrator cannot
-# reach. The provisioner had named the same fact `tududi_sync_tududi_url`, default
-# `http://tududi:3002`. The gate failed on every run, and the step carried a bearer header,
-# so the run printed `censored` and nothing else.
+# reach. The provisioner had named the same fact differently, with another default. The
+# gate failed on every run, and the step carried a bearer header, so the run printed
+# `censored` and nothing else.
 #
 # PAIRING RULE, as checked here:
 #   - Population: every platform/playbooks/verify-<X>.yml.
 #   - Counterparts: every deploy-<Y>.yml and provision-<Y>.yml in the same directory where
-#     X == Y or X starts with "<Y>-" (verify-tududi-github-sync pairs with
-#     provision-tududi-github-sync AND deploy-tududi; verify-o11y-service with deploy-o11y).
+#     X == Y or X starts with "<Y>-" (verify-o11y-service pairs with deploy-o11y).
 #     A verify playbook with no counterpart is not checked.
 #   - Subject: each `<name>_url | default('<literal>')` in any string of the verify playbook
 #     (whitespace and newlines anywhere around `|`, `default` and the paren), where
@@ -129,18 +128,10 @@ _compare() {
   _compare "$output" "$RATCHET" "$PB"
   local n
   n=$(printf '%s\n' "$output" | sed -n 's/^checked //p')
-  # Not vacuous: two variables were compared when this landed.
-  [ "$n" -ge 2 ]
-}
-
-@test "the 6.4 fix is recognised: the sync gate reads tududi under the provisioner's name and default" {
-  # The pair that was wrong in 6.4 and is right now. If the pairing rule or the default
-  # parser regressed, this pair would stop being compared, and the ratchet test above
-  # could still pass on an empty population.
-  run _offenders "$PB"
-  [ "$status" -eq 0 ]
-  assert_contains "$output" "verify-tududi-github-sync.yml:tududi_sync_tududi_url"
-  refute_contains "$output" $'verify-tududi-github-sync.yml:tududi_sync_tududi_url\t'
+  # No real-tree floor. The population is empty since 2026-11-07: the only verify playbook
+  # that defaulted a url name was retired with the tududi sync. Non-vacuity is proven on
+  # the fixtures below (the 6.4 shape is an offender; a matching default is compared clean).
+  [ -n "$n" ]
 }
 
 # ── The checker itself, on fixtures ─────────────────────────────────────────

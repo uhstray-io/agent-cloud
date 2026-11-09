@@ -1,0 +1,58 @@
+# Semaphore templates retired from the declaration. The "Retire Semaphore Templates" template
+# (platform/playbooks/retire-semaphore-templates.yml) deletes each live template named here,
+# together with its schedules.
+#
+# setup-templates.yml only publishes: removing a template from templates.yml leaves the live
+# template in Semaphore, and its schedule keeps firing. An entry here is the code-managed removal.
+#
+# The playbook enforces these before it deletes anything:
+#   - the name must already be gone from templates.yml and templates-local.yml, including the
+#     generated "(Dev)" twin of a dev_variant template. Remove the declaration and add the entry
+#     in the SAME change, so no name is both declared and retired;
+#   - the name must match exactly one live template. More than one is refused, not guessed at.
+#
+# Fields:
+#   name     exact Semaphore template name, as published (a "(Dev)" or "(Local)" suffix included)
+#   retired  the date the declaration was removed, YYYY-MM-DD, quoted so YAML keeps it a string
+#   reason   one line
+#
+# Entries are kept after a retirement. An absent name is a no-op, so a re-run converges and the
+# list is the record of what was retired and when.
+
+retired_templates:
+  - name: "Store tududi API Token"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Store tududi API Token (Dev)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Store tududi API Token (Local)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Refresh tududi-sync GitHub Token"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Refresh tududi-sync GitHub Token (Dev)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Refresh tududi-sync GitHub Token (Local)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Provision tududi-github Sync"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Provision tududi-github Sync (Dev)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Provision tududi-github Sync (Local)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Verify tududi-github Sync"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Verify tududi-github Sync (Dev)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
+  - name: "Verify tududi-github Sync (Local)"
+    retired: "2026-11-07"
+    reason: "tududi GitHub sync retired; Plane replaces it (plan 16)"
