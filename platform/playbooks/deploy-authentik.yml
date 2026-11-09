@@ -54,13 +54,17 @@
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
     # Blueprints always applied regardless of environment (groups, flows, named
-    # users). Per-app blueprints are selected from the catalog by `authentik_apps`.
+    # users, and the retired-apps tombstones). Per-app blueprints are selected from
+    # the catalog by `authentik_apps`.
     # zz-sso-bindings and platform-admins are RENDERED from templates/ (not copied):
     # the first from the enabled set, the second from the administrator list.
+    # retired-apps.yaml must stay here: a retired app's objects are removed only by its
+    # state: absent entries, and those run only while the file is placed.
     _shared_blueprints:
       - agent-cloud.yaml
       - platform-groups.yaml
       - platform-users.yaml
+      - retired-apps.yaml
     _authentik_tpls: "{{ playbook_dir }}/../services/authentik/deployment"
 
   tasks:

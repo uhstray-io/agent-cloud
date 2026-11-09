@@ -27,8 +27,8 @@ metadata:
   name: agent-cloud - platform users
 entries:
   # BUSINESS tier only (platform-business): rw ERPNext, and admitted to
-  # every tier-`member` app by the platform-member access gate, which is what
-  # grants tududi. Real identity via site-config (ANDREW_*).
+  # every tier-`member` app by the platform-member access gate. Real identity via
+  # site-config (ANDREW_*).
   #
   # Narrowed from platform-developers + platform-business to business alone on
   # 2026-08-26, at the operator's direction. That REMOVES the developer tier — a
