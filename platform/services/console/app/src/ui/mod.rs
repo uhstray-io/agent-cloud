@@ -4,6 +4,7 @@
 
 mod access;
 mod access_api;
+mod action;
 mod api;
 mod cicd;
 pub(crate) mod cicd_api;
@@ -34,6 +35,9 @@ pub(crate) mod telemetry_api;
 mod topology;
 mod work;
 mod work_detail;
+
+#[cfg(all(test, feature = "server"))]
+mod render_tests;
 
 use dioxus::prelude::*;
 

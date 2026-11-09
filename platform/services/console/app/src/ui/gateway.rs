@@ -39,6 +39,9 @@ pub const LLM_ACCESS: PageMeta = PageMeta {
 /// Why the Rotate and Revoke buttons are off: key changes arrive with proposals (Phase 4).
 const KEY_TITLE: &str = "Key changes arrive with proposals (Phase 4)";
 
+/// The element that shows `KEY_TITLE` as visible text above the client table; each Rotate and Revoke button describes itself by it.
+const KEY_REASON_ID: &str = "gateway-action-reason";
+
 /// Shown beneath both tables: the reason some platform admins are absent from them.
 const ADMIN_NOTE: &str = "Platform admins with a personal gateway identity that is not also a listed client are not shown; the gateway enrols them at deploy with the admin tier.";
 
@@ -209,6 +212,11 @@ fn AccessTable(clients: Vec<GatewayClient>, usage_read: Option<String>) -> Eleme
     let empty = clients.is_empty();
     rsx! {
         section { class: "card",
+            if !empty {
+                div { class: "card-b",
+                    p { id: KEY_REASON_ID, class: "action-reason", "{KEY_TITLE}" }
+                }
+            }
             div { class: "tbl-wrap",
                 table { class: "tbl",
                     thead {
@@ -258,8 +266,20 @@ fn AccessTable(clients: Vec<GatewayClient>, usage_read: Option<String>) -> Eleme
                                 }
                                 td {
                                     div { class: "row",
-                                        button { class: "btn", disabled: true, title: "{KEY_TITLE}", "Rotate" }
-                                        button { class: "btn", disabled: true, title: "{KEY_TITLE}", "Revoke" }
+                                        button {
+                                            class: "btn",
+                                            disabled: true,
+                                            aria_describedby: KEY_REASON_ID,
+                                            title: "{KEY_TITLE}",
+                                            "Rotate"
+                                        }
+                                        button {
+                                            class: "btn",
+                                            disabled: true,
+                                            aria_describedby: KEY_REASON_ID,
+                                            title: "{KEY_TITLE}",
+                                            "Revoke"
+                                        }
                                     }
                                 }
                             }

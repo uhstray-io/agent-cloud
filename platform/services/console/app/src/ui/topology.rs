@@ -1,8 +1,9 @@
 //! Topology: the compute tree (sites, clusters, nodes, VMs), the resource panel
 //! for what is selected, and two admin-only tabs (network prefixes, data flows).
 //!
-//! Click selects one row. Shift-click adds or removes a row, and the panel then
-//! shows the count and the worst RAG of the selection. Every row is a NetBox or
+//! Click, or Enter or Space on a focused row, selects one row. Shift-click (or
+//! Shift+Enter, Shift+Space) adds or removes a row, and the panel then shows the
+//! count and the worst RAG of the selection. Every row is a NetBox or
 //! Proxmox fact the inventory answer carries; nothing is drawn from console-local
 //! data. The scope bar narrows the compute tree; the network and flows tabs are
 //! not tenant-scoped.
@@ -19,7 +20,7 @@ use super::inventory::{
     after_click, bytes_text, count_text, cpu_percent, live_picks, loaded_tree, mb_text,
     mem_percent, meta_of, node_key, pick_rags, poll_admin, same_row, scope_gate, scoped_inventory,
     selection_rag, uptime_text, view, vm_key, vm_of, Admin, Kind, Pick, ScopeGate, Snapshot, View,
-    ViewNotice, SEP,
+    ViewNotice, POLL_MS, SEP,
 };
 use super::inventory_api::{
     self, Cluster, Device, Flow, FlowsBody, Inventory, NetworkBody, Node, Prefix, Site,
@@ -294,6 +295,55 @@ fn pick_name(pick: &Pick) -> String {
     }
 }
 
+/// Hides the selection announcement from sight while a screen reader still reads it.
+const VISUALLY_HIDDEN: &str = "position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;";
+
+/// The line a flows answer shows above its groups, or `None` when it needs none. An
+/// unconfigured source gets the setup hint. An unknown source says it is unknown, not
+/// that nothing is declared; an empty answer from a known source says nothing is declared.
+pub fn flows_notice(source: SourceStatus, empty: bool) -> Option<String> {
+    if source == SourceStatus::Unconfigured {
+        Some(unconfigured_hint("flows").to_string())
+    } else if source == SourceStatus::Unknown {
+        Some("The data-flow source reported a state the console does not know.".to_string())
+    } else if empty {
+        Some("No data flows are declared.".to_string())
+    } else {
+        None
+    }
+}
+
+/// The sentence a failed admin read shows: what failed, why, and when it is read again.
+/// The seconds come from the poll interval the caller passes, never a literal.
+pub fn unavailable_message(what: &str, reason: &str, poll_ms: u32) -> String {
+    format!(
+        "The {what} could not be loaded: {reason}. It retries every {} seconds while this tab is visible.",
+        poll_ms / 1000
+    )
+}
+
+/// True for the two keys that select a row the way a click does: Enter, and Space
+/// (the key value `" "`).
+pub fn is_select_key(key: &Key) -> bool {
+    matches!(key, Key::Enter) || matches!(key, Key::Character(text) if text == " ")
+}
+
+/// The selection after a select key on `pick`'s row, or `None` for any other key.
+/// A plain key replaces the selection. Shift adds the row, or removes it when it is
+/// already selected, the same rule `after_click` applies to a click.
+pub fn key_selection(picks: &[Pick], pick: Pick, key: &Key, shift: bool) -> Option<Vec<Pick>> {
+    is_select_key(key).then(|| after_click(picks, pick, shift))
+}
+
+/// What the selection live region says: how many rows are selected.
+pub fn selection_announcement(count: usize) -> String {
+    match count {
+        0 => "No row selected.".to_string(),
+        1 => "1 row selected.".to_string(),
+        n => format!("{n} rows selected."),
+    }
+}
+
 /// The Topology page. The tenant's snapshot feeds the compute tab. The network and
 /// flows tabs read their own admin-only answers, and polling stops for a non-admin.
 #[component]
@@ -554,7 +604,8 @@ fn vm_meta(vm: &Vm) -> String {
     format!("{} \u{00b7} {}", vm.status, live)
 }
 
-/// A selectable row. A plain click selects it alone. A shift-click toggles it in the selection.
+/// A selectable row. A plain click selects it alone. A shift-click toggles it in the
+/// selection. Enter and Space do the same from the keyboard: plain replaces, Shift toggles.
 #[component]
 fn TreeRow(
     pick: Pick,
@@ -569,6 +620,7 @@ fn TreeRow(
     let mut picks = picks;
     let selected = picks.read().iter().any(|p| same_row(p, &pick));
     let clicked = pick.clone();
+    let keyed = pick.clone();
     rsx! {
         button {
             r#type: "button",
@@ -577,6 +629,23 @@ fn TreeRow(
             onclick: move |evt: MouseEvent| {
                 let next = after_click(&picks.read(), clicked.clone(), evt.modifiers().shift());
                 picks.set(next);
+            },
+            // A native button turns Enter and Space into a click. Both key events are
+            // cancelled so that click cannot apply a second Shift toggle: the selection is
+            // made once, on keydown. An auto-repeated key is cancelled but selects nothing.
+            onkeydown: move |evt: KeyboardEvent| {
+                let next = key_selection(&picks.read(), keyed.clone(), &evt.key(), evt.modifiers().shift());
+                if let Some(next) = next {
+                    evt.prevent_default();
+                    if !evt.is_auto_repeating() {
+                        picks.set(next);
+                    }
+                }
+            },
+            onkeyup: move |evt: KeyboardEvent| {
+                if is_select_key(&evt.key()) {
+                    evt.prevent_default();
+                }
             },
             span { class: "grow",
                 b { "{label}" }
@@ -598,11 +667,12 @@ fn TreeRow(
 fn ResourcePanel(inventory: Inventory, picks: Signal<Vec<Pick>>) -> Element {
     let mut picks = picks;
     let current = live_picks(&inventory, &picks.read());
+    let announcement = selection_announcement(current.len());
     let body = match current.as_slice() {
         [] => rsx! {
             section { class: "card",
                 div { class: "card-b faint",
-                    "Select a site, cluster, node or VM to see its details. Shift-click to select several."
+                    "Select a site, cluster, node or VM to see its details. Shift-click, Shift+Enter or Shift+Space to select several."
                 }
             }
         },
@@ -643,6 +713,9 @@ fn ResourcePanel(inventory: Inventory, picks: Signal<Vec<Pick>>) -> Element {
     };
     rsx! {
         aside { class: "details", aria_label: "Resource panel",
+            // Rendered whatever the selection, because a live region must already be in
+            // the page when its text changes.
+            span { role: "status", aria_live: "polite", style: VISUALLY_HIDDEN, "{announcement}" }
             {body}
         }
     }
@@ -720,7 +793,7 @@ fn NetworkPanel(state: Signal<Admin<NetworkBody>>) -> Element {
             Notice { message: "Your session ended. Sign in again to see the network.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
-            Notice { message: format!("The network could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }
+            Notice { message: unavailable_message("network", &reason, POLL_MS) }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
@@ -789,7 +862,7 @@ fn FlowsPanel(state: Signal<Admin<FlowsBody>>) -> Element {
             Notice { message: "Your session ended. Sign in again to see the data flows.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
-            Notice { message: format!("The data flows could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }
+            Notice { message: unavailable_message("data flows", &reason, POLL_MS) }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
@@ -805,13 +878,7 @@ fn FlowsPanel(state: Signal<Admin<FlowsBody>>) -> Element {
                     (kind, counted, keyed)
                 })
                 .collect();
-            let notice: Option<String> = if body.source == SourceStatus::Unconfigured {
-                Some(unconfigured_hint("flows").to_string())
-            } else if groups.is_empty() {
-                Some("No data flows are declared.".to_string())
-            } else {
-                None
-            };
+            let notice = flows_notice(body.source, groups.is_empty());
             rsx! {
                 if !reason.is_empty() {
                     p { class: "stale", role: "status", "The last refresh failed: {reason}." }
@@ -1219,5 +1286,111 @@ mod tests {
         );
         assert!(d.rows.iter().any(|(k, v)| *k == "VM ID" && v == "101"));
         assert_eq!(d.rag, Some(Rag::Red));
+    }
+
+    #[test]
+    fn enter_and_space_select_a_row_and_shift_toggles_it() {
+        let a = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0);
+        let b = pick(Kind::Vm, "dc1", Some("pve-prod"), "honcho", 1);
+        let space = Key::Character(" ".to_string());
+        // Plain Enter or Space replaces the selection.
+        assert_eq!(
+            key_selection(std::slice::from_ref(&b), a.clone(), &Key::Enter, false),
+            Some(vec![a.clone()])
+        );
+        assert_eq!(
+            key_selection(std::slice::from_ref(&b), a.clone(), &space, false),
+            Some(vec![a.clone()])
+        );
+        // Shift adds the row, and removes it when it is already selected.
+        assert_eq!(
+            key_selection(std::slice::from_ref(&b), a.clone(), &Key::Enter, true),
+            Some(vec![b.clone(), a.clone()])
+        );
+        assert_eq!(
+            key_selection(&[a.clone(), b.clone()], a.clone(), &space, true),
+            Some(vec![b.clone()])
+        );
+    }
+
+    #[test]
+    fn other_keys_leave_the_selection_alone() {
+        let a = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0);
+        for key in [
+            Key::Escape,
+            Key::Tab,
+            Key::ArrowDown,
+            Key::Character("a".to_string()),
+        ] {
+            assert!(!is_select_key(&key), "{key:?} selects nothing");
+            assert_eq!(key_selection(&[], a.clone(), &key, true), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn the_selection_announcement_counts_the_rows() {
+        assert_eq!(selection_announcement(0), "No row selected.");
+        assert_eq!(selection_announcement(1), "1 row selected.");
+        assert_eq!(selection_announcement(3), "3 rows selected.");
+    }
+
+    #[test]
+    fn an_unknown_flow_source_is_said_to_be_unknown_not_empty() {
+        let unknown = "The data-flow source reported a state the console does not know.";
+        assert_eq!(
+            flows_notice(SourceStatus::Unknown, true).as_deref(),
+            Some(unknown)
+        );
+        assert_eq!(
+            flows_notice(SourceStatus::Unknown, false).as_deref(),
+            Some(unknown)
+        );
+        assert_eq!(
+            flows_notice(SourceStatus::Ok, true).as_deref(),
+            Some("No data flows are declared.")
+        );
+        assert_eq!(flows_notice(SourceStatus::Ok, false), None);
+        assert_eq!(
+            flows_notice(SourceStatus::Unconfigured, true),
+            Some(unconfigured_hint("flows").to_string())
+        );
+    }
+
+    #[test]
+    fn a_retry_sentence_takes_its_seconds_from_the_poll_interval() {
+        assert_eq!(
+            unavailable_message("network", "timed out", 5_000),
+            "The network could not be loaded: timed out. It retries every 5 seconds while this tab is visible."
+        );
+        assert!(unavailable_message("data flows", "x", POLL_MS)
+            .contains(&format!("every {} seconds", POLL_MS / 1000)));
+    }
+
+    /// Holds a signal of picks, as the tree does, and draws the resource panel over it.
+    #[cfg(feature = "server")]
+    #[component]
+    fn PanelHarness(inventory: Inventory, picks: Vec<Pick>) -> Element {
+        let picks = use_signal(|| picks.clone());
+        rsx! { ResourcePanel { inventory, picks } }
+    }
+
+    #[cfg(feature = "server")]
+    #[test]
+    fn the_selection_live_region_is_in_the_page_and_names_the_count() {
+        let two = vec![
+            pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0),
+            pick(Kind::Vm, "dc1", Some("pve-prod"), "honcho", 1),
+        ];
+        let html = dioxus::ssr::render_element(rsx! {
+            PanelHarness { inventory: inventory(), picks: two }
+        });
+        assert!(html.contains(r#"aria-live="polite""#), "{html}");
+        assert!(html.contains("2 rows selected."), "{html}");
+
+        let none = dioxus::ssr::render_element(rsx! {
+            PanelHarness { inventory: inventory(), picks: Vec::new() }
+        });
+        assert!(none.contains(r#"aria-live="polite""#), "{none}");
+        assert!(none.contains("No row selected."), "{none}");
     }
 }

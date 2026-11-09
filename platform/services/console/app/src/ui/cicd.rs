@@ -20,6 +20,9 @@ use super::work::Tone;
 /// Why the Re-run button is off: a re-run arrives with proposals, which is Phase 4.
 const RERUN_TITLE: &str = "Re-runs arrive with proposals (Phase 4)";
 
+/// The element that shows `RERUN_TITLE` as visible text above the pull request table; each Re-run button describes itself by it.
+const RERUN_REASON_ID: &str = "cicd-action-reason";
+
 /// The page's one poll, as `poll_admin` runs it. It also keeps the client clock each answer arrived at, so
 /// the ages in the table are read against that clock (as the Policy page does).
 async fn poll(
@@ -212,6 +215,11 @@ fn PullsCard(pulls: Vec<Pull>, now_ms: Option<i64>) -> Element {
             div { class: "card-h",
                 h2 { "Open pull requests" }
             }
+            if !empty {
+                div { class: "card-b",
+                    p { id: RERUN_REASON_ID, class: "action-reason", "{RERUN_TITLE}" }
+                }
+            }
             div { class: "tbl-wrap",
                 table { class: "tbl",
                     thead {
@@ -251,6 +259,7 @@ fn PullsCard(pulls: Vec<Pull>, now_ms: Option<i64>) -> Element {
                                     button {
                                         class: "btn",
                                         disabled: true,
+                                        aria_describedby: RERUN_REASON_ID,
                                         title: "{RERUN_TITLE}",
                                         "Re-run"
                                     }

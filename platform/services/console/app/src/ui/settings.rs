@@ -11,11 +11,11 @@
 use dioxus::prelude::*;
 
 use super::icons::icon;
-use super::inventory::{meta_of, poll_admin, view, Admin, Snapshot, View};
+use super::inventory::{meta_of, poll_admin, view, Admin, Snapshot, View, POLL_MS};
 use super::inventory_api::{self, Domain, ServiceRow};
 use super::services::DomainSwatch;
 use super::settings_api::{tree_path, TenantTree, TreeOrg, TreeSite};
-use super::shell::Ctx;
+use super::shell::{no_tenant_message, Ctx};
 use super::status::{Notice, DASH};
 
 /// Why every change control on these pages is disabled.
@@ -103,7 +103,9 @@ pub fn TenantSettings() -> Element {
             TreeRead { key: "{tenant}", tenant, page: SettingsPage::Tenant }
         },
         None => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see its settings.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see its settings."),
+            }
         },
     };
     rsx! {
@@ -129,7 +131,9 @@ pub fn OrgSettings() -> Element {
             TreeRead { key: "{tenant}", tenant, page: SettingsPage::Org }
         },
         None => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see its settings.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see its settings."),
+            }
         },
     };
     rsx! {
@@ -167,7 +171,7 @@ fn TreeRead(tenant: String, page: SettingsPage) -> Element {
             Notice { message: "Your session ended. Sign in again to see these settings.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
-            Notice { message: format!("The settings could not be loaded: {reason}. They retry every 30 seconds while this tab is visible.") }
+            Notice { message: format!("The settings could not be loaded: {reason}. They retry every {} seconds while this tab is visible.", POLL_MS / 1000) }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
@@ -238,9 +242,16 @@ fn TenantView(body: TenantTree, reason: String) -> Element {
             }
             div { class: "card-b stack",
                 div { class: "row wrap",
-                    button { class: "btn", r#type: "button", disabled: true, title: "{CHANGE_REASON}", "Edit tenant" }
+                    button {
+                        class: "btn",
+                        r#type: "button",
+                        disabled: true,
+                        aria_describedby: "tenant-change-reason",
+                        title: "{CHANGE_REASON}",
+                        "Edit tenant"
+                    }
                 }
-                p { class: "hint", "{CHANGE_REASON}" }
+                p { id: "tenant-change-reason", class: "hint", "{CHANGE_REASON}" }
             }
         }
     }
@@ -381,9 +392,16 @@ fn OrgView(tenant: String, body: TenantTree, reason: String) -> Element {
                     Notice { message: "The business domains are not loaded yet.".to_string() }
                 }
                 div { class: "row wrap",
-                    button { class: "btn", r#type: "button", disabled: true, title: "{CHANGE_REASON}", "Edit domains" }
+                    button {
+                        class: "btn",
+                        r#type: "button",
+                        disabled: true,
+                        aria_describedby: "org-change-reason",
+                        title: "{CHANGE_REASON}",
+                        "Edit domains"
+                    }
                 }
-                p { class: "hint", "{CHANGE_REASON}" }
+                p { id: "org-change-reason", class: "hint", "{CHANGE_REASON}" }
             }
         }
     }

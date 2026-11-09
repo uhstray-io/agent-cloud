@@ -91,7 +91,7 @@ Decisions D22–D25. Every source is all-or-none in the environment. A source th
 
 Waits for OPA and skynet in production (D29).
 
-- [ ] 7.1 To be detailed when OPA and skynet are deployed in production. See the operator handoffs `opa-production.md` and `skynet-production.md` (2026-10-29).
+- [ ] 7.1 To be detailed when OPA and skynet are deployed in production. Includes the composer's keyboard path, moved here from 10.1 on 2026-11-08 (D44). See the operator handoffs `opa-production.md` and `skynet-production.md` (2026-10-29).
 
 ## Shared credentials (before Phase 5)
 
@@ -149,8 +149,11 @@ Decision D26. Admin-only (D25).
 
 ## Phase 7 checklist: harden and promote
 
-- [ ] 10.1 Accessibility: a keyboard-only path through Work, the composer, the stepper and topology selection.
-- [ ] 10.2 Error, permission-denied and unconfigured states on every page.
-- [ ] 10.3 A load test of the API.
+- [ ] 10.1 Accessibility (D44): a keyboard-only path through Work, its details and stepper, topology selection and the tenant menu, with a skip link, and disabled controls whose reason is visible text. Narrowed 2026-11-08 (operator's call): the composer's keyboard path moves to Phase 4.
+- [ ] 10.2 Error, permission-denied and unconfigured states on every page (D45): a 401 signs out everywhere, a failed tenant list says so, unknown states say they are unknown, and retry sentences take their seconds from the poll interval.
+- [x] 10.3 A load test of the API (D46): the in-process ignored test, its request count and p50, p95 and p99 recorded here.
+  - Done 2026-11-08: `load_cached_reads` (`server/load_test.rs`) run on the integrated Phase 7 branch, one Darwin arm64 workstation, 32 workers, 16 `/v1` read routes, 10 s, platform-admin session, unconfigured caches: 152,337 requests (15,166 req/s), every status 200, no transport error, p50 1.24 ms, p95 3.69 ms, p99 26.24 ms, max 85.33 ms. Tail latency varies between runs (an earlier run had p99 41.40 ms), so these figures are indicative, not a baseline.
+- [x] 10.3a Status rendering (D47): each status component rendered for every state shows an icon and a word.
+  - Done 2026-11-08: `ui/render_tests.rs` renders `RagBadge`, the source line, the step list, every lane of the minimized rail (icon, accessible name and visible word) and the meter for every state, and checks every icon name a status look returns draws a glyph. Renaming one icon turned five render tests red while every data-level test stayed green. `cicd::status_badge`, `telemetry::HealthBadge`, `work_detail::Stepper` and `roles::LaneCell` are private, so their icons are covered by the icon-name test only.
 - [ ] 10.4 The plan 17 validation table passes on `dev` **and in production** (every phase gate 6.6, 8.5 and 9.3, run through the (Dev) templates and the computer-use tests). Write the operator test plan `plan/product/dispatch-console/TEST-PLAN.md`.
 - [ ] 10.5 Only after 10.4 passes: open the dev → main promotion PR. The merge is the operator's call.
