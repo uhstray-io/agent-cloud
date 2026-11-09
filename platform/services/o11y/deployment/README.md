@@ -213,6 +213,26 @@ deduplicated with the OTLP TLS overlay. Existing self-monitor labels and metrics
 are forwarded through the existing private receiver path. Keep task 3.3 and all
 live acceptance gates open.
 
+**Proving the namespace gate before the first enable.** `Survey o11y Availability Gate (Dev)`
+(`survey-o11y-availability-gate.yml`) runs the pre-placement namespace proof in enabled mode and
+prints one fixed category. `isolated` means the proof passed for the receiver as it runs at that
+moment. Any other value names the decision point that refused: `namespace_alloy_unavailable` (no
+single project Alloy container running with a start time), `namespace_alloy_host_port`
+(a container publishes host port 12345), `namespace_shared` (the Alloy network namespace equals the
+host's or a project sibling's), `namespace_network_mode` (a network mode that is host, none, or joins
+another namespace), `namespace_provider_unverified` (the compose or podman provider, its version or
+executable identity, or the enabled-mode overlay does not match), `namespace_unstable` (two passes
+disagree, or an expected fingerprint does not match), `namespace_runtime_unreadable` (an inspect,
+`/proc` or listing read failed or was malformed, or a running container had no usable pid), and
+`namespace_unverified` for every other refusal. The producer source gate
+(`--verify-availability-source`) reports `namespace_unverified` in place of the finer categories, so
+its fixed reason set does not change.
+The survey reads no activation switch, places nothing, and prints no container, process or namespace
+identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
+an `isolated` result does not accept availability: the source, placement and post-apply gates still
+apply. Candidate-mode checks of the effective compose file (`deploy.sh --candidate`) keep the generic
+`namespace_unverified` category; the survey covers only the pre-placement runtime proof.
+
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
 candidate object is complete. It compares every fixed public job category in
@@ -868,6 +888,13 @@ failures over fifteen minutes instead of five would have paged 17 times. It keep
 than by every rule. Rules whose queries are still failing hold their last state while
 it fires; check the receiver host's I/O wait and Prometheus health.
 
+The same group's `o11y_grafana_db_check_failing` warns when Grafana's own database check
+(`/api/health` answering 503) fails more than four times in an hour and that holds for
+fifteen minutes. The external liveness watcher retries each probe before it pages, so this
+rule is what still reports Grafana's store failing in short bursts. Backtested on the 14
+days before the SQLite fix was deployed (merged 2026-11-07, deployed 2026-11-08; window 2026-10-25 to 2026-11-08), it would have fired twice,
+on 2026-10-30 and 2026-11-07; a threshold of more than three would have fired seven times.
+
 Order matters. Run `Deploy o11y (Dev)` with this change before any alert drill or recover
 template. `Drill o11y Active Alert Delivery (Dev)` and `Recover o11y Active Alert Drill (Dev)`
 validate the live rules against the KeepLast contracts and refuse `live_target_drift` until a
@@ -880,16 +907,21 @@ A full Grafana or Prometheus outage is covered by the external liveness watcher
 (`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs
 from the Semaphore host and does not depend on Grafana's rule evaluation. Each probe is
 retried twice, `o11y_watch_retry_delay` seconds apart (default 10), before it counts, so a
-page means about 20 s of failure rather than one lost request. A datasource health 500 is
-reported as Grafana-side (`grafana datasource health errored`): Grafana 11.4 answers 400
-when Prometheus returns an unhealthy verdict, and 500 when Grafana itself errored (loading
-the datasource, building the plugin context, the plugin call, or parsing its details).
+page means about 20 s of failure rather than one lost request. Only a datasource health
+400, Prometheus's own unhealthy verdict, is reported as `prometheus datasource unhealthy`.
+A 500 is reported as `grafana datasource health errored`: Grafana itself errored (loading
+the datasource, building the plugin context, the plugin call, or parsing its details), and
 `grafana_plugin_request_total{endpoint="checkHealth"}` shows only whether the plugin call
-failed.
+failed. A 401 or 403 is reported as `watcher token rejected by Grafana`. Any other status,
+such as a 502 from the edge while Grafana is down, is reported as
+`grafana datasource health probe failed`. The 500 and probe-failure messages name the datasource uid, so a mistyped
+`o11y_watch_prometheus_uid` (Grafana answers it with 500 too) is visible in the message.
 
 Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
-that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed
-(Grafana's container logs are not in Loki). What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
+that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed:
+Grafana's logs reach Loki only since the journal collector added it on 2026-11-08 (after
+the fix), and Grafana logs `Database locked, sleeping then retrying` whenever a lock retry
+fires. What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
 `/api/health` 503 (database check) in 26 separate hours and datasource health 500 in at least 4, with
 zero Prometheus plugin `checkHealth` errors, which rules out a failed plugin call but not the
 other 500 paths; the watcher, then unretried, paged on any single 500. `compose.yml` sets

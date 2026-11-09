@@ -47,7 +47,7 @@ and why.
 | 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
 | 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
-| 1.18 | Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full | Unverified claim | 1 | Convention (disk alert proposed) |
+| 1.18 | **x2** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer) | Unverified claim | 2 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | **x3** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe) | Unverified claim | 3 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed |
@@ -58,8 +58,9 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) | Unverified claim | 7 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) | Unverified claim | 8 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
+| 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -128,7 +129,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-09: a template-order test the fast subset skips) | Process | 11 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips) | Process | 12 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -894,6 +895,8 @@ scoping exists. Otherwise report the status code and the endpoint, not a cause.
 
 ### 1.18 Listed an auth failure's causes from the code, missed the database error, and chased credentials for two hours
 
+**Occurrences: 2** — 2026-09-26, 2026-11-07
+
 **What happened.** Production Semaphore began answering every API call with an empty-body 401
 and the operator could not log in ("Failed to create session"). I read `api/auth.go` at
 v2.19.11 and reported that it rejects a Bearer token only when the token is missing, revoked or
@@ -917,6 +920,18 @@ including the error branch, before ruling causes out.
 
 **Enforced by.** Convention. Proposed guard: an o11y disk-usage alert for the Semaphore host
 (and every orchestrator-class host), which would have fired before Postgres ran out of room.
+
+**Occurrence 2 — 2026-11-07.** While fixing the o11y liveness watcher's misleading page (10.34),
+the first draft of PR #889 said Grafana answers a datasource health check with 500 "only" when it
+fails before contacting Prometheus, from reading one handler in `pkg/api/datasources.go`. The
+same file returns 500 from two more branches: building the plugin context, and parsing the
+plugin's detail payload after the call. The watcher message even said "Prometheus not
+contacted". The same draft described Grafana's lock retries as backing off "10 ms to 1 s"
+without reading `pkg/util/retryer`, where the setting counts attempts, so the chosen value of 5
+waited only about 150 ms. Two review rounds (CodeRabbit, then an independent reviewer) caught
+both before merge; the fix moved to 10 attempts and dropped the cause claim. The rule did not
+fire because it is worded for auth paths and 401s; the habit it names, listing every branch
+that produces a status before ruling causes out, applies to any status read from source.
 
 ### 1.19 A negative claim about a host's state, made from evidence that cannot establish it (widens 1.6)
 
@@ -1199,7 +1214,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 7** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08
+**Occurrences: 8** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1293,6 +1308,8 @@ not fire: the step looked like free-form tagging, because the gate copies it int
 not read as a value the policy checks. The brief had read the gate's request parser and its message format,
 not the policy that consumes the same field.
 
+**Occurrence 8 — 2026-11-09.** Briefing the Dispatch Console's proposal store and its JSON contract, I fixed a proposal's survey value as `target_service: "<service>_svc"`, the service's NetBox VM name with `_svc` appended, from the naming of groups such as `honcho_svc`. I did not read how the repository maps a service to its group. The service workflow names a service from its group and never the reverse "by string surgery" (`platform/workflows/service-onboarding/lib/step_results.py:52-54`); where it must go from a name to a group it replaces `-` with `_` (`:315`). OPA requires `^[a-z][a-z0-9_]*_svc$` (`agent_actions.rego`, the target_service bound). So `step-ca` became `step-ca_svc`, every hyphenated service's preview would have been an OPA deny, and the proposal could never be approved. The independent review of PR #934 caught it before merge. Why the rule did not fire: the value looked like a format, not a rule, and the earlier occurrence 2 was the same class (a `target_service` rule from a naming convention), which shows the convention-only rule is not being recalled at brief-writing time. The guard proposed at occurrence 4 (a dispatch hook requiring a read of each referenced path) would not catch it either, because the brief cited no path for the mapping; a stronger proposal: a brief that states an identifier's format must cite the `file:line` that defines it.
+
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -1317,6 +1334,38 @@ from code behaviour to platform and tool behaviour.
 
 **Enforced by.** Convention. The DEVIATION RULE caught it again: a worker re-checked a fact from
 its brief and reported the contradiction. Related: 1.29, 2.31.
+
+### 1.31 Called five branches unmerged from their commits-ahead count; each had been squash-merged
+
+**Occurrences: 1** — 2026-11-07
+
+**What happened.** Asked to review every site-config branch and merge the clean ones, I classified
+each branch by `git rev-list --count origin/main..<branch>` and `git merge-tree`. Four branches
+showed commits ahead and conflicts, and one showed commits ahead whose keys were already on
+`main`. I told the operator the four "need rebasing by their owner" and the fifth was "already on
+`main` another way", and the operator asked me to rebase the four and open PRs. Replaying the
+first one hit conflicts against commits titled "Record DHCP refusal drill and single-router
+authority (#23)" on `main`. All five had been squash-merged (#23, #24, #18, #2, #43): each PR
+targeted `main` and merged the exact commit that was still the branch tip, and each branch's diff
+from its merge base matched its squash commit's diff line for line (`git diff --binary -U0`, `index` lines
+aside). Nothing was rebased or pushed; the branches were deleted on request.
+
+**Root cause.** A squash merge writes a new commit, so the branch's own commits are never
+ancestors of `main` and every ancestry-based test (`rev-list`, `branch --merged`, merge-base)
+reports the branch as unmerged forever. The repository squash-merged before it switched to merge
+commits, so its oldest branches are exactly the ones this test gets wrong. I used an ancestry
+count as a content question and did not look for the PR.
+
+**The rule.** "Is this branch merged into `main`?" is answered from its pull request: the PR
+is merged, its base is `main`, and the head it merged (`headRefOid`) is still the branch tip, so no
+commit landed after the merge. With no PR, or to confirm content, compare the branch's diff from
+its merge base with the candidate commit's diff exactly (`git diff --binary -U0`, ignoring only `index`
+lines). `git patch-id --stable` only finds candidates: it ignores whitespace, so `"ab"` and
+`"a b"` match. A commits-ahead count alone never supports "unmerged", and a patch-id match alone
+never supports "merged".
+
+**Enforced by.** Convention. Related: 1.19 (a negative claim from evidence that cannot establish
+it).
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -3685,6 +3734,18 @@ runner-scratch rule. Fixed in `81bd7950` by skipping the block in a dry run inst
 the rule did not fire: both the author and the reviewer chose tests by the file's name, and the
 contract tests that read every playbook name none of them. The 91-second fast subset proposed above
 does not launch `ansible-playbook`, so it includes this contract test and would have stopped the push.
+
+**Occurrence 2026-11-08 (a template comment).** PR #926's heads `29c8d931` and `7b8e3f91` added a
+comment above the `Verify GitHub PAT (Dev)` template in `platform/semaphore/templates.yml` that said
+the registry login is skipped "under --check". Locally only four suites ran (the no_log and loop
+guards, the Dev-name test, `platform/semaphore/tests`). The pre-push hook ran BATS and skipped pytest
+("Python suite not collectable here — a dependency is missing"), and the change was reported green.
+CI's Python core failed on `test_step_results.py::test_no_template_can_inject_check_mode_outside_the_task_row`,
+which refuses the literal `--check` anywhere in `templates.yml`, comments included (1 failed, 6615
+passed). Fixed before merge by rewording the comment to "in check mode" (`1f6bf66d`). Why the rule did not fire:
+the hook fails open when pytest cannot be collected, so a local pass meant only that the chosen
+suites passed, and the suites were again chosen by the files' names. A test that reads
+`templates.yml` without naming it is invisible to that choice.
 
 **Occurrence 2026-11-09 (the fast subset has a blind spot).** PR #922 added the `Probe launch-gate (Dev)`
 template to `platform/semaphore/templates.yml` between `Probe agentgateway Gate (Dev)` and

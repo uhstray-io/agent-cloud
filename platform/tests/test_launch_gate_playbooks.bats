@@ -134,7 +134,28 @@ tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
 checks = tasks["Refuse launch_gate_callers unless every caller has a literal token and a non-empty agent list"]["ansible.builtin.assert"]["that"]
 assert any("difference(_launch_gate_token_callers)" in c for c in checks), checks
 assert any("map('length') | min) > 0" in c for c in checks), checks
-assert play["vars"]["_launch_gate_token_callers"] == ["skynet"], play["vars"]["_launch_gate_token_callers"]
+assert play["vars"]["_launch_gate_token_callers"] == ["skynet", "console"], play["vars"]["_launch_gate_token_callers"]
+PY
+}
+
+@test "launch-gate deploy: the console caller acts as the five role agents, and every caller in the default has a token in the list and a secret definition" {
+  python3 - "$DEPLOY" <<'PY'
+import ast, re, sys, yaml
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+v = play["vars"]
+# D49: the console acts as the same five roles skynet does, so its list is the shared role list, not a copy of it.
+assert v["_launch_gate_role_agents"] == ["infra-agent", "security-agent", "o11y-agent", "service-agent", "network-agent"], v["_launch_gate_role_agents"]
+m = re.fullmatch(r"\{\{ launch_gate_callers \| default\((\{.*\}), true\) \}\}", v["_launch_gate_callers"])
+assert m, v["_launch_gate_callers"]
+default = ast.parse(m.group(1), mode="eval").body
+assert isinstance(default, ast.Dict), m.group(1)
+callers = [key.value for key in default.keys]
+assert callers == ["skynet", "console"], callers
+assert [ast.unparse(value) for value in default.values] == ["_launch_gate_role_agents", "_launch_gate_role_agents"], m.group(1)
+# Every caller the default names has its token declared in the list, and that list is exactly the token secrets declared.
+assert v["_launch_gate_token_callers"] == callers, v["_launch_gate_token_callers"]
+token_secrets = [d["name"][len("caller_"):-len("_token")] for d in v["_secret_definitions"] if d["name"].startswith("caller_")]
+assert token_secrets == v["_launch_gate_token_callers"], token_secrets
 PY
 }
 
@@ -147,6 +168,7 @@ v = play["vars"]
 assert isinstance(v["_secret_definitions"], list), v["_secret_definitions"]
 assert v["_secret_definitions"] == [
     {"name": "caller_skynet_token", "type": "random", "length": 48},
+    {"name": "caller_console_token", "type": "random", "length": 48},
     {"name": "semaphore_api_token", "type": "existing"},
 ], v["_secret_definitions"]
 assert v["_required_existing_secrets"] == ["semaphore_api_token"], v["_required_existing_secrets"]
@@ -197,10 +219,30 @@ import sys, yaml
 play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
 tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
 caller = tasks["Hold the caller and template the verify play probes with"]["ansible.builtin.set_fact"]
-assert caller["_launch_gate_probe_caller"] == "{{ _launch_gate_callers.keys() | list | sort | first }}", caller
+assert caller["_launch_gate_probe_caller"] == "{{ 'skynet' if 'skynet' in _launch_gate_callers else (_launch_gate_callers.keys() | list | sort | first) }}", caller
 assert caller["_launch_gate_probe_template"] == "{{ _launch_gate_allowlist[0] }}", caller
 agent = tasks["Hold the agent the verify play probes with (the probe caller's first agent)"]["ansible.builtin.set_fact"]
 assert agent["_launch_gate_probe_agent"] == "{{ _launch_gate_callers[_launch_gate_probe_caller][0] }}", agent
+PY
+}
+
+@test "launch-gate deploy: the verify probes choose skynet whenever skynet is a caller, else the first sorted caller (rendered)" {
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+from jinja2 import Environment
+play = [p for p in yaml.safe_load(open(sys.argv[1], encoding="utf-8")) if "hosts" in p][0]
+tasks = {t["name"]: t for t in play["tasks"] if "name" in t}
+expr = tasks["Hold the caller and template the verify play probes with"]["ansible.builtin.set_fact"]["_launch_gate_probe_caller"]
+assert expr.startswith("{{") and expr.endswith("}}"), expr
+env = Environment()
+def pick(callers):
+    return env.from_string(expr).render(_launch_gate_callers=callers)
+roles = ["infra-agent"]
+assert pick({"skynet": roles, "console": roles}) == "skynet"
+assert pick({"console": roles, "skynet": roles}) == "skynet"
+assert pick({"skynet": roles}) == "skynet"
+assert pick({"console": roles}) == "console"
+assert pick({"zeta": roles, "alpha": roles}) == "alpha"
 PY
 }
 

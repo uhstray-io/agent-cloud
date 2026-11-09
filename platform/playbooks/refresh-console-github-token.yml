@@ -32,8 +32,7 @@
   gather_facts: false
   become: false
   vars:
-    # Same default + override as refresh-tududi-sync-github-token.yml: the controller's own
-    # OpenBao address, from the inventory or the environment.
+    # The controller's own OpenBao address, from the inventory or the environment.
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"

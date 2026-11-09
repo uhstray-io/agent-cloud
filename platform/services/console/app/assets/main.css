@@ -357,3 +357,15 @@ h2 { font-size: 16px; font-weight: 650; }
 
 /* The reason a disabled change control is off, as visible text beside it (plan 17 D44). */
 .action-reason { margin: 0; font-size: 12px; color: var(--fg2); }
+
+/* ---------- Dashboard proposals and service actions (plan 17, D48-D53) ---------- */
+.proposals { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.proposal { display: grid; gap: 8px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--raised); }
+.proposal p { margin: 0; }
+.proposal-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.proposal-head h3 { font-size: 14px; font-weight: 650; min-width: 0; overflow-wrap: anywhere; }
+.proposal-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.proposal-comments { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 13px; }
+/* The outcome line is focused after an action. It shows only while it has text, so it takes no room otherwise. */
+.outcome { margin: 0; }
+.outcome:empty { display: none; }

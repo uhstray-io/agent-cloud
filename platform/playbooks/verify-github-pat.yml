@@ -1,0 +1,144 @@
+---
+# verify-github-pat.yml — read-only proof that the GitHub PAT the registry login uses
+# (secret/services/github:<registry_login_key>, default `pat`) can pull the private GHCR
+# images.
+#
+# Why it exists: tasks/registry-login.yml skips its `podman login` under --check, and so do
+# the deploys' pre-flight pulls, so no dry run ever exercises the token. Validate Secrets reads
+# per-service paths and never tests it. Before this playbook, the only proof was a real deploy.
+#
+# What it proves, from the controller, with GitHub's documented REST API (classic PATs only:
+# GHCR does not accept fine-grained tokens, per GitHub's container-registry docs):
+#   1. GET /user answers 200            -> the token is live.
+#   2. X-OAuth-Scopes lists read:packages -> it may pull container images.
+#   3. GET /orgs/<org>/packages/container/<name> answers 200 for every declared package
+#      -> the token's owner can read each private image the deploys pull.
+#
+# The token is read and sent only in no_log tasks; the report carries HTTP statuses and the
+# scope list, never the token, a header or a body. The GitHub requests are GETs and the OpenBao
+# AppRole login is a POST that only issues a token; all carry check_mode: false, so check mode
+# runs the same requests and gives the same answer.
+#
+# Optional vars:
+#   registry_login_key  key under secret/services/github (default pat; same knob as the login)
+#   ghcr_org            package owner (default uhstray-io, the registry login's user)
+#   ghcr_packages       container package names (default honcho, skynet-tier2)
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Verify the GitHub PAT can pull the private GHCR images"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    _pat_key: "{{ registry_login_key | default('pat') }}"
+    _org: "{{ ghcr_org | default('uhstray-io') }}"
+    _packages: "{{ ghcr_packages | default(['honcho', 'skynet-tier2']) }}"
+
+  tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Read secret/services/github"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/github"
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _gh_secret
+      no_log: true
+      check_mode: false
+
+    # The presence check is derived inside the boundary, so the visible assert below reads a
+    # boolean and never the protected result.
+    - name: "Record whether the PAT key is present"
+      ansible.builtin.set_fact:
+        _pat_present: "{{ (_gh_secret.json.data.data[_pat_key] | default('') | length) > 0 }}"
+      no_log: true
+
+    - name: "Require the PAT key"
+      ansible.builtin.assert:
+        that: _pat_present | bool
+        fail_msg: >-
+          No '{{ _pat_key }}' key at secret/services/github. Seed a classic PAT with
+          read:packages there through Seed OpenBao Key.
+
+    - name: "Ask GitHub who the token belongs to (validity + scopes)"
+      ansible.builtin.uri:
+        url: "https://api.github.com/user"
+        headers:
+          Authorization: "Bearer {{ _gh_secret.json.data.data[_pat_key] }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        status_code: [200, 401, 403]
+      register: _gh_user
+      no_log: true
+      check_mode: false
+
+    - name: "Read each declared package's metadata (package read access)"
+      ansible.builtin.uri:
+        url: "https://api.github.com/orgs/{{ _org }}/packages/container/{{ item | urlencode }}"
+        headers:
+          Authorization: "Bearer {{ _gh_secret.json.data.data[_pat_key] }}"
+          Accept: "application/vnd.github+json"
+          X-GitHub-Api-Version: "2022-11-28"
+        status_code: [200, 401, 403, 404]
+      loop: "{{ _packages }}"
+      register: _gh_pkgs
+      no_log: true
+      check_mode: false
+
+    # Clean facts only: statuses and the scope list. The visible report and assert read these,
+    # never the registered results (which carry the request headers).
+    - name: "Reduce the answers to statuses and scopes"
+      ansible.builtin.set_fact:
+        _pat_report:
+          user_status: "{{ _gh_user.status }}"
+          scopes: "{{ (_gh_user.x_oauth_scopes | default('')).split(',') | map('trim') | reject('equalto', '') | list }}"
+          packages: "{{ dict(_packages | zip(_gh_pkgs.results | map(attribute='status') | list)) }}"
+      no_log: true
+
+    - name: "Report (statuses and scopes only)"
+      ansible.builtin.debug:
+        msg:
+          - "GET /user: HTTP {{ _pat_report.user_status }}"
+          - "scopes: {{ _pat_report.scopes | join(', ') if _pat_report.scopes else '(none reported: not a classic PAT?)' }}"
+          - "packages ({{ _org }}): {{ _pat_report.packages }}"
+
+    - name: "Require a live token with read:packages that can read every declared package"
+      ansible.builtin.assert:
+        that:
+          # An empty package list would pass the package check vacuously.
+          - _packages | length > 0
+          - (_pat_report.user_status | int) == 200
+          - "'read:packages' in _pat_report.scopes"
+          - _pat_report.packages.values() | map('int') | reject('equalto', 200) | list | length == 0
+        fail_msg: >-
+          The PAT at secret/services/github:{{ _pat_key }} cannot pull the private images.
+          401 on /user = revoked or expired; no read:packages = re-mint as a classic PAT with
+          that scope; a package not 200 = the token's owner has no read access to it; an empty
+          ghcr_packages proves no image. Replace a bad token through Seed OpenBao Key.
+        success_msg: "PAT is live, has read:packages, and reads every declared package."

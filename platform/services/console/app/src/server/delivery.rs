@@ -1064,6 +1064,8 @@ mod tests {
                 authentik: None,
                 role_map_file: None,
                 github,
+                launch_gate: None,
+                launch_dev_variants: true,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -1086,6 +1088,7 @@ mod tests {
             telemetry: tokio::sync::RwLock::new(crate::server::telemetry::TelemetryCache::new(
                 false,
             )),
+            gate: None,
         })
     }
 

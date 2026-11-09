@@ -83,8 +83,9 @@
     _launch_gate_probe_agent: service-agent
     _launch_gate_probe_template: "Snapshot Service Assessment (Dev)"
     _launch_gate_probe_step: service-assess
-    # The same default deploy-launch-gate.yml uses for its caller map. test_probe_launch_gate.py pins that the two match.
-    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']}, true) }}"
+    # The same default and role list deploy-launch-gate.yml uses for its caller map. test_probe_launch_gate.py pins that the two match.
+    _launch_gate_role_agents: ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']
+    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': _launch_gate_role_agents, 'console': _launch_gate_role_agents}, true) }}"
     # The agents the probe's caller may act as, as a list. Anything else (a string, a map) is refused below: a string
     # would match the agent name by substring.
     _launch_gate_probe_agents: "{{ _launch_gate_callers[_launch_gate_probe_caller] | default([]) if _launch_gate_callers is mapping else [] }}"

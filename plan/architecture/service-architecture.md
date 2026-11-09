@@ -319,8 +319,6 @@ flowchart LR
     AGW -->|"budgets"| AGWDB["gateway Postgres"]
     CON["Dispatch Console"] -->|"read-only tasks"| SEM
     N8N["n8n"] -->|"publish"| PZ["Postiz"]
-    N8N -->|"two-way sync"| TD["tududi"]
-    N8N -->|"issues"| GH["GitHub"]
     HON["honcho"] -->|"text generation (deriver, summaries);<br/>embeddings off"| GEM["Gemini API"]
     UHH["UhhCraft"] -->|"generate"| CUI["ComfyUI sidecar"]
     UHH -->|"generate"| HUN["Hunyuan3D sidecar"]
@@ -341,8 +339,9 @@ Notable edges, each recorded where it lives:
   planned (OpenSpec change `skynet-launch-containment`).
 - **agentgateway to OpenRouter.** A model declared with `provider: openrouter` is served through the
   gateway with a key only the gateway holds; it is optional and absent unless declared [16].
-- **n8n to tududi and GitHub.** The two-way task and issue sync runs as n8n workflows; it ends with
-  tududi's teardown in Plane's final phase [23][39].
+- **n8n to tududi and GitHub (retired).** The two-way task and issue sync was removed on
+  2026-11-07, so the diagram no longer shows it. Plane's native GitHub integration is planned to
+  replace it (plan 16, Phase 3); until then no service syncs issues [23][39].
 - **Semaphore to NetBox.** A device creation proposed by skynet and allowed by OPA is executed by
   the `Create NetBox Device` playbook with a scoped NetBox token [3]. The OPA check is the one skynet's
   own client makes; Semaphore does not make it. skynet cannot currently launch this playbook, because
@@ -483,7 +482,7 @@ visible so they are not reopened without new evidence.
 | Inference gateway versus orchestrator | agentgateway replaces skynet; skynet fronts vLLM directly; both, with distinct jobs | Per-client keys and limits for SDK clients; placement and policy across the estate | **Both.** agentgateway owns transport, keys and budgets; skynet owns placement, policy and orchestration, and reaches models through the gateway. | [44] |
 | Container runtime | Docker everywhere; rootless podman everywhere; rootless by default with named exceptions | Least privilege; the capabilities a few services require | **Rootless podman by default**; Docker only where privileged mode or the host socket is required. | [6][7] |
 | How the console reads the platform | Its own database; the controller token; read models from each authority with a read-only identity | Never a second source of truth; least privilege | **Read models from the authorities**, through a `guest` Semaphore identity that cannot launch. | [21][45] |
-| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; tududi's teardown is Plane's last phase. | [23] |
+| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; tududi's teardown runs after Plane's Phase 1 gate, ahead of its GitHub integration (changed 2026-11-07). | [23] |
 
 ## Source Context
 
@@ -663,7 +662,7 @@ document; for long, frequently edited documents the section name is given as wel
 36. `plan/architecture/05-platform-infra.md:352-394` (MCP endpoint and the one admin list)
 37. `platform/services/openbao/deployment/config/policies/nemoclaw-read.hcl:3-6`; `platform/services/openbao/deployment/config/policies/semaphore-read.hcl:8-10`
 38. `platform/playbooks/deploy-tududi.yml:1-157`
-39. `platform/services/tududi/context/github-sync-contract.md:1-30`
+39. Retired 2026-11-07: the tududi GitHub sync contract (file deleted with the sync).
 40. `plan/development/15-service-deployment-workflow-agents.md:40-180` (Decisions, Design principles, Architecture, Workflow table)
 41. `plan/development/06-inference-skynet.md:1-30` and `:236-300`
 42. `platform/workflows/service-onboarding/registry.yml` (23 step ids)

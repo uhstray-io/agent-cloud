@@ -152,16 +152,11 @@ services:
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       GF_METRICS_ENABLED: "true"
-      # Grafana's store is SQLite. Its defaults (wal=false, query_retries=0, Grafana
-      # 11.4 conf/defaults.ini) fail a read the moment a write holds the file lock.
-      # Observed: /api/health 503 (its SELECT 1 database check failing) and datasource
-      # health 500 a few times a day. Suspected, not log-confirmed: lock contention.
-      # WAL lets reads proceed beside a writer. On a lock that remains, the value is the
-      # number of attempts (pkg/util/retryer): 10 gives nine waits doubling from 10 ms to
-      # the 1 s cap, about 3.3 s in all; 1 would not retry at all. Escalation if the 503s
-      # persist: an external Postgres for Grafana. Removing this line does NOT leave WAL:
-      # SQLite keeps WAL in the file, and Grafana sets the mode only when wal is true
-      # (README, "Grafana's store is SQLite").
+      # Grafana's SQLite store fails a read the moment a writer holds the lock under its
+      # defaults (wal=false, query_retries=0). WAL lets reads proceed beside a writer; 10
+      # lock attempts wait about 3.3 s in all. Removing GF_DATABASE_WAL does NOT leave WAL.
+      # Evidence, retry arithmetic, rollback and escalation: o11y README, "Grafana's store
+      # is SQLite".
       GF_DATABASE_WAL: "true"
       GF_DATABASE_QUERY_RETRIES: "10"
     volumes:

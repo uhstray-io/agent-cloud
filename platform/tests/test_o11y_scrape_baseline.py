@@ -2169,17 +2169,25 @@ def test_availability_namespace_refuses_short_and_transitive_container_joiners()
             "pid": pid, "proc_start_ticks": 200 + len(processes),
             "cmdline_sha256": "a" * 64, "netns_dev": 7, "netns_ino": 101,
         }
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_network_mode"):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
     # Different namespace path strings cannot disguise a shared kernel namespace.
     processes["b" * 64]["netns_ino"] = processes["a" * 64]["netns_ino"]
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_network_mode"):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
 
-@pytest.mark.parametrize("failure", ["host", "unstable_pid", "published_port", "hidden_sibling"])
-def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure):
+@pytest.mark.parametrize(
+    ("failure", "category"),
+    [
+        ("host", "namespace_shared"),
+        ("unstable_pid", "namespace_unstable"),
+        ("published_port", "namespace_alloy_host_port"),
+        ("hidden_sibling", "namespace_shared"),
+    ],
+)
+def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure, category):
     containers, processes = _availability_namespace_fixture()
     if failure == "host":
         processes["a" * 64]["netns_ino"] = 1
@@ -2190,7 +2198,7 @@ def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure
     elif failure == "hidden_sibling":
         containers[1]["service"] = ""
         processes["b" * 64]["netns_ino"] = processes["a" * 64]["netns_ino"]
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match=category):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
 
@@ -2198,7 +2206,7 @@ def test_availability_namespace_proof_refuses_unverified_or_shared_state(failure
 def test_availability_namespace_proof_refuses_host_and_namespace_join_modes(network_mode):
     containers, processes = _availability_namespace_fixture()
     containers[0]["network_mode"] = network_mode
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_network_mode"):
         SURVEY.validate_availability_namespace_snapshot(containers, processes, (7, 1))
 
 
@@ -2251,7 +2259,7 @@ def test_availability_provider_context_accepts_only_reviewed_local_provider_and_
             lambda argv, output=invalid_output, **_kwargs: b"podman version 4.9.3\n"
             if argv[0] == "/usr/bin/podman" else output,
         )
-        with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+        with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
             SURVEY._availability_provider_context()
 
     monkeypatch.setattr(
@@ -2260,11 +2268,11 @@ def test_availability_provider_context_accepts_only_reviewed_local_provider_and_
         if argv[0] != "/usr/bin/podman" else b"podman version 4.9.3\n",
     )
     monkeypatch.setenv("COMPOSE_CMD", "/opt/other-podman-compose")
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
     monkeypatch.delenv("COMPOSE_CMD")
     monkeypatch.setenv("PODMAN_COMPOSE_PROVIDER", "docker-compose")
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
 
     monkeypatch.delenv("PODMAN_COMPOSE_PROVIDER")
@@ -2273,11 +2281,11 @@ def test_availability_provider_context_accepts_only_reviewed_local_provider_and_
         lambda argv, **_kwargs: b"podman version 4.9.3\n" if argv[0] == "/usr/bin/podman"
         else b"Docker Compose version v1.3.0\npodman version 4.9.3\n",
     )
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
 
     monkeypatch.setenv("COMPOSE_CMD", "podman compose")
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_provider_unverified"):
         SURVEY._availability_provider_context()
 
 
