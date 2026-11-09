@@ -251,22 +251,17 @@ The Plane MCP server SHALL run in OAuth mode behind the reverse proxy. A harness
 
 ### Requirement: tududi retires in a fixed order
 
-The tududi retirement SHALL run only after the gates for the earlier phases pass. Open tasks MUST migrate into Plane under the label `migrated-from-tududi`, each carrying its tududi task id as a stable identity. Before every create, the migration MUST query Plane for that identity, so that a rerun after a partial failure never creates a duplicate. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
-
-#### Scenario: Open tasks migrate under a marker label
-
-- **WHEN** the one-time migration runs
-- **THEN** each open tududi task exists in Plane under the label `migrated-from-tududi`, carrying its tududi task id
-
-#### Scenario: Migration rerun creates no duplicates
-
-- **WHEN** the migration is run again after a partial failure
-- **THEN** the items already migrated are skipped, and no item is created a second time
+The tududi retirement SHALL run only after the Phase 1 gate passes; it does not wait for phases 2 to 6 (decision 2026-11-07). The tududi data MUST be archived, not migrated: its database and uploads are written to site-config and then discarded, and nothing is imported into Plane. The tududi container MUST be stopped before the final archive, so no write lands during or after it. The final archive MUST be taken from the stopped volumes and its checksum read back before any container, volume or VM is removed. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
 
 #### Scenario: Teardown refuses without confirmation
 
 - **WHEN** the tududi teardown is launched with a confirmation value that is absent or does not equal the VM id
 - **THEN** its preflight refuses before any backup or destructive step, and it changes nothing
+
+#### Scenario: Final archive precedes teardown
+
+- **WHEN** the teardown runs
+- **THEN** the tududi container is stopped first, the database and uploads are archived from the stopped volumes to site-config, and the archive checksum is read back before any container, volume or VM is removed
 
 #### Scenario: Sync app is uninstalled after the refresher is gone
 
