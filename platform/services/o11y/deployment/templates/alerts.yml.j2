@@ -522,7 +522,9 @@ groups:
    pages. A sustained failure would otherwise go unseen, so this rule is the one that
    keeps Alerting: it fires once when rule evaluations keep failing for fifteen
    minutes. It stays out of service-telemetry (groups[0]), whose uids are pinned by
-   the tests. Gated like the other paging rules: alerts enabled, not local, no canary. #}
+   the tests. Gated like the other paging rules: alerts enabled, not local, no canary.
+   Its second rule, o11y_grafana_db_check_failing, reports Grafana's own database check
+   failing repeatedly, which the liveness watcher's retries no longer page on. #}
 {% set _alerting_health_active = o11y_alerts_enabled | default(false) | bool and not (local_mode | default(false) | bool) and o11y_alert_canary_service is not defined %}
   - orgId: 1
     name: alerting-health
@@ -566,6 +568,58 @@ groups:
           dashboard_url: /d/o11y-self-monitoring
           description: >-
             Rule evaluations are timing out or erroring, usually because Prometheus queries are slow (receiver storage contention) or unreachable. While this fires, rules whose own queries are failing hold their last state; rules whose queries succeed keep evaluating. Check receiver host I/O wait and Prometheus health; the external liveness watcher covers Grafana or Prometheus being fully down.
+        labels:
+          severity: warning
+          service: 'o11y/grafana'
+          owner: platform-operations
+          environment: {{ o11y_environment | default('local' if local_mode | default(false) | bool else 'prod') | to_json }}
+          cluster: {{ o11y_cluster | default('agent-cloud-local') | to_json }}
+        isPaused: {{ 'false' if _alerting_health_active else 'true' }}
+{% if _alerting_health_active %}
+        notification_settings:
+          receiver: agent-cloud-ops
+          group_by: [service, environment, cluster, alertname]
+          group_wait: 30s
+          group_interval: 5m
+          repeat_interval: 4h
+{% endif %}
+      - uid: o11y_grafana_db_check_failing
+        title: Grafana database check failing
+        condition: B
+        data:
+          - refId: A
+            relativeTimeRange: { from: 3600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              editorMode: code
+              expr: 'sum(increase(grafana_http_request_duration_seconds_count{job="grafana",handler="/api/health",status_code=~"5.."}[1h]))'
+              instant: true
+              range: false
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              expression: A
+              type: threshold
+              conditions:
+                - evaluator: { type: gt, params: [4] }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { type: last, params: [] }
+                  type: query
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+        noDataState: OK
+        execErrState: KeepLast
+        for: 15m
+        annotations:
+          summary: Grafana's own database check has failed more than four times in an hour, for fifteen minutes.
+          dashboard_url: /d/o11y-self-monitoring
+          description: >-
+            Grafana answers /api/health with 503 when its database check fails. The external liveness watcher retries before it pages, so short failures reach no one except through this rule. Look for "Database locked, sleeping then retrying" lines in Grafana's logs in Loki (service o11y/grafana); if the failures persist, the escalation is an external Postgres for Grafana (o11y README, "Grafana's store is SQLite").
         labels:
           severity: warning
           service: 'o11y/grafana'
