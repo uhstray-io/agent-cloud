@@ -40,6 +40,37 @@ jobs:
               - 'platform/services/inference-comfyui/deployment/Dockerfile'
               - 'platform/services/inference-hunyuan3d/deployment/Dockerfile'
 
+  # Predict the version this pull request would release and fail on a title the
+  # release rules cannot read (plan 20). The live title is read through the API,
+  # so a re-run after a title edit sees the edit.
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the title and predict the version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # The live title, not the event payload: a re-run after a title edit sees the edit.
+          title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)"
+          python3 scripts/semver.py title -- "$title"
+          if [ "$BASE_REF" = main ]; then
+            tag="$(python3 scripts/semver.py next --channel main --ref HEAD)"
+          else
+            tag="$(python3 scripts/semver.py next --channel dev --ref "origin/${BASE_REF}" --title "$title")"
+          fi
+          echo "Merging this pull request produces: ${tag:-no new version}" | tee -a "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Static Analysis
     runs-on: ubuntu-latest
