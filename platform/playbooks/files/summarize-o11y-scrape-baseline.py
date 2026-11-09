@@ -270,7 +270,9 @@ def _availability_inspect(row: bytes) -> dict[str, Any]:
 
 def _availability_process_identity(pid: int) -> dict[str, Any]:
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
-        raise Refusal("namespace_alloy_unavailable")
+        # Any related container reaches here, not only Alloy, so a missing pid is an unreadable
+        # runtime record; the Alloy-specific checks report alloy_unavailable where they run.
+        raise Refusal("namespace_runtime_unreadable")
     try:
         with open(f"/proc/{pid}/stat", "rb") as handle:
             stat_bytes = handle.read(8193)
@@ -1060,9 +1062,14 @@ def verify_availability_namespace(*, validate_candidate: bool = False) -> dict[s
     ) = _availability_provider_context()
     candidate_project = None
     if validate_candidate:
-        candidate_project = _verify_availability_effective_compose(
-            os.environ["O11Y_DEPLOYMENT_DIR"], compose_cmd, overlays,
-        )
+        try:
+            candidate_project = _verify_availability_effective_compose(
+                os.environ["O11Y_DEPLOYMENT_DIR"], compose_cmd, overlays,
+            )
+        except Refusal:
+            # Candidate effective-config checks keep the generic category; the provider and
+            # runtime categories describe the pre-placement proof, not the compose config read.
+            raise Refusal("namespace_unverified") from None
     podman_path = executable_identity["podman"]["path"]
     first = _availability_runtime_pass(podman_path)
     second = _availability_runtime_pass(podman_path)
@@ -4404,22 +4411,29 @@ def collect_prometheus_self_source(
 
 
 def _current_alloy_identity() -> tuple[dict[str, Any], dict[str, Any]]:
-    provider_context = _availability_provider_context()
-    identities = provider_context[5]
-    podman_identity = identities.get("podman") if isinstance(identities, dict) else None
-    podman_path = podman_identity.get("path") if isinstance(podman_identity, dict) else None
-    if not isinstance(podman_path, str) or not os.path.isabs(podman_path):
-        raise Refusal("native_source_unavailable")
-    records = _availability_inspect_all(
-        time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
-    )
-    candidates = [record for record in records if record.get("service") == "alloy"]
-    if len(candidates) != 1:
-        raise Refusal("native_source_unavailable")
-    record = candidates[0]
-    if not record.get("running") or not record.get("started_at") or not record.get("pid"):
-        raise Refusal("native_source_unavailable")
-    process = _availability_process_identity(record["pid"])
+    try:
+        provider_context = _availability_provider_context()
+        identities = provider_context[5]
+        podman_identity = identities.get("podman") if isinstance(identities, dict) else None
+        podman_path = podman_identity.get("path") if isinstance(podman_identity, dict) else None
+        if not isinstance(podman_path, str) or not os.path.isabs(podman_path):
+            raise Refusal("native_source_unavailable")
+        records = _availability_inspect_all(
+            time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
+        )
+        candidates = [record for record in records if record.get("service") == "alloy"]
+        if len(candidates) != 1:
+            raise Refusal("native_source_unavailable")
+        record = candidates[0]
+        if not record.get("running") or not record.get("started_at") or not record.get("pid"):
+            raise Refusal("native_source_unavailable")
+        process = _availability_process_identity(record["pid"])
+    except Refusal as error:
+        # The source gate accepts only native and generic reasons. A namespace category from the
+        # provider, inspect or process read becomes the generic one; native reasons pass through.
+        if error.category in AVAILABILITY_NAMESPACE_REASONS:
+            raise Refusal("namespace_unverified") from None
+        raise
     _parse_native_time(record["started_at"])
     return record, process
 

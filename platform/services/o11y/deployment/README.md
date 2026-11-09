@@ -217,13 +217,16 @@ live acceptance gates open.
 (`survey-o11y-availability-gate.yml`) runs the pre-placement namespace proof in enabled mode and
 prints one fixed category. `isolated` means the proof passed for the receiver as it runs at that
 moment. Any other value names the decision point that refused: `namespace_alloy_unavailable` (no
-single project Alloy container running with a start time and usable pid), `namespace_alloy_host_port`
+single project Alloy container running with a start time), `namespace_alloy_host_port`
 (a container publishes host port 12345), `namespace_shared` (the Alloy network namespace equals the
 host's or a project sibling's), `namespace_network_mode` (a network mode that is host, none, or joins
 another namespace), `namespace_provider_unverified` (the compose or podman provider, its version or
 executable identity, or the enabled-mode overlay does not match), `namespace_unstable` (two passes
 disagree, or an expected fingerprint does not match), `namespace_runtime_unreadable` (an inspect,
-`/proc` or listing read failed or was malformed), and `namespace_unverified` for every other refusal.
+`/proc` or listing read failed or was malformed, or a running container had no usable pid), and
+`namespace_unverified` for every other refusal. The producer source gate
+(`--verify-availability-source`) reports `namespace_unverified` in place of the finer categories, so
+its fixed reason set does not change.
 The survey reads no activation switch, places nothing, and prints no container, process or namespace
 identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
 an `isolated` result does not accept availability: the source, placement and post-apply gates still

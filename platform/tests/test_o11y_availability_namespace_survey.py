@@ -134,9 +134,10 @@ def test_a_running_container_without_a_process_record_is_an_unreadable_runtime()
     ) == "namespace_runtime_unreadable"
 
 
-def test_a_process_identity_without_a_usable_pid_is_alloy_unavailable():
-    assert _refusal_category(lambda: GATE._availability_process_identity(1)) == "namespace_alloy_unavailable"
-    assert _refusal_category(lambda: GATE._availability_process_identity(True)) == "namespace_alloy_unavailable"
+def test_a_process_identity_without_a_usable_pid_is_an_unreadable_runtime():
+    # Any related container reaches this check, so the category is the runtime one, not Alloy's.
+    assert _refusal_category(lambda: GATE._availability_process_identity(1)) == "namespace_runtime_unreadable"
+    assert _refusal_category(lambda: GATE._availability_process_identity(True)) == "namespace_runtime_unreadable"
 
 
 def test_an_unreadable_process_record_is_an_unreadable_runtime():
@@ -594,3 +595,120 @@ def test_pre_placement_report_prints_only_the_category_under_ansible(tmp_path):
     assert "Availability namespace diagnostic: namespace_shared" in output, output
     assert "strict namespace gate refused" not in output
     assert sentinel not in output
+
+
+# ---- producer source gate and candidate checks keep the generic category --------------------
+
+PRODUCER_ID = "a" * 64
+
+
+def _producer_command(*, row=None, ids=None):
+    """Bounded runtime commands for one Alloy-shaped container, with the version banners."""
+    def command(argv, **_kwargs):
+        if argv[-1] == "--version":
+            if argv[0] == "/usr/bin/podman":
+                return b"podman version 4.9.3\n"
+            return b"podman-compose version 1.3.0\npodman version 4.9.3\n"
+        if argv[1:2] == ["ps"]:
+            return (ids if ids is not None else f"{PRODUCER_ID}\n").encode()
+        if argv[1:2] == ["inspect"]:
+            return row.encode()
+        raise AssertionError(f"unexpected bounded runtime command: {argv[:2]}")
+    return command
+
+
+def _alloy_row(pid=4101, service="alloy"):
+    return (
+        f"{PRODUCER_ID}\tsha256:alloy\ttrue\t{pid}\t2026-10-28T00:00:00Z\to11y\t{{}}\to11y\t{service}\t/o11y-{service}\n"
+    )
+
+
+def _source_cli(monkeypatch, capsys):
+    """Run the real source CLI; the inner collector call is the only thing replaced by its inputs."""
+    monkeypatch.setattr(GATE.sys, "argv", ["summarize-o11y-scrape-baseline.py", "--verify-availability-source"])
+    monkeypatch.setattr(GATE, "_availability_source_action", lambda: GATE.collect_current_availability_source(
+        b'{"status":"success","data":{"activeTargets":[]}}', {}, {"enabled": False, "targets": [], "limits": {}},
+        {}, environment="prod", cluster="agent-cloud-local", intended_source="alloy",
+        lower_bound=None, freshness_seconds=300, require_health_targets=False,
+        candidate_config_sha256=None, previous_source=None, previous_container_sha256=None,
+    ))
+    code = GATE.main()
+    readback = json.loads(capsys.readouterr().out)
+    return code, readback
+
+
+@pytest.mark.parametrize("failure", ["provider", "inspect", "process_pid", "process_unreadable"])
+def test_producer_refusal_from_provider_inspect_or_process_is_the_generic_source_reason(
+    monkeypatch, capsys, tmp_path, failure,
+):
+    if failure == "provider":
+        # The real provider context refuses a non-podman engine before any runtime read.
+        monkeypatch.setattr(GATE.platform, "system", lambda: "Linux")
+        monkeypatch.setenv("CONTAINER_ENGINE", "docker")
+    else:
+        _provider_mocks(monkeypatch, tmp_path)
+        if failure == "inspect":
+            monkeypatch.setattr(GATE, "_availability_command", _producer_command(ids="not-an-id\n"))
+        elif failure == "process_pid":
+            monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=_alloy_row(pid=1)))
+        else:
+            monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=_alloy_row(pid=2_000_000_000)))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2
+    assert readback == {
+        "status": "unavailable", "reason": "namespace_unverified",
+        "source": "unknown", "intended_source": "unknown", "matches_intended": False,
+    }
+    # The filter the deploy gate uses maps the printed reason to itself, not producer_evidence_invalid.
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
+    ) == "namespace_unverified"
+
+
+def test_native_only_producer_refusal_keeps_its_native_reason(monkeypatch, capsys, tmp_path):
+    # No single Alloy record is a native refusal; the gate's reason set must not widen for it.
+    _provider_mocks(monkeypatch, tmp_path)
+    loki = f"{PRODUCER_ID}\tsha256:loki\ttrue\t4101\t2026-10-28T00:00:00Z\to11y\t{{}}\to11y\tloki\t/o11y-loki\n"
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=loki))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2 and readback["reason"] == "native_source_unavailable"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
+    ) == "native_source_unavailable"
+
+
+def _candidate_cli(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(GATE.sys, "argv", [
+        "summarize-o11y-scrape-baseline.py", "--verify-availability-namespace", "--candidate",
+    ])
+    code = GATE.main()
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_candidate_compose_provider_refusal_is_the_generic_namespace_reason(monkeypatch, capsys, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    # The effective-config read is a real provider refusal in the candidate path; the wrap must
+    # make it the generic category for the CLI, as README states for candidate checks.
+    for name in ("compose.prod.yml", "compose.availability.yml"):
+        (tmp_path / name).write_text("services: {}\n", encoding="utf-8")
+
+    def command(argv, **kwargs):
+        if argv[-1] == "config":
+            raise GATE.Refusal(kwargs["refusal"])
+        return _producer_command(row=_alloy_row())(argv, **kwargs)
+
+    monkeypatch.setattr(GATE, "_availability_command", command)
+    code, result = _candidate_cli(monkeypatch, capsys, tmp_path)
+    assert code == 2 and result == {"status": "unverified", "reason": "namespace_unverified"}
+
+
+def test_candidate_refusal_raised_as_a_direct_call_is_also_generic(monkeypatch, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+
+    def provider_refusal(*_args):
+        raise GATE.Refusal("namespace_provider_unverified")
+
+    monkeypatch.setattr(GATE, "_verify_availability_effective_compose", provider_refusal)
+    assert _refusal_category(
+        lambda: GATE.verify_availability_namespace(validate_candidate=True)
+    ) == "namespace_unverified"
