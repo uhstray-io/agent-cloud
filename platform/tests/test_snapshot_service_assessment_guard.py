@@ -12,8 +12,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
 import playbook_yaml
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/snapshot-service-assessment.yml"
