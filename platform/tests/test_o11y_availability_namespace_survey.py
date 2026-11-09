@@ -398,7 +398,9 @@ def _tasks_of(play):
     return play.get("tasks", [])
 
 
-def test_survey_refuses_internal_extra_vars_before_anything_else():
+def test_survey_imports_the_internal_name_guard_first():
+    # Structural: the guard is the first import. The refusal itself, with templated forgeries, is
+    # proven for every launchable playbook (this one included) by test_executor_internal_overrides.py.
     first = _survey()[0]
     assert first["ansible.builtin.import_playbook"] == "refuse-internal-extra-vars.yml"
 
