@@ -577,7 +577,7 @@ pub fn ViewNotice(view: View) -> Element {
         },
         View::Failed(reason) => rsx! {
             Notice {
-                message: format!("The inventory could not be loaded: {reason}. It retries every 30 seconds while this tab is visible."),
+                message: format!("The inventory could not be loaded: {reason}. It retries every {} seconds while this tab is visible.", POLL_MS / 1000),
             }
         },
         View::Ready(_) => rsx! {},

@@ -12,7 +12,7 @@ use super::empty::SERVICES;
 use super::icons::icon;
 use super::inventory::{
     count_text, mb_text, meta_of, poll_admin, services_in_scope, view, Admin, ScopedServices,
-    Snapshot, View, ViewNotice, SEP,
+    Snapshot, View, ViewNotice, POLL_MS, SEP,
 };
 use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
 use super::shell::Ctx;
@@ -368,7 +368,7 @@ fn ServiceView(tenant: String, name: String) -> Element {
             Notice { message: "Your session ended. Sign in again to see this service.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
-            Notice { message: format!("The service could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }
+            Notice { message: format!("The service could not be loaded: {reason}. It retries every {} seconds while this tab is visible.", POLL_MS / 1000) }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();

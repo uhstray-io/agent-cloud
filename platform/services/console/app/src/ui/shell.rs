@@ -191,10 +191,10 @@ fn Workspace(account: Account) -> Element {
     // start another poll loop. The poll's own waits are in the browser (`api::sleep_unless_hidden`).
     // The agent roles are read once, and only for a platform admin: the server refuses everyone else.
     use_hook(move || {
-        spawn(work::poll(ctx.work));
+        spawn(work::poll(ctx.work, ctx.me));
         spawn(inventory::poll(ctx));
         if admin {
-            spawn(load_roles(ctx.roles));
+            spawn(load_roles(ctx.roles, ctx.me));
         }
     });
     let no_access = has_no_tenant_access(&ctx.tenants.read());
