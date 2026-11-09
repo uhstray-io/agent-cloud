@@ -10,6 +10,7 @@ playbook's argv, its guards and its assertions. The caller token is synthetic an
 environment, as it does in production.
 """
 
+import importlib.util
 import json
 import re
 import ssl
@@ -209,6 +210,9 @@ def test_the_first_launch_is_allowed_and_the_repeat_is_refused_already_running(t
             "survey": {"target_service": "opa_svc"},
         }
     )
+    # The same body through the gate's own request parser: a drift in its contract fails here, not in production.
+    request = _gate_core().parse_request(json.dumps(first["body"]).encode("utf-8"))
+    assert (request.step, request.agent, request.dry_run) == ("service-assess", "service-agent", True)
     _no_leak(out)
 
 
@@ -216,7 +220,8 @@ def test_a_repeat_that_is_also_accepted_is_inconclusive_and_fails(tmp_path, pki,
     server = gate(["201", "201"])
     rc, out = _run(tmp_path, address=f"127.0.0.1:{server.server_port}", cafile=pki / "ca.crt")
     assert rc != 0, out
-    assert "inconclusive: the first task finished before the repeat" in out, out
+    assert "inconclusive: both launches were accepted (first task 4200, repeat task 4201)" in out, out
+    assert "or the gate's duplicate check did not fire" in out, out
     assert "first task 4200, repeat task 4201" in out, out
     _no_leak(out)
 
@@ -425,3 +430,13 @@ def test_the_target_pattern_is_the_one_opa_applies():
     assert 'regex.match("^[a-z][a-z0-9_]*_svc$", name)' in rego
     playbook = (REPO / "platform/playbooks/probe-launch-gate.yml").read_text()
     assert "_probe_target is match('^[a-z][a-z0-9_]*_svc$')" in playbook
+
+
+def _gate_core():
+    path = REPO / "platform/services/launch-gate/deployment/app/launch_gate.py"
+    spec = importlib.util.spec_from_file_location("launch_gate_probe_core", path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec so dataclasses can resolve the module by name.
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module

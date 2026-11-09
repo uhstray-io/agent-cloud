@@ -154,9 +154,10 @@
         that:
           - _launch_gate_probe_out.stdout_lines[1].split(' ')[1] != '201'
         fail_msg: >-
-          inconclusive: the first task finished before the repeat, so the duplicate refusal was not exercised. Both
-          launches were accepted: first task {{ _launch_gate_probe_out.stdout_lines[0].split(' ')[3] }}, repeat task
-          {{ _launch_gate_probe_out.stdout_lines[1].split(' ')[3] }}. Nothing is proven; re-run the probe.
+          inconclusive: both launches were accepted (first task {{ _launch_gate_probe_out.stdout_lines[0].split(' ')[3] }},
+          repeat task {{ _launch_gate_probe_out.stdout_lines[1].split(' ')[3] }}). Either the first task had already
+          finished, or the gate's duplicate check did not fire. Check the first task's end time in Semaphore before
+          re-running: if it was still running when the repeat was accepted, the duplicate check is broken.
         quiet: true
       when: not ansible_check_mode and _launch_gate_probe_out.stdout_lines[0].split(' ')[1] == '201'
 
