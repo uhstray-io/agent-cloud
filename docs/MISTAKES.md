@@ -127,7 +127,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test) | Process | 10 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-09: a template-order test the fast subset skips) | Process | 11 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -3640,6 +3640,17 @@ runner-scratch rule. Fixed in `81bd7950` by skipping the block in a dry run inst
 the rule did not fire: both the author and the reviewer chose tests by the file's name, and the
 contract tests that read every playbook name none of them. The 91-second fast subset proposed above
 does not launch `ansible-playbook`, so it includes this contract test and would have stopped the push.
+
+**Occurrence 2026-11-09 (the fast subset has a blind spot).** PR #922 added the `Probe launch-gate (Dev)`
+template to `platform/semaphore/templates.yml` between `Probe agentgateway Gate (Dev)` and
+`Probe agentgateway Isolation (Dev)`, and was pushed under `SKIP_TESTS=1` after the fast subset (every test file
+that does not launch `ansible-playbook`) and the template-catalog tests passed. CI's Python Agentgateway job
+failed on `test_agw_isolation_probe.py::test_the_semaphore_template_is_dev_bound_with_the_two_survey_vars`, which
+requires the isolation probe to follow the gate probe directly. That file launches `ansible-playbook`, so the
+subset excluded it, although this test only reads `templates.yml`. Fixed before merge by moving the entry
+(`6aaa6476`). Why the rule did not fire: the subset is chosen per file, and a file that runs playbooks can still
+hold text-only tests about shared files. **Refines the proposed guard:** select the always-run scans per test (a
+marker on tests that launch nothing), not per file.
 
 ### 5.3 Merging while the review was rate-limited
 
