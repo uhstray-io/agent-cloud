@@ -2,15 +2,20 @@
 
 Ansible scopes a play's `vars:` to that play. A later play that reads the same name sees it
 undefined, and a `when:` on it fails the run. deploy-console.yml defined
-`_console_launch_gate_declared` in Phase 1 and read it in Phase 3, so every console deploy after
+`_console_launch_gate_declared` in Phase 1 and read it in Phase 3, so a console deploy after
 agent-cloud #934 failed at its verify play (Semaphore task 14234, check mode). The structure tests
 that shipped with it never evaluated Phase 3.
 
 The guard: in every playbook, an internal name (leading underscore) that some play defines in
 its `vars:` may be read by another play only when that play defines it too (play, block or task
-`vars`, `register`, `set_fact`, `loop_var`), or when the file sets it as a host fact
-(`set_fact`, `register` or an `add_host` variable, which do carry across plays). Inventory names are out of scope: a
-name without the underscore may come from inventory.
+`vars`, `register`, `set_fact`, `loop_var`), or when an EARLIER play sets it as a host fact
+(`set_fact`, `register` or an `add_host` variable, which do carry across plays). Inventory names are
+out of scope: a name without the underscore may come from inventory.
+
+Limits, so a pass is not read as more than it is: only one file at a time (an `import_playbook`
+chain is not followed); reads inside included or imported task files are not scanned; names from
+`vars_files` and block-level `vars:` are not treated as play-scoped sources; and an earlier
+play's host fact counts whatever hosts it ran on, so a fact set on other hosts is accepted.
 """
 
 import re
@@ -38,12 +43,10 @@ def _defined_in_play(play: dict) -> set[str]:
     return names
 
 
-def _host_facts(doc: list) -> set[str]:
-    """Names a play sets as host facts: they outlive the play."""
+def _host_facts(play: dict) -> set[str]:
+    """Names one play sets as host facts: they outlive the play."""
     facts: set[str] = set()
-    for play in doc:
-        if not isinstance(play, dict):
-            continue
+    if isinstance(play, dict):
         for key in PLAY_TASK_KEYS:
             for task in playbook_yaml.tasks(play.get(key)):
                 if isinstance(task.get("register"), str):
@@ -63,8 +66,8 @@ def leaks(doc) -> list[str]:
         return []
     plays = [p for p in doc if isinstance(p, dict) and ("hosts" in p)]
     play_vars = {name for play in plays for name in (play.get("vars") or {}) if str(name).startswith("_")}
-    facts = _host_facts(plays)
     found = []
+    facts: set[str] = set()  # host facts set by the plays before this one
     for index, play in enumerate(plays):
         own = _defined_in_play(play)
         text = "\n".join(playbook_yaml.strings(play))
@@ -72,6 +75,7 @@ def leaks(doc) -> list[str]:
             if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", text):
                 label = f"play {index + 1} ({play.get('name', '?')})"
                 found.append(f"{label} reads {name}, defined only in another play's vars")
+        facts |= _host_facts(play)
     return found
 
 
@@ -98,6 +102,26 @@ def test_the_guard_catches_a_play_var_read_in_the_next_play():
   tasks:
     - ansible.builtin.debug: {msg: ok}
       when: _flag | bool
+"""
+    )
+    assert leaks(doc) == ["play 2 (two) reads _flag, defined only in another play's vars"]
+
+
+def test_a_host_fact_set_only_by_a_later_play_does_not_excuse_an_earlier_read():
+    doc = playbook_yaml.loads(
+        """
+- name: one
+  hosts: all
+  vars:
+    _flag: true
+- name: two
+  hosts: all
+  tasks:
+    - ansible.builtin.debug: {msg: "{{ _flag }}"}
+- name: three
+  hosts: all
+  tasks:
+    - ansible.builtin.set_fact: {_flag: false}
 """
     )
     assert leaks(doc) == ["play 2 (two) reads _flag, defined only in another play's vars"]
