@@ -825,11 +825,14 @@ JSON
 }
 
 @test "skynet: the two local files pin the same skynet digest" {
-  local digest="sha256:36d0bb9e63c888b44be988598dd28c0e15e4b95fcfae9279296a589d4a459596"
+  local digest="sha256:7bcd4153bb1c22462bfefad0bcaec740ea51c18249d0fc6f8a94f5d01884578a"
   assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/inventory/local-dev.yml.example"
   assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
   refute_grep -qF 'd1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
   refute_grep -qF 'd1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
+  # The pre-gate image (skynet 9168d6ce) launches directly; skynet's Semaphore account cannot.
+  refute_grep -qF '36d0bb9e63c888b44be988598dd28c0e15e4b95fcfae9279296a589d4a459596' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
+  refute_grep -qF '36d0bb9e63c888b44be988598dd28c0e15e4b95fcfae9279296a589d4a459596' "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
 }
 
 @test "skynet: local templates offer Deploy and Clean Deploy, the clean one behind confirm_reset" {
