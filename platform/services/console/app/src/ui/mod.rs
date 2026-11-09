@@ -19,7 +19,7 @@ mod inventory_api;
 mod policy;
 mod policy_api;
 mod profile;
-mod proposals_api;
+pub(crate) mod proposals_api;
 mod request;
 mod request_api;
 mod roles;

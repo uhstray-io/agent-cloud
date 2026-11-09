@@ -17,7 +17,7 @@ use super::inventory::{
 };
 use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
 use super::proposals_api::{self, Kind, Proposal};
-use super::shell::{no_tenant_message, Ctx};
+use super::shell::{is_platform_admin, no_tenant_message, Ctx};
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, Freshness, Notice, Rag, RagBadge, StepList,
     DASH,
@@ -376,9 +376,12 @@ fn ServiceView(tenant: String, name: String) -> Element {
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
+            let proposing = shows_proposal_actions(&ctx.me.read());
             rsx! {
                 ServiceCard { body, reason }
-                ProposalActions { service: name }
+                if proposing {
+                    ProposalActions { service: name }
+                }
             }
         }
     }
@@ -516,6 +519,13 @@ fn propose(
     });
 }
 
+/// Whether the Actions card is drawn: only for a platform admin, the same check the shell uses for the admin pages.
+/// The server answers every proposal route 403 to anyone else (D25), so this keeps the card off the page; it is not
+/// the control.
+pub fn shows_proposal_actions(me: &Me) -> bool {
+    matches!(me, Me::SignedIn(account) if is_platform_admin(&account.claims))
+}
+
 /// The Assess resource and Verify health actions on a service's page (plan 17, D48). Each one makes a proposal
 /// for a platform admin to review on the Dashboard. Nothing runs from this page: the gate runs an action only
 /// after an approval.
@@ -615,6 +625,33 @@ fn ProposeStatus(result: ProposeResult) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::api::{Account, Claims, Preferences};
+
+    #[test]
+    fn only_a_platform_admin_sees_the_proposal_actions() {
+        let signed_in = |groups: &[&str]| {
+            Me::SignedIn(Account {
+                claims: Claims {
+                    sub: "s".into(),
+                    email: None,
+                    name: None,
+                    username: None,
+                    groups: groups.iter().map(|g| g.to_string()).collect(),
+                },
+                preferences: Preferences::default(),
+            })
+        };
+        assert!(shows_proposal_actions(&signed_in(&[
+            "ops",
+            "platform-admins"
+        ])));
+        assert!(!shows_proposal_actions(&signed_in(&["ops"])));
+        assert!(!shows_proposal_actions(&signed_in(&[
+            "platform-admins-old"
+        ])));
+        assert!(!shows_proposal_actions(&Me::SignedOut));
+        assert!(!shows_proposal_actions(&Me::Loading));
+    }
 
     /// A service row carrying the given domain slugs.
     fn row(name: &str, rag: &str, domains: &[&str], failed: &[&str]) -> ServiceRow {

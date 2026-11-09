@@ -36,7 +36,7 @@ const COMMENT_MAX: usize = 2000;
 const LIST_MAX: usize = 200;
 
 const AWAITING: &str = "awaiting";
-/// Internal only: an approval has claimed the row and the gate has not answered yet. Read as `launch_failed`.
+/// Stored while an approval's launch is in flight. It reads as `launching` inside `LAUNCH_WINDOW_SECS`, then as `launch_failed`.
 const LAUNCHING: &str = "launching";
 const DENIED: &str = "denied";
 const LAUNCHED: &str = "launched";
@@ -45,8 +45,11 @@ const LAUNCH_FAILED: &str = "launch_failed";
 const APPROVED: &str = "approved";
 /// What a proposal's preview shows until its first decide answers. Never `allowed`, so nothing launches on it.
 const PREVIEW_PENDING: &str = "the preview has not finished; edit the proposal to run it again";
-/// What a launch row left in `launching` shows. A launch in flight reads the same way until the gate answers.
-const INTERRUPTED: &str = "the launch was interrupted before the gate answered; a task may have started, so check the template's tasks before launching again";
+/// What a launch shows once its row has stayed in `launching` past `LAUNCH_WINDOW_SECS`: the gate never answered.
+const INTERRUPTED: &str = "The launch did not finish; check Active Work before proposing again.";
+/// How long a row may stay `launching` and still read as a launch in flight. The gate's launch call is capped at
+/// 120 s (`gate.rs`, `LAUNCH_TIMEOUT`); the window is that cap plus 30 s.
+const LAUNCH_WINDOW_SECS: i64 = 150;
 
 const CREATE_SHAPE: &str = r#"request body must be JSON {"kind", "service", "check_mode", "note"}"#;
 const EDIT_SHAPE: &str = r#"request body must be JSON {"check_mode", "note"}"#;
@@ -211,8 +214,9 @@ pub struct Comment {
     pub text: String,
 }
 
-/// One proposal as the API answers it. `state` is one of the four contract states; a row still in `launching`
-/// answers `launch_failed` with an `interrupted` launch.
+/// One proposal as the API answers it. `state` is one of five: `awaiting`, `launching` (a launch in flight), `denied`,
+/// `launched` and `launch_failed`. A `launching` row older than `LAUNCH_WINDOW_SECS` answers `launch_failed` with an
+/// `interrupted` launch.
 #[derive(Debug, Clone, Serialize)]
 pub struct Proposal {
     pub id: String,
@@ -332,14 +336,19 @@ impl ProposalStore {
     }
 
     pub async fn get(&self, id: i64) -> rusqlite::Result<Option<Proposal>> {
+        self.get_at(id, now_unix()).await
+    }
+
+    /// `get` as of `now` (Unix seconds). Only a `launching` row depends on the time (`read_row`), so tests pass it.
+    pub async fn get_at(&self, id: i64, now: i64) -> rusqlite::Result<Option<Proposal>> {
         let conn = self.conn.lock().await;
-        load(&conn, id)
+        load(&conn, id, &launch_cutoff(now))
     }
 
     /// Newest first, at most `LIST_MAX`.
     pub async fn list(&self, filter: ListFilter) -> rusqlite::Result<Vec<Proposal>> {
         let conn = self.conn.lock().await;
-        load_list(&conn, filter)
+        load_list(&conn, filter, &launch_cutoff(now_unix()))
     }
 
     /// Starts an edit (D51): in one UPDATE while the row is awaiting, it writes the values, bumps the revision and resets
@@ -368,7 +377,7 @@ impl ProposalStore {
             ],
         )?;
         if changed == 1 {
-            return Ok(load(&conn, id)?.ok_or(Refusal::Missing));
+            return Ok(load(&conn, id, &launch_cutoff(now_unix()))?.ok_or(Refusal::Missing));
         }
         let refusal = if stored_row(&conn, id)?.is_some() {
             Refusal::NotAwaiting
@@ -395,7 +404,7 @@ impl ProposalStore {
             params![to_json(decision)?, decision.at, id, revision],
         )?;
         if changed == 1 {
-            return Ok(load(&conn, id)?.ok_or(Refusal::Missing));
+            return Ok(load(&conn, id, &launch_cutoff(now_unix()))?.ok_or(Refusal::Missing));
         }
         Ok(Err(refused(
             &conn,
@@ -419,7 +428,7 @@ impl ProposalStore {
             params![to_json(decision)?, decision.at, id, revision],
         )?;
         if changed == 1 {
-            return Ok(load(&conn, id)?.ok_or(Refusal::Missing));
+            return Ok(load(&conn, id, &launch_cutoff(now_unix()))?.ok_or(Refusal::Missing));
         }
         // A denial has no preview gate, so an awaiting row at this revision cannot reach the last arm.
         Ok(Err(refused(&conn, id, revision, Refusal::NotAwaiting)?))
@@ -508,18 +517,25 @@ fn refused(
     })
 }
 
-/// One row as the API shapes it, with the numeric id kept beside it for the comments query.
-fn read_row(row: &Row<'_>) -> rusqlite::Result<(i64, Proposal)> {
+/// One row as the API shapes it, with the numeric id kept beside it for the comments query. A `launching` row reads as
+/// in flight while its `updated_at` is at or after `cutoff` (`launch_cutoff`), and as interrupted before it. Both
+/// stamps are text from `rfc3339_from_unix`, fixed-width UTC, so comparing them as text compares their times.
+fn read_row(row: &Row<'_>, cutoff: &str) -> rusqlite::Result<(i64, Proposal)> {
     let id: i64 = row.get("id")?;
     let stored: String = row.get("state")?;
     let (state, launch) = if stored == LAUNCHING {
-        let error = LaunchError {
-            status: 0,
-            code: "interrupted".to_string(),
-            detail: INTERRUPTED.to_string(),
-            reason: None,
-        };
-        (LAUNCH_FAILED.to_string(), Some(Launch::Failed { error }))
+        let updated: String = row.get("updated_at")?;
+        if updated.as_str() >= cutoff {
+            (LAUNCHING.to_string(), None)
+        } else {
+            let error = LaunchError {
+                status: 0,
+                code: "interrupted".to_string(),
+                detail: INTERRUPTED.to_string(),
+                reason: None,
+            };
+            (LAUNCH_FAILED.to_string(), Some(Launch::Failed { error }))
+        }
     } else {
         (stored, json_opt(row, "launch_json")?)
     };
@@ -568,12 +584,12 @@ fn load_comments(conn: &Connection, id: i64) -> rusqlite::Result<Vec<Comment>> {
     Ok(comments)
 }
 
-fn load(conn: &Connection, id: i64) -> rusqlite::Result<Option<Proposal>> {
+fn load(conn: &Connection, id: i64, cutoff: &str) -> rusqlite::Result<Option<Proposal>> {
     let found = conn
         .query_row(
             &format!("SELECT {COLUMNS} FROM proposals WHERE id = ?1"),
             [id],
-            read_row,
+            |row| read_row(row, cutoff),
         )
         .optional()?;
     let Some((num, mut proposal)) = found else {
@@ -583,14 +599,18 @@ fn load(conn: &Connection, id: i64) -> rusqlite::Result<Option<Proposal>> {
     Ok(Some(proposal))
 }
 
-fn load_list(conn: &Connection, filter: ListFilter) -> rusqlite::Result<Vec<Proposal>> {
+fn load_list(
+    conn: &Connection,
+    filter: ListFilter,
+    cutoff: &str,
+) -> rusqlite::Result<Vec<Proposal>> {
     let sql = format!(
         "SELECT {COLUMNS} FROM proposals {} ORDER BY id DESC LIMIT {LIST_MAX}",
         filter.clause()
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
-        .query_map([], read_row)?
+        .query_map([], |row| read_row(row, cutoff))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut proposals = Vec::with_capacity(rows.len());
     for (num, mut proposal) in rows {
@@ -713,12 +733,22 @@ fn launch_record(outcome: LaunchOutcome) -> (&'static str, Launch) {
     }
 }
 
-/// The current time as RFC 3339, the form every timestamp in the API takes.
-fn now() -> String {
+/// The current time in Unix seconds.
+fn now_unix() -> i64 {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs());
-    rfc3339_from_unix(i64::try_from(secs).unwrap_or(i64::MAX))
+    i64::try_from(secs).unwrap_or(i64::MAX)
+}
+
+/// The oldest stamp a `launching` row may carry and still read as in flight at `now` (Unix seconds).
+fn launch_cutoff(now: i64) -> String {
+    rfc3339_from_unix(now - LAUNCH_WINDOW_SECS)
+}
+
+/// The current time as RFC 3339, the form every timestamp in the API takes.
+fn now() -> String {
+    rfc3339_from_unix(now_unix())
 }
 
 /// Whether the inventory lists a service of this name.
@@ -1143,9 +1173,12 @@ pub async fn deny_proposal(
 mod tests {
     use super::*;
     use crate::server::prefs::Prefs;
+    use crate::ui::proposals_api as page;
 
     const T0: &str = "2026-11-09T10:00:00Z";
     const T1: &str = "2026-11-09T10:05:00Z";
+    /// `T1` in Unix seconds. `the_test_clock_matches_the_stamps_the_tests_write` pins it to `T1`.
+    const T1_UNIX: i64 = 1794218700;
 
     fn ada() -> Person {
         Person {
@@ -1334,9 +1367,12 @@ mod tests {
             .await
             .expect("db")
             .expect("claimed");
-        // No record_launch: the process stopped while the gate was answering.
-
-        let shown = store.get(id).await.expect("get").expect("row");
+        // No record_launch: the process stopped while the gate was answering. Past the window it reads as interrupted.
+        let shown = store
+            .get_at(id, T1_UNIX + LAUNCH_WINDOW_SECS + 1)
+            .await
+            .expect("get")
+            .expect("row");
         assert_eq!(shown.state, LAUNCH_FAILED);
         assert_eq!(
             shown.launch,
@@ -1344,7 +1380,8 @@ mod tests {
                 error: LaunchError {
                     status: 0,
                     code: "interrupted".into(),
-                    detail: INTERRUPTED.into(),
+                    detail: "The launch did not finish; check Active Work before proposing again."
+                        .into(),
                     reason: None,
                 }
             })
@@ -1356,6 +1393,158 @@ mod tests {
                 .expect("db")
                 .is_err(),
             "a restart must not reopen the launch (D53)"
+        );
+    }
+
+    /// The window is inclusive: 150 s after the claim the row still reads as in flight, and 151 s after it reads as
+    /// interrupted. Mutating the comparison in `read_row` to strict `>` fails the 150 s check.
+    #[tokio::test]
+    async fn a_launch_reads_as_in_flight_for_150_seconds_after_its_claim() {
+        let store = store().await;
+        let id = store.insert(&new_row("honcho"), T0).await.expect("insert");
+        assert!(store.set_preview(id, 1, &allowed(T0)).await.expect("db"));
+        store
+            .claim(id, 1, &approval(grace()))
+            .await
+            .expect("db")
+            .expect("claimed");
+
+        let at_claim = store.get_at(id, T1_UNIX).await.expect("get").expect("row");
+        assert_eq!(at_claim.state, LAUNCHING);
+        assert_eq!(at_claim.launch, None);
+
+        let edge = store
+            .get_at(id, T1_UNIX + LAUNCH_WINDOW_SECS)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(
+            edge.state, LAUNCHING,
+            "150 s after the claim is still in flight"
+        );
+        assert_eq!(edge.launch, None);
+
+        let late = store
+            .get_at(id, T1_UNIX + LAUNCH_WINDOW_SECS + 1)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(
+            late.state, LAUNCH_FAILED,
+            "151 s after the claim is interrupted"
+        );
+        assert_eq!(
+            late.launch,
+            Some(Launch::Failed {
+                error: LaunchError {
+                    status: 0,
+                    code: "interrupted".into(),
+                    detail: "The launch did not finish; check Active Work before proposing again."
+                        .into(),
+                    reason: None,
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn the_test_clock_matches_the_stamps_the_tests_write() {
+        assert_eq!(rfc3339_from_unix(T1_UNIX), T1);
+    }
+
+    /// The page reads the JSON the server writes. Every field it mirrors is set to a value that is not its default, so a
+    /// field the server renames or drops fails here instead of reading back as the default (D48-D53).
+    #[tokio::test]
+    async fn the_page_reads_every_field_the_server_writes() {
+        let store = store().await;
+        let id = store.insert(&new_row("honcho"), T0).await.expect("insert");
+        store
+            .begin_edit(id, false, "second", T1)
+            .await
+            .expect("db")
+            .expect("edit to revision 2");
+        store
+            .begin_edit(id, true, "before the honcho upgrade", T1)
+            .await
+            .expect("db")
+            .expect("edit to revision 3");
+        assert!(store.set_preview(id, 3, &allowed(T1)).await.expect("db"));
+        store
+            .claim(id, 3, &approval(ada()))
+            .await
+            .expect("db")
+            .expect("claimed");
+        let launch = Launch::Launched {
+            task_id: 4217,
+            message: "console p1 service-validate".into(),
+            reason: "read-only".into(),
+        };
+        assert!(store
+            .record_launch(id, LAUNCHED, &launch, T1)
+            .await
+            .expect("db"));
+        assert!(store
+            .add_comment(id, &grace(), T1, "Looks right.")
+            .await
+            .expect("db"));
+
+        let stored = store.get(id).await.expect("get").expect("row");
+        let json = serde_json::to_value(&stored).expect("json");
+        let page: page::Proposal =
+            serde_json::from_value(json).expect("the page reads the server's JSON");
+
+        assert_eq!(page.id, "p1");
+        assert_eq!(page.revision, 3);
+        assert_eq!(page.kind, page::Kind::Verify);
+        assert_eq!(page.service, "honcho");
+        assert_eq!(page.template, "Verify Service Health (Dev)");
+        assert_eq!(page.agent, "service-agent");
+        assert_eq!(page.step, "service-validate");
+        assert!(page.check_mode);
+        assert_eq!(page.note.as_deref(), Some("before the honcho upgrade"));
+        assert_eq!(page.state, page::State::Launched);
+        assert_eq!(page.created_at, T0);
+        assert_eq!(page.proposer.name, "Ada");
+        let preview = page.preview.expect("preview");
+        assert_eq!(preview.state, page::PreviewState::Allowed);
+        assert_eq!(preview.reason.as_deref(), Some("read-only"));
+        let decision = page.decision.expect("decision");
+        assert_eq!(decision.action, page::DecisionAction::Approved);
+        assert_eq!(decision.by.name, "Ada");
+        assert_eq!(decision.at, T1);
+        assert!(decision.self_approved);
+        assert_eq!(page.launch.and_then(|launch| launch.task_id), Some(4217));
+        assert_eq!(page.comments.len(), 1);
+        assert_eq!(page.comments[0].text, "Looks right.");
+        assert_eq!(page.comments[0].by.name, "Grace");
+    }
+
+    /// A launch in flight reads as `launching` on the page, with no launch object yet.
+    #[tokio::test]
+    async fn a_launch_in_flight_reads_as_launching_on_the_page() {
+        let store = store().await;
+        let id = store.insert(&new_row("honcho"), T0).await.expect("insert");
+        assert!(store.set_preview(id, 1, &allowed(T0)).await.expect("db"));
+        store
+            .claim(id, 1, &approval(grace()))
+            .await
+            .expect("db")
+            .expect("claimed");
+
+        let stored = store
+            .get_at(id, T1_UNIX + 10)
+            .await
+            .expect("get")
+            .expect("row");
+        let json = serde_json::to_value(&stored).expect("json");
+        let page: page::Proposal =
+            serde_json::from_value(json).expect("the page reads the server's JSON");
+        assert_eq!(page.state, page::State::Launching);
+        assert_eq!(page.revision, 1);
+        assert!(page.launch.is_none());
+        assert_eq!(
+            page.decision.map(|decision| decision.by.name),
+            Some("Grace".to_string())
         );
     }
 
