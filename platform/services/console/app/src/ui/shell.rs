@@ -492,7 +492,10 @@ fn TenantSwitch() -> Element {
                     role: "listbox",
                     aria_label: "Tenants",
                     onkeydown: move |evt: KeyboardEvent| {
-                        if evt.key() == Key::Escape {
+                        // Escape and Tab both close the menu and return to the switch, so Tab never walks
+                        // through every tenant and never leaves an open menu behind.
+                        if closes_menu(&evt.key()) {
+                            evt.prevent_default();
                             open.set(false);
                             api::focus(TENANT_SWITCH_ID);
                         }
@@ -505,6 +508,8 @@ fn TenantSwitch() -> Element {
                                 role: "option",
                                 class: "tenant-option",
                                 aria_selected: "{selected}",
+                                // One tab stop for the whole menu: the arrows move between options.
+                                tabindex: option_tabindex(index, focus_index),
                                 onmounted: move |evt: MountedEvent| {
                                     if index == focus_index {
                                         let node = evt.data();
@@ -572,8 +577,33 @@ pub fn is_platform_admin(claims: &Claims) -> bool {
     claims.groups.iter().any(|group| group == "platform-admins")
 }
 
+/// Whether a key closes the open tenant menu and returns focus to its switch.
+fn closes_menu(key: &Key) -> bool {
+    matches!(key, Key::Escape | Key::Tab)
+}
+
+/// The tab index of a tenant option: only the option that takes focus on open is a tab stop (D44).
+fn option_tabindex(index: usize, focus_index: usize) -> &'static str {
+    if index == focus_index {
+        "0"
+    } else {
+        "-1"
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn escape_and_tab_close_the_menu_and_only_one_option_is_a_tab_stop() {
+        assert!(closes_menu(&Key::Escape));
+        assert!(closes_menu(&Key::Tab));
+        assert!(!closes_menu(&Key::ArrowDown));
+        assert!(!closes_menu(&Key::Enter));
+        assert_eq!(option_tabindex(2, 2), "0");
+        assert_eq!(option_tabindex(0, 2), "-1");
+        assert_eq!(option_tabindex(3, 2), "-1");
+    }
+
     use super::*;
     use serde_json::{json, Value};
 

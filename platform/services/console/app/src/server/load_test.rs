@@ -116,7 +116,9 @@ async fn serve(app: Router) -> SocketAddr {
     addr
 }
 
-/// The `/v1` read routes the load runs over, every one the router serves as a read.
+/// The `/v1` read routes the load runs over: 16 of the router's 18 reads. The two detail routes,
+/// `/v1/work/{key}` and `/v1/tenants/{t}/services/{name}`, need an item key the empty test caches cannot
+/// supply, so they are left out rather than timed on their not-found path.
 const READS: [&str; 16] = [
     "/v1/me",
     "/v1/tenants",

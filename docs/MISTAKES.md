@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x6** | Unverified claim | 6 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x7** | Unverified claim | 7 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) | Unverified claim | 6 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) | Unverified claim | 7 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
@@ -115,6 +115,7 @@ and why.
 | 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
 | 3.20 | Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) | Live state | 1 | Convention (launch away from schedule slots); per-task inventory proposed |
+| 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -127,7 +128,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test) | Process | 10 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-09: a template-order test the fast subset skips) | Process | 11 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -251,7 +252,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 6** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03
+**Occurrences: 7** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -321,6 +322,20 @@ read as missing runs. The pr-reviewer caught the duplicate before merge; the ste
 Why the rule did not fire: the file was the right one, so the "right artifact" check passed, but
 the read itself was partial. A gap claim needs the full text of the lines it says are missing, not
 a display-truncated view of them.
+
+**Occurrence 7 — 2026-11-07 (a gap inferred from a guard's failure message).** A local
+`Seed OpenBao Key (Dev)` access check (local Semaphore task 11896) failed with "ensure openbao_addr
+(or OPENBAO_ADDR) + AppRole creds are set". The user was told that the local inventory never
+declares `openbao_addr` under `all.vars`, so no seed template could run in local-dev, and offered a
+bootstrap fix taking one to two hours, which they chose. The inventory did declare it: a literal
+`all.vars.openbao_addr` in the static-yaml form, since `910b2747`, read back from local Semaphore
+inventory 1. The task's own output, three lines above the play, said
+`Unable to parse /tmp/semaphore/project_1/inventory_1.yml as an inventory source`. That is the
+intermittent local parse failure already seen on task 11592, and a plain re-run (task 13408)
+passed. Why the rule did not fire: no file was grepped. The gap was read from a failure message
+that lists possible causes, and the stored artifact the claim was about was never opened. A guard's
+fail message names what it checks, not what is missing; the cause of a failure comes from the
+failing task's full output and the artifact it names.
 
 ### 1.3 A masked exit code reported as success
 
@@ -1184,7 +1199,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 6** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late)
+**Occurrences: 7** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1267,6 +1282,16 @@ proposed at occurrence 3 would not catch this case, because the claim was in a b
 task list. **Proposed guard, extended:** a PreToolUse hook on Agent dispatches that extracts every
 repository path a brief names as a pattern to copy (`PATTERN TO COPY`, "copy how", "like `<path>`") and
 requires a Read or Bash read of that path earlier in the session, refusing the dispatch otherwise.
+
+**Occurrence 7 — 2026-11-08.** Briefing the launch gate's allow-path probe (`Probe launch-gate (Dev)`), I
+fixed its request's workflow step as `probe`, a name I chose, without reading how OPA uses the step. OPA looks
+the step up in the catalog's `workflow_steps` (`agent_actions.rego:100`) and denies a launch whose step is not
+there (`:102`); `probe` is not, so the probe would have been refused at exactly the decision it exists to
+prove. The worker evaluated both inputs with `opa eval` against the policy bundle, stopped before writing
+anything, and named the registry step that is allowed for that template (`service-assess`). Why the rule did
+not fire: the step looked like free-form tagging, because the gate copies it into the task message, so it was
+not read as a value the policy checks. The brief had read the gate's request parser and its message format,
+not the policy that consumes the same field.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
@@ -3090,6 +3115,36 @@ inventory, re-run it alone, and check whether scheduled tasks started in the sam
 minute of a schedule declared in `templates.yml`, and the foundational fix is a per-task copy of
 the inventory so no task can remove another's.
 
+### 3.21 Shared-inventory switches merged and synced before any run had read them
+
+**What happened.** For observability task 2.3c (endpoint availability probes), site-config PR 157
+declared three health targets and, in the same change, set `o11y_availability_probes_enabled: true` and
+declared the Alloy self target's metrics source as native (`source: alloy`). The agent-cloud task list
+(1.4a.4) already said enabled availability had never run in production. The PR was reviewed, merged and
+synced to the production Semaphore inventory on 2026-11-09 at about 02:55 UTC. The first enabled
+`Deploy o11y (Dev)` dry run (Semaphore task 13907) refused at the pre-placement Alloy network-namespace
+gate, and a rerun (13908) refused the same way. Because the switch lived in the shared inventory, every
+o11y deploy, by any session, would have refused. Holding the probes off (site-config 159) was not
+enough: a disabled-mode dry run (13914) refused at the self-metrics producer check, and the native
+source declaration would also have failed every real deploy's post-apply source readback (Alloy's
+native self-scrape renders only with the probes on, `config.alloy.j2`; the readback requires
+`matches_intended`, `deploy-o11y.yml`), so it was reverted too (site-config 160). The next disabled-mode dry run (13927, 03:37 UTC) passed. Nothing on the
+receiver changed: every refusal happened before placement. Deploys were blocked for about 40 minutes.
+
+**Root cause.** The inventory is the only place these switches can be set, and the change that set them
+was proven only against the census in isolation (revision, preparation), not by a run of the deploy
+that reads them. Each switch also flips a second behaviour (the namespace gate, the native-source
+expectation) that no review traced to a live check.
+
+**The rule.** A site-config change that switches on a mode never exercised in production, or changes
+a value a deploy gate checks, merges with the switch off. Prove the mode first with a run that reads the
+candidate values without changing the shared inventory, then switch it on in its own small change, with
+a disabled-mode dry run ready to confirm the revert path.
+
+**Enforced by.** Convention. Proposed: a read-only template that runs the enabled-mode pre-placement
+gates against the declared cohort without the switch, with fixed-category refusal reasons, so the
+switch can be proven before it is merged. Related: 3.15 (unproven `dev` changes reaching a real run).
+
 ## 4. Data handling
 
 ### 4.1 `while read` dropping an unterminated final line
@@ -3630,6 +3685,17 @@ runner-scratch rule. Fixed in `81bd7950` by skipping the block in a dry run inst
 the rule did not fire: both the author and the reviewer chose tests by the file's name, and the
 contract tests that read every playbook name none of them. The 91-second fast subset proposed above
 does not launch `ansible-playbook`, so it includes this contract test and would have stopped the push.
+
+**Occurrence 2026-11-09 (the fast subset has a blind spot).** PR #922 added the `Probe launch-gate (Dev)`
+template to `platform/semaphore/templates.yml` between `Probe agentgateway Gate (Dev)` and
+`Probe agentgateway Isolation (Dev)`, and was pushed under `SKIP_TESTS=1` after the fast subset (every test file
+that does not launch `ansible-playbook`) and the template-catalog tests passed. CI's Python Agentgateway job
+failed on `test_agw_isolation_probe.py::test_the_semaphore_template_is_dev_bound_with_the_two_survey_vars`, which
+requires the isolation probe to follow the gate probe directly. That file launches `ansible-playbook`, so the
+subset excluded it, although this test only reads `templates.yml`. Fixed before merge by moving the entry
+(`6aaa6476`). Why the rule did not fire: the subset is chosen per file, and a file that runs playbooks can still
+hold text-only tests about shared files. **Refines the proposed guard:** select the always-run scans per test (a
+marker on tests that launch nothing), not per file.
 
 ### 5.3 Merging while the review was rate-limited
 

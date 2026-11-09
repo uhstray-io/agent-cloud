@@ -19,6 +19,8 @@ from ansible.errors import AnsibleFilterError
 REPO = Path(__file__).resolve().parents[2]
 CATALOG = REPO / "platform/services/opa/deployment/policies/agentcloud/data.json"
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
+LOCAL_TEMPLATES = REPO / "platform/semaphore/templates-local.yml"
+PLAYBOOK = REPO / "platform/playbooks/deploy-launch-gate.yml"
 DEPLOY = REPO / "platform/services/launch-gate/deployment"
 ROLE_AGENTS = ["infra-agent", "security-agent", "o11y-agent", "service-agent", "network-agent"]
 
@@ -170,6 +172,61 @@ def test_the_repository_skynet_agent_is_refused_because_it_names_no_templates():
     cat, tpl = real_documents()
     with pytest.raises(AnsibleFilterError, match="skynet"):
         filt.launch_gate_allowlist(cat, tpl, ["skynet"])
+
+
+# ── (Local) variants, local-dev only ────────────────────────────────────────────
+
+
+def local_templates(*names):
+    """A minimal templates-local.yml document from template names."""
+    return {"templates": [{"name": name} for name in names]}
+
+
+def test_local_variants_are_added_only_where_templates_local_declares_them():
+    doc = catalog(**{"agent-one": {"allowed_templates": ["A", "B", "Wipe and Rebuild"]}})
+    tpl = templates(("A", True), ("B", False), ("Wipe and Rebuild", True))
+    local = local_templates("A (Local)", "Wipe and Rebuild (Local)", "Unrelated (Local)")
+    assert filt.launch_gate_allowlist(doc, tpl, ["agent-one"], local) == ["A", "A (Dev)", "A (Local)", "B"]
+
+
+def test_without_the_local_document_no_local_name_is_listed():
+    cat, tpl = real_documents()
+    assert not [name for name in filt.launch_gate_allowlist(cat, tpl, ROLE_AGENTS) if name.endswith(" (Local)")]
+
+
+def test_a_local_document_without_its_list_is_refused():
+    doc = catalog(**{"agent-one": {"allowed_templates": ["A"]}})
+    with pytest.raises(AnsibleFilterError, match="templates-local.yml"):
+        filt.launch_gate_allowlist(doc, templates(("A", False)), ["agent-one"], {"other": []})
+
+
+def test_a_local_template_name_declared_twice_is_refused():
+    doc = catalog(**{"agent-one": {"allowed_templates": ["A"]}})
+    with pytest.raises(AnsibleFilterError, match="declared twice in templates-local.yml"):
+        local = local_templates("A (Local)", "A (Local)")
+        filt.launch_gate_allowlist(doc, templates(("A", False)), ["agent-one"], local)
+
+
+def test_the_repository_local_allowlist_adds_only_declared_local_names_to_the_production_list():
+    cat, tpl = real_documents()
+    local = yaml.safe_load(LOCAL_TEMPLATES.read_text())
+    declared_local = {entry["name"] for entry in local["templates"]}
+    prod = filt.launch_gate_allowlist(cat, tpl, ROLE_AGENTS)
+    out = filt.launch_gate_allowlist(cat, tpl, ROLE_AGENTS, local)
+    added = sorted(set(out) - set(prod))
+    assert set(prod) <= set(out)
+    assert added, "no role agent template has a (Local) variant"
+    assert all(name.endswith(" (Local)") and name in declared_local for name in added)
+    assert all(name.removesuffix(" (Local)") in prod for name in added)
+    assert "Snapshot Firewall (Local)" in out  # skynet's first local service-onboarding launch
+
+
+def test_the_deploy_reads_templates_local_only_under_local_mode():
+    text = PLAYBOOK.read_text()
+    start = text.index("_launch_gate_allowlist: >-")
+    call = text[start : text.index("\n\n", start)]
+    assert "templates-local.yml" in call
+    assert "if (_launch_gate_local_mode | bool) else none" in call
 
 
 # ── the templates, rendered as Ansible renders them ─────────────────────────────
