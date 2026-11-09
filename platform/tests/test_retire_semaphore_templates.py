@@ -206,3 +206,14 @@ def test_deletes_accept_already_gone_and_the_read_back_still_proves_it():
     assert max(delete_at) < min(reads) < readback[0], "post-delete GETs sit between the deletes and the assert"
     for i in reads:
         assert "when" not in tasks[i] or tasks[i]["when"] == "not ansible_check_mode", tasks[i].get("name")
+
+
+def test_template_delete_allows_for_a_long_task_history():
+    """Deleting a template removes its task history; the uri default (30 s) timed out on the
+    tududi refresher's (Semaphore tasks 14206, 14211)."""
+    deletes = [
+        args for _, args in _uri_tasks()
+        if str(args.get("method", "")).upper() == "DELETE" and "/templates/" in str(args.get("url", ""))
+    ]
+    assert len(deletes) == 1
+    assert int(deletes[0].get("timeout", 30)) >= 300, "template DELETE needs a long timeout"
