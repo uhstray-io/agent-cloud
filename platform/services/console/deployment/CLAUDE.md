@@ -232,6 +232,37 @@ Deep links: each VM and service row carries `grafana_url`, the Service Overview 
 - **Errors.** A failed `up` read keeps the last good rollup and sets `error` to `The newest telemetry read failed: <reason>. Showing the last good read.`, or `The telemetry read failed: <reason>.` before any good read. A failed alerts read sets `alerts` to `{"state":"error","error":"Grafana alerts could not be read: <reason>."}` and leaves that refresh's alert counts at zero. The `alerts` block describes the rollup on the page: when the `up` read fails, the block keeps the outcome of the rollup it is shown beside, so a failed alerts read during a failed `up` read is not shown as its own status. The reasons are fixed text: never a URL, a body or the token.
 - **Gate.** `work::admin_only`, the same gate as `/v1/policies`.
 
+## Launch gate (plan 17 D49, D53)
+
+The console calls the launch gate's `POST /v1/launch` with its own caller token (D49). The deploy wires the gate in only when the inventory declares it. Undeclared, nothing below renders, no task reads a token, and no launch-gate check runs.
+
+**Inventory (`console_svc` host vars, in site-config).**
+
+| Var | Required | Meaning |
+|-----|----------|---------|
+| `console_launch_gate_url` | no | The gate's base URL, `https://<host>[:<port>]`. Declaring it enables the gate. Refused by name unless it is https with a host name |
+| `console_launch_gate_ip` | when declared, outside local mode | One non-wildcard IPv4 address: the gate host. The console maps the gate's name to it (`compose.launch-gate.yml`). Refused by name when unset, empty, `0.0.0.0` or not an address |
+| `console_launch_dev_variants` | no, default `true` | D53: the console launches each template's `(Dev)` variant. Rendered always, so the flag is never implicit. Turn it off at promotion |
+
+Outside local mode a declared gate also needs a `step_ca_svc` host: the CA root is read from that group, and the play refuses by name when the group is empty.
+
+**Secret.** `caller_console_token` is a shared read of `secret/services/launch-gate`. The read happens only when the gate is declared, and this deploy never writes the token back. The launch-gate deploy must generate the token first. On this base it does not: `deploy-launch-gate.yml` lists only `skynet` in `_launch_gate_token_callers` (line 92) and refuses a `launch_gate_callers` entry with no token caller (line 214). That change belongs to the launch-gate deploy and is not in this change.
+
+**Environment** (`templates/env.j2`):
+
+- `CONSOLE_LAUNCH_GATE_URL` and `CONSOLE_LAUNCH_GATE_TOKEN`: when declared, in every mode.
+- `CONSOLE_LAUNCH_GATE_HOSTNAME` and `CONSOLE_LAUNCH_GATE_IP`: when declared, outside local mode only. They feed the overlay's `extra_hosts`.
+- `CONSOLE_LAUNCH_DEV_VARIANTS`: always, `true` or `false`.
+- `CONSOLE_EXTRA_CA_FILE` is never rendered into `.env`. Only the overlay sets it.
+
+**Overlay** (`compose.launch-gate.yml`). `deploy.sh` loads it only outside `LOCAL_MODE` and only when `.env` carries `CONSOLE_LAUNCH_GATE_HOSTNAME`. It maps the gate's name with `extra_hosts` (both variables required, `:?`), mounts `./certs/step-ca-bundle.crt` read-only at `/etc/ssl/certs/step-ca-bundle.crt`, and sets `CONSOLE_EXTRA_CA_FILE` to that path. `deploy.sh` refuses to start when the overlay is loaded and the bundle is missing, because a missing bind-mount source would be created as a directory. The bundle is a recreate input only with the overlay, since the console reads its roots once, at startup.
+
+**Trust.** Production distributes the step-ca root and intermediate from the `step_ca_svc` host into `certs/step-ca-bundle.crt` (`tasks/distribute-ca-root.yml`, without the combined public-roots bundle). `server/mod.rs` `client_with_roots` adds that bundle to the client's roots, and reqwest keeps its built-in roots by default, so the public OIDC issuer still verifies. The same client serves every upstream the console calls (OIDC, Semaphore, NetBox, Grafana, the Authentik directory). The bundle therefore trusts those upstreams too, not only the gate. The step-ca name policy limits which names the CA can sign.
+
+**Probe** (Phase 3, when declared). The verify play runs `curl --request POST --cacert <deploy>/certs/step-ca-bundle.crt` against `<console_launch_gate_url>/v1/launch` with no token, and requires HTTP 401. The probe runs from the host, not the container, for two reasons: the image is distroless (no curl), and the `probe` subcommand speaks plain HTTP to 127.0.0.1 only. Outside local mode `--resolve` sends the declared name to `console_launch_gate_ip`. The probe is `POST` because the gate answers `GET` with 405 before it checks the token. The address is never printed. The probe is skipped under `--check`. It proves the gate answers over TLS against the bundle. It does not prove the console container has the `extra_hosts` mapping. The gate host's firewall must admit `console_svc`, or the probe fails with status 000.
+
+**Not in this change.** Two things the gate needs live outside this deploy. (1) The console application does not read any `CONSOLE_LAUNCH_*` variable on this base. It has no gate client and no proposal routes (D50 to D52 are Phase 4), so the rendered values do nothing until that code lands. (2) The launch-gate deploy must generate `caller_console_token` (see Secret above). Until it does, a declared `console_launch_gate_url` fails the shared read by name.
+
 ## Shared credentials (plan 17, D26-D27)
 
 Three credentials serve the console. Each has its own provisioning playbook, and the deploy reads the first two into `.env`. The GitHub token is read by the console at run time (Phase 5), not by the deploy. (1) The console AppRole: `secret/services/approles/console` holds `role_id` and `secret_id`. `provision-console-approle.yml` writes it, and `rotate-console-credentials.yml` rotates `secret_id` monthly. (2) The Grafana Viewer token: `secret/services/o11y:console_grafana_token`, from `provision-console-grafana-token.yml`, renewed by the rotation. (3) The read-only GitHub token: `secret/services/console/github`, refreshed every 45 minutes by `refresh-console-github-token.yml` on a Dev schedule. Setting `console_openbao_url` in the inventory reads (1) into `CONSOLE_OPENBAO_*`. Setting `console_grafana_api_enabled: true` together with `console_grafana_url` reads (2) into `CONSOLE_GRAFANA_TOKEN`; `console_grafana_url` alone is only the deep-link base. Each read fails by name when its source is missing. Production order: Provision Console AppRole, Provision Console Grafana Token, set the URLs and `console_grafana_api_enabled` in site-config, then Deploy console. The rotation renders `.env` from the controller checkout (`manage-secrets.yml:205`) while the image stays at the commit it pins; its drift check refuses a rotation whose controller inputs differ from that commit. While `dev`'s console inputs are ahead of the deployed commit, every monthly rotation refuses by name; redeploy the console from `dev` within the 90-day secret ID lifetime, or the stored secret ID expires and the console loses OpenBao.
@@ -265,6 +296,7 @@ deployment/
 ├── deploy.sh               container lifecycle + host image build (lib/common.sh)
 ├── compose.yml             single container, env-parameterized image/bind/port, console-data volume
 ├── compose.local.yml       local overlay: local-dev network, step-ca bundle, CONSOLE_EXTRA_CA_FILE
+├── compose.launch-gate.yml production launch-gate overlay: gate name mapping, step-ca bundle (loaded only with CONSOLE_LAUNCH_GATE_HOSTNAME)
 ├── templates/
 │   ├── env.j2              .env (non-secret config + shared OIDC secret + Semaphore token)
 │   ├── scope.json.j2       config/scope.json from console_tenants
