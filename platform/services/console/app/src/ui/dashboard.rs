@@ -44,6 +44,57 @@ struct Queues {
     now: Signal<Option<i64>>,
 }
 
+/// Moves the launches in flight from the decided answer to the waiting one. The server's decided answer is every row
+/// that is not awaiting, so a `launching` row comes back there; the page never lists it as decided. It shows at the top
+/// of the waiting list, with no actions, and the same keyed card carries on when the launch settles. When the waiting
+/// read failed there is no list to put it in, so it is left out until the next good read.
+pub fn queues_with_launches(
+    waiting: Admin<ProposalsBody>,
+    decided: Admin<ProposalsBody>,
+) -> (Admin<ProposalsBody>, Admin<ProposalsBody>) {
+    let Admin::Shown {
+        body: decided_body,
+        reason: decided_reason,
+    } = decided
+    else {
+        return (waiting, decided);
+    };
+    let (in_flight, rest): (Vec<Proposal>, Vec<Proposal>) = decided_body
+        .proposals
+        .into_iter()
+        .partition(|proposal| proposal.state == proposals_api::State::Launching);
+    let decided = Admin::Shown {
+        body: ProposalsBody { proposals: rest },
+        reason: decided_reason,
+    };
+    let waiting = match waiting {
+        Admin::Shown { body, reason } => {
+            let mut proposals = in_flight;
+            proposals.extend(body.proposals);
+            Admin::Shown {
+                body: ProposalsBody { proposals },
+                reason,
+            }
+        }
+        other => other,
+    };
+    (waiting, decided)
+}
+
+/// The Dashboard header's count: the proposals waiting on an approver. A launch in flight is listed, but nothing
+/// waits on it, so it is not counted.
+pub fn waiting_count(state: &Admin<ProposalsBody>) -> String {
+    match state {
+        Admin::Shown { body, .. } => body
+            .proposals
+            .iter()
+            .filter(|proposal| proposal.state == proposals_api::State::Awaiting)
+            .count()
+            .to_string(),
+        _ => DASH.to_string(),
+    }
+}
+
 /// One read of both lists into their signals. Returns `false` when the poll should stop: the session ended,
 /// or the caller is not a platform admin.
 async fn read_queues(q: Queues, me: Signal<Me>) -> bool {
@@ -53,6 +104,7 @@ async fn read_queues(q: Queues, me: Signal<Me>) -> bool {
     now.set(api::now_ms().await);
     let next_waiting = admin_next(&q.awaiting.peek(), waiting);
     let next_decided = admin_next(&q.decided.peek(), decided);
+    let (next_waiting, next_decided) = queues_with_launches(next_waiting, next_decided);
     let signed_out =
         matches!(next_waiting, Admin::SignedOut) || matches!(next_decided, Admin::SignedOut);
     let keep = keeps_polling_admin(&next_waiting) && keeps_polling_admin(&next_decided);
@@ -163,10 +215,7 @@ pub fn Dashboard() -> Element {
     let waiting = queues.awaiting.read().clone();
     let decided = queues.decided.read().clone();
     let current = outcome.read().clone();
-    let count = match &waiting {
-        Admin::Shown { body, .. } => body.proposals.len().to_string(),
-        _ => DASH.to_string(),
-    };
+    let count = waiting_count(&waiting);
 
     rsx! {
         div { class: "view dashboard",
@@ -322,13 +371,25 @@ fn ProposalCard(
     let mut notice = use_signal(|| None::<String>);
 
     let id = proposal.id.clone();
+    // The revision on this card. An approval or denial names it, so the server refuses it if the proposal has moved on.
+    let revision = proposal.revision;
+    let launching = proposal.state == proposals_api::State::Launching;
     let title = format!(
         "{} \u{00b7} {}",
         proposals_api::kind_label(proposal.kind),
         proposal.service
     );
-    let (shape, tone, word) = proposals_api::preview_look(proposal.preview.as_ref());
-    let reason = proposals_api::preview_reason(proposal.preview.as_ref());
+    // A launch in flight shows its state. Its gate preview is no longer what the page is deciding on.
+    let (shape, tone, word) = if launching {
+        proposals_api::state_look(proposal.state)
+    } else {
+        proposals_api::preview_look(proposal.preview.as_ref())
+    };
+    let reason = if launching {
+        None
+    } else {
+        proposals_api::preview_reason(proposal.preview.as_ref())
+    };
     let refusal = proposals_api::approve_refusal(&proposal);
     let proposed = format!(
         "Proposed by {} \u{00b7} {}",
@@ -353,7 +414,7 @@ fn ProposalCard(
             notice.set(None);
             let id = id.clone();
             spawn(async move {
-                let reply = proposals_api::approve(&id).await;
+                let reply = proposals_api::approve(&id, revision).await;
                 busy.set(false);
                 on_settled.call(action_settled(&reply, proposals_api::outcome_for));
             });
@@ -370,7 +431,7 @@ fn ProposalCard(
             let id = id.clone();
             let text = deny_note();
             spawn(async move {
-                let reply = proposals_api::deny(&id, &text).await;
+                let reply = proposals_api::deny(&id, &text, revision).await;
                 busy.set(false);
                 on_settled.call(action_settled(&reply, proposals_api::outcome_for));
             });
@@ -449,7 +510,7 @@ fn ProposalCard(
             if let Some(text) = note {
                 p { class: "muted", "Note: {text}" }
             }
-            if own {
+            if own && !launching {
                 p { class: "hint", "You proposed this. Approving it is recorded as a self-approval." }
             }
             if !proposal.comments.is_empty() {
@@ -462,69 +523,73 @@ fn ProposalCard(
                     }
                 }
             }
-            div { class: "proposal-actions",
-                label { class: "field grow",
-                    span { class: "label", "Comment" }
-                    input {
-                        class: "input",
-                        r#type: "text",
-                        maxlength: "2000",
-                        placeholder: "Comment on this proposal",
-                        value: "{comment}",
-                        oninput: move |evt: FormEvent| comment.set(evt.value()),
-                    }
-                }
-                button { class: "btn", r#type: "button", onclick: on_comment, "Add" }
-            }
-            if editing() {
-                div { class: "stack",
-                    label { class: "choice",
-                        input {
-                            r#type: "checkbox",
-                            checked: edit_check(),
-                            onchange: move |evt: FormEvent| edit_check.set(evt.checked()),
-                        }
-                        span { "Check mode (dry run)" }
-                    }
-                    label { class: "field",
-                        span { class: "label", "Note" }
-                        input {
-                            class: "input",
-                            r#type: "text",
-                            maxlength: "2000",
-                            value: "{edit_note}",
-                            oninput: move |evt: FormEvent| edit_note.set(evt.value()),
-                        }
-                    }
-                    div { class: "proposal-actions",
-                        button { class: "btn primary", r#type: "button", onclick: on_save, {icon("check")} "Save" }
-                        button {
-                            class: "btn",
-                            r#type: "button",
-                            onclick: move |_: MouseEvent| editing.set(false),
-                            "Cancel"
-                        }
-                    }
-                }
+            if launching {
+                p { class: "hint", "The launch is running. Nothing to decide." }
             } else {
                 div { class: "proposal-actions",
-                    if let Some(text) = refusal {
-                        BlockedButton { label: "Approve".to_string(), reason: text, id: approve_reason_id }
-                    } else {
-                        button { class: "btn primary", r#type: "button", onclick: on_approve, {icon("check")} "Approve" }
-                    }
-                    button { class: "btn", r#type: "button", onclick: on_edit, "Edit" }
-                    label { class: "field",
-                        span { class: "label", "Denial note (optional)" }
+                    label { class: "field grow",
+                        span { class: "label", "Comment" }
                         input {
                             class: "input",
                             r#type: "text",
                             maxlength: "2000",
-                            value: "{deny_note}",
-                            oninput: move |evt: FormEvent| deny_note.set(evt.value()),
+                            placeholder: "Comment on this proposal",
+                            value: "{comment}",
+                            oninput: move |evt: FormEvent| comment.set(evt.value()),
                         }
                     }
-                    button { class: "btn", r#type: "button", onclick: on_deny, {icon("x")} "Deny" }
+                    button { class: "btn", r#type: "button", onclick: on_comment, "Add" }
+                }
+                if editing() {
+                    div { class: "stack",
+                        label { class: "choice",
+                            input {
+                                r#type: "checkbox",
+                                checked: edit_check(),
+                                onchange: move |evt: FormEvent| edit_check.set(evt.checked()),
+                            }
+                            span { "Check mode (dry run)" }
+                        }
+                        label { class: "field",
+                            span { class: "label", "Note" }
+                            input {
+                                class: "input",
+                                r#type: "text",
+                                maxlength: "2000",
+                                value: "{edit_note}",
+                                oninput: move |evt: FormEvent| edit_note.set(evt.value()),
+                            }
+                        }
+                        div { class: "proposal-actions",
+                            button { class: "btn primary", r#type: "button", onclick: on_save, {icon("check")} "Save" }
+                            button {
+                                class: "btn",
+                                r#type: "button",
+                                onclick: move |_: MouseEvent| editing.set(false),
+                                "Cancel"
+                            }
+                        }
+                    }
+                } else {
+                    div { class: "proposal-actions",
+                        if let Some(text) = refusal {
+                            BlockedButton { label: "Approve".to_string(), reason: text, id: approve_reason_id }
+                        } else {
+                            button { class: "btn primary", r#type: "button", onclick: on_approve, {icon("check")} "Approve" }
+                        }
+                        button { class: "btn", r#type: "button", onclick: on_edit, "Edit" }
+                        label { class: "field",
+                            span { class: "label", "Denial note (optional)" }
+                            input {
+                                class: "input",
+                                r#type: "text",
+                                maxlength: "2000",
+                                value: "{deny_note}",
+                                oninput: move |evt: FormEvent| deny_note.set(evt.value()),
+                            }
+                        }
+                        button { class: "btn", r#type: "button", onclick: on_deny, {icon("x")} "Deny" }
+                    }
                 }
             }
             if busy() {
@@ -686,6 +751,82 @@ mod tests {
             Settled::Changed(outcome) => assert!(!outcome.ok),
             other => panic!("expected a changed outcome, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use crate::ui::proposals_api::State;
+
+    fn proposal(id: &str, state: State) -> Proposal {
+        Proposal {
+            id: id.into(),
+            state,
+            ..Proposal::default()
+        }
+    }
+
+    fn shown(proposals: Vec<Proposal>) -> Admin<ProposalsBody> {
+        Admin::Shown {
+            body: ProposalsBody { proposals },
+            reason: None,
+        }
+    }
+
+    /// The ids of a shown list, in order. Any other state fails the test, so a missing list cannot pass.
+    fn ids(state: &Admin<ProposalsBody>) -> Vec<String> {
+        match state {
+            Admin::Shown { body, .. } => body.proposals.iter().map(|p| p.id.clone()).collect(),
+            _ => panic!("expected a shown list"),
+        }
+    }
+
+    #[test]
+    fn a_launch_in_flight_moves_to_the_top_of_the_waiting_list_and_out_of_the_decided_one() {
+        let waiting = shown(vec![
+            proposal("p4", State::Awaiting),
+            proposal("p2", State::Awaiting),
+        ]);
+        let decided = shown(vec![
+            proposal("p3", State::Launching),
+            proposal("p1", State::Launched),
+        ]);
+        let (waiting, decided) = queues_with_launches(waiting, decided);
+        assert_eq!(ids(&waiting), ["p3", "p4", "p2"]);
+        assert_eq!(ids(&decided), ["p1"]);
+    }
+
+    #[test]
+    fn a_launch_in_flight_is_not_counted_as_waiting() {
+        let waiting = shown(vec![
+            proposal("p5", State::Awaiting),
+            proposal("p4", State::Launching),
+            proposal("p3", State::Awaiting),
+        ]);
+        assert_eq!(waiting_count(&waiting), "2");
+        assert_eq!(waiting_count(&Admin::Loading), DASH);
+    }
+
+    #[test]
+    fn a_failed_waiting_read_leaves_the_launch_out_and_still_keeps_it_off_the_decided_list() {
+        let (waiting, decided) = queues_with_launches(
+            Admin::Unavailable("GitHub answered HTTP 500".to_string()),
+            shown(vec![
+                proposal("p5", State::Launching),
+                proposal("p1", State::Denied),
+            ]),
+        );
+        assert!(matches!(waiting, Admin::Unavailable(_)));
+        assert_eq!(ids(&decided), ["p1"]);
+    }
+
+    #[test]
+    fn a_decided_list_that_has_not_loaded_is_passed_through() {
+        let (waiting, decided) =
+            queues_with_launches(shown(vec![proposal("p2", State::Awaiting)]), Admin::Loading);
+        assert_eq!(ids(&waiting), ["p2"]);
+        assert!(matches!(decided, Admin::Loading));
     }
 }
 
@@ -873,6 +1014,24 @@ mod render_tests {
         assert!(
             html.contains("Propose an assessment or a health check from a service"),
             "no pointer to a service page: {html}"
+        );
+    }
+
+    #[test]
+    fn a_launch_in_flight_shows_launching_and_no_button() {
+        let launching = Proposal {
+            state: State::Launching,
+            ..waiting(PreviewState::Allowed, None)
+        };
+        let html = render(rsx! { CardUnderTest { proposal: launching } });
+        assert!(html.contains("Launching"), "no launching state: {html}");
+        assert!(
+            html.contains("Nothing to decide."),
+            "no explanation: {html}"
+        );
+        assert!(
+            !html.contains("<button"),
+            "a launch in flight has a button: {html}"
         );
     }
 }

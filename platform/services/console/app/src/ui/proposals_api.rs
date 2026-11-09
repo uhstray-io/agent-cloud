@@ -21,6 +21,8 @@ pub const RECENT_DECIDED: usize = 20;
 pub const ADMIN_ONLY: &str = "Platform admins only.";
 /// The sentence a failed write shows when the server sent none.
 pub const GENERIC_FAILURE: &str = "The request did not complete. Try again.";
+/// The sentence a stale approval or denial shows: the proposal was edited after this page loaded it (D53).
+pub const STALE: &str = "This proposal changed since you loaded it. Review it again.";
 
 /// The action a proposal takes. `assess` runs Snapshot Service Assessment; `verify` runs Verify Service Health.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -44,11 +46,13 @@ impl Kind {
     }
 }
 
-/// Where a proposal stands. `Awaiting` is the only state a decision can change.
+/// Where a proposal stands. `Awaiting` is the only state a decision can change. `Launching` is a launch in flight: the
+/// gate has not answered, so nothing can be decided on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum State {
     Awaiting,
+    Launching,
     Denied,
     Launched,
     LaunchFailed,
@@ -137,6 +141,8 @@ pub struct Comment {
 #[serde(default)]
 pub struct Proposal {
     pub id: String,
+    /// The revision the page reviewed. An approval or denial sends it back, and the server refuses a stale one (D53).
+    pub revision: u64,
     pub kind: Kind,
     pub service: String,
     pub template: String,
@@ -172,6 +178,7 @@ pub struct Outcome {
 pub fn state_look(state: State) -> (&'static str, Tone, &'static str) {
     match state {
         State::Awaiting => ("loader-circle", Tone::Run, "Awaiting approval"),
+        State::Launching => ("loader-circle", Tone::Run, "Launching"),
         State::Denied => ("x", Tone::Idle, "Denied"),
         State::Launched => ("circle-check", Tone::Ok, "Launched"),
         State::LaunchFailed => ("octagon-x", Tone::Crit, "Launch failed"),
@@ -308,11 +315,14 @@ pub fn comment_text(raw: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_string())
 }
 
-/// The sentence a failed write shows. A 403 is the admin-only sentence. Otherwise it is the server's `detail`,
-/// or the generic one when the answer carries none.
+/// The sentence a failed write shows. A 403 is the admin-only sentence, and a stale 409 is `STALE`. Otherwise it is the
+/// server's `detail`, or the generic one when the answer carries none.
 pub fn error_text(reply: &Reply) -> String {
     if reply.status == 403 {
         return ADMIN_ONLY.to_string();
+    }
+    if reply.status == 409 && reply.body["error"].as_str() == Some("stale") {
+        return STALE.to_string();
     }
     reply.body["detail"]
         .as_str()
@@ -357,15 +367,15 @@ pub fn comment_body(text: &str) -> Value {
     json!({ "text": text })
 }
 
-/// Approve sends no note. A null is still a body, so the content type is always JSON.
-pub fn approve_body() -> Value {
-    json!({ "note": null })
+/// Approve sends no note and the revision the page shows. A null note is still a body, so the content type is always JSON.
+pub fn approve_body(revision: u64) -> Value {
+    json!({ "note": null, "revision": revision })
 }
 
-/// The denial body. A blank note is sent as null, which the server reads as no note.
-pub fn deny_body(note: &str) -> Value {
+/// The denial body. A blank note is sent as null, which the server reads as no note. It names the revision too.
+pub fn deny_body(note: &str, revision: u64) -> Value {
     let note = note.trim();
-    json!({ "note": (!note.is_empty()).then_some(note) })
+    json!({ "note": (!note.is_empty()).then_some(note), "revision": revision })
 }
 
 /// Creates a proposal.
@@ -388,14 +398,14 @@ pub async fn comment(id: &str, text: &str) -> Reply {
     api::request("POST", &comments_path(id), Some(comment_body(text))).await
 }
 
-/// Approves a proposal. The gate decides again, and a launch follows if it allows it.
-pub async fn approve(id: &str) -> Reply {
-    api::request("POST", &approve_path(id), Some(approve_body())).await
+/// Approves the revision the page shows. The gate decides again, and a launch follows if it allows it.
+pub async fn approve(id: &str, revision: u64) -> Reply {
+    api::request("POST", &approve_path(id), Some(approve_body(revision))).await
 }
 
-/// Denies a proposal. Nothing runs.
-pub async fn deny(id: &str, note: &str) -> Reply {
-    api::request("POST", &deny_path(id), Some(deny_body(note))).await
+/// Denies the revision the page shows. Nothing runs.
+pub async fn deny(id: &str, note: &str, revision: u64) -> Reply {
+    api::request("POST", &deny_path(id), Some(deny_body(note, revision))).await
 }
 
 #[cfg(test)]
@@ -426,6 +436,7 @@ mod tests {
     fn contract_example() -> Value {
         json!({
             "id": "p42",
+            "revision": 3,
             "kind": "verify",
             "service": "honcho",
             "template": "Verify Service Health (Dev)",
@@ -449,6 +460,7 @@ mod tests {
     fn a_contract_example_reads_every_field_the_page_uses() {
         let p: Proposal = serde_json::from_value(contract_example()).expect("proposal");
         assert_eq!(p.id, "p42");
+        assert_eq!(p.revision, 3);
         assert_eq!(p.kind, Kind::Verify);
         assert_eq!(p.service, "honcho");
         assert_eq!(p.template, "Verify Service Health (Dev)");
@@ -475,6 +487,7 @@ mod tests {
                 .state
         };
         assert_eq!(read("awaiting"), State::Awaiting);
+        assert_eq!(read("launching"), State::Launching);
         assert_eq!(read("denied"), State::Denied);
         assert_eq!(read("launched"), State::Launched);
         assert_eq!(read("launch_failed"), State::LaunchFailed);
@@ -762,8 +775,8 @@ mod tests {
         assert!(create_body(Kind::Assess, "honcho", true, "why").is_object());
         assert!(edit_body(false, "").is_object());
         assert!(comment_body("hi").is_object());
-        assert!(approve_body().is_object());
-        assert!(deny_body("").is_object());
+        assert!(approve_body(1).is_object());
+        assert!(deny_body("", 1).is_object());
     }
 
     #[test]
@@ -776,10 +789,44 @@ mod tests {
     }
 
     #[test]
-    fn approve_sends_a_null_note_and_a_blank_denial_note_is_null() {
-        assert_eq!(approve_body(), json!({"note": null}));
-        assert_eq!(deny_body("   "), json!({"note": null}));
-        assert_eq!(deny_body(" not now "), json!({"note": "not now"}));
+    fn approve_sends_a_null_note_and_the_revision_and_a_blank_denial_note_is_null() {
+        assert_eq!(approve_body(3), json!({"note": null, "revision": 3}));
+        assert_eq!(deny_body("   ", 3), json!({"note": null, "revision": 3}));
+        assert_eq!(
+            deny_body(" not now ", 4),
+            json!({"note": "not now", "revision": 4})
+        );
+    }
+
+    #[test]
+    fn a_stale_write_says_the_proposal_changed_since_it_was_loaded() {
+        let stale = reply(
+            409,
+            json!({"error": "stale", "detail": "The proposal changed since you loaded it. Review it again."}),
+        );
+        assert_eq!(
+            error_text(&stale),
+            "This proposal changed since you loaded it. Review it again."
+        );
+        assert_eq!(
+            error_text(&reply(
+                409,
+                json!({"error": "not_awaiting", "detail": "Already decided."})
+            )),
+            "Already decided.",
+            "only a stale 409 takes the stale sentence"
+        );
+    }
+
+    #[test]
+    fn a_launch_in_flight_is_its_own_state_and_cannot_be_approved() {
+        assert_eq!(state_look(State::Launching).2, "Launching");
+        assert_eq!(state_look(State::Launching).1, Tone::Run);
+        let launching = Proposal {
+            state: State::Launching,
+            ..waiting(PreviewState::Allowed, None)
+        };
+        assert!(!can_approve(&launching));
     }
 
     #[test]

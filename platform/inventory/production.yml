@@ -77,6 +77,10 @@ all:
     #                                                    # runtime: unset means the runtime's default trust (not yet read)
     #     -----BEGIN CERTIFICATE-----
     #   console_tenants[].orgs[].sites[].netbox_site: <NetBox site slug>   # optional; one slug per site (D23)
+    # The launch gate (D49) is optional. Undeclared, none of it renders or runs.
+    #   console_launch_gate_url: https://<launch gate host name>   # https only; the name the console calls
+    #   console_launch_gate_ip: <launch gate IPv4 address>         # production only: the address that name maps to
+    #   console_launch_dev_variants: true                          # default true (D53): template names carry " (Dev)"
 
     # postiz — social-media scheduling and publishing. Five containers, only the
     # app publishing a port. Native OIDC to Authentik; the automation API is
