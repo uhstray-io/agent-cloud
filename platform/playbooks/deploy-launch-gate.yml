@@ -4,8 +4,8 @@
 #
 # Phase 1: Refuse invalid inputs before anything changes. Compute the template allowlist from OPA's catalog
 #          (policies/agentcloud/data.json) and platform/semaphore/templates.yml, plus templates-local.yml under
-#          local mode only, through the launch_gate_allowlist filter (drift in either file fails the run here). Place the repo. manage-secrets: caller_skynet_token
-#          is generated once into OpenBao and reused; semaphore_api_token is the svc-launch-gate account's token,
+#          local mode only, through the launch_gate_allowlist filter (drift in either file fails the run here). Place the repo. manage-secrets: each
+#          caller_<name>_token (skynet, console) is generated once into OpenBao and reused; semaphore_api_token is the svc-launch-gate account's token,
 #          read and never generated (provision-launch-gate-semaphore-access.yml must run first). Template .env (the
 #          tokens, as environment) and config.json (URLs, allowlist, caller map, no token). Issue the listener's
 #          server leaf from step-ca (the key is made on this host) and distribute the trust bundle into ./certs. Outside
@@ -85,17 +85,20 @@
     _launch_gate_opa_ip: "{{ launch_gate_opa_ip | default('', true) | string }}"
     _launch_gate_server_leaf: "{{ launch_gate_server_leaf | default('launch-gate-server') | string }}"
     _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
+    # The five role identities. skynet and the Dispatch Console (console, D49) act as the same roles.
+    _launch_gate_role_agents: ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']
     # Callers and the agents each may act as. Adding a caller is an inventory change AND a change to
     # _launch_gate_token_callers below: each caller's token is a literal secret definition (check-secrets reads
     # this file as text, so a computed declaration cannot be evaluated there).
-    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']}, true) }}"
-    _launch_gate_token_callers: ['skynet']
+    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': _launch_gate_role_agents, 'console': _launch_gate_role_agents}, true) }}"
+    _launch_gate_token_callers: ['skynet', 'console']
     # The OpenBao path is secret/services/launch-gate (manage-secrets derives it from service_name).
-    # caller_skynet_token is generated once and reused; semaphore_api_token is type existing, NEVER generated: it
+    # Each caller_<name>_token is generated once and reused; semaphore_api_token is type existing, NEVER generated: it
     # is written by provision-launch-gate-semaphore-access.yml, and _required_existing_secrets stops the run before any
     # OpenBao write when it is absent. The monorepo is already placed by then, which is harmless and re-run safe.
     _secret_definitions:
       - { name: caller_skynet_token, type: random, length: 48 }
+      - { name: caller_console_token, type: random, length: 48 }
       - { name: semaphore_api_token, type: existing }
     _required_existing_secrets: [semaphore_api_token]
     _env_templates:
@@ -299,11 +302,13 @@
         fail_msg: "The launch allowlist is empty for the callers' agents: the gate would refuse every launch. Check the caller map."
         quiet: true
 
-    # Phase 3 probes through these: a caller, its first agent, and the first allowlisted template. The
-    # allowlist is sorted, so the choice is stable across runs.
+    # Phase 3 probes through these: a caller, its first agent, and the first allowlisted template. The caller is
+    # skynet whenever skynet is one of the callers, so the 401, 403 and 400 probes keep proving skynet's token; a
+    # callers map without skynet falls back to its first sorted name. The allowlist is sorted, so the template choice
+    # is stable across runs.
     - name: "Hold the caller and template the verify play probes with"
       ansible.builtin.set_fact:
-        _launch_gate_probe_caller: "{{ _launch_gate_callers.keys() | list | sort | first }}"
+        _launch_gate_probe_caller: "{{ 'skynet' if 'skynet' in _launch_gate_callers else (_launch_gate_callers.keys() | list | sort | first) }}"
         _launch_gate_probe_template: "{{ _launch_gate_allowlist[0] }}"
 
     - name: "Hold the agent the verify play probes with (the probe caller's first agent)"

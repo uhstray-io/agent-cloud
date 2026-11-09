@@ -1184,6 +1184,8 @@ mod tests {
             authentik: None,
             role_map_file: None,
             github: None,
+            launch_gate: None,
+            launch_dev_variants: true,
         }
     }
 
@@ -1213,6 +1215,7 @@ mod tests {
             telemetry: tokio::sync::RwLock::new(crate::server::telemetry::TelemetryCache::new(
                 false,
             )),
+            gate: None,
         })
     }
 

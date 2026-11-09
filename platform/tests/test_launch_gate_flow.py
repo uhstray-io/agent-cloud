@@ -208,9 +208,15 @@ class World:
         return lg.Gate(cfg, semaphore, opa_client, log=self.events.append)
 
     def launch(self, body=None, *, token=SKYNET_TOKEN, raw=None, gate=None):
+        return self._post("/v1/launch", body, token=token, raw=raw, gate=gate)
+
+    def decide(self, body=None, *, token=SKYNET_TOKEN, raw=None, gate=None):
+        return self._post("/v1/decide", body, token=token, raw=raw, gate=gate)
+
+    def _post(self, path, body, *, token, raw, gate):
         headers = {} if token is None else {"Authorization": f"Bearer {token}"}
         payload = raw if raw is not None else _raw(_request() if body is None else body)
-        return (gate or self.gate).handle("POST", "/v1/launch", headers, payload)
+        return (gate or self.gate).handle("POST", path, headers, payload)
 
     def set_opa(self, answer):
         self.opa.routes[("POST", OPA_PATH)] = (200, answer, {})
@@ -243,6 +249,11 @@ def test_unknown_path_is_404(world, method, path):
 
 def test_launch_path_refuses_other_methods_with_405(world):
     assert world.gate.handle("GET", "/v1/launch", {}, b"") == (405, {"error": "method_not_allowed"})
+    assert world.semaphore.requests == [] and world.opa.requests == [] and world.events == []
+
+
+def test_decide_path_refuses_other_methods_with_405(world):
+    assert world.gate.handle("GET", "/v1/decide", {}, b"") == (405, {"error": "method_not_allowed"})
     assert world.semaphore.requests == [] and world.opa.requests == [] and world.events == []
 
 
@@ -753,3 +764,205 @@ def test_default_log_writes_one_json_line_to_stdout(world, capsys):
     assert capsys.readouterr().out == (
         json.dumps({"event": "launch", "outcome": 401, "error": "unauthorized"}, sort_keys=True) + "\n"
     )
+
+
+# ---------- the decision route: POST /v1/decide (D51) ----------
+# The same checks as /v1/launch up to and including OPA, and the answer. It creates no task, so none of the
+# launch's Semaphore writes, template lock or running-task read may happen on it.
+
+
+def test_allowed_decision_answers_200_and_creates_nothing(world):
+    status, payload = world.decide()
+    assert status == 200
+    assert payload == {"decision": {"allowed": True, "reason": OPA_REASON}}
+    assert world.semaphore.calls() == [
+        ("GET", f"{SEMA_BASE}/templates"),
+        ("GET", f"{SEMA_BASE}/templates/{TEMPLATE_ID}"),
+        ("GET", f"{SEMA_BASE}/repositories"),
+    ]
+    assert _posts(world) == []
+    assert world.opa.calls() == [("POST", OPA_PATH)]
+
+
+def test_decision_asks_opa_the_same_question_as_a_launch(world):
+    world.launch()
+    launch_input = world.opa.requests[-1]["body"]
+    world.decide()
+    assert world.opa.requests[-1]["body"] == launch_input
+
+
+def test_decision_event_has_the_launch_fields_and_no_task_id(world):
+    world.decide()
+    assert world.events == [
+        {
+            "event": "decide",
+            "caller": "skynet",
+            "agent": "infra-agent",
+            "template": TEMPLATE,
+            "step": "ssh-keys",
+            "workflow_id": "onboard-x",
+            "dry_run": False,
+            "survey_keys": ["service_name"],
+            "outcome": 200,
+            "error": None,
+            "reason": OPA_REASON,
+        }
+    ]
+
+
+def test_bad_json_decision_event_has_no_task_id(world):
+    status, _ = world.decide(raw=b"{not json")
+    assert status == 400
+    assert world.events == [
+        {"event": "decide", "caller": "skynet", "outcome": 400, "error": "bad_request", "reason": None}
+    ]
+
+
+def test_opa_deny_on_decision_is_200_allowed_false_with_its_reason_and_no_task(world):
+    world.set_opa({"result": {"allowed": False, "reason": "outside the change window"}})
+    status, payload = world.decide()
+    assert status == 200
+    assert payload == {"decision": {"allowed": False, "reason": "outside the change window"}}
+    assert _posts(world) == []
+    event = world.events[-1]
+    assert (event["event"], event["outcome"], event["error"], event["reason"]) == (
+        "decide",
+        200,
+        None,
+        "outside the change window",
+    )
+    assert "task_id" not in event
+
+
+def test_missing_token_on_decision_is_401_and_reaches_neither_server(world):
+    status, payload = world.decide(token=None)
+    assert (status, payload["error"]) == (401, "unauthorized")
+    assert world.semaphore.requests == [] and world.opa.requests == []
+    assert world.events == [{"event": "decide", "outcome": 401, "error": "unauthorized"}]
+
+
+def test_undeclared_field_on_decision_is_400_before_opa(world):
+    status, payload = world.decide(_request(survey={"service_name": SURVEY_VALUE, "inventory_id": "7"}))
+    assert (status, payload["error"]) == (400, "undeclared_field")
+    assert "inventory_id" in payload["detail"]
+    assert world.opa.requests == []
+
+
+def test_template_off_the_allowlist_on_decision_is_403_before_semaphore(world):
+    status, payload = world.decide(_request(template="Destroy VM"))
+    assert (status, payload["error"]) == (403, "template_not_allowed")
+    assert world.semaphore.requests == [] and world.opa.requests == []
+
+
+def test_opa_unreachable_on_decision_is_503_and_no_task(world):
+    gate = world.gate_for(f"http://127.0.0.1:{refused_port()}")
+    status, payload = world.decide(gate=gate)
+    assert (status, payload["error"]) == (503, "opa_unavailable")
+    assert _posts(world) == []
+
+
+def test_dry_run_on_unverified_version_on_decision_is_400_before_opa(world):
+    world.semaphore.routes[("GET", "/api/info")] = (200, {"version": "v2.20.0"}, {})
+    status, payload = world.decide(_request(dry_run=True))
+    assert (status, payload["error"]) == (400, "dry_run_unverified")
+    assert world.opa.requests == [] and _posts(world) == []
+
+
+def test_dry_run_decision_on_a_verified_version_asks_opa_and_launches_nothing(world):
+    status, payload = world.decide(_request(dry_run=True))
+    assert (status, payload) == (200, {"decision": {"allowed": True, "reason": OPA_REASON}})
+    assert ("GET", "/api/info") in world.semaphore.calls()
+    assert world.opa.calls() == [("POST", OPA_PATH)]
+    assert _posts(world) == []
+    assert not any(path.endswith("/stop") for _, path in world.semaphore.calls())
+
+
+def test_decision_ignores_a_running_task_of_the_template(world):
+    # A launch of this template would be a 409 here. A decision never reads the template's tasks at all.
+    world.semaphore.routes[("GET", f"{SEMA_BASE}/tasks/last")] = (
+        200,
+        [{"id": 7, "template_id": TEMPLATE_ID, "status": "running"}],
+        {},
+    )
+    status, payload = world.decide()
+    assert (status, payload) == (200, {"decision": {"allowed": True, "reason": OPA_REASON}})
+    assert not any(path.endswith("/tasks/last") for _, path in world.semaphore.calls())
+    assert _posts(world) == []
+
+
+def test_decision_does_not_wait_for_a_launch_holding_the_template_lock(world):
+    # A launch holds its template's lock while it reads the running tasks and creates. A decision takes no lock,
+    # so it must answer while the lock is held. Were it to take the lock, the join below would time out.
+    lock = world.gate._template_lock(TEMPLATE_ID)
+    results = []
+    with lock:
+        thread = threading.Thread(target=lambda: results.append(world.decide()))
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "the decision waited for the template lock"
+    assert results == [(200, {"decision": {"allowed": True, "reason": OPA_REASON}})]
+    assert _posts(world) == []
+
+
+def test_decision_pins_the_branch_in_the_opa_input_like_a_launch(world):
+    _serve_template(world)
+    status, _ = world.decide()
+    assert status == 200
+    opa_input = world.opa.requests[0]["body"]["input"]
+    assert opa_input["git_branch"] == "dev"
+    assert opa_input["settings"] == {"service_branch": "dev", "service_name": SURVEY_VALUE}
+
+
+def test_decision_refuses_a_caller_branch_other_than_the_record_before_opa(world):
+    _serve_template(world)
+    status, payload = world.decide(_request(survey={"service_name": SURVEY_VALUE, "service_branch": "feature-x"}))
+    assert (status, payload["error"]) == (400, "branch_mismatch")
+    assert world.opa.requests == []
+
+
+def _template_absent(world):
+    world.semaphore.routes[("GET", f"{SEMA_BASE}/templates")] = (
+        200,
+        [{"id": 13, "name": OTHER_TEMPLATE}],
+        {},
+    )
+
+
+def _version_unverified(world):
+    world.semaphore.routes[("GET", "/api/info")] = (200, {"version": "v2.20.0"}, {})
+
+
+def _record_branch(world):
+    _serve_template(world)
+
+
+@pytest.mark.parametrize(
+    ("prepare", "kwargs"),
+    [
+        pytest.param(None, {"raw": b"{not json"}, id="bad-json"),
+        pytest.param(
+            None, {"body": _request(survey={"service_name": SURVEY_VALUE, "inventory_id": "7"})}, id="undeclared-field"
+        ),
+        pytest.param(None, {"body": _request(survey={})}, id="missing-required"),
+        pytest.param(None, {"body": _request(template="Destroy VM")}, id="template-off-allowlist"),
+        pytest.param(None, {"token": CONSOLE_TOKEN}, id="agent-not-permitted"),
+        pytest.param(None, {"token": None}, id="unauthenticated"),
+        pytest.param(_template_absent, {}, id="template-not-found"),
+        pytest.param(_version_unverified, {"body": _request(dry_run=True)}, id="dry-run-unverified"),
+        pytest.param(
+            _record_branch,
+            {"body": _request(survey={"service_name": SURVEY_VALUE, "service_branch": "feature-x"})},
+            id="branch-mismatch",
+        ),
+    ],
+)
+def test_decision_refuses_exactly_what_a_launch_refuses(world, prepare, kwargs):
+    # The two routes share one check sequence. Every refusal before OPA must come back identically from both:
+    # the status, the error code and the detail. OPA is never asked in any of these cases.
+    if prepare is not None:
+        prepare(world)
+    launch = world.launch(**kwargs)
+    decision = world.decide(**kwargs)
+    assert launch[0] >= 400, launch
+    assert decision == launch
+    assert world.opa.requests == []

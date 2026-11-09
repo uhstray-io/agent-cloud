@@ -59,6 +59,8 @@ fn unconfigured_state() -> SharedState {
             authentik: None,
             role_map_file: None,
             github: None,
+            launch_gate: None,
+            launch_dev_variants: true,
         },
         http: reqwest::Client::new(),
         oidc: tokio::sync::OnceCell::new(),
@@ -79,6 +81,7 @@ fn unconfigured_state() -> SharedState {
         policies: tokio::sync::RwLock::new(policies::PoliciesCache::new(false)),
         delivery: tokio::sync::RwLock::new(delivery::DeliveryCache::new(false)),
         telemetry: tokio::sync::RwLock::new(telemetry::TelemetryCache::new(false)),
+        gate: None,
     })
 }
 

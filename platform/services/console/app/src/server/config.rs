@@ -91,6 +91,16 @@ pub struct GithubConfig {
     pub git_ref: String,
 }
 
+/// The launch gate a proposal is decided and launched through (plan 17 D49, D51). Present only when both
+/// `CONSOLE_LAUNCH_GATE_URL` and `CONSOLE_LAUNCH_GATE_TOKEN` are set (see `launch_gate_from`). The token is the
+/// console's own caller token, and it is sent only to that origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchGateConfig {
+    /// Gate origin, no trailing slash. A plain origin: no path, query, fragment or user information.
+    pub url: String,
+    pub token: Secret,
+}
+
 #[derive(Clone)]
 pub struct Config {
     /// Public origin, no trailing slash. The OIDC redirect is `<base_url>/auth/callback`.
@@ -135,6 +145,11 @@ pub struct Config {
     pub role_map_file: Option<PathBuf>,
     /// GitHub source for the Policy page. `None` answers `/v1/policies` as `unconfigured`.
     pub github: Option<GithubConfig>,
+    /// The launch gate proposals are decided and launched through (D49, D51). `None` leaves every launch refused as
+    /// unconfigured.
+    pub launch_gate: Option<LaunchGateConfig>,
+    /// Launch each template's ` (Dev)` variant (D53). Read from `CONSOLE_LAUNCH_DEV_VARIANTS`, default true.
+    pub launch_dev_variants: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -156,6 +171,15 @@ impl fmt::Display for ConfigError {
 }
 
 impl Config {
+    /// The origin a state-changing request's `Origin` header must equal (D53): the scheme, host and port of `base_url`,
+    /// serialized the way a browser sends it (lowercase host, default port dropped). `None` when the base URL does not
+    /// parse, which refuses every such request. `base_url` itself is unchanged, because the OIDC redirect is built from it.
+    pub fn base_origin(&self) -> Option<String> {
+        reqwest::Url::parse(&self.base_url)
+            .ok()
+            .map(|url| url.origin().ascii_serialization())
+    }
+
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let required = |name: &'static str| -> Result<String, ConfigError> {
             get(name)
@@ -171,6 +195,13 @@ impl Config {
             return Err(ConfigError::Invalid {
                 name: "CONSOLE_BASE_URL",
                 reason: "must start with https:// or http://",
+            });
+        }
+        // The origin check (`Config::base_origin`) reads this URL, so one that does not parse would refuse every write.
+        if reqwest::Url::parse(&base_url).is_err() {
+            return Err(ConfigError::Invalid {
+                name: "CONSOLE_BASE_URL",
+                reason: "must be a URL with a host name",
             });
         }
         let oidc_issuer = required("CONSOLE_OIDC_ISSUER")?;
@@ -221,6 +252,8 @@ impl Config {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from);
         let github = github_from(&get)?;
+        let launch_gate = launch_gate_from(&get)?;
+        let launch_dev_variants = launch_dev_variants_from(&get)?;
 
         Ok(Config {
             base_url,
@@ -243,7 +276,55 @@ impl Config {
             authentik,
             role_map_file,
             github,
+            launch_gate,
+            launch_dev_variants,
         })
+    }
+}
+
+/// The two `CONSOLE_LAUNCH_GATE_*` variables are all-or-none. The URL takes the infrastructure rule, and it must be
+/// a plain origin, because the gate's paths are appended to it. Values never reach an error.
+fn launch_gate_from(
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<Option<LaunchGateConfig>, ConfigError> {
+    let read = |name: &'static str| {
+        get(name)
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let url = read("CONSOLE_LAUNCH_GATE_URL");
+    let token = read("CONSOLE_LAUNCH_GATE_TOKEN");
+    if url.is_none() && token.is_none() {
+        return Ok(None);
+    }
+    let url = url.ok_or(ConfigError::Missing("CONSOLE_LAUNCH_GATE_URL"))?;
+    let token = token.ok_or(ConfigError::Missing("CONSOLE_LAUNCH_GATE_TOKEN"))?;
+    let url = infrastructure_origin("CONSOLE_LAUNCH_GATE_URL", &url)?;
+    if !plain_origin(&url) {
+        return Err(ConfigError::Invalid {
+            name: "CONSOLE_LAUNCH_GATE_URL",
+            reason: "must be an origin only: no path, query, fragment or user information",
+        });
+    }
+    Ok(Some(LaunchGateConfig {
+        url,
+        token: Secret::new(token),
+    }))
+}
+
+/// `CONSOLE_LAUNCH_DEV_VARIANTS` is `true` or `false`, and it defaults to `true` (D53). A blank value is unset.
+/// Any other value is refused by name, so a typo cannot quietly choose which template runs.
+fn launch_dev_variants_from(get: impl Fn(&str) -> Option<String>) -> Result<bool, ConfigError> {
+    let value = get("CONSOLE_LAUNCH_DEV_VARIANTS")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    match value.as_deref() {
+        None | Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(_) => Err(ConfigError::Invalid {
+            name: "CONSOLE_LAUNCH_DEV_VARIANTS",
+            reason: "must be true or false",
+        }),
     }
 }
 
@@ -500,6 +581,20 @@ pub fn transport_allowed(url: &str) -> bool {
     }
 }
 
+/// True for a plain origin: `transport_allowed`, and nothing after the authority (no path, query, fragment or
+/// user information). A caller appends its paths to the origin, so anything after it would move them.
+pub fn plain_origin(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    transport_allowed(url)
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -577,6 +672,43 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn base_url_must_parse_as_a_url_with_a_host() {
+        let mut env = full_env();
+        // Passes the scheme check (`trim_end_matches('/')` would reduce a bare `https://` to `https:`).
+        env.insert("CONSOLE_BASE_URL", "https://[console.test");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "CONSOLE_BASE_URL",
+                reason: "must be a URL with a host name",
+            }
+        ));
+    }
+
+    /// The origin check compares an Origin header with `base_origin`, the way a browser serializes it. The redirect keeps
+    /// `base_url` as configured, so the two differ exactly where a browser's origin differs from the configured text.
+    #[test]
+    fn base_origin_is_the_serialized_origin_and_base_url_is_kept_as_configured() {
+        let mut env = full_env();
+        env.insert("CONSOLE_BASE_URL", "https://Console.Test:443/");
+        let config = Config::from_lookup(lookup(env)).expect("config");
+        assert_eq!(config.base_url, "https://Console.Test:443");
+        assert_eq!(
+            config.base_origin().as_deref(),
+            Some("https://console.test")
+        );
+
+        let mut env = full_env();
+        env.insert("CONSOLE_BASE_URL", "https://console.example.test:8443/app");
+        let config = Config::from_lookup(lookup(env)).expect("config");
+        assert_eq!(
+            config.base_origin().as_deref(),
+            Some("https://console.example.test:8443")
+        );
     }
 
     fn semaphore_env() -> HashMap<&'static str, &'static str> {
@@ -1217,6 +1349,140 @@ mod tests {
             "dev#frag",
         ] {
             assert!(!github_ref_valid(bad), "{bad:?}");
+        }
+    }
+
+    fn launch_gate_env() -> HashMap<&'static str, &'static str> {
+        let mut env = full_env();
+        env.insert(
+            "CONSOLE_LAUNCH_GATE_URL",
+            " https://launch-gate.example.test:8443/ ",
+        );
+        env.insert("CONSOLE_LAUNCH_GATE_TOKEN", "gate-token-value");
+        env
+    }
+
+    #[test]
+    fn launch_gate_is_unconfigured_when_unset_and_dev_variants_default_on() {
+        let config = Config::from_lookup(lookup(full_env())).expect("valid config");
+        assert!(config.launch_gate.is_none());
+        assert!(config.launch_dev_variants, "dev variants default on");
+    }
+
+    #[test]
+    fn launch_gate_parses_trims_and_keeps_the_token_out_of_debug() {
+        let config = Config::from_lookup(lookup(launch_gate_env())).expect("valid config");
+        let gate = config.launch_gate.expect("configured");
+        assert_eq!(gate.url, "https://launch-gate.example.test:8443");
+        assert_eq!(gate.token.expose(), "gate-token-value");
+        assert!(!format!("{gate:?}").contains("gate-token-value"));
+    }
+
+    #[test]
+    fn launch_gate_is_all_or_none_and_names_the_missing_variable() {
+        let mut only_url = full_env();
+        only_url.insert(
+            "CONSOLE_LAUNCH_GATE_URL",
+            "https://launch-gate.example.test:8443",
+        );
+        let err = Config::from_lookup(lookup(only_url))
+            .err()
+            .expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_LAUNCH_GATE_TOKEN"));
+
+        let mut only_token = full_env();
+        only_token.insert("CONSOLE_LAUNCH_GATE_TOKEN", "gate-token-value");
+        let err = Config::from_lookup(lookup(only_token))
+            .err()
+            .expect("must fail");
+        assert_eq!(err, ConfigError::Missing("CONSOLE_LAUNCH_GATE_URL"));
+    }
+
+    #[test]
+    fn launch_gate_must_be_a_plain_origin_under_the_transport_rule() {
+        for url in [
+            "https://launch-gate.example.test:8443/v1",
+            "https://launch-gate.example.test:8443/?x=1",
+            "https://launch-gate.example.test:8443/#frag",
+            "https://someone@launch-gate.example.test:8443",
+        ] {
+            let mut env = launch_gate_env();
+            env.insert("CONSOLE_LAUNCH_GATE_URL", url);
+            let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::Invalid {
+                        name: "CONSOLE_LAUNCH_GATE_URL",
+                        ..
+                    }
+                ),
+                "{url}: {err}"
+            );
+            assert!(
+                !err.to_string().contains("launch-gate.example.test"),
+                "{url}: {err}"
+            );
+        }
+
+        // Cleartext is allowed only to loopback or RFC1918, and the refusal names the setting, not the host.
+        for url in [
+            "http://launch-gate.example.test:8443",
+            "http://203.0.113.9:8443",
+        ] {
+            let mut env = launch_gate_env();
+            env.insert("CONSOLE_LAUNCH_GATE_URL", url);
+            let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+            assert!(
+                matches!(
+                    err,
+                    ConfigError::Invalid {
+                        name: "CONSOLE_LAUNCH_GATE_URL",
+                        ..
+                    }
+                ),
+                "{url}: {err}"
+            );
+            assert!(!err.to_string().contains("203.0.113.9"), "{url}: {err}");
+        }
+
+        for url in ["http://127.0.0.1:8443", "https://launch-gate.example.test"] {
+            let mut env = launch_gate_env();
+            env.insert("CONSOLE_LAUNCH_GATE_URL", url);
+            let config = Config::from_lookup(lookup(env)).expect(url);
+            assert!(config.launch_gate.is_some(), "{url}");
+        }
+        // RFC1918 cleartext loads. Built with `ip`, as the other tests do, so no private literal is committed.
+        let private = format!("http://{}:8443", ip([10, 20, 0, 5]));
+        let config = Config::from_lookup(overlay(
+            launch_gate_env(),
+            "CONSOLE_LAUNCH_GATE_URL",
+            private.clone(),
+        ))
+        .expect("valid config");
+        assert_eq!(config.launch_gate.expect("configured").url, private);
+    }
+
+    #[test]
+    fn launch_dev_variants_accepts_only_true_or_false_and_blank_is_unset() {
+        for (value, expected) in [("true", true), ("false", false), ("   ", true)] {
+            let mut env = full_env();
+            env.insert("CONSOLE_LAUNCH_DEV_VARIANTS", value);
+            let config = Config::from_lookup(lookup(env)).expect(value);
+            assert_eq!(config.launch_dev_variants, expected, "{value:?}");
+        }
+        for bad in ["yes", "0", "1", "False", "TRUE"] {
+            let mut env = full_env();
+            env.insert("CONSOLE_LAUNCH_DEV_VARIANTS", bad);
+            let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+            assert_eq!(
+                err,
+                ConfigError::Invalid {
+                    name: "CONSOLE_LAUNCH_DEV_VARIANTS",
+                    reason: "must be true or false",
+                },
+                "{bad:?}"
+            );
         }
     }
 }

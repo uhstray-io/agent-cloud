@@ -1,6 +1,6 @@
 //! The Request a service page (plan 17, task 8.4, D38): the services the platform can deploy, from its deploy
 //! templates, with a tag beside each one a host already runs. It reads `GET /v1/catalog`, for any signed-in member.
-//! The Request buttons stay off until proposals arrive (Phase 4), so nothing on this page writes.
+//! The Request buttons stay off until skynet can plan a request (D48), so nothing on this page writes.
 
 use dioxus::prelude::*;
 
@@ -16,12 +16,12 @@ pub const REQUEST_SERVICE: PageMeta = PageMeta {
     id: "request",
     title: "Request a service",
     icon: "user-round",
-    purpose: "Services the platform can deploy, from its deploy templates. Requests arrive with proposals (Phase 4).",
+    purpose: "Services the platform can deploy, from its deploy templates. Requests wait for skynet's planning (D48).",
     authority: "Semaphore deploy templates",
 };
 
-/// Why the Request buttons are off: requests arrive with proposals (Phase 4).
-const REQUEST_TITLE: &str = "Service requests arrive with proposals (Phase 4)";
+/// Why the Request buttons are off: skynet must plan a request, and it cannot plan yet (plan 17, D48).
+const REQUEST_TITLE: &str = "Service requests arrive when skynet can plan them (D48)";
 
 /// The element that shows `REQUEST_TITLE` as visible text; each Request button describes itself by it.
 const REQUEST_REASON_ID: &str = "request-action-reason";
@@ -91,7 +91,7 @@ fn CatalogBodyView(body: CatalogBody, reason: String) -> Element {
 }
 
 /// One row per deployable service: its name with a tag when a host runs it, its deploy template, and the request
-/// control, which stays off until proposals land.
+/// control, which stays off until skynet can plan requests (D48).
 #[component]
 fn ServiceTable(services: Vec<CatalogService>) -> Element {
     let empty = services.is_empty();

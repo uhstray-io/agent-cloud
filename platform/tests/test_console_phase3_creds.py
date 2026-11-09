@@ -1432,3 +1432,325 @@ def test_the_github_assert_is_skipped_without_openbao(tmp_path):
     # Without OpenBao the pair is not rendered, so a bad value there blocks nothing.
     proc = _run_tasks(tmp_path, [_named(DEPLOY, GITHUB_ASSERT)], {"console_github_ref": "feat/../main"})
     assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+# --- The launch gate (plan 17 D49, D53): deploy wiring --------------------------------------------------
+# Documentation addresses only (RFC 5737) and example.test names. The gate is optional: each test that declares it
+# also checks what an undeclared deploy renders and runs.
+
+GATE_URL = "https://launch-gate.example.test:8443"
+GATE_IP = "192.0.2.10"
+GATE_SECRETS = {**ENV_SECRETS, "caller_console_token": "GATE-REF"}
+GATE_DECLARED = "_console_launch_gate_declared"
+GATE_PROBE = "Launch gate refuses a request with no token (POST /v1/launch -> 401, from this host)"
+GATE_PROBE_ASSERT = "Assert the launch gate refused a request with no token"
+GATE_OVERLAY = CONSOLE / "compose.launch-gate.yml"
+DEPLOY_SH = CONSOLE / "deploy.sh"
+
+
+def _gate_env(tmp_path: Path, variables: dict) -> list[str]:
+    return _render(tmp_path, CONSOLE / "templates/env.j2", variables).splitlines()
+
+
+def _verify_vars() -> dict:
+    return next(p for p in playbook_yaml.plays(DEPLOY) if "_console_gate_probe_argv" in (p.get("vars") or {}))["vars"]
+
+
+def _gate_vars(url: str, *, local: bool = False, ip: str = GATE_IP) -> dict:
+    # The playbook's own declared-expression, so each refusal is judged by the same condition the deploy uses.
+    return {"console_launch_gate_url": url, "console_launch_gate_ip": ip, "local_mode": local,
+            GATE_DECLARED: _deploy_vars()[GATE_DECLARED]}
+
+
+def _shell_function(name: str) -> str:
+    lines = DEPLOY_SH.read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln.startswith(f"{name}() {{"))
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
+    return "\n".join(lines[start:end + 1]) + "\n"
+
+
+def _overlay_block() -> str:
+    lines = DEPLOY_SH.read_text().splitlines()
+    start = next(i for i, ln in enumerate(lines) if ln == "LAUNCH_GATE_OVERLAY=false")
+    end = next(i for i in range(start + 1, len(lines)) if lines[i] == "fi")
+    return "\n".join(lines[start:end + 1]) + "\n"
+
+
+def _bash(script: str, cwd: Path, extra_env: dict) -> subprocess.CompletedProcess:
+    env = {k: v for k, v in os.environ.items() if k not in ("LOCAL_MODE", "COMPOSE_OVERLAYS")}
+    env.update(extra_env)
+    return subprocess.run(["bash", "-c", script], cwd=cwd, env=env, text=True, capture_output=True, check=False)
+
+
+@NEEDS_ANSIBLE
+def test_an_undeclared_gate_renders_no_launch_gate_variable(tmp_path):
+    # GATE_SECRETS is not passed here, so a render that reached for the caller token would fail.
+    lines = _gate_env(tmp_path, {"secrets": ENV_SECRETS})
+    assert not [ln for ln in lines if ln.startswith("CONSOLE_LAUNCH_GATE_")], lines
+    # The dev-variant flag renders whether or not the gate is declared (D53).
+    assert "CONSOLE_LAUNCH_DEV_VARIANTS=true" in lines
+
+
+@NEEDS_ANSIBLE
+def test_a_declared_gate_in_local_mode_renders_url_and_token_and_no_name_mapping(tmp_path):
+    lines = _gate_env(tmp_path, {"secrets": GATE_SECRETS, "console_launch_gate_url": GATE_URL, "local_mode": True})
+    assert f"CONSOLE_LAUNCH_GATE_URL={GATE_URL}" in lines
+    assert "CONSOLE_LAUNCH_GATE_TOKEN=GATE-REF" in lines
+    # Local mode resolves the gate's name on its own network, so no extra_hosts pair is rendered.
+    assert not [ln for ln in lines if ln.startswith(("CONSOLE_LAUNCH_GATE_HOSTNAME", "CONSOLE_LAUNCH_GATE_IP"))], lines
+
+
+@NEEDS_ANSIBLE
+def test_a_declared_gate_in_production_renders_the_name_mapping_the_overlay_needs(tmp_path):
+    lines = _gate_env(tmp_path, {"secrets": GATE_SECRETS, "console_launch_gate_url": GATE_URL,
+                                 "console_launch_gate_ip": GATE_IP, "local_mode": False})
+    assert f"CONSOLE_LAUNCH_GATE_URL={GATE_URL}" in lines  # the port is kept
+    assert "CONSOLE_LAUNCH_GATE_TOKEN=GATE-REF" in lines
+    assert "CONSOLE_LAUNCH_GATE_HOSTNAME=launch-gate.example.test" in lines
+    assert f"CONSOLE_LAUNCH_GATE_IP={GATE_IP}" in lines
+
+
+@NEEDS_ANSIBLE
+@pytest.mark.parametrize("variables, rendered", [
+    ({}, "true"),
+    ({"console_launch_dev_variants": True}, "true"),
+    ({"console_launch_dev_variants": False}, "false"),
+    ({"console_launch_dev_variants": "false"}, "false"),
+])
+def test_the_dev_variant_flag_renders_as_a_lowercase_boolean(tmp_path, variables, rendered):
+    lines = _gate_env(tmp_path, {"secrets": ENV_SECRETS, **variables})
+    assert f"CONSOLE_LAUNCH_DEV_VARIANTS={rendered}" in lines
+
+
+def test_env_template_never_sets_the_extra_ca_file():
+    # The step-ca bundle's variable is the overlay's alone, so it cannot reach a deploy that did not declare the gate.
+    assert "CONSOLE_EXTRA_CA_FILE" not in (CONSOLE / "templates/env.j2").read_text()
+
+
+@NEEDS_ANSIBLE
+def test_the_caller_token_read_names_one_key_and_is_gated_on_the_url(tmp_path):
+    expr = _deploy_vars()["_console_launch_gate_reads"]
+    tpl = tmp_path / "reads.j2"
+    tpl.write_text("{{ gate_reads | to_json }}")
+    declared = json.loads(_render(tmp_path, tpl, {"console_launch_gate_url": GATE_URL, "gate_reads": expr}))
+    assert declared == [{"from_service": "launch-gate", "read_keys": ["caller_console_token"]}]
+    undeclared = json.loads(_render(tmp_path, tpl, {"console_launch_gate_url": "", "gate_reads": expr}))
+    assert undeclared == []
+    assert "_console_launch_gate_reads" in _deploy_vars()["_shared_reads"]
+
+
+@NEEDS_ANSIBLE
+def test_a_launch_gate_url_that_is_not_https_with_a_host_is_refused_by_name(tmp_path):
+    task = _named(DEPLOY, "Refuse console_launch_gate_url unless it is https")
+    # The gate's URL is an origin: a path, a query or a fragment after the authority is refused, because the console
+    # appends its own paths to the origin (the probe argv is built from it).
+    refused = ["http://launch-gate.example.test:8443", "https://", "launch-gate.example.test:8443",
+               "https://launch-gate.example.test:8443/v1", "https://launch-gate.example.test/path/",
+               "https://launch-gate.example.test:8443?x=1", "https://launch-gate.example.test#frag"]
+    for url in refused:
+        proc = _run_tasks(tmp_path, [task], _gate_vars(url))
+        assert proc.returncode != 0 and "must be an https:// origin" in proc.stdout, (url, proc.stdout)
+    for url in [GATE_URL, "https://launch-gate.example.test", GATE_URL + "/"]:
+        ok = _run_tasks(tmp_path, [task], _gate_vars(url))
+        assert ok.returncode == 0, (url, ok.stdout + ok.stderr)
+    undeclared = _run_tasks(tmp_path, [task], _gate_vars(""))
+    assert undeclared.returncode == 0, undeclared.stdout + undeclared.stderr
+
+
+@NEEDS_ANSIBLE
+def test_a_launch_gate_ip_that_is_not_one_address_is_refused_in_production(tmp_path):
+    task = _named(DEPLOY, "Refuse console_launch_gate_ip unless it is one non-wildcard IPv4 address in production")
+    # 192.0.2.256 has the right shape, so it is the octet range check that refuses it.
+    for ip in ["0.0.0.0", "", "not-an-ip", "192.0.2.256"]:
+        proc = _run_tasks(tmp_path, [task], _gate_vars(GATE_URL, ip=ip))
+        assert proc.returncode != 0, (ip, proc.stdout)
+        assert "must be the IPv4 address of the launch gate host" in proc.stdout, (ip, proc.stdout)
+    ok = _run_tasks(tmp_path, [task], _gate_vars(GATE_URL, ip=GATE_IP))
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    # Local mode and an undeclared gate skip the address check.
+    local = _run_tasks(tmp_path, [task], _gate_vars(GATE_URL, local=True, ip="0.0.0.0"))
+    assert local.returncode == 0, local.stdout + local.stderr
+    undeclared = _run_tasks(tmp_path, [task], _gate_vars("", ip=""))
+    assert undeclared.returncode == 0, undeclared.stdout + undeclared.stderr
+
+
+@NEEDS_ANSIBLE
+def test_a_production_gate_needs_a_step_ca_host_to_read_the_root_from(tmp_path):
+    task = _named(DEPLOY, "Refuse a production launch gate without a step_ca_svc host to read the CA root from")
+    refused = _run_tasks(tmp_path, [task], _gate_vars(GATE_URL))
+    assert refused.returncode != 0 and "step_ca_svc" in refused.stdout, refused.stdout
+    ca_host = {"ca-host.example.test": {"ansible_connection": "local"}}
+    inventory = {"all": {"hosts": {"localhost": {"ansible_connection": "local"}},
+                         "children": {"step_ca_svc": {"hosts": ca_host}}}}
+    playbook = {"hosts": "localhost", "connection": "local", "gather_facts": False,
+                "vars": _gate_vars(GATE_URL), "tasks": [task]}
+    ok = _run_with_inventory(tmp_path, inventory, playbook)
+    assert ok.returncode == 0, ok.stdout + ok.stderr
+    local = _run_tasks(tmp_path, [task], _gate_vars(GATE_URL, local=True))
+    assert local.returncode == 0, local.stdout + local.stderr
+
+
+def test_the_launch_gate_refusals_run_before_the_bao_guard_and_the_placement():
+    names = [t.get("name") for t in _tasks(DEPLOY)]
+    prefixes = ("Refuse console_launch_gate", "Refuse a production launch gate")
+    refusals = [n for n in names if n and n.startswith(prefixes)]
+    assert len(refusals) == 3, refusals
+    assert max(names.index(n) for n in refusals) < names.index(
+        "Transport guard: the OpenBao endpoint must not be cleartext public") < names.index(
+        "Place the monorepo + ensure podman/compose")
+
+
+def test_the_production_trust_distribution_reuses_the_task_and_is_gated_on_the_gate():
+    names = [t.get("name") for t in _tasks(DEPLOY)]
+    name = "Distribute the step-ca root for the launch gate's TLS trust (production)"
+    task = _named(DEPLOY, name)
+    assert task["ansible.builtin.include_tasks"] == "tasks/distribute-ca-root.yml"
+    # The bundle lands in the deploy's certs/ (what the overlay mounts). No combined bundle: the console adds roots.
+    assert task["vars"] == {"_ca_root_dest_dir": "{{ _deploy_dir }}", "_ca_host": "{{ groups['step_ca_svc'] | first }}"}
+    assert task["when"] == ["_console_launch_gate_declared | bool", "not (local_mode | default(false) | bool)"]
+    assert names.index("Manage secrets and template env + scope files") < names.index(name) < names.index(
+        "Create convenience symlink ~/console -> deploy dir")
+
+
+def test_the_gate_probe_is_a_read_only_post_that_asserts_401_and_prints_no_address():
+    task = _named(DEPLOY, GATE_PROBE)
+    assert task["ansible.builtin.command"] == {"argv": "{{ _console_gate_probe_argv }}"}
+    assert task["changed_when"] is False and task["failed_when"] is False
+    assert task["until"] == "_console_gate_probe.stdout | trim == '401'"
+    assert task["when"] == ["_console_launch_gate_declared | bool", "not ansible_check_mode"]
+    assert_task = _named(DEPLOY, GATE_PROBE_ASSERT)
+    assert assert_task["ansible.builtin.assert"]["that"] == ["_console_gate_probe.stdout | trim == '401'"]
+    assert "console_launch_gate_ip" not in assert_task["ansible.builtin.assert"]["fail_msg"]
+    names = [t.get("name") for t in _tasks(DEPLOY)]
+    assert names.index(GATE_PROBE) < names.index(GATE_PROBE_ASSERT) < names.index("Report")
+
+
+@NEEDS_ANSIBLE
+def test_the_gate_probe_argv_resolves_only_outside_local_mode_and_keeps_the_port(tmp_path):
+    tpl = tmp_path / "argv.j2"
+    tpl.write_text("{{ _console_gate_probe_argv | to_json }}")
+    verify = _verify_vars()
+
+    def argv(url: str, local: bool) -> list[str]:
+        variables = {k: verify[k] for k in ("_console_gate_probe_url", "_console_gate_probe_resolve",
+                                            "_console_gate_probe_argv")}
+        variables.update({"_deploy_dir": "/srv/console/deployment", "console_launch_gate_url": url,
+                          "console_launch_gate_ip": GATE_IP, "local_mode": local})
+        return json.loads(_render(tmp_path, tpl, variables))
+
+    prod = argv(GATE_URL, False)
+    assert prod[prod.index("--resolve") + 1] == "launch-gate.example.test:8443:192.0.2.10"
+    assert prod[prod.index("--cacert") + 1] == "/srv/console/deployment/certs/step-ca-bundle.crt"
+    assert prod[prod.index("--request") + 1] == "POST"
+    assert prod[-1] == "https://launch-gate.example.test:8443/v1/launch"
+    assert not [a for a in prod if "uthorization" in a or "GATE" in a], prod  # no credential in argv
+    default_port = argv("https://launch-gate.example.test", False)
+    assert default_port[default_port.index("--resolve") + 1] == "launch-gate.example.test:443:192.0.2.10"
+    slash = argv(GATE_URL + "/", False)
+    assert slash[-1] == "https://launch-gate.example.test:8443/v1/launch"
+    assert "--resolve" not in argv(GATE_URL, True)
+
+
+@NEEDS_ANSIBLE
+def test_the_gate_probe_passes_on_401_and_fails_naming_the_status_otherwise(tmp_path, monkeypatch):
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    stub = stub_dir / "curl"
+    # Stands in for curl: records its argv (one per line) and prints the status the test sets.
+    stub.write_text('#!/usr/bin/env bash\nprintf \'%s\\n\' "$@" > "$GATE_STUB_ARGV"\n'
+                    'printf \'%s\' "$GATE_STUB_STATUS"\n')
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{stub_dir}:{os.environ['PATH']}")
+    monkeypatch.setenv("GATE_STUB_ARGV", str(tmp_path / "argv.txt"))
+    verify = _verify_vars()
+    variables = {k: verify[k] for k in ("_console_gate_probe_url", "_console_gate_probe_resolve",
+                                        "_console_gate_probe_argv")}
+    variables.update({"_deploy_dir": str(tmp_path), "console_launch_gate_url": GATE_URL,
+                      "console_launch_gate_ip": GATE_IP, "local_mode": False,
+                      GATE_DECLARED: _deploy_vars()[GATE_DECLARED]})
+    tasks = [_named(DEPLOY, GATE_PROBE), _named(DEPLOY, GATE_PROBE_ASSERT)]
+
+    monkeypatch.setenv("GATE_STUB_STATUS", "401")
+    passed = _run_tasks(tmp_path, tasks, variables)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    recorded = (tmp_path / "argv.txt").read_text().splitlines()
+    assert recorded[recorded.index("--resolve") + 1] == "launch-gate.example.test:8443:192.0.2.10"
+    assert recorded[-1] == "https://launch-gate.example.test:8443/v1/launch"
+
+    monkeypatch.setenv("GATE_STUB_STATUS", "000")
+    failed = _run_tasks(tmp_path, tasks, variables)
+    assert failed.returncode != 0 and "answered 000" in failed.stdout, failed.stdout
+    assert "192.0.2.10" not in failed.stdout  # the address is never printed
+
+
+@pytest.mark.parametrize("local, env_file, loaded", [
+    (None, "CONSOLE_LAUNCH_GATE_HOSTNAME=launch-gate.example.test\n", True),
+    ("true", "CONSOLE_LAUNCH_GATE_HOSTNAME=launch-gate.example.test\n", False),
+    (None, "CONSOLE_LAUNCH_GATE_URL=https://launch-gate.example.test:8443\n", False),
+    (None, "CONSOLE_LAUNCH_GATE_HOSTNAME=\n", False),
+])
+def test_the_overlay_loads_only_outside_local_mode_and_with_the_gate_host(tmp_path, local, env_file, loaded):
+    (tmp_path / ".env").write_text(env_file)
+    script = ("set -euo pipefail\n" + _overlay_block()
+              + 'printf "%s|%s" "$LAUNCH_GATE_OVERLAY" "${COMPOSE_OVERLAYS:-}"\n')
+    proc = _bash(script, tmp_path, {} if local is None else {"LOCAL_MODE": local})
+    assert proc.returncode == 0, proc.stderr
+    flag, overlays = proc.stdout.split("|", 1)
+    assert flag == ("true" if loaded else "false"), proc.stdout
+    assert ("compose.launch-gate.yml" in overlays) == loaded, proc.stdout
+
+
+@pytest.mark.parametrize("local, flag, bundle_hashed", [
+    (None, "true", True),
+    (None, "false", False),
+    ("true", "false", True),
+])
+def test_step_start_hashes_the_gate_bundle_only_with_its_overlay(tmp_path, local, flag, bundle_hashed):
+    if local is not None:
+        (tmp_path / "compose.local.yml").write_text("services: {}\n")
+    script = ("set -euo pipefail\ninfo() { :; }\n"
+              'compose_up_if_changed() { echo "UP $*"; }\n'
+              f"LAUNCH_GATE_OVERLAY={flag}\n" + _shell_function("step_start") + "step_start\n")
+    proc = _bash(script, tmp_path, {} if local is None else {"LOCAL_MODE": local})
+    assert proc.returncode == 0, proc.stderr
+    line = proc.stdout.strip()
+    assert line.count("config/gateway.json") == 1, line
+    assert ("certs/step-ca-bundle.crt" in line) == bundle_hashed, line
+
+
+REQUIRED_CONSOLE_INPUTS = (".env", "config/scope.json", "config/workflow.json", "config/flows.json",
+                           "config/proxmox-ca.pem", "config/gateway.json", "config/role-map.json",
+                           "config/catalog.json")
+
+
+def test_the_gate_bundle_is_refused_before_a_bind_mount_can_create_a_directory(tmp_path):
+    for rel in REQUIRED_CONSOLE_INPUTS:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x\n")
+    script = ("set -euo pipefail\ninfo() { :; }\n"
+              'error() { echo "ERR: $*"; exit 1; }\n'
+              f'SCRIPT_DIR="{tmp_path}"\nLAUNCH_GATE_OVERLAY=true\n'
+              + _shell_function("step_verify_inputs") + "step_verify_inputs\n")
+    missing = _bash(script, tmp_path, {})
+    assert missing.returncode != 0 and "the launch gate's trust bundle" in missing.stdout, missing.stdout
+    (tmp_path / "certs").mkdir()
+    (tmp_path / "certs/step-ca-bundle.crt").write_text(CERT_PEM)
+    present = _bash(script, tmp_path, {})
+    assert present.returncode == 0, present.stdout + present.stderr
+    # Without the gate overlay the bundle is not required, so a deploy that never declared the gate is unchanged.
+    (tmp_path / "certs/step-ca-bundle.crt").unlink()
+    off = _bash(script.replace("LAUNCH_GATE_OVERLAY=true", "LAUNCH_GATE_OVERLAY=false"), tmp_path, {})
+    assert off.returncode == 0, off.stdout + off.stderr
+
+
+def test_the_overlay_mounts_the_bundle_it_names_and_maps_the_gate_with_required_variables():
+    doc = yaml.safe_load(GATE_OVERLAY.read_text())
+    assert set(doc["services"]) == {"console"}
+    svc = doc["services"]["console"]
+    assert set(svc) == {"volumes", "environment", "extra_hosts"}
+    assert svc["volumes"] == ["./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro"]
+    assert svc["environment"] == {"CONSOLE_EXTRA_CA_FILE": "/etc/ssl/certs/step-ca-bundle.crt"}
+    assert svc["extra_hosts"] == [
+        "${CONSOLE_LAUNCH_GATE_HOSTNAME:?set console_launch_gate_url in the inventory}"
+        ":${CONSOLE_LAUNCH_GATE_IP:?set console_launch_gate_ip in the inventory}"]

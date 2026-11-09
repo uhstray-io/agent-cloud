@@ -1,10 +1,12 @@
 # launch-gate — container deployment
 
 The launch gate is the only identity that may ask Semaphore to launch a task on behalf of an agent. It is a
-stdlib Python HTTPS service in `app/launch_gate.py`. An agent (skynet, later the Dispatch Console) calls
-`POST /v1/launch` with its caller bearer token. The gate checks the token, that the caller may act as the
-requested agent, and that the template is on the allowlist. It then asks OPA for a decision and creates the
-Semaphore task only on an allow. Full design and the check order: `plan/development/openspec/changes/skynet-launch-containment/design.md`.
+stdlib Python HTTPS service in `app/launch_gate.py`. An agent calls `POST /v1/launch` with its caller bearer
+token. The callers are skynet and the Dispatch Console (`console`), each with its own token (see "Callers"). The
+gate checks the token, that the caller may act as the requested agent, and that the template is on the allowlist.
+It then asks OPA for a decision and creates the Semaphore task only on an allow. `POST /v1/decide` runs the same
+checks and answers the decision without creating a task (see "The decision route"). Full design and the check order:
+`plan/development/openspec/changes/skynet-launch-containment/design.md`.
 
 ## Status: deployed and validated in local-dev; not deployed in production
 
@@ -24,7 +26,10 @@ The playbook headers hold the behaviour, the refusals and the order of the steps
 
 Local-dev ran the gate on 2026-11-04: bootstrapped from dev, deployed and validated (local Semaphore tasks 11594
 and 11596; the 3.8 scenarios passed against the live gate), then stopped again with its volumes kept. Production
-does not run it yet. The open tasks of the `skynet-launch-containment` change
+does not run it yet. The decision route and the `console` caller are task 7.2 of `add-dispatch-console`
+(`plan/development/openspec/changes/add-dispatch-console/tasks.md`; decisions D49 and D51 in
+`plan/development/17-dispatch-console.md`). That change deploys nothing. The console's own deploy, which shared-reads
+`caller_console_token`, is built in `deploy-console.yml` (read when `console_launch_gate_url` is declared). The open tasks of the `skynet-launch-containment` change
 (`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) are:
 
 - skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),
@@ -81,6 +86,52 @@ the port mapping in `compose.yml`. It renders `opa_ca_bundle` as `/certs/step-ca
 Each token must be at least 32 characters. Two callers may not share a token. The gate refuses to start on
 either failure, and it never prints a token. `env.j2` renders one `LAUNCH_GATE_CALLER_TOKEN_*` line per
 caller, in sorted order, from `secrets['caller_<name>_token']`.
+
+## Callers
+
+`callers` maps each caller to the agents it may act as. The deploy's default (`_launch_gate_callers` in
+`deploy-launch-gate.yml`, overridable by inventory `launch_gate_callers`) names two callers, `skynet` and `console`,
+and both act as the five role agents in `_launch_gate_role_agents`: infra-, security-, o11y-, service- and
+network-agent. The Dispatch Console launches as its own caller, not as skynet (plan 17, D49).
+
+Each caller has one token. The deploy generates `caller_<name>_token` into `secret/services/launch-gate` once and
+reuses it (`_secret_definitions`), and renders it as `LAUNCH_GATE_CALLER_TOKEN_<NAME>`. A caller needs an entry in
+`_launch_gate_token_callers`, which the deploy checks, and a matching `caller_<name>_token` secret definition, which
+the bats suite checks against that list.
+
+The deploy's Phase 3 probes present skynet's token: the probe caller is `skynet` whenever skynet is a caller, and the
+first sorted caller name otherwise (`deploy-launch-gate.yml`, "Hold the caller and template the verify play probes with").
+
+The task message is `<caller> <workflow_id> <step>` (`task_message`). The tag D49 specifies for a console launch is
+`console <proposal id> <step>`; the gate's message form is unchanged.
+
+## The decision route (`POST /v1/decide`)
+
+The console previews a proposal here, and the launch at approval decides again (plan 17, D51). The request is the
+same bearer token and the same body as `/v1/launch`, with the same keys, including `dry_run`. The route runs the same
+checks in the same order, up to and including OPA: authenticate, parse the request, authorise the agent and template,
+merge the survey (declared fields, defaults, types), pin the branch, apply the check-mode version rule when `dry_run`
+is true, then ask OPA. Both routes call one method (`Gate._judge`), so they cannot drift.
+
+The decision then stops. It never reads the template's running tasks, never takes the template lock and never creates
+a task. Its log event is `"event": "decide"`, with the launch's fields and no `task_id`.
+
+Answers:
+
+- `200 {"decision": {"allowed": true, "reason": "<OPA's reason>"}}` when OPA allows.
+- `200 {"decision": {"allowed": false, "reason": "<OPA's reason>"}}` when OPA denies. An OPA deny is the answer, not a
+  refusal, so this body has no `error`.
+- The refusals a launch gives before OPA, with the same status, code and detail: `401 unauthorized`; `400 bad_request`,
+  `undeclared_field`, `missing_required`, `bad_value`, `branch_mismatch`, `dry_run_unverified`; `403
+  agent_not_permitted`, `template_not_allowed`; `502` with `semaphore_unreadable`, `template_not_found`,
+  `template_ambiguous`, `branch_ambiguous`, `bad_default` or `unsupported_field_type`; `503 opa_unavailable` when OPA is
+  unreachable or its answer is unusable.
+- `405` for any method other than POST, and `404` for any other path.
+
+A decision is a preview. `/v1/launch` decides again at approval and is the authoritative answer. The tests in
+`platform/tests/test_launch_gate_flow.py` (the decision route section) pin that each pre-OPA refusal matches the
+launch's, that the OPA input matches the launch's, and that the decision makes no Semaphore write, takes no lock and
+reads no running task.
 
 ## Certificates and renewal
 
@@ -162,6 +213,8 @@ repo is placed.
 
 ## Do not
 
+- Do not let the console call OPA itself. Its preview goes through `POST /v1/decide`: one OPA caller and one input
+  builder, so the preview cannot disagree with the launch (plan 17, D51).
 - Do not put a token in `config.json`, in a template outside the `secrets` namespace, or in any committed file.
   Templates use `secrets.*` and `_`-prefixed variables only. `test_credential_leaks.bats` is meant to check
   that, but its regex does not match `{{ name` written with a space. CI's GNU grep shows the same miss: run
