@@ -177,3 +177,13 @@ def test_destination_and_project_id_are_refused_before_runtime_access():
     that = " ".join(guards[0])
     assert f"_semaphore_url == '{DESTINATION}'" in that
     assert "_project_id is match('^[1-9][0-9]*$')" in that
+
+
+def test_deletes_accept_already_gone_and_the_read_back_still_proves_it():
+    """A DELETE that finds the object gone (404) must not fail the run; the read-back is the proof."""
+    deletes = [args for _, args in _uri_tasks() if str(args.get("method", "GET")).upper() == "DELETE"]
+    assert len(deletes) == 2, "one schedule delete and one template delete"
+    for args in deletes:
+        assert sorted(args.get("status_code", [])) == [204, 404], args.get("url")
+    names = [task.get("name", "") for task in _play()["tasks"]]
+    assert any(name.startswith("Require the retired names") for name in names), "read-back assert missing"

@@ -177,7 +177,7 @@ Run on a throwaway Commercial `v3.3.3` instance on a workstation, on the Free pl
 
 ## Migration Plan
 
-The phases run in order: 0, then 1 to 7. Phase 0 blocks each phase that names one of its spikes. Phase 3 switches the tududi sync off before Phase 4 switches on the projects sync, because of the sync ordering in risk 5. Phase 7 runs last and only after the gates before it pass. The task list in `tasks.md` carries the detail for each phase.
+The phases run in order: 0, then 1 to 7. Phase 0 blocks each phase that names one of its spikes. Phase 3 switches the tududi sync off before Phase 4 switches on the projects sync, because of the sync ordering in risk 5. Phase 7 runs last and only after the gates before it pass. The task list in `tasks.md` carries the detail for each phase. **Changed 2026-11-07:** Phase 7 (tududi retirement) now runs after the Phase 1 gate, ahead of phases 3 to 6, and the sync is removed outright rather than switched off (see "tududi data (2026-11-07)").
 
 ## Unverified Going In
 

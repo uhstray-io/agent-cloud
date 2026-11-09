@@ -166,7 +166,9 @@
           Authorization: "Bearer {{ _token }}"
         unredirected_headers: [Authorization]
         follow_redirects: none
-        status_code: [204]
+        # 404: already gone (a concurrent run, or a template delete that took its schedule with
+        # it). Either way the object is absent, and the read-back below proves the end state.
+        status_code: [204, 404]
       loop: "{{ _retire_schedule_ids }}"
       loop_control:
         label: "schedule {{ item }}"
@@ -180,7 +182,9 @@
           Authorization: "Bearer {{ _token }}"
         unredirected_headers: [Authorization]
         follow_redirects: none
-        status_code: [204]
+        # 404: already gone (a concurrent run, or a template delete that took its schedule with
+        # it). Either way the object is absent, and the read-back below proves the end state.
+        status_code: [204, 404]
       loop: "{{ _present_template_ids }}"
       loop_control:
         label: "template {{ item }}"

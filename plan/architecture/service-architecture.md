@@ -319,8 +319,6 @@ flowchart LR
     AGW -->|"budgets"| AGWDB["gateway Postgres"]
     CON["Dispatch Console"] -->|"read-only tasks"| SEM
     N8N["n8n"] -->|"publish"| PZ["Postiz"]
-    N8N -->|"two-way sync"| TD["tududi"]
-    N8N -->|"issues"| GH["GitHub"]
     HON["honcho"] -->|"text generation (deriver, summaries);<br/>embeddings off"| GEM["Gemini API"]
     UHH["UhhCraft"] -->|"generate"| CUI["ComfyUI sidecar"]
     UHH -->|"generate"| HUN["Hunyuan3D sidecar"]
@@ -341,8 +339,9 @@ Notable edges, each recorded where it lives:
   planned (OpenSpec change `skynet-launch-containment`).
 - **agentgateway to OpenRouter.** A model declared with `provider: openrouter` is served through the
   gateway with a key only the gateway holds; it is optional and absent unless declared [16].
-- **n8n to tududi and GitHub.** The two-way task and issue sync was retired on 2026-11-07; Plane's
-  native GitHub integration replaces it [23][39].
+- **n8n to tududi and GitHub (retired).** The two-way task and issue sync was removed on
+  2026-11-07, so the diagram no longer shows it. Plane's native GitHub integration is planned to
+  replace it (plan 16, Phase 3); until then no service syncs issues [23][39].
 - **Semaphore to NetBox.** A device creation proposed by skynet and allowed by OPA is executed by
   the `Create NetBox Device` playbook with a scoped NetBox token [3]. The OPA check is the one skynet's
   own client makes; Semaphore does not make it. skynet cannot currently launch this playbook, because

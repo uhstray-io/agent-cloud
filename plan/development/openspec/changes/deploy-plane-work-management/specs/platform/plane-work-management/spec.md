@@ -251,7 +251,7 @@ The Plane MCP server SHALL run in OAuth mode behind the reverse proxy. A harness
 
 ### Requirement: tududi retires in a fixed order
 
-The tududi retirement SHALL run only after the gates for the earlier phases pass. The tududi data MUST be archived, not migrated: its database and uploads are written to site-config and then discarded, and nothing is imported into Plane. The final archive MUST be written, and its checksum read back, before any container or VM is removed. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
+The tududi retirement SHALL run only after the Phase 1 gate passes; it does not wait for phases 2 to 6 (decision 2026-11-07). The tududi data MUST be archived, not migrated: its database and uploads are written to site-config and then discarded, and nothing is imported into Plane. The tududi container MUST be stopped before the final archive, so no write lands during or after it. The final archive MUST be taken from the stopped volumes and its checksum read back before any container, volume or VM is removed. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
 
 #### Scenario: Teardown refuses without confirmation
 
@@ -261,7 +261,7 @@ The tududi retirement SHALL run only after the gates for the earlier phases pass
 #### Scenario: Final archive precedes teardown
 
 - **WHEN** the teardown runs
-- **THEN** the tududi database and uploads are archived to site-config and the archive checksum is read back before any container or VM is removed
+- **THEN** the tududi container is stopped first, the database and uploads are archived from the stopped volumes to site-config, and the archive checksum is read back before any container, volume or VM is removed
 
 #### Scenario: Sync app is uninstalled after the refresher is gone
 
