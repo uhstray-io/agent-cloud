@@ -373,46 +373,9 @@
   vars:
     _engine: "{{ container_engine | default('podman') }}"
     # The launch-gate probe, shared by the two probe tasks below so their request contract cannot drift apart.
-    # argv carries only the mode, 'anon' or 'caller', and no secret. The anon mode never reads
-    # SKYNET_LAUNCH_GATE_TOKEN, so the request that proves the 401 cannot carry the token. Only the caller
-    # mode reads it, inside the container.
-    _skynet_gate_probe_script: |
-      import json
-      import os
-      import sys
-      import urllib.error
-      import urllib.request
-      mode = sys.argv[1] if len(sys.argv) > 1 else ''
-      if mode not in ('anon', 'caller'):
-          print('bad-mode')
-          raise SystemExit(2)
-      url = os.environ.get('SKYNET_LAUNCH_GATE_URL')
-      if not url:
-          print('env-missing')
-          raise SystemExit(0)
-      headers = {'Content-Type': 'application/json'}
-      if mode == 'caller':
-          token = os.environ.get('SKYNET_LAUNCH_GATE_TOKEN')
-          if not token:
-              print('env-missing')
-              raise SystemExit(0)
-          headers['Authorization'] = 'Bearer ' + token
-      request = urllib.request.Request(
-          url.rstrip('/') + '/v1/launch',
-          data=b'{}',
-          headers=headers,
-          method='POST',
-      )
-      try:
-          response = urllib.request.urlopen(request, timeout=10)
-          status, body = response.status, response.read()
-      except urllib.error.HTTPError as error:
-          status, body = error.code, error.read()
-      try:
-          code = json.loads(body.decode('utf-8')).get('error', '')
-      except (ValueError, AttributeError):
-          code = ''
-      print(status, code)
+    # The script is a linted file, run as `python -I -c`. argv carries only the mode, 'anon' or 'caller', and
+    # no secret. The anon mode never reads SKYNET_LAUNCH_GATE_TOKEN; only the caller mode reads it, inside the container.
+    _skynet_gate_probe_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/skynet-launch-gate-probe.py') }}"
 
   tasks:
     # Every check runs INSIDE the container, so it never depends on a published port or
@@ -675,6 +638,7 @@
           - exec
           - skynet
           - python
+          - -I
           - -c
           - "{{ _skynet_gate_probe_script }}"
           - anon
@@ -709,6 +673,7 @@
           - exec
           - skynet
           - python
+          - -I
           - -c
           - "{{ _skynet_gate_probe_script }}"
           - caller
@@ -741,8 +706,8 @@
           skynet's own OPA client got OPA's default deny over {{ skynet_opa_url | default('its OPA URL') }},
           and OPA refused skynet's write to /v1/data (401).
           {% if (skynet_launch_gate_url | default('', true) | string | trim | length) > 0 %}
-          {% if (_skynet_gate_anon.stdout_lines | default([]) | last | default('')) == 'env-missing' or (_skynet_gate_authed.stdout_lines | default([]) | last | default('')) == 'env-missing' %}
-          The launch gate was not probed: the running container predates the gate declaration, and a dry run does not recreate it.
+          {% if (_skynet_gate_authed.stdout_lines | default([]) | last | default('')) == 'env-missing' %}
+          The launch gate was not probed: skynet's running container has no launch-gate variables yet, and a dry run does not recreate it.
           {% else %}
           The launch gate answered 401 to a request with no token and 400 to skynet's caller token, over {{ skynet_launch_gate_url }}.
           {% endif %}

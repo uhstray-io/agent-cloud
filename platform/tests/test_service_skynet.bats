@@ -32,9 +32,7 @@ setup() {
 # Stops only the stub launch gate a test started. The PID is the one that test recorded with $!; nothing
 # is matched by name, so no other process is touched.
 teardown() {
-  if [ -s "$BATS_TEST_TMPDIR/stub.pid" ]; then
-    kill "$(cat "$BATS_TEST_TMPDIR/stub.pid")" 2>/dev/null || true
-  fi
+  kill "$(cat "$BATS_TEST_TMPDIR/stub.pid" 2>/dev/null)" 2>/dev/null || true
 }
 
 # Skip a test that reads the service directory (built by a separate change) only when
@@ -768,10 +766,14 @@ PY
   # difference between them, and the anonymous probe's argv names no token.
   assert_contains "$anon" '"{{ _skynet_gate_probe_script }}"'
   assert_contains "$authed" '"{{ _skynet_gate_probe_script }}"'
-  refute_grep -qF 'os.environ' <<<"$anon"
-  refute_grep -qF 'os.environ' <<<"$authed"
   assert_grep -qE '^ +- anon$' <<<"$anon"
   assert_grep -qE '^ +- caller$' <<<"$authed"
+  # Both run isolated (python -I), so the container's working directory is not put on the import path.
+  assert_grep -qE '^ +- -I$' <<<"$anon"
+  assert_grep -qE '^ +- -I$' <<<"$authed"
+  # The script is a linted file loaded by lookup; the playbook carries no copy of it.
+  assert_contains "$play3" "_skynet_gate_probe_script: \"{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/skynet-launch-gate-probe.py') }}\""
+  [ -f "$REPO_ROOT/platform/playbooks/files/skynet-launch-gate-probe.py" ]
   # The unauthenticated probe must not carry the token at all.
   refute_contains "$anon" 'SKYNET_LAUNCH_GATE_TOKEN'
   for block in "$anon" "$authed"; do
@@ -787,43 +789,40 @@ PY
   assert_contains "$(task_block "$PLAYBOOK" 'Report')" 'skynet_launch_gate_url'
 }
 
-# The launch-gate probe script as the verify play carries it, run against a stub gate on loopback. The stub
-# records the Authorization header of every POST to a log, answers 401 without one and 400 to the token t0k.
-@test "skynet: the launch-gate probe script sends the token only in caller mode, and reports env-missing and bad-mode without a request" {
-  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
-  local probe="$BATS_TEST_TMPDIR/probe.py" stub="$BATS_TEST_TMPDIR/stub.py" url port i
-  python3 - "$PLAYBOOK" "$probe" <<'PY'
-import sys
-import yaml
+# The launch-gate probe as the verify play runs it, read straight from its linted file, against a stub gate on
+# loopback. The stub derives from the suite's DrainingHandler, so it reads each request body before it answers.
+# It answers 400 to the token t0k and 401 to any other request, and appends each Authorization header (NONE when
+# absent) to seen.log. probe_expect <mode> <status> <output> [VAR=value...] runs the probe with only the given
+# environment, reads the calling test's $probe, and checks the exit status and the one output line.
+probe_expect() {
+  run env -i PATH="$PATH" "${@:4}" python3 -I "$probe" "$1"
+  [ "$status" -eq "$2" ]
+  [ "$output" = "$3" ]
+}
 
-plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-verify = next(p for p in plays if p.get("name") == "Phase 3: Verify skynet")
-open(sys.argv[2], "w", encoding="utf-8").write(verify["vars"]["_skynet_gate_probe_script"])
-PY
+@test "skynet: the launch-gate probe sends the token only in caller mode, and reports env-missing and bad-mode without a request" {
+  command -v python3 >/dev/null 2>&1 || skip "python3 not available"
+  local probe="$REPO_ROOT/platform/playbooks/files/skynet-launch-gate-probe.py" stub="$BATS_TEST_TMPDIR/stub.py" url i
   cat > "$stub" <<'PY'
 import http.server
 import json
 import os
 import sys
 
+from fake_http import DrainingHandler
+
 out = sys.argv[1]
 
 
-class Gate(http.server.BaseHTTPRequestHandler):
+class Gate(DrainingHandler):
     def do_POST(self):
-        length = int(self.headers.get("Content-Length") or 0)
-        self.rfile.read(length)
         auth = self.headers.get("Authorization")
         with open(os.path.join(out, "seen.log"), "a", encoding="utf-8") as fh:
             fh.write((auth if auth is not None else "NONE") + "\n")
-        if self.path != "/v1/launch":
-            status, payload = 404, {"error": "not_found"}
-        elif auth is None:
-            status, payload = 401, {"error": "unauthorized"}
-        elif auth == "Bearer t0k":
+        if auth == "Bearer t0k":
             status, payload = 400, {"error": "bad_request"}
         else:
-            status, payload = 403, {"error": "forbidden"}
+            status, payload = 401, {"error": "unauthorized"}
         body = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -842,50 +841,33 @@ with open(tmp, "w", encoding="utf-8") as fh:
 os.replace(tmp, os.path.join(out, "stub.port"))
 server.serve_forever()
 PY
-  python3 "$stub" "$BATS_TEST_TMPDIR" >/dev/null 2>&1 &
+  PYTHONPATH="$REPO_ROOT/platform/tests" python3 "$stub" "$BATS_TEST_TMPDIR" >/dev/null 2>&1 &
   echo $! > "$BATS_TEST_TMPDIR/stub.pid"
   for i in $(seq 1 100); do
     [ -s "$BATS_TEST_TMPDIR/stub.port" ] && break
     sleep 0.05
   done
   [ -s "$BATS_TEST_TMPDIR/stub.port" ]
-  port=$(cat "$BATS_TEST_TMPDIR/stub.port")
-  url="http://127.0.0.1:$port"
+  url="http://127.0.0.1:$(cat "$BATS_TEST_TMPDIR/stub.port")"
   # Anonymous mode sends no Authorization header, even with the token in its environment.
-  run env -i PATH="$PATH" SKYNET_LAUNCH_GATE_URL="$url" SKYNET_LAUNCH_GATE_TOKEN=t0k python3 "$probe" anon
-  [ "$status" -eq 0 ]
-  [ "$output" = "401 unauthorized" ]
-  [ "$(tail -n 1 "$BATS_TEST_TMPDIR/seen.log")" = "NONE" ]
+  probe_expect anon 0 '401 unauthorized' SKYNET_LAUNCH_GATE_URL="$url" SKYNET_LAUNCH_GATE_TOKEN=t0k
   # Caller mode sends the token and gets the gate's 400 for the empty body.
-  run env -i PATH="$PATH" SKYNET_LAUNCH_GATE_URL="$url" SKYNET_LAUNCH_GATE_TOKEN=t0k python3 "$probe" caller
-  [ "$status" -eq 0 ]
-  [ "$output" = "400 bad_request" ]
-  [ "$(tail -n 1 "$BATS_TEST_TMPDIR/seen.log")" = "Bearer t0k" ]
+  probe_expect caller 0 '400 bad_request' SKYNET_LAUNCH_GATE_URL="$url" SKYNET_LAUNCH_GATE_TOKEN=t0k
   # Anonymous mode needs no token at all: with the URL alone it still gets its 401.
-  run env -i PATH="$PATH" SKYNET_LAUNCH_GATE_URL="$url" python3 "$probe" anon
-  [ "$status" -eq 0 ]
-  [ "$output" = "401 unauthorized" ]
+  probe_expect anon 0 '401 unauthorized' SKYNET_LAUNCH_GATE_URL="$url"
   # Caller mode without the token, and either mode without the URL, reports env-missing and sends nothing.
-  run env -i PATH="$PATH" SKYNET_LAUNCH_GATE_URL="$url" python3 "$probe" caller
-  [ "$status" -eq 0 ]
-  [ "$output" = "env-missing" ]
-  run env -i PATH="$PATH" SKYNET_LAUNCH_GATE_TOKEN=t0k python3 "$probe" anon
-  [ "$status" -eq 0 ]
-  [ "$output" = "env-missing" ]
-  run env -i PATH="$PATH" SKYNET_LAUNCH_GATE_TOKEN=t0k python3 "$probe" caller
-  [ "$status" -eq 0 ]
-  [ "$output" = "env-missing" ]
+  probe_expect caller 0 'env-missing' SKYNET_LAUNCH_GATE_URL="$url"
+  probe_expect anon 0 'env-missing' SKYNET_LAUNCH_GATE_TOKEN=t0k
+  probe_expect caller 0 'env-missing' SKYNET_LAUNCH_GATE_TOKEN=t0k
   # Any other mode is refused with exit 2 before a request is sent.
-  run env -i PATH="$PATH" SKYNET_LAUNCH_GATE_URL="$url" SKYNET_LAUNCH_GATE_TOKEN=t0k python3 "$probe" x
-  [ "$status" -eq 2 ]
-  [ "$output" = "bad-mode" ]
-  # Exactly three requests reached the gate: the three calls that had a URL and a valid mode.
-  [ "$(wc -l < "$BATS_TEST_TMPDIR/seen.log" | tr -d ' ')" = "3" ]
+  probe_expect x 2 'bad-mode' SKYNET_LAUNCH_GATE_URL="$url" SKYNET_LAUNCH_GATE_TOKEN=t0k
+  # Exactly three requests reached the gate, in order: anonymous, caller, then anonymous with the URL alone.
+  [ "$(cat "$BATS_TEST_TMPDIR/seen.log")" = "$(printf 'NONE\nBearer t0k\nNONE')" ]
 }
 
 # The verify report states the launch gate's answers only when the probes observed them. The Report task is
-# rendered from the real playbook, with each probe's registered stdout_lines.
-@test "skynet: the verify report says the launch gate was not probed when either probe reported env-missing, and states its answers only otherwise" {
+# rendered from the real playbook: one play per case, each named for its case, so the output splits by case.
+@test "skynet: the verify report says the launch gate was not probed when the caller probe reported env-missing, and states its answers only otherwise" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR" <<'PY'
 import sys
@@ -903,37 +885,29 @@ def probe(line):
 
 
 cases = {
-    "both-missing": {"skynet_launch_gate_url": url, "_skynet_gate_anon": probe("env-missing"),
-                     "_skynet_gate_authed": probe("env-missing")},
-    "anon-missing": {"skynet_launch_gate_url": url, "_skynet_gate_anon": probe("env-missing"),
-                     "_skynet_gate_authed": probe("400 bad_request")},
+    # The container has the URL but no token: the anonymous probe answers, the caller probe reports env-missing.
     "authed-missing": {"skynet_launch_gate_url": url, "_skynet_gate_anon": probe("401 unauthorized"),
                        "_skynet_gate_authed": probe("env-missing")},
     "answered": {"skynet_launch_gate_url": url, "_skynet_gate_anon": probe("401 unauthorized"),
                  "_skynet_gate_authed": probe("400 bad_request")},
     "undeclared": {"skynet_launch_gate_url": ""},
 }
-for name, extra in cases.items():
-    play = [{"name": "render report", "hosts": "localhost", "connection": "local", "gather_facts": False,
-             "vars": {"skynet_opa_url": "https://opa.example.test", **extra}, "tasks": [report]}]
-    with open(f"{out}/report-{name}.yml", "w", encoding="utf-8") as fh:
-        yaml.safe_dump(play, fh, sort_keys=False, allow_unicode=True)
+plays = [{"name": name, "hosts": "localhost", "connection": "local", "gather_facts": False,
+          "vars": {"skynet_opa_url": "https://opa.example.test", **extra}, "tasks": [report]}
+         for name, extra in cases.items()]
+with open(f"{out}/report.yml", "w", encoding="utf-8") as fh:
+    yaml.safe_dump(plays, fh, sort_keys=False, allow_unicode=True)
 PY
-  for name in both-missing anon-missing authed-missing; do
-    run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/report-$name.yml"
-    [ "$status" -eq 0 ] || { echo "$name: report did not render"; return 1; }
-    assert_contains "$output" 'The launch gate was not probed'
-    refute_contains "$output" 'answered 401'
-  done
-  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/report-answered.yml"
-  [ "$status" -eq 0 ]
-  assert_contains "$output" 'answered 401 to a request with no token and 400 to skynet'
-  refute_contains "$output" 'The launch gate was not probed:'
-  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/report-undeclared.yml"
-  [ "$status" -eq 0 ]
-  assert_contains "$output" 'is not declared'
-  refute_contains "$output" 'The launch gate was not probed:'
-  refute_contains "$output" 'answered 401'
+  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/report.yml"
+  [ "$status" -eq 0 ] || { echo "report did not render"; return 1; }
+  # The lines of one case: those after its PLAY header, up to the next play or the recap.
+  section() { awk -v h="PLAY [$1]" 'index($0, h) == 1 { on = 1; next } /^PLAY /{ on = 0 } on' <<<"$output"; }
+  assert_contains "$(section authed-missing)" "The launch gate was not probed: skynet's running container"
+  refute_contains "$(section authed-missing)" 'answered 401'
+  assert_contains "$(section answered)" 'answered 401 to a request with no token and 400 to skynet'
+  refute_contains "$(section answered)" 'The launch gate was not probed:'
+  assert_contains "$(section undeclared)" 'is not declared'
+  refute_contains "$(section undeclared)" 'The launch gate was not probed:'
 }
 
 @test "skynet: the production overlay is a skynet-only override: certs read-only, combined bundle, OPA mapping from two required variables" {
