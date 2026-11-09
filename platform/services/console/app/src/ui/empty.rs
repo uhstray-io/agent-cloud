@@ -1,14 +1,11 @@
-//! Placeholder pages. Each nav page the shell links to renders the same empty
-//! state until its phase lands: what the page is for, the authority behind it,
-//! and the phase it arrives in.
+//! The metadata each page's header reads (title, icon, purpose and authority), and the page
+//! an unknown path shows.
 
 use dioxus::prelude::*;
 
-use super::icons::icon;
 use super::Route;
 
-/// What a placeholder page says about itself. `id` is the nav id from the
-/// reference prototype, and `phase_for` keys on it.
+/// What a page says about itself. `id` is the nav id from the reference prototype.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PageMeta {
     pub id: &'static str,
@@ -18,32 +15,12 @@ pub struct PageMeta {
     pub authority: &'static str,
 }
 
-/// The build phase a nav page arrives in, from plan/development/17-dispatch-console.md.
-/// `None` means no phase is recorded for the page, and the page says "Planned".
-pub fn phase_for(id: &str) -> Option<u8> {
-    match id {
-        "home" => Some(2),
-        "topology" | "services" | "compute" => Some(3),
-        "dashboard" => Some(4),
-        "telemetry" | "cicd" => Some(6),
-        _ => None,
-    }
-}
-
 pub const ACTIVE_WORK: PageMeta = PageMeta {
     id: "home",
     title: "Active Work",
     icon: "list-todo",
     purpose: "Every request as a strip from approval to done, scoped to what you picked.",
     authority: "skynet, Semaphore",
-};
-
-pub const DASHBOARD: PageMeta = PageMeta {
-    id: "dashboard",
-    title: "Dashboard",
-    icon: "layout-dashboard",
-    purpose: "Proposals waiting for your review: comment, edit the plan, approve or deny.",
-    authority: "skynet, OPA",
 };
 
 pub const TOPOLOGY: PageMeta = PageMeta {
@@ -86,36 +63,6 @@ pub const CICD: PageMeta = PageMeta {
     authority: "GitHub",
 };
 
-/// The empty state every placeholder page renders.
-#[component]
-pub fn EmptyPage(page: PageMeta) -> Element {
-    let arrival = match phase_for(page.id) {
-        Some(phase) => format!("Arrives in Phase {phase}"),
-        None => "Planned".to_string(),
-    };
-    rsx! {
-        div { class: "view",
-            header { class: "view-h",
-                h1 { {icon(page.icon)} "{page.title}" }
-                span { class: "authority", "Source of truth: {page.authority}" }
-                p { "{page.purpose}" }
-            }
-            section { class: "card",
-                div { class: "empty",
-                    span { class: "empty-icon", aria_hidden: "true", {icon(page.icon)} }
-                    h2 { "Not built yet" }
-                    span { class: "tag accent", "{arrival}" }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-pub fn Dashboard() -> Element {
-    rsx! { EmptyPage { page: DASHBOARD } }
-}
-
 /// Any path the router does not know. It renders outside the shell, so it
 /// shows no account or tenant data.
 #[component]
@@ -130,45 +77,6 @@ pub fn NotFound(segments: Vec<String>) -> Element {
             p {
                 Link { to: Route::Home {}, "Back to Active Work" }
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_nav_page_has_a_phase_from_plan_17() {
-        assert_eq!(phase_for("home"), Some(2));
-        assert_eq!(phase_for("topology"), Some(3));
-        assert_eq!(phase_for("services"), Some(3));
-        assert_eq!(phase_for("compute"), Some(3));
-        assert_eq!(phase_for("dashboard"), Some(4));
-        assert_eq!(phase_for("cicd"), Some(6));
-        assert_eq!(phase_for("telemetry"), Some(6));
-    }
-
-    #[test]
-    fn unmapped_pages_are_planned_not_guessed() {
-        assert_eq!(phase_for("profile"), None);
-        assert_eq!(phase_for("network"), None);
-    }
-
-    #[test]
-    fn every_placeholder_page_is_mapped() {
-        let pages = [
-            ACTIVE_WORK,
-            DASHBOARD,
-            TOPOLOGY,
-            SERVICES,
-            COMPUTE,
-            TELEMETRY,
-            CICD,
-        ];
-        for page in pages {
-            assert!(phase_for(page.id).is_some(), "{} has no phase", page.id);
-            assert!(!page.authority.is_empty(), "{} names no authority", page.id);
         }
     }
 }

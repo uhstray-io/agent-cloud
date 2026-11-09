@@ -20,8 +20,8 @@ pub const REQUEST_SERVICE: PageMeta = PageMeta {
     authority: "Semaphore deploy templates",
 };
 
-/// Why the Request buttons are off: requests arrive with proposals (Phase 4).
-const REQUEST_TITLE: &str = "Service requests arrive with proposals (Phase 4)";
+/// Why the Request buttons are off: skynet must plan a request, and it cannot plan yet (plan 17, D48).
+const REQUEST_TITLE: &str = "Service requests arrive when skynet can plan them (D48)";
 
 /// The element that shows `REQUEST_TITLE` as visible text; each Request button describes itself by it.
 const REQUEST_REASON_ID: &str = "request-action-reason";
