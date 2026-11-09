@@ -1909,6 +1909,14 @@ templates:
         type: string
         required: true
 
+  # Read-only proof that secret/services/github:pat can pull the private GHCR images (live,
+  # read:packages, each declared package readable). The registry login and the pre-flight pulls
+  # are skipped under --check, so no deploy dry run proves the token. Reports statuses and
+  # scopes only; the token is read and sent in no_log tasks. Dev-bound until promotion.
+  - name: Verify GitHub PAT (Dev)
+    playbook: platform/playbooks/verify-github-pat.yml
+    repository: agent-cloud dev
+
   - name: Seed Discovery Credentials
     playbook: platform/playbooks/seed-discovery-credentials.yml
 

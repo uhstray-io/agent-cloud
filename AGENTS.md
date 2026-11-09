@@ -428,6 +428,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Validate All | `validate-all.yml` | Health check all services |
 | Check Secrets | `check-secrets.yml` | Read-only secret inventory from OpenBao |
 | Validate Secrets | `validate-secrets.yml` | Test credentials against live services |
+| Verify GitHub PAT (Dev) | `verify-github-pat.yml` | Read-only proof that `secret/services/github:pat` (the registry login's token) can pull the private GHCR images: `GET /user` 200, `read:packages` in its scopes, and each declared container package (`ghcr_packages`, default honcho and skynet-tier2) readable. Exists because the registry login and pre-flight pulls are skipped under `--check`, so no deploy dry run proves the token. Token read and sent in `no_log` tasks; reports statuses and scopes only; identical under `--check` |
 
 Semaphore templates are managed as code in `platform/semaphore/templates.yml`.
 

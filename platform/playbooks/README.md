@@ -199,6 +199,7 @@ and launches each with a forged internal name.
 |----------|---------|
 | `check-secrets.yml` | Read-only secret inventory from OpenBao (present/missing/empty) |
 | `validate-secrets.yml` | Active credential testing (DB, Redis, HTTP auth) |
+| `verify-github-pat.yml` | Read-only proof the GHCR pull token is live, has `read:packages`, and reads each declared package |
 | `seed-discovery-credentials.yml` | Copy/migrate discovery credentials to new vault paths |
 | `seed-openbao-key.yml` | Merge ONE operator-held key into a secret path (created if absent, siblings preserved). Runs in its own isolated Semaphore environment; the value arrives as the encrypted `BAO_VALUE` input staged by `scripts/semaphore-seed-input.py`. `bao_verify_access_only=true` is the read-only access check |
 | `seed-postiz-secrets.yml` | Merge the operator's social-platform credentials into `secret/services/postiz`. Runs in its own isolated environment; values arrive as encrypted `SEED_*` inputs staged by `scripts/postiz-seed-input.py`. `postiz_verify_access_only=true` is the read-only access check |
