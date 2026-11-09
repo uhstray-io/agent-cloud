@@ -213,6 +213,23 @@ deduplicated with the OTLP TLS overlay. Existing self-monitor labels and metrics
 are forwarded through the existing private receiver path. Keep task 3.3 and all
 live acceptance gates open.
 
+**Proving the namespace gate before the first enable.** `Survey o11y Availability Gate (Dev)`
+(`survey-o11y-availability-gate.yml`) runs the pre-placement namespace proof in enabled mode and
+prints one fixed category. `isolated` means the proof passed for the receiver as it runs at that
+moment. Any other value names the decision point that refused: `namespace_alloy_unavailable` (no
+single project Alloy container running with a start time and usable pid), `namespace_alloy_host_port`
+(a container publishes host port 12345), `namespace_shared` (the Alloy network namespace equals the
+host's or a project sibling's), `namespace_network_mode` (a network mode that is host, none, or joins
+another namespace), `namespace_provider_unverified` (the compose or podman provider, its version or
+executable identity, or the enabled-mode overlay does not match), `namespace_unstable` (two passes
+disagree, or an expected fingerprint does not match), `namespace_runtime_unreadable` (an inspect,
+`/proc` or listing read failed or was malformed), and `namespace_unverified` for every other refusal.
+The survey reads no activation switch, places nothing, and prints no container, process or namespace
+identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
+an `isolated` result does not accept availability: the source, placement and post-apply gates still
+apply. Candidate-mode checks of the effective compose file (`deploy.sh --candidate`) keep the generic
+`namespace_unverified` category; the survey covers only the pre-placement runtime proof.
+
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
 candidate object is complete. It compares every fixed public job category in
