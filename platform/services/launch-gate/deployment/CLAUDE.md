@@ -38,7 +38,7 @@ does not run it yet. The open tasks of the `skynet-launch-containment` change
 | `compose.prod.yml` | Production overlay, loaded by `deploy.sh` outside `LOCAL_MODE`: `user: "1000:1000"` and `userns_mode: keep-id:uid=1000,gid=1000`, so the non-root process reads the 0600 TLS key; `extra_hosts` maps the OPA host name to `launch_gate_opa_ip` (see "Production inventory"). |
 | `compose.local.yml` | Local-dev overlay (`LOCAL_MODE=true`, appended by `platform/lib/common.sh`): memory cap, `label=disable`, the `local-dev` network. It does not republish ports. |
 | `deploy.sh` | Container lifecycle only. Checks the inputs exist, pulls, starts with `compose_up_if_changed app config.json certs/step-ca-bundle.crt`, waits for the container to be running. It generates no secret. |
-| `templates/env.j2` | Renders `.env`: the image, bind and port, the Semaphore token, one caller token per caller. |
+| `templates/env.j2` | Renders `.env`: the image, bind and port, the Semaphore token, one caller token per caller, and outside local-dev the OPA name map (`LAUNCH_GATE_OPA_HOSTNAME`, `LAUNCH_GATE_OPA_IP`) that `compose.prod.yml` reads. |
 | `templates/config.json.j2` | Renders `config.json`: URLs, allowlist, caller-to-agent map, listener, certificate paths. It holds no token. |
 | `.gitignore` | `.env`, `config.json`, `certs/`. The rendered and issued files are never committed. |
 | `AGENTS.md` | Symlink to this file. |
@@ -107,12 +107,18 @@ Outside local-dev the deploy refuses to run unless these are declared on `launch
 Phase 3 proves the mapping: `GET <launch_gate_opa_url>/health` from inside the container must answer 200 through the
 gate's own trust bundle (`opa-health 200`). A failure names the status or the exception class, never the body.
 
+OPA's host firewall must admit the gate's host before the first production deploy: declare `launch_gate_svc` in
+`opa_svc`'s `firewall_allow_groups` and run `Apply Firewall` on `opa_svc`. Otherwise Phase 2 has already started the
+new container when the Phase 3 OPA probe fails, and the run ends red with the gate running.
+
 ## Local-dev
 
 Declared in `platform/playbooks/bootstrap-local-dev.yml` (`[launch_gate_svc]`, the local Semaphore's inventory) and
 mirrored in `platform/inventory/local-dev.yml.example`. `Deploy launch-gate (Local)` and
 `Provision launch-gate Semaphore Access (Local)` are in `platform/semaphore/templates-local.yml`.
 
+- Deploy OPA (Local) first. Phase 3 asks OPA for `/health` from inside the gate container at `http://opa:8181`, so a
+  local deploy fails there while OPA is not running on the `local-dev` network.
 - The published port is 18443 on 127.0.0.1, because Caddy holds 8443 on the Mac. The container still listens on 8443.
 - The TLS name is `launch-gate.local.agent-cloud.test` (`dns_site` local, `dns_zone` the local zone). `compose.local.yml`
   makes it a network alias on `local-dev`. The Phase 3 probes run inside the Semaphore container and dial that name on

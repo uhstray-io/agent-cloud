@@ -176,7 +176,8 @@ def test_the_repository_skynet_agent_is_refused_because_it_names_no_templates():
 
 
 def _jinja_env():
-    """Ansible's template settings: trim_blocks, keep_trailing_newline, and its own to_nice_json, bool and urlsplit filters."""
+    """Ansible's template settings: trim_blocks, keep_trailing_newline, and its own to_nice_json, bool and
+    urlsplit filters."""
     jinja2 = pytest.importorskip("jinja2")
     core = pytest.importorskip("ansible.plugins.filter.core")
     urls = pytest.importorskip("ansible.plugins.filter.urlsplit")

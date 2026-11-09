@@ -117,7 +117,8 @@ def host_passes(value):
     return bool(re.match(name_re, value)) and not re.match(ip_literal_re, value)
 for good in ("opa.dc1.example.internal", "opa"):
     assert host_passes(good), good
-for bad in ("", "192.0.2.20", "[::1]", "-bad.example"):
+# "::1" is what urlsplit('hostname') returns for an https://[::1]/ URL; "[::1]" is the bracketed form.
+for bad in ("", "192.0.2.20", "::1", "[::1]", "-bad.example"):
     assert not host_passes(bad), bad
 # Both refusals sit after the URL's https refusal and before anything is issued.
 assert names.index("Refuse launch_gate_opa_url unless it is https (http only under local_mode)") < names.index(ip["name"]) < names.index("Issue the server leaf (key here, signed on the CA host)")
