@@ -170,7 +170,10 @@ def test_a_400_for_a_task_still_listed_is_a_failure(fake, tmp_path):
     assert "1001" in result.stderr
 
 
-@pytest.mark.parametrize("status", ["running", "waiting", "starting", "stopping"])
+@pytest.mark.parametrize(
+    "status",
+    ["running", "waiting", "starting", "stopping", "waiting_confirmation", "confirmed", "rejected", "never-seen", None],
+)
 def test_a_running_or_queued_task_on_any_template_refuses_before_any_delete(fake, tmp_path, status):
     srv = fake({7: tasks(1000, 5), 8: tasks(2000, 2) + [task(2999, status)]})
     result = drain(tmp_path, srv.url, "--template-id", "7", "--template-id", "8")

@@ -34,7 +34,10 @@ import urllib.request
 PAGE = 200
 GET_TIMEOUT = 60
 DELETE_TIMEOUT = 120
-RUNNING = frozenset({"running", "waiting", "starting", "stopping"})
+# Upstream TaskStatus.IsFinished (pkg/task_logger/task_logger.go): only these are finished. Any other
+# status, including waiting_confirmation, confirmed and one this file has never seen, counts as
+# not finished and refuses.
+FINISHED = frozenset({"success", "error", "stopped"})
 LOOPBACK = re.compile(r"http://127\.0\.0\.1:([0-9]{1,5})")
 POSITIVE = re.compile(r"[1-9][0-9]*")
 
@@ -122,7 +125,7 @@ def history_page(base, project, template_id, token):
 
 
 def running_ids(tasks):
-    return [task["id"] for task in tasks if task.get("status") in RUNNING]
+    return [task["id"] for task in tasks if task.get("status") not in FINISHED]
 
 
 def drain_template(base, project, template_id, token, max_pages, progress):

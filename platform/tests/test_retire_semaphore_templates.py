@@ -324,3 +324,11 @@ def test_scratch_directory_is_created_and_removed_in_always():
     ]
     assert len(removed) == 1, "the scratch directory is removed in always, so a failed drain leaves no token behind"
     assert removed[0]["ansible.builtin.file"]["path"] == "{{ _drain_tmp.path }}"
+
+
+def test_preview_counts_every_unfinished_status_as_running():
+    """An allowlist of finished statuses (upstream TaskStatus.IsFinished), not a denylist of busy ones:
+    a status the playbook has never seen must refuse, not pass."""
+    text = PLAYBOOK.read_text()
+    assert "rejectattr('status', 'in', ['success', 'error', 'stopped'])" in text
+    assert "selectattr('status', 'in'" not in text

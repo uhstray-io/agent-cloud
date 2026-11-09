@@ -199,7 +199,7 @@
                'template_id': template_id,
                'first_page': page | length,
                'capped': (page | length) == 200,
-               'running_ids': page | selectattr('status', 'in', ['running', 'waiting', 'starting', 'stopping']) | map(attribute='id') | list
+               'running_ids': page | rejectattr('status', 'in', ['success', 'error', 'stopped']) | map(attribute='id') | list
              }) %}
           {% endfor %}
           {{ plan | to_json }}
