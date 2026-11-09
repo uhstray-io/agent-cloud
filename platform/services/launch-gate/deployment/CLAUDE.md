@@ -121,7 +121,8 @@ least weekly, or after a long break, to keep it current. Production keeps an iss
 
 ## Allowlist
 
-`launch_gate_allowlist(catalog_doc, templates_doc, agents)` renders the list at deploy time:
+`launch_gate_allowlist(catalog_doc, templates_doc, agents, local_templates_doc=None)` renders the list at deploy
+time:
 
 1. For each agent, it takes `catalog.<agent>.allowed_templates` and `catalog.<agent>.service_deploy_templates`
    from OPA's `policies/agentcloud/data.json`. The gate's list only narrows what reaches OPA. It adds nothing
@@ -130,10 +131,14 @@ least weekly, or after a long break, to keep it current. Production keeps an iss
    `Clean Deploy`.
 3. For each remaining name, it adds `<name> (Dev)` when `platform/semaphore/templates.yml` sets
    `dev_variant: true` for it.
+4. Under local mode only, the deploy also passes `platform/semaphore/templates-local.yml`, and the filter adds
+   `<name> (Local)` for each remaining name that file declares. skynet's local catalog launches the ` (Local)`
+   variants, and OPA trims that suffix (`agent_actions.rego`, `_base_template`). A production deploy passes
+   nothing, so its list carries no ` (Local)` name.
 
 It fails closed: it raises `AnsibleFilterError` on an empty agent list, an agent not in the catalog, an agent with no
-`allowed_templates` list, a remaining name that `templates.yml` does not declare (catalog drift), or a template
-name declared twice. The deploy playbook calls it in Phase 1 without a rescue, so the error stops the run before the
+`allowed_templates` list, a remaining name that `templates.yml` does not declare (catalog drift), a template
+name declared twice, or a local document without a `templates` list. The deploy playbook calls it in Phase 1 without a rescue, so the error stops the run before the
 repo is placed.
 
 ## Do not

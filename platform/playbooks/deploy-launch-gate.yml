@@ -255,7 +255,9 @@
         _launch_gate_allowlist: >-
           {{ lookup('ansible.builtin.file', playbook_dir ~ '/../services/opa/deployment/policies/agentcloud/data.json') | from_json
              | launch_gate_allowlist(lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates.yml') | from_yaml,
-                                      _launch_gate_agents) }}
+                                      _launch_gate_agents,
+                                      (lookup('ansible.builtin.file', playbook_dir ~ '/../semaphore/templates-local.yml') | from_yaml)
+                                      if (_launch_gate_local_mode | bool) else none) }}
 
     - name: "Refuse an empty launch allowlist"
       ansible.builtin.assert:
