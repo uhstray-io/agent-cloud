@@ -3116,8 +3116,9 @@ synced to the production Semaphore inventory on 2026-11-09 at about 02:55 UTC. T
 gate, and a rerun (13908) refused the same way. Because the switch lived in the shared inventory, every
 o11y deploy, by any session, would have refused. Holding the probes off (site-config 159) was not
 enough: a disabled-mode dry run (13914) refused at the self-metrics producer check, and the native
-source declaration would also have failed every real deploy's post-apply source readback, so it was
-reverted too (site-config 160). The next disabled-mode dry run (13927, 03:37 UTC) passed. Nothing on the
+source declaration would also have failed every real deploy's post-apply source readback (Alloy's
+native self-scrape renders only with the probes on, `config.alloy.j2`; the readback requires
+`matches_intended`, `deploy-o11y.yml`), so it was reverted too (site-config 160). The next disabled-mode dry run (13927, 03:37 UTC) passed. Nothing on the
 receiver changed: every refusal happened before placement. Deploys were blocked for about 40 minutes.
 
 **Root cause.** The inventory is the only place these switches can be set, and the change that set them
