@@ -2132,8 +2132,9 @@ templates:
 
   - name: Sync Plane Projects
     playbook: platform/playbooks/sync-plane-projects.yml
-    # Open OpenSpec tasks of every repository enabled in platform/services/plane/projects.yml
-    # become Plane work items, one module per change. CREATE-ONLY: nothing already in Plane is
+    # Every project declared in platform/services/plane/projects.yml (plus site-config's
+    # plane_projects_private) becomes a Plane project; the open OpenSpec tasks of every enabled
+    # repository become its work items, one module per change. CREATE-ONLY: nothing already in Plane is
     # changed, and no item is ever given a status. Launch it as a dry run to see the counts it
     # would create. The schedule is added once production holds Plane (change task 4.4).
     dev_variant: true
