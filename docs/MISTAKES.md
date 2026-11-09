@@ -96,6 +96,7 @@ and why.
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
+| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) | Wrong-reason pass | 1 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category); class Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -2521,6 +2522,40 @@ it spans the alphabet), next to where it is built. Seed a generator once and dra
 
 **Enforced by.** Test: the module asserts `set(_RANDOM_BASE64) == set(_BASE64)` at import, and restoring the
 per-character seed fails collection (mutation-checked). The class rule stays `Convention`.
+
+### 2.36 A test stubbed the one OS read whose permission decided the outcome (widens 2.22)
+
+**What happened.** The o11y availability namespace gate compares the Alloy container's network namespace with
+the host's. It read the host's from `os.stat("/proc/1/ns/net")` (`summarize-o11y-scrape-baseline.py`,
+`_availability_runtime_pass`). The namespace tests replaced `os.stat` with a stub that answered that exact path
+(`test_o11y_availability_namespace_survey.py`), so every test passed. In production the helper runs as the
+unprivileged deploy user of a rootless podman receiver (`become: false`). For that user the stat raises
+`PermissionError` (errno 13), because reading another user's `/proc/<pid>/ns/*` needs ptrace access to that
+process, here init. The error was not a refusal, so the command line's catch-all printed the generic
+`namespace_unverified`. The read-only survey on 2026-11-09 (Semaphore task 14237) printed exactly that. The
+enabled-mode deploy dry runs of 2026-11-08 had also stopped at this gate with the same word, which had been put
+down to a suspected first-enable deadlock (recorded as unverified); that they hit this same read is inferred,
+not established. Reproduced on 2026-11-09 on a local Linux VM: as `nobody`,
+`/proc/self/ns/net` stats and `/proc/1/ns/net` raises errno 13. Production confirmation is the next survey run
+after the fix.
+
+**Root cause.** The stub replaced the first call whose result depended on who runs the helper, and it failed
+before any other such call ran. With the read stubbed, the tests checked the comparison logic while the
+production identity's access was never exercised. The per-container `/proc/<pid>` reads that follow it also
+depend on the caller's identity and are still stubbed in these tests; a local rootless run read them for the
+user's own containers, and the production survey after this fix is their first production run.
+Separately, the catch-all printed the same word as a real refusal, so a crash and a refusal looked identical
+from outside.
+
+**The rule.** When a test stubs an OS read (a `/proc` or `/sys` path, a file mode, a syscall), the stub must
+also refuse the paths that the production identity cannot read. Prefer reading only what that identity can
+read: here the helper's own namespace, `/proc/self/ns/net`, which under rootless podman is the namespace that
+`network_mode: host` would join. An unexpected exception gets its own fixed category, never the word a real
+refusal uses.
+
+**Enforced by.** Test (`test_o11y_availability_namespace_survey.py`: the stub refuses `/proc/1/ns/net` with
+errno 13 and the runtime pass must stat `/proc/self/ns/net`; the catch-all must print
+`namespace_internal_error`). Mutation-checked. The class-wide rule for other stubbed OS reads: Convention.
 
 ## 3. Acting on live state
 

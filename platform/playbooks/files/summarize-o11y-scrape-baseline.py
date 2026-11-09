@@ -159,7 +159,7 @@ AVAILABILITY_PROVIDER_OVERRIDE_NAMES = {
 AVAILABILITY_NAMESPACE_REASONS = frozenset({
     "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
     "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
-    "namespace_runtime_unreadable", "namespace_unverified",
+    "namespace_runtime_unreadable", "namespace_unverified", "namespace_internal_error",
 })
 
 
@@ -847,7 +847,13 @@ def _availability_runtime_pass(podman_path: str) -> tuple[
     records = _availability_inspect_all(
         time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
     )
-    host_ns = os.stat("/proc/1/ns/net", follow_symlinks=True)
+    # The host reference is this helper's own netns. Rootless podman `network_mode: host` joins
+    # the caller's netns, so this process's netns is the one at risk. /proc/1 is unreadable
+    # (EACCES) for an unprivileged deploy user, so it is never a fallback.
+    try:
+        host_ns = os.stat("/proc/self/ns/net", follow_symlinks=True)
+    except OSError:
+        raise Refusal("namespace_runtime_unreadable") from None
     host_namespace = (int(host_ns.st_dev), int(host_ns.st_ino))
     related = _availability_related(records)
     if any(
@@ -4804,7 +4810,7 @@ def main() -> int:
             result = {"status": "unverified", "reason": category}
             code = 2
         except Exception:
-            result = {"status": "unverified", "reason": "namespace_unverified"}
+            result = {"status": "unverified", "reason": "namespace_internal_error"}
             code = 2
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return code
