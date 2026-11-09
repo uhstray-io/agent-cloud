@@ -150,6 +150,19 @@ mod tests {
     }
 
     #[test]
+    fn a_401_is_failed_and_the_caller_signs_out() {
+        // The registry state stays Failed for a 401. The sign-out is the caller's, in `load_roles`,
+        // which reads `signs_out` on the same status.
+        use crate::ui::work::signs_out;
+        assert_eq!(
+            role_state(&reply(401, serde_json::json!({"error": "unauthenticated"}))),
+            RoleState::Failed
+        );
+        assert!(signs_out(401));
+        assert!(!signs_out(403), "a 403 keeps its own state and sentence");
+    }
+
+    #[test]
     fn a_200_that_is_not_the_roles_shape_is_failed() {
         assert_eq!(
             role_state(&reply(200, serde_json::json!({"roles": "not a list"}))),

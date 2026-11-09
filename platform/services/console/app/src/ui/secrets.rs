@@ -24,6 +24,9 @@ pub const SECRETS: PageMeta = PageMeta {
 /// Why the Rotate button is off: rotation arrives with proposals (D28, Phase 4).
 const ROTATE_TITLE: &str = "Rotation arrives with proposals (Phase 4)";
 
+/// The element that shows `ROTATE_TITLE` as visible text above the table; each Rotate button describes itself by it.
+const ROTATE_REASON_ID: &str = "secrets-action-reason";
+
 /// Shown above the table when a bound stopped the walk.
 const TRUNCATED_TEXT: &str =
     "The list is truncated: a walk bound stopped it, so it is not the whole of OpenBao.";
@@ -124,6 +127,11 @@ fn SecretsBodyView(body: SecretsBody, reason: String, now_ms: Option<i64>) -> El
             p { class: "stale", role: "status", "{TRUNCATED_TEXT}" }
         }
         section { class: "card",
+            if !empty {
+                div { class: "card-b",
+                    p { id: ROTATE_REASON_ID, class: "action-reason", "{ROTATE_TITLE}" }
+                }
+            }
             div { class: "tbl-wrap",
                 table { class: "tbl",
                     thead {
@@ -145,7 +153,13 @@ fn SecretsBodyView(body: SecretsBody, reason: String, now_ms: Option<i64>) -> El
                                 td { title: "{row.created_time}", {age_label(now_ms, &row.created_time)} }
                                 td { title: "{row.updated_time}", {age_label(now_ms, &row.updated_time)} }
                                 td {
-                                    button { class: "btn", disabled: true, title: "{ROTATE_TITLE}", "Rotate" }
+                                    button {
+                                        class: "btn",
+                                        disabled: true,
+                                        aria_describedby: ROTATE_REASON_ID,
+                                        title: "{ROTATE_TITLE}",
+                                        "Rotate"
+                                    }
                                 }
                             }
                         }

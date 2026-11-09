@@ -131,12 +131,14 @@
     - name: "Require a live token with read:packages that can read every declared package"
       ansible.builtin.assert:
         that:
+          # An empty package list would pass the package check vacuously.
+          - _packages | length > 0
           - (_pat_report.user_status | int) == 200
           - "'read:packages' in _pat_report.scopes"
           - _pat_report.packages.values() | map('int') | reject('equalto', 200) | list | length == 0
         fail_msg: >-
           The PAT at secret/services/github:{{ _pat_key }} cannot pull the private images.
           401 on /user = revoked or expired; no read:packages = re-mint as a classic PAT with
-          that scope; a package not 200 = the token's owner has no read access to it. Replace it
-          through Seed OpenBao Key.
+          that scope; a package not 200 = the token's owner has no read access to it; an empty
+          ghcr_packages proves no image. Replace a bad token through Seed OpenBao Key.
         success_msg: "PAT is live, has read:packages, and reads every declared package."

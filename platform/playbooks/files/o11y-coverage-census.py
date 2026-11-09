@@ -442,6 +442,10 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
             if target["trust"] == "internal-ca":
                 tls["ca_file"] = "/certs/step-ca-bundle.crt"
             http["tls_config"] = tls
+            # The endpoint is a literal address, so without this the request carries the IP as
+            # its Host and a name-routed proxy (Caddy) matches no site. blackbox_exporter at the
+            # commit Alloy v1.9.2 bundles sets request.Host from this header (prober/http.go).
+            http["headers"] = {"Host": target["tls_server_name"]}
         module = {
             "prober": "http",
             "timeout": f'{target["probe_timeout_seconds"]}s',

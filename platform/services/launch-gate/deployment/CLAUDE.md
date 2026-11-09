@@ -35,10 +35,10 @@ does not run it yet. The open tasks of the `skynet-launch-containment` change
 | File | Role |
 |------|------|
 | `compose.yml` | The base: one container, `restart: always`, the HTTPS port on `${LAUNCH_GATE_BIND:-127.0.0.1}:${LAUNCH_GATE_PORT:-8443}`, read-only mounts of `./app`, `./config.json` and `./certs`, `read_only`, `cap_drop: ALL`, `no-new-privileges`, and `init: true` (an init process as PID 1, so a stop delivers SIGTERM; production hosts need catatonit, which the deploy checks). |
-| `compose.prod.yml` | Production overlay, loaded by `deploy.sh` outside `LOCAL_MODE`: `user: "1000:1000"` and `userns_mode: keep-id:uid=1000,gid=1000`, so the non-root process reads the 0600 TLS key. |
+| `compose.prod.yml` | Production overlay, loaded by `deploy.sh` outside `LOCAL_MODE`: `user: "1000:1000"` and `userns_mode: keep-id:uid=1000,gid=1000`, so the non-root process reads the 0600 TLS key; `extra_hosts` maps the OPA host name to `launch_gate_opa_ip` (see "Production inventory"). |
 | `compose.local.yml` | Local-dev overlay (`LOCAL_MODE=true`, appended by `platform/lib/common.sh`): memory cap, `label=disable`, the `local-dev` network. It does not republish ports. |
 | `deploy.sh` | Container lifecycle only. Checks the inputs exist, pulls, starts with `compose_up_if_changed app config.json certs/step-ca-bundle.crt`, waits for the container to be running. It generates no secret. |
-| `templates/env.j2` | Renders `.env`: the image, bind and port, the Semaphore token, one caller token per caller. |
+| `templates/env.j2` | Renders `.env`: the image, bind and port, the Semaphore token, one caller token per caller, and outside local-dev the OPA name map (`LAUNCH_GATE_OPA_HOSTNAME`, `LAUNCH_GATE_OPA_IP`) that `compose.prod.yml` reads. |
 | `templates/config.json.j2` | Renders `config.json`: URLs, allowlist, caller-to-agent map, listener, certificate paths. It holds no token. |
 | `.gitignore` | `.env`, `config.json`, `certs/`. The rendered and issued files are never committed. |
 | `AGENTS.md` | Symlink to this file. |
@@ -94,12 +94,31 @@ caller, in sorted order, from `secrets['caller_<name>_token']`.
   client reads its CA bundle once, when it is constructed, at start.
 - The bundle is the only `certs/` file in the digest. Hashing all of `certs/` would make every renewal a restart.
 
+## Production inventory
+
+Outside local-dev the deploy refuses to run unless these are declared on `launch_gate_svc:vars` in site-config's inventory:
+
+- `launch_gate_opa_url`: the OPA decision API, `https://`. Set it to the same URL as `skynet_opa_url`: skynet's OPA call
+  already reaches OPA under that host name (`deploy-skynet.yml`, its OPA decision probe).
+- `launch_gate_opa_ip`: one IPv4 address, the OPA host's. The OPA leaf is signed for a name with no production DNS
+  record, so `compose.prod.yml` maps that name to this address inside the container. `0.0.0.0` is refused. The URL's
+  host must be a DNS name, not an IP address, because the mapping needs a name.
+
+Phase 3 proves the mapping: `GET <launch_gate_opa_url>/health` from inside the container must answer 200 through the
+gate's own trust bundle (`opa-health 200`). A failure names the status or the exception class, never the body.
+
+OPA's host firewall must admit the gate's host before the first production deploy: declare `launch_gate_svc` in
+`opa_svc`'s `firewall_allow_groups` and run `Apply Firewall` on `opa_svc`. Otherwise Phase 2 has already started the
+new container when the Phase 3 OPA probe fails, and the run ends red with the gate running.
+
 ## Local-dev
 
 Declared in `platform/playbooks/bootstrap-local-dev.yml` (`[launch_gate_svc]`, the local Semaphore's inventory) and
 mirrored in `platform/inventory/local-dev.yml.example`. `Deploy launch-gate (Local)` and
 `Provision launch-gate Semaphore Access (Local)` are in `platform/semaphore/templates-local.yml`.
 
+- Deploy OPA (Local) first. Phase 3 asks OPA for `/health` from inside the gate container at `http://opa:8181`, so a
+  local deploy fails there while OPA is not running on the `local-dev` network.
 - The published port is 18443 on 127.0.0.1, because Caddy holds 8443 on the Mac. The container still listens on 8443.
 - The TLS name is `launch-gate.local.agent-cloud.test` (`dns_site` local, `dns_zone` the local zone). `compose.local.yml`
   makes it a network alias on `local-dev`. The Phase 3 probes run inside the Semaphore container and dial that name on
@@ -121,7 +140,8 @@ least weekly, or after a long break, to keep it current. Production keeps an iss
 
 ## Allowlist
 
-`launch_gate_allowlist(catalog_doc, templates_doc, agents)` renders the list at deploy time:
+`launch_gate_allowlist(catalog_doc, templates_doc, agents, local_templates_doc=None)` renders the list at deploy
+time:
 
 1. For each agent, it takes `catalog.<agent>.allowed_templates` and `catalog.<agent>.service_deploy_templates`
    from OPA's `policies/agentcloud/data.json`. The gate's list only narrows what reaches OPA. It adds nothing
@@ -130,10 +150,14 @@ least weekly, or after a long break, to keep it current. Production keeps an iss
    `Clean Deploy`.
 3. For each remaining name, it adds `<name> (Dev)` when `platform/semaphore/templates.yml` sets
    `dev_variant: true` for it.
+4. Under local mode only, the deploy also passes `platform/semaphore/templates-local.yml`, and the filter adds
+   `<name> (Local)` for each remaining name that file declares. skynet's local catalog launches the ` (Local)`
+   variants, and OPA trims that suffix (`agent_actions.rego`, `_base_template`). A production deploy passes
+   nothing, so its list carries no ` (Local)` name.
 
 It fails closed: it raises `AnsibleFilterError` on an empty agent list, an agent not in the catalog, an agent with no
-`allowed_templates` list, a remaining name that `templates.yml` does not declare (catalog drift), or a template
-name declared twice. The deploy playbook calls it in Phase 1 without a rescue, so the error stops the run before the
+`allowed_templates` list, a remaining name that `templates.yml` does not declare (catalog drift), a template
+name declared twice, or a local document without a `templates` list. The deploy playbook calls it in Phase 1 without a rescue, so the error stops the run before the
 repo is placed.
 
 ## Do not
@@ -165,3 +189,5 @@ repo is placed.
 - `platform/tests/test_launch_gate*.py` (existing): the app.
 - `platform/tests/test_restart_policy.bats`, `test_compose_image_qualified.py`, `test_no_bind_mount_dir_delete.py`:
   repository-wide guards that also cover this directory.
+- `platform/playbooks/probe-launch-gate.yml` (template `Probe launch-gate (Dev)`): the allow-path and duplicate-refusal
+  probe, run from inside the gate's container; `platform/tests/test_probe_launch_gate.py` runs it against a fake gate.

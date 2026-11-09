@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 use super::api::{self, Me, Tree};
 use super::inventory_api::{self, Cluster, Inventory, Meta, Read, ServiceRow, ServicesBody, Vm};
 use super::scope::Scope;
-use super::shell::{Ctx, Loaded};
+use super::shell::{no_tenant_message, Ctx, Loaded};
 use super::status::{worst, Notice, Rag};
 
 /// How often the tenant answers and the admin answers are re-read while the tab is visible.
@@ -568,16 +568,19 @@ pub fn count_text(count: usize, singular: &str, plural: &str) -> String {
 /// The notice for a tenant page with nothing to show yet, or a failure.
 #[component]
 pub fn ViewNotice(view: View) -> Element {
+    let ctx = use_context::<Ctx>();
     match view {
         View::NoTenant => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see its inventory.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see its inventory."),
+            }
         },
         View::Loading => rsx! {
             Notice { message: "Loading inventory\u{2026}".to_string() }
         },
         View::Failed(reason) => rsx! {
             Notice {
-                message: format!("The inventory could not be loaded: {reason}. It retries every 30 seconds while this tab is visible."),
+                message: format!("The inventory could not be loaded: {reason}. It retries every {} seconds while this tab is visible.", POLL_MS / 1000),
             }
         },
         View::Ready(_) => rsx! {},

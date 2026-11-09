@@ -315,6 +315,9 @@ pub fn router(state: SharedState) -> Router {
 }
 
 #[cfg(test)]
+mod load_test;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::probe::{http_get_raw, parse_status_line};
