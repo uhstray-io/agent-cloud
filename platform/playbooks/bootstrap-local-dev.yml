@@ -1402,6 +1402,10 @@
           opa-local ansible_host=127.0.0.1 ansible_connection=local
 
           [opa_svc:vars]
+          # Verify Service Health (Local) probes this from the Semaphore container, by the container's name on
+          # the local-dev network; OPA's authorization policy admits GET /health (verified 200 there, and 401 for
+          # GET /v1/data, 2026-11-09).
+          health_url=http://opa:8181/health
           ansible_user=semaphore
           service_name=opa
           monorepo_deploy_path=platform/services/opa/deployment

@@ -128,7 +128,7 @@ def test_the_local_inventory_declares_the_verified_health_urls():
     # PR 203 Codex review: the generated local inventory declared no health contract, so the
     # local executor could not pass for a healthy service.
     text = (REPO / "platform/playbooks/bootstrap-local-dev.yml").read_text()
-    for group in ("step_ca_svc", "authentik_svc", "o11y_svc", "agentgateway_svc"):
+    for group in ("step_ca_svc", "authentik_svc", "o11y_svc", "agentgateway_svc", "opa_svc"):
         section = text.split(f"[{group}:vars]", 1)[1].split("\n          [", 1)[0]
         assert "health_url=http" in section, group
 
