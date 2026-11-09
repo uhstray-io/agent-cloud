@@ -868,6 +868,13 @@ failures over fifteen minutes instead of five would have paged 17 times. It keep
 than by every rule. Rules whose queries are still failing hold their last state while
 it fires; check the receiver host's I/O wait and Prometheus health.
 
+The same group's `o11y_grafana_db_check_failing` warns when Grafana's own database check
+(`/api/health` answering 503) fails more than four times in an hour and that holds for
+fifteen minutes. The external liveness watcher retries each probe before it pages, so this
+rule is what still reports Grafana's store failing in short bursts. Backtested on the 14
+days before the 2026-11-08 SQLite fix (2026-10-25 to 2026-11-08), it would have fired twice,
+on 2026-10-30 and 2026-11-07; a threshold of more than three would have fired seven times.
+
 Order matters. Run `Deploy o11y (Dev)` with this change before any alert drill or recover
 template. `Drill o11y Active Alert Delivery (Dev)` and `Recover o11y Active Alert Drill (Dev)`
 validate the live rules against the KeepLast contracts and refuse `live_target_drift` until a
@@ -888,8 +895,10 @@ the datasource, building the plugin context, the plugin call, or parsing its det
 failed.
 
 Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
-that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed
-(Grafana's container logs are not in Loki). What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
+that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed:
+Grafana's logs reach Loki only since the journal collector added it on 2026-11-08 (after
+the fix), and Grafana logs `Database locked, sleeping then retrying` whenever a lock retry
+fires. What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
 `/api/health` 503 (database check) in 26 separate hours and datasource health 500 in at least 4, with
 zero Prometheus plugin `checkHealth` errors, which rules out a failed plugin call but not the
 other 500 paths; the watcher, then unretried, paged on any single 500. `compose.yml` sets
