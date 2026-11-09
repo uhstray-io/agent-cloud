@@ -1,0 +1,183 @@
+---
+# probe-skynet-launch.yml — read-only launch-path proof of skynet's own client (openspec change
+# skynet-launch-containment, task 4.4 local; the same probe runs in production after the gate's allow path).
+#
+# From inside skynet's container, skynet's own HTTP API starts ONE service_onboarding run bounded to one registry
+# step: service-validate (registry order 14), in check mode. skynet asks OPA for the step's decision, launches the
+# step's executor (Verify Service Health) through its Semaphore client with dry_run set (its mode is "check"), waits
+# for that task, and records the run's state. This playbook then reads Semaphore's newest tasks and requires exactly
+# one whose message is "skynet <run_id> service-validate", the tag the launch gives a step's task.
+#
+# Why service-validate: it is a read-only HTTP health check. No reasoning step feeds it (registry.yml: no step's
+# `feeds` names it), so the bounded run calls no model and launches no other template. OPA's allowlist holds
+# Verify Service Health for service-agent at this step (policies/agentcloud/data.json, workflow_steps). OPA removes
+# the " (Dev)" and " (Local)" suffixes before the lookup (agent_actions.rego, _base_template), so the local variant
+# is decided the same way.
+#
+# Why the tag shows the launch path: skynet's own Semaphore identity is svc-skynet at project role guest
+# (AGENTS.md, Provision skynet Semaphore Access). Guest reads tasks and cannot create one. The gate is skynet's only
+# launch path (AGENTS.md, Launch gate deployed). So a task tagged with this run's id came through the gate.
+#
+# Pass: skynet answers 202 with a service_onboarding run id, and Semaphore's newest tasks hold exactly one task
+# tagged with that run and step. The run's state and status, and the task's own status, are reported and never
+# asserted: a service that fails its health check still proves the launch. Fail: skynet did not answer 202, the
+# task list could not be read, no task carries the tag (the run's state is named), or more than one does (ambiguous).
+#
+# Nothing here prints a token, a header, a response body or the run's failure text. The bearers stay in the
+# container's environment (SKYNET_API_TOKEN, SKYNET_SEMAPHORE_TOKEN), read by the in-container script and never
+# passed on argv. No OpenBao call and no no_log: no secret reaches Ansible. A dry run (--check) runs the guards and
+# sends nothing.
+#
+# Inventory (skynet_svc, one host): container_engine. Optional: skynet_probe_timeout_s (default 600), the bound on
+# how long the probe waits for the run to leave running; tests lower it. Survey: probe_service, the skynet
+# service_name whose <name>_svc group skynet launches the step against (default opa). skynet targets that group
+# with "-" as "_" plus "_svc" (skynet orchestrator/service_onboarding.py, inventory_group), and this playbook's
+# guard uses the same mapping.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: skynet_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: skynet_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: skynet_svc
+
+# Guards that touch no host. They run in check mode too, so a dry run still refuses a bad target.
+- name: "Refuse unless the skynet host and the probed service group are real"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    _probe_service: "{{ probe_service | default('opa', true) | string }}"
+    _probe_group: "{{ _probe_service | replace('-', '_') ~ '_svc' }}"
+  tasks:
+    - name: "Require exactly one skynet_svc host"
+      ansible.builtin.assert:
+        that: groups['skynet_svc'] | length == 1
+        fail_msg: "The skynet launch probe runs against exactly one skynet_svc host."
+        quiet: true
+
+    - name: "Require probe_service to name a populated <name>_svc group"
+      ansible.builtin.assert:
+        that:
+          - _probe_service is match('^[a-z][a-z0-9-]*$')
+          - groups[_probe_group] | default([]) | length > 0
+        fail_msg: >-
+          probe_service must name a skynet service_name whose <name>_svc inventory group is populated (skynet
+          launches the step against that group), got "{{ _probe_service }}".
+        quiet: true
+
+- name: "Start one bounded service_onboarding run for service-validate and read its launch task"
+  hosts: skynet_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _probe_service: "{{ probe_service | default('opa', true) | string }}"
+    # The registry step and its order. test_probe_skynet_launch.py pins both against registry.yml.
+    _skynet_probe_step: service-validate
+    _skynet_probe_order: 14
+    _skynet_probe_timeout_s: "{{ skynet_probe_timeout_s | default(600) | int }}"
+    _skynet_probe_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/skynet-launch-probe.py') }}"
+
+  tasks:
+    # One container exec: the script posts the run, polls it, then reads the tasks. The bearers are read from the
+    # container's environment inside the script and are not arguments here.
+    - name: "Run the bounded service-validate run through skynet and read the tagged task (inside its container)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - skynet
+          - python
+          - -I
+          - -c
+          - "{{ _skynet_probe_script }}"
+          - "{{ _probe_service }}"
+          - "{{ _skynet_probe_step }}"
+          - "{{ _skynet_probe_order }}"
+          - "{{ _skynet_probe_timeout_s }}"
+      register: _skynet_probe_out
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "Report skynet's answers (identifiers, states and counts only)"
+      ansible.builtin.debug:
+        msg: "{{ _skynet_probe_out.stdout_lines }}"
+      when: not ansible_check_mode
+
+    - name: "Dry run: report what the probe would send"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: the run would start one service_onboarding run for {{ _probe_service }}, bounded to registry step
+          {{ _skynet_probe_step }} (order {{ _skynet_probe_order }}) in check mode, then read Semaphore's newest tasks for
+          its tag. Nothing was sent.
+      when: ansible_check_mode
+
+    - name: "Split the two answer lines into fields"
+      ansible.builtin.set_fact:
+        # run: run <http_status> <error> <run_id> <state> <status>
+        _skynet_probe_run: "{{ _skynet_probe_out.stdout_lines[0].split(' ') }}"
+        # task: task <count> <error> <task_id> <task_status>
+        _skynet_probe_task: "{{ _skynet_probe_out.stdout_lines[1].split(' ') }}"
+      when: not ansible_check_mode
+
+    # Checked in order: the first refusal is the one named. skynet's answer comes first, because a run it refused
+    # has no task list to read.
+    - name: "Assert skynet accepted the run (202 with a service_onboarding run id)"
+      ansible.builtin.assert:
+        that:
+          - _skynet_probe_run[1] == '202'
+          - _skynet_probe_run[3].startswith('service_onboarding:')
+        fail_msg: >-
+          skynet did not accept the run (run line: "{{ _skynet_probe_out.stdout_lines[0] }}"). Only 202 with a
+          service_onboarding run id is accepted: 401 means the bearer skynet checks was rejected (SKYNET_API_TOKEN),
+          400 means the body or graph was refused, and anything else means the route or the server is wrong.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Assert Semaphore's task list could be read"
+      ansible.builtin.assert:
+        that:
+          - _skynet_probe_task[1] is match('^[0-9]+$')
+        fail_msg: >-
+          Semaphore's task list could not be read (task line: "{{ _skynet_probe_out.stdout_lines[1] }}"). The error
+          field names the transport failure, or the HTTP status the answer carried.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Refuse a probe where no Semaphore task carries the run's tag"
+      ansible.builtin.assert:
+        that:
+          - _skynet_probe_task[1] != '0'
+        fail_msg: >-
+          no Semaphore task carries the tag skynet {{ _skynet_probe_run[3] }} {{ _skynet_probe_step }}. The run's state
+          is {{ _skynet_probe_run[4] }} and its status {{ _skynet_probe_run[5] }}. running means the deadline passed
+          before skynet launched; a finished or failed run that launched nothing was refused before the launch.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Refuse an ambiguous probe: more than one Semaphore task carries the run's tag"
+      ansible.builtin.assert:
+        that:
+          - _skynet_probe_task[1] == '1'
+        fail_msg: >-
+          ambiguous: {{ _skynet_probe_task[1] }} Semaphore tasks carry the tag skynet {{ _skynet_probe_run[3] }}
+          {{ _skynet_probe_step }}. One run launches its step once, so more than one task means the launch happened
+          more than once.
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Assert skynet launched the step once and the task has an id"
+      ansible.builtin.assert:
+        that:
+          - _skynet_probe_task[1] == '1'
+          - _skynet_probe_task[3] is match('^[0-9]+$')
+        fail_msg: >-
+          The tagged task carries no numeric id (task line: "{{ _skynet_probe_out.stdout_lines[1] }}").
+        quiet: true
+      when: not ansible_check_mode
