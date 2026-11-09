@@ -113,6 +113,13 @@ checks in the same order, up to and including OPA: authenticate, parse the reque
 merge the survey (declared fields, defaults, types), pin the branch, apply the check-mode version rule when `dry_run`
 is true, then ask OPA. Both routes call one method (`Gate._judge`), so they cannot drift.
 
+The branch the gate pins and asks OPA about is the template's repository record's, read from Semaphore and never
+from the caller. One exception, in local mode only: local-dev's working-tree record declares `HEAD` (whatever the
+developer has checked out), and OPA allows agent launches only from `main` or `dev`, so the gate reads that `HEAD`
+as `dev` (`policy_branch`), as skynet's local catalog already does. Outside local mode `HEAD` reaches OPA unchanged
+and is refused. Found by the local skynet launch probe on 2026-11-09 (local task 14161): every agent launch through
+the local gate was denied "an agent task may run only from main or dev".
+
 The decision then stops. It never reads the template's running tasks, never takes the template lock and never creates
 a task. Its log event is `"event": "decide"`, with the launch's fields and no `task_id`.
 
