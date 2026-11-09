@@ -428,6 +428,6 @@ templates:
       - name: target_service
         title: Target group
         # Only groups with a health_url in the generated local inventory can pass (task 7.9).
-        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc)
+        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc, opa_svc)
         type: string
         required: true
