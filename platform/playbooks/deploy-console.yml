@@ -110,8 +110,9 @@
     _console_launch_gate_declared: "{{ (console_launch_gate_url | default('', true) | string | trim | length) > 0 }}"
     # The console's caller token for the gate's POST /v1/launch (D49): a shared read of
     # secret/services/launch-gate:caller_console_token. The launch-gate deploy generates it once console is one of its
-    # token callers (on this base it is not yet; the read then fails by name). This deploy reads it into .env and never
-    # writes it back. env.j2 renders CONSOLE_LAUNCH_GATE_TOKEN from the same read.
+    # token callers, which is the default (deploy-launch-gate.yml, _launch_gate_token_callers); until it has, the read
+    # fails by name. This deploy reads it into .env and never writes it back. env.j2 renders CONSOLE_LAUNCH_GATE_TOKEN
+    # from the same read.
     _console_launch_gate_reads: >-
       {{ [{'from_service': 'launch-gate', 'read_keys': ['caller_console_token']}]
          if (console_launch_gate_url | default('', true) | string | trim | length) > 0 else [] }}
@@ -295,9 +296,9 @@
     - name: "Refuse console_launch_gate_url unless it is https"
       ansible.builtin.assert:
         that:
-          - (console_launch_gate_url | string) is match('^https://[^/:?#]+')
+          - (console_launch_gate_url | string) is match('^https://[^/:?#]+(:[0-9]{1,5})?/?$')
         fail_msg: >-
-          console_launch_gate_url must be an https:// URL with a host name (the launch gate the console calls over TLS).
+          console_launch_gate_url must be an https:// origin: a host name and an optional port, with no path, query or fragment.
           Set it in the inventory and re-run, or remove it to leave the gate undeclared.
         quiet: true
       when: _console_launch_gate_declared | bool

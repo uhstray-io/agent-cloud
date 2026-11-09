@@ -29,7 +29,7 @@ and 11596; the 3.8 scenarios passed against the live gate), then stopped again w
 does not run it yet. The decision route and the `console` caller are task 7.2 of `add-dispatch-console`
 (`plan/development/openspec/changes/add-dispatch-console/tasks.md`; decisions D49 and D51 in
 `plan/development/17-dispatch-console.md`). That change deploys nothing. The console's own deploy, which shared-reads
-`caller_console_token`, is task 7.3 and is not built. The open tasks of the `skynet-launch-containment` change
+`caller_console_token`, is built in `deploy-console.yml` (read when `console_launch_gate_url` is declared). The open tasks of the `skynet-launch-containment` change
 (`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) are:
 
 - skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),

@@ -23,6 +23,8 @@ pub const ADMIN_ONLY: &str = "Platform admins only.";
 pub const GENERIC_FAILURE: &str = "The request did not complete. Try again.";
 /// The sentence a stale approval or denial shows: the proposal was edited after this page loaded it (D53).
 pub const STALE: &str = "This proposal changed since you loaded it. Review it again.";
+/// The sentence a 403 `not_proposer` shows: only the proposer may edit a proposal (the server's own detail, kept here).
+pub const NOT_PROPOSER: &str = "Only the person who proposed this can edit it.";
 
 /// The action a proposal takes. `assess` runs Snapshot Service Assessment; `verify` runs Verify Service Health.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -214,6 +216,14 @@ pub fn preview_reason(preview: Option<&Preview>) -> Option<String> {
         .filter(|text| !text.is_empty())
 }
 
+/// Whether the page offers Edit: the proposal waits and the signed-in user proposed it. The server refuses an edit by
+/// anyone else with 403 `not_proposer` (D53, proposer-only edit), so the page hides the control rather than offering it.
+/// A missing sub, or an empty proposer sub, matches nothing.
+pub fn can_edit(proposal: &Proposal, sub: Option<&str>) -> bool {
+    proposal.state == State::Awaiting
+        && sub.is_some_and(|sub| !sub.is_empty() && sub == proposal.proposer.sub)
+}
+
 /// Whether Approve is offered: the proposal waits and the gate's last preview allowed it.
 pub fn can_approve(proposal: &Proposal) -> bool {
     proposal.state == State::Awaiting
@@ -318,6 +328,10 @@ pub fn comment_text(raw: &str) -> Option<String> {
 /// The sentence a failed write shows. A 403 is the admin-only sentence, and a stale 409 is `STALE`. Otherwise it is the
 /// server's `detail`, or the generic one when the answer carries none.
 pub fn error_text(reply: &Reply) -> String {
+    // The proposer-only refusal is a 403 too, so it is read before the admin-only sentence takes every 403.
+    if reply.status == 403 && reply.body["error"].as_str() == Some("not_proposer") {
+        return NOT_PROPOSER.to_string();
+    }
     if reply.status == 403 {
         return ADMIN_ONLY.to_string();
     }
@@ -833,5 +847,50 @@ mod tests {
     fn a_proposal_list_reads_with_no_proposals_key_as_empty() {
         let body: ProposalsBody = serde_json::from_value(json!({})).expect("body");
         assert!(body.proposals.is_empty());
+    }
+
+    fn proposed_by(sub: &str, state: State) -> Proposal {
+        Proposal {
+            state,
+            proposer: Person {
+                sub: sub.into(),
+                name: "Ada".into(),
+            },
+            ..Proposal::default()
+        }
+    }
+
+    #[test]
+    fn only_the_proposer_of_a_waiting_proposal_is_offered_edit() {
+        let ada = proposed_by("ada-sub", State::Awaiting);
+        assert!(can_edit(&ada, Some("ada-sub")));
+        assert!(!can_edit(&ada, Some("grace-sub")));
+        assert!(!can_edit(&ada, None));
+        // A decided proposal is not editable by its proposer either: the server answers not_awaiting.
+        let launched = proposed_by("ada-sub", State::Launched);
+        assert!(!can_edit(&launched, Some("ada-sub")));
+    }
+
+    #[test]
+    fn an_empty_sub_matches_no_proposal() {
+        // A proposal with no proposer sub (the serde default) must not be editable by a signed-in user whose sub is empty.
+        let unnamed = proposed_by("", State::Awaiting);
+        assert!(!can_edit(&unnamed, Some("")));
+        assert!(!can_edit(&unnamed, None));
+    }
+
+    #[test]
+    fn a_not_proposer_refusal_says_only_the_proposer_can_edit_and_other_403s_stay_admin_only() {
+        assert_eq!(
+            error_text(&reply(
+                403,
+                json!({"error": "not_proposer", "detail": "Only the person who proposed this can edit it."})
+            )),
+            NOT_PROPOSER
+        );
+        assert_eq!(
+            error_text(&reply(403, json!({"error": "forbidden", "detail": "x"}))),
+            ADMIN_ONLY
+        );
     }
 }

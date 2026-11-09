@@ -349,18 +349,20 @@ async fn require_console_origin(
         [Method::POST, Method::PUT, Method::PATCH, Method::DELETE].contains(request.method());
     if changes_state
         && request.uri().path().starts_with("/v1/")
-        && !same_origin_json(request.headers(), &app.config.base_url)
+        && !same_origin_json(request.headers(), app.config.base_origin().as_deref())
     {
         return api::error(StatusCode::FORBIDDEN, "origin_refused");
     }
     next.run(request).await
 }
 
-/// One `Origin` value, exactly `base_url`, and a `Content-Type` whose media type is `application/json`. The media
-/// type is the value before any `;`, so `application/json; charset=utf-8` passes and `application/jsonx` does not.
-fn same_origin_json(headers: &HeaderMap, base_url: &str) -> bool {
+/// One `Origin` value, exactly the console's origin (`Config::base_origin`), and a `Content-Type` whose media type is
+/// `application/json`. The media type is the value before any `;`, so `application/json; charset=utf-8` passes and
+/// `application/jsonx` does not. No base origin (a base URL that does not parse) refuses every request.
+fn same_origin_json(headers: &HeaderMap, base_origin: Option<&str>) -> bool {
     let mut origins = headers.get_all(header::ORIGIN).iter();
-    let origin_ok = origins.next().and_then(|value| value.to_str().ok()) == Some(base_url)
+    let origin_ok = base_origin
+        .is_some_and(|base| origins.next().and_then(|value| value.to_str().ok()) == Some(base))
         && origins.next().is_none();
     let json = headers
         .get(header::CONTENT_TYPE)
@@ -1434,7 +1436,11 @@ mod tests {
             sites: std::collections::BTreeMap::from([
                 (
                     "dc1".to_string(),
-                    site(vec![vm("honcho", true), vm("plain", false)]),
+                    site(vec![
+                        vm("honcho", true),
+                        vm("plain", false),
+                        vm("step-ca", true),
+                    ]),
                 ),
                 ("other".to_string(), site(vec![vm("elsewhere", true)])),
             ]),
@@ -2669,6 +2675,247 @@ mod tests {
             .await,
         );
         assert_eq!(shown["state"], "awaiting", "a refused body changed nothing");
+    }
+
+    #[tokio::test]
+    async fn a_hyphenated_service_proposes_its_underscore_group() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let propose =
+            r#"{"kind": "verify", "service": "step-ca", "check_mode": false, "note": ""}"#;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada),
+            propose.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+        let body = json_of(&created);
+        assert_eq!(body["service"], "step-ca");
+        assert_eq!(
+            body["survey"],
+            serde_json::json!({"target_service": "step_ca_svc"})
+        );
+        let asked = fake.decide_bodies.lock().expect("bodies").clone();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(
+            asked[0]["survey"],
+            serde_json::json!({"target_service": "step_ca_svc"})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_service_with_no_valid_group_is_refused_before_the_gate_is_asked() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, _) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let propose = r#"{"kind": "verify", "service": "9lives", "check_mode": false, "note": ""}"#;
+        let refused = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada),
+            propose.into(),
+        )
+        .await;
+        assert_eq!(refused.status, 400, "{}", refused.body);
+        let body = json_of(&refused);
+        assert_eq!(body["error"], "bad_request");
+        // The detail names the service, so the refusal is not the inventory's "not in the inventory" by accident.
+        assert!(
+            body["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("9lives")),
+            "{}",
+            refused.body
+        );
+        assert!(fake.decide_bodies.lock().expect("bodies").is_empty());
+    }
+
+    #[tokio::test]
+    async fn only_the_proposer_may_edit_and_the_refusal_changes_nothing() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        let edit = r#"{"check_mode": true, "note": "changed by grace"}"#;
+        let refused = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(grace.clone()),
+            edit.into(),
+        )
+        .await;
+        assert_eq!(refused.status, 403, "{}", refused.body);
+        let body = json_of(&refused);
+        assert_eq!(body["error"], "not_proposer");
+        assert_eq!(
+            body["detail"],
+            "Only the person who proposed this can edit it."
+        );
+        let unchanged = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada.clone()),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(unchanged["revision"], 1, "{unchanged}");
+        assert_eq!(unchanged["check_mode"], false, "{unchanged}");
+        assert_eq!(unchanged["note"], "before the upgrade", "{unchanged}");
+        // The gate was not asked again: only the create's preview ran.
+        assert_eq!(fake.decide_bodies.lock().expect("bodies").len(), 1);
+
+        // The proposer's own edit still goes through.
+        let own = send(
+            addr,
+            "PUT",
+            "/v1/proposals/p1".into(),
+            Some(ada),
+            edit.into(),
+        )
+        .await;
+        assert_eq!(own.status, 200, "{}", own.body);
+        assert_eq!(json_of(&own)["revision"], 2);
+    }
+
+    /// A launch is recorded even when the approver's connection closes while the gate is still answering. The request
+    /// is sent and dropped before any reply; the fake launch takes 300 ms, so the row is still `launching` when the
+    /// approver goes away. The launch runs in its own task, so the row still reads `launched` once the gate answers.
+    #[tokio::test]
+    async fn a_launch_is_recorded_when_the_approver_drops_the_request() {
+        let fake = Arc::new(FakeGate::default());
+        let origin = serve_gate(fake.clone()).await;
+        let (addr, ada, grace) = proposal_server(proposal_state(
+            Some(gate_client(&origin)),
+            Some(proposal_netbox()),
+        ))
+        .await;
+        let created = send(
+            addr,
+            "POST",
+            "/v1/proposals".into(),
+            Some(ada.clone()),
+            PROPOSE_HONCHO.into(),
+        )
+        .await;
+        assert_eq!(created.status, 201, "{}", created.body);
+
+        tokio::task::spawn_blocking(move || {
+            let body = r#"{"note": null, "revision": 1}"#;
+            let request = format!(
+                "POST /v1/proposals/p1/approve HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\
+                 Cookie: {grace}\r\nOrigin: {CONSOLE_ORIGIN}\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let mut stream =
+                TcpStream::connect_timeout(&addr, Duration::from_secs(5)).expect("connect");
+            stream.write_all(request.as_bytes()).expect("write");
+            // Dropped here, before the gate has answered.
+        })
+        .await
+        .expect("blocking request");
+
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let stored = json_of(
+            &send(
+                addr,
+                "GET",
+                "/v1/proposals/p1".into(),
+                Some(ada),
+                String::new(),
+            )
+            .await,
+        );
+        assert_eq!(stored["state"], "launched", "{stored}");
+        assert_eq!(stored["launch"]["task_id"], 4217, "{stored}");
+        assert_eq!(fake.launch_bodies.lock().expect("bodies").len(), 1);
+    }
+
+    /// The origin check compares an `Origin` header with the console's serialized origin. A base URL written
+    /// `https://Console.Test:443` is the origin `https://console.test`, which is what a browser sends, and the header is
+    /// still compared exactly: the spelling the config was written in is not an accepted Origin.
+    #[tokio::test]
+    async fn the_origin_check_compares_the_serialized_base_origin() {
+        let mut state = Arc::try_unwrap(test_state()).ok().expect("a fresh state");
+        state.config.base_url = "https://Console.Test:443".into();
+        let addr = serve(api_router(Arc::new(state)).layer(session_layer(memory_sessions()))).await;
+
+        let browser = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://console.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(browser.status, 401, "{}", browser.body);
+
+        let spelled_as_configured = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://Console.Test:443"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(
+            spelled_as_configured.status, 403,
+            "{}",
+            spelled_as_configured.body
+        );
+        assert_eq!(spelled_as_configured.body, r#"{"error":"origin_refused"}"#);
+
+        let other = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(other.body, r#"{"error":"origin_refused"}"#);
     }
 
     #[tokio::test]
