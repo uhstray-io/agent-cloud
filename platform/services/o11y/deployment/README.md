@@ -887,12 +887,14 @@ A full Grafana or Prometheus outage is covered by the external liveness watcher
 (`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs
 from the Semaphore host and does not depend on Grafana's rule evaluation. Each probe is
 retried twice, `o11y_watch_retry_delay` seconds apart (default 10), before it counts, so a
-page means about 20 s of failure rather than one lost request. A datasource health 500 is
-reported as Grafana-side (`grafana datasource health errored`): Grafana 11.4 answers 400
-when Prometheus returns an unhealthy verdict, and 500 when Grafana itself errored (loading
-the datasource, building the plugin context, the plugin call, or parsing its details).
+page means about 20 s of failure rather than one lost request. Only a datasource health
+400, Prometheus's own unhealthy verdict, is reported as `prometheus datasource unhealthy`.
+A 500 is reported as `grafana datasource health errored`: Grafana itself errored (loading
+the datasource, building the plugin context, the plugin call, or parsing its details), and
 `grafana_plugin_request_total{endpoint="checkHealth"}` shows only whether the plugin call
-failed.
+failed. Any other status, such as a 502 from the edge while Grafana is down, is reported as
+`grafana datasource health probe failed`. Both name the datasource uid, so a mistyped
+`o11y_watch_prometheus_uid` (Grafana answers it with 500 too) is visible in the message.
 
 Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
 that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed:
