@@ -1017,7 +1017,7 @@ JSON
 }
 
 @test "skynet: the two local files pin the same skynet digest" {
-  local digest="sha256:7bcd4153bb1c22462bfefad0bcaec740ea51c18249d0fc6f8a94f5d01884578a"
+  local digest="sha256:7eb9fa7b114dc51784745a19ec2a7d03f5254ad7e3cf774694d99f925f62dbe6"
   assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/inventory/local-dev.yml.example"
   assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
   refute_grep -qF 'd1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
@@ -1144,19 +1144,28 @@ for ln in lines[start + 1:]:
     if ln and not ln.startswith("#"):
         section.append(ln)
 ini = dict(ln.split("=", 1) for ln in section)
+# The INI renders zones from _dev_zone, whose default bootstrap-local-dev.yml declares. Every value is compared
+# with that one variable substituted, so a key that names the zone matches the example's literal.
+raw_text = open(sys.argv[2], encoding="utf-8").read()
+zone = re.search(r"_dev_zone: \"\{\{ dev_zone \| default\('([^']+)'\) \}\}\"", raw_text).group(1)
 for key, value in host.items():
     if key in ("ansible_host", "ansible_connection", "skynet_semaphore_project"):
         continue
     assert key in ini, f"{key} missing from the INI skynet_svc:vars"
-    if key == "skynet_launch_gate_url":
-        # The INI renders its zone from _dev_zone, whose default bootstrap-local-dev.yml declares. Compare the
-        # rendered value with the example's literal, substituting only that one variable.
-        raw_text = open(sys.argv[2], encoding="utf-8").read()
-        zone = re.search(r"_dev_zone: \"\{\{ dev_zone \| default\('([^']+)'\) \}\}\"", raw_text).group(1)
-        rendered = ini[key].replace("{{ _dev_zone }}", zone)
-        assert rendered == str(value), f"{key}: INI renders {rendered!r} != example {value!r}"
+    rendered = ini[key].replace("{{ _dev_zone }}", zone)
+    if key == "internal_leaves":
+        # The INI emits the bootstrap's _skynet_leaves list (`| string`, too long for one literal INI line).
+        assert rendered == "{{ _skynet_leaves | string }}", rendered
+        play = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))[0]
+        leaves = [{**leaf, "sans": [s.replace("{{ _dev_zone }}", zone) for s in leaf["sans"]]}
+                  for leaf in play["vars"]["_skynet_leaves"]]
+        assert value == leaves, f"internal_leaves: example {value!r} != bootstrap {leaves!r}"
         continue
-    assert ini[key] == str(value), f"{key}: INI {ini[key]!r} != example {value!r}"
+    if isinstance(value, bool):
+        # INI writes a boolean lowercase; Ansible reads either spelling as the same boolean.
+        assert rendered.lower() == str(value).lower(), f"{key}: INI {rendered!r} != example {value!r}"
+        continue
+    assert rendered == str(value), f"{key}: INI renders {rendered!r} != example {value!r}"
 assert "skynet_image" in ini, "the INI must carry the same pinned skynet_image as the example"
 # The project id is resolved live by name (_pid), so the INI names that lookup, not the example's literal.
 assert ini["skynet_semaphore_project"] == "{{ _pid }}", ini["skynet_semaphore_project"]
