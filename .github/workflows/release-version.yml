@@ -1,0 +1,166 @@
+name: Release Version
+
+# Tags the version that a merge into `dev` or `main` produces (plan 20,
+# plan/development/20-semantic-versioning.md). scripts/semver.py computes the version
+# from the pull request titles in git, so this workflow only applies it:
+#   - push to dev:  annotated tag vX.Y.Z-dev.N on the merge commit
+#   - push to main: annotated tag vX.Y.Z and a GitHub Release with the notes since the last one
+#   - manual major: annotated tag vN+1.0.0 on main and a GitHub Release, only after the
+#                   operator approves the `release-major` environment
+#
+# WHY IT EXISTS: a deployed state can only be named by a commit SHA, and nothing in git says
+# whether a promotion was a fix or a feature. Tags make the release history browsable.
+#
+# WHY PUSH ONLY: this workflow holds `contents: write`, so it must never run on
+# `pull_request`. A fork or feature branch could otherwise run code with a write token.
+# Its triggers are pushes to dev and main, and a manual dispatch.
+#
+# WHY THE MERGE GUARD REFUSES A PULL REQUEST THAT TOUCHES THIS FILE: scripts/merge-when-green.py
+# refuses any pull request that changes a workflow other than lint-and-test.yml
+# (scripts/merge-when-green.py:134-135). A workflow that can push tags is exactly what that rule
+# keeps out of the guarded path, so the operator merges the pull request that adds or changes it.
+#
+# THE MAJOR GATE: automation never produces a new major version. The `major` job runs only on a
+# dispatch from main with the `major` input set, and it waits in the `release-major` environment
+# for the operator's approval. That environment is configuration as code: .github/environments/.
+#
+# INJECTION: no ${{ }} expression is interpolated into a run script. Values reach the shell only
+# through env:, and every shell variable is quoted. Pull request titles reach semver.py through
+# the commit messages in git, never through an expression in this file.
+
+on:
+  push:
+    branches: [dev, main]
+  workflow_dispatch:
+    inputs:
+      major:
+        description: "Cut the next major version on main. The job then waits for the release-major environment approval."
+        type: boolean
+        default: false
+
+# Read by default. Each job that writes asks for contents: write itself.
+permissions:
+  contents: read
+
+# One run at a time, and a running one is never cancelled. A pending run is still replaced by a
+# newer pending run (GitHub's default for concurrency groups, docs: using-concurrency).
+concurrency:
+  group: release-version
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    name: Tag the push
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # fetch-depth 0 fetches all history and all tags: actions/checkout@v7 src/git-source-provider.ts:188-189.
+      - name: Check out full history and tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set the bot identity for annotated tags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Backfill missing historical tags
+        run: python3 scripts/semver.py backfill --apply --push
+
+      - name: Compute the version, tag it and publish it
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rc=0
+          case "$REF_NAME" in
+            dev)
+              TAG="$(python3 scripts/semver.py next --channel dev --require-pr-merge)" || rc=$? ;;
+            main)
+              TAG="$(python3 scripts/semver.py next --channel main)" || rc=$? ;;
+            *)
+              echo "::error::Release Version has no channel for '$REF_NAME'."
+              exit 1 ;;
+          esac
+          if [ "$rc" -eq 3 ]; then
+            echo "::error title=Manual major release needed::semver.py next exited 3: a breaking change after 1.0.0 needs the manual major release. Run Release Version from main with major set to true, then approve the release-major environment."
+            exit 1
+          fi
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::semver.py next exited $rc on $REF_NAME."
+            exit "$rc"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "No version tag on $REF_NAME at $GITHUB_SHA: no pull request since the last release carries a bump, or HEAD is not a pull request merge."
+            echo "No version tag on $REF_NAME at $GITHUB_SHA (no bump, or HEAD is not a pull request merge)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          NOTES=""
+          if [ "$REF_NAME" = main ]; then
+            # The previous release must be read before the new tag exists, or the new tag would be its own predecessor.
+            PREV="$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+            if [ -z "$PREV" ]; then
+              echo "::error::No release tag is reachable from main to start the notes from. The backfill should have created one."
+              exit 1
+            fi
+            NOTES="$(python3 scripts/semver.py notes --from "$PREV" --to HEAD)"
+          fi
+          git tag -a "$TAG" -m "agent-cloud $TAG"
+          git push origin "refs/tags/$TAG"
+          if [ "$REF_NAME" = main ]; then
+            gh release create "$TAG" --title "agent-cloud $TAG" --notes "$NOTES" --verify-tag
+            echo "Tagged $TAG and created its GitHub Release on main at $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Tagged $TAG on dev at $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  major:
+    name: Manual major release
+    if: github.event_name == 'workflow_dispatch' && inputs.major && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Required reviewer: the operator (.github/environments/release-major.json). A job that names an
+    # environment which does not exist creates it with no protection rules, so run
+    # .github/environments/apply.sh --apply before the first major dispatch.
+    environment: release-major
+    permissions:
+      contents: write
+    steps:
+      - name: Check out full history and tags
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set the bot identity for annotated tags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Tag the next major version and publish it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rc=0
+          TAG="$(python3 scripts/semver.py major)" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::semver.py major exited $rc."
+            exit "$rc"
+          fi
+          if [ -z "$TAG" ]; then
+            echo "::error::semver.py major printed no tag."
+            exit 1
+          fi
+          PREV="$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)"
+          if [ -z "$PREV" ]; then
+            echo "::error::No release tag is reachable from main to start the notes from. The backfill should have created one."
+            exit 1
+          fi
+          NOTES="$(python3 scripts/semver.py notes --from "$PREV" --to HEAD)"
+          git tag -a "$TAG" -m "agent-cloud $TAG"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" --title "agent-cloud $TAG" --notes "$NOTES" --verify-tag
+          echo "Tagged $TAG (manual major) and created its GitHub Release on main at $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
