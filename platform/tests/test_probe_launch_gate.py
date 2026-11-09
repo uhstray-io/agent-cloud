@@ -417,3 +417,11 @@ def test_the_docs_list_the_probe():
     assert "probe-launch-gate.yml" in (REPO / "platform/services/launch-gate/deployment/CLAUDE.md").read_text()
     tasks = (REPO / "plan/development/openspec/changes/skynet-launch-containment/tasks.md").read_text()
     assert "(allow path: `Probe launch-gate (Dev)`)" in tasks
+
+
+def test_the_target_pattern_is_the_one_opa_applies():
+    # A target the probe admits but OPA refuses would fail at the decision, not at the guard.
+    rego = (REPO / "platform/services/opa/deployment/policies/agentcloud/agent_actions.rego").read_text()
+    assert 'regex.match("^[a-z][a-z0-9_]*_svc$", name)' in rego
+    playbook = (REPO / "platform/playbooks/probe-launch-gate.yml").read_text()
+    assert "_probe_target is match('^[a-z][a-z0-9_]*_svc$')" in playbook

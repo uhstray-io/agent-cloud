@@ -58,7 +58,9 @@
     - name: "Require probe_target_service to name a populated <name>_svc group"
       ansible.builtin.assert:
         that:
-          - _probe_target is match('^[a-z0-9][a-z0-9_]*_svc$')
+          # The same pattern OPA's _plain_service_name applies (agent_actions.rego), so a target this guard
+          # admits is one OPA can allow.
+          - _probe_target is match('^[a-z][a-z0-9_]*_svc$')
           - groups[_probe_target] | default([]) | length > 0
         fail_msg: >-
           probe_target_service must name one populated <name>_svc inventory group (Snapshot Service Assessment reads
