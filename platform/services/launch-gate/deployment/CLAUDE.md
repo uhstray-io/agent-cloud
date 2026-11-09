@@ -184,3 +184,5 @@ repo is placed.
 - `platform/tests/test_launch_gate*.py` (existing): the app.
 - `platform/tests/test_restart_policy.bats`, `test_compose_image_qualified.py`, `test_no_bind_mount_dir_delete.py`:
   repository-wide guards that also cover this directory.
+- `platform/playbooks/probe-launch-gate.yml` (template `Probe launch-gate (Dev)`): the allow-path and duplicate-refusal
+  probe, run from inside the gate's container; `platform/tests/test_probe_launch_gate.py` runs it against a fake gate.
