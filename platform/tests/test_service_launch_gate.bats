@@ -64,6 +64,31 @@ setup() {
   assert_grep -qxF '    user: "1000:1000"' "$DEPLOY_DIR/compose.prod.yml"
 }
 
+@test "launch-gate: the production overlay maps the OPA name to the declared address, and both values are required" {
+  assert_grep -qxF '    extra_hosts:' "$DEPLOY_DIR/compose.prod.yml"
+  assert_grep -qxF '      - "${LAUNCH_GATE_OPA_HOSTNAME:?set launch_gate_opa_url in the inventory}:${LAUNCH_GATE_OPA_IP:?set launch_gate_opa_ip in the inventory}"' "$DEPLOY_DIR/compose.prod.yml"
+}
+
+@test "launch-gate: the local overlay maps no host name, so local-dev reaches the gate by its network alias only" {
+  refute_grep -qE 'extra_hosts|LAUNCH_GATE_OPA' "$DEPLOY_DIR/compose.local.yml"
+}
+
+@test "launch-gate: env.j2 renders the OPA name map inside one local-mode guard, and nowhere else" {
+  python3 - "$DEPLOY_DIR/templates/env.j2" <<'PY'
+import sys
+lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+opens = [i for i, line in enumerate(lines) if line == "{% if not _launch_gate_local_mode %}"]
+assert len(opens) == 1, opens
+start = opens[0]
+end = next(i for i in range(start + 1, len(lines)) if lines[i] == "{% endif %}")
+inside = [line for line in lines[start + 1:end] if line.startswith("LAUNCH_GATE_OPA_")]
+assert inside == ["LAUNCH_GATE_OPA_HOSTNAME={{ _launch_gate_opa_url | urlsplit('hostname') }}",
+                  "LAUNCH_GATE_OPA_IP={{ _launch_gate_opa_ip }}"], inside
+outside = [line for i, line in enumerate(lines) if (i < start or i > end) and "LAUNCH_GATE_OPA" in line]
+assert outside == [], outside
+PY
+}
+
 @test "launch-gate: no overlay declares command, so the base command stands" {
   refute_grep -qE '^[[:space:]]+command:' "$DEPLOY_DIR/compose.prod.yml" "$DEPLOY_DIR/compose.local.yml"
 }

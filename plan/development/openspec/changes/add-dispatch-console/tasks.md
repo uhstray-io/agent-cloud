@@ -134,15 +134,18 @@ Decision D28. These are platform-wide views, so they answer `platform-admins` on
 
 Decision D26. Admin-only (D25).
 
-- [ ] 9.1 The CI/CD page (D42): `GET /v1/delivery` and the page.
+- [x] 9.1 The CI/CD page (D42): `GET /v1/delivery` and the page.
   - Server: required-check names from `.github/rulesets/protect-main.json` through the GitHub API (D34 token), the promotion path (`compare/main...<ref>` and the open ref → `main` pull request), and open pull requests into the ref and into `main` with check runs and review state. Refreshed every 15 minutes into a cache, as the Policy page.
   - UI: required checks, the promotion path, and the pull-request table, each with a GitHub link. Re-run disabled with its Phase 4 reason.
-- [ ] 9.2 The Telemetry page (D43): `GET /v1/telemetry/rollups` and the page.
+- [x] 9.2 The Telemetry page (D43): `GET /v1/telemetry/rollups` and the page.
   - Server: `up` through the Grafana Prometheus proxy and Grafana alert instances, grouped by environment, cluster and service. Refreshed every 5 minutes into a cache.
   - UI: the rollup tree with targets up of total and firing and pending alerts, and a `service-overview` Grafana link per service. No chart.
-- [ ] 9.3 Validation gate:
+- [x] 9.3 Validation gate:
   - A unit test parses the committed `protect-main.json` and gets exactly its required-check names.
   - Deploy console (Dev) in production, then computer-use tests of both pages signed in.
+  - Done 2026-11-08. #917 merged (`f740a8d4`). The ruleset test `required_checks_match_the_committed_ruleset` passes in CI. Deploy console (Dev) ran in check mode (Semaphore task 13879), then for real (13880), placing `dev` and rebuilding the image. Signed in through Authentik in Orca's built-in browser (D30 as amended):
+    - CI/CD matches GitHub read directly: `dev` 1275 commits ahead of `main` and 0 behind, no open promotion pull request, 7 open pull requests into `dev` and 6 into `main`. Review states and the required checks of a pull request into `main` agree with GitHub. The four required checks are the ruleset file's. Re-run is disabled with its Phase 4 reason.
+    - Telemetry matches Prometheus and Grafana read directly: `prod`, then `agent-cloud-prod` (8 of 8 targets up) and `dgx-spark` (3 of 3). Of 43 Grafana alert instances, 0 are firing or pending, and the inactive ones add no rows. The alerts read succeeds with the console's Viewer token. Each service links to `service-overview`, and the page draws no chart.
 
 ## Phase 7 checklist: harden and promote
 
