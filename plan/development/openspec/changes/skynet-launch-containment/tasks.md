@@ -39,4 +39,4 @@
 - [ ] 5.2 Workflow steps in order, check mode first: lookup, validate address, provision, keys + backup, harden, firewall, grow root if needed
 - [ ] 5.3 Provision launch-gate Semaphore Access (Dev), Deploy launch-gate (Dev); skynet image pin bumped and Deploy skynet (Dev)
 - [ ] 5.4 Back up the gate's credentials to site-config (caller tokens; not the launch token)
-- [ ] 5.5 Validation gate: in production, scenarios "OPA allows" (a check-mode launch of a read-only snapshot template through the gate as `service-agent`), "Duplicate launch while running", "Dry run", "Plain HTTP" and "Another LAN host" hold, and "Declared team matches" passes in Manage Semaphore Access check mode
+- [ ] 5.5 Validation gate: in production, scenarios "OPA allows" (a check-mode launch of a read-only snapshot template through the gate as `service-agent`), "Duplicate launch while running", "Dry run", "Plain HTTP" and "Another LAN host" hold, and "Declared team matches" passes in Manage Semaphore Access check mode (allow path: `Probe launch-gate (Dev)`)
