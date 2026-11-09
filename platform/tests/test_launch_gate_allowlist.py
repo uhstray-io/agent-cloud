@@ -200,6 +200,13 @@ def test_a_local_document_without_its_list_is_refused():
         filt.launch_gate_allowlist(doc, templates(("A", False)), ["agent-one"], {"other": []})
 
 
+def test_a_local_template_name_declared_twice_is_refused():
+    doc = catalog(**{"agent-one": {"allowed_templates": ["A"]}})
+    with pytest.raises(AnsibleFilterError, match="declared twice in templates-local.yml"):
+        local = local_templates("A (Local)", "A (Local)")
+        filt.launch_gate_allowlist(doc, templates(("A", False)), ["agent-one"], local)
+
+
 def test_the_repository_local_allowlist_adds_only_declared_local_names_to_the_production_list():
     cat, tpl = real_documents()
     local = yaml.safe_load(LOCAL_TEMPLATES.read_text())

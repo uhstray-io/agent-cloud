@@ -112,7 +112,7 @@ def _dev_variants(templates_doc):
 
 
 def _local_names(local_templates_doc):
-    """Every template name templates-local.yml declares."""
+    """Every template name templates-local.yml declares. A duplicate name is refused, as in templates.yml."""
     templates = local_templates_doc.get("templates") if isinstance(local_templates_doc, Mapping) else None
     if not isinstance(templates, list):
         raise AnsibleFilterError("local_templates_doc has no templates list (is it templates-local.yml?)")
@@ -120,6 +120,8 @@ def _local_names(local_templates_doc):
     for entry in templates:
         if not isinstance(entry, Mapping) or not isinstance(entry.get("name"), str) or not entry["name"]:
             raise AnsibleFilterError("every templates-local.yml entry needs a name")
+        if entry["name"] in names:
+            raise AnsibleFilterError(f"template name {entry['name']!r} is declared twice in templates-local.yml")
         names.add(entry["name"])
     return names
 
