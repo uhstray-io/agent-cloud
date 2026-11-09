@@ -6,6 +6,7 @@ use dioxus::prelude::*;
 use super::access_api::{
     directory_note, not_ok_message, role_rows, sorted_people, status_label, AccessBody, ACCESS_PATH,
 };
+use super::action::DisabledAction;
 use super::empty::PageMeta;
 use super::icons::icon;
 use super::inventory::{poll_admin, Admin, POLL_MS};
@@ -93,7 +94,11 @@ fn AccessBodyView(body: AccessBody, reason: String) -> Element {
         section { class: "card",
             div { class: "card-h",
                 h2 { "People" }
-                button { class: "btn", disabled: true, title: "{ADD_USER_TITLE}", "Add user" }
+                DisabledAction {
+                    label: "Add user".to_string(),
+                    reason: ADD_USER_TITLE,
+                    id: "access-add-user-reason".to_string(),
+                }
             }
             if let Some(message) = &directory {
                 p { class: "empty", "{message}" }

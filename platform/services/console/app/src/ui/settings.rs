@@ -242,9 +242,16 @@ fn TenantView(body: TenantTree, reason: String) -> Element {
             }
             div { class: "card-b stack",
                 div { class: "row wrap",
-                    button { class: "btn", r#type: "button", disabled: true, title: "{CHANGE_REASON}", "Edit tenant" }
+                    button {
+                        class: "btn",
+                        r#type: "button",
+                        disabled: true,
+                        aria_describedby: "tenant-change-reason",
+                        title: "{CHANGE_REASON}",
+                        "Edit tenant"
+                    }
                 }
-                p { class: "hint", "{CHANGE_REASON}" }
+                p { id: "tenant-change-reason", class: "hint", "{CHANGE_REASON}" }
             }
         }
     }
@@ -385,9 +392,16 @@ fn OrgView(tenant: String, body: TenantTree, reason: String) -> Element {
                     Notice { message: "The business domains are not loaded yet.".to_string() }
                 }
                 div { class: "row wrap",
-                    button { class: "btn", r#type: "button", disabled: true, title: "{CHANGE_REASON}", "Edit domains" }
+                    button {
+                        class: "btn",
+                        r#type: "button",
+                        disabled: true,
+                        aria_describedby: "org-change-reason",
+                        title: "{CHANGE_REASON}",
+                        "Edit domains"
+                    }
                 }
-                p { class: "hint", "{CHANGE_REASON}" }
+                p { id: "org-change-reason", class: "hint", "{CHANGE_REASON}" }
             }
         }
     }
