@@ -344,3 +344,6 @@ h2 { font-size: 16px; font-weight: 650; }
   *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; }
   .spin { animation: none; }
 }
+
+/* The reason a disabled change control is off, as visible text beside it (plan 17 D44). */
+.action-reason { margin: 0; font-size: 12px; color: var(--fg2); }

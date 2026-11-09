@@ -4,6 +4,7 @@
 
 mod access;
 mod access_api;
+mod action;
 mod api;
 mod cicd;
 pub(crate) mod cicd_api;
