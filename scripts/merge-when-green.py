@@ -19,6 +19,7 @@ NODE_PARTITIONED_WORKFLOW_BLOB_SHA = "159efa1d6d6e2048a0d2cd84f8f185a92580a232"
 CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA = "ccd27624f66f4923bacea51976f708fa4b870a33"
 RUNS_PARTITIONED_WORKFLOW_BLOB_SHA = "466828e11b7bf29958d7de7a505dad908ae8b3cd"
 PI_MOVED_WORKFLOW_BLOB_SHA = "15a15a96bad6b35ee53d36ac7a37deea9cf298d0"
+RUFF_PINNED_WORKFLOW_BLOB_SHA = "98e7aca96851979464f36bffc48444eba93d39f0"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
     "Python Playbook Safety", "Python Agentgateway",
@@ -383,11 +384,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Playbook Runs partition may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == PI_MOVED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUFF_PINNED_WORKFLOW_BLOB_SHA:
+            # Same job set as pi-moved: only the ruff step gains its pinned version.
+            check_workflow_policy(base, pi_moved=True)
+            check_workflow_policy(candidate, pi_moved=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != PI_MOVED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed pi-moved workflow")
         check_workflow_policy(base, pi_moved=True)
         if base != candidate or workflow_records:
             raise Refusal("Pi-moved workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUFF_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RUFF_PINNED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed ruff-pinned workflow")
+        check_workflow_policy(base, pi_moved=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Ruff-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
