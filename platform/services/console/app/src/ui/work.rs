@@ -1342,8 +1342,9 @@ mod tests {
         // D45: a retry sentence takes its seconds from the poll interval, never a literal. The
         // needle is split across two literals so this test's own source does not match it.
         const TAIL: &str = concat!(" seconds", " while this tab is visible");
-        // topology.rs is not in the list: its two retry sentences still say "30 seconds". Add it
-        // here once they take the poll constant.
+        // topology.rs is not in the list: its retry sentences go through `unavailable_message`, which its
+        // own test `a_retry_sentence_takes_its_seconds_from_the_poll_interval` pins, and that test's
+        // expected text is a literal this scan would flag.
         let sources = [
             ("work.rs", include_str!("work.rs")),
             ("inventory.rs", include_str!("inventory.rs")),

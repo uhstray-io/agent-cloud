@@ -107,7 +107,8 @@ fn every_lane_in_the_minimized_rail_draws_its_icon_and_names_its_word() {
     #[component]
     fn RailOf(lane: Lane) -> Element {
         let minimized = use_signal(|| true);
-        rsx! { Rail { counts: vec![(lane, 3)], can_open: true, minimized } }
+        let focus_rail = use_signal(|| false);
+        rsx! { Rail { counts: vec![(lane, 3)], can_open: true, minimized, focus_rail } }
     }
 
     let cases = [
@@ -121,11 +122,14 @@ fn every_lane_in_the_minimized_rail_draws_its_icon_and_names_its_word() {
     for (lane, word) in cases {
         let html = render(rsx! { RailOf { lane } });
         assert_icon_and_word(&html, word);
-        // The rail shows only the icon and the count, so the word must be the
-        // item's accessible name, not visible text.
+        // The word is both the item's accessible name and visible text beside the count (D44).
         assert!(
             html.contains(&format!("aria-label=\"{word}: 3\"")),
             "the rail item is not named by its word: {html}"
+        );
+        assert!(
+            html.contains(&format!("<span>{word}</span>")),
+            "the rail item does not show its word: {html}"
         );
     }
 }

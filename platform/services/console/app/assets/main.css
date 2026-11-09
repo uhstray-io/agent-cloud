@@ -65,6 +65,9 @@ a { color: var(--accent); }
   border: 1px solid var(--line-strong); background: var(--raised); color: var(--fg); box-shadow: var(--shadow-pop);
   font-weight: 600; text-decoration: none; }
 .skip-link:focus { left: 8px; }
+/* The skip link's target is the page's main region (tabindex -1), focused only to move the keyboard there.
+   It is not a control, so it draws no focus ring around the whole page. */
+main#content:focus { outline: none; }
 .mono { font-family: var(--mono); font-size: .92em; }
 .muted { color: var(--fg2); }
 .faint { color: var(--fg3); }
