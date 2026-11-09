@@ -23,6 +23,9 @@ pub const REQUEST_SERVICE: PageMeta = PageMeta {
 /// Why the Request buttons are off: requests arrive with proposals (Phase 4).
 const REQUEST_TITLE: &str = "Service requests arrive with proposals (Phase 4)";
 
+/// The element that shows `REQUEST_TITLE` as visible text; each Request button describes itself by it.
+const REQUEST_REASON_ID: &str = "request-action-reason";
+
 /// The Request a service page: the header, and the one poll of `GET /v1/catalog` behind the list.
 #[component]
 pub fn RequestService() -> Element {
@@ -83,7 +86,7 @@ fn CatalogBodyView(body: CatalogBody, reason: String) -> Element {
             p { class: "stale", role: "status", "The last read failed: {reason}." }
         }
         ServiceTable { services: body.services }
-        p { class: "hint", "{REQUEST_TITLE}." }
+        p { id: REQUEST_REASON_ID, class: "hint", "{REQUEST_TITLE}." }
     }
 }
 
@@ -114,7 +117,13 @@ fn ServiceTable(services: Vec<CatalogService>) -> Element {
                                 }
                                 td { class: "mono", "{service.template}" }
                                 td {
-                                    button { class: "btn", disabled: true, title: "{REQUEST_TITLE}", "Request" }
+                                    button {
+                                        class: "btn",
+                                        disabled: true,
+                                        aria_describedby: REQUEST_REASON_ID,
+                                        title: "{REQUEST_TITLE}",
+                                        "Request"
+                                    }
                                 }
                             }
                         }

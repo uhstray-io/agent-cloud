@@ -4,6 +4,7 @@
 
 use dioxus::prelude::*;
 
+use super::action::DisabledAction;
 use super::api::{self, Me};
 use super::empty::PageMeta;
 use super::icons::icon;
@@ -86,7 +87,11 @@ pub fn Policy() -> Element {
             header { class: "view-h",
                 h1 { {icon(POLICY.icon)} "{POLICY.title}" }
                 span { class: "authority", "Source of truth: {POLICY.authority}" }
-                button { class: "btn", disabled: true, title: "{PROPOSE_TITLE}", "Propose a change" }
+                DisabledAction {
+                    label: "Propose a change".to_string(),
+                    reason: PROPOSE_TITLE,
+                    id: "policy-propose-reason".to_string(),
+                }
                 p { "{lede}" }
                 if let Some(read) = read {
                     p { "{read}." }

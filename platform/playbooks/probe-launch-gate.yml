@@ -1,0 +1,178 @@
+---
+# probe-launch-gate.yml — read-only allow-path probe of the launch gate (openspec change
+# skynet-launch-containment, task 5.5: scenarios "OPA allows", "Duplicate launch while running" and "Dry run").
+#
+# From inside the gate's own container, as one fixed identity (caller skynet, acting as agent service-agent), it
+# asks the gate to launch Snapshot Service Assessment (Dev) as a dry run, then repeats the same request at once.
+# The gate's own rules decide both launches: the caller may act as the agent, the template is on the allowlist,
+# OPA allows the step, and the dry-run read-back proves check mode. A dry run of a read-only snapshot creates one
+# Semaphore task per launch and changes nothing else.
+#
+# Why the step is service-assess and not a name of the probe's own: OPA looks the request's step up in the
+# registry (policies/agentcloud/data.json, workflow_steps). A step the registry does not hold is denied with
+# "a workflow task must name its registry step" (agent_actions.rego, the registry-step rule). The first draft named
+# the step "probe", which the registry does not have, so the probe would have been refused at the decision it exists
+# to prove. service-assess is the registry step service-agent runs Snapshot Service Assessment as, and the message
+# the gate records for each task is "skynet <workflow_id> service-assess". workflow_agents_test.rego holds one allow
+# case and one unregistered-step deny case for this input shape.
+#
+# Pass: the first launch is HTTP 201 with an integer task id and that message, and the repeat is HTTP 409
+# already_running. A repeat that is also 201 is inconclusive: the first task had already finished, so the duplicate
+# refusal was never exercised. The run fails and names both task ids. Any other first answer fails the run.
+#
+# Nothing here prints the caller token, a header or a body. The token is read from the container's own environment
+# (LAUNCH_GATE_CALLER_TOKEN_SKYNET), as deploy-launch-gate.yml reads it, and never reaches argv or the output. The
+# in-container script prints statuses, error codes, task ids and the task message only. No OpenBao call, and no
+# no_log: no secret is touched. A dry run (--check) runs the guards and sends nothing.
+#
+# Inventory (launch_gate_svc, one host): launch_gate_callers (default as deploy-launch-gate.yml), launch_gate_tls_server_name
+# (or dns_site and dns_zone), container_engine. Survey: probe_target_service, the populated <name>_svc group Snapshot
+# reads (default opa_svc).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Pre-flight: launch_gate_svc is real"
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: launch_gate_svc
+    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
+    preflight_group_expected: launch_gate_svc
+
+# Guards that touch no host. They run in check mode too, so a dry run still refuses a bad target.
+- name: "Refuse unless the gate host and the target group are real"
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    _probe_target: "{{ probe_target_service | default('opa_svc', true) | string }}"
+  tasks:
+    - name: "Require exactly one launch_gate_svc host"
+      ansible.builtin.assert:
+        that: groups['launch_gate_svc'] | length == 1
+        fail_msg: "The launch-gate probe runs against exactly one launch_gate_svc host."
+        quiet: true
+
+    - name: "Require probe_target_service to name a populated <name>_svc group"
+      ansible.builtin.assert:
+        that:
+          # The same pattern OPA's _plain_service_name applies (agent_actions.rego), so a target this guard
+          # admits is one OPA can allow.
+          - _probe_target is match('^[a-z][a-z0-9_]*_svc$')
+          - groups[_probe_target] | default([]) | length > 0
+        fail_msg: >-
+          probe_target_service must name one populated <name>_svc inventory group (Snapshot Service Assessment reads
+          it), got "{{ _probe_target }}".
+        quiet: true
+
+- name: "Probe the launch gate's allow path and its duplicate refusal"
+  hosts: launch_gate_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    # The same derivation as deploy-launch-gate.yml. The probe runs inside the container, so it dials the gate's own
+    # listener on 127.0.0.1 and verifies the certificate as this name.
+    _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
+    _probe_target: "{{ probe_target_service | default('opa_svc', true) | string }}"
+    # The fixed probe identity. The step must be a registry step (see the header). The template is the (Dev) variant,
+    # which only the dev repository record runs.
+    _launch_gate_probe_caller: skynet
+    _launch_gate_probe_agent: service-agent
+    _launch_gate_probe_template: "Snapshot Service Assessment (Dev)"
+    _launch_gate_probe_step: service-assess
+    # The same default deploy-launch-gate.yml uses for its caller map. test_probe_launch_gate.py pins that the two match.
+    _launch_gate_callers: "{{ launch_gate_callers | default({'skynet': ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']}, true) }}"
+    # The agents the probe's caller may act as, as a list. Anything else (a string, a map) is refused below: a string
+    # would match the agent name by substring.
+    _launch_gate_probe_agents: "{{ _launch_gate_callers[_launch_gate_probe_caller] | default([]) if _launch_gate_callers is mapping else [] }}"
+    _launch_gate_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/launch-gate-allow-probe.py') }}"
+
+  tasks:
+    # The gate would refuse agent_not_permitted for a caller that may not act as the agent. Refuse here first, so a
+    # misdeclared map is named as the cause and not read as a gate failure.
+    - name: "Refuse unless the probe's caller may act as the probe's agent"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_callers is mapping
+          - _launch_gate_probe_caller in _launch_gate_callers
+          - _launch_gate_probe_agents is sequence
+          - _launch_gate_probe_agents is not string
+          - _launch_gate_probe_agents is not mapping
+          - _launch_gate_probe_agent in _launch_gate_probe_agents
+        fail_msg: >-
+          The probe launches as {{ _launch_gate_probe_caller }} acting as {{ _launch_gate_probe_agent }}, and
+          launch_gate_callers does not list that agent for that caller, so the gate would refuse the probe with
+          agent_not_permitted and prove nothing.
+        quiet: true
+
+    - name: "Name this probe run (one workflow id for both launches)"
+      ansible.builtin.set_fact:
+        _launch_gate_workflow_id: "probe-{{ now(utc=true).timestamp() | int }}"
+
+    # Both launches run in one container exec: the script makes the first request, then the repeat at once. The
+    # caller token is read from the container's environment inside the script and is not an argument here.
+    - name: "Launch the probe through the gate twice, at once, from inside its container"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - launch-gate
+          - python
+          - -I
+          - -c
+          - "{{ _launch_gate_script }}"
+          - "{{ _launch_gate_tls_name }}"
+          - "{{ _launch_gate_probe_caller }}"
+          - "{{ _launch_gate_probe_agent }}"
+          - "{{ _launch_gate_probe_template }}"
+          - "{{ _probe_target }}"
+          - "{{ _launch_gate_workflow_id }}"
+          - "{{ _launch_gate_probe_step }}"
+      register: _launch_gate_probe_out
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "Report the gate's answers (statuses, error codes and task ids only)"
+      ansible.builtin.debug:
+        msg: "{{ _launch_gate_probe_out.stdout_lines }}"
+      when: not ansible_check_mode
+
+    - name: "Dry run: report what the probe would send"
+      ansible.builtin.debug:
+        msg: >-
+          check mode: the run would launch {{ _launch_gate_probe_template }} as {{ _launch_gate_probe_caller }} acting as
+          {{ _launch_gate_probe_agent }} (dry run, step {{ _launch_gate_probe_step }}) twice, at once, through the gate.
+          Nothing was sent.
+      when: ansible_check_mode
+
+    # Checked first, so an accepted duplicate is named as inconclusive and not as a generic allow-path failure.
+    - name: "Refuse an inconclusive probe: the repeat was also accepted"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_probe_out.stdout_lines[1].split(' ')[1] != '201'
+        fail_msg: >-
+          inconclusive: both launches were accepted (first task {{ _launch_gate_probe_out.stdout_lines[0].split(' ')[3] }},
+          repeat task {{ _launch_gate_probe_out.stdout_lines[1].split(' ')[3] }}). Either the first task had already
+          finished, or the gate's duplicate check did not fire. Check the first task's end time in Semaphore before
+          re-running: if it was still running when the repeat was accepted, the duplicate check is broken.
+        quiet: true
+      when: not ansible_check_mode and _launch_gate_probe_out.stdout_lines[0].split(' ')[1] == '201'
+
+    - name: "Assert the gate allowed the probe and refused its duplicate while the task ran"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_probe_out.stdout_lines[0].split(' ', 4)[1] == '201'
+          - _launch_gate_probe_out.stdout_lines[0].split(' ', 4)[3].isdigit()
+          - _launch_gate_probe_out.stdout_lines[0].split(' ', 4)[4] == (_launch_gate_probe_caller ~ ' ' ~ _launch_gate_workflow_id ~ ' ' ~ _launch_gate_probe_step)
+          - _launch_gate_probe_out.stdout_lines[1].split(' ')[1] == '409'
+          - _launch_gate_probe_out.stdout_lines[1].split(' ')[2] == 'already_running'
+        fail_msg: >-
+          The gate did not answer the allow path (statuses and codes only). First launch: "{{ _launch_gate_probe_out.stdout_lines[0] }}".
+          Repeat: "{{ _launch_gate_probe_out.stdout_lines[1] }}". The first must be 201 with a task id and the message
+          "{{ _launch_gate_probe_caller }} {{ _launch_gate_workflow_id }} {{ _launch_gate_probe_step }}"; the repeat must be
+          409 already_running. A first refusal names the gate's own check that stopped it.
+        quiet: true
+      when: not ansible_check_mode

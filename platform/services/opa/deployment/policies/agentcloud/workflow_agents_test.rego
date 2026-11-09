@@ -194,6 +194,25 @@ test_launch_gate_settings_without_target_service_keeps_an_allow if {
 	agentcloud.allow with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"settings": {"smoke": "1"}})
 }
 
+# The launch gate's probe (Probe launch-gate (Dev), playbooks/probe-launch-gate.yml) sends this input shape:
+# agent service-agent, template Snapshot Service Assessment (Dev) on dev, the registry step service-assess, the
+# survey values as settings and human_approved false. The step must be a registry name: "probe" is not one, and
+# an unregistered step is denied, so the probe names service-assess.
+_gate_probe(step) := object.union(_run("service-agent", "Snapshot Service Assessment", step), {
+	"human_approved": false,
+	"settings": {"target_service": "opa_svc"},
+})
+
+test_launch_gate_probe_registry_step_is_allowed if {
+	agentcloud.allow with input as _gate_probe("service-assess")
+}
+
+test_launch_gate_probe_unregistered_step_is_denied if {
+	d := agentcloud.decision with input as _gate_probe("probe")
+	not d.allowed
+	contains(d.reason, "a workflow task must name its registry step")
+}
+
 # Bare service names: these templates look the declaration up with groups[target_service ~ '_svc'],
 # so the value they take carries no suffix. Each is allowed (the gate must not refuse them).
 _vm_run(template, step, settings) := object.union(_run("infra-agent", template, step), {"settings": settings})

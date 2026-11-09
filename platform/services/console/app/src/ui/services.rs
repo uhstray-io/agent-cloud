@@ -12,10 +12,10 @@ use super::empty::SERVICES;
 use super::icons::icon;
 use super::inventory::{
     count_text, mb_text, meta_of, poll_admin, services_in_scope, view, Admin, ScopedServices,
-    Snapshot, View, ViewNotice, SEP,
+    Snapshot, View, ViewNotice, POLL_MS, SEP,
 };
 use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
-use super::shell::Ctx;
+use super::shell::{no_tenant_message, Ctx};
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, Freshness, Notice, Rag, RagBadge, StepList,
     DASH,
@@ -329,7 +329,9 @@ pub fn ServiceDetail(name: String) -> Element {
             ServiceView { key: "{tenant}/{name}", tenant, name: name.clone() }
         },
         None => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see this service.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see this service."),
+            }
         },
     };
     rsx! {
@@ -368,7 +370,7 @@ fn ServiceView(tenant: String, name: String) -> Element {
             Notice { message: "Your session ended. Sign in again to see this service.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
-            Notice { message: format!("The service could not be loaded: {reason}. It retries every 30 seconds while this tab is visible.") }
+            Notice { message: format!("The service could not be loaded: {reason}. It retries every {} seconds while this tab is visible.", POLL_MS / 1000) }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();

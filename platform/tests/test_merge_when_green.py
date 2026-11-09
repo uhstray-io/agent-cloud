@@ -42,6 +42,10 @@ CONSOLE_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
 RUNS_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-runs-partition.txt").read_bytes()
 
+# The workflow as it stood before ruff was pinned in Static Analysis.
+PI_MOVED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-pi-moved.txt").read_bytes()
+
 
 def _blob_sha(source):
     return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
@@ -54,7 +58,8 @@ assert _blob_sha(AGW_WORKFLOW) == guard.AGW_PARTITIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(NODE_WORKFLOW) == guard.NODE_PARTITIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(CONSOLE_WORKFLOW) == guard.CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(RUNS_WORKFLOW) == guard.RUNS_PARTITIONED_WORKFLOW_BLOB_SHA
-assert _blob_sha(CURRENT_WORKFLOW) == guard.PI_MOVED_WORKFLOW_BLOB_SHA
+assert _blob_sha(PI_MOVED_WORKFLOW) == guard.PI_MOVED_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.RUFF_PINNED_WORKFLOW_BLOB_SHA
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -208,6 +213,14 @@ class FakeGitHub:
 
     def set_pi_moved_transition(self):
         self.workflow_sources[BASE] = RUNS_WORKFLOW
+        self.workflow_sources[HEAD] = PI_MOVED_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_ruff_pinned_transition(self):
+        self.workflow_sources[BASE] = PI_MOVED_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
@@ -215,8 +228,8 @@ class FakeGitHub:
             next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
 
     def set_partition_baseline(self):
-        self.workflow_sources[BASE] = CURRENT_WORKFLOW
-        self.workflow_sources[HEAD] = CURRENT_WORKFLOW
+        self.workflow_sources[BASE] = PARTITIONED_WORKFLOW
+        self.workflow_sources[HEAD] = PARTITIONED_WORKFLOW
         self.files = []
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
             self.jobs[name]["conclusion"] = "success"
@@ -347,6 +360,7 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_partitioned_workflow_is_accepted_for_later_prs(self):
         api = FakeGitHub()
+        api.workflow_source = PARTITIONED_WORKFLOW
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
@@ -427,8 +441,14 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_pi_moved_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = PI_MOVED_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
         run_refusal(self, api, "Pi-moved workflow may only remain byte-identical")
+
+    def test_ruff_pinned_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Ruff-pinned workflow may only remain byte-identical")
 
     def test_agentgateway_to_node_transition_is_allowed(self):
         api = FakeGitHub()
@@ -628,26 +648,73 @@ class MergeGuardTests(unittest.TestCase):
         cases = [
             ("runs to pi-moved with extra byte", lambda api: (
                 api.set_pi_moved_transition(),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW + b"# extra\n"))),
             ("console base to pi-moved head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
             ("node base to pi-moved head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
             ("runs base with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW + b"# extra\n"),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
             ("pi-moved base to runs head", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
             ("pi-moved base to console head", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
             ("pi-moved base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
+            ("pi-moved base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW + b"# extra\n"))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api)
+
+    def test_pi_moved_to_ruff_pinned_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_ruff_pinned_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_pi_moved_to_ruff_pinned_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_ruff_pinned_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_ruff_pinned_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_ruff_pinned_transition_or_ruff_pinned_baseline_is_accepted(self):
+        cases = [
+            ("pi-moved to ruff-pinned with extra byte", lambda api: (
+                api.set_ruff_pinned_transition(),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+            ("runs base to ruff-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("console base to ruff-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
+            ("ruff-pinned base to pi-moved head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
+            ("ruff-pinned base with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n"),
                 api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW))),
-            ("pi-moved base to edited head", lambda api: (
+            ("ruff-pinned base to edited head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
         ]
@@ -719,8 +786,9 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_partitioned_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = PARTITIONED_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
-        run_refusal(self, api, "byte-identical on subsequent PRs")
+        run_refusal(self, api, "Credential-safe partition may only remain byte-identical")
 
     def test_agentgateway_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
