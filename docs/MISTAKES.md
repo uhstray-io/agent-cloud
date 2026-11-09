@@ -115,6 +115,7 @@ and why.
 | 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
 | 3.20 | Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) | Live state | 1 | Convention (launch away from schedule slots); per-task inventory proposed |
+| 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -3103,6 +3104,35 @@ inventory, re-run it alone, and check whether scheduled tasks started in the sam
 **Enforced by.** Convention. Proposed: `scripts/semaphore-launch.py` refuses a launch within a
 minute of a schedule declared in `templates.yml`, and the foundational fix is a per-task copy of
 the inventory so no task can remove another's.
+
+### 3.21 Shared-inventory switches merged and synced before any run had read them
+
+**What happened.** For observability task 2.3c (endpoint availability probes), site-config PR 157
+declared three health targets and, in the same change, set `o11y_availability_probes_enabled: true` and
+declared the Alloy self target's metrics source as native (`source: alloy`). The agent-cloud task list
+(1.4a.4) already said enabled availability had never run in production. The PR was reviewed, merged and
+synced to the production Semaphore inventory on 2026-11-09 at about 02:55 UTC. The first enabled
+`Deploy o11y (Dev)` dry run (Semaphore task 13907) refused at the pre-placement Alloy network-namespace
+gate, and a rerun (13908) refused the same way. Because the switch lived in the shared inventory, every
+o11y deploy, by any session, would have refused. Holding the probes off (site-config 159) was not
+enough: a disabled-mode dry run (13914) refused at the self-metrics producer check, and the native
+source declaration would also have failed every real deploy's post-apply source readback, so it was
+reverted too (site-config 160). The next disabled-mode dry run (13927, 03:37 UTC) passed. Nothing on the
+receiver changed: every refusal happened before placement. Deploys were blocked for about 40 minutes.
+
+**Root cause.** The inventory is the only place these switches can be set, and the change that set them
+was proven only against the census in isolation (revision, preparation), not by a run of the deploy
+that reads them. Each switch also flips a second behaviour (the namespace gate, the native-source
+expectation) that no review traced to a live check.
+
+**The rule.** A site-config change that switches on a mode never exercised in production, or changes
+a value a deploy gate checks, merges with the switch off. Prove the mode first with a run that reads the
+candidate values without changing the shared inventory, then switch it on in its own small change, with
+a disabled-mode dry run ready to confirm the revert path.
+
+**Enforced by.** Convention. Proposed: a read-only template that runs the enabled-mode pre-placement
+gates against the declared cohort without the switch, with fixed-category refusal reasons, so the
+switch can be proven before it is merged. Related: 3.15 (unproven `dev` changes reaching a real run).
 
 ## 4. Data handling
 
