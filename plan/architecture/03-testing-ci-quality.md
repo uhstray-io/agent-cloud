@@ -37,7 +37,7 @@ Source: `.github/workflows/lint-and-test.yml`. It defines these jobs and runs on
 
 ### What Exists
 
-The CI pipeline (`.github/workflows/lint-and-test.yml`) now runs 16 jobs on every pull request to `main` and `dev` (see *Current CI* above). As of 2026-05-06, Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provided functional coverage for NetBox workers and shared libraries.
+The CI pipeline (`.github/workflows/lint-and-test.yml`) runs the jobs listed in *Current CI* above on every pull request to `main` and `dev`. As of 2026-05-06, Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provided functional coverage for NetBox workers and shared libraries.
 
 | Component | Test Coverage | Notes |
 |-----------|---------------|-------|
