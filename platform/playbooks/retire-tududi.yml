@@ -1,0 +1,573 @@
+---
+# retire-tududi.yml — ONE-WAY teardown of the tududi to-do app: stop it, archive its data to
+# site-config and prove the archive there, wipe the service, destroy its VM.
+#
+# Spec: plan/development/openspec/changes/deploy-plane-work-management/specs/platform/
+# plane-work-management/spec.md, "tududi retires in a fixed order": the teardown refuses,
+# before any backup or destructive step, unless its confirmation equals the VM id; the
+# archive is taken from STOPPED volumes; nothing is removed before the archive's checksum
+# has been read back from site-config.
+#
+# Order (each play fails the run before the next starts):
+#   1. localhost  PREFLIGHT  extra-var refusals, one declared host, a complete declaration,
+#                            confirm_destroy == the declared vm_vmid. Then the o11y
+#                            restore-target input gate (credential-free). Nothing else.
+#   2. tududi_svc ARCHIVE    stop the container; require it not running; resolve the two
+#                            volumes compose created for project `tududi`; size them (read);
+#                            refuse over 50 MiB; export each volume; gzip both into one
+#                            archive; list it; fingerprint it (sha256). Nothing is removed.
+#                            On failure: restart tududi if this run stopped it.
+#   3. localhost  DELIVER    read the site-config deploy key from OpenBao; fetch the archive
+#                            to the controller; check its sha256; commit it on a fresh
+#                            site-config branch and push; clone that branch again and
+#                            require the remote copy's sha256 to equal the VM's. On failure:
+#                            restart tududi if this run stopped it. Scratch dirs (deploy key,
+#                            clone, the VM's archive copy) are wiped in `always`.
+#   4. tududi_svc WIPE       tasks/clean-service.yml: compose down -v, container removal,
+#                            clone removal. Reached only when play 3 passed.
+#   5. VM DESTROY            destroy-vm.yml with target_service=tududi. It re-checks the live
+#                            VM (vmid AND name AND node) and refuses on a mismatch.
+#
+# WHY THE STOP COMES BEFORE THE ARCHIVE. The spec requires the container stopped before the
+# archive, so the SQLite file cannot change under the copy. A stopped container loses no data;
+# the destructive steps are the wipe (4) and the destroy (5), both behind the read-back.
+#
+# NO CLEANUP GAP ON FAILURE. Play 2 and play 3 each restart tududi if this run stopped it and
+# then fail. Play 4 and play 5 are never reached, so the volumes and the VM are untouched.
+#
+# OPERATOR PREREQUISITE. This template runs in its own isolated Semaphore environment,
+# `Retire tududi inputs`, because destroy-vm.yml refuses the shared environment's plaintext
+# credential extra vars and reads BAO_ROLE_ID / BAO_SECRET_ID from its environment. Publication
+# requires one environment per template, so Destroy VM's environment cannot be shared. Provision
+# Seed Environment (platform/semaphore/provision-seed-environment.yml) binds the AppRole inputs.
+# Until that runs, this template cannot authenticate.
+#
+# DECLARATION. Only the inventory host in `tududi_svc` (vm_vmid, vm_name, vm_node). Nothing from
+# proxmox/vm-specs.yml and no launch override: destroy-vm.yml resolves the declaration from the
+# inventory alone, and this gate must name the same vmid destroy-vm will act on.
+#
+# Usage (Semaphore survey, or extra vars for a dry run):
+#   -e confirm_destroy=<declared vm_vmid>      REQUIRED; no default on purpose
+#   --check                                    dry run: refuses at the same gates, changes nothing
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+  tags: [always]
+
+# ── 1. PREFLIGHT (localhost) ────────────────────────────────────────────────
+- name: "Preflight: refuse without the declared VM id, before any backup or destructive step"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _rt_hosts: "{{ groups['tududi_svc'] | default([]) }}"
+    _rt_host: "{{ _rt_hosts | first | default('') }}"
+    _rt_decl: "{{ hostvars[_rt_host] | default({}) }}"
+    _rt_vmid: "{{ _rt_decl.vm_vmid | default('') }}"
+  tasks:
+    # destroy-vm.yml takes its target from these names. An extra var outranks an import's own
+    # vars, so a launch that set one could point the destroy at another service or another
+    # declaration than the one this gate checked. Refused by name, before anything else.
+    - name: "Refuse a launch that redirects the declaration or the destroy"
+      ansible.builtin.assert:
+        that:
+          - (['target_service', 'target_host', 'target_vmid', 'target_node'] | intersect('' | extra_var_names) | length) == 0
+        fail_msg: >-
+          Refusing: target_service, target_host, target_vmid and target_node are fixed by this
+          template. Remove them from the launch. Nothing was changed.
+        quiet: true
+
+    - name: "Require exactly one declared tududi host"
+      ansible.builtin.assert:
+        that:
+          - _rt_hosts | length == 1
+        fail_msg: >-
+          tududi_svc declares {{ _rt_hosts | length }} host(s). Retire tududi needs exactly one,
+          the declaration destroy-vm.yml reads. Nothing was changed.
+        quiet: true
+
+    - name: "Require a complete declaration (vm_vmid, vm_name, vm_node)"
+      ansible.builtin.assert:
+        that:
+          - _rt_vmid | string | length > 0
+          - (_rt_decl.vm_name | default('')) | length > 0
+          - (_rt_decl.vm_node | default('')) | length > 0
+        fail_msg: "Declaration '{{ _rt_host }}' lacks vm_vmid/vm_name/vm_node. Nothing was changed."
+        quiet: true
+
+    # The gate the spec names: the launch must type the vmid it is about to retire. A run with
+    # no confirmation, or the wrong one, refuses here, before the container is stopped.
+    - name: "Require the launch to NAME the declared VM id"
+      ansible.builtin.assert:
+        that:
+          - (confirm_destroy | default('') | string) == (_rt_vmid | string)
+        fail_msg: >-
+          Refusing: pass -e confirm_destroy={{ _rt_vmid }} to retire tududi (vmid {{ _rt_vmid }},
+          '{{ _rt_decl.vm_name | default('?') }}' on '{{ _rt_decl.vm_node | default('?') }}').
+          Nothing was changed.
+        quiet: true
+
+    - name: "Stamp this run once (the archive name uses it)"
+      ansible.builtin.set_fact:
+        _rt_stamp: "{{ lookup('pipe', 'date -u +%Y%m%dT%H%M%SZ') }}"
+
+# The fixed restore-target OpenBao destination, checked before any credential lookup. Credential-free.
+- name: "Preflight the fixed restore-target OpenBao destination before any credential lookup"
+  ansible.builtin.import_playbook: preflight-o11y-restore-target-inputs.yml
+  tags: [always]
+
+# ── 2. ARCHIVE (tududi_svc) ─────────────────────────────────────────────────
+- name: "Stop tududi, archive its volumes, prove the archive is small and complete"
+  hosts: tududi_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    # Read from the inventory, never from a launch: the archive and the destroy both depend on
+    # this host being the podman host that holds the tududi project.
+    _rt_engine: "{{ container_engine | default('podman') }}"
+    _rt_container: tududi
+    _rt_project: tududi
+  tasks:
+    - name: "Require one host and a podman engine (the archive uses podman volume export)"
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - _rt_engine == 'podman'
+        fail_msg: >-
+          Retire tududi needs one tududi_svc host whose container_engine is podman. Found
+          {{ ansible_play_hosts_all | length }} host(s), engine '{{ _rt_engine }}'. Nothing was stopped.
+        quiet: true
+
+    - name: "Archive, restoring tududi if this run stopped it and the archive fails"
+      block:
+        - name: "Make a private (0700) scratch dir on the VM for the archive"
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: ".retire-tududi_"
+          register: _rt_host_wd_result
+          when: not ansible_check_mode
+
+        - name: "Remember the VM scratch dir"
+          ansible.builtin.set_fact:
+            _rt_host_wd: "{{ _rt_host_wd_result.path }}"
+          when: not ansible_check_mode
+
+        - name: "Remember the archive name (fixed once per run; the stamp is set on localhost)"
+          ansible.builtin.set_fact:
+            _rt_archive: "tududi-final-{{ hostvars['localhost']._rt_stamp }}.tar.gz"
+
+        # The container is stopped before any archive read: the SQLite file must not change under
+        # the copy (spec: archive from stopped volumes). Not destructive; `podman start` undoes it.
+        - name: "Stop the tududi container before reading its volumes"
+          ansible.builtin.command:
+            argv: [podman, stop, "{{ _rt_container }}"]
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Remember that this run stopped tududi (a failure restarts it)"
+          ansible.builtin.set_fact:
+            _tududi_stopped: true
+          when: not ansible_check_mode
+
+        - name: "Read the container state after the stop (must not be running or paused)"
+          ansible.builtin.command:
+            argv: [podman, container, inspect, "{{ _rt_container }}", --format, "{{ '{{' }}.State.Status{{ '}}' }}"]
+          register: _rt_state
+          changed_when: false
+          when: not ansible_check_mode
+
+        - name: "Require tududi stopped before its volumes are read"
+          ansible.builtin.assert:
+            that:
+              - _rt_state.stdout | trim not in ['running', 'paused']
+            fail_msg: "tududi is still '{{ _rt_state.stdout | trim }}' after the stop. Nothing was archived or removed."
+            quiet: true
+          when: not ansible_check_mode
+
+        # Labels, not names: podman-compose stamps every volume it creates with
+        # com.docker.compose.project=<project name> (compose.yml `name: tududi`). The name shape
+        # below is the second check: only the two volumes compose.yml declares (tududi-db,
+        # tududi-uploads, under any compose prefix) may enter the archive.
+        - name: "Resolve the volumes compose created for the tududi project (read only)"
+          ansible.builtin.command:
+            argv: [podman, volume, ls, --filter, "label=com.docker.compose.project={{ _rt_project }}", --format, "{{ '{{' }}.Name{{ '}}' }}"]
+          register: _rt_vols
+          changed_when: false
+          check_mode: false
+
+        - name: "Require exactly the two tududi volumes, the database and the uploads"
+          ansible.builtin.assert:
+            that:
+              - _rt_vols.stdout_lines | length == 2
+              - _rt_vols.stdout_lines | unique | length == 2
+              - _rt_vols.stdout_lines | select('match', '^(.+_)?tududi-(db|uploads)$') | list | length == 2
+            fail_msg: >-
+              Expected exactly the tududi-db and tududi-uploads volumes of project {{ _rt_project }}; found
+              {{ _rt_vols.stdout_lines | join(', ') or 'none' }}. Nothing was archived or removed.
+            quiet: true
+
+        - name: "Resolve each volume's mountpoint (read only)"
+          ansible.builtin.command:
+            argv: [podman, volume, inspect, --format, "{{ '{{' }}.Mountpoint{{ '}}' }}", "{{ item }}"]
+          loop: "{{ _rt_vols.stdout_lines }}"
+          register: _rt_mounts
+          changed_when: false
+          check_mode: false
+
+        - name: "Measure each volume on disk, in bytes (read only)"
+          ansible.builtin.command:
+            argv: [du, -sb, "{{ item.stdout }}"]
+          loop: "{{ _rt_mounts.results }}"
+          register: _rt_du
+          changed_when: false
+          check_mode: false
+
+        # The archive is the database plus the uploads. The cap is GitHub's own limit: a file over
+        # 50 MiB draws a warning from GitHub, and one over 100 MiB is refused. Measured before any
+        # export, so an oversized volume is never copied in full. The database is never empty
+        # once tududi has booted, so a zero total means the wrong volumes were read.
+        - name: "Refuse data over the 50 MiB cap, or an empty set (before any copy is made)"
+          ansible.builtin.assert:
+            that:
+              - (_rt_du.results[0].stdout.split()[0] | int) + (_rt_du.results[1].stdout.split()[0] | int) > 0
+              - (_rt_du.results[0].stdout.split()[0] | int) + (_rt_du.results[1].stdout.split()[0] | int) <= 52428800
+            fail_msg: >-
+              The tududi volumes hold {{ (_rt_du.results[0].stdout.split()[0] | int) + (_rt_du.results[1].stdout.split()[0] | int) }}
+              bytes. The archive must be non-empty and at most 52428800 bytes (50 MiB). Nothing was archived or removed.
+            quiet: true
+          when: not ansible_check_mode
+
+        # Export reads the volume through podman, so it works whatever the container's state.
+        - name: "Export each volume to a tar on the VM"
+          ansible.builtin.command:
+            argv: [podman, volume, export, "{{ item }}", --output, "{{ _rt_host_wd }}/{{ item }}.tar"]
+          loop: "{{ _rt_vols.stdout_lines }}"
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "Gzip both volume exports into one archive"
+          ansible.builtin.command:
+            argv: "{{ ['tar', '-C', _rt_host_wd, '-czf', _rt_host_wd ~ '/' ~ _rt_archive] + (_rt_vols.stdout_lines | map('regex_replace', '$', '.tar') | list) }}"
+          changed_when: true
+          when: not ansible_check_mode
+
+        - name: "List the archive (read only): both volumes must be inside"
+          ansible.builtin.command:
+            argv: [tar, -tzf, "{{ _rt_host_wd }}/{{ _rt_archive }}"]
+          register: _rt_listing
+          changed_when: false
+          when: not ansible_check_mode
+
+        - name: "Require both volume exports inside the archive"
+          ansible.builtin.assert:
+            that:
+              - _rt_vols.stdout_lines | map('regex_replace', '$', '.tar') | list | difference(_rt_listing.stdout_lines) | length == 0
+            fail_msg: "The archive does not list both volume exports. Nothing was removed."
+            quiet: true
+          when: not ansible_check_mode
+
+        - name: "Fingerprint the archive (sha256, read on the VM)"
+          ansible.builtin.stat:
+            path: "{{ _rt_host_wd }}/{{ _rt_archive }}"
+            checksum_algorithm: sha256
+            get_checksum: true
+          register: _rt_archive_stat
+          when: not ansible_check_mode
+
+        - name: "Refuse an archive over the 50 MiB cap or an empty one"
+          ansible.builtin.assert:
+            that:
+              - _rt_archive_stat.stat.size > 0
+              - _rt_archive_stat.stat.size <= 52428800
+            fail_msg: "The archive is {{ _rt_archive_stat.stat.size }} bytes. It must be non-empty and at most 52428800. Nothing was removed."
+            quiet: true
+          when: not ansible_check_mode
+
+        - name: "Remember the archive fingerprint for the controller"
+          ansible.builtin.set_fact:
+            _rt_sha: "{{ _rt_archive_stat.stat.checksum }}"
+          when: not ansible_check_mode
+
+      rescue:
+        - name: "Restart tududi if this run stopped it (the service returns as it was)"
+          ansible.builtin.command:
+            argv: [podman, start, "{{ _rt_container }}"]
+          changed_when: true
+          when: _tududi_stopped | default(false) | bool and not ansible_check_mode
+
+        - name: "Remove the VM scratch dir (it holds a copy of the database)"
+          ansible.builtin.file:
+            path: "{{ _rt_host_wd }}"
+            state: absent
+          when: _rt_host_wd is defined
+
+        - name: "Fail: nothing was removed"
+          ansible.builtin.fail:
+            msg: >-
+              Retire tududi stopped at '{{ ansible_failed_task.name | default('a task') }}'.
+              tududi was restarted if this run had stopped it. No volume, container or VM was removed.
+
+# ── 3. DELIVER (localhost) ──────────────────────────────────────────────────
+- name: "Deliver the archive to site-config and prove the pushed copy matches the VM's"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _rt_host: "{{ groups['tududi_svc'] | default([]) | first | default('') }}"
+    _rt_container: tududi
+    _bao_url: "{{ hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '' }}"
+    _bao_role_id: "{{ lookup('env', 'BAO_ROLE_ID') }}"
+    _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
+    _key_path: "secret/data/services/ssh/site-config"
+  tasks:
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # Ansible does not stop a run when a host is UNREACHABLE, so this play can start after play 2
+    # produced nothing (measured with an unreachable scratch host). The archive step's fingerprint
+    # is the proof it ran; without it there is nothing to deliver and nothing may be removed.
+    - name: "Require the VM archive step to have completed (its fingerprint exists)"
+      ansible.builtin.assert:
+        that:
+          - hostvars[_rt_host]._rt_sha is defined
+          - hostvars[_rt_host]._rt_archive is defined
+        fail_msg: "The archive step did not complete on {{ _rt_host }} (unreachable or skipped). Nothing was removed."
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Deliver, restoring tududi if this run stopped it and delivery fails"
+      block:
+        - name: "Log in to OpenBao (AppRole)"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/auth/approle/login"
+            method: POST
+            body_format: json
+            body:
+              role_id: "{{ _bao_role_id }}"
+              secret_id: "{{ _bao_secret_id }}"
+            status_code: [200]
+          register: _rt_auth
+          no_log: true
+          changed_when: false
+          check_mode: false
+
+        # The deploy key is the only credential this run reads. It stays in memory and in the
+        # 0600 file tasks/site-config-clone.yml writes inside the scratch dir the `always` wipes.
+        - name: "Read the site-config deploy key"
+          ansible.builtin.uri:
+            url: "{{ _bao_url }}/v1/{{ _key_path }}"
+            method: GET
+            headers:
+              X-Vault-Token: "{{ _rt_auth.json.auth.client_token }}"
+            status_code: [200, 403, 404]
+          register: _rt_key
+          no_log: true
+          changed_when: false
+          check_mode: false
+
+        - name: "Say plainly when the deploy key is missing"
+          ansible.builtin.assert:
+            that:
+              - _rt_key.status == 200
+              - (_rt_key.json.data.data.private_key | default('')) | length > 0
+            fail_msg: >-
+              No deploy key at {{ _key_path }} (HTTP {{ _rt_key.status }}). Seed it with the Seed
+              OpenBao Key template and register its public half on site-config WITH WRITE ACCESS.
+              Nothing was removed.
+
+        - name: "Deliver the archive (skipped under --check: it writes the clone and pushes)"
+          when: not ansible_check_mode
+          block:
+            - name: "Make the controller scratch dir (0700)"
+              ansible.builtin.tempfile:
+                state: directory
+                prefix: ".retire-tududi_"
+              register: _rt_ctrl_result
+
+            - name: "Remember the controller scratch dir"
+              ansible.builtin.set_fact:
+                _rt_ctrl_wd: "{{ _rt_ctrl_result.path }}"
+
+            - name: "Fetch the archive from the VM"
+              ansible.builtin.fetch:
+                src: "{{ hostvars[_rt_host]._rt_host_wd }}/{{ hostvars[_rt_host]._rt_archive }}"
+                dest: "{{ _rt_ctrl_wd }}/{{ hostvars[_rt_host]._rt_archive }}"
+                flat: true
+                fail_on_missing: true
+              delegate_to: "{{ _rt_host | default(inventory_hostname) }}"
+
+            - name: "Fingerprint the fetched copy on the controller"
+              ansible.builtin.stat:
+                path: "{{ _rt_ctrl_wd }}/{{ hostvars[_rt_host]._rt_archive }}"
+                checksum_algorithm: sha256
+                get_checksum: true
+              register: _rt_ctrl_stat
+
+            - name: "Require the fetched copy to match the VM's archive"
+              ansible.builtin.assert:
+                that:
+                  - _rt_ctrl_stat.stat.checksum == hostvars[_rt_host]._rt_sha
+                fail_msg: "The fetched archive does not match the VM's sha256. Nothing was removed."
+                quiet: true
+
+            - name: "Write the sha256 sidecar next to the archive"
+              ansible.builtin.copy:
+                content: "{{ hostvars[_rt_host]._rt_sha }}  {{ hostvars[_rt_host]._rt_archive }}\n"
+                dest: "{{ _rt_ctrl_wd }}/{{ hostvars[_rt_host]._rt_archive }}.sha256"
+                mode: "0600"
+
+            # Defaults only: no launch value may redirect the archive or pin another host key.
+            - name: "Clone site-config on a fresh branch"
+              ansible.builtin.include_tasks: tasks/site-config-clone.yml
+              vars:
+                _sc_deploy_key: "{{ _rt_key.json.data.data.private_key }}"
+                _sc_branch_prefix: "archive/tududi"
+
+            - name: "Create archives/tududi in the clone"
+              ansible.builtin.file:
+                path: "{{ _sc_clone }}/archives/tududi"
+                state: directory
+                mode: "0755"
+
+            - name: "Place the archive and its sidecar in the clone"
+              ansible.builtin.copy:
+                src: "{{ _rt_ctrl_wd }}/{{ item }}"
+                dest: "{{ _sc_clone }}/archives/tududi/{{ item }}"
+                remote_src: true
+                mode: "0644"
+              loop:
+                - "{{ hostvars[_rt_host]._rt_archive }}"
+                - "{{ hostvars[_rt_host]._rt_archive }}.sha256"
+
+            - name: "Commit and push the archive"
+              ansible.builtin.include_tasks: tasks/site-config-push.yml
+              vars:
+                _sc_add_path: "archives/tududi"
+                _sc_commit_subject: "archive(tududi): final data before retirement"
+                _sc_commit_body: >-
+                  Written by retire-tududi.yml: {{ hostvars[_rt_host]._rt_archive }}, sha256
+                  {{ hostvars[_rt_host]._rt_sha }}. The database and uploads of the tududi_svc volumes.
+                _sc_report_what: "the tududi final archive {{ hostvars[_rt_host]._rt_archive }}"
+
+            - name: "Require this run to have pushed the archive (a no-change push cannot be read back)"
+              ansible.builtin.assert:
+                that:
+                  - _sc_staged.rc != 0
+                fail_msg: "site-config did not change, so there is no pushed archive to read back. Nothing was removed."
+                quiet: true
+
+            # A fresh clone of the pushed branch: what the remote now holds, not what this run wrote.
+            - name: "Clone the pushed branch again, to read the archive back from the remote"
+              ansible.builtin.command:
+                argv: [git, clone, --depth, "1", --branch, "{{ _sc_branch }}", "{{ _sc_repo }}", "{{ _sc_wd }}/readback"]
+              environment: "{{ _sc_git_env }}"
+              changed_when: true
+
+            - name: "Fingerprint the archive as the remote now holds it"
+              ansible.builtin.stat:
+                path: "{{ _sc_wd }}/readback/archives/tududi/{{ hostvars[_rt_host]._rt_archive }}"
+                checksum_algorithm: sha256
+                get_checksum: true
+              register: _rt_remote_stat
+
+            # The destroy gate: nothing below the wipe runs unless this passes.
+            - name: "Require the remote copy to match the VM's archive (the gate before any removal)"
+              ansible.builtin.assert:
+                that:
+                  - _rt_remote_stat.stat.exists
+                  - _rt_remote_stat.stat.checksum == hostvars[_rt_host]._rt_sha
+                fail_msg: >-
+                  The archive on site-config does not match the VM's sha256. Nothing was removed; tududi
+                  was restarted if this run had stopped it.
+                quiet: true
+
+      rescue:
+        - name: "Restart tududi if this run stopped it (the service returns as it was)"
+          ansible.builtin.command:
+            argv: [podman, start, "{{ _rt_container }}"]
+          delegate_to: "{{ _rt_host | default(inventory_hostname) }}"
+          changed_when: true
+          when: hostvars[_rt_host]._tududi_stopped | default(false) | bool and not ansible_check_mode
+
+        - name: "Fail: nothing was removed"
+          ansible.builtin.fail:
+            msg: >-
+              Retire tududi stopped at '{{ ansible_failed_task.name | default('a task') }}'.
+              tududi was restarted if this run had stopped it. No volume, container or VM was removed.
+
+      always:
+        - name: "Wipe the site-config scratch dir (deploy key and clones)"
+          ansible.builtin.file:
+            path: "{{ _sc_wd }}"
+            state: absent
+          when: _sc_wd is defined
+
+        - name: "Wipe the controller archive copy"
+          ansible.builtin.file:
+            path: "{{ _rt_ctrl_wd }}"
+            state: absent
+          when: _rt_ctrl_wd is defined
+
+        - name: "Wipe the VM's archive scratch dir (it holds a copy of the database)"
+          ansible.builtin.file:
+            path: "{{ hostvars[_rt_host]._rt_host_wd }}"
+            state: absent
+          delegate_to: "{{ _rt_host | default(inventory_hostname) }}"
+          when: hostvars[_rt_host]._rt_host_wd is defined
+
+# ── 4. WIPE (tududi_svc) ────────────────────────────────────────────────────
+# Reached only when play 3 passed, which is the proof that the archive is on site-config.
+- name: "Wipe tududi (only after the archive is proven on site-config)"
+  hosts: tududi_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    # The confirmation is this play's own host list, not inventory_hostname, which an extra var
+    # could set. The gate in play 1 is the vmid check; this one satisfies clean-service's own
+    # refusal with the value that is true by construction.
+    - name: "Destroy the containers, volumes and clone"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+      vars:
+        confirm_reset: "{{ ansible_play_hosts_all | sort | join(',') }}"
+
+    - name: "Record that the wipe ran on this host"
+      ansible.builtin.set_fact:
+        _rt_wiped: true
+      when: not ansible_check_mode
+
+# An UNREACHABLE host is skipped by play 4 without failing the run, so the destroy below would
+# otherwise run after no wipe. This gate names that case and stops the run first.
+- name: "Require the wipe to have run before the VM is destroyed"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _rt_host: "{{ groups['tududi_svc'] | default([]) | first | default('') }}"
+  tasks:
+    - name: "Require the wipe step to have completed on the VM"
+      ansible.builtin.assert:
+        that:
+          - hostvars[_rt_host]._rt_wiped | default(false) | bool
+        fail_msg: "The wipe did not run on {{ _rt_host }} (unreachable or skipped). The VM was not destroyed."
+        quiet: true
+      when: not ansible_check_mode
+
+# ── 5. DESTROY THE VM ───────────────────────────────────────────────────────
+- name: "Destroy the declared tududi VM (destroy-vm re-checks vmid, name and node on the live cluster)"
+  ansible.builtin.import_playbook: destroy-vm.yml
+  vars:
+    _extra_var_guard_nested: true
+    target_service: tududi
+    target_host: "{{ groups['tududi_svc'] | default([]) | first | default('') }}"
