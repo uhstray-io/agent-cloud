@@ -50,7 +50,7 @@ and why.
 | 1.18 | **x2** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer) | Unverified claim | 2 | Convention (disk alert proposed) |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
-| 1.21 | **x3** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe) | Unverified claim | 3 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed |
+| 1.21 | **x4** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 4 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
@@ -996,7 +996,7 @@ live rule and contact state", "real deploy verifies every provisioned dashboard 
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
 
-**Occurrences: 3** — 2026-10-04, 2026-10-13, 2026-10-28
+**Occurrences: 4** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09
 
 **Occurrence 2 — 2026-10-13.** Verify o11y Service (Dev) tasks 5257 and 5262 passed with the
 agentgateway canary, and the operator was told the Loki line read back "is a span log", so
@@ -1029,6 +1029,28 @@ assumption about an unmanaged record; a held publishing step means "not live yet
 occurrence `Convention` is retired for the live-probe form; proposed guard: a WAF skip for exactly
 `console.uhstray.io/healthz` (the shape of the inference `/health` rule in `waf.tf`), so Verify
 Service Health probes the public URL through the edge.
+
+**Occurrence 4 — 2026-11-09.** After `Deploy skynet (Dev)` task 14142 passed, I told the operator
+"production skynet now launches through the gate" and wrote the same claim into the launch-gate
+status entry in `AGENTS.md` on the evidence PR (#932). The check behind it was the deploy's two
+in-container gate probes: `POST /v1/launch` with no token answered 401, and with skynet's caller
+token and an empty body answered 400 `bad_request` (`deploy-skynet.yml`, the two "Launch gate"
+verify tasks). Those select reachability over TLS, the name mapping and authentication. A launch
+is outside them: the gate refuses an empty body before it reads a template, asks OPA or calls
+Semaphore, and no skynet run had been started in either environment. The gate's own allow path
+was proven separately by `Probe launch-gate (Dev)` task 14117, which posts from inside the gate's
+container with a fixed probe request, not through skynet's client. The `pr-reviewer` round on #932
+caught the wording before merge, and the entry now says the gate is skynet's only launch path and
+that no skynet-initiated launch has run through it yet. The rule did not fire because I read the
+probe's result, not its scope, at the moment of reporting: the deploy's `Report` line and the
+probe names ("Launch gate refuses a request with no token", "Launch gate accepts the caller
+token") read like the end-to-end claim. The
+correction reached the operator in the next message. Proposed guard, replacing `Convention` for
+this form: a check-mode launch made through skynet's own client (the shape of `Probe launch-gate
+(Dev)`, but driven by skynet's `SemaphoreClient` inside the skynet container) that must return a
+task tagged `skynet <workflow_id> <step>`, so "skynet launches through the gate" is the probe's
+own selection rather than an inference from its neighbours; until it exists, that claim is not
+made for any environment where the probe has not run.
 
 ### 1.22 A runner's tool version stated twice without reading the running system
 
