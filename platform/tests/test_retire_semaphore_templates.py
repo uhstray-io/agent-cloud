@@ -185,5 +185,24 @@ def test_deletes_accept_already_gone_and_the_read_back_still_proves_it():
     assert len(deletes) == 2, "one schedule delete and one template delete"
     for args in deletes:
         assert sorted(args.get("status_code", [])) == [204, 404], args.get("url")
-    names = [task.get("name", "") for task in _play()["tasks"]]
-    assert any(name.startswith("Require the retired names") for name in names), "read-back assert missing"
+    tasks = _play()["tasks"]
+    delete_at = [
+        i for i, t in enumerate(tasks) for key in URI
+        if key in t and str(t[key].get("method", "")).upper() == "DELETE"
+    ]
+    readback = [
+        i for i, t in enumerate(tasks)
+        if "ansible.builtin.assert" in t
+        and "_templates_after" in str(t["ansible.builtin.assert"]["that"])
+        and "_schedules_after" in str(t["ansible.builtin.assert"]["that"])
+    ]
+    assert len(readback) == 1, "one read-back assert over the post-delete template and schedule lists"
+    assert readback[0] > max(delete_at), "the read-back assert must run after every DELETE"
+    reads = [
+        i for i, t in enumerate(tasks)
+        if any(key in t for key in URI) and t.get("register") in ("_templates_after", "_schedules_after")
+    ]
+    assert len(reads) == 2, "two post-delete GETs"
+    assert max(delete_at) < min(reads) < readback[0], "post-delete GETs sit between the deletes and the assert"
+    for i in reads:
+        assert "when" not in tasks[i] or tasks[i]["when"] == "not ansible_check_mode", tasks[i].get("name")

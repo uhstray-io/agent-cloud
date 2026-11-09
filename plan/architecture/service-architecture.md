@@ -482,7 +482,7 @@ visible so they are not reopened without new evidence.
 | Inference gateway versus orchestrator | agentgateway replaces skynet; skynet fronts vLLM directly; both, with distinct jobs | Per-client keys and limits for SDK clients; placement and policy across the estate | **Both.** agentgateway owns transport, keys and budgets; skynet owns placement, policy and orchestration, and reaches models through the gateway. | [44] |
 | Container runtime | Docker everywhere; rootless podman everywhere; rootless by default with named exceptions | Least privilege; the capabilities a few services require | **Rootless podman by default**; Docker only where privileged mode or the host socket is required. | [6][7] |
 | How the console reads the platform | Its own database; the controller token; read models from each authority with a read-only identity | Never a second source of truth; least privilege | **Read models from the authorities**, through a `guest` Semaphore identity that cannot launch. | [21][45] |
-| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; tududi's teardown is Plane's last phase. | [23] |
+| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; tududi's teardown runs after Plane's Phase 1 gate, ahead of its GitHub integration (changed 2026-11-07). | [23] |
 
 ## Source Context
 

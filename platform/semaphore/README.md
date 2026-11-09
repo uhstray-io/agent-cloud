@@ -20,7 +20,7 @@ workstation OpenBao login before work that an existing Semaphore template can
 execute. Never export the controller AppRole from the browser or use backup
 credentials to manufacture workstation access.
 
-**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)` (template retired 2026-11-07),
+**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)` (template retired 2026-11-07; what it showed is recorded here because the task may not survive the template's deletion),
 authenticated through the controller AppRole, read runtime secrets, checked the
 GitHub App's repository coverage and reached n8n. It stopped at an absent
 credential-visible sync workflow with `changed=0`; it did not verify task/issue

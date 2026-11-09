@@ -39,7 +39,7 @@ compose merges `ports` lists append-only, so an overlay can't remove a base publ
 ## Related
 
 - Deploy playbooks: [`../../../playbooks/deploy-tududi.yml`](../../../playbooks/deploy-tududi.yml), [`../../../playbooks/clean-deploy-tududi.yml`](../../../playbooks/clean-deploy-tududi.yml)
-- The GitHub issue sync was retired on 2026-11-07; Plane's native GitHub integration replaces it (plan 16).
+- The GitHub issue sync was retired on 2026-11-07; Plane's native GitHub integration is planned to replace it (plan 16, Phase 3).
 - Authentik OIDC blueprint: [`../../authentik/deployment/blueprints/tududi-oidc.yaml`](../../authentik/deployment/blueprints/tududi-oidc.yaml)
 - Plan: [`../../../../plan/development/11-tududi-honcho-deployment.md`](../../../../plan/development/11-tududi-honcho-deployment.md)
 - Root conventions: [`../../../../CLAUDE.md`](../../../../CLAUDE.md)
