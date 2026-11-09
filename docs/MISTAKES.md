@@ -182,7 +182,7 @@ and why.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | 1 | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | 1 | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | 1 | Test (real evaluation, current ansible-core) |
-| 10.17 | **x2** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) (widened by 10.32) | Mechanism never exercised | 2 | Test (`test_manage_secrets_scope.py`) |
+| 10.17 | **x3** — A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) (widened by 10.32) — **x3** (2026-11-09: deploy-console.yml's verify play read a flag defined only in Phase 1's `vars:`; every console deploy after #934 failed, task 14234 in check mode) | Mechanism never exercised | 3 | Test (`test_manage_secrets_scope.py`, `test_play_vars_scope.py`) |
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
@@ -5395,7 +5395,7 @@ general case.
 
 ### 10.17 A guard that could never pass in production, tested only where it is switched off
 
-**Occurrences: 2** — 2026-09-23, 2026-09-29
+**Occurrences: 3** — 2026-09-23, 2026-09-29, 2026-11-09
 
 **What happened.** `deploy-agentgateway.yml` refuses to deploy when the upstream key is empty,
 unless `agw_upstream_requires_key: false`. It read `secrets.vllm_api_key`. `manage-secrets.yml`
@@ -5447,6 +5447,8 @@ already names it.
 
 **Widened 2026-10-30 by 10.32.** A guard proven in its enabled form, but only in a test
 execution environment production's templates do not run in.
+
+**Occurrence 3 — 2026-11-09.** Agent-cloud PR #934 (Dispatch Console Phase 4) gave `deploy-console.yml` an optional launch-gate wiring. The flag `_console_launch_gate_declared` was defined in Phase 1's play `vars:`, and the verify play (Phase 3) read it in three `when:` conditions. A play's `vars:` do not reach the next play, so Phase 3 failed with "'_console_launch_gate_declared' is undefined" whether or not the gate was declared: every console deploy after #934 would fail at its verify. The first production run found it in check mode (Semaphore task 14234), before any real change. The PR's tests checked the playbook's structure and rendered its templates, and none evaluated Phase 3's conditions; its review and the two reviews of its fixes read the code and did not catch the scope either. Why the rule did not fire: the existing guard only covers `secrets`, the one name it was written for, so a fact read across plays under any other name was still carried by memory. **Enforced by** now includes `platform/tests/test_play_vars_scope.py`: in every playbook, an internal name one play defines in its `vars:` may be read by another play only when that play defines it too, or when the file sets it as a host fact (`set_fact`, `register`, `add_host`). It found this case and none other; `configure-host-network.yml` passes its value through `add_host`, which carries.
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 
