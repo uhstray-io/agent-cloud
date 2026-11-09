@@ -12,11 +12,13 @@ use super::gateway_api::{
     usage_notice, usage_percent, usage_read_text, GatewayBody, GatewayClient, Usage, APPROXIMATE,
 };
 use super::icons::icon;
-use super::inventory::Admin;
+use super::inventory::{end_session, Admin, POLL_MS};
 use super::roles_api::{role_named, role_state, RoleState, ROLES_PATH};
 use super::shell::{is_platform_admin, Ctx};
 use super::status::{Meter, Notice};
-use super::work::{board_items, item_age, stale_text, Lane, Source, WorkItem, WorkState};
+use super::work::{
+    board_items, item_age, signs_out, stale_text, Lane, Source, WorkItem, WorkState,
+};
 use super::Route;
 
 /// The Active Work strips that belong to `role`: the board's items, one per job as the board shows them,
@@ -44,10 +46,13 @@ pub fn work_stale_line(
 }
 
 /// Reads the registry's roles once into the shell. Only platform admins call it, since the server refuses every
-/// other caller. The state comes from the status and the body together (`role_state`).
-pub async fn load_roles(mut roles: Signal<RoleState>) {
+/// other caller. The state comes from the status and the body together (`role_state`). A 401 ends the session.
+pub async fn load_roles(mut roles: Signal<RoleState>, me: Signal<Me>) {
     let reply = api::request("GET", ROLES_PATH, None).await;
     roles.set(role_state(&reply));
+    if signs_out(reply.status) {
+        end_session(me);
+    }
 }
 
 /// The role page. Platform admins only: the registry, the work and the gateway answer it shows are all
@@ -135,7 +140,10 @@ fn WorkCard(role: String) -> Element {
     let state = ctx.work.read().clone();
     let body = match &state {
         WorkState::Loading => rsx! { p { class: "empty", "Loading work\u{2026}" } },
-        WorkState::Forbidden | WorkState::SignedOut => {
+        WorkState::Forbidden => {
+            rsx! { p { class: "empty", "Active Work is limited to platform administrators." } }
+        }
+        WorkState::SignedOut => {
             rsx! { p { class: "empty", "Active Work is not available to this session." } }
         }
         WorkState::Unreachable => rsx! { p { class: "empty", "Active Work could not be loaded." } },
@@ -227,7 +235,11 @@ fn GatewayCard(role: String, gateway: Signal<Admin<GatewayBody>>, now_ms: Option
             rsx! { p { class: "empty", "Your session ended. Sign in again to see the gateway." } }
         }
         Admin::Unavailable(reason) => {
-            rsx! { p { class: "empty", "The gateway could not be loaded: {reason}." } }
+            let line = format!(
+                "The gateway could not be loaded: {reason}. It retries every {} seconds while this tab is visible.",
+                POLL_MS / 1000
+            );
+            rsx! { p { class: "empty", "{line}" } }
         }
         Admin::Shown { body, reason } => match not_ok_message(body.state) {
             Some(message) => rsx! { p { class: "empty", "{message}" } },

@@ -11,7 +11,7 @@
 use dioxus::prelude::*;
 
 use super::icons::icon;
-use super::inventory::{meta_of, poll_admin, view, Admin, Snapshot, View};
+use super::inventory::{meta_of, poll_admin, view, Admin, Snapshot, View, POLL_MS};
 use super::inventory_api::{self, Domain, ServiceRow};
 use super::services::DomainSwatch;
 use super::settings_api::{tree_path, TenantTree, TreeOrg, TreeSite};
@@ -167,7 +167,7 @@ fn TreeRead(tenant: String, page: SettingsPage) -> Element {
             Notice { message: "Your session ended. Sign in again to see these settings.".to_string() }
         },
         Admin::Unavailable(reason) => rsx! {
-            Notice { message: format!("The settings could not be loaded: {reason}. They retry every 30 seconds while this tab is visible.") }
+            Notice { message: format!("The settings could not be loaded: {reason}. They retry every {} seconds while this tab is visible.", POLL_MS / 1000) }
         },
         Admin::Shown { body, reason } => {
             let reason = reason.unwrap_or_default();
