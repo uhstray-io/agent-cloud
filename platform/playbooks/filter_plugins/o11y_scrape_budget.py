@@ -815,7 +815,7 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
 AVAILABILITY_NAMESPACE_REASONS = frozenset({
     "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
     "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
-    "namespace_runtime_unreadable", "namespace_unverified",
+    "namespace_runtime_unreadable", "namespace_unverified", "namespace_internal_error",
 })
 _NAMESPACE_SHA256 = re.compile(r"[0-9a-f]{64}")
 
@@ -824,17 +824,20 @@ def o11y_availability_namespace_diagnostic(result: Any) -> str:
     """Reduce a protected namespace-gate command result to one fixed category.
 
     Returns "isolated" only for a clean, well-formed isolated result, the refusal reason for a
-    well-formed unverified result, and "namespace_unverified" for anything else. No value from
-    the protected stdout is returned, so a caller can print the answer without printing the
-    result it was computed from.
+    well-formed unverified result, "namespace_helper_failed" when the helper exited with a code
+    other than 0 or 2 (it crashed before printing), and "namespace_unverified" for anything else.
+    No value from the protected stdout is returned, so a caller can print the answer without
+    printing the result it was computed from.
     """
     generic = "namespace_unverified"
     try:
         if not isinstance(result, Mapping):
             return generic
         rc, stdout = result.get("rc"), result.get("stdout")
-        if isinstance(rc, bool) or not isinstance(rc, int) or rc not in {0, 2}:
+        if isinstance(rc, bool) or not isinstance(rc, int):
             return generic
+        if rc not in {0, 2}:
+            return "namespace_helper_failed"
         if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 4096:
             return generic
 
