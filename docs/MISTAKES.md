@@ -1034,13 +1034,14 @@ Service Health probes the public URL through the edge.
 "production skynet now launches through the gate" and wrote the same claim into the launch-gate
 status entry in `AGENTS.md` on the evidence PR (#932). The check behind it was the deploy's two
 in-container gate probes: `POST /v1/launch` with no token answered 401, and with skynet's caller
-token and an empty body answered 400 `bad_request` (`deploy-skynet.yml`, the two "Launch gate"
+token and an empty JSON object (`{}`) as the body answered 400 `bad_request` (`deploy-skynet.yml`, the two "Launch gate"
 verify tasks). Those select reachability over TLS, the name mapping and authentication. A launch
-is outside them: the gate refuses an empty body before it reads a template, asks OPA or calls
+is outside them: the gate refuses that body, which names no template, before it reads a template, asks OPA or calls
 Semaphore, and no skynet-initiated launch had gone through the gate in either environment (checked
 the same day: production's last 200 tasks, ids 14008 to 14207, span the gate's whole life from
-deploy task 14113, and the only `skynet`-tagged one is the gate's own probe task 14118; locally,
-skynet had no gate client before skynet#14 merged that day). The gate's own allow path
+deploy task 14113, and the only `skynet`-tagged one is task 14118, the dry-run task the gate's probe created; locally,
+skynet had no gate client before skynet#14 merged (2026-11-09 UTC), and the local end-to-end proof,
+`skynet-launch-containment` task 4.4, was still open). The gate's own allow path
 was proven separately by `Probe launch-gate (Dev)` task 14117, which posts from inside the gate's
 container with a fixed probe request, not through skynet's client. The `pr-reviewer` round on #932
 caught the wording before merge, and the entry now says the gate is skynet's only launch path and
