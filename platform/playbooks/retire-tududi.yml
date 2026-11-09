@@ -10,11 +10,13 @@
 #
 # Order (each play fails the run before the next starts):
 #   1. localhost  PREFLIGHT  extra-var refusals, one declared host, a complete declaration,
-#                            confirm_destroy == the declared vm_vmid. Then the o11y
-#                            restore-target input gate (credential-free). Nothing else.
-#   2. tududi_svc ARCHIVE    stop the container; require it not running; resolve the two
-#                            volumes compose created for project `tududi`; size them (read);
-#                            refuse over 50 MiB; export each volume; gzip both into one
+#                            confirm_destroy == the declared vm_vmid. Then the OpenBao transport
+#                            check and the o11y restore-target input gate (both credential-free).
+#                            Nothing else runs before these.
+#   2. tududi_svc ARCHIVE    read tududi's state; stop the container only if this run found it
+#                            running; require it not running; resolve the two volumes compose
+#                            created for project `tududi`; size them (read, through podman
+#                            unshare); refuse over 50 MiB; export each volume; gzip both into one
 #                            archive; list it; fingerprint it (sha256). Nothing is removed.
 #                            On failure: restart tududi if this run stopped it.
 #   3. localhost  DELIVER    read the site-config deploy key from OpenBao; fetch the archive
@@ -22,7 +24,9 @@
 #                            site-config branch and push; clone that branch again and
 #                            require the remote copy's sha256 to equal the VM's. On failure:
 #                            restart tududi if this run stopped it. Scratch dirs (deploy key,
-#                            clone, the VM's archive copy) are wiped in `always`.
+#                            clone, the VM's archive copy) are wiped in `always`. This play has
+#                            no connection override: the controller steps run on the implicit
+#                            localhost, and the delegated VM steps use the VM's own connection.
 #   4. VM DESTROY            destroy-vm.yml with target_service=tududi. It re-checks the live
 #                            VM (vmid AND name AND node), then purges the VM and its disks.
 #
@@ -46,6 +50,10 @@
 # WHAT THE ARCHIVE HOLDS. The archive is tududi's SQLite database and its uploads. The database
 # holds user accounts with their password hashes and session records. The archive is committed
 # to the private site-config repository, the accepted location for this teardown's archive.
+#
+# THE ARCHIVE IS THEN THE ONLY COPY. Once the VM is destroyed, the archive on site-config is the
+# only copy of the tududi data. Merge it into site-config main before closing task 7.5; until then
+# it is the only copy of the tududi data. The run prints the branch and path at its end.
 #
 # OPERATOR PREREQUISITE. This template runs in its own isolated Semaphore environment,
 # `Retire tududi inputs`, because destroy-vm.yml refuses the shared environment's plaintext
@@ -79,6 +87,7 @@
     _rt_host: "{{ _rt_hosts | first | default('') }}"
     _rt_decl: "{{ hostvars[_rt_host] | default({}) }}"
     _rt_vmid: "{{ _rt_decl.vm_vmid | default('') }}"
+    _bao_url: "{{ hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '' }}"
   tasks:
     # Extra vars outrank hostvars, so a launch that set vm_vmid, vm_name or vm_node would replace
     # the inventory's declaration: this gate would compare the confirmation to a value the launch
@@ -126,6 +135,13 @@
           '{{ _rt_decl.vm_name | default('?') }}' on '{{ _rt_decl.vm_node | default('?') }}').
           Nothing was changed.
         quiet: true
+
+    # The OpenBao endpoint must be a non-cleartext transport before anything is stopped. Credential-free:
+    # the URL comes from the inventory's openbao_svc host, and nothing runs on tududi_svc before this.
+    - name: "Refuse a cleartext secret-store endpoint before tududi is stopped"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
 
     - name: "Stamp this run once (the archive name uses it)"
       ansible.builtin.set_fact:
@@ -177,18 +193,28 @@
           ansible.builtin.set_fact:
             _rt_archive: "tududi-final-{{ hostvars['localhost']._rt_stamp }}.tar.gz"
 
+        # Read the state BEFORE touching the container. This run stops tududi only when it found it running,
+        # and only a stop this run made is undone on failure. A container that was already stopped is left
+        # as it was. Read only, so it also runs under --check.
+        - name: "Read the container state before the stop (read only)"
+          ansible.builtin.command:
+            argv: [podman, container, inspect, "{{ _rt_container }}", --format, "{{ '{{' }}.State.Status{{ '}}' }}"]
+          register: _rt_state_before
+          changed_when: false
+          check_mode: false
+
         # The container is stopped before any archive read: the SQLite file must not change under
         # the copy (spec: archive from stopped volumes). Not destructive; `podman start` undoes it.
-        - name: "Stop the tududi container before reading its volumes"
+        - name: "Stop the tududi container before reading its volumes (only if this run found it running)"
           ansible.builtin.command:
             argv: [podman, stop, "{{ _rt_container }}"]
           changed_when: true
-          when: not ansible_check_mode
+          when: _rt_state_before.stdout | trim == 'running' and not ansible_check_mode
 
         - name: "Remember that this run stopped tududi (a failure restarts it)"
           ansible.builtin.set_fact:
             _tududi_stopped: true
-          when: not ansible_check_mode
+          when: _rt_state_before.stdout | trim == 'running' and not ansible_check_mode
 
         - name: "Read the container state after the stop (must not be running or paused)"
           ansible.builtin.command:
@@ -197,11 +223,11 @@
           changed_when: false
           when: not ansible_check_mode
 
-        - name: "Require tududi stopped before its volumes are read"
+        - name: "Require tududi not running or paused before its volumes are read"
           ansible.builtin.assert:
             that:
               - _rt_state.stdout | trim not in ['running', 'paused']
-            fail_msg: "tududi is still '{{ _rt_state.stdout | trim }}' after the stop. Nothing was archived or removed."
+            fail_msg: "tududi is '{{ _rt_state.stdout | trim }}', not stopped. Nothing was archived or removed."
             quiet: true
           when: not ansible_check_mode
 
@@ -235,9 +261,12 @@
           changed_when: false
           check_mode: false
 
-        - name: "Measure each volume on disk, in bytes (read only)"
+        # Measured through `podman unshare`: it runs du inside the rootless user namespace, where the
+        # subuid-owned files of a rootless volume are visible. Not verified on the VM; the local podman
+        # here is a remote client, so `podman unshare` cannot be run from this Mac.
+        - name: "Measure each volume on disk, in bytes (read only, inside the rootless user namespace)"
           ansible.builtin.command:
-            argv: [du, -sb, "{{ item.stdout }}"]
+            argv: [podman, unshare, du, -sb, "{{ item.stdout }}"]
           loop: "{{ _rt_mounts.results }}"
           register: _rt_du
           changed_when: false
@@ -329,9 +358,12 @@
               tududi was restarted if this run had stopped it. No volume, container or VM was removed.
 
 # ── 3. DELIVER (localhost) ──────────────────────────────────────────────────
+# No `connection: local` on this play. The controller steps run on the implicit localhost, whose
+# connection is local, and the delegated VM steps (fetch, restart, scratch wipe) use the VM's own
+# connection. A play-level `connection: local` would run every delegated VM step on the controller
+# instead (verified on ansible-core 2.21: `hostname` under delegate_to printed the controller).
 - name: "Deliver the archive to site-config and prove the pushed copy matches the VM's"
   hosts: localhost
-  connection: local
   gather_facts: false
   become: false
   any_errors_fatal: true
@@ -343,22 +375,13 @@
     _bao_secret_id: "{{ lookup('env', 'BAO_SECRET_ID') }}"
     _key_path: "secret/data/services/ssh/site-config"
   tasks:
+    # Kept here as well as in preflight: a repo-wide rule (platform/tests/test_credential_leaks.bats) requires
+    # every play that resolves an OpenBao URL to include this guard. The preflight instance is the one that
+    # runs before tududi is stopped.
     - name: "Refuse a cleartext secret-store endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
-
-    # Ansible does not stop a run when a host is UNREACHABLE, so this play can start after play 2
-    # produced nothing (measured with an unreachable scratch host). The archive step's fingerprint
-    # is the proof it ran; without it there is nothing to deliver and nothing may be removed.
-    - name: "Require the VM archive step to have completed (its fingerprint exists)"
-      ansible.builtin.assert:
-        that:
-          - hostvars[_rt_host]._rt_sha is defined
-          - hostvars[_rt_host]._rt_archive is defined
-        fail_msg: "The archive step did not complete on {{ _rt_host }} (unreachable or skipped). Nothing was removed."
-        quiet: true
-      when: not ansible_check_mode
 
     - name: "Deliver, restoring tududi if this run stopped it and delivery fails"
       block:
@@ -403,6 +426,18 @@
         - name: "Deliver the archive (skipped under --check: it writes the clone and pushes)"
           when: not ansible_check_mode
           block:
+            # Ansible does not stop a run when a host is UNREACHABLE, so delivery can start after play 2
+            # produced nothing (measured with an unreachable scratch host). The archive step's fingerprint
+            # is the proof it ran. This gate has no `when` of its own: its only guard is the dry-run block
+            # above. Without the fingerprint there is nothing to deliver, and nothing may be removed.
+            - name: "Require the VM archive step to have completed (its fingerprint exists)"
+              ansible.builtin.assert:
+                that:
+                  - hostvars[_rt_host]._rt_sha is defined
+                  - hostvars[_rt_host]._rt_archive is defined
+                fail_msg: "The archive step did not complete on {{ _rt_host }} (unreachable or skipped). Nothing was removed."
+                quiet: true
+
             - name: "Make the controller scratch dir (0700)"
               ansible.builtin.tempfile:
                 state: directory
@@ -505,6 +540,14 @@
                   The archive on site-config does not match the VM's sha256. Nothing was removed; tududi
                   was restarted if this run had stopped it.
                 quiet: true
+
+            # The run's last word on the archive. From the destroy below on, this is the only copy of the data.
+            - name: "Name the archive that is now the only copy of the tududi data"
+              ansible.builtin.debug:
+                msg: >-
+                  Archive {{ hostvars[_rt_host]._rt_archive }} is on site-config branch {{ _sc_branch }} at
+                  archives/tududi/. Merge it into site-config main before closing task 7.5; until then it is
+                  the only copy of the tududi data.
 
       rescue:
         - name: "Restart tududi if this run stopped it (the service returns as it was)"

@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 import playbook_yaml
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -26,9 +27,31 @@ DESTROY = "destroy-vm.yml"
 CAP = "52428800"  # 50 MiB, GitHub's warning threshold for a file (docs.github.com, About large files)
 CREDENTIAL_READS = {"Log in to OpenBao (AppRole)", "Read the site-config deploy key"}
 READ_ONLY = CREDENTIAL_READS | {
+    "Read the container state before the stop (read only)",
     "Resolve the volumes compose created for the tududi project (read only)",
     "Resolve each volume's mountpoint (read only)",
-    "Measure each volume on disk, in bytes (read only)",
+    "Measure each volume on disk, in bytes (read only, inside the rootless user namespace)",
+}
+ONLY_COPY = "Merge it into site-config main before closing task 7.5; until then it is the only copy of the tududi data."
+TRANSPORT_CHECK = "tasks/assert-bao-transport.yml"
+STOP_WHEN = "_rt_state_before.stdout | trim == 'running' and not ansible_check_mode"
+# Data-loss gates: each must assert exactly these expressions, with no `when` of its own. Its only guard is
+# the dry-run block it sits in ("not ansible_check_mode"). A gate that a `when` can skip is no gate.
+DATA_LOSS_GATES = {
+    "Require the VM archive step to have completed (its fingerprint exists)": [
+        "hostvars[_rt_host]._rt_sha is defined",
+        "hostvars[_rt_host]._rt_archive is defined",
+    ],
+    "Require the fetched copy to match the VM's archive": [
+        "_rt_ctrl_stat.stat.checksum == hostvars[_rt_host]._rt_sha",
+    ],
+    "Require this run to have pushed the archive (a no-change push cannot be read back)": [
+        "_sc_staged.rc != 0",
+    ],
+    "Require the remote copy to match the VM's archive (the gate before any removal)": [
+        "_rt_remote_stat.stat.exists",
+        "_rt_remote_stat.stat.checksum == hostvars[_rt_host]._rt_sha",
+    ],
 }
 WRITE_MODULES = ("ansible.builtin.tempfile", "ansible.builtin.fetch", "ansible.builtin.copy", "ansible.builtin.file")
 
@@ -199,9 +222,21 @@ def test_the_destroy_follows_the_read_back_gate_and_is_the_last_step():
     assert after[-1][0] == 5 and after[-1][2] is None, "the destroy import is the last step"
 
 
-def test_the_archive_proof_gate_refuses_when_the_archive_step_did_not_complete():
-    gate = next(t for t in PLAYS[4]["tasks"] if "_rt_sha is defined" in json.dumps(t))
-    assert "_rt_archive is defined" in json.dumps(gate)
+@pytest.mark.parametrize("name", sorted(DATA_LOSS_GATES))
+def test_a_data_loss_gate_asserts_exactly_its_expressions_and_has_no_when_of_its_own(name):
+    matches = [(task, guards) for _, _, task, guards in STEPS if task is not None and task.get("name") == name]
+    assert len(matches) == 1, name
+    task, guards = matches[0]
+    assert set(task) == {"name", "ansible.builtin.assert"}, sorted(task)
+    assert task["ansible.builtin.assert"]["that"] == DATA_LOSS_GATES[name]
+    assert guards == (json.dumps("not ansible_check_mode"),), guards
+
+
+def test_the_archive_gate_is_inside_the_dry_run_block_before_any_fetch_or_push():
+    gate = _find(lambda t: t.get("name", "").startswith("Require the VM archive step"), "archive-completed gate")
+    fetch = _find(lambda t: "ansible.builtin.fetch" in t, "fetch of the archive")
+    push = _find(lambda t: t.get("ansible.builtin.include_tasks") == "tasks/site-config-push.yml", "site-config push")
+    assert STEPS[gate][0] == 4 and gate < fetch < push
 
 
 # ── volumes and size ────────────────────────────────────────────────────────
@@ -229,8 +264,11 @@ def test_the_archive_is_capped_at_fifty_mebibytes_and_refused_when_empty():
     assert any(f"<= {CAP}" in e for e in expressions)
 
 
-def test_the_size_is_measured_before_any_export():
-    du = _find(lambda t: (_argv(t) or [None])[0] == "du", "du -sb")
+def test_the_size_is_measured_inside_the_rootless_user_namespace_before_any_export():
+    # Plain `du` runs as the deploy user, which may not read the subuid-owned files of a rootless volume.
+    # `podman unshare` runs it inside the user namespace. The failure stays closed: no ignore_errors.
+    du = _find(lambda t: (_argv(t) or [])[:3] == ["podman", "unshare", "du"], "podman unshare du -sb")
+    assert "ignore_errors" not in STEPS[du][2] and "failed_when" not in STEPS[du][2]
     export = _find(lambda t: (_argv(t) or [])[:3] == ["podman", "volume", "export"], "podman volume export")
     cap = _find(lambda t: CAP in _text(t) and "ansible.builtin.assert" in t and "_rt_du" in _text(t), "du cap")
     assert du < cap < export
@@ -239,6 +277,65 @@ def test_the_size_is_measured_before_any_export():
 def test_the_archive_host_play_is_one_podman_host():
     first = PLAYS[3]["tasks"][0]
     assert _asserts(first) == ["ansible_play_hosts_all | length == 1", "_rt_engine == 'podman'"]
+
+
+def test_tududi_is_stopped_only_when_this_run_found_it_running():
+    before = _find(lambda t: t.get("register") == "_rt_state_before", "state read before the stop")
+    stop = _find(lambda t: (_argv(t) or [])[:2] == ["podman", "stop"], "podman stop")
+    recorded = _find(lambda t: "ansible.builtin.set_fact" in t and "_tududi_stopped" in _text(t), "_tududi_stopped set")
+    assert before < stop < recorded
+    assert STEPS[before][2].get("check_mode") is False, "the pre-stop read runs under --check too"
+    assert STEPS[stop][2]["when"] == STOP_WHEN
+    assert STEPS[recorded][2]["when"] == STOP_WHEN
+
+
+def test_no_play_that_delegates_overrides_the_connection():
+    # A play-level or task-level `connection: local` makes every delegated task run on the controller
+    # (verified on ansible-core 2.21: `hostname` under delegate_to printed the controller's hostname).
+    delegating_plays = set()
+    for index, play in enumerate(PLAYS):
+        if "ansible.builtin.import_playbook" in play:
+            continue
+        for task, _ in _flatten(play.get("tasks")):
+            if "delegate_to" in task:
+                delegating_plays.add(index)
+                assert task.get("connection") != "local", task["name"]
+    assert delegating_plays == {4}, "only the deliver play delegates to the VM"
+    for index in delegating_plays:
+        assert PLAYS[index].get("connection") != "local", PLAYS[index]["name"]
+
+
+def test_the_transport_check_runs_in_preflight_before_tududi_is_stopped():
+    includes = [
+        i
+        for i, (_, _, t, _) in enumerate(STEPS)
+        if t is not None and t.get("ansible.builtin.include_tasks") == TRANSPORT_CHECK
+    ]
+    # Two includes, not one: preflight runs the guard before tududi is stopped, and the delivery play keeps it
+    # because the repo-wide rule requires every play that resolves an OpenBao URL to carry the guard.
+    assert sorted(STEPS[i][0] for i in includes) == [1, 4], "one include in preflight, one in delivery"
+    gate = STEPS.index(next(s for s in STEPS if s[2] is _confirm_task()))
+    stop = _find(lambda t: (_argv(t) or [])[:2] == ["podman", "stop"], "podman stop")
+    preflight = next(i for i in includes if STEPS[i][0] == 1)
+    assert gate < preflight < stop
+    assert PLAYS[1]["vars"]["_bao_url"].startswith("{{ hostvars[(groups['openbao_svc']")
+
+
+def test_the_only_copy_sentence_is_in_the_run_record_the_header_and_the_survey():
+    debug = [
+        task
+        for _, _, task, _ in STEPS
+        if task is not None
+        and "ansible.builtin.debug" in task
+        and ONLY_COPY in " ".join(str(task["ansible.builtin.debug"]["msg"]).split())
+    ]
+    assert len(debug) == 1, "the run ends by naming the archive that is now the only copy"
+    debug_index = STEPS.index(next(s for s in STEPS if s[2] is debug[0]))
+    readback = _find(lambda t: "_rt_remote_stat.stat.checksum" in _text(t), "remote checksum gate")
+    assert debug_index > readback and STEPS[debug_index][0] == 4
+    header = " ".join(line.lstrip("#").strip() for line in PLAYBOOK.read_text().splitlines() if line.startswith("#"))
+    assert ONLY_COPY in header
+    assert ONLY_COPY in " ".join(_template()["survey_vars"][0]["description"].split())
 
 
 # ── check mode and credentials ──────────────────────────────────────────────

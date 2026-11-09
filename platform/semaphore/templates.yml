@@ -1392,7 +1392,8 @@ templates:
           Type the declared vm_vmid of the tududi host. Anything else refuses before any archive or removal.
           No default on purpose. Operator: before the first run, Provision Seed Environment with seed_template
           'Retire tududi' (and seed_variant dev for the (Dev) twin) binds the environment's AppRole inputs.
-          Until then this template cannot authenticate.
+          Until then this template cannot authenticate. After the destroy the archive is the only copy of the data.
+          Merge it into site-config main before closing task 7.5; until then it is the only copy of the tududi data.
         type: string
         required: true
 
