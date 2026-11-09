@@ -33,6 +33,13 @@ if [ "${LOCAL_MODE:-}" != "true" ] && grep -qE '^SKYNET_LAUNCH_GATE_HOSTNAME=.' 
   COMPOSE_OVERLAYS="compose.launch-gate.yml ${COMPOSE_OVERLAYS:-}"
 fi
 
+# Both modes: .env carries SKYNET_TLS_CERT_FILE only when the inventory declares skynet_tls, and env.j2 renders it in
+# both modes. compose.tls.yml publishes the HTTPS port; the certificate directory is mounted by the mode overlays.
+# .env is the one decision point, as for the launch gate. Undeclared, the overlay is not loaded.
+if grep -qE '^SKYNET_TLS_CERT_FILE=.' .env 2>/dev/null; then
+  COMPOSE_OVERLAYS="compose.tls.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     --no-pull) SKIP_PULL=true ;;
@@ -72,11 +79,17 @@ step_start() {
   # compose-spec change, so plain `up -d` would leave the old containers running with stale env.
   # compose_up_if_changed hashes .env with the compose files and recreates only when that digest
   # or an image changed, and prints DEPLOY_CHANGED=true|false for the playbook.
-  # certs/ is hashed only where it exists. Both overlays mount it (local: the step-ca bundle;
-  # production: the combined bundle, which SSL_CERT_FILE names), so a renewed bundle inside it is a
-  # changed input and recreates the containers. Without the directory there is no bundle to hash.
-  if [ -d certs ]; then
-    compose_up_if_changed certs
+  # The trust bundles under certs/ are hashed, and only those: each is the process's trust store
+  # (SSL_CERT_FILE names one), so a changed bundle recreates the containers. The HTTPS leaf is NOT
+  # hashed: skynet re-reads its certificate on every new connection, so a renewal must not recreate
+  # the containers. Hashing the whole certs/ directory would make every renewal a restart. Only
+  # bundles that exist are passed, because compose_inputs_digest refuses a path it cannot read.
+  local bundles=() b
+  for b in certs/step-ca-bundle.crt certs/ca-bundle-combined.crt; do
+    if [ -f "$b" ]; then bundles+=("$b"); fi
+  done
+  if [ "${#bundles[@]}" -gt 0 ]; then
+    compose_up_if_changed "${bundles[@]}"
   else
     compose_up_if_changed
   fi

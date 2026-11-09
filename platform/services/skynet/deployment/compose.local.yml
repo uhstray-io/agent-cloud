@@ -10,6 +10,15 @@
 # tasks/distribute-ca-root.yml writes to certs/step-ca-bundle.crt (the deploy dir is the
 # consumer's _ca_root_dest_dir). No public roots are needed: skynet's configured endpoints are
 # all local in local-dev.
+#
+# user "1001:0": the local consumer that writes certs/ is the Semaphore container, which runs as uid
+# 1001 gid 0. The leaf key it writes is 0600 under that uid, so the process runs as that uid too, as
+# platform/services/launch-gate/deployment/compose.local.yml records for the gate. Production maps uid
+# 10001 with compose.prod.yml instead.
+#
+# The TLS name (env.j2 SKYNET_TLS_NAME) is a network alias on local-dev, so a local probe from the
+# Semaphore container reaches the HTTPS port by that name. The default `skynet` is the container name,
+# so a local deploy that renders no TLS name still parses and resolves.
 
 networks:
   # podman-compose requires every referenced network declared, incl. default.
@@ -19,9 +28,12 @@ networks:
 
 services:
   skynet:
+    user: "1001:0"
     networks:
-      - default
-      - local-dev
+      default:
+      local-dev:
+        aliases:
+          - ${SKYNET_TLS_NAME:-skynet}
     security_opt:
       - label=disable
     volumes:

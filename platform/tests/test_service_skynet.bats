@@ -964,8 +964,162 @@ import yaml
 
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 assert list(doc["services"]) == ["skynet"], doc["services"]
-assert set(doc["services"]["skynet"]) == {"volumes", "environment", "extra_hosts"}, doc["services"]["skynet"]
+assert set(doc["services"]["skynet"]) == {"user", "userns_mode", "volumes", "environment", "extra_hosts"}, doc["services"]["skynet"]
 PY
+}
+
+@test "skynet: the production overlay runs skynet as uid 10001 under keep-id, the uid the image runs as" {
+  local overlay="$DEPLOY_DIR/compose.prod.yml"
+  skip_unless_service_file "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+svc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["services"]["skynet"]
+assert svc["user"] == "10001:10001", svc.get("user")
+assert svc["userns_mode"] == "keep-id:uid=10001,gid=10001", svc.get("userns_mode")
+PY
+}
+
+@test "skynet: the TLS overlay publishes the HTTPS port alone, on the two required variables" {
+  local overlay="$DEPLOY_DIR/compose.tls.yml"
+  skip_unless_service_file "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert set(doc) == {"services"}, doc.keys()
+assert list(doc["services"]) == ["skynet"], doc["services"]
+assert doc["services"]["skynet"] == {
+    "ports": ["${SKYNET_TLS_PUBLISH_BIND:?set by the deploy}:${SKYNET_TLS_PUBLISH_PORT:?set by the deploy}:8443"],
+}, doc["services"]["skynet"]
+PY
+}
+
+@test "skynet: deploy.sh loads the TLS overlay on the SKYNET_TLS_CERT_FILE marker in both modes, and only then" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  # Run the real TLS block, extracted from the file, against a .env in each directory under each LOCAL_MODE.
+  local tls="$BATS_TEST_TMPDIR/tls-overlay.sh"
+  sed -n '/^if grep -qE .*SKYNET_TLS_CERT_FILE=/,/^fi$/p' "$deploy" > "$tls"
+  [ -s "$tls" ]
+  local marked="$BATS_TEST_TMPDIR/marked" blank="$BATS_TEST_TMPDIR/blank" absent="$BATS_TEST_TMPDIR/absent"
+  mkdir -p "$marked" "$blank" "$absent"
+  printf 'SKYNET_TLS_CERT_FILE=/certs/skynet-server/current/cert.pem\n' > "$marked/.env"
+  printf 'SKYNET_TLS_CERT_FILE=\n' > "$blank/.env"
+  # overlays_for <directory holding .env> <LOCAL_MODE value, or empty for unset>
+  overlays_for() {
+    if [ -n "$2" ]; then
+      (cd "$1" && env -u COMPOSE_OVERLAYS LOCAL_MODE="$2" bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$tls")
+    else
+      (cd "$1" && env -u COMPOSE_OVERLAYS -u LOCAL_MODE bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$tls")
+    fi
+  }
+  local mode
+  for mode in "" true; do
+    assert_contains "$(overlays_for "$marked" "$mode")" 'compose.tls.yml'
+    refute_contains "$(overlays_for "$blank" "$mode")" 'compose.tls.yml'
+    refute_contains "$(overlays_for "$absent" "$mode")" 'compose.tls.yml'
+  done
+}
+
+@test "skynet: deploy.sh hashes the trust bundles under certs/, never the directory, so a renewed leaf is not a change" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  local step="$BATS_TEST_TMPDIR/step-start.sh"
+  sed -n '/^step_start() {/,/^}/p' "$deploy" > "$step"
+  [ -s "$step" ]
+  # The real step, extracted, with compose_up_if_changed replaced by a stub that prints its arguments.
+  # It runs under the bash of this machine (3.2 on macOS), where an empty array under set -u is an error.
+  step_args() {  # <directory to run in>
+    (cd "$1" && bash -c 'set -eu; info() { :; }; compose_up_if_changed() { printf "ARGS:%s\n" "$*"; }; source "$1"; step_start' _ "$step")
+  }
+  local bare="$BATS_TEST_TMPDIR/bare" bundled="$BATS_TEST_TMPDIR/bundled" leafed="$BATS_TEST_TMPDIR/leafed"
+  mkdir -p "$bare" "$bundled/certs" "$leafed/certs/skynet-server/current"
+  : > "$bundled/certs/step-ca-bundle.crt"
+  : > "$bundled/certs/ca-bundle-combined.crt"
+  : > "$leafed/certs/step-ca-bundle.crt"
+  : > "$leafed/certs/ca-bundle-combined.crt"
+  : > "$leafed/certs/skynet-server/current/cert.pem"
+  : > "$leafed/certs/skynet-server/current/key.pem"
+  # No certs/ at all: no arguments, the whole project is hashed from its compose files and .env.
+  [ "$(step_args "$bare")" = "ARGS:" ]
+  # Both bundles present: exactly those two, in this order.
+  [ "$(step_args "$bundled")" = "ARGS:certs/step-ca-bundle.crt certs/ca-bundle-combined.crt" ]
+  # The leaf and its key sit beside the bundles and are never passed.
+  [ "$(step_args "$leafed")" = "ARGS:certs/step-ca-bundle.crt certs/ca-bundle-combined.crt" ]
+}
+
+@test "skynet: the local overlay runs as uid 1001 gid 0 and aliases the TLS name on local-dev, defaulting to the container name" {
+  local overlay="$DEPLOY_DIR/compose.local.yml"
+  skip_unless_service_file "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+svc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["services"]["skynet"]
+assert svc["user"] == "1001:0", svc.get("user")
+assert svc["networks"] == {"default": None, "local-dev": {"aliases": ["${SKYNET_TLS_NAME:-skynet}"]}}, svc["networks"]
+PY
+}
+
+@test "skynet: env renders the HTTPS listener block only under skynet_tls, on the declared bind, and never SKYNET_TLS_PORT" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local env="$DEPLOY_DIR/templates/env.j2"
+  skip_unless_service_file "$env"
+  cat > "$BATS_TEST_TMPDIR/render.yml" <<'YAML'
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Render the skynet env file for this case
+      ansible.builtin.template:
+        src: "{{ env_src }}"
+        dest: "{{ env_dest }}"
+        mode: "0600"
+YAML
+  python3 - "$env" "$BATS_TEST_TMPDIR" <<'PY'
+import json
+import sys
+
+env, tmp = sys.argv[1], sys.argv[2]
+base = {
+    "env_src": env,
+    "secrets": {"api_token": "a", "db_password": "b", "read_token": "c", "semaphore_api_token": "d"},
+    "skynet_image": "ghcr.io/uhstray-io/skynet-tier2@sha256:" + "a" * 64,
+    "skynet_gateway_url": "https://inference.example.test",
+    "skynet_model": "test-model",
+    "skynet_opa_url": "https://opa.example.test:8281",
+    "skynet_opa_ip": "203.0.113.20",
+    "skynet_semaphore_url": "https://semaphore.example.test",
+    "skynet_semaphore_project": 1,
+    "skynet_semaphore_catalog": "production",
+    "skynet_publish_bind": "203.0.113.9",
+    "local_mode": False,
+}
+cases = {
+    "off": dict(base),
+    "on": {**base, "skynet_tls": True, "dns_site": "site", "dns_zone": "example.test"},
+}
+for name, values in cases.items():
+    values["env_dest"] = f"{tmp}/tls-{name}.env"
+    with open(f"{tmp}/tls-vars-{name}.json", "w", encoding="utf-8") as fh:
+        json.dump(values, fh)
+PY
+  local name
+  for name in off on; do
+    ansible-playbook "$BATS_TEST_TMPDIR/render.yml" -e "@$BATS_TEST_TMPDIR/tls-vars-$name.json" >/dev/null
+  done
+  refute_grep -qE '^SKYNET_TLS_' "$BATS_TEST_TMPDIR/tls-off.env"
+  assert_grep -qx 'SKYNET_TLS_CERT_FILE=/certs/skynet-server/current/cert.pem' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_KEY_FILE=/certs/skynet-server/current/key.pem' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_BIND=203.0.113.9' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_PORT=8443' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_NAME=skynet.site.example.test' "$BATS_TEST_TMPDIR/tls-on.env"
+  # The image reads SKYNET_TLS_PORT as its own listen port; rendering it here would move the listener.
+  refute_grep -qE '^SKYNET_TLS_PORT=' "$BATS_TEST_TMPDIR/tls-on.env"
+  refute_grep -qE '^SKYNET_TLS_PORT=' "$BATS_TEST_TMPDIR/tls-off.env"
 }
 
 @test "skynet: deploy.sh adds the production overlay only outside LOCAL_MODE" {

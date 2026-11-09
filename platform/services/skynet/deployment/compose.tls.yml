@@ -1,0 +1,20 @@
+# skynet — HTTPS listener overlay. deploy.sh appends it in both modes, and only when .env carries
+# SKYNET_TLS_CERT_FILE: templates/env.j2 renders that line only when the inventory declares skynet_tls.
+# .env is the one decision point, so this file and the variables it needs cannot disagree.
+#
+# The skynet image serves HTTPS on container port 8443 (its SKYNET_TLS_PORT default) once both
+# SKYNET_TLS_CERT_FILE and SKYNET_TLS_KEY_FILE are set; the image must carry that listener. This
+# overlay adds one publish of that port, on the declared publish bind (the same address as the plain
+# API). The plain 8080 publish in compose.yml is unchanged: the container healthcheck and the
+# gateway's route stay on it.
+#
+# Both variables are required (:?), so compose refuses to start without them rather than publishing
+# to an unset address. env.j2 renders them whenever this overlay is loaded.
+#
+# Nothing else is declared here. The certificate directory is mounted by the mode overlays
+# (compose.prod.yml, compose.local.yml), and the TLS file names arrive through env_file.
+
+services:
+  skynet:
+    ports:
+      - "${SKYNET_TLS_PUBLISH_BIND:?set by the deploy}:${SKYNET_TLS_PUBLISH_PORT:?set by the deploy}:8443"
