@@ -62,6 +62,8 @@ def make_handler(grafana="up", datasource="ok", token=TOKEN, blips=0):
             if self.path == "/api/datasources/uid/prometheus/health":
                 if self.headers.get("Authorization") != f"Bearer {TOKEN}":
                     return self.reply({"message": "invalid API key"}, 401)
+                if datasource == "forbidden":
+                    return self.reply({"message": "Access denied to datasource"}, 403)
                 if self.blip() or datasource == "db-error":
                     return self.reply({"message": "Unable to load datasource metadata"}, 500)
                 if datasource == "bad-gateway":
@@ -74,10 +76,10 @@ def make_handler(grafana="up", datasource="ok", token=TOKEN, blips=0):
     return Handler
 
 
-def run(tmp_path, handler, verbose=True):
+def run(tmp_path, handler, verbose=True, extra=None):
     with serve(handler) as addr:
         handler.addr = addr
-        extra = {"o11y_watch_url": addr, **WATCH_EXTRA}
+        extra = {"o11y_watch_url": addr, **WATCH_EXTRA, **(extra or {})}
         rc, out = run_seed(tmp_path, PLAYBOOK, addr, extra=extra, verbose=verbose)
     for secret in (TOKEN, HOOK_SECRET):
         assert secret not in out
@@ -100,6 +102,7 @@ def test_healthy_receiver_posts_nothing(tmp_path):
         ({"datasource": "db-error"}, "grafana datasource health errored (status 500, uid prometheus;"),
         ({"datasource": "bad-gateway"}, "grafana datasource health probe failed (status 502, uid prometheus)"),
         ({"token": "synthetic-stale-token"}, "watcher token rejected by Grafana (status 401)"),
+        ({"datasource": "forbidden"}, "watcher token rejected by Grafana (status 403)"),
         ({"token": ""}, "watcher_token is not in secret/services/o11y"),
     ],
 )
@@ -112,6 +115,15 @@ def test_each_failure_posts_one_named_message(tmp_path, kwargs, named):
     assert named in content
     assert TOKEN not in json.dumps(handler.posts) and HOOK_SECRET not in json.dumps(handler.posts)
     assert named in out
+
+
+def test_failure_names_the_configured_datasource_uid(tmp_path):
+    # Grafana answers an unknown uid too; the message must carry the uid that was probed.
+    handler = make_handler()
+    rc, out = run(tmp_path, handler, extra={"o11y_watch_prometheus_uid": "prom-alt"})
+    assert rc != 0
+    assert len(handler.posts) == 1, out
+    assert "grafana datasource health probe failed (status 404, uid prom-alt)" in handler.posts[0]["content"]
 
 
 def test_persistent_failure_is_probed_three_times_before_posting(tmp_path):

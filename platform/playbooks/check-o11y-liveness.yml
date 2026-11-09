@@ -29,9 +29,9 @@
 # its database verdict for 5 s, so the delay stays above that.
 #
 # Datasource health (Grafana 11.4 pkg/api/datasources.go): only a 400 is Prometheus's own
-# unhealthy verdict, so only a 400 names Prometheus. A 500 is Grafana erroring; any other
-# status (a 502 from the edge, a refused connection) is the probe path failing. Both name
-# the datasource uid. Detail: the o11y README's liveness watcher paragraph.
+# unhealthy verdict, so only a 400 names Prometheus. A 401/403 is the watcher token being
+# rejected; a 500 is Grafana erroring; any other status (a 502 from the edge, a refused
+# connection) is the probe path failing. The last two name the datasource uid. Detail: the o11y README's liveness watcher paragraph.
 #
 # Check mode probes and reports but posts nothing.
 

@@ -872,7 +872,7 @@ The same group's `o11y_grafana_db_check_failing` warns when Grafana's own databa
 (`/api/health` answering 503) fails more than four times in an hour and that holds for
 fifteen minutes. The external liveness watcher retries each probe before it pages, so this
 rule is what still reports Grafana's store failing in short bursts. Backtested on the 14
-days before the 2026-11-08 SQLite fix (2026-10-25 to 2026-11-08), it would have fired twice,
+days before the SQLite fix was deployed (merged 2026-11-07, deployed 2026-11-08; window 2026-10-25 to 2026-11-08), it would have fired twice,
 on 2026-10-30 and 2026-11-07; a threshold of more than three would have fired seven times.
 
 Order matters. Run `Deploy o11y (Dev)` with this change before any alert drill or recover
@@ -892,8 +892,9 @@ page means about 20 s of failure rather than one lost request. Only a datasource
 A 500 is reported as `grafana datasource health errored`: Grafana itself errored (loading
 the datasource, building the plugin context, the plugin call, or parsing its details), and
 `grafana_plugin_request_total{endpoint="checkHealth"}` shows only whether the plugin call
-failed. Any other status, such as a 502 from the edge while Grafana is down, is reported as
-`grafana datasource health probe failed`. Both name the datasource uid, so a mistyped
+failed. A 401 or 403 is reported as `watcher token rejected by Grafana`. Any other status,
+such as a 502 from the edge while Grafana is down, is reported as
+`grafana datasource health probe failed`. The 500 and probe-failure messages name the datasource uid, so a mistyped
 `o11y_watch_prometheus_uid` (Grafana answers it with 500 too) is visible in the message.
 
 Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
