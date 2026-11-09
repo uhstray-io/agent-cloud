@@ -24,6 +24,16 @@ cd "${SCRIPT_DIR}"
 # shellcheck source=/dev/null
 source "${LIB_DIR}/common.sh"
 
+# Production with the launch gate declared (D49): .env carries CONSOLE_LAUNCH_GATE_HOSTNAME, which env.j2 renders only
+# outside local mode and only when console_launch_gate_url is set. compose.launch-gate.yml maps the gate's name and mounts
+# the step-ca bundle the console verifies the gate against. .env is the one decision point, so the overlay and the
+# variables it needs cannot disagree. Undeclared, the overlay is not loaded and the stack is what it was before the gate.
+LAUNCH_GATE_OVERLAY=false
+if [ "${LOCAL_MODE:-}" != "true" ] && grep -qE '^CONSOLE_LAUNCH_GATE_HOSTNAME=.' .env 2>/dev/null; then
+  COMPOSE_OVERLAYS="compose.launch-gate.yml ${COMPOSE_OVERLAYS:-}"
+  LAUNCH_GATE_OVERLAY=true
+fi
+
 # Label the built image carries: the digest of everything the build reads. It is how the next
 # deploy knows whether the image on this host was built from the inputs it holds now.
 CONSOLE_BUILD_LABEL="io.agent-cloud.console.build-inputs-sha256"
@@ -97,6 +107,12 @@ step_verify_inputs() {
   [ -f "${SCRIPT_DIR}/config/role-map.json" ] || error "${SCRIPT_DIR}/config/role-map.json not found. Run Ansible deploy-console.yml first."
   [ -f "${SCRIPT_DIR}/config/catalog.json" ] || error "${SCRIPT_DIR}/config/catalog.json not found. Run Ansible deploy-console.yml first."
   info "  .env, config/scope.json, config/workflow.json, config/flows.json, config/proxmox-ca.pem, config/gateway.json, config/role-map.json and config/catalog.json present."
+  # The overlay bind-mounts this file. A missing source makes the engine create a directory in its place, so the
+  # check is here, before any container work.
+  if [ "$LAUNCH_GATE_OVERLAY" = "true" ]; then
+    [ -f "${SCRIPT_DIR}/certs/step-ca-bundle.crt" ] || error "${SCRIPT_DIR}/certs/step-ca-bundle.crt not found (the launch gate's trust bundle). Run Ansible deploy-console.yml first."
+    info "  certs/step-ca-bundle.crt present (launch gate)."
+  fi
 }
 
 step_build() {
@@ -112,10 +128,14 @@ step_start() {
   # only when that digest or the image ID changed. A rebuilt image has a new ID, so it is picked
   # up; an unchanged re-run recreates nothing and prints DEPLOY_CHANGED=true|false.
   # config/flows.json, config/proxmox-ca.pem, config/gateway.json, config/role-map.json and config/catalog.json are bind-mounted too, so a change to any recreates.
+  # The launch gate's bundle is a recreate input only with its overlay: the console reads its roots once, at startup, so a
+  # renewed intermediate in the bundle needs a recreate (the local branch already hashes the local bundle).
+  local gate_inputs=()
+  if [ "$LAUNCH_GATE_OVERLAY" = "true" ]; then gate_inputs=(certs/step-ca-bundle.crt); fi
   if [ "${LOCAL_MODE:-}" = "true" ] && [ -f compose.local.yml ]; then
     compose_up_if_changed config/scope.json config/workflow.json config/flows.json config/proxmox-ca.pem config/gateway.json config/role-map.json config/catalog.json certs/step-ca-bundle.crt
   else
-    compose_up_if_changed config/scope.json config/workflow.json config/flows.json config/proxmox-ca.pem config/gateway.json config/role-map.json config/catalog.json
+    compose_up_if_changed config/scope.json config/workflow.json config/flows.json config/proxmox-ca.pem config/gateway.json config/role-map.json config/catalog.json ${gate_inputs[@]+"${gate_inputs[@]}"}
   fi
 }
 
