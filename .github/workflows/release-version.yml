@@ -25,6 +25,10 @@ name: Release Version
 # dispatch from main with the `major` input set, and it waits in the `release-major` environment
 # for the operator's approval. That environment is configuration as code: .github/environments/.
 #
+# ISOLATED PYTHON: semver.py runs as `python3 -I`, so the scripts/ folder is not put first on sys.path.
+# Without it, a guarded pull request could add scripts/argparse.py (or any module semver.py imports)
+# and run its own code with this job's write token; the merge guard protects only semver.py and its table.
+#
 # INJECTION: no ${{ }} expression is interpolated into a run script. Values reach the shell only
 # through env:, and every shell variable is quoted. Pull request titles reach semver.py through
 # the commit messages in git, never through an expression in this file.
@@ -70,7 +74,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Backfill missing historical tags
-        run: python3 scripts/semver.py backfill --apply --push
+        run: python3 -I scripts/semver.py backfill --apply --push
 
       - name: Compute the version, tag it and publish it
         env:
@@ -83,9 +87,9 @@ jobs:
             dev)
               # dev-tags catches up: a pending run replaced by a newer one (concurrency group) leaves
               # its merge untagged, so each run tags every pull request merge since the newest dev tag.
-              TAGS="$(python3 scripts/semver.py dev-tags)" || rc=$? ;;
+              TAGS="$(python3 -I scripts/semver.py dev-tags)" || rc=$? ;;
             main)
-              TAG="$(python3 scripts/semver.py next --channel main)" || rc=$? ;;
+              TAG="$(python3 -I scripts/semver.py next --channel main)" || rc=$? ;;
             *)
               echo "::error::Release Version has no channel for '$REF_NAME'."
               exit 1 ;;
@@ -123,7 +127,7 @@ jobs:
               echo "::error::No release tag is reachable from main to start the notes from. The backfill should have created one."
               exit 1
             fi
-            NOTES="$(python3 scripts/semver.py notes --from "$PREV" --to HEAD)"
+            NOTES="$(python3 -I scripts/semver.py notes --from "$PREV" --to HEAD)"
           fi
           git tag -a "$TAG" -m "agent-cloud $TAG"
           git push origin "refs/tags/$TAG"
@@ -165,7 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           rc=0
-          TAG="$(python3 scripts/semver.py major)" || rc=$?
+          TAG="$(python3 -I scripts/semver.py major)" || rc=$?
           if [ "$rc" -ne 0 ]; then
             echo "::error::semver.py major exited $rc."
             exit "$rc"
@@ -179,7 +183,7 @@ jobs:
             echo "::error::No release tag is reachable from main to start the notes from. The backfill should have created one."
             exit 1
           fi
-          NOTES="$(python3 scripts/semver.py notes --from "$PREV" --to HEAD)"
+          NOTES="$(python3 -I scripts/semver.py notes --from "$PREV" --to HEAD)"
           git tag -a "$TAG" -m "agent-cloud $TAG"
           git push origin "refs/tags/$TAG"
           gh release create "$TAG" --title "agent-cloud $TAG" --notes "$NOTES" --verify-tag
