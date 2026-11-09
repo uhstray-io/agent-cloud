@@ -6,12 +6,14 @@
 # plane_svc host's `plane_projects_private` in site-config (names that must stay private), merged.
 # Every declared project is created; `enabled` decides only whether its repository's OpenSpec
 # tasks are read. An entry with no `repo` is a project with no repository: it is created, never
-# read, and its external_id is `project:<name>`.
+# read, and its external_id is `project:<name>`, so its name is its permanent key: renaming it, or
+# giving it a repo later, makes a new key whose create is refused on the identifier already taken.
 #
-# For each repository enabled in the declaration:
-#   project       one Plane project per entry (identifier and name declared there)
+# For every declared entry:
+#   project       one Plane project (identifier and name declared there)
 #   schema        the states and labels in platform/services/plane/schema.yml (created, or their
 #                 declared fields patched; never deleted)
+# and for each entry enabled in the declaration:
 #   module        one per OpenSpec change (changes/<change>/)
 #   work item     one per open task in that change's tasks.md, linked back to the file on GitHub
 #
@@ -62,7 +64,8 @@
   gather_facts: false
   vars:
     _declared_public: "{{ (lookup('file', playbook_dir ~ '/../services/plane/projects.yml') | from_yaml).plane_projects }}"
-    _declared_private: "{{ hostvars[groups['plane_svc'][0]].plane_projects_private | default([]) }}"
+    # default(..., true) so an empty `plane_projects_private:` (null) counts as no private projects.
+    _declared_private: "{{ hostvars[groups['plane_svc'][0]].plane_projects_private | default([], true) }}"
     _declared: "{{ _declared_public + _declared_private }}"
     _enabled: "{{ _declared | selectattr('enabled') | list }}"
     _parser: "{{ playbook_dir }}/../services/plane/lib/openspec_to_plane.py"
@@ -84,21 +87,46 @@
         fail_msg: "platform/services/plane/schema.yml must be a mapping with states, labels and item_labels lists."
         quiet: true
 
+    - name: "The private declaration is a list"
+      ansible.builtin.assert:
+        that:
+          - _declared_private is sequence
+          - _declared_private is not string
+          - _declared_private is not mapping
+        fail_msg: "plane_projects_private (site-config, plane_svc) must be a list of project entries."
+        quiet: true
+
+    # Shape before uniqueness: a null repo or a string "false" would otherwise pass a presence check
+    # and reach Plane as external_id null (never found again) or as an enabled entry.
+    - name: "Every declared project is well formed"
+      ansible.builtin.assert:
+        that:
+          - item is mapping
+          - item.name is defined and item.name is string and item.name | length > 0
+          - item.identifier is defined and item.identifier is string and item.identifier is match('^[A-Z0-9]{1,10}$')
+          - item.enabled is defined and item.enabled is boolean
+          - >-
+            item.repo is not defined or (item.repo is string and item.repo is match('^[^/\\s]+/[^/\\s]+$')
+            and item.private is defined and item.private is boolean)
+          - item.repo is defined or not item.enabled
+        fail_msg: >-
+          projects.yml or plane_projects_private: each entry needs name (string), identifier (1-10
+          uppercase letters or digits) and enabled (true or false); a repo is owner/name and needs
+          private (true or false); an entry without a repo cannot be enabled.
+        quiet: true
+      loop: "{{ _declared }}"
+      loop_control:
+        label: "{{ item.name | default(item) }}"
+
     - name: "The declaration is well formed"
       ansible.builtin.assert:
         that:
-          - _declared | rejectattr('name', 'defined') | list | length == 0
-          - _declared | rejectattr('identifier', 'defined') | list | length == 0
-          - _declared | rejectattr('enabled', 'defined') | list | length == 0
-          - _declared | map(attribute='identifier') | reject('match', '^[A-Z0-9]{1,10}$') | list | length == 0
           - _declared | map(attribute='identifier') | unique | list | length == _declared | length
           - _declared | map(attribute='name') | unique | list | length == _declared | length
           - _declared | selectattr('repo', 'defined') | map(attribute='repo') | unique | list | length == _declared | selectattr('repo', 'defined') | list | length
-          - _declared | rejectattr('repo', 'defined') | selectattr('enabled') | list | length == 0
         fail_msg: >-
           projects.yml plus plane_projects_private: every entry needs a name, an identifier
-          (1-10 uppercase letters or digits) and enabled; identifiers, names and repos are unique; an entry
-          without a repo cannot be enabled.
+          (1-10 uppercase letters or digits) and enabled; identifiers, names and repos are unique.
         quiet: true
 
     - name: "Refuse an enabled private repository until the plane-compose App exists"

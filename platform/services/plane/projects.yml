@@ -16,7 +16,7 @@
 #               A private repository stays false until the plane-compose GitHub App exists (task 4.4)
 #
 # Keys are permanent: the repo is the external_id of the project and of every module and item
-# beneath it. Renaming a repo entry either stops the sync (its identifier is still taken) or, with a
+# beneath it; for an entry with no repo, project:<name> is, so its name must not change either. Renaming a repo entry either stops the sync (its identifier is still taken) or, with a
 # new identifier, creates a second project whose items duplicate the old one's.
 #
 # Every name here is already public in this repository's plan documents. A project whose name must
