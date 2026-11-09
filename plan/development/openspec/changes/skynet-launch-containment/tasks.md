@@ -35,8 +35,25 @@
 
 ## 5. Production rollout
 
-- [ ] 5.1 site-config: `launch_gate_svc` host and VM declaration (NetBox IP reserved first), `internal_leaves` entry, firewall (API port from `skynet_svc` and `console_svc`), OPA `firewall_allow_groups` gains `launch_gate_svc`, `semaphore_project_members` gains `svc-launch-gate: task_runner`; inventory synced
-- [ ] 5.2 Workflow steps in order, check mode first: lookup, validate address, provision, keys + backup, harden, firewall, grow root if needed
-- [ ] 5.3 Provision launch-gate Semaphore Access (Dev), Deploy launch-gate (Dev); skynet image pin bumped and Deploy skynet (Dev); Deploy skynet's verify runs task 3.6's in-container gate probes (401 without a token, 400 bad_request with skynet's) (skynet part done 2026-11-09: image pin bumped by site-config #164, Deploy skynet (Dev) task 14142 with both probes passing)
-- [ ] 5.4 Back up the gate's credentials to site-config (caller tokens; not the launch token)
-- [ ] 5.5 Validation gate: in production, scenarios "OPA allows" (a check-mode launch of a read-only snapshot template through the gate as `service-agent`), "Duplicate launch while running", "Dry run", "Plain HTTP" and "Another LAN host" hold, and "Declared team matches" passes in Manage Semaphore Access check mode (allow path: `Probe launch-gate (Dev)`)
+- [x] 5.1 site-config: `launch_gate_svc` host and VM declaration (NetBox IP reserved first), `internal_leaves` entry, firewall (API port from `skynet_svc` and `console_svc`), OPA `firewall_allow_groups` gains `launch_gate_svc`, `semaphore_project_members` gains `svc-launch-gate: task_runner`; inventory synced
+  - **Done 2026-11-08/09.** Address reserved by `Allocate NetBox IP (Dev)` task 13901 (outside the pfSense DHCP range). site-config #158 declared the host, VM, firewall and OPA's admission; #162 declared the leaf and the team member once the VM and the account existed (declared earlier, the daily renewal and Manage Semaphore Access would have failed on them). Inventory synced after each with `scripts/semaphore-sync-inventory.py`. Placement (Joe, 2026-11-08): crabnebula, vmid 226, beside OPA and skynet.
+- [x] 5.2 Workflow steps in order, check mode first: lookup, validate address, provision, keys + backup, harden, firewall, grow root if needed
+  - **Done 2026-11-08/09**, each step check mode first:
+    - Lookup Service Inventory (Dev) task 13916; Validate Address Free (Dev) task 13918 (no ARP answer; NetBox VM record created).
+    - Provision VM (Dev): task 13921 timed out waiting for the template clone on its source node (the wait is 60 x 10 s, `provision-vm.yml`); the re-run task 14075 resumed, migrated the VM to crabnebula and passed (key login, agent, cloud-init done).
+    - Generate Service SSH Key (Dev) 14080; Distribute SSH Keys (Dev) 14082; Back Up Service SSH Key (Dev) 14084 (site-config #161).
+    - Verify Host Access (Dev) 14086, plus a key-only login from an operator workstation; Harden SSH (Dev) 14090.
+    - Apply Firewall (Dev) on `launch_gate_svc` 14092 (8443 from skynet and the console) and on `opa_svc` 14094 (OPA admits the gate on 8281).
+    - No root grow: the disk is declared at the template's 20G, as for OPA.
+- [x] 5.3 Provision launch-gate Semaphore Access (Dev), Deploy launch-gate (Dev); skynet image pin bumped and Deploy skynet (Dev); Deploy skynet's verify runs task 3.6's in-container gate probes (401 without a token, 400 bad_request with skynet's)
+  - **Gate half done 2026-11-09:** templates published by `Publish Semaphore Template Surveys (Dev)` (tasks 14097, 14100, 14103); Provision launch-gate Semaphore Access (Dev) task 14105 (account created at `task_runner`, launch probe 404, token stored); Deploy step-ca (Dev) task 14110 (name policy gains the gate's SAN; root fingerprint unchanged); Deploy launch-gate (Dev) task 14113 (leaf issued; `/healthz` 200 over TLS, plain HTTP refused, 401/403/400 refusals, and OPA's `/health` 200 from inside the container through the name map).
+  - **Skynet half done 2026-11-09:** site-config #164 bumped `skynet_image` to the skynet#14 build (`sha256:7bcd4153…`) and declared `skynet_launch_gate_url` and `skynet_launch_gate_ip`; inventory synced with `scripts/semaphore-sync-inventory.py` (apply verified, re-check matched); Deploy skynet (Dev) check-mode task 14141, then task 14142: the in-container probes answered 401 without a token and 400 `bad_request` with skynet's caller token.
+- [x] 5.4 Back up the gate's credentials to site-config (caller tokens; not the launch token)
+  - **Done 2026-11-09:** `Back Up Credentials to site-config (Dev)` task 14115 with `credential_fields=caller_skynet_token` (site-config #163).
+- [x] 5.5 Validation gate: in production, scenarios "OPA allows" (a check-mode launch of a read-only snapshot template through the gate as `service-agent`), "Duplicate launch while running", "Dry run", "Plain HTTP" and "Another LAN host" hold, and "Declared team matches" passes in Manage Semaphore Access check mode (allow path: `Probe launch-gate (Dev)`)
+  - **Done 2026-11-09:**
+    - OPA allows, Duplicate launch, Dry run: `Probe launch-gate (Dev)` task 14117. The first launch answered 201 and created task 14118 (`Snapshot Service Assessment (Dev)`, `params.dry_run` true, message `skynet probe-1794232620 service-assess`, launched by the gate's account); the immediate repeat answered 409 `already_running`.
+    - Plain HTTP: Deploy launch-gate (Dev) task 14113's verify.
+    - Another LAN host: `Probe Reachability (Dev)` 8443 from `dns_svc` closed (task 14127); from `skynet_svc` (14123) and `console_svc` (14125) open.
+    - Declared team matches: `Manage Semaphore Access (Dev)` check mode task 14132 (nothing to add, re-role or remove).
+    - Also: `Verify Service Health (Dev)` task 14134 (200).
