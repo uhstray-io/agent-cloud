@@ -3,10 +3,8 @@
 //! approval. Both send the console's caller token as a bearer and the same body. The shared client follows no
 //! redirect, so the token reaches only the origin the config names, and no URL, body or token reaches an error.
 
-// Removed when the proposal routes use it (plan 17 7.4).
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde::de::DeserializeOwned;
@@ -16,6 +14,12 @@ use super::config::{plain_origin, Secret};
 
 const DECIDE_PATH: &str = "/v1/decide";
 const LAUNCH_PATH: &str = "/v1/launch";
+
+/// How long `decide` may take. It creates no task and makes no Semaphore call.
+const DECIDE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long `launch` may take. The gate's Semaphore calls each time out at 15 s (`launch_gate.py`,
+/// `SEMAPHORE_TIMEOUT`), and a launch makes more than one, so the shared client's 20 s is too short.
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The text when the gate did not answer a decision.
 const NO_ANSWER: &str = "the launch gate did not answer";
@@ -39,20 +43,10 @@ pub struct GateCall {
 /// What `decide` answers. `Denied` carries OPA's own sentence. `Refused` carries the gate's refusal code and detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateVerdict {
-    Allowed {
-        reason: String,
-    },
-    Denied {
-        reason: String,
-    },
-    Refused {
-        status: u16,
-        code: String,
-        detail: String,
-    },
-    Unavailable {
-        detail: String,
-    },
+    Allowed { reason: String },
+    Denied { reason: String },
+    Refused { code: String, detail: String },
+    Unavailable { detail: String },
 }
 
 /// What `launch` answers. `Launched` carries the task id, the message the gate tagged the task with, and OPA's reason.
@@ -82,6 +76,9 @@ pub struct GateClient {
     base: String,
     token: Secret,
     http: reqwest::Client,
+    /// Per-call limits. Each replaces the shared client's 20 s for its own call (`reqwest` `RequestBuilder::timeout`).
+    decide_timeout: Duration,
+    launch_timeout: Duration,
 }
 
 impl GateClient {
@@ -91,12 +88,25 @@ impl GateClient {
             base: url.trim_end_matches('/').to_string(),
             token,
             http,
+            decide_timeout: DECIDE_TIMEOUT,
+            launch_timeout: LAUNCH_TIMEOUT,
         }
+    }
+
+    /// The same client with shorter per-call limits, so a test can make a silent gate time out quickly.
+    #[cfg(test)]
+    fn with_timeouts(mut self, decide: Duration, launch: Duration) -> Self {
+        self.decide_timeout = decide;
+        self.launch_timeout = launch;
+        self
     }
 
     /// The gate's decision for `call`. The gate creates no task (D51).
     pub async fn decide(&self, call: &GateCall) -> GateVerdict {
-        let reply = match self.post(DECIDE_PATH, call, NO_ANSWER).await {
+        let reply = match self
+            .post(DECIDE_PATH, call, self.decide_timeout, NO_ANSWER)
+            .await
+        {
             Ok(reply) => reply,
             Err(detail) => {
                 return GateVerdict::Unavailable {
@@ -119,11 +129,7 @@ impl GateClient {
         }
         match refusal(&reply.bytes) {
             Some(Refusal::Denied(reason)) => GateVerdict::Denied { reason },
-            Some(Refusal::Other { code, detail }) => GateVerdict::Refused {
-                status: reply.status,
-                code,
-                detail,
-            },
+            Some(Refusal::Other { code, detail }) => GateVerdict::Refused { code, detail },
             None => GateVerdict::Unavailable {
                 detail: unreadable(reply.status),
             },
@@ -132,7 +138,10 @@ impl GateClient {
 
     /// Creates the task for `call` (D51). The gate decides again here, and its answer is the one that counts.
     pub async fn launch(&self, call: &GateCall) -> LaunchOutcome {
-        let reply = match self.post(LAUNCH_PATH, call, LAUNCH_UNCERTAIN).await {
+        let reply = match self
+            .post(LAUNCH_PATH, call, self.launch_timeout, LAUNCH_UNCERTAIN)
+            .await
+        {
             Ok(reply) => reply,
             Err(detail) => {
                 return LaunchOutcome::Unavailable {
@@ -169,18 +178,20 @@ impl GateClient {
         }
     }
 
-    /// One POST of `call` to `path` with the caller token. An origin the config would refuse is refused before any
-    /// request. A transport failure answers `on_no_answer`, the text for that call.
+    /// One POST of `call` to `path` with the caller token, cut off after `timeout`. An origin the config would refuse
+    /// is refused before any request. A transport failure, a timeout included, answers `on_no_answer`.
     async fn post(
         &self,
         path: &str,
         call: &GateCall,
+        timeout: Duration,
         on_no_answer: &'static str,
     ) -> Result<Reply, &'static str> {
         let url = endpoint(&self.base, path).ok_or(ORIGIN_REFUSED)?;
         let response = self
             .http
             .post(url)
+            .timeout(timeout)
             .header(AUTHORIZATION, format!("Bearer {}", self.token.expose()))
             .header(ACCEPT, "application/json")
             .json(call)
@@ -279,7 +290,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
 
     use crate::server::client_with_roots;
     use dioxus::server::axum::extract::State;
@@ -497,7 +507,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn other_refusals_keep_the_gates_status_code_and_detail() {
+    async fn other_refusals_keep_the_gates_code_and_detail_and_a_launch_keeps_its_status() {
         let fake = Arc::new(Fake::default());
         queue(
             &fake,
@@ -528,7 +538,6 @@ mod tests {
         assert_eq!(
             client.decide(&call()).await,
             GateVerdict::Refused {
-                status: 503,
                 code: "opa_unavailable".into(),
                 detail: "OPA decision unavailable".into(),
             }
@@ -536,7 +545,6 @@ mod tests {
         assert_eq!(
             client.decide(&call()).await,
             GateVerdict::Refused {
-                status: 400,
                 code: "bad_request".into(),
                 detail: "dry_run must be true or false".into(),
             }
@@ -590,12 +598,9 @@ mod tests {
                 .route(LAUNCH_PATH, post(slow)),
         )
         .await;
-        let quick = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_millis(200))
-            .build()
-            .expect("client");
-        let client = GateClient::new(&origin, Secret::new(TOKEN), quick);
+        // The shared client's 20 s would outlast the fake's 2 s, so only the per-call limit can cut this off.
+        let client = GateClient::new(&origin, Secret::new(TOKEN), production_client())
+            .with_timeouts(Duration::from_millis(200), Duration::from_millis(200));
 
         let verdict = client.decide(&call()).await;
         assert_eq!(
@@ -619,6 +624,51 @@ mod tests {
                 "the gate address reached an error: {text}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn each_call_has_its_own_limit_and_the_limits_are_the_contract_values() {
+        assert_eq!(DECIDE_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(LAUNCH_TIMEOUT, Duration::from_secs(120));
+        let defaults = gate("http://127.0.0.1:1");
+        assert_eq!(defaults.decide_timeout, DECIDE_TIMEOUT);
+        assert_eq!(defaults.launch_timeout, LAUNCH_TIMEOUT);
+
+        // Each answer takes 1 s. A decide limit of 100 ms cuts the decision off, and a launch limit of 3 s lets
+        // the launch answer arrive: a launch must not inherit the decide limit.
+        async fn slow_decide() -> &'static str {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r#"{"decision": {"allowed": true, "reason": "late"}}"#
+        }
+        async fn slow_launch() -> (StatusCode, &'static str) {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            (
+                StatusCode::CREATED,
+                r#"{"task_id": 9, "message": "m", "decision": {"allowed": true, "reason": "r"}}"#,
+            )
+        }
+        let origin = serve_app(
+            Router::new()
+                .route(DECIDE_PATH, post(slow_decide))
+                .route(LAUNCH_PATH, post(slow_launch)),
+        )
+        .await;
+        let client = GateClient::new(&origin, Secret::new(TOKEN), production_client())
+            .with_timeouts(Duration::from_millis(100), Duration::from_secs(3));
+        assert_eq!(
+            client.decide(&call()).await,
+            GateVerdict::Unavailable {
+                detail: NO_ANSWER.into()
+            }
+        );
+        assert_eq!(
+            client.launch(&call()).await,
+            LaunchOutcome::Launched {
+                task_id: 9,
+                message: "m".into(),
+                reason: "r".into(),
+            }
+        );
     }
 
     #[tokio::test]

@@ -232,6 +232,43 @@ Deep links: each VM and service row carries `grafana_url`, the Service Overview 
 - **Errors.** A failed `up` read keeps the last good rollup and sets `error` to `The newest telemetry read failed: <reason>. Showing the last good read.`, or `The telemetry read failed: <reason>.` before any good read. A failed alerts read sets `alerts` to `{"state":"error","error":"Grafana alerts could not be read: <reason>."}` and leaves that refresh's alert counts at zero. The `alerts` block describes the rollup on the page: when the `up` read fails, the block keeps the outcome of the rollup it is shown beside, so a failed alerts read during a failed `up` read is not shown as its own status. The reasons are fixed text: never a URL, a body or the token.
 - **Gate.** `work::admin_only`, the same gate as `/v1/policies`.
 
+## Proposals (plan 17 D48-D53)
+
+Proposals are the console's only write path. A platform admin proposes one registry action, the launch gate previews it, and an approval launches it through the gate. The store is `app/src/server/proposals.rs` and the gate client is `app/src/server/gate.rs`. The rows live in `prefs.db` beside the preferences (D50).
+
+| Route | Answers |
+|-------|---------|
+| `GET /v1/proposals` (`?state=awaiting`, `decided` or `all`; default `all`) | `{"proposals": [...]}`, newest first, at most 200 |
+| `POST /v1/proposals` | 201 with the proposal. Body `{"kind", "service", "check_mode", "note"}`; `kind` is `assess` or `verify`; the note is trimmed and at most 2000 characters |
+| `GET /v1/proposals/{id}` | the proposal |
+| `PUT /v1/proposals/{id}` | 200 with the proposal after its preview runs again. Body `{"check_mode", "note"}`; only while awaiting |
+| `POST /v1/proposals/{id}/comments` | 201 with the proposal. Body `{"text"}`, 1 to 2000 characters after trimming; any state |
+| `POST /v1/proposals/{id}/approve` | 200 with the proposal, now `launched` or `launch_failed`. Body `{"note"}`, null or text |
+| `POST /v1/proposals/{id}/deny` | 200 with the proposal, now `denied`. Body `{"note"}`; no gate call |
+
+An id is `p` followed by the row number. Every route is platform-admin only: 401 without a session, 403 without the group. Every write under `/v1/` also passes the origin check (D53): `Origin` must equal the console's base URL and the body must be `application/json`.
+
+Errors: 400 `bad_request` with a `detail` (an unknown kind, a service name outside `[a-z0-9][a-z0-9-]{0,62}`, a service the inventory does not list, an over-long note); 404 `not_found`; 409 `not_awaiting`; 409 `preview_not_allowed` (approve only, when the preview is not `allowed`); 503 `gate_unconfigured` on create, edit and approve when `CONSOLE_LAUNCH_GATE_*` is unset; 500 `proposals_unavailable` when the store fails.
+
+**Lifecycle.**
+
+- **Create** stores the proposal as `awaiting`, then asks the gate's `/v1/decide` with the proposal's template, role, step, survey and check mode. No task is created. The answer is stored as the preview: `allowed`, `denied` (with OPA's own reason), `refused` (the gate's code and detail) or `unavailable`. The proposal exists whatever the preview says.
+- **Placeholder.** Until its first decide answers, a new proposal shows the preview `unavailable` with the detail "the preview has not finished". If the process stops in that window, the row keeps the placeholder until it is edited, and approval refuses it as `preview_not_allowed`.
+- **Edit** (`PUT`) runs the decide again, then stores the new values and their preview in one UPDATE, only while the row is awaiting.
+- **Approve** moves the row from `awaiting` to `launching` in one guarded UPDATE. That UPDATE also requires the stored preview to be `allowed`, and it records the decision. Only the request that moves the row launches; a second approval of the same row gets 409 `not_awaiting`. The launch then goes through the gate's `/v1/launch`, whose own decision is the one that counts. The outcome is `launched` (the task id, message and reason from the gate), or `launch_failed` with `error` holding `status`, `code`, `detail` and `reason`. An OPA denial is status 403 with code `opa_denied` and OPA's reason; any other refusal keeps the gate's status and code; a launch the gate never answered is status 0 with code `gate_unavailable`.
+- **`launching` reads as `launch_failed`.** A row still in `launching` answers `launch_failed` with `error.code` `interrupted` and status 0. That includes a launch in flight: until the gate answers, which can take up to the 120 s launch limit, every reader sees `launch_failed`. A restart leaves such a row unlaunched; nothing relaunches it (D53).
+- **Deny** moves the row from `awaiting` to `denied` in one guarded UPDATE.
+- **Self-approval** (D52): an approval by the person who proposed it records `self_approved: true`. A denial always records `self_approved: false`.
+- **Comments** do not change `updated_at`. Every other change does.
+
+**Service check.** Create refuses a service the inventory does not list. A listed service is a NetBox VM with workflow fields, in a scope site that maps to a NetBox site the last read covered, across every tenant. That rule is repeated in `proposals.rs` (`known_service`) because `services_of` in `inventory.rs` is private; a shared helper there would remove the copy. Until the first NetBox read finishes, create answers 400 and says the inventory has not been read.
+
+**Actions.** `assess` launches `Snapshot Service Assessment` at step `service-assess`; `verify` launches `Verify Service Health` at step `service-validate`. Both use role `service-agent` and the survey `target_service` = `<service>_svc`. With `CONSOLE_LAUNCH_DEV_VARIANTS` true (the default, D53) the template name carries ` (Dev)`. The name is fixed when the proposal is created.
+
+**Gate limits.** The gate client sets 30 s on decide and 120 s on launch, per call (`gate.rs`). The gate's own Semaphore calls each time out at 15 s (`platform/services/launch-gate/deployment/app/launch_gate.py`, `SEMAPHORE_TIMEOUT`), and a launch makes several of them.
+
+**Work board.** The gate tags the task it creates `console <proposal id> <step>`. The Work board reads that tag as launcher `console` and links the item to its proposal (D49).
+
 ## Shared credentials (plan 17, D26-D27)
 
 Three credentials serve the console. Each has its own provisioning playbook, and the deploy reads the first two into `.env`. The GitHub token is read by the console at run time (Phase 5), not by the deploy. (1) The console AppRole: `secret/services/approles/console` holds `role_id` and `secret_id`. `provision-console-approle.yml` writes it, and `rotate-console-credentials.yml` rotates `secret_id` monthly. (2) The Grafana Viewer token: `secret/services/o11y:console_grafana_token`, from `provision-console-grafana-token.yml`, renewed by the rotation. (3) The read-only GitHub token: `secret/services/console/github`, refreshed every 45 minutes by `refresh-console-github-token.yml` on a Dev schedule. Setting `console_openbao_url` in the inventory reads (1) into `CONSOLE_OPENBAO_*`. Setting `console_grafana_api_enabled: true` together with `console_grafana_url` reads (2) into `CONSOLE_GRAFANA_TOKEN`; `console_grafana_url` alone is only the deep-link base. Each read fails by name when its source is missing. Production order: Provision Console AppRole, Provision Console Grafana Token, set the URLs and `console_grafana_api_enabled` in site-config, then Deploy console. The rotation renders `.env` from the controller checkout (`manage-secrets.yml:205`) while the image stays at the commit it pins; its drift check refuses a rotation whose controller inputs differ from that commit. While `dev`'s console inputs are ahead of the deployed commit, every monthly rotation refuses by name; redeploy the console from `dev` within the 90-day secret ID lifetime, or the stored secret ID expires and the console loses OpenBao.
@@ -239,7 +276,7 @@ Three credentials serve the console. Each has its own provisioning playbook, and
 ## Runtime notes
 
 - **No compose healthcheck; readiness is an exec probe.** The compose file declares no `healthcheck:`. On prod, podman-compose 1.0.6 (tag `v1.0.6`, `podman_compose.py`, the healthcheck translation) wraps every `healthcheck.test` in `/bin/sh -c`, and the runtime image is distroless (`cc-debian12`, no `/bin/sh`). Prod Semaphore task 9892 built and started the container, which logged `OIDC discovery ready`, yet podman reported it `unhealthy`, and `wait_for_healthy` failed the deploy. So `deploy.sh` step 4 runs `podman exec console /usr/local/app/server probe /healthz 200` every 5 s until a 300 s wall-clock deadline, then dumps the container's diagnostics and fails. Each exec is bounded by `timeout 15` where coreutils `timeout` exists, because a stalled `podman exec` would otherwise hold the loop past its deadline. Phase 3 of `deploy-console.yml` repeats the same probe. The probe is the server binary's own subcommand, so no curl or wget is assumed. The shell-less gateway in `agentgateway` is probed the same way.
-- **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`: preferences and login sessions). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
+- **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`: preferences, login sessions and proposals). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
 - **Sessions** are rows in the same `prefs.db` (table `sessions`, one connection shared with preferences). A restart keeps every unexpired session. Expired rows are swept at startup and at most hourly. The cookie `console_session` expires after 8h of inactivity.
 - **Local-dev overlay** (`compose.local.yml`, `LOCAL_MODE=true`): joins the `local-dev` network so central Caddy reaches `console:8080` by name, mounts `certs/step-ca-bundle.crt`, and sets `CONSOLE_EXTRA_CA_FILE` to it for OIDC calls to the internal IdP. Prod's IdP uses a public chain, so the overlay is not applied there.
 - **Probes** run inside the container with `podman exec`, so they do not depend on the published port or on Caddy.

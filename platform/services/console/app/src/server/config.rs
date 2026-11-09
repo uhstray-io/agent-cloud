@@ -149,8 +149,6 @@ pub struct Config {
     /// unconfigured.
     pub launch_gate: Option<LaunchGateConfig>,
     /// Launch each template's ` (Dev)` variant (D53). Read from `CONSOLE_LAUNCH_DEV_VARIANTS`, default true.
-    // Removed when the proposal routes use it (plan 17 7.4).
-    #[allow(dead_code)]
     pub launch_dev_variants: bool,
 }
 
