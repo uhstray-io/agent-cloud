@@ -80,7 +80,8 @@ scripts/semaphore-seed-input.py --template "Seed OpenBao Key" --variant dev \
 ```
 
 Phase 3c of `deploy-plane.yml` (`activate_license.py`) then signs in as the workspace owner (the
-automation account; billing needs the owner, so no person needs Admin first), reads the plan,
+automation account; billing needs owner or Admin, and Admin needs the licence, so no person needs
+Admin first), reads the plan,
 and only when it is not `plane_license_plan` (default `PRO`) posts the key to
 `/api/payments/workspaces/<slug>/licenses/` — the route the Billing page calls; Plane documents
 no other — and reads the plan back. No key stored: the phase reports that and skips. A refusal

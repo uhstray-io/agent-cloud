@@ -108,11 +108,22 @@ def test_a_licensed_workspace_is_never_sent_the_key_again(plane):
 
 def test_a_refused_key_reports_the_status_and_never_the_body(plane):
     state, base = plane
+    state["plans"] = ["FREE"]
     state["activate_status"] = 400
     state["activate_body"] = {"error": f"invalid {KEY}"}
     out = run(base)
     assert out.returncode == 1, out.stdout + out.stderr
     assert json.loads(out.stdout) == {"error": "licence activation for ws refused (400)"}
+    assert secret_free(out)
+
+
+def test_an_error_status_after_the_key_was_accepted_counts_as_activated_when_the_plan_reads_back(plane):
+    # Plane answers 400 when the payment server accepted the key but its own resync failed.
+    state, base = plane
+    state["activate_status"] = 400
+    out = run(base)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert json.loads(out.stdout) == {"changed": True, "product": "PRO"}
     assert secret_free(out)
 
 

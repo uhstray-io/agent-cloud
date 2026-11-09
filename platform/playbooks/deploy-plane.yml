@@ -375,7 +375,8 @@
 # ── Phase 3c: Licence ───────────────────────────────────────────────────────
 # Plane gates the Admin role, IdP group sync and the GitHub integration behind the licence. The
 # key is the operator's (Seed OpenBao Key -> secret/services/plane:plane_license_key); activating
-# it needs the workspace owner, which is the automation account, so no person needs Admin first.
+# it needs billing-manage (owner or Admin, and Admin needs the licence), so the automation account,
+# the workspace's owner, activates it and no person needs Admin first.
 - name: "Phase 3c: Licence"
   hosts: plane_svc
   gather_facts: false
@@ -389,6 +390,14 @@
       ansible.builtin.debug:
         msg: "no licence key at secret/services/plane:plane_license_key; the workspace stays on its current plan"
       when: _plane_license_key | length == 0
+
+    # Even the plan read writes (Plane resyncs its licence row), so check mode only reports.
+    - name: "Dry run: report what would be checked"
+      ansible.builtin.debug:
+        msg: "would activate the stored licence unless the workspace plan reads {{ plane_license_plan | default('PRO') }}"
+      when:
+        - ansible_check_mode
+        - _plane_license_key | length > 0
 
     - name: "Activate the licence (skipped in check mode: it writes)"
       when:
