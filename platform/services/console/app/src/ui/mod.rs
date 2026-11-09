@@ -35,6 +35,9 @@ mod topology;
 mod work;
 mod work_detail;
 
+#[cfg(all(test, feature = "server"))]
+mod render_tests;
+
 use dioxus::prelude::*;
 
 use access::Access;
