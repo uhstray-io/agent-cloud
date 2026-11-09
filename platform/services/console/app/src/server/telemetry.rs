@@ -1132,6 +1132,8 @@ mod tests {
                 authentik: None,
                 role_map_file: None,
                 github: None,
+                launch_gate: None,
+                launch_dev_variants: true,
             },
             http: production_client(),
             oidc: tokio::sync::OnceCell::new(),
@@ -1152,6 +1154,7 @@ mod tests {
             policies: tokio::sync::RwLock::new(crate::server::policies::PoliciesCache::new(false)),
             delivery: tokio::sync::RwLock::new(crate::server::delivery::DeliveryCache::new(false)),
             telemetry: tokio::sync::RwLock::new(TelemetryCache::new(origin.is_some())),
+            gate: None,
         })
     }
 

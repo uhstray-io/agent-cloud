@@ -6,6 +6,7 @@ pub mod auth;
 pub mod catalog;
 pub mod config;
 pub mod delivery;
+pub mod gate;
 pub mod gateway;
 pub mod github;
 pub mod grafana;
@@ -27,6 +28,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use dioxus::server::axum::extract::{Request, State};
+use dioxus::server::axum::http::{header, HeaderMap, Method, StatusCode};
+use dioxus::server::axum::middleware::{self, Next};
+use dioxus::server::axum::response::Response;
 use dioxus::server::axum::routing::{any, get, post};
 use dioxus::server::axum::Router;
 use tower_sessions::cookie::time::Duration as CookieDuration;
@@ -86,6 +91,11 @@ pub struct AppState {
     /// Target health and Grafana alerts by environment, cluster and service for the Telemetry page (plan 17, 9.2,
     /// D43). The refresh task writes it; `/v1/telemetry/rollups` only reads it.
     pub telemetry: tokio::sync::RwLock<telemetry::TelemetryCache>,
+    /// The launch-gate client proposals are decided and launched through (D49, D51). `None` when
+    /// `CONSOLE_LAUNCH_GATE_*` is unset.
+    // Removed when the proposal routes use it (plan 17 7.4).
+    #[allow(dead_code)]
+    pub gate: Option<gate::GateClient>,
 }
 
 pub type SharedState = Arc<AppState>;
@@ -156,6 +166,10 @@ pub fn load(config: Config) -> Result<SharedState, String> {
     let telemetry_cache = telemetry::TelemetryCache::new(
         config.grafana_token.is_some() && config.grafana_url.is_some(),
     );
+    let gate = config
+        .launch_gate
+        .as_ref()
+        .map(|settings| gate::GateClient::new(&settings.url, settings.token.clone(), http.clone()));
     let inventory_cache =
         inventory::InventoryCache::new(config.netbox.is_some(), config.proxmox.is_some());
     let work_cache = if config.semaphore.is_some() {
@@ -185,6 +199,7 @@ pub fn load(config: Config) -> Result<SharedState, String> {
         policies: tokio::sync::RwLock::new(policies_cache),
         delivery: tokio::sync::RwLock::new(delivery_cache),
         telemetry: tokio::sync::RwLock::new(telemetry_cache),
+        gate,
     }))
 }
 
@@ -302,7 +317,44 @@ pub fn api_router(state: SharedState) -> Router {
         .route("/v1/delivery", get(delivery::get_delivery))
         .route("/v1/telemetry/rollups", get(telemetry::get_telemetry))
         .route("/v1/{*rest}", any(api::v1_unmatched))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_console_origin,
+        ))
         .with_state(state)
+}
+
+/// D53: a state-changing request under `/v1/` is refused 403 `origin_refused` unless its `Origin` is the console's own
+/// base URL and its body is JSON. The session cookie is SameSite=Lax, which another `uhstray.io` subdomain passes, so
+/// this check carries the protection. GET and HEAD, and every path outside `/v1/` (the `/auth/*` routes), pass through.
+async fn require_console_origin(
+    State(app): State<SharedState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let changes_state =
+        [Method::POST, Method::PUT, Method::PATCH, Method::DELETE].contains(request.method());
+    if changes_state
+        && request.uri().path().starts_with("/v1/")
+        && !same_origin_json(request.headers(), &app.config.base_url)
+    {
+        return api::error(StatusCode::FORBIDDEN, "origin_refused");
+    }
+    next.run(request).await
+}
+
+/// One `Origin` value, exactly `base_url`, and a `Content-Type` whose media type is `application/json`. The media
+/// type is the value before any `;`, so `application/json; charset=utf-8` passes and `application/jsonx` does not.
+fn same_origin_json(headers: &HeaderMap, base_url: &str) -> bool {
+    let mut origins = headers.get_all(header::ORIGIN).iter();
+    let origin_ok = origins.next().and_then(|value| value.to_str().ok()) == Some(base_url)
+        && origins.next().is_none();
+    let json = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"));
+    origin_ok && json
 }
 
 /// Everything the process serves: the Dioxus app, the API, and the session
@@ -385,6 +437,8 @@ mod tests {
                 authentik: None,
                 role_map_file: None,
                 github: None,
+                launch_gate: None,
+                launch_dev_variants: true,
             },
             http: reqwest::Client::new(),
             oidc: tokio::sync::OnceCell::new(),
@@ -405,6 +459,7 @@ mod tests {
             policies: tokio::sync::RwLock::new(policies::PoliciesCache::new(false)),
             delivery: tokio::sync::RwLock::new(delivery::DeliveryCache::new(false)),
             telemetry: tokio::sync::RwLock::new(telemetry::TelemetryCache::new(false)),
+            gate: None,
         })
     }
 
@@ -460,12 +515,37 @@ mod tests {
         body: String,
     }
 
-    /// One raw HTTP/1.1 request. `cookie` is sent as-is, e.g. `console_session=...`.
+    /// The console's own origin, as the test AppState names it in `base_url`.
+    const CONSOLE_ORIGIN: &str = "https://console.test";
+
+    /// One raw HTTP/1.1 request from the console's own origin with a JSON body. `cookie` is sent as-is.
     fn raw_request(
         addr: SocketAddr,
         method: &str,
         path: &str,
         cookie: Option<&str>,
+        body: &str,
+    ) -> Reply {
+        raw_request_with(
+            addr,
+            method,
+            path,
+            cookie,
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json"),
+            ],
+            body,
+        )
+    }
+
+    /// One raw HTTP/1.1 request carrying exactly `headers`, beyond Host, Connection, Cookie and Content-Length.
+    fn raw_request_with(
+        addr: SocketAddr,
+        method: &str,
+        path: &str,
+        cookie: Option<&str>,
+        headers: &[(&str, &str)],
         body: &str,
     ) -> Reply {
         let mut stream =
@@ -476,9 +556,12 @@ mod tests {
         let cookie_line = cookie
             .map(|c| format!("Cookie: {c}\r\n"))
             .unwrap_or_default();
+        let header_lines: String = headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
         let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{cookie_line}\
-             Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n{cookie_line}{header_lines}Content-Length: {}\r\n\r\n{body}",
             body.len()
         );
         stream.write_all(request.as_bytes()).expect("write");
@@ -516,6 +599,22 @@ mod tests {
     ) -> Reply {
         tokio::task::spawn_blocking(move || {
             raw_request(addr, method, path, cookie.as_deref(), body)
+        })
+        .await
+        .expect("blocking request")
+    }
+
+    /// `call` with exactly `headers`, for the origin tests.
+    async fn call_with(
+        addr: SocketAddr,
+        method: &'static str,
+        path: &'static str,
+        cookie: Option<String>,
+        headers: &'static [(&'static str, &'static str)],
+        body: &'static str,
+    ) -> Reply {
+        tokio::task::spawn_blocking(move || {
+            raw_request_with(addr, method, path, cookie.as_deref(), headers, body)
         })
         .await
         .expect("blocking request")
@@ -879,6 +978,118 @@ mod tests {
         (addr, cookie)
     }
 
+    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its body is JSON.
+    /// A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
+    #[tokio::test]
+    async fn state_changing_v1_requests_need_the_console_origin_and_a_json_body() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+        const BODY: &str = r#"{"preferences":{"theme":"dark"}}"#;
+        let refused: [(&str, &'static [(&'static str, &'static str)]); 6] = [
+            (
+                "cross origin",
+                &[
+                    ("Origin", "https://evil.test"),
+                    ("Content-Type", "application/json"),
+                ],
+            ),
+            ("no origin", &[("Content-Type", "application/json")]),
+            (
+                "a repeated origin",
+                &[
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Content-Type", "application/json"),
+                ],
+            ),
+            (
+                "a text body",
+                &[("Origin", CONSOLE_ORIGIN), ("Content-Type", "text/plain")],
+            ),
+            (
+                "a form body",
+                &[
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Content-Type", "application/x-www-form-urlencoded"),
+                ],
+            ),
+            (
+                "a media type that only starts with application/json",
+                &[
+                    ("Origin", CONSOLE_ORIGIN),
+                    ("Content-Type", "application/jsonx"),
+                ],
+            ),
+        ];
+        for (name, headers) in refused {
+            let reply = call_with(addr, "PUT", "/v1/me", Some(cookie.clone()), headers, BODY).await;
+            assert_eq!(reply.status, 403, "{name}");
+            assert_eq!(reply.body, r#"{"error":"origin_refused"}"#, "{name}");
+        }
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        assert_eq!(
+            me_json["preferences"]["theme"], "system",
+            "a refused write changed nothing"
+        );
+
+        let same_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json; charset=utf-8"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(same_origin.status, 200, "{}", same_origin.body);
+
+        // The catch-all under /v1 is covered too: the refusal comes before the 404 an unknown path would get.
+        let unknown = call_with(
+            addr,
+            "POST",
+            "/v1/nope",
+            Some(cookie.clone()),
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "{}",
+        )
+        .await;
+        assert_eq!(unknown.status, 403);
+        assert_eq!(unknown.body, r#"{"error":"origin_refused"}"#);
+
+        let tenants = call_with(
+            addr,
+            "GET",
+            "/v1/tenants",
+            Some(cookie.clone()),
+            &[("Origin", "https://evil.test")],
+            "",
+        )
+        .await;
+        assert_eq!(tenants.status, 200, "GET is never refused");
+
+        let logout = call_with(
+            addr,
+            "POST",
+            "/auth/logout",
+            Some(cookie.clone()),
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            "",
+        )
+        .await;
+        assert_ne!(logout.status, 403, "/auth/* is outside the rule");
+        assert_ne!(logout.body, r#"{"error":"origin_refused"}"#);
+    }
+
     #[tokio::test]
     async fn member_sees_only_the_tenants_naming_their_group() {
         let (addr, cookie) = signed_in(&["ops"]).await;
@@ -1204,6 +1415,7 @@ mod tests {
             ("github.rs", include_str!("github.rs")),
             ("policies.rs", include_str!("policies.rs")),
             ("grafana.rs", include_str!("grafana.rs")),
+            ("gate.rs", include_str!("gate.rs")),
         ] {
             assert!(!text.contains(needle), "{file} turns verification off");
         }
