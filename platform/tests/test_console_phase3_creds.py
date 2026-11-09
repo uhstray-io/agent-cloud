@@ -1542,11 +1542,17 @@ def test_the_caller_token_read_names_one_key_and_is_gated_on_the_url(tmp_path):
 @NEEDS_ANSIBLE
 def test_a_launch_gate_url_that_is_not_https_with_a_host_is_refused_by_name(tmp_path):
     task = _named(DEPLOY, "Refuse console_launch_gate_url unless it is https")
-    for url in ["http://launch-gate.example.test:8443", "https://", "launch-gate.example.test:8443"]:
+    # The gate's URL is an origin: a path, a query or a fragment after the authority is refused, because the console
+    # appends its own paths to the origin (the probe argv is built from it).
+    refused = ["http://launch-gate.example.test:8443", "https://", "launch-gate.example.test:8443",
+               "https://launch-gate.example.test:8443/v1", "https://launch-gate.example.test/path/",
+               "https://launch-gate.example.test:8443?x=1", "https://launch-gate.example.test#frag"]
+    for url in refused:
         proc = _run_tasks(tmp_path, [task], _gate_vars(url))
-        assert proc.returncode != 0 and "must be an https:// URL with a host name" in proc.stdout, (url, proc.stdout)
-    ok = _run_tasks(tmp_path, [task], _gate_vars(GATE_URL))
-    assert ok.returncode == 0, ok.stdout + ok.stderr
+        assert proc.returncode != 0 and "must be an https:// origin" in proc.stdout, (url, proc.stdout)
+    for url in [GATE_URL, "https://launch-gate.example.test", GATE_URL + "/"]:
+        ok = _run_tasks(tmp_path, [task], _gate_vars(url))
+        assert ok.returncode == 0, (url, ok.stdout + ok.stderr)
     undeclared = _run_tasks(tmp_path, [task], _gate_vars(""))
     assert undeclared.returncode == 0, undeclared.stdout + undeclared.stderr
 

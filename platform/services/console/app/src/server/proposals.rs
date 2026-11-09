@@ -528,13 +528,7 @@ fn read_row(row: &Row<'_>, cutoff: &str) -> rusqlite::Result<(i64, Proposal)> {
         if updated.as_str() >= cutoff {
             (LAUNCHING.to_string(), None)
         } else {
-            let error = LaunchError {
-                status: 0,
-                code: "interrupted".to_string(),
-                detail: INTERRUPTED.to_string(),
-                reason: None,
-            };
-            (LAUNCH_FAILED.to_string(), Some(Launch::Failed { error }))
+            (LAUNCH_FAILED.to_string(), Some(interrupted()))
         }
     } else {
         (stored, json_opt(row, "launch_json")?)
@@ -646,6 +640,19 @@ fn valid_service(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// The `target_service` a service's proposal carries: the service name with `-` read as `_`, then `_svc`. That is the
+/// derivation `step_results.py` uses for a deploy playbook's group (`deploy-<name>.yml` becomes `<name>_svc`, `-` as
+/// `_`). `None` when the group is not one OPA accepts, `^[a-z][a-z0-9_]*_svc$` (`agent_actions.rego`): a name that
+/// starts with a digit, such as `9lives`, has no such group.
+fn target_group(service: &str) -> Option<String> {
+    let group = format!("{}_svc", service.replace('-', "_"));
+    let starts_with_letter = matches!(group.chars().next(), Some(c) if c.is_ascii_lowercase());
+    let allowed = group
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    (starts_with_letter && allowed).then_some(group)
+}
+
 /// A note as the console stores it: trimmed, and within the bound. The error is the 400 detail. The helpers return it
 /// rather than a response, because a response is too large for a `Result` error (clippy `result_large_err`).
 fn note_text(raw: &str) -> Result<String, &'static str> {
@@ -733,6 +740,19 @@ fn launch_record(outcome: LaunchOutcome) -> (&'static str, Launch) {
     }
 }
 
+/// The launch a `launching` row carries when no answer was recorded: the one a row left `launching` past its window reads
+/// as (`read_row`), and the one a launch task that panicked is recorded with (`approve_proposal`).
+fn interrupted() -> Launch {
+    Launch::Failed {
+        error: LaunchError {
+            status: 0,
+            code: "interrupted".to_string(),
+            detail: INTERRUPTED.to_string(),
+            reason: None,
+        },
+    }
+}
+
 /// The current time in Unix seconds.
 fn now_unix() -> i64 {
     let secs = SystemTime::now()
@@ -809,6 +829,19 @@ fn not_found() -> Response {
 
 fn not_awaiting() -> Response {
     api::error(StatusCode::CONFLICT, "not_awaiting")
+}
+
+/// 403 `not_proposer`: only the person who proposed a proposal may edit it. Approval is a separate question (D52). The
+/// sentence is the one the page shows for it.
+fn not_proposer() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "not_proposer",
+            "detail": "Only the person who proposed this can edit it.",
+        })),
+    )
+        .into_response()
 }
 
 fn gate_unconfigured() -> Response {
@@ -914,6 +947,13 @@ pub async fn create_proposal(
     if !valid_service(&body.service) {
         return bad_request(SERVICE_RULE);
     }
+    // Refused before the gate is asked, so a name with no group never reaches OPA as an unusable target.
+    let Some(group) = target_group(&body.service) else {
+        return bad_request(&format!(
+            "service {} cannot name an inventory group: the group must start with a letter",
+            body.service
+        ));
+    };
     let note = match note_text(&body.note) {
         Ok(note) => note,
         Err(detail) => return bad_request(detail),
@@ -932,10 +972,7 @@ pub async fn create_proposal(
         template: gate::template_name(base, app.config.launch_dev_variants),
         agent: AGENT.to_string(),
         step: step.to_string(),
-        survey: BTreeMap::from([(
-            "target_service".to_string(),
-            format!("{}_svc", body.service),
-        )]),
+        survey: BTreeMap::from([("target_service".to_string(), group)]),
         kind: body.kind,
         service: body.service,
         check_mode: body.check_mode,
@@ -989,16 +1026,19 @@ pub struct EditBody {
     note: String,
 }
 
-/// `PUT /v1/proposals/{id}`: edits check mode and note while awaiting, and runs the preview again.
+/// `PUT /v1/proposals/{id}`: edits check mode and note while awaiting, and runs the preview again. Only the proposer may
+/// edit (403 `not_proposer`): an edit changes what the approver is asked to approve, so an approver who is not the
+/// proposer must not change it and then approve it.
 pub async fn edit_proposal(
     State(app): State<SharedState>,
     session: Session,
     Path(id): Path<String>,
     body: Result<Json<EditBody>, JsonRejection>,
 ) -> Response {
-    if let Err(response) = admin(&session).await {
-        return response;
-    }
+    let user = match admin(&session).await {
+        Ok(user) => user,
+        Err(response) => return response,
+    };
     let Some(num) = parse_id(&id) else {
         return not_found();
     };
@@ -1015,6 +1055,9 @@ pub async fn edit_proposal(
         Ok(None) => return not_found(),
         Err(_) => return unavailable(),
     };
+    if current.proposer.sub != user.sub {
+        return not_proposer();
+    }
     if current.state != AWAITING {
         return not_awaiting();
     }
@@ -1124,8 +1167,29 @@ pub async fn approve_proposal(
         Ok(Err(refusal)) => return refusal_response(refusal),
         Err(_) => return unavailable(),
     };
-    let (state, launch) = launch_record(gate_client.launch(&call_of(&claimed)).await);
-    match store.record_launch(num, state, &launch, &now()).await {
+    // The launch runs in its own task, which this handler awaits. If the approver's request is dropped mid-launch (the
+    // connection closes), the task still records the gate's answer, so the row cannot stay `launching` after its launch
+    // has finished. A panic in the task records `interrupted`, the answer a row left `launching` past its window reads as.
+    let call = call_of(&claimed);
+    let gate = gate_client.clone();
+    let launcher = app.clone();
+    let launch = tokio::spawn(async move {
+        let (state, launch) = launch_record(gate.launch(&call).await);
+        launcher
+            .prefs
+            .proposal_store()
+            .record_launch(num, state, &launch, &now())
+            .await
+    });
+    let recorded = match launch.await {
+        Ok(recorded) => recorded,
+        Err(_) => {
+            store
+                .record_launch(num, LAUNCH_FAILED, &interrupted(), &now())
+                .await
+        }
+    };
+    match recorded {
         Ok(true) => reply(&store, num, StatusCode::OK).await,
         _ => unavailable(),
     }
@@ -1784,6 +1848,17 @@ mod tests {
         ] {
             assert!(!valid_service(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_service_names_the_group_its_vms_sit_in_or_is_refused() {
+        // `-` reads as `_`, as the deploy playbooks' own groups do (step_results.py), and the result is what OPA accepts.
+        assert_eq!(target_group("honcho").as_deref(), Some("honcho_svc"));
+        assert_eq!(target_group("step-ca").as_deref(), Some("step_ca_svc"));
+        assert_eq!(target_group("a-9").as_deref(), Some("a_9_svc"));
+        // A leading digit is a valid service name (valid_service allows it) and no OPA-valid group.
+        assert_eq!(target_group("9lives"), None);
+        assert_eq!(target_group("9-lives"), None);
     }
 
     #[test]

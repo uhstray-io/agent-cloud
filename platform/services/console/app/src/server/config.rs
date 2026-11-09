@@ -171,6 +171,15 @@ impl fmt::Display for ConfigError {
 }
 
 impl Config {
+    /// The origin a state-changing request's `Origin` header must equal (D53): the scheme, host and port of `base_url`,
+    /// serialized the way a browser sends it (lowercase host, default port dropped). `None` when the base URL does not
+    /// parse, which refuses every such request. `base_url` itself is unchanged, because the OIDC redirect is built from it.
+    pub fn base_origin(&self) -> Option<String> {
+        reqwest::Url::parse(&self.base_url)
+            .ok()
+            .map(|url| url.origin().ascii_serialization())
+    }
+
     pub fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let required = |name: &'static str| -> Result<String, ConfigError> {
             get(name)
@@ -186,6 +195,13 @@ impl Config {
             return Err(ConfigError::Invalid {
                 name: "CONSOLE_BASE_URL",
                 reason: "must start with https:// or http://",
+            });
+        }
+        // The origin check (`Config::base_origin`) reads this URL, so one that does not parse would refuse every write.
+        if reqwest::Url::parse(&base_url).is_err() {
+            return Err(ConfigError::Invalid {
+                name: "CONSOLE_BASE_URL",
+                reason: "must be a URL with a host name",
             });
         }
         let oidc_issuer = required("CONSOLE_OIDC_ISSUER")?;
@@ -656,6 +672,43 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn base_url_must_parse_as_a_url_with_a_host() {
+        let mut env = full_env();
+        // Passes the scheme check (`trim_end_matches('/')` would reduce a bare `https://` to `https:`).
+        env.insert("CONSOLE_BASE_URL", "https://[console.test");
+        let err = Config::from_lookup(lookup(env)).err().expect("must fail");
+        assert!(matches!(
+            err,
+            ConfigError::Invalid {
+                name: "CONSOLE_BASE_URL",
+                reason: "must be a URL with a host name",
+            }
+        ));
+    }
+
+    /// The origin check compares an Origin header with `base_origin`, the way a browser serializes it. The redirect keeps
+    /// `base_url` as configured, so the two differ exactly where a browser's origin differs from the configured text.
+    #[test]
+    fn base_origin_is_the_serialized_origin_and_base_url_is_kept_as_configured() {
+        let mut env = full_env();
+        env.insert("CONSOLE_BASE_URL", "https://Console.Test:443/");
+        let config = Config::from_lookup(lookup(env)).expect("config");
+        assert_eq!(config.base_url, "https://Console.Test:443");
+        assert_eq!(
+            config.base_origin().as_deref(),
+            Some("https://console.test")
+        );
+
+        let mut env = full_env();
+        env.insert("CONSOLE_BASE_URL", "https://console.example.test:8443/app");
+        let config = Config::from_lookup(lookup(env)).expect("config");
+        assert_eq!(
+            config.base_origin().as_deref(),
+            Some("https://console.example.test:8443")
+        );
     }
 
     fn semaphore_env() -> HashMap<&'static str, &'static str> {

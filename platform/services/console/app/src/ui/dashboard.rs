@@ -397,6 +397,8 @@ fn ProposalCard(
         when(now_ms, &proposal.created_at)
     );
     let own = me_sub.as_deref() == Some(proposal.proposer.sub.as_str());
+    // Only the proposer edits (D53): the server answers anyone else 403 `not_proposer`, so the control is not offered.
+    let editable = proposals_api::can_edit(&proposal, me_sub.as_deref());
     let note = proposal.note.clone().filter(|text| !text.is_empty());
     let runs = format!(
         "Runs {} for role {}, step {}.",
@@ -577,7 +579,9 @@ fn ProposalCard(
                         } else {
                             button { class: "btn primary", r#type: "button", onclick: on_approve, {icon("check")} "Approve" }
                         }
-                        button { class: "btn", r#type: "button", onclick: on_edit, "Edit" }
+                        if editable {
+                            button { class: "btn", r#type: "button", onclick: on_edit, "Edit" }
+                        }
                         label { class: "field",
                             span { class: "label", "Denial note (optional)" }
                             input {
@@ -848,6 +852,14 @@ mod render_tests {
         }
     }
 
+    /// A card as one signed-in user sees it, so the edit control can be checked per user.
+    #[component]
+    fn CardAs(proposal: Proposal, me_sub: Option<String>) -> Element {
+        rsx! {
+            ProposalCard { proposal, now_ms: None, me_sub, on_settled: move |_: Settled| {} }
+        }
+    }
+
     /// The waiting list with its handler made inside a component, for the same reason as `CardUnderTest`.
     #[component]
     fn WaitingUnderTest(state: Admin<ProposalsBody>) -> Element {
@@ -891,6 +903,27 @@ mod render_tests {
             }),
             ..Proposal::default()
         }
+    }
+
+    #[test]
+    fn edit_is_offered_to_the_proposer_and_absent_for_anyone_else() {
+        let proposal = waiting(PreviewState::Allowed, None);
+        let by_proposer = render(rsx! {
+            CardAs { proposal: proposal.clone(), me_sub: Some("ada-sub".to_string()) }
+        });
+        assert!(by_proposer.contains(">Edit<"), "{by_proposer}");
+        let by_other = render(rsx! {
+            CardAs { proposal, me_sub: Some("grace-sub".to_string()) }
+        });
+        assert!(!by_other.contains(">Edit<"), "{by_other}");
+        assert!(
+            by_other.contains(">Approve<"),
+            "the card still renders: {by_other}"
+        );
+        let signed_out = render(rsx! {
+            CardAs { proposal: waiting(PreviewState::Allowed, None), me_sub: None }
+        });
+        assert!(!signed_out.contains(">Edit<"), "{signed_out}");
     }
 
     #[test]
