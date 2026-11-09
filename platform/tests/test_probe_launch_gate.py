@@ -399,10 +399,18 @@ def test_the_script_has_the_production_defaults_and_survives_the_playbook_lookup
         assert delimiter not in script, delimiter
 
 
+def _declared_callers(path):
+    """The caller default and the role list of the one play that declares them, read from the parsed document."""
+    [declared] = [
+        play["vars"] for play in playbook_yaml.plays(path) if "_launch_gate_callers" in (play.get("vars") or {})
+    ]
+    return declared["_launch_gate_callers"], declared["_launch_gate_role_agents"]
+
+
 def test_the_caller_default_is_the_deploy_default():
-    pattern = re.compile(r"\{'skynet': \[[^\]]*\]\}")
-    here, there = pattern.search(PLAYBOOK.read_text()), pattern.search(DEPLOY.read_text())
-    assert here and there and here.group(0) == there.group(0)
+    # Compared as parsed values: the default is a Jinja expression, so the two strings and the role list they name
+    # must be identical, and a reshaped default that still holds the old literal cannot pass.
+    assert _declared_callers(PLAYBOOK) == _declared_callers(DEPLOY)
 
 
 def test_the_semaphore_template_is_dev_bound_with_one_optional_target_survey():
