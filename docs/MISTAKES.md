@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x6** | Unverified claim | 6 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x7** | Unverified claim | 7 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -251,7 +251,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 6** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03
+**Occurrences: 7** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -321,6 +321,20 @@ read as missing runs. The pr-reviewer caught the duplicate before merge; the ste
 Why the rule did not fire: the file was the right one, so the "right artifact" check passed, but
 the read itself was partial. A gap claim needs the full text of the lines it says are missing, not
 a display-truncated view of them.
+
+**Occurrence 7 — 2026-11-07 (a gap inferred from a guard's failure message).** A local
+`Seed OpenBao Key (Dev)` access check (local Semaphore task 11896) failed with "ensure openbao_addr
+(or OPENBAO_ADDR) + AppRole creds are set". The user was told that the local inventory never
+declares `openbao_addr` under `all.vars`, so no seed template could run in local-dev, and offered a
+bootstrap fix taking one to two hours, which they chose. The inventory did declare it: a literal
+`all.vars.openbao_addr` in the static-yaml form, since `910b2747`, read back from local Semaphore
+inventory 1. The task's own output, three lines above the play, said
+`Unable to parse /tmp/semaphore/project_1/inventory_1.yml as an inventory source`. That is the
+intermittent local parse failure already seen on task 11592, and a plain re-run (task 13408)
+passed. Why the rule did not fire: no file was grepped. The gap was read from a failure message
+that lists possible causes, and the stored artifact the claim was about was never opened. A guard's
+fail message names what it checks, not what is missing; the cause of a failure comes from the
+failing task's full output and the artifact it names.
 
 ### 1.3 A masked exit code reported as success
 
