@@ -28,7 +28,7 @@ flowchart TD
     ACK --> MODE{"Explicit --merge?"}
     MODE -->|No| READ["Print read-only PASS"]
     MODE -->|Yes| RECHECK["Repeat every read gate"]
-    RECHECK --> MERGE["One gh pr merge --merge --match-head-commit SHA"]
+    RECHECK --> MERGE["One gh pr merge --merge --match-head-commit SHA --body TITLE"]
     MERGE --> READBACK["Read PR state; never retry blindly"]
 ```
 
@@ -89,7 +89,7 @@ Use `--review-receipt PATH` only for a structured Sol/Claude review receipt when
 | Workflow policy | Base/head are the exact pre-partition-to-credential-safe-partition transition, the exact Playbook Safety-to-Agentgateway partition transition, or a byte-identical credential-safe or Agentgateway partition; the intermediate partition is refused as base or head; the matching schema is valid and tree mode is `100644` |
 | CI | Every expected job is present on the latest PR workflow attempt and has a successful exact-head check run; every latest exact-head commit status context succeeds except optional CodeRabbit; a CodeRabbit check run must be completed with `success` or `neutral`; any other non-Actions check run refuses; only path-proven Go skips are allowed |
 | Review | One independent exact-head approval or valid receipt; no latest outstanding changes request; no unresolved thread |
-| Merge | Only explicit `--merge`; revalidate all reads and issue one `--merge --match-head-commit SHA`; read back ambiguous results without retry |
+| Merge | Only explicit `--merge`; revalidate all reads and issue one `--merge --match-head-commit SHA --body TITLE`, where `TITLE` is the Conventional Commits title that final validation read, so the merge body (which semver reads) carries the checked title; read back ambiguous results without retry |
 | Refusal | Every gate failure exits nonzero before a merge call |
 
 ## Security considerations and limits

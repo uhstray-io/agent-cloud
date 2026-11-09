@@ -105,10 +105,15 @@ def apply(base, level):
     raise ValueError(f"no version for level {level!r}")
 
 
-def last_release(repo, ref):
-    """The highest release tag reachable from ref, as (version, tag); ((0, 0, 0), None) when there is none."""
+def last_release(repo):
+    """The highest release tag in the repository, as (version, tag); ((0, 0, 0), None) when there is none.
+
+    Every tag counts, not only those merged into a ref: release tags are made only on main, and a merge into
+    dev can land before the main-to-dev sync brings the promotion into dev. Counting only the tags reachable
+    from dev would start that merge from an older release and tag it below the version already shipped.
+    """
     best = (Version(0, 0, 0), None)
-    for tag in _git(repo, "tag", "--merged", ref, "--list", "v*").stdout.split():
+    for tag in _git(repo, "tag", "--list", "v*").stdout.split():
         match = RELEASE_RE.match(tag)
         if match is None:
             continue
@@ -186,7 +191,7 @@ def dev_tags(repo, ref):
     carries a dev tag, only ref itself is offered, and only when it is a pull request. Each
     version is cumulative over the whole chain since the last release. Computes only.
     """
-    base, tag = last_release(repo, ref)
+    base, tag = last_release(repo)
     rev_range = f"{tag}..{ref}" if tag else ref
     chain = [
         (sha, _level_of_history(title))
@@ -241,7 +246,7 @@ def cmd_title(_repo, args):
 
 
 def cmd_next(repo, args):
-    base, tag = last_release(repo, args.ref)
+    base, tag = last_release(repo)
     rev_range = f"{tag}..{args.ref}" if tag else args.ref
     prs = pr_titles(repo, rev_range, first_parent=args.channel == "dev")
     level = _highest([_level_of_history(title) for _number, title in prs])
@@ -307,7 +312,7 @@ def cmd_backfill(repo, args):
 
 
 def cmd_major(repo, args):
-    base, _tag = last_release(repo, args.ref)
+    base, _tag = last_release(repo)
     print("v1.0.0" if base.major == 0 else f"v{base.major + 1}.0.0")
     return 0
 
@@ -341,8 +346,7 @@ def _parser():
     backfill.add_argument("--apply", action="store_true")
     backfill.add_argument("--push", action="store_true", help="push each created tag to origin (needs --apply)")
     backfill.add_argument("--table", type=Path, default=TABLE, help=argparse.SUPPRESS)
-    major = commands.add_parser("major", help="the next major version; computes only, never tags")
-    major.add_argument("--ref", default="HEAD")
+    commands.add_parser("major", help="the next major version; computes only, never tags")
     return parser
 
 

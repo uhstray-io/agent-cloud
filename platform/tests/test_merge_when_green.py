@@ -6,9 +6,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/merge-when-green.py"
 SPEC = importlib.util.spec_from_file_location("merge_when_green", SCRIPT)
@@ -272,9 +274,9 @@ class FakeGitHub:
 
         self.api = changed
 
-    def merge(self, pr, sha):
+    def merge(self, pr, sha, title):
         self.merge_calls.append(["gh", "pr", "merge", str(pr), "--repo", guard.REPO,
-                                 "--merge", "--match-head-commit", sha])
+                                 "--merge", "--match-head-commit", sha, "--body", title])
         self.pr["merged"] = True
 
 
@@ -297,7 +299,7 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed"], api), 0)
         self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
-                                            "--merge", "--match-head-commit", HEAD]])
+                                            "--merge", "--match-head-commit", HEAD, "--body", "feat: x"]])
         self.assertEqual(sum(endpoint == f"repos/{guard.REPO}/pulls/{PR}" for endpoint, _ in api.calls), 5)
 
     def test_stale_head_refuses_without_merge(self):
@@ -1222,15 +1224,48 @@ class MergeGuardTests(unittest.TestCase):
     def test_ambiguous_merge_response_is_read_back_and_never_retried(self):
         api = FakeGitHub()
 
-        def uncertain(_pr, _sha):
+        def uncertain(_pr, _sha, _title):
             api.merge_calls.append(["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
-                                    "--merge", "--match-head-commit", HEAD])
+                                    "--merge", "--match-head-commit", HEAD, "--body", "feat: x"])
             raise guard.Refusal("merge outcome unavailable")
 
         api.merge = uncertain
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed"], api), 1)
         self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
-                                            "--merge", "--match-head-commit", HEAD]])
+                                            "--merge", "--match-head-commit", HEAD, "--body", "feat: x"]])
+
+    def test_merge_command_carries_the_validated_title_as_its_body(self):
+        # The real command, not the fake: the body is one argv element after --match-head-commit.
+        seen = []
+
+        def record(command, **_kwargs):
+            seen.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(guard.subprocess, "run", record):
+            guard.GitHub().merge(PR, HEAD, "fix(api): trim the route")
+        self.assertEqual(seen, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO, "--merge",
+                                 "--match-head-commit", HEAD, "--body", "fix(api): trim the route"]])
+
+    def test_merge_body_is_the_title_the_final_validation_pass_read(self):
+        # The title changes after the first pass and before the merge pass: the merge carries the new, validated title.
+        api = FakeGitHub()
+        original = api.api
+        reads = 0
+
+        def retitled(endpoint, fields=()):
+            nonlocal reads
+            if endpoint == f"repos/{guard.REPO}/pulls/{PR}":
+                reads += 1
+                if reads == 3:  # first read of the merge pass
+                    api.pr["title"] = "fix: retitled before the merge"
+            return original(endpoint, fields)
+
+        api.api = retitled
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed"], api), 0)
+        self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
+                                            "--merge", "--match-head-commit", HEAD,
+                                            "--body", "fix: retitled before the merge"]])
 
 if __name__ == "__main__":
     unittest.main()

@@ -383,6 +383,23 @@ def test_dev_tags_refuses_a_breaking_change_after_one_point_oh(tmp_path):
     assert "manual major release" in result.stderr
 
 
+def test_dev_counts_from_the_shipped_release_before_the_sync_brings_it_in(tmp_path):
+    # The promotion is tagged v0.14.0 on main, and a merge lands on dev before the main-to-dev sync brings
+    # the promotion into dev. The patch must count from v0.14.0, not from the release dev can reach (v0.13.0).
+    repo = _dev_repo(tmp_path, release="v0.13.0")
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 70, "feat: a")
+    repo.checkout("main")
+    repo.merge_raw("Merge pull request #71 from uhstray-io/dev", "feat: promoted", "dev")
+    repo.tag("v0.14.0")
+    repo.checkout("dev")
+    repo.feature("fix-b", "fix: b")
+    repo.merge_pr("fix-b", 72, "fix: b")
+    b = repo.head()
+    assert _run(repo, "dev-tags", "--ref", "dev").stdout.splitlines() == [f"v0.14.1-dev.1 {b}"]
+    assert _run(repo, "next", "--channel", "dev", "--ref", "dev").stdout == "v0.14.1-dev.1\n"
+
+
 def test_notes_lists_pull_requests_oldest_first(tmp_path):
     repo = Repo(tmp_path / "repo")
     repo.feature("one", "fix: one")

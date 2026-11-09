@@ -70,9 +70,12 @@ class GitHub:
         except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
             raise Refusal(f"GitHub read failed for {endpoint}") from error
 
-    def merge(self, pr, sha):
+    def merge(self, pr, sha, title):
+        # --body is the title this run validated. semver reads the merge body for the version, and GitHub's
+        # default body carries the title as it stands when the merge happens, so an edit after the last read
+        # would reach history unchecked. The title is one argv element, never a shell string.
         command = ["gh", "pr", "merge", str(pr), "--repo", REPO,
-                   "--merge", "--match-head-commit", sha]
+                   "--merge", "--match-head-commit", sha, "--body", title]
         self.calls.append(command)
         try:
             return subprocess.run(command, capture_output=True, text=True, check=True)
@@ -682,7 +685,7 @@ def validate(api, number, sha, receipt_path):
     if current_base_sha != base_sha or current_pr["head"]["sha"] != pr["head"]["sha"]:
         raise Refusal("PR base or head moved while collecting merge evidence")
     return {"checks": checks, "approvals": approvals, "receipt": receipt, "comments": len(comments),
-            "base_sha": base_sha, "head_sha": sha}
+            "base_sha": base_sha, "head_sha": sha, "title": current_pr["title"]}
 
 
 def main(argv=None, api=None):
@@ -713,7 +716,7 @@ def main(argv=None, api=None):
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
         try:
-            api.merge(args.pr, args.head)
+            api.merge(args.pr, args.head, refreshed["title"])
         except Refusal:
             pr = get_pr(api, args.pr)
             if (isinstance(pr, dict) and pr.get("merged")
