@@ -226,10 +226,10 @@
     - name: "Refuse skynet_launch_gate_url unless it is https"
       ansible.builtin.assert:
         that:
-          - (skynet_launch_gate_url | string) is match('^https://[^/:?#]+')
+          - (skynet_launch_gate_url | string) is match('^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?/?\Z')
         fail_msg: >-
-          skynet_launch_gate_url must be an https:// URL with a host name (the launch gate skynet calls over TLS). Set it in
-          the inventory and re-run, or remove it to leave the gate undeclared.
+          skynet_launch_gate_url must be an https origin: https://<host>[:port][/], with no user info, path, query, fragment or whitespace
+          (the launch gate skynet calls over TLS). Set it in the inventory and re-run, or remove it to leave the gate undeclared.
       when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
     - name: "Refuse skynet_launch_gate_ip unless it is one non-wildcard IPv4 address in production"
@@ -372,6 +372,10 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    # The launch-gate probe, shared by the two probe tasks below so their request contract cannot drift apart.
+    # The script is a linted file, run as `python -I -c`. argv carries only the mode, 'anon' or 'caller', and
+    # no secret. The anon mode never reads SKYNET_LAUNCH_GATE_TOKEN; only the caller mode reads it, inside the container.
+    _skynet_gate_probe_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/skynet-launch-gate-probe.py') }}"
 
   tasks:
     # Every check runs INSIDE the container, so it never depends on a published port or
@@ -634,31 +638,10 @@
           - exec
           - skynet
           - python
+          - -I
           - -c
-          - |
-            import json
-            import os
-            import urllib.error
-            import urllib.request
-            if not os.environ.get('SKYNET_LAUNCH_GATE_URL'):
-                print('env-missing')
-                raise SystemExit(0)
-            request = urllib.request.Request(
-                os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
-                data=b'{}',
-                headers={'Content-Type': 'application/json'},
-                method='POST',
-            )
-            try:
-                response = urllib.request.urlopen(request, timeout=10)
-                status, body = response.status, response.read()
-            except urllib.error.HTTPError as error:
-                status, body = error.code, error.read()
-            try:
-                code = json.loads(body.decode('utf-8')).get('error', '')
-            except (ValueError, AttributeError):
-                code = ''
-            print(status, code)
+          - "{{ _skynet_gate_probe_script }}"
+          - anon
       register: _skynet_gate_anon
       changed_when: false
       failed_when: false
@@ -690,31 +673,10 @@
           - exec
           - skynet
           - python
+          - -I
           - -c
-          - |
-            import json
-            import os
-            import urllib.error
-            import urllib.request
-            if not os.environ.get('SKYNET_LAUNCH_GATE_URL') or not os.environ.get('SKYNET_LAUNCH_GATE_TOKEN'):
-                print('env-missing')
-                raise SystemExit(0)
-            request = urllib.request.Request(
-                os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
-                data=b'{}',
-                headers={'Authorization': 'Bearer ' + os.environ['SKYNET_LAUNCH_GATE_TOKEN'], 'Content-Type': 'application/json'},
-                method='POST',
-            )
-            try:
-                response = urllib.request.urlopen(request, timeout=10)
-                status, body = response.status, response.read()
-            except urllib.error.HTTPError as error:
-                status, body = error.code, error.read()
-            try:
-                code = json.loads(body.decode('utf-8')).get('error', '')
-            except (ValueError, AttributeError):
-                code = ''
-            print(status, code)
+          - "{{ _skynet_gate_probe_script }}"
+          - caller
       register: _skynet_gate_authed
       changed_when: false
       failed_when: false
@@ -744,7 +706,11 @@
           skynet's own OPA client got OPA's default deny over {{ skynet_opa_url | default('its OPA URL') }},
           and OPA refused skynet's write to /v1/data (401).
           {% if (skynet_launch_gate_url | default('', true) | string | trim | length) > 0 %}
+          {% if (_skynet_gate_authed.stdout_lines | default([]) | last | default('')) == 'env-missing' %}
+          The launch gate was not probed: skynet's running container has no launch-gate variables yet, and a dry run does not recreate it.
+          {% else %}
           The launch gate answered 401 to a request with no token and 400 to skynet's caller token, over {{ skynet_launch_gate_url }}.
+          {% endif %}
           {% else %}
           The launch gate is not declared (skynet_launch_gate_url unset), so it was not probed.
           {% endif %}

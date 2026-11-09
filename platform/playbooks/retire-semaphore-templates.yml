@@ -14,13 +14,17 @@
 #      runtime-access.yml). The destination is the controller's fixed loopback API.
 #   3. A retired name matching more than one live template is refused: choosing which one to
 #      delete would be a guess.
-#   4. Each matched template's schedules are deleted first, then the templates. An absent name is
-#      already done, so a re-run converges.
-#   5. Both lists are read back. The run fails if a retired name, or a schedule bound to a deleted
+#   4. Each matched template's newest task-history page is read (a GET, in check mode too). The run
+#      refuses before any delete while one of them has a running or queued task.
+#   5. Each matched template's schedules are deleted first, so nothing new starts. Then, on a live
+#      run, each template's task history is drained by files/semaphore_drain_template.py, and only
+#      then are the templates deleted. A template's delete with thousands of runs timed out
+#      (Semaphore tasks 14206, 14211, 14223). An absent name is already done, so a re-run converges.
+#   6. Both lists are read back. The run fails if a retired name, or a schedule bound to a deleted
 #      template, is still live.
 #
-# Check mode is a dry run: the GETs run (they only read), the DELETEs are skipped. Run the Dev
-# template in Semaphore's Dry run first and read the report.
+# Check mode is a dry run: the GETs run (they only read); the history drain and the DELETEs are
+# skipped. Run the Dev template in Semaphore's Dry run first and read the report.
 #
 # Template names and ids are printed. The token is never printed.
 
@@ -158,6 +162,81 @@
             {% for s in _retire_schedules %}id {{ s.id }} on template {{ s.template_id }} ({{ s.cron_format }}, active {{ s.active }}); {% endfor %}
           - "Already absent, no-op ({{ _absent_names | length }}): {{ _absent_names | join(', ') }}"
 
+    - name: "Read each retired template's newest task-history page (a read, also in check mode)"
+      ansible.builtin.uri:
+        # The newest page only: how much history a template holds, and whether a task is still
+        # running. The drain pages through the rest. Read in both modes, so a dry run reports the
+        # same counts a live run acts on.
+        url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ item }}/tasks/last?limit=200"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      loop: "{{ _present_template_ids }}"
+      loop_control:
+        label: "template {{ item }}"
+      register: _drain_pages
+      check_mode: false
+      changed_when: false
+
+    - name: "Require every history page to have come back as a JSON reply"
+      ansible.builtin.assert:
+        that:
+          - _drain_pages.results | selectattr('status', 'equalto', 200) | list | length == _present_template_ids | length
+          - _drain_pages.results | selectattr('json', 'defined') | list | length == _present_template_ids | length
+        fail_msg: "A retired template's task history could not be read. Nothing was deleted."
+
+    - name: "Compute each retired template's history preview (counts and running task ids only)"
+      ansible.builtin.set_fact:
+        _drain_plan: "{{ _drain_plan_json | from_json }}"
+      vars:
+        # Indexed by loop position: result i is the page of template i in the clean id list.
+        _drain_plan_json: >-
+          {% set plan = [] %}
+          {% for template_id in _present_template_ids %}
+          {% set page = _drain_pages.results[loop.index0].json %}
+          {% set _ = plan.append({
+               'template_id': template_id,
+               'first_page': page | length,
+               'capped': (page | length) == 200,
+               'running_ids': page | rejectattr('status', 'in', ['success', 'error', 'stopped']) | map(attribute='id') | list
+             }) %}
+          {% endfor %}
+          {{ plan | to_json }}
+
+    - name: "Report each retired template's task history (counts and running task ids)"
+      ansible.builtin.debug:
+        var: _drain_plan
+
+    - name: "Refuse before any delete while a retired template has a running or queued task"
+      ansible.builtin.assert:
+        that:
+          - _drain_plan | selectattr('running_ids') | list | length == 0
+        fail_msg: >-
+          A retired template still has running or queued tasks, so nothing was deleted:
+          {{ _drain_plan | selectattr('running_ids') | list | to_json }}. Let them finish, or stop
+          them in Semaphore, then run this again.
+
+    - name: "Read the logged-in user (deleting task history needs a Semaphore admin)"
+      ansible.builtin.uri:
+        url: "{{ _semaphore_url }}/api/user/"
+        headers:
+          Authorization: "Bearer {{ _token }}"
+        unredirected_headers: [Authorization]
+        follow_redirects: none
+      register: _user
+      check_mode: false
+      changed_when: false
+
+    - name: "Refuse before any delete if task history must go and the token is not a Semaphore admin"
+      ansible.builtin.assert:
+        that:
+          - (_drain_plan | selectattr('first_page', 'gt', 0) | list | length == 0) or (_user.json.admin | bool)
+        fail_msg: >-
+          A retired template has task history, and deleting task history needs a Semaphore admin
+          token: upstream RemoveTask is admin-only. This token is not an admin, so nothing was
+          deleted. Use an admin token, or retire templates that have no history.
+
     - name: "Delete each retired template's schedule"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/schedules/{{ item }}"
@@ -174,10 +253,49 @@
         label: "schedule {{ item }}"
       when: not ansible_check_mode
 
+    - name: "Drain each retired template's task history before its delete (live run only)"
+      when:
+        - not ansible_check_mode
+        - _present_template_ids | length > 0
+      block:
+        - name: "Create a private scratch directory for the token file"
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: .retire-drain-
+          register: _drain_tmp
+
+        - name: "Write the runtime token to the scratch directory (0600)"
+          ansible.builtin.copy:
+            content: "{{ _token }}"
+            dest: "{{ _drain_tmp.path }}/token"
+            mode: "0600"
+          no_log: true
+
+        - name: "Drain each retired template's task history (names and counts only)"
+          ansible.builtin.command:
+            # argv, never a shell string. The token travels in the 0600 file, never on this command line.
+            argv: >-
+              {{ ['python3', playbook_dir ~ '/files/semaphore_drain_template.py',
+                  '--url=' ~ _semaphore_url, '--project=' ~ _project_id,
+                  '--token-file=' ~ _drain_tmp.path ~ '/token']
+                 + (_present_template_ids | map('string') | map('regex_replace', '^', '--template-id=') | list) }}
+          register: _drain_run
+          changed_when: _drain_run.rc == 0 and (_drain_run.stdout | from_json).templates.values() | map(attribute='deleted') | sum > 0
+      always:
+        - name: "Remove the scratch directory that held the token file"
+          ansible.builtin.file:
+            path: "{{ _drain_tmp.path }}"
+            state: absent
+          when: _drain_tmp.path is defined
+
     - name: "Delete each retired template"
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ item }}"
         method: DELETE
+        # A template's delete takes its task history with it. The 45-minute tududi refresher
+        # had weeks of runs, and its delete outlasted the module's 30 s default every time
+        # (Semaphore tasks 14206, 14211), while smaller templates finished. Give it time.
+        timeout: 600
         headers:
           Authorization: "Bearer {{ _token }}"
         unredirected_headers: [Authorization]

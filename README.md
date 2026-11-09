@@ -284,6 +284,20 @@ Branch testing via Semaphore allows deploying feature branches to production VMs
 
 `main` is protected by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the three checks above must pass before the merge button unlocks. Merges into `main` allow **merge commits (the default) or squash** — linear history is NOT required, so `dev` → `main` promotions land as merge commits (squash only to scrub accidental sensitive content). (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) See `plan/development/03-guardrails-governance.md`.
 
+### Versioning
+
+agent-cloud follows [Semantic Versioning](https://semver.org/) and is in its 0.x line. The pull
+request title sets the bump, in Conventional Commits form (`type(scope)!: description`): `feat`
+is a minor bump; `fix`, `perf`, `security` and `revert` are a patch; `docs`, `chore`, `test`,
+`ci`, `refactor`, `build`, `style`, `plan` and `promote` add none. A `!` marks a breaking change,
+which bumps the minor while on 0.x. The `Version` job on every pull request fails a title not in
+that form and shows the version the merge would produce. A merge into `dev` is tagged
+`vX.Y.Z-dev.N`; a promotion into `main` is tagged `vX.Y.Z` with a GitHub Release
+(`.github/workflows/release-version.yml`). 1.0.0, and every later major version, is cut only by a
+manual dispatch that the operator approves in the `release-major` environment. History before
+this was backfilled from the promotions: `main` was `v0.13.0` when versioning began. See
+`plan/development/20-semantic-versioning.md`.
+
 For local setup and the full pre-PR checklist, see `plan/architecture/03-testing-ci-quality.md`.
 
 ## Technology Stack

@@ -158,6 +158,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/00-foundation-local-dev.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; **genesis (`make local-bootstrap`) brings up the secure foundation (OpenBao→dns→step-ca→caddy→authentik) directly, then Semaphore LAST already OIDC-secured — §12A**; see also `docs/LOCAL-DEV.md` and `plan/development/00-foundation-local-dev.md`
 - `plan/development/00-foundation-local-dev.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
 - `plan/development/16-plane-work-management.md` — Plane (Commercial Pro) work tracker replacing tududi: Authentik OIDC, native GitHub sync, OpenSpec→modules via Plane Compose, OAuth MCP for harnesses, Forge Discord app, tududi teardown
+- `plan/development/20-semantic-versioning.md` — Semantic versioning: PR titles set the bump, `Version` check on every PR, `-dev.N` tags on `dev`, `vX.Y.Z` tags and Releases on `main`, 0.x line with every major behind the `release-major` approval
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
@@ -574,6 +575,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 ## Git Conventions
 
 - **No AI attribution** in commits, PR titles and bodies, or issues. Commits: enforced by `.githooks/commit-msg` (`docs/MISTAKES.md` 5.9). GitHub text: convention, since no repository hook sees `gh` (5.15, a wrapper hook proposed)
+- **Pull request titles set the version.** Write them as Conventional Commits (`type(scope)!: description`), because `scripts/semver.py` reads them from the merge commits to tag `dev` and `main` (plan 20). The required `Version` job fails any other form. Mark a breaking change with `!`: removing or renaming a Semaphore template, a survey or playbook input, an inventory variable, an OpenBao path or field, or a published route. Automation never cuts a major version; 1.0.0 and later majors go through the approved `release-major` dispatch
 - **No credentials, IPs, or usernames** in committed files — use `{{ }}` template variables
 - IPs and real credentials belong exclusively in site-config (private)
 

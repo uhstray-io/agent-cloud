@@ -206,3 +206,174 @@ def test_deletes_accept_already_gone_and_the_read_back_still_proves_it():
     assert max(delete_at) < min(reads) < readback[0], "post-delete GETs sit between the deletes and the assert"
     for i in reads:
         assert "when" not in tasks[i] or tasks[i]["when"] == "not ansible_check_mode", tasks[i].get("name")
+
+
+def test_template_delete_allows_for_a_long_task_history():
+    """Deleting a template removes its task history; the uri default (30 s) timed out on the
+    tududi refresher's (Semaphore tasks 14206, 14211)."""
+    deletes = [
+        args for _, args in _uri_tasks()
+        if str(args.get("method", "")).upper() == "DELETE" and "/templates/" in str(args.get("url", ""))
+    ]
+    assert len(deletes) == 1
+    assert int(deletes[0].get("timeout", 30)) >= 300, "template DELETE needs a long timeout"
+
+
+# ── (f) the task-history drain before the template delete ────────────────────
+
+HISTORY_PAGE = "/tasks/last?limit=200"
+
+
+def _has_module(task: dict, *names: str) -> bool:
+    return any(name in task for name in names)
+
+
+def _is_request(task: dict, method: str, fragment: str) -> bool:
+    for key in URI:
+        if key in task:
+            args = task[key]
+            return str(args.get("method", "GET")).upper() == method and fragment in str(args.get("url", ""))
+    return False
+
+
+def _preview_index(tasks: list) -> int:
+    found = [i for i, task in enumerate(tasks) if _is_request(task, "GET", HISTORY_PAGE)]
+    assert len(found) == 1, "one newest-page read of each retired template's history"
+    return found[0]
+
+
+def _drain_block(tasks: list) -> dict:
+    blocks = [
+        task
+        for task in tasks
+        if "block" in task and any("semaphore_drain_template.py" in str(child) for child in task["block"])
+    ]
+    assert len(blocks) == 1, "one drain block"
+    return blocks[0]
+
+
+def test_history_preview_is_a_read_that_runs_in_check_mode():
+    tasks = _play()["tasks"]
+    task = tasks[_preview_index(tasks)]
+    assert task.get("check_mode") is False, "the preview must run under --check"
+    assert task.get("changed_when") is False, "the preview changes nothing"
+    assert task.get("loop") == "{{ _present_template_ids }}", "loop over the clean id list, not a register"
+    assert task.get("register") == "_drain_pages"
+
+
+def test_preview_and_running_refusal_precede_every_delete_in_both_modes():
+    tasks = _play()["tasks"]
+    preview = _preview_index(tasks)
+    refusal = [
+        i
+        for i, task in enumerate(tasks)
+        if "ansible.builtin.assert" in task and "running_ids" in str(task["ansible.builtin.assert"])
+    ]
+    assert len(refusal) == 1, "one running-task refusal"
+    assert "when" not in tasks[refusal[0]], "the refusal must apply in check mode too"
+    deletes = [
+        i
+        for i, task in enumerate(tasks)
+        if any(key in task and str(task[key].get("method", "")).upper() == "DELETE" for key in URI)
+    ]
+    drain = tasks.index(_drain_block(tasks))
+    assert preview < refusal[0] < min(deletes), "the refusal must precede every DELETE"
+    assert refusal[0] < drain, "the refusal must precede the history drain"
+
+
+def test_drain_block_is_live_only_and_runs_after_schedules_and_before_the_template_delete():
+    tasks = _play()["tasks"]
+    block = _drain_block(tasks)
+    whens = block["when"] if isinstance(block["when"], list) else [block["when"]]
+    assert "not ansible_check_mode" in whens, "the drain block must be skipped under --check"
+    schedule_deletes = [i for i, task in enumerate(tasks) if _is_request(task, "DELETE", "/schedules/")]
+    template_deletes = [i for i, task in enumerate(tasks) if _is_request(task, "DELETE", "/templates/")]
+    drain = tasks.index(block)
+    assert len(template_deletes) == 1
+    assert max(schedule_deletes) < drain < template_deletes[0], (
+        "schedules first (no new run starts during the drain), then the drain, then the template delete"
+    )
+
+
+def test_token_copy_is_hidden_and_the_drain_command_is_visible_and_carries_no_token():
+    children = _drain_block(_play()["tasks"])["block"]
+    copies = [child for child in children if _has_module(child, "copy", "ansible.builtin.copy")]
+    assert len(copies) == 1, "one token copy"
+    assert copies[0].get("no_log") is True, "the token copy is a credential task"
+    assert "_token" in str(copies[0].get("ansible.builtin.copy", copies[0].get("copy"))), "the copy carries the token"
+    commands = [child for child in children if _has_module(child, "command", "ansible.builtin.command")]
+    assert len(commands) == 1, "one drain command"
+    command = commands[0]
+    assert command.get("no_log") is not True, "the drain command is visible: its counts are the report"
+    assert command.get("check_mode") is not False, "the drain runs only live, so it is never forced"
+    argv = str(command["ansible.builtin.command"]["argv"])
+    assert "--token-file=" in argv, "the token travels in a file"
+    assert "_token" not in argv, "the token never reaches the command line"
+
+
+def test_scratch_directory_is_created_and_removed_in_always():
+    block = _drain_block(_play()["tasks"])
+    created = [child for child in block["block"] if _has_module(child, "tempfile", "ansible.builtin.tempfile")]
+    assert len(created) == 1 and created[0].get("register") == "_drain_tmp"
+    assert created[0].get("ansible.builtin.tempfile", created[0].get("tempfile", {})).get("state") == "directory"
+    removed = [
+        child
+        for child in block.get("always", [])
+        if _has_module(child, "file", "ansible.builtin.file")
+        and child.get("ansible.builtin.file", child.get("file", {})).get("state") == "absent"
+    ]
+    assert len(removed) == 1, "the scratch directory is removed in always, so a failed drain leaves no token behind"
+    assert removed[0]["ansible.builtin.file"]["path"] == "{{ _drain_tmp.path }}"
+
+
+def test_preview_counts_every_unfinished_status_as_running():
+    """An allowlist of finished statuses (upstream TaskStatus.IsFinished), not a denylist of busy ones:
+    a status the playbook has never seen must refuse, not pass."""
+    text = PLAYBOOK.read_text()
+    assert "rejectattr('status', 'in', ['success', 'error', 'stopped'])" in text
+    assert "selectattr('status', 'in'" not in text
+
+
+def _user_index(tasks: list) -> int:
+    found = [i for i, task in enumerate(tasks) if _is_request(task, "GET", "/api/user/")]
+    assert len(found) == 1, "one logged-in-user read"
+    return found[0]
+
+
+def test_admin_gate_precedes_every_delete_in_both_modes():
+    tasks = _play()["tasks"]
+    user = _user_index(tasks)
+    assert tasks[user].get("check_mode") is False, "the admin read must run under --check"
+    assert tasks[user].get("changed_when") is False, "the admin read changes nothing"
+    assert tasks[user].get("register") == "_user"
+    deletes = [
+        i
+        for i, task in enumerate(tasks)
+        if any(key in task and str(task[key].get("method", "")).upper() == "DELETE" for key in URI)
+    ]
+    drain = tasks.index(_drain_block(tasks))
+    assert user < min(deletes), "the admin gate must precede every schedule and template delete"
+    assert user < drain, "the admin gate must precede the task-history drain"
+
+
+def test_admin_gate_applies_only_when_task_history_must_go_and_names_admin():
+    tasks = _play()["tasks"]
+    gates = [
+        task
+        for task in tasks
+        if "ansible.builtin.assert" in task and "_user.json.admin" in str(task["ansible.builtin.assert"])
+    ]
+    assert len(gates) == 1, "one admin assert"
+    checks = " ".join(str(item) for item in gates[0]["ansible.builtin.assert"]["that"])
+    assert "first_page" in checks and "'gt', 0" in checks, "the gate applies only to templates with history"
+    assert "admin" in str(gates[0]["ansible.builtin.assert"]["fail_msg"]), "the refusal names the admin need"
+    assert tasks.index(gates[0]) > _user_index(tasks), "the assert reads the admin GET it depends on"
+
+
+def test_drain_changed_when_requires_a_zero_return_code_before_parsing_stdout():
+    block = _drain_block(_play()["tasks"])
+    commands = [child for child in block["block"] if _has_module(child, "command", "ansible.builtin.command")]
+    assert len(commands) == 1, "one drain command"
+    assert str(commands[0]["changed_when"]).startswith("_drain_run.rc == 0 and "), (
+        "a failed run must short-circuit before from_json reads its stdout"
+    )
