@@ -15,8 +15,9 @@
 #      -> the token's owner can read each private image the deploys pull.
 #
 # The token is read and sent only in no_log tasks; the report carries HTTP statuses and the
-# scope list, never the token, a header or a body. Every request is a GET, so check mode runs
-# the same requests and gives the same answer.
+# scope list, never the token, a header or a body. The GitHub requests are GETs and the OpenBao
+# AppRole login is a POST that only issues a token; all carry check_mode: false, so check mode
+# runs the same requests and gives the same answer.
 #
 # Optional vars:
 #   registry_login_key  key under secret/services/github (default pat; same knob as the login)
