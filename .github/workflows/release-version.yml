@@ -79,7 +79,9 @@ jobs:
           rc=0
           case "$REF_NAME" in
             dev)
-              TAG="$(python3 scripts/semver.py next --channel dev --require-pr-merge)" || rc=$? ;;
+              # dev-tags catches up: a pending run replaced by a newer one (concurrency group) leaves
+              # its merge untagged, so each run tags every pull request merge since the newest dev tag.
+              TAGS="$(python3 scripts/semver.py dev-tags)" || rc=$? ;;
             main)
               TAG="$(python3 scripts/semver.py next --channel main)" || rc=$? ;;
             *)
@@ -93,6 +95,18 @@ jobs:
           if [ "$rc" -ne 0 ]; then
             echo "::error::semver.py next exited $rc on $REF_NAME."
             exit "$rc"
+          fi
+          if [ "$REF_NAME" = dev ]; then
+            if [ -z "$TAGS" ]; then
+              echo "No dev tag at $GITHUB_SHA: HEAD is not a pull request merge, or every merge is already tagged." | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            while read -r tag sha; do
+              git tag -a "$tag" -m "agent-cloud $tag" "$sha"
+              git push origin "refs/tags/$tag"
+              echo "Tagged $tag on dev at $sha." >> "$GITHUB_STEP_SUMMARY"
+            done <<< "$TAGS"
+            exit 0
           fi
           if [ -z "$TAG" ]; then
             echo "No version tag on $REF_NAME at $GITHUB_SHA: no pull request since the last release carries a bump, or HEAD is not a pull request merge."

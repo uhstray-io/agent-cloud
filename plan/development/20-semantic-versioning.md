@@ -94,15 +94,18 @@ flowchart TD
 
 One script holds every rule, so the pull request check and the release job cannot disagree:
 
-- `title TITLE`: prints the bump (`major`, `minor`, `patch`, `none`), exit 2 with a reason for a title not in the form.
+- `title -- TITLE`: prints the bump (`major`, `minor`, `patch`, `none`), exit 2 with a reason for a title not in the form. The `--` keeps a title that starts with a dash from being read as an option (a title of `--help` would otherwise exit 0 and pass).
 - `next --channel dev|main [--ref REF] [--title TITLE]`: prints the tag the channel would get at `REF` (default `HEAD`), counting `TITLE` as one more pull request when given (the pull request check passes its own title, not yet merged). Prints nothing and exits 0 when `main` would get no release; exits 3 when a breaking change after 1.0.0 needs the manual major release.
 - `notes --from TAG --to REF`: Markdown list of the pull request titles in the range, for the GitHub Release.
-- `backfill [--apply] [--push]`: creates each tag in the committed table `scripts/semver-backfill.tsv` that does not exist yet; an existing tag pointing elsewhere is an error, never moved.
-- `major [--apply] [--push]`: the next major on `main`'s HEAD, for the manual release only.
+- `dev-tags [--ref REF]`: one `vX.Y.Z-dev.N SHA` line per pull request merge on `dev` that still needs a tag, oldest first (see catch-up below). Computes only.
+- `backfill [--apply] [--push]`: creates each tag in the committed table `scripts/semver-backfill.tsv` that does not exist yet; every row is checked first, and a tag pointing elsewhere refuses the whole run, so no tag is ever moved.
+- `major [--ref REF]`: prints the next major version on `main`, for the manual release only. Computes only; the workflow tags.
 
 **Reading pull requests from git.** A merge commit `Merge pull request #N from OWNER/BRANCH` carries the title as the first body line; a squash merge's subject is `TITLE (#N)`. Promotion merges (branch `dev`) and the main-to-dev sync merge (`Merge branch 'main' into dev`) are skipped, so a promotion is never counted as a pull request of its own. `dev` reads its first-parent chain since the last release tag; `main` reads every commit since the last release tag.
 
 **Pre-release numbering on `dev`.** The next version is the last release tag reachable from `dev` bumped by the pull requests merged since, with a floor of a patch (anything merged after a release is at least a patch candidate). `N` is one more than the highest existing `-dev.N` tag for that version, starting at 1. When a feature lifts the next version (say from `0.14.1` to `0.15.0`), numbering restarts at `-dev.1`; semver precedence still orders them (`0.14.1-dev.3 < 0.15.0-dev.1`).
+
+**Catch-up.** The release workflow runs one at a time (a `concurrency` group), and GitHub keeps only the newest pending run, cancelling an older pending one. A burst of merges can therefore skip a run. `dev-tags` covers that: each run tags every pull request merge after the newest commit that already carries a `-dev` tag, in order. When no commit since the last release carries one (the first run, or the first after a release), it tags only `HEAD`, so the first run does not tag every merge since `v0.13.0`.
 
 ### Pull request check: a `Version` job in `lint-and-test.yml`
 
@@ -120,7 +123,7 @@ The merge guard pins `lint-and-test.yml` by blob SHA, so this is the guard's **e
 
 The environment is configuration as code: `.github/environments/release-major.json` and `.github/environments/apply.sh`, the same pattern as `.github/rulesets/`.
 
-**Merging this change.** The guard refuses any pull request that adds or changes a workflow other than `lint-and-test.yml` (`scripts/merge-when-green.py:133-134`). A workflow that can push tags is exactly what that rule exists for, so the pull request that adds `release-version.yml` is merged by the operator, not through the guard. Every later pull request goes through the guard as before.
+**Merging this change.** The guard refuses any pull request that adds or changes a workflow other than `lint-and-test.yml` (`scripts/merge-when-green.py:134-135`). A workflow that can push tags is exactly what that rule exists for, so the pull request that adds `release-version.yml` is merged by the operator, not through the guard. Every later pull request goes through the guard as before.
 
 ## Implementation phases
 

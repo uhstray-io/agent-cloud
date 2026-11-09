@@ -63,7 +63,7 @@ jobs:
         run: |
           # The live title, not the event payload: a re-run after a title edit sees the edit.
           title="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq .title)"
-          python3 scripts/semver.py title "$title"
+          python3 scripts/semver.py title -- "$title"
           if [ "$BASE_REF" = main ]; then
             tag="$(python3 scripts/semver.py next --channel main --ref HEAD)"
           else
