@@ -1164,20 +1164,6 @@ templates:
     playbook: platform/playbooks/probe-agentgateway-gate.yml
     repository: agent-cloud dev
 
-  # Read-only allow-path probe of the launch gate (skynet-launch-containment task 5.5): one dry-run
-  # Snapshot Service Assessment (Dev) launch as the probe identity (skynet, acting as service-agent), then the
-  # same request again at once, which the gate must refuse already_running. Runs inside the gate's container;
-  # never prints the caller token. Dev-bound until promotion.
-  - name: Probe launch-gate (Dev)
-    playbook: platform/playbooks/probe-launch-gate.yml
-    repository: agent-cloud dev
-    survey_vars:
-      - name: probe_target_service
-        title: "Target group"
-        description: "Inventory group the probe snapshots, a populated <name>_svc group (blank for opa_svc)"
-        type: string
-        required: false
-
   # Encoded proof of gateway task 4.5 "One client cannot exceed its share": drive one low-budget
   # identity to HTTP 429 budget_exceeded and show a second identity is still served 200. Real
   # (tiny) completions; refuses an identity whose budget is above 1000 tokens/hour. Reads the two
@@ -1194,6 +1180,20 @@ templates:
       - name: agw_isolation_control
         title: "Control identity"
         description: "The identity that must stay served (leave blank for the first other declared identity)"
+        type: string
+        required: false
+
+  # Read-only allow-path probe of the launch gate (skynet-launch-containment task 5.5): one dry-run
+  # Snapshot Service Assessment (Dev) launch as the probe identity (skynet, acting as service-agent), then the
+  # same request again at once, which the gate must refuse already_running. Runs inside the gate's container;
+  # never prints the caller token. Dev-bound until promotion.
+  - name: Probe launch-gate (Dev)
+    playbook: platform/playbooks/probe-launch-gate.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_target_service
+        title: "Target group"
+        description: "Inventory group the probe snapshots, a populated <name>_svc group (blank for opa_svc)"
         type: string
         required: false
 
