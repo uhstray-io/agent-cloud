@@ -15,7 +15,7 @@ use super::inventory::{
     Snapshot, View, ViewNotice, SEP,
 };
 use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
-use super::shell::Ctx;
+use super::shell::{no_tenant_message, Ctx};
 use super::status::{
     step_rows, unconfigured_hint, unconfigured_notice, Freshness, Notice, Rag, RagBadge, StepList,
     DASH,
@@ -329,7 +329,9 @@ pub fn ServiceDetail(name: String) -> Element {
             ServiceView { key: "{tenant}/{name}", tenant, name: name.clone() }
         },
         None => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see this service.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see this service."),
+            }
         },
     };
     rsx! {

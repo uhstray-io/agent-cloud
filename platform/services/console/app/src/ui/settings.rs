@@ -15,7 +15,7 @@ use super::inventory::{meta_of, poll_admin, view, Admin, Snapshot, View};
 use super::inventory_api::{self, Domain, ServiceRow};
 use super::services::DomainSwatch;
 use super::settings_api::{tree_path, TenantTree, TreeOrg, TreeSite};
-use super::shell::Ctx;
+use super::shell::{no_tenant_message, Ctx};
 use super::status::{Notice, DASH};
 
 /// Why every change control on these pages is disabled.
@@ -103,7 +103,9 @@ pub fn TenantSettings() -> Element {
             TreeRead { key: "{tenant}", tenant, page: SettingsPage::Tenant }
         },
         None => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see its settings.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see its settings."),
+            }
         },
     };
     rsx! {
@@ -129,7 +131,9 @@ pub fn OrgSettings() -> Element {
             TreeRead { key: "{tenant}", tenant, page: SettingsPage::Org }
         },
         None => rsx! {
-            Notice { message: "Pick a tenant in the sidebar to see its settings.".to_string() }
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see its settings."),
+            }
         },
     };
     rsx! {
