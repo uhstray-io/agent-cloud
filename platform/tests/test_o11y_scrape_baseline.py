@@ -1526,7 +1526,10 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
         return value
 
     env = Environment(undefined=StrictUndefined)
-    env.filters.update(to_json=json.dumps, bool=bool, mandatory=mandatory)
+    env.filters.update(
+        to_json=json.dumps, bool=bool, mandatory=mandatory,
+        o11y_effective_scrape_limits=BUDGET.o11y_effective_scrape_limits,
+    )
     template = ROOT / "platform/services/o11y/deployment/templates/prometheus.yml.j2"
     rendered = env.from_string(template.read_text(encoding="utf-8")).render(
         local_mode=False, o11y_scrape_limits_reviewed=True, o11y_scrape_limits=_loaded_inventory(),
@@ -1535,8 +1538,10 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
     )
     config = yaml.safe_load(rendered)
     job = next(row for row in config["scrape_configs"] if row["job_name"] == "alloy")
+    # Every source-review caller passes the effective limits (the 2000 default ceiling applies).
     SURVEY._validate_prometheus_alloy_loaded_limits(
-        _loaded_readback({"scrape_configs": [job]}), _loaded_inventory(),
+        _loaded_readback({"scrape_configs": [job]}),
+        BUDGET.o11y_effective_scrape_limits(_loaded_inventory(), 2000, False, True),
         environment="prod", cluster="prod-west",
     )
 

@@ -908,13 +908,21 @@ def o11y_effective_scrape_limits(limits: Any, sample_ceiling: Any = 2000, local:
     if not isinstance(limits, Mapping):
         return {}
     effective = dict(limits)
-    sample = effective.get("sample_limit")
-    if (
-        isinstance(sample, int) and not isinstance(sample, bool)
-        and isinstance(sample_ceiling, int) and not isinstance(sample_ceiling, bool)
-    ):
-        effective["sample_limit"] = min(sample, sample_ceiling)
+    sample, ceiling = _limit_int(effective.get("sample_limit")), _limit_int(sample_ceiling)
+    if sample is not None and ceiling is not None:
+        effective["sample_limit"] = min(sample, ceiling)
     return effective
+
+
+def _limit_int(value: Any) -> int | None:
+    """An integer limit, accepting the numeric strings the templates' `| int` always accepted."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,9}", value.strip()):
+        return int(value.strip())
+    return None
 
 
 class FilterModule:

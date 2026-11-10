@@ -1156,7 +1156,7 @@ def test_all_prometheus_scrape_jobs_render_finite_limits_and_keep_identity_polic
         "prometheus", "receiver-host", "grafana", "loki", "alloy", "tempo", "pyroscope"
     }
     for job in base:
-        _assert_bounded(job, 2000 if job["job_name"] == "receiver-host" else None)
+        _assert_bounded(job, 2000 if job["job_name"] in CEILED_JOBS else None)
         assert job["metric_relabel_configs"][0] == {"action": "labeldrop", "regex": POLICY}
         labels = job["static_configs"][0]["labels"]
         assert labels["cluster"] == "test-cluster"
@@ -1298,7 +1298,7 @@ def test_local_prometheus_render_uses_finite_defaults():
         _o11y_forbidden_metric_label_names_regex=POLICY,
     )
     for job in config["scrape_configs"]:
-        _assert_bounded(job, 2000 if job["job_name"] == "receiver-host" else None)
+        _assert_bounded(job, 2000 if job["job_name"] in CEILED_JOBS else None)
 
     env = _environment().from_string((DEPLOY / "templates/env.j2").read_text(encoding="utf-8"))
     rendered_env = env.render(
@@ -1522,6 +1522,8 @@ def test_candidate_digest_block_skips_a_dry_run_runs_for_real_and_leaves_no_temp
 # o11y_scrape_sample_limit 2000. env.j2 gave Alloy 2000 while the availability source gate was
 # handed the raw 8192, so the first real enabled deploy (Semaphore task 14414) failed its
 # post-apply readback with native_limits_mismatch.
+# Prometheus jobs held to the stricter o11y_scrape_sample_limit ceiling (the effective limit).
+CEILED_JOBS = {"receiver-host", "alloy"}
 PRODUCTION_SHAPED_LIMITS = {
     "body_size_limit_bytes": 1048576,
     "sample_limit": 8192,
@@ -1573,3 +1575,40 @@ def test_every_source_review_payload_passes_the_effective_limits(caller):
     assert payloads, f"{caller} has no shared_limits payload"
     for payload in payloads:
         assert "o11y_effective_scrape_limits(" in payload, f"{caller} passes raw limits: {payload}"
+
+
+def test_both_producers_of_alloy_self_metrics_run_the_limits_the_source_gate_expects():
+    common = dict(
+        local_mode=False, o11y_cluster="prod-west", o11y_environment="prod",
+        o11y_scrape_limits=PRODUCTION_SHAPED_LIMITS, o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000, _o11y_forbidden_metric_label_names_regex=POLICY,
+    )
+    gate_limits = BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, True)
+    prometheus = _render_yaml("prometheus.yml.j2", o11y_availability_probes_enabled=False, **common)
+    alloy_job = next(job for job in prometheus["scrape_configs"] if job["job_name"] == "alloy")
+    assert alloy_job["sample_limit"] == gate_limits["sample_limit"] == 2000
+    host_job = next(job for job in prometheus["scrape_configs"] if job["job_name"] == "receiver-host")
+    assert host_job["sample_limit"] == gate_limits["sample_limit"]
+
+
+@pytest.mark.parametrize(("limit", "ceiling", "expected"), [
+    ("8192", 2000, 2000), (8192, "2000", 2000), (" 1500 ", 2000, 1500), ("many", 2000, "many"),
+    (True, 2000, True), (8192, None, 8192),
+])
+def test_effective_limits_coerce_numeric_strings_like_the_templates_did(limit, ceiling, expected):
+    limits = {**PRODUCTION_SHAPED_LIMITS, "sample_limit": limit}
+    assert BUDGET.o11y_effective_scrape_limits(limits, ceiling, False, True)["sample_limit"] == expected
+
+
+def test_post_apply_source_diagnostic_prints_only_the_fixed_category():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    tasks = [task for play in plays for task in play.get("tasks", []) if isinstance(task, dict)]
+    by_name = {task.get("name"): task for task in tasks}
+    validate = by_name["Validate the fixed post-apply source diagnostic category"]
+    report = by_name["Report only the fixed post-apply source diagnostic category"]
+    assert validate["no_log"] is True
+    fact = validate["ansible.builtin.set_fact"]["_o11y_source_postapply_diagnostic"]
+    assert "o11y_availability_source_gate_diagnostic" in fact
+    assert "no_log" not in report
+    assert "_o11y_source_postapply_raw" not in json.dumps(report)
+    assert "_o11y_source_postapply_diagnostic" in report["ansible.builtin.debug"]["msg"]

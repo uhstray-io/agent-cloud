@@ -1869,9 +1869,13 @@ task 14414) applied the stack, and its post-apply readback refused. The deploy s
 read-only dry run (14417) named it, `native_limits_mismatch`. Why the rule did not fire: the source gate was
 written against the declared limits, not against what the template renders, and no test rendered the two with
 the ceiling below the declared limit. One filter, `o11y_effective_scrape_limits`, now defines the effective
-limits for `env.j2` and every source-review caller. A test renders `env.j2` with production-shaped limits and
-requires the rendered value to equal the gate's input, and another requires every caller to pass the filter
-(both mutation-checked). The post-apply readback now prints its fixed category.
+sample limit for both producers of Alloy's self-metrics: `env.j2` (Alloy's own scrape), Prometheus's `alloy`
+job in `prometheus.yml.j2`, and every source-review caller. The first version of this fix changed only the
+gate's input and Alloy's side, which moved the disagreement to the Prometheus producer; review caught it
+before merge. Tests render both templates with production-shaped limits, require each producer's sample
+limit to equal the gate's input, and run the real Prometheus-producer validator on the rendered config; another
+requires every caller to pass the filter (all mutation-checked). The post-apply readback now prints its fixed
+category.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
 **Occurrences: 4** — 2026-08-25, 2026-08-25, 2026-11-02, 2026-11-04
