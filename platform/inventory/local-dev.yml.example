@@ -19,9 +19,8 @@ all:
     # Mac-side port the local Semaphore is published on (container side stays 3000).
     # Change it in the gitignored working copy when another local app holds
     # 127.0.0.1:3000; an integer 1024-65535. Re-run `make local-bootstrap` to apply.
-    # Avoid ports the stack already uses on the Mac: 3001 (UhhCraft when run with
-    # UHHCRAFT_PORT=3001), 3002 (Grafana), 3100 (Loki, also the collector's Loki URL),
-    # 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca).
+    # Avoid ports the stack already uses on the Mac: 3002 (Grafana), 3100 (Loki, also the
+    # collector's Loki URL), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca).
     local_semaphore_port: 3000
     # Genesis (Mac-direct) foundation deploys (§12A) place the repo like every
     # composable deploy: rsync local_workspace_dir (the working tree) into a
@@ -147,9 +146,6 @@ all:
             # clients (ERPNext/Semaphore/… backends) reach the IdP at the same
             # host:port the browser uses (AUTH-SSO-DEPLOYMENT.md OIDC enabler).
             - { host: "auth.agent-cloud.test", upstream: "authentik-server:9000", internal_https_port: 8443 }
-            # forward_auth gates n8n through Authentik's embedded outpost
-            # (community n8n has no native OIDC — see n8n-forward-auth.yaml).
-            - { host: "n8n.agent-cloud.test", upstream: "workflow-n8n:5678", forward_auth: "authentik-server:9000" }
             - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
             # console uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
             - { host: "console.agent-cloud.test", upstream: "console:8080" }
@@ -157,8 +153,8 @@ all:
             # surface is Authentik-gated (path-scoped forward_auth).
             - { host: "memory.agent-cloud.test", upstream: "honcho-api:8000", forward_auth: "authentik-server:9000", forward_auth_paths: ["/docs*", "/redoc*", "/openapi.json"] }
             # postiz uses NATIVE OIDC (not forward_auth) — plain reverse_proxy.
-            # An edge gate would also gate /api/public/v1, breaking n8n's
-            # API-key calls; postiz authenticates interactively in-app instead.
+            # An edge gate would also gate /api/public/v1, the API-key automation
+            # endpoint; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
             # plane uses in-app auth, so plain reverse_proxy like postiz. The upstream is the
             # stack's own proxy container (plane-proxy:80), which joins the local-dev network.
@@ -269,26 +265,6 @@ all:
               dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/launch-gate/deployment/certs/launch-gate-server
               sans: [launch-gate.local.agent-cloud.test]
               reload: none
-
-    # n8n — workflow automation (composable; greenfield locally). Behind Caddy
-    # at n8n.agent-cloud.test. The encryption key is stateful (see deploy-n8n.yml).
-    n8n_svc:
-      hosts:
-        n8n-local:
-          ansible_host: 127.0.0.1
-          ansible_connection: local
-          service_name: n8n
-          monorepo_deploy_path: platform/services/n8n/deployment
-          container_engine: podman
-          n8n_bind: 127.0.0.1
-          # docker.n8n.io rate-limits unauthenticated pulls; the Docker Hub
-          # mirror is the same image. Base compose default stays docker.n8n.io.
-          n8n_image: docker.io/n8nio/n8n:2.25.7
-          # Postiz credential host for provision-n8n-postiz-credential.yml —
-          # the n8n app container shares the local-dev network with postiz, so
-          # the in-container test reaches it directly (no .test DNS / CA trust
-          # inside the container). Same /api path shape as the public route.
-          n8n_postiz_credential_host: "http://postiz:5000/api"
 
     # console — the Dispatch Console (Rust/Dioxus app; SQLite preferences on a named volume). Native
     # OIDC to Authentik (client `console`), behind Caddy at console.agent-cloud.test. The image is
@@ -601,31 +577,6 @@ all:
           erpnext_site_name: erp.agent-cloud.test
           erpnext_public_url: https://erp.agent-cloud.test:8443
 
-    uhhcraft_svc:
-      hosts:
-        uhhcraft-local:
-          ansible_host: 127.0.0.1
-          ansible_connection: local
-          service_name: uhhcraft
-          service_url: "http://127.0.0.1:3001"
-          health_path: "/healthz"
-          monorepo_deploy_path: platform/services/uhhcraft/deployment
-          container_engine: podman
-          uhhcraft_port: 3001
-
-    # Phase 2 coverage — uncomment as services gain local profiles
-    # (port map registry of record: docs/LOCAL-DEV.md):
-    #
-    # nocodb_svc:
-    #   hosts:
-    #     nocodb-local:
-    #       ansible_host: 127.0.0.1
-    #       ansible_connection: local
-    #       service_name: nocodb
-    #       service_url: "http://127.0.0.1:8081"
-    #       monorepo_deploy_path: platform/services/nocodb/deployment
-    #       container_engine: podman
-    #
     # NetBox — IPAM authority, under PODMAN through the local Semaphore (plan 04 "NetBox
     # Local Engine"; change service-deployment-workflow section 6). The forward_auth
     # overlay makes Caddy's Authentik gate the only way in, and the app publishes on
