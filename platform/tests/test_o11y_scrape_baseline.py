@@ -1526,7 +1526,10 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
         return value
 
     env = Environment(undefined=StrictUndefined)
-    env.filters.update(to_json=json.dumps, bool=bool, mandatory=mandatory)
+    env.filters.update(
+        to_json=json.dumps, bool=bool, mandatory=mandatory,
+        o11y_effective_scrape_limits=BUDGET.o11y_effective_scrape_limits,
+    )
     template = ROOT / "platform/services/o11y/deployment/templates/prometheus.yml.j2"
     rendered = env.from_string(template.read_text(encoding="utf-8")).render(
         local_mode=False, o11y_scrape_limits_reviewed=True, o11y_scrape_limits=_loaded_inventory(),
@@ -1535,8 +1538,10 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
     )
     config = yaml.safe_load(rendered)
     job = next(row for row in config["scrape_configs"] if row["job_name"] == "alloy")
+    # Every source-review caller passes the effective limits (the 2000 default ceiling applies).
     SURVEY._validate_prometheus_alloy_loaded_limits(
-        _loaded_readback({"scrape_configs": [job]}), _loaded_inventory(),
+        _loaded_readback({"scrape_configs": [job]}),
+        BUDGET.o11y_effective_scrape_limits(_loaded_inventory(), 2000, False, True),
         environment="prod", cluster="prod-west",
     )
 
@@ -2840,11 +2845,12 @@ def test_candidate_equal_to_any_observed_maximum_is_incompatible(field, candidat
     }
 
 
-def test_receiver_and_host_node_use_the_stricter_sample_cap_only():
-    receipt = _budget_receipt("receiver-host", "host-node", "grafana")
+def test_receiver_host_node_and_alloy_use_the_stricter_sample_cap_only():
+    receipt = _budget_receipt("receiver-host", "host-node", "alloy", "grafana")
     receipt["jobs"][0]["max_scrape_samples_scraped_24h"] = 2000
     receipt["jobs"][1]["max_scrape_samples_scraped_24h"] = 2001
-    receipt["jobs"][2]["max_scrape_samples_scraped_24h"] = 9999
+    receipt["jobs"][2]["max_scrape_samples_scraped_24h"] = 2001
+    receipt["jobs"][3]["max_scrape_samples_scraped_24h"] = 9999
 
     result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True, 2000)
 
@@ -2852,6 +2858,7 @@ def test_receiver_and_host_node_use_the_stricter_sample_cap_only():
     assert result["jobs"] == [
         {"job": "receiver-host", "status": "incompatible"},
         {"job": "host-node", "status": "incompatible"},
+        {"job": "alloy", "status": "incompatible"},
         {"job": "grafana", "status": "compatible"},
     ]
 
@@ -3873,3 +3880,36 @@ def test_alert_input_playbook_reports_only_fixed_projection_and_skips_check_mode
     assert source_report["when"] == "not ansible_check_mode"
     assert source_report["ansible.builtin.debug"]["msg"] == "{{ _scrape_availability_source_coverage | to_json }}"
     assert "_scrape_survey_result" not in str(source_report)
+
+
+@pytest.mark.parametrize(("loaded", "expected"), [(2000, "matched"), (2001, "mismatch")])
+def test_loaded_alloy_job_uses_the_stricter_sample_cap(loaded, expected):
+    alloy = _loaded_config_job("alloy", sample_limit=loaded)
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [alloy]}, [{"pool": "alloy", "job": "alloy"}]),
+        _budget_receipt("alloy"), _loaded_inventory(), True, 2000,
+    )
+    assert result["status"] == expected
+
+
+def test_loaded_coverage_matches_every_job_the_real_template_renders():
+    """The coverage filter must agree with prometheus.yml.j2 on which jobs it caps."""
+    env = Environment(undefined=StrictUndefined)
+    env.filters.update(
+        to_json=json.dumps, bool=bool, mandatory=lambda value: value,
+        o11y_effective_scrape_limits=BUDGET.o11y_effective_scrape_limits,
+    )
+    template = ROOT / "platform/services/o11y/deployment/templates/prometheus.yml.j2"
+    rendered = env.from_string(template.read_text(encoding="utf-8")).render(
+        local_mode=False, o11y_scrape_limits=_loaded_inventory(), o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000, o11y_environment="prod", o11y_cluster="prod-west",
+        _o11y_forbidden_metric_label_names_regex="^private$", o11y_availability_probes_enabled=False,
+    )
+    jobs = [job["job_name"] for job in yaml.safe_load(rendered)["scrape_configs"]]
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        {"status": "observed", "reason": "stable_loaded_config", "config_yaml": rendered,
+         "target_pools": [{"pool": job, "job": job} for job in jobs]},
+        {"status": "observed", "jobs": [{"job": job} for job in jobs]},
+        _loaded_inventory(), True, 2000,
+    )
+    assert {row["job"]: row["status"] for row in result["jobs"]} == dict.fromkeys(jobs, "matched")

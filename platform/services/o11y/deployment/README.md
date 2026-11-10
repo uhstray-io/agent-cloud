@@ -165,7 +165,15 @@ number, so its config appends the `B` unit to the bytes carried in
 crash-loops the container. The other four limits stay numeric.
 
 The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
-receiver-host and host-node exporters. All scrape paths retain the forbidden
+receiver-host and host-node exporters, and for the scrapes of Alloy's own self-metrics. One filter,
+`o11y_effective_scrape_limits` (`platform/playbooks/filter_plugins/o11y_scrape_budget.py`), defines
+that sample limit for both producers: `templates/env.j2` gives it to Alloy's self-scrape,
+`templates/prometheus.yml.j2` to Prometheus's `alloy` and `receiver-host` jobs, and every availability
+source-review caller passes the same result, so the source gate compares whichever producer is current
+against the limit it was given. The other Prometheus jobs keep the declared `sample_limit`.
+The scrape-baseline survey's budget preview and loaded-limit coverage read the same capped-job set
+(`CEILED_SAMPLE_JOBS` in that module: `receiver-host`, `host-node` and `alloy`), so they judge each job
+against the limit it actually runs with. All scrape paths retain the forbidden
 label drop and target identity labels. Per-scrape bounds restrict one response
 at a time; they do not cap lifetime series churn as label values change across
 scrapes. Live target readback, over-budget refusal checks, and calibration of
