@@ -107,6 +107,13 @@ delivery once it has the App and the secret. The Cloudflare challenge skip for t
 check. It is safe to apply at any time: with no App configured silo answers every delivery 403, so
 it is not gated on the deploy; after both are live, redeliver one App delivery and expect 202.
 
+Integrations lists GitHub only once Plane's marketplace application for it exists. Plane creates
+those applications from a migration that skips on an empty database, from the add-admin endpoint,
+or from `setup_instance`. Our first admin signs up through the sign-up endpoint, which takes none
+of those paths. Phase 3e (`ensure_marketplace_apps.py`, inside plane-api) therefore runs Plane's own
+`create_applications`, which skips any application already present, and fails unless all of them
+exist (MISTAKES 1.33).
+
 Connecting the workspace (Workspace settings, Integrations, GitHub) and each project's repository
 is done in Plane after the deploy (change tasks 0.6 and 3.5).
 

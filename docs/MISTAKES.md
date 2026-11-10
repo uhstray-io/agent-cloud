@@ -62,6 +62,7 @@ and why.
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) | Unverified claim | 1 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
+| 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1499,6 +1500,16 @@ history (`git log origin/dev -- <file>`, linked PRs): a fix may already be there
 **Enforced by.** Convention. For one helper, `platform/tests/test_o11y_availability_namespace_survey.py`
 keeps a crash out of the decision categories; the class guard proposed under 1.18 would extend that
 to every fixed-category helper.
+
+### 1.33 Called an integration working end to end from one half of it
+
+**What happened.** On 2026-11-10, after the GitHub settings reached production Plane (Deploy Plane (Dev) task 14711), I told Joseph the integration was "working end to end". My evidence was GitHub's last ten App deliveries answering 202 and an unsigned delivery answering 401 through the edge. Joseph then found that Workspace settings > Integrations listed no GitHub, so the connect step he had to take was impossible. Reading the page in the built-in browser showed the cause. Silo listed GITHUB as supported, the plan flag GITHUB_INTEGRATION was on, and the workspace's enabled integrations and applications held no GitHub application.
+
+**Root cause.** Plane v3.3.3 creates its marketplace applications (GitHub, Slack, GitLab, ...) only from migration silo 0002, which skips on an empty database, from the add-admin endpoint, or from setup_instance. Our first admin signs up through the sign-up endpoint, which does none of these. The claim was built on the webhook path, which works without that application record, and the user-facing path was never looked at.
+
+**The rule.** An integration is "working" only once every leg a person uses has been exercised, the in-app setup page included. Name the legs that were proven and the ones that were not.
+
+**Enforced by.** For this integration, a test: Deploy Plane Phase 3e creates the missing applications and fails unless every one exists (`test_the_marketplace_phase_judges_the_script_summary`). The general rule is Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 

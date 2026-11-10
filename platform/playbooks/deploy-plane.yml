@@ -17,6 +17,8 @@
 #          skipped when no key is stored, and a no-op once the plan reads as licensed.
 # Phase 3d: With plane_github_app_id declared, set the GitHub App's webhook URL and signing secret
 #          (github_app_token.py set-hook-secret, on the controller) to the one Plane holds.
+# Phase 3e: Create Plane's marketplace applications (GitHub, Slack, ...) that are missing, the
+#          entries Workspace settings > Integrations lists (ensure_marketplace_apps.py).
 # Phase 4: Verify through the proxy, then record the service-deploy step result.
 #
 # Plan: plan/development/16-plane-work-management.md
@@ -522,6 +524,65 @@
             msg: >-
               GitHub App webhook → {{ _plane_hook_summary.url }} ({{ _plane_hook_summary.content_type }});
               secret sent{{ ', GitHub reports it set' if _plane_hook_summary.secret_set else '' }} (value never shown)
+
+# ── Phase 3e: Marketplace applications ──────────────────────────────────────
+# Workspace settings > Integrations lists Plane's own marketplace applications (GitHub, Slack,
+# GitLab, ...). Plane creates them only from a migration that skips on an empty database, the
+# add-admin endpoint, or setup_instance; our first admin signs up through the sign-up endpoint,
+# which does none of these, so production listed no GitHub after the App was configured
+# (2026-11-10). ensure_marketplace_apps.py calls Plane's own create_applications, which skips any
+# application already present, so this converges and a re-run changes nothing. No credential.
+- name: "Phase 3e: Marketplace applications"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+  tasks:
+    - name: "Dry run: report what would be ensured"
+      ansible.builtin.debug:
+        msg: "would create any of Plane's marketplace applications that are missing (GitHub, Slack, GitLab, ...)"
+      when: ansible_check_mode
+
+    - name: "Create missing marketplace applications (inside plane-api)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - plane-api
+          - python
+          - manage.py
+          - shell
+          - -c
+          - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/ensure_marketplace_apps.py') }}"
+      register: _plane_apps_run
+      changed_when: ((_plane_apps_run.stdout_lines | select('match', '^\\{') | list | last | default('{}')) | from_json).created | default([]) | length > 0
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: "Keep the marketplace summary"
+      ansible.builtin.set_fact:
+        _plane_apps_summary: >-
+          {%- set lines = _plane_apps_run.stdout_lines | default([]) | select('match', '^\\{') | list -%}
+          {{ (lines | last | from_json) if lines else {'error': 'the script printed no summary (exit ' ~ _plane_apps_run.rc ~ ')'} }}
+      when: not ansible_check_mode
+
+    - name: "Every marketplace application exists"
+      ansible.builtin.assert:
+        that:
+          - _plane_apps_run.rc == 0
+          - _plane_apps_summary.error is not defined
+          - _plane_apps_summary.missing | default(['?']) | length == 0
+        # default(): fail_msg is rendered even when the assertion holds (MISTAKES 10.36).
+        fail_msg: >-
+          plane marketplace applications: {{ _plane_apps_summary.error | default('missing ' ~ (_plane_apps_summary.missing | default([]) | join(', '))) }}
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "marketplace applications: created {{ _plane_apps_summary.created | default([]) | join(', ') or 'none' }}; already present {{ _plane_apps_summary.present | default([]) | length }}"
+      when: not ansible_check_mode
 
 # ── Phase 4: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 4: Verify plane"

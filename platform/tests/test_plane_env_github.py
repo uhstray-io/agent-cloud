@@ -311,3 +311,60 @@ def test_the_webhook_assert_renders_with_and_without_an_error(tmp_path, summary,
     assert (proc.returncode == 0) is ok, proc.stdout[-1500:]
     if not ok:
         assert "boom" in proc.stdout
+
+
+APPS_SCRIPT = REPO / "platform/services/plane/deployment/ensure_marketplace_apps.py"
+
+
+def test_the_marketplace_script_creates_without_resetting_secrets():
+    src = APPS_SCRIPT.read_text()
+    compile(src, str(APPS_SCRIPT), "exec")
+    assert "create_applications(admin.user.id)" in src
+    # reset deletes the secrets connected integrations depend on; it must never run on a deploy.
+    assert "reset_marketplace" not in src.split('"""', 2)[2]
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "stdout,rc,ok",
+    [
+        ('Creating application for github\n{"created": ["github"], "present": ["slack"], "missing": []}', 0, True),
+        ('{"created": [], "present": ["github", "slack"], "missing": []}', 0, True),
+        ('{"created": [], "present": ["slack"], "missing": ["github"]}', 0, False),
+        ('{"error": "no instance admin yet; first-run setup has not completed"}', 0, False),
+        ("Traceback (most recent call last):", 1, False),
+    ],
+)
+def test_the_marketplace_phase_judges_the_script_summary(tmp_path, stdout, rc, ok):
+    import yaml
+
+    play = next(p for p in _plays() if p.get("name") == "Phase 3e: Marketplace applications")
+    keep = [
+        t
+        for t in play["tasks"]
+        if t.get("name") in ("Keep the marketplace summary", "Every marketplace application exists")
+    ]
+    assert len(keep) == 2
+    fake = {"rc": rc, "stdout_lines": stdout.splitlines()}
+    (tmp_path / "play.yml").write_text(
+        yaml.safe_dump(
+            [{"hosts": "localhost", "gather_facts": False, "vars": {"_plane_apps_run": fake}, "tasks": keep}]
+        )
+    )
+    proc = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert (proc.returncode == 0) is ok, proc.stdout[-1500:]
+
+
+def test_the_marketplace_phase_runs_before_verify_and_never_in_check_mode():
+    names = [p.get("name", "") for p in _plays()]
+    assert names.index("Phase 3e: Marketplace applications") < names.index("Phase 4: Verify plane")
+    play = next(p for p in _plays() if p.get("name") == "Phase 3e: Marketplace applications")
+    run = next(t for t in play["tasks"] if t.get("name", "").startswith("Create missing"))
+    assert run["when"] == "not ansible_check_mode"
+    assert run["ansible.builtin.command"]["argv"][3:7] == ["python", "manage.py", "shell", "-c"]
