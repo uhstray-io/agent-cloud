@@ -122,6 +122,11 @@ NATIVE_SOURCE_REFUSAL_REASONS = frozenset({
     "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
     "native_debug_stale", "native_debug_mismatch", "native_readback_timeout", "native_target_mismatch",
     "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
+    # Decision points of the post-apply candidate binding and source transition.
+    "native_binding_digest_invalid", "native_binding_started_before_apply", "native_binding_argv",
+    "native_binding_compose", "native_binding_image", "native_binding_config_digest",
+    "native_binding_config_bytes", "native_binding_components", "native_binding_mounts",
+    "native_source_identity_changed", "native_source_transition_unproven", "native_source_internal_error",
 })
 SOURCE_GATE_REFUSAL_REASONS = READBACK_REASONS | SOURCE_READBACK_REASONS | NATIVE_SOURCE_REFUSAL_REASONS
 SOURCE_JOB_CATEGORIES = {

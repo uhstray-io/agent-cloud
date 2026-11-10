@@ -1740,7 +1740,7 @@ def test_root_graph_alone_does_not_claim_cross_controller_native_absence(monkeyp
         "enabled": False, "limits": {},
         "targets": [{"module_name": "health_01", "freshness_seconds": 300}],
     }
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_digest_invalid"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, availability, _loaded_inventory(), environment="prod", cluster="prod-west",
             intended_source="prometheus", now=2000, require_health_targets=True,
@@ -1777,7 +1777,10 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
     process = {
         "pid": 4101, "cmdline_sha256": hashlib.sha256(command_line).hexdigest(),
     }
-    state = {"argv": command_line, "root_bytes": config_bytes, "mount_rw": False}
+    state = {
+        "argv": command_line, "root_bytes": config_bytes, "mount_rw": False,
+        "mount_source": str(config_path), "mount_fail": False,
+    }
     provider_state = {"version": "1.3.0", "digest": "b" * 64}
     original_open = open
     original_read = SURVEY._read_bounded_regular_file
@@ -1796,8 +1799,11 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         if "{{.ImageName}}" in argv:
             return b"docker.io/grafana/alloy:v1.5.1\n"
         if "{{json .Mounts}}" in argv:
+            if state["mount_fail"]:
+                # The real helper raises the caller's refusal word for a failed inspect.
+                raise SURVEY.Refusal(_kwargs.get("refusal", "namespace_unverified"))
             return json.dumps([{
-                "Type": "bind", "Source": str(config_path),
+                "Type": "bind", "Source": state["mount_source"],
                 "Destination": "/etc/alloy/config.alloy", "RW": state["mount_rw"],
             }]).encode()
         raise AssertionError("unexpected runtime metadata query")
@@ -1819,6 +1825,33 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         record, process, digest, availability_enabled=True, lower_bound=900,
     )
     assert re.fullmatch(r"[0-9a-f]{64}", binding)
+    # A symlink in the deployment path: podman reports the resolved bind source.
+    link = tmp_path / "deploy-link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(link))
+    assert SURVEY._verify_loaded_candidate_config(
+        record, process, digest, availability_enabled=True, lower_bound=900,
+    )
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(tmp_path))
+    # A different host file with identical bytes, and a symlink that resolves outside the
+    # deployment directory, are not the placed config: the mount source must be that file.
+    twin = tmp_path / "twin.alloy"
+    twin.write_bytes(config_bytes)
+    outside = tmp_path / "outside-link.alloy"
+    outside.symlink_to(twin)
+    for source in (str(twin), str(outside)):
+        state["mount_source"] = source
+        with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+            SURVEY._verify_loaded_candidate_config(
+                record, process, digest, availability_enabled=True, lower_bound=900,
+            )
+    state["mount_source"] = str(config_path)
+    state["mount_fail"] = True
+    with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+        SURVEY._verify_loaded_candidate_config(
+            record, process, digest, availability_enabled=True, lower_bound=900,
+        )
+    state["mount_fail"] = False
     provider_state.update(version="1.6.0", digest="d" * 64)
     assert SURVEY._verify_loaded_candidate_config(
         record, process, digest, availability_enabled=True, lower_bound=900,
@@ -1826,24 +1859,24 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
     provider_state.update(version="1.3.0", digest="b" * 64)
 
     state["argv"] = command_line.replace(b"127.0.0.1", b"0.0.0.0")
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_argv"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["argv"] = command_line
     state["mount_rw"] = True
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["mount_rw"] = False
     state["root_bytes"] = b'prometheus.scrape "stale" {}\n'
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_config_bytes"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["root_bytes"] = config_bytes
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_config_digest"):
         SURVEY._verify_loaded_candidate_config(
             record, process, "f" * 64, availability_enabled=True, lower_bound=900,
         )
@@ -1884,7 +1917,7 @@ def test_source_transition_requires_new_post_apply_alloy_process(monkeypatch):
     assert binding_calls
 
     binding_calls.clear()
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_source_transition_unproven"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, {"enabled": True, "targets": [{"freshness_seconds": 300}], "limits": {}},
             _loaded_inventory(), environment="prod", cluster="prod-west", intended_source="alloy",
@@ -1895,7 +1928,7 @@ def test_source_transition_requires_new_post_apply_alloy_process(monkeypatch):
     assert binding_calls == []
 
     record["started_at"] = "1970-01-01T00:14:00Z"
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_source_transition_unproven"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, {"enabled": True, "targets": [{"freshness_seconds": 300}], "limits": {}},
             _loaded_inventory(), environment="prod", cluster="prod-west", intended_source="alloy",
@@ -3913,3 +3946,61 @@ def test_loaded_coverage_matches_every_job_the_real_template_renders():
         _loaded_inventory(), True, 2000,
     )
     assert {row["job"]: row["status"] for row in result["jobs"]} == dict.fromkeys(jobs, "matched")
+
+
+def _rendered_enabled_alloy_config():
+    """config.alloy.j2 with availability enabled and production-shaped probe targets."""
+    policy = yaml.safe_load(
+        (ROOT / "platform/playbooks/vars/o11y-metric-labels.yml").read_text(encoding="utf-8")
+    )["_o11y_forbidden_metric_label_names_regex"]
+    env = Environment(undefined=StrictUndefined)
+    env.filters.update(to_json=json.dumps, bool=bool, mandatory=lambda value: value, string=str)
+    targets = [{
+        "module_name": f"health_0{index}", "blackbox_config": "modules: {}",
+        "target_id": f"service:svc{index}", "endpoint": f"https://svc{index}.example.test/health",
+        "service_identity": f"svc{index}", "environment": "prod", "cluster": "prod-west",
+        "interval_seconds": 60, "scrape_timeout_seconds": 5, "samples_per_scrape": 128,
+    } for index in (1, 2, 3)]
+    template = ROOT / "platform/services/o11y/deployment/templates/config.alloy.j2"
+    return env.from_string(template.read_text(encoding="utf-8")).render(
+        local_mode=False, o11y_cluster="prod-west", o11y_environment="prod",
+        o11y_availability_probes_enabled=True, _o11y_availability={"enabled": True, "targets": targets},
+        _o11y_forbidden_metric_label_names_regex=policy,
+    )
+
+
+def test_the_rendered_enabled_alloy_config_passes_the_component_binding():
+    # Semaphore task 14536: the keyword check matched the blackbox target's `module = "health_NN"`
+    # attribute, so every enabled deploy refused its post-apply readback.
+    rendered = _rendered_enabled_alloy_config()
+    assert 'module  = "health_01"' in rendered
+    SURVEY._validate_alloy_config_components(rendered.encode("utf-8"), availability_enabled=True)
+
+
+@pytest.mark.parametrize("block", [
+    'import.file "extra" {\n  filename = "/tmp/x.alloy"\n}\n',
+    'module.file "extra" {\n  filename = "/tmp/x.alloy"\n}\n',
+    'remotecfg {\n  url = "https://example.test"\n}\n',
+    'import.git "extra" {\n  repository = "https://example.test/x.git"\n}\n',
+    # A label the component regex cannot match, so only the config-loading keyword check refuses it.
+    'import.file "a/b" {\n  filename = "/tmp/x.alloy"\n}\n',
+])
+def test_config_loading_blocks_still_refuse_the_component_binding(block):
+    rendered = _rendered_enabled_alloy_config() + block
+    with pytest.raises(SURVEY.Refusal, match="native_binding_components"):
+        SURVEY._validate_alloy_config_components(rendered.encode("utf-8"), availability_enabled=True)
+
+
+def test_source_cli_prints_its_own_word_for_an_unexpected_exception(monkeypatch, capsys):
+    def explode():
+        raise RuntimeError("detail that must never be printed")
+
+    monkeypatch.setattr(SURVEY, "_availability_source_action", explode)
+    monkeypatch.setattr(SURVEY.sys, "argv", ["helper", "--verify-availability-source"])
+    assert SURVEY.main() == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["reason"] == "native_source_internal_error"
+    assert "detail" not in json.dumps(printed)
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": 2, "stdout": json.dumps(printed), "stderr": ""}
+    ) == "native_source_internal_error"
