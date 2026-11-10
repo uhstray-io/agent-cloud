@@ -6,10 +6,10 @@ playbook, and run the playbook:
 - the declaration is well formed, and it keeps the seeded fields;
 - the playbook's guards, read from its parsed structure: the refusal comes before any OpenBao request,
   the reads run in check mode, the merge is live-only and planned per path, no visible task prints a
-  registered result, no_log covers only the credential tasks, and the OpenBao URL is the retire-tududi
+  registered result, no_log covers only the credential tasks, and the OpenBao URL is the single-host
   pattern;
-- the real tree: no retired field is declared in a file the playbook scans. Strict xfail until the
-  sibling removals land;
+- the real tree: no retired field is declared in a file the playbook scans. Nothing on the tree
+  declares a retired field;
 - behaviour: the real playbook runs under ansible-playbook against a local KV-v2 double, in a fixture
   tree with its own declaration and deploy files. A run that fails the refusal makes no OpenBao request.
 """
@@ -37,7 +37,11 @@ PLAYBOOK = PLAYBOOKS / "retire-openbao-fields.yml"
 DECLARATION = PLAYBOOKS / "vars/retired-secret-fields.yml"
 REFUSE = PLAYBOOKS / "refuse-internal-extra-vars.yml"
 TASKS = PLAYBOOKS / "tasks"
-RETIRE_TUDUDI = PLAYBOOKS / "retire-tududi.yml"
+# The single-host OpenBao address expression; tasks/guard-o11y-restore-target.yml:14 uses the same one.
+SINGLE_HOST_BAO_URL = (
+    "{{ hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') "
+    "if (groups['openbao_svc'] | default([]) | length == 1) else '' }}"
+)
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
 
 SEEDED = {
@@ -166,11 +170,6 @@ def test_declaration_keeps_the_seeded_fields():
 # ── (b) the real tree ─────────────────────────────────────────────────────────
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="removed on sibling branches chore/retire-tududi-service (deploy-tududi.yml) and "
-    "feat/retire-tududi-authentik-dns (authentik.yml:44)",
-)
 def test_retired_fields_are_not_declared_in_any_source_the_playbook_scans():
     assert _literal_hits(PLAYBOOKS, _declaration()) == []
 
@@ -213,12 +212,12 @@ def test_the_refusal_scans_only_the_paths_own_two_files_as_whole_words():
     assert "(?<![A-Za-z0-9_])' ~ field ~ '(?![A-Za-z0-9_])" in text
 
 
-def test_openbao_url_is_the_retire_tududi_single_host_pattern():
+def test_openbao_url_is_the_single_host_pattern():
     def bao_url(path: Path) -> str:
         play = next(play for play in playbook_yaml.plays(path) if "_bao_url" in (play.get("vars") or {}))
         return play["vars"]["_bao_url"]
 
-    assert bao_url(PLAYBOOK) == bao_url(RETIRE_TUDUDI)
+    assert bao_url(PLAYBOOK) == SINGLE_HOST_BAO_URL
 
 
 def test_reads_are_check_mode_reads_with_both_statuses_and_no_log():

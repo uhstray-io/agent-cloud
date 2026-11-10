@@ -29,7 +29,7 @@
 # Check mode is a dry run: the reads run, the merge and the read-back are skipped. Run the Dev
 # template in Semaphore's Dry run first and read the plan.
 #
-# OpenBao is reached at the single host of the openbao_svc group, as retire-tududi.yml does. The
+# OpenBao is reached at the single host of the openbao_svc group (as tasks/guard-o11y-restore-target.yml does). The
 # AppRole comes from BAO_ROLE_ID / BAO_SECRET_ID, or the bao_role_id / bao_secret_id extra vars the
 # other OpenBao playbooks accept. Field values are never printed.
 
