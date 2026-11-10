@@ -156,6 +156,8 @@ def test_the_mint_requests_the_declared_grant_and_one_repository_of_one_org():
 def test_the_signing_key_arrives_on_stdin_and_never_on_argv():
     mint = _registered("_rv_mint")["task"]
     argv = _argv(mint)
+    # Isolated mode: the signer's directory is not on sys.path while the key is on stdin.
+    assert argv[:3] == ["python3", "-I", "{{ playbook_dir }}/../lib/github_app_token.py"], argv[:3]
     assert argv[argv.index("--key") + 1] == "-"
     assert (
         mint["command" if "command" in mint else "ansible.builtin.command"]["stdin"]

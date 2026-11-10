@@ -175,8 +175,12 @@
 
         - name: "Mint the installation token (key via stdin; the grant is the declared map)"
           ansible.builtin.command:
+            # -I: isolated mode, so the script's own directory (platform/lib/) is not first on sys.path.
+            # The merge guard protects this playbook, not every file in platform/lib/; without -I a merged
+            # module beside the signer could shadow an import while the App key is on its stdin.
             argv:
               - python3
+              - "-I"
               - "{{ playbook_dir }}/../lib/github_app_token.py"
               - installation-token
               - "--issuer"
