@@ -1373,13 +1373,13 @@ posting and corrected the comment in place (issuecomment 6759971706), saying in 
 wrong. Why the rule did not fire: the claim was a reason for not changing code, written in a reply to a reviewer,
 and it read as a summary of tests already seen in the session rather than as a claim about their behaviour.
 
-**Occurrence 10 — 2026-11-10.** Minutes later, opening #1002 (the shared Clean Deploy teardown loads overlays the
+**Occurrence 10 — 2026-11-10.** Later the same day, opening #1002 (the shared Clean Deploy teardown loads overlays the
 deploy never loaded), I wrote that `platform/lib/common.sh` "already computes that set (`compose_files`, `:147`),
 from the service's `deploy.sh` overlay choices and `.env`", without reading the function. It reads neither: it
 prints `compose.yml`, `compose.local.yml` in local mode, and whatever `COMPOSE_OVERLAYS` holds (`:146-151`); a
 service's `deploy.sh` sets that variable from its own conditions (skynet's from `LOCAL_MODE` and `.env` markers).
 I read the function before anyone acted on the issue and corrected the paragraph. Why the rule did not fire: the
-description extended a reviewer subagent's one-line summary of the function, relayed earlier in the session, and
+description extended a reviewer subagent's one-line summary of the function from #993's second review round (a report to the session, not posted), and
 outward text such as issues and PR comments passes through neither check that caught earlier occurrences: no
 worker reads it against the code under a DEVIATION RULE (occurrences 1, 6 and 7), and no reviewer reads it before
 it is public (occurrences 2, 4 and 8). Relaying a reviewer's claim is 1.28's class; it is recorded here because
@@ -1388,7 +1388,7 @@ the broken rule is this entry's, a description of what a function does written w
 **Guard status after occurrence 10.** Occurrence 10 cited the path and line it described (`common.sh`, `:147`).
 The dispatch hook proposed at occurrence 6 (each referenced path read before an Agent dispatch) would have
 targeted exactly that path, but it watches Agent dispatches, not `gh` commands, so it would not have run.
-Occurrence 9 cited no path, so neither that hook nor occurrence 8's proposal (a brief stating an identifier's
+Occurrence 9's false claim cited no path, so neither that hook nor occurrence 8's proposal (a brief stating an identifier's
 format cites the `file:line` that defines it) would have caught it. Proposed guard for outward text: the same
 read check, on `gh pr comment`, `gh issue create`, `gh issue edit` and `gh api .../comments`, refusing a body
 that cites a repository path not read in the session. It covers occurrence 10's shape. Occurrence 9's shape, a
