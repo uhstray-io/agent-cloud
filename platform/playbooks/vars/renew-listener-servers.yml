@@ -18,8 +18,11 @@
 #
 # Every row reloads its own leaf (reload: none). OPA re-reads `current` under
 # --tls-cert-refresh-period; the launch gate's listener reloads its TLS context on each
-# connection. Neither asks for a client certificate, so the proof presents none. A row's deploy
-# writes the leaf at <deploy>/certs/<leaf>, with step-ca-bundle.crt beside it.
+# connection; skynet's HTTPS listener checks its leaf's files on each new connection and reloads
+# them when they changed (deployment/templates/env.j2). OPA and the gate ask for no client
+# certificate, so the proof presents none; that skynet's listener asks for none too is taken from
+# the image contract and is not verified in this repo. A row's deploy writes the leaf at
+# <deploy>/certs/<leaf>, with step-ca-bundle.crt beside it.
 _renew_listener_servers:
   - class: opa-server
     group: opa_svc
@@ -37,3 +40,11 @@ _renew_listener_servers:
     default_leaf: launch-gate-server
     default_port: '8443'
     tls_var: ''
+  - class: skynet-server
+    group: skynet_svc
+    prefix: skynet
+    name_prefix: skynet
+    label: skynet
+    default_leaf: skynet-server
+    default_port: '8443'
+    tls_var: skynet_tls
