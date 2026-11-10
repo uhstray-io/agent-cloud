@@ -263,6 +263,23 @@ and `namespace_network_mode` (a service other than `alloy` declares a network mo
 deploy output. It never prints the helper's raw output. The producer source gate folds all of these
 to `namespace_unverified`.
 
+**Post-apply source readback refusals.** After the lifecycle apply, the deploy reads the Alloy
+self-metrics producer back and prints `Post-apply self-metrics producer diagnostic: <category>`
+when it does not observe the reviewed producer (the pre-placement read prints the same line as
+`Current self-metrics producer diagnostic`). With availability enabled the readback also binds
+the running Alloy to the reviewed candidate config, and each binding check has its own category:
+`native_binding_digest_invalid` (no valid candidate digest), `native_binding_started_before_apply`
+(Alloy was not restarted after the apply boundary), `native_binding_argv` (Alloy's command line),
+`native_binding_compose` (the effective compose project), `native_binding_image`,
+`native_binding_config_digest` (the placed config is not the reviewed candidate),
+`native_binding_config_bytes` (the config Alloy loaded differs from the placed one),
+`native_binding_components` (an unknown root component or a config-loading `import`, `module` or
+`remotecfg` block; a `module = ...` attribute is not a block) and `native_binding_mounts`.
+`native_source_identity_changed` means the Alloy process changed during the read,
+`native_source_transition_unproven` that a producer change was not proven by a new Alloy process,
+and `native_source_internal_error` that the helper raised an unexpected error. The read-only
+`Survey o11y Scrape Baseline (Dev)` runs the same binding without applying anything.
+
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
 candidate object is complete. It compares every fixed public job category in
