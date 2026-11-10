@@ -672,6 +672,7 @@ def test_merge_guard_operator_merges_every_file_the_release_tagging_runs_from():
     assert "scripts/semver.py" in guard.RELEASE_SCRIPTS
     assert "scripts/semver-backfill.tsv" in guard.RELEASE_SCRIPTS
     assert "platform/playbooks/release-version.yml" in guard.RELEASE_SCRIPTS
+    assert "platform/playbooks/tasks/release-notes-body.yml" in guard.RELEASE_SCRIPTS
 
 
 # --- release-notes: one release's categorised notes, as JSON sections or Markdown with optional summaries ----------
@@ -866,6 +867,39 @@ def test_each_rejection_rule_drops_only_its_summary_and_names_the_rule_not_the_t
     assert not stripped or stripped not in result.stdout
 
 
+ALLOWLIST = "contains a character outside the allowed set"
+
+
+@pytest.mark.parametrize(
+    ("bad", "rule"),
+    [
+        ("HTTPS://evil.example now", ALLOWLIST),  # an uppercase scheme passes the banned marks; the slash fails here
+        ("see www.Evil.example today", "contains 'www.'"),  # GitHub links www. in any letter case
+        ("[x]: //evil.example", ALLOWLIST),  # the first half of a reference-style link
+        ("~~~", ALLOWLIST),  # a tilde fence would swallow the rest of the body
+        ("ping &#64;octocat", ALLOWLIST),  # an encoded mention
+        ("Fixes #9999 quickly", ALLOWLIST),  # a free-text reference to a pull request outside the release
+        ("see other-org/repo#1 too", ALLOWLIST),  # a cross-repository reference
+    ],
+)
+def test_model_text_outside_the_allowlist_is_dropped_under_the_rule_it_breaks(tmp_path, bad, rule):
+    repo = _three_sections_repo(tmp_path)
+    summaries = {"features": bad, "fixes": "Fixes two crashes."}
+    result = _run_stdin(repo, json.dumps(summaries), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"features summary dropped: {rule}"])
+    assert "## Features\n\n<details>" in result.stdout  # the section stays, its summary does not
+    assert "## Fixes\n\nFixes two crashes.\n\n<details>" in result.stdout  # the other summary is kept
+    assert bad not in result.stdout
+
+
+def test_curly_quotes_dashes_and_percent_signs_stay_in_model_text(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    text = "The gateway’s limits — “now” enforced, 100% of the time."
+    result = _run_stdin(repo, json.dumps({"features": text}), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert f"## Features\n\n{text}\n\n<details>" in result.stdout
+
+
 def test_a_summary_of_exactly_800_characters_is_accepted(tmp_path):
     repo = _three_sections_repo(tmp_path)
     result = _run_stdin(repo, json.dumps({"features": "x" * 800}), "release-notes", "--tag", "v0.2.0", "--render")
@@ -922,6 +956,34 @@ def test_at_signs_are_neutralised_in_rendered_titles_and_names_but_raw_in_the_js
     assert "- #40 fix: ping @​team about the route\n" in rendered
     assert "- Cat@​Work (1 commit)\n" in rendered
     assert "@" not in rendered.replace("@​", "")
+
+
+def test_a_contributor_name_that_is_a_link_renders_as_plain_text(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "[n](https://e.example)", "pr-70", 70, "fix: a plain title")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- \\[n\\](https://e.example) (1 commit)\n" in rendered
+    assert "[n](" not in rendered
+
+
+def test_a_title_cannot_format_a_link_or_close_its_block(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-71", 71, "fix: close </details> early")
+    _pr_as(repo, "Ada", "pr-72", 72, "fix: keep crash_loop *bold* ~gone~ a|b c\\d [x](y) R&D `make`")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- #71 fix: close &lt;/details&gt; early\n" in rendered
+    assert "- #72 fix: keep crash\\_loop \\*bold\\* \\~gone\\~ a\\|b c\\\\d \\[x\\](y) R&amp;D \\`make\\`\n" in rendered
+    assert rendered.count("<details>") == rendered.count("</details>") == 1
+
+
+def test_a_breaking_title_is_escaped_like_a_section_title(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-73", 73, "fix(api)!: drop <b>old_route</b>")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- #73 fix(api)!: drop &lt;b&gt;old\\_route&lt;/b&gt; (breaking change)\n" in rendered
 
 
 def test_previous_is_the_highest_lower_release_tag_by_version_number_and_never_a_dev_tag(tmp_path):
@@ -1114,6 +1176,23 @@ def test_a_highlight_whose_text_breaks_a_rule_is_dropped_and_the_rest_kept(tmp_p
     assert f"{BREAKING_LINE}\n- #31 Crash fixed.\n\n## Features\n" in result.stdout
     stripped = text.strip()
     assert not stripped or stripped not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("text", "rule"),
+    [
+        ("www.evil.example", "contains 'www.'"),  # no banned mark, so only the www. rule catches it
+        ("See WWW.Evil.example.", "contains 'www.'"),
+        ("Closes #9999.", ALLOWLIST),
+    ],
+)
+def test_a_highlight_outside_the_allowlist_is_dropped_and_the_rest_kept(tmp_path, text, rule):
+    repo = _major_repo(tmp_path)
+    highlights = [{"number": 30, "text": text}, {"number": 31, "text": "Crash fixed."}]
+    result = _render_with(repo, {"highlights": highlights})
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"highlight 1 dropped: {rule}"])
+    assert f"{BREAKING_LINE}\n- #31 Crash fixed.\n\n## Features\n" in result.stdout
+    assert text not in result.stdout
 
 
 def test_a_highlight_of_exactly_200_characters_is_shown_and_its_newlines_collapsed(tmp_path):

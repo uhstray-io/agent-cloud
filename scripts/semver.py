@@ -318,6 +318,9 @@ HEADINGS = (
 SUMMARY_KEYS = ("features", "fixes", "documentation")
 SUMMARY_MAX = 800
 SUMMARY_BANNED = ("@", "http://", "https://", "](", "<", ">", "`")
+# Model text (summaries, the overview, highlight text) may hold only these characters. Every other mark is Markdown
+# or HTML syntax, a URL, or a reference (#N, owner/repo#N), so the text is dropped rather than rendered.
+SAFE_TEXT = re.compile(r"[\w\s.,;:'\"()!?%+=–—‘’“”-]+")
 HIGHLIGHT_MAX = 200
 HIGHLIGHTS_SHOWN = 5
 INPUT_KEYS = (*SUMMARY_KEYS, "overview", "highlights")
@@ -365,6 +368,15 @@ def _banned_problem(text):
     return None
 
 
+def _unsafe_text_problem(text):
+    """The rule model text breaks: www. in any case, or a character outside SAFE_TEXT. None when it passes."""
+    if "www." in text.casefold():
+        return "contains 'www.'"
+    if SAFE_TEXT.fullmatch(text) is None:
+        return "contains a character outside the allowed set"
+    return None
+
+
 def _summary_problem(text):
     """The rule a model summary breaks, or None if it may be rendered. A rejected summary is dropped, never repaired."""
     stripped = text.strip()
@@ -375,7 +387,7 @@ def _summary_problem(text):
         return problem
     if any(line.lstrip().startswith("#") for line in stripped.splitlines()):
         return "a line starts with '#'"
-    return None
+    return _unsafe_text_problem(stripped)
 
 
 def _highlight_text_problem(text):
@@ -383,7 +395,10 @@ def _highlight_text_problem(text):
     stripped = text.strip()
     if not 1 <= len(stripped) <= HIGHLIGHT_MAX:
         return f"not 1 to {HIGHLIGHT_MAX} characters after strip"
-    return _banned_problem(stripped)
+    problem = _banned_problem(stripped)
+    if problem is not None:
+        return problem
+    return _unsafe_text_problem(stripped)
 
 
 def _highlight_rule(item, in_release, breaking_numbers, seen):
@@ -472,6 +487,21 @@ def _neutral(text):
     return text.replace("@", "@​")
 
 
+# HTML first (the & of each entity must not be escaped again), then Markdown marks. The backslash comes first in the
+# Markdown tuple so the backslashes added for the other marks are not doubled.
+ESCAPED_HTML = (("&", "&amp;"), ("<", "&lt;"), (">", "&gt;"))
+ESCAPED_MARKDOWN = ("\\", "`", "*", "_", "[", "]", "~", "|")
+
+
+def _escape(text):
+    """Keep a title or a name from formatting, linking or closing the block around it, then from notifying anyone."""
+    for mark, entity in ESCAPED_HTML:
+        text = text.replace(mark, entity)
+    for mark in ESCAPED_MARKDOWN:
+        text = text.replace(mark, "\\" + mark)
+    return _neutral(text)
+
+
 def _render(previous, sections, breaking, contributors, model):
     """The Markdown body: Summary, Major Updates, the sections, Contributors. The first release gets one line."""
     if previous is None:
@@ -487,7 +517,7 @@ def _render(previous, sections, breaking, contributors, model):
         f"{_count(counts['documentation'], 'documentation update')}, "
         f"{_count(counts['other'], 'other change')}."
     )
-    lines = [f"- #{number} {_neutral(title)} (breaking change)" for number, title in breaking]
+    lines = [f"- #{number} {_escape(title)} (breaking change)" for number, title in breaking]
     lines += [f"- #{number} {text}" for number, text in model["highlights"]]
     parts.append("## Major Updates")
     parts.append("\n".join(lines) if lines else "No breaking changes in this release.")
@@ -498,10 +528,10 @@ def _render(previous, sections, breaking, contributors, model):
         parts.append(f"## {heading}")
         if key in model["summaries"]:
             parts.append(model["summaries"][key])
-        lines = "\n".join(f"- #{number} {_neutral(title)}" for number, title in items)
+        lines = "\n".join(f"- #{number} {_escape(title)}" for number, title in items)
         parts.append(f"<details><summary>{_count(len(items), 'pull request')}</summary>\n\n{lines}\n\n</details>")
     if contributors:
-        lines = "\n".join(f"- {_neutral(name)} ({_count(commits, 'commit')})" for name, commits in contributors)
+        lines = "\n".join(f"- {_escape(name)} ({_count(commits, 'commit')})" for name, commits in contributors)
         parts.append(f"## Contributors\n\n{lines}")
     return "\n\n".join(parts) + "\n"
 

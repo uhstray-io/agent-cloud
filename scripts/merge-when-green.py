@@ -45,8 +45,14 @@ _semver_spec = importlib.util.spec_from_file_location("semver_for_merge_guard", 
 semver = importlib.util.module_from_spec(_semver_spec)
 _semver_spec.loader.exec_module(semver)
 # The Semaphore Release Version templates run these with a GitHub App token that can push tags (plan 20), so a
-# pull request that changes any of them is merged by the operator, never through this gate.
-RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv", "platform/playbooks/release-version.yml")
+# pull request that changes any of them is merged by the operator, never through this gate. The release playbook
+# and the notes task it includes both run inside that token's block, so the task is listed with the playbook.
+RELEASE_SCRIPTS = (
+    "scripts/semver.py",
+    "scripts/semver-backfill.tsv",
+    "platform/playbooks/release-version.yml",
+    "platform/playbooks/tasks/release-notes-body.yml",
+)
 
 
 class Refusal(Exception):
