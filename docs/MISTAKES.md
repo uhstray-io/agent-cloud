@@ -33,7 +33,7 @@ and why.
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x7** | Unverified claim | 7 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
-| 1.4 | **x3** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped; x3: a survey value inferred from another template, `opa_svc` where the template wants `opa`) | Unverified claim | 3 | Convention; launcher survey-pattern check proposed |
+| 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | 2 | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) | Unverified claim | 10 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) | Unverified claim | 11 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) | Unverified claim | 1 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
@@ -121,7 +121,7 @@ and why.
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
 | 3.20 | **x2** — Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) (x2: two more launches in forbidden minutes, no failure) | Live state | 2 | Convention (launch away from schedule slots); per-task inventory proposed; widened by 3.22 |
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
-| 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check failed on the removed shared inventory (supersedes 3.20's rule for longer tasks) | Live state | 1 | Convention (finish before the next slot); launcher duration check proposed |
+| 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -407,7 +407,7 @@ command list; until then, `ruff check .; echo rc=$?` is the form.
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
 
-**Occurrences: 3** — (first occurrence undated), 2026-10-30, 2026-11-10
+**Occurrences: 2** — (first occurrence undated), 2026-10-30
 
 **What happened.** Immediately after creating a runner group, its access list was checked
 at `.../runner-groups/5/repositories`. The group's real id was 6. The check silently
@@ -431,21 +431,6 @@ rule did not fire because these were status summaries, not verification steps, a
 wording emphasises verification; an id in a report to the operator is a claim just the same.
 The ids were corrected from the launcher logs (`Task <id> launched`) before the final report.
 
-
-**Occurrence 3 — 2026-11-10.** Launching check-mode runs of the `main`-bound `Provision VM` and `Resize VM`
-templates for the OPA host, I passed `target_service=opa_svc`. The value was inferred from adjacent state (other
-templates take the group name, for example `Probe launch-gate (Dev)`'s `probe_target_service` defaults to `opa_svc`),
-not read from these templates' own survey descriptions, which say "Service whose <name>_svc group holds the declaration
-(e.g. github_runner)" and "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)". Both playbooks append `_svc`
-(`provision-vm.yml` builds `groups[target_service ~ '_svc']`), so Semaphore tasks 14728 and 14729 refused before
-touching Proxmox, naming the group `opa_svc_svc`. The relaunch with `target_service=opa` passed (14731, 14734). Nothing
-was changed, but it cost two runs, and the two failed launches overlapped a schedule slot (3.22). The rule did not
-fire because it is worded for ids returned by a create call; a launch input is the same kind of identifier. The
-corrected form: read the template's survey description before setting a survey value.
-
-**Proposed guard (count 3).** Survey fields in `platform/semaphore/templates.yml` gain an optional `pattern`, which
-`scripts/semaphore-launch.py` checks before the POST; `target_service` on the VM writers gets one refusing a value
-ending in `_svc`.
 
 ### 1.5 A security control asserted from documentation, disproved by the first measurement
 
@@ -1309,7 +1294,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 10** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10
+**Occurrences: 11** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1437,6 +1422,8 @@ read check, on `gh pr comment`, `gh issue create`, `gh issue edit` and `gh api .
 that cites a repository path not read in the session. It covers occurrence 10's shape. Occurrence 9's shape, a
 behavioural claim with no citation, has no mechanical detector; it stays Convention.
 
+
+**Occurrence 11 — 2026-11-10.** Launching check-mode runs of the `main`-bound `Provision VM` and `Resize VM` templates for the OPA host, I passed `target_service=opa_svc`, the group name, taken from another template's default (`Probe launch-gate (Dev)`'s `probe_target_service` defaults to `opa_svc`) without reading these templates' own survey descriptions ("Service whose <name>_svc group holds the declaration (e.g. github_runner)", "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)"). Both playbooks append `_svc` (`provision-vm.yml:112`, `resize-vm.yml:168`), so Semaphore tasks 14728 and 14729 refused before touching Proxmox, naming the group `opa_svc_svc`; the relaunch with `target_service=opa` passed (14731, 14734). This is occurrence 2's slip again, on the same field and the same two templates. Why the rule did not fire: it was not recalled; a survey value set on a launcher command line felt like an input, not a claim about what the template does. Guard proposal: the launcher (`scripts/semaphore-launch.py`) refuses a `target_service` ending in `_svc` for every template on OPA's existing `bare_service_name_templates` list (`platform/services/opa/deployment/policies/agentcloud/data.json`), and OPA's own bare-name check refuses the same suffix, so one list guards both the operator launcher and the launch gate.
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -3467,11 +3454,13 @@ minute of a schedule declared in `templates.yml`, and the foundational fix is a 
 the inventory so no task can remove another's.
 
 **Occurrence 2 — 2026-11-10.** Running the check-mode VM-writer runs on `main` (Create VM Template, Provision VM,
-Resize VM), I launched at 23:03:54 UTC (task 14727, under five minutes after the :00 slot) and at 23:15:26 UTC (task
-14734, 26 seconds after the :15 slot), both in minutes the rule forbids. Neither failed, and the scheduled tasks at
-23:15 (14732, 14733) did not fail either. The rule did not fire because it was not recalled: the launches were
-sequenced by when the previous one finished, not by the clock. Two other launches, in minutes the rule allows, did
-break a scheduled task; that case the rule does not cover, and 3.22 widens it.
+Resize VM), I launched at 23:03:54 UTC (task 14727, under five minutes after the :00 slot), at 23:10:49 UTC (task
+14731, under a minute after the :10 slot) and at 23:15:26 UTC (task 14734, 26 seconds after the :15 slot), all in
+minutes the rule forbids. None of them failed, and the scheduled tasks at 23:15 (14732, 14733) did not fail either.
+The rule did not fire because it was not recalled: the launches were sequenced by when the previous one finished, not
+by the clock. Two other launches, in minutes the rule allows, ran into the next slot, and the scheduled task that
+started there failed on an empty inventory; that the two are linked is inferred from timing, not proven. The rule does
+not cover that case, and 3.22 widens it.
 
 ### 3.21 Shared-inventory switches merged and synced before any run had read them
 
@@ -3503,7 +3492,7 @@ a disabled-mode dry run ready to confirm the revert path.
 gates against the declared cohort without the switch, with fixed-category refusal reasons, so the
 switch can be proven before it is merged. Related: 3.15 (unproven `dev` changes reaching a real run).
 
-### 3.22 A launch in an allowed minute ran into the next schedule slot and broke the liveness check
+### 3.22 A launch in an allowed minute ran into the next schedule slot; the liveness check there failed on the shared inventory (link inferred)
 
 **Occurrences: 1** — 2026-11-10
 
@@ -3517,14 +3506,18 @@ nothing about o11y for that slot.
 **Root cause.** 3.20's rule constrains when a manual task starts, but the race happens when a task finishes: the
 task that finishes first removes the shared inventory file (`platform/playbooks/tasks/require-parsed-inventory.yml`).
 A manual task that starts in an allowed minute and is still running at the next slot can finish while a scheduled
-task is parsing. That the failure came from 14729 finishing is inferred from the timing; it was not proven.
+task is parsing. That 14730's failure came from 14728 or 14729 finishing is inferred from the timing; it was not
+proven. Another task scheduled every ten minutes (`Stock GitHub Runner JIT (Dev)`, `platform/semaphore/templates.yml`)
+also starts at 23:10, and its finish could equally have removed the file.
 
-**The rule.** Supersedes 3.20's rule for any task that runs longer than a minute or two. Launch a manual production
-task only when it will also finish before the next declared schedule slot (`platform/semaphore/templates.yml`),
-leaving at least one minute of margin. For a task of unknown duration, launch it right after a slot has finished,
-never in the minutes just before one. Run manual launches one after another, each checked against the clock. If a
-scheduled task fails on an empty inventory near a manual run, re-run nothing by hand: let its next slot run, and
-check that it passes.
+**The rule.** Keeps 3.20's rule (launch on a minute no declared schedule uses, at least five minutes after the last
+slot) and adds: the task should also finish before the next declared slot (`platform/semaphore/templates.yml`), with
+at least one minute of margin. With today's slots the longest gap is ten minutes, so a task that runs longer than
+about four minutes has no window that satisfies both. For such a task, launch five minutes after the start of a
+ten-minute gap, accept that the race can hit the next slot, and afterwards read every scheduled task that started
+while it ran: one that failed on an empty inventory is left to its next slot and checked to pass there. Run manual
+launches one after another, each checked against the clock, never sequenced only by the previous one finishing. The
+real fix is a per-task inventory copy, below.
 
 **Enforced by.** Convention. Proposed, extending 3.20's proposal: `scripts/semaphore-launch.py` refuses a launch
 within a template's recorded typical duration of the next declared slot. The foundational fix is unchanged: a
