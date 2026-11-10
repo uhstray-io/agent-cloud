@@ -177,7 +177,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update
+          # uv.lock is excluded from THIS scan only: it is generated and full of package hashes,
+          # and the SentryToken detector matched the sentry-sdk wheel's hash URL. A comment
+          # marker cannot live there because `uv lock` rewrites the file. The verified scan
+          # above still reads uv.lock, so a live credential in it still fails the job.
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update \
+            --exclude-paths .github/trufflehog-exclude-unverified.txt
 
       - name: RFC1918 IP address audit
         run: |
