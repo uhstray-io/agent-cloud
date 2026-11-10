@@ -1907,10 +1907,12 @@
       changed_when: true
       when: not ansible_check_mode
 
-    - name: "Register templates (shared + local-only)"
+    # The converge entry point publishes, then retires: setup-templates.yml never deletes, so a
+    # retired template stayed live here and kept its schedule firing (#955, #956).
+    - name: "Register templates and apply retirements (shared + local-only)"
       ansible.builtin.command:
         cmd: >-
-          ansible-playbook {{ playbook_dir }}/../semaphore/setup-templates.yml
+          ansible-playbook {{ playbook_dir }}/../semaphore/converge-local-catalog.yml
           -e semaphore_project_id={{ _pid }}
           -e semaphore_inventory_id={{ _inv_id }}
           -e semaphore_environment_id={{ _env_id }}

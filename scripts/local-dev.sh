@@ -232,8 +232,9 @@ task_output() {
   _print_task_output "$task" || die "no output for task ${task} (not found, or local Semaphore is down)"
 }
 
-# Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, exactly as
-# bootstrap-local-dev.yml's "Register templates" step does, without re-running genesis. Use
+# Re-publish the template catalog (shared + local-only) to the LOCAL Semaphore, then apply the
+# template retirements, exactly as bootstrap-local-dev.yml's "Register templates and apply
+# retirements" step does, without re-running genesis. Use
 # after editing templates-local.yml or templates.yml. Resolves the same records by name
 # (inventory `local`, environment `local-openbao`) that the bootstrap creates.
 templates() {
@@ -249,7 +250,7 @@ templates() {
   env=$(_api "${base}/environment" | python3 -c "import json,sys; print(next(e['id'] for e in json.load(sys.stdin) if e['name'] == 'local-openbao'))") \
     || die "no 'local-openbao' environment record — run: make local-bootstrap"
   SEMAPHORE_URL="$SEMAPHORE_URL" SEMAPHORE_TOKEN="$SEMAPHORE_TOKEN" ansible-playbook \
-    "${REPO_ROOT}/platform/semaphore/setup-templates.yml" \
+    "${REPO_ROOT}/platform/semaphore/converge-local-catalog.yml" \
     -e "semaphore_project_id=${SEMAPHORE_PROJECT_ID}" -e "semaphore_inventory_id=${inv}" \
     -e "semaphore_environment_id=${env}" -e semaphore_include_local_templates=true
 }
@@ -632,7 +633,7 @@ usage: scripts/local-dev.sh <subcommand>
   clean-deploy <svc> <host>  DESTRUCTIVE: wipe the service's containers+volumes, redeploy;
                      <host> must name the host (<svc>-local), as confirm_reset
   validate           run Validate All via LOCAL Semaphore
-  templates          re-publish shared + local-only templates to LOCAL Semaphore
+  templates          re-publish shared + local-only templates to LOCAL Semaphore and apply retirements
   run <playbook> [json]  run any registered template by playbook basename via
                      LOCAL Semaphore (worktree-bound dispatch; extra vars as JSON).
                      DRY_RUN=1 runs it in check mode
