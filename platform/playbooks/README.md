@@ -150,6 +150,7 @@ and launches each with a forged internal name.
 | Playbook | Pattern | Purpose |
 |----------|---------|---------|
 | `deploy-service.yml` | Legacy | Generic deploy: clone monorepo, run deploy.sh, health check |
+| `deploy-all.yml` | Legacy aggregate | Deploys OpenBao, then NetBox, through the legacy clone task; not a complete current-platform deployment or recovery path |
 | `deploy-openbao.yml` | Legacy | Deploy OpenBao (self-bootstrapping, special case) |
 | `deploy-semaphore.yml` | Legacy | Deploy Semaphore (new VM only) |
 | `deploy-netbox.yml` | Composable | Deploy NetBox (5-phase: secrets, containers, bootstrap, Diode creds, verify) |
@@ -385,7 +386,6 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/apply-openbao-policy.yml` | Implemented | Apply a single OpenBao policy from an .hcl file |
 | `tasks/seed-discovery-credential.yml` | Implemented | Copy/update one credential set at a discovery/* vault path |
 | `tasks/update-vault-field.yml` | Implemented | Read a vault secret, update a specific field, write back |
-| `tasks/run-migrations.yml` | Implemented | Generic goose migration runner; container or host execution |
 | `tasks/install-nvidia-toolkit.yml` | Implemented | NVIDIA Container Toolkit + CDI for Podman on GPU hosts |
 | `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable (Linux apt / macOS Homebrew) |
 | `tasks/place-monorepo.yml` | Implemented | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble. The local copy reports `changed` only for a transfer, a created or retargeted symlink, a deletion or a mode change on a non-symlink (`filter_plugins/rsync_itemize.py`), so a second deploy of an unchanged tree reports none |

@@ -741,7 +741,7 @@ flowchart TB
   end
   subgraph A2["Axis 2 — Authoring discipline (within TRIGGER-CONVERGED)"]
     DS["D — declared-state<br/>hand the tool desired state, it diffs<br/>(template, file, lineinfile, apt, server-side upserts)"]
-    GI["GI — guarded-imperative<br/>imperative form, convergent effect, PROVEN by a<br/>guard + honest changed_when (run-migrations, mint-cert)"]
+    GI["GI — guarded-imperative<br/>imperative form, convergent effect, PROVEN by a<br/>guard + honest changed_when (mint-cert)"]
     IR["I — imperative-raw<br/>mutating shell, no convergence claim<br/>(legacy secret-gen deploy.sh) — a defect outside bootstrap"]
   end
   T --> DS
@@ -758,7 +758,7 @@ flowchart TB
 ### Axis 2 — Authoring discipline (applies *within* TRIGGER-CONVERGED)
 
 - **D — declared-state:** you hand the tool the end state; it computes the diff; re-running is *intrinsically* a no-op. `ansible.builtin.template`/`file`/`lineinfile`/`apt`/`authorized_key`, `.j2`/`.hcl`/compose/`templates.yml` data, and server-side upserts (Vault policy `PUT`, Semaphore template `PUT`-by-id).
-- **GI — guarded-imperative:** imperative *form*, declarative *effect*, where convergence is **hand-built** per task: a guard (`creates:`, a `when:` precondition, a `container exists` check) plus an **honest `changed_when`**. Legitimate and unavoidable at boundaries with no faithful module (podman/compose, in-container CLIs, vendor HTTP APIs). `run-migrations.yml`, `mint-internal-cert.yml`, the thin `deploy.sh` wrappers.
+- **GI — guarded-imperative:** imperative *form*, declarative *effect*, where convergence is **hand-built** per task: a guard (`creates:`, a `when:` precondition, a `container exists` check) plus an **honest `changed_when`**. Legitimate and unavoidable at boundaries with no faithful module (podman/compose, in-container CLIs, vendor HTTP APIs). `mint-internal-cert.yml`, the thin `deploy.sh` wrappers.
 - **I — imperative-raw:** a mutating `shell`/`command` with **no** convergence — re-run behavior depends on side effects, not desired state. Outside genuine bootstrap/one-time genesis, this is a **defect**.
 
 > **The sharpest, most testable rule** (its own §6/§7): *a bare `changed_when: true` on a mutating `shell`/`command`/`podman exec` is an **unverified convergence claim** — GI-debt by default, and often I masquerading as GI.* Convergence in this repo is **authored, not free**; the author can get it wrong, and `manage-approle.yml` proves they did.
@@ -794,7 +794,6 @@ Mapping to the **four-layer guardrails model** (see ARCHITECTURE.md): *Platform*
 | OpenBao policies / `templates.yml` | TRIGGER-CONVERGED | D (data) over GI (apply) | Declarative source, idempotent upsert. |
 | `deploy.sh` (dns/caddy/step-ca) | TRIGGER-CONVERGED | GI (correct) | Thin lifecycle; no module does podman-compose+overlay faithfully. |
 | `mint-internal-cert.yml` | TRIGGER-CONVERGED | GI | Re-mints each run by design (cheap, overwrite); honest. |
-| `run-migrations.yml` | TRIGGER-CONVERGED | GI (textbook) | goose idempotent at target + honest `changed_when`. |
 | `harden-ssh.yml` | TRIGGER-CONVERGED | **D** | `lineinfile`+handler+`validate`+`assert` — best-in-repo. |
 | bootstrap (local + prod genesis) | TRIGGER-CONVERGED | GI (sequenced) | ~25% irreducible ordering, ~75% reducible (§7). |
 | OpenBao auth / OPA | DECISION-ENGINE | D (policy) | Per-request allow/deny; not a state reconciler. |
@@ -889,7 +888,7 @@ The two-axis model was chosen because the project's central risk is **convergenc
 This plan synthesizes a three-lens analysis, each verified against source then cross-challenged:
 
 - **Architecture lens** — declarative-vs-imperative as *who closes the loop*; four-layer mapping; AI-invariant; liveness-vs-config reconciliation. Grounded in the Composability half of this doc, `IMPLEMENTATION_PLAN.md` (Idempotency Contract), `platform/k8s/` (empty), live deploy playbooks.
-- **Automation lens** — the D/I/GI discipline and the `changed_when: true` smell; refactor candidates. Grounded in `platform/playbooks/tasks/*` (`manage-secrets`, `manage-approle`, `place-monorepo`, `mint-internal-cert`, `run-migrations`), `harden-ssh.yml`, `common.sh`, `setup-templates.yml`.
+- **Automation lens** — the D/I/GI discipline and the `changed_when: true` smell; refactor candidates. Grounded in `platform/playbooks/tasks/*` (`manage-secrets`, `manage-approle`, `place-monorepo`, `mint-internal-cert`), `harden-ssh.yml`, `common.sh`, `setup-templates.yml`.
 - **Agent-cloud (ground-truth) lens** — current-state map, FORCED-vs-DEBT split, confirmation of the live `manage-approle` defect (`secret_id_ttl: 0` ~lines 60–61; unconditional `/secret-id` POST ~75–85), the unwired `assert-orchestrated.yml`, and the unbuilt runtime-dir tasks. Grounded across `platform/playbooks/`, `platform/services/*/deployment/`, `platform/semaphore/`, `scripts/local-dev.sh`.
 
 Consensus: adopt Axis-1 loop-ownership as the architectural truth (zero standing reconcilers today — names the k8s gap), layer D/I/GI within it, treat `changed_when: true`-on-mutating-shell as the #1 debt signal, rank the `manage-approle` defect most urgent.

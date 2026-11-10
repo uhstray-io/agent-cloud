@@ -50,7 +50,7 @@ must never masquerade as the real fix.
 
 ## Repository Overview
 
-**agent-cloud** is the unified platform monorepo for the uhstray-io privacy-focused AI platform. It consolidates service deployments, AI agent configurations, Ansible playbooks, Kubernetes manifests, and shared libraries into a single public repository.
+**agent-cloud** is the unified platform monorepo for the uhstray-io privacy-focused AI platform. It consolidates service deployments, Ansible playbooks, Kubernetes manifests, and shared libraries into a single public repository.
 
 Private configuration (real IPs, credentials, production inventory) lives in the separate **site-config** repository. This repo contains only templates, placeholders, and code.
 
@@ -106,7 +106,7 @@ plan/                        Architecture, implementation, and composability pla
 - `platform/playbooks/README.md` — Playbook conventions and a selected reference (many playbooks are not named in it)
 - `docs/MISTAKES.md` — Recorded mistakes and the rules they earned; each entry names where it is enforced (test, hook, CI, OPA). Read §3 before acting on live state and §1 before calling something verified
 - `plan/architecture/01-automation-model.md` — Composable deployment architecture; Where to use declarative vs imperative automation (two-axis taxonomy, surface classification, FORCED-vs-DEBT, action backlog, AI-loop invariant)
-- `plan/development/06-inference-skynet.md` — skynet as the inference and agent plane; operational inference cutover to skynet: feature-parity matrix, phased migration via the OpenBao `secret/services/inference/endpoint` lever, dependency gates (N3/X2/LADDER), rollback, X2 telemetry gap
+- `plan/development/06-inference-skynet.md` — skynet as the inference and agent plane: agentgateway in front of vLLM, skynet roles as OPA identities, the launch gate as the only launch path, and the use-case catalog
 - `plan/development/03-guardrails-governance.md` — Source-of-truth ADR + development plan: exactly one authority per concern (NetBox=network/IPAM, Git+ArgoCD=desired workload state, k8s API=live, Harbor=images, o11y=telemetry, OpenBao=secrets, OPA/Kyverno=policy); CI-enforceable invariants (reflections read-only, never invert authority, ephemeral state never pollutes IPAM); phased Compose→k8s plan; Branch protection & rulesets plan (config-as-code `protect-main`; evaluate→active rollout; CI-gated merges)
 - `plan/architecture/00-foundation-standards.md` — Master architecture document index and standards
 - `plan/architecture/network-architecture.md` — Current-state network map: edge, Caddy, inference path, internal CA/DNS, firewall, control-plane and provisioning paths; status per component

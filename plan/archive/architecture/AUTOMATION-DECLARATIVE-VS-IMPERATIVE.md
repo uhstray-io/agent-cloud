@@ -26,7 +26,7 @@ flowchart TB
   end
   subgraph A2["Axis 2 — Authoring discipline (within TRIGGER-CONVERGED)"]
     DS["D — declared-state<br/>hand the tool desired state, it diffs<br/>(template, file, lineinfile, apt, server-side upserts)"]
-    GI["GI — guarded-imperative<br/>imperative form, convergent effect, PROVEN by a<br/>guard + honest changed_when (run-migrations, mint-cert)"]
+    GI["GI — guarded-imperative<br/>imperative form, convergent effect, PROVEN by a<br/>guard + honest changed_when (mint-cert)"]
     IR["I — imperative-raw<br/>mutating shell, no convergence claim<br/>(legacy secret-gen deploy.sh) — a defect outside bootstrap"]
   end
   T --> DS
@@ -43,7 +43,7 @@ flowchart TB
 ### Axis 2 — Authoring discipline (applies *within* TRIGGER-CONVERGED)
 
 - **D — declared-state:** you hand the tool the end state; it computes the diff; re-running is *intrinsically* a no-op. `ansible.builtin.template`/`file`/`lineinfile`/`apt`/`authorized_key`, `.j2`/`.hcl`/compose/`templates.yml` data, and server-side upserts (Vault policy `PUT`, Semaphore template `PUT`-by-id).
-- **GI — guarded-imperative:** imperative *form*, declarative *effect*, where convergence is **hand-built** per task: a guard (`creates:`, a `when:` precondition, a `container exists` check) plus an **honest `changed_when`**. Legitimate and unavoidable at boundaries with no faithful module (podman/compose, in-container CLIs, vendor HTTP APIs). `run-migrations.yml`, `mint-internal-cert.yml`, the thin `deploy.sh` wrappers.
+- **GI — guarded-imperative:** imperative *form*, declarative *effect*, where convergence is **hand-built** per task: a guard (`creates:`, a `when:` precondition, a `container exists` check) plus an **honest `changed_when`**. Legitimate and unavoidable at boundaries with no faithful module (podman/compose, in-container CLIs, vendor HTTP APIs). `mint-internal-cert.yml`, the thin `deploy.sh` wrappers.
 - **I — imperative-raw:** a mutating `shell`/`command` with **no** convergence — re-run behavior depends on side effects, not desired state. Outside genuine bootstrap/one-time genesis, this is a **defect**.
 
 > **The sharpest, most testable rule** (its own §6/§7): *a bare `changed_when: true` on a mutating `shell`/`command`/`podman exec` is an **unverified convergence claim** — GI-debt by default, and often I masquerading as GI.* Convergence in this repo is **authored, not free**; the author can get it wrong, and `manage-approle.yml` proves they did.
@@ -79,7 +79,6 @@ Mapping to the **four-layer guardrails model**: the *Platform* layer is where RE
 | OpenBao policies / `templates.yml` | TRIGGER-CONVERGED | D (data) over GI (apply) | Declarative source, idempotent upsert. |
 | `deploy.sh` (dns/caddy/step-ca) | TRIGGER-CONVERGED | GI (correct) | Thin lifecycle; no module does podman-compose+overlay faithfully. |
 | `mint-internal-cert.yml` | TRIGGER-CONVERGED | GI | Re-mints each run by design (cheap, overwrite); honest. |
-| `run-migrations.yml` | TRIGGER-CONVERGED | GI (textbook) | goose idempotent at target + honest `changed_when`. |
 | `harden-ssh.yml` | TRIGGER-CONVERGED | **D** | `lineinfile`+handler+`validate`+`assert` — best-in-repo. |
 | bootstrap (local + prod genesis) | TRIGGER-CONVERGED | GI (sequenced) | ~25% irreducible ordering, ~75% reducible (§7). |
 | OpenBao auth / OPA | DECISION-ENGINE | D (policy) | Per-request allow/deny; not a state reconciler. |
