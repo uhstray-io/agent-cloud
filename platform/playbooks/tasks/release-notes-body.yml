@@ -1,0 +1,326 @@
+# release-notes-body.yml — the GitHub Release body for one tag (plan 20, "Release notes").
+#
+# Included by release-version.yml inside its block, with _rn_tag set to a release tag (vX.Y.Z). It leaves the
+# categorised body in _rn_body for the caller to post or to PATCH. Steps:
+#   1. The tag's pull requests by category (scripts/semver.py release-notes --sections): names and counts.
+#   2. Model text through agentgateway as the release-notes identity (client_release-notes in
+#      secret/services/agentgateway), with the one model _rv_notes_model:
+#        a. one summary per category that has pull requests;
+#        b. one overview of the whole release, a summary and up to five highlights, each naming one of the
+#           release's pull requests.
+#      The client key is read from OpenBao in no_log tasks only. A missing key, a missing route, a failed call
+#      or a reply without what it needs leaves that part to the grouped lists. Nothing here fails the run for it.
+#   3. The rendered markdown (scripts/semver.py release-notes --render), the model text on stdin. The renderer
+#      validates each part and drops an unsafe one, naming it on stderr.
+#
+# Play facts it reads: _rv_tmp (the clone at {{ _rv_tmp.path }}/repo), _rv_auth (the controller AppRole login,
+# hidden), _bao_url and _rv_notes_model. It sets _rn_body and _rn_summary_state.
+#
+# Check mode runs it too. Every read is check_mode: false and changed_when: false, the renderer writes nothing,
+# and the body is printed, so a dry run shows the notes a real run would publish. The gateway is called in check
+# mode as well: a completion is a read, and the text it returns is what the printed body carries.
+#
+# Reading the replies. The category summaries are read by regex: a truncated reply must not fail a release, and a
+# regex finds the summary in a truncated reply as "no summary". The overview is parsed with from_json, and a parse
+# that fails (ignore_errors) leaves it empty, so a reply that does not parse is an omission, not a failure. The
+# renderer checks every part again before it reaches the body.
+#
+# Known limit: a summary's JSON escapes are kept as written (the model is told to write plain sentences).
+
+- name: "Require a release tag of the form vX.Y.Z"
+  ansible.builtin.assert:
+    that:
+      - _rn_tag is match('^v[0-9]+[.][0-9]+[.][0-9]+$')
+    fail_msg: "The release notes need a release tag of the form vX.Y.Z; nothing was rendered or posted."
+    quiet: true
+
+- name: "Read the tag's pull requests by category (names and counts)"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-I"
+      - "{{ playbook_dir }}/../../scripts/semver.py"
+      - "--repo"
+      - "{{ _rv_tmp.path }}/repo"
+      - release-notes
+      - "--tag"
+      - "{{ _rn_tag }}"
+      - "--sections"
+  environment:
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_TERMINAL_PROMPT: "0"
+  register: _rn_sections_raw
+  changed_when: false
+  check_mode: false
+
+- name: "Take the categories"
+  ansible.builtin.set_fact:
+    _rn_sections: "{{ _rn_sections_raw.stdout | from_json }}"
+
+- name: "Count the release's pull requests (a number, no pull request text)"
+  ansible.builtin.set_fact:
+    _rn_pr_total: "{{ _rn_sections.counts | dict2items | map(attribute='value') | map('int') | sum }}"
+
+- name: "Read the release-notes client key from OpenBao (hidden: the read carries the token)"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/agentgateway"
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _rv_auth.json.auth.client_token }}"
+    status_code: [200, 404]
+  register: _rn_agw
+  no_log: true
+  changed_when: false
+  check_mode: false
+
+- name: "Take the agentgateway fields (hidden; empty when the path is absent)"
+  ansible.builtin.set_fact:
+    _rn_agw_fields: "{{ _rn_agw.json.data.data if _rn_agw.status == 200 else {} }}"
+  no_log: true
+
+- name: "Take the release-notes client key (hidden; empty when the field is absent)"
+  ansible.builtin.set_fact:
+    _rn_key: "{{ _rn_agw_fields['client_release-notes'] | default('', true) }}"
+  no_log: true
+
+- name: "Note whether a key is held (a boolean; the key stays hidden)"
+  ansible.builtin.set_fact:
+    _rn_has_key: "{{ _rn_key | length > 0 }}"
+  no_log: true
+
+- name: "Name the inference route (empty when no caddy_svc host declares inference_route_address)"
+  ansible.builtin.set_fact:
+    _rn_host: "{{ hostvars[groups['caddy_svc'][0]].inference_route_address | default('', true) if (groups['caddy_svc'] | default([], true) | length > 0) else '' }}"
+
+- name: "Build the list the overview reads: every pull request as #N title, grouped by category (no secret)"
+  ansible.builtin.set_fact:
+    _rn_overview_list: |-
+      {% for name, label in [['features', 'Features'], ['fixes', 'Fixes'], ['documentation', 'Documentation'], ['other', 'Other']] %}
+      {% if _rn_sections.sections[name] | length > 0 %}
+      {{ label }}:
+      {% for pr in _rn_sections.sections[name] %}
+      #{{ pr.number }} {{ pr.title }}
+      {% endfor %}
+      {% endif %}
+      {% endfor %}
+
+# One call per category, in this literal order. A category with no pull requests, a missing key or a missing
+# route is skipped by its when, and its result still sits at its index, so the indexes below stay aligned.
+- name: "Ask the gateway for one summary per category with pull requests (hidden: the request carries the key)"
+  ansible.builtin.uri:
+    url: "https://{{ _rn_host }}/v1/chat/completions"
+    method: POST
+    follow_redirects: none
+    headers:
+      Authorization: "Bearer {{ _rn_key }}"
+    body_format: json
+    body:
+      model: "{{ _rv_notes_model }}"
+      temperature: 0
+      max_tokens: 600
+      chat_template_kwargs:
+        enable_thinking: false
+      response_format:
+        type: json_schema
+        json_schema:
+          name: release_summary
+          strict: true
+          schema:
+            type: object
+            properties:
+              summary:
+                type: string
+            required: [summary]
+            additionalProperties: false
+      messages:
+        - role: system
+          content: "Summarise these merged pull request titles for a release note in 2 to 4 plain sentences. Describe what changed for users and operators. No lists, no headings, no links, no names, no @ mentions, no code formatting. Use only facts in the titles."
+        - role: user
+          content: "{{ item.label }}:\n{{ _rn_sections.sections[item.name] | map(attribute='title') | join('\\n') }}"
+    timeout: 100
+    status_code: [200]
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  loop:
+    - {name: features, label: Features}
+    - {name: fixes, label: Fixes}
+    - {name: documentation, label: Documentation}
+  when: _rn_has_key and (_rn_host | length > 0) and (_rn_sections.counts[item.name] | int > 0)
+  register: _rn_calls
+
+# One overview call for the whole release: a summary and up to five highlights, each with a pull request number from
+# the list. Same identity, model and key as the category calls; the schema is the strict one the renderer expects.
+- name: "Ask the gateway for the release overview and its highlights (hidden: the request carries the key)"
+  ansible.builtin.uri:
+    url: "https://{{ _rn_host }}/v1/chat/completions"
+    method: POST
+    follow_redirects: none
+    headers:
+      Authorization: "Bearer {{ _rn_key }}"
+    body_format: json
+    body:
+      model: "{{ _rv_notes_model }}"
+      temperature: 0
+      max_tokens: 800
+      chat_template_kwargs:
+        enable_thinking: false
+      response_format:
+        type: json_schema
+        json_schema:
+          name: release_overview
+          strict: true
+          schema:
+            type: object
+            properties:
+              summary:
+                type: string
+              highlights:
+                type: array
+                maxItems: 5
+                items:
+                  type: object
+                  properties:
+                    number:
+                      type: integer
+                    text:
+                      type: string
+                  required: [number, text]
+                  additionalProperties: false
+            required: [summary, highlights]
+            additionalProperties: false
+      messages:
+        - role: system
+          content: "Write release notes for an infrastructure platform. summary: 2 to 4 plain sentences describing the release as a whole for users and operators. highlights: up to 5 of the most significant changes, each with the pull request number from the list and one plain sentence under 200 characters. Use only the pull requests listed; never invent numbers. No links, no names, no @ mentions, no headings, no code formatting."
+        - role: user
+          content: "{{ _rn_overview_list }}"
+    timeout: 100
+    status_code: [200]
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: _rn_has_key and (_rn_host | length > 0) and (_rn_pr_total | int > 0)
+  register: _rn_overview
+
+# The overview reply is checked by a small python program (python3 -I -c), not by Jinja: a reply that does not parse
+# fails inside Jinja before the task runs, and that failure cannot be ignored. The program reads the reply on stdin
+# and prints only the valid parts as JSON: a summary string, or a highlights list of one to five items, each with an
+# integer number and a text. An empty or malformed reply prints {}. The output is therefore always JSON. Nothing here
+# fails the run.
+- name: "Check the overview reply's shape (hidden: the reply is a protected result; only the valid parts are printed)"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-I"
+      - "-c"
+      - |-
+        import json, sys
+        out = {}
+        try:
+            reply = json.loads(sys.stdin.read())
+            summary = reply.get("summary") if isinstance(reply, dict) else None
+            if isinstance(summary, str) and summary:
+                out["summary"] = summary
+            items = reply.get("highlights") if isinstance(reply, dict) else None
+            if (isinstance(items, list) and 0 < len(items) <= 5
+                    and all(isinstance(i, dict) and set(i) == {"number", "text"}
+                            and type(i["number"]) is int and isinstance(i["text"], str) for i in items)):
+                out["highlights"] = [{"number": i["number"], "text": i["text"]} for i in items]
+        except ValueError:
+            pass
+        print(json.dumps(out))
+    stdin: "{{ ((((_rn_overview.json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true) }}"
+  register: _rn_overview_check
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Take the overview's parts from the check (hidden; always a JSON object, empty when nothing is valid)"
+  ansible.builtin.set_fact:
+    _rn_overview_parsed: "{{ (_rn_overview_check.stdout | default('{}', true)) | from_json }}"
+  no_log: true
+
+- name: "Take the overview's summary and highlights (hidden; a part the check left out is empty)"
+  ansible.builtin.set_fact:
+    _rn_overview_summary: "{{ _rn_overview_parsed.summary | default('', true) }}"
+    _rn_overview_highlights: "{{ _rn_overview_parsed.highlights | default('', true) }}"
+  no_log: true
+
+# The summary of each category reply: the content string's "summary" value, read by regex. A reply with no closed
+# summary (truncated, or not the schema) gives an empty string and the category falls back to the grouped list.
+- name: "Take each category's summary, and the overview, from their replies (hidden; a part without one is left out)"
+  ansible.builtin.set_fact:
+    _rn_summaries: >-
+      {{ {'features': ((((_rn_calls.results[0].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true) | regex_findall('"summary"\s*:\s*"((?:[^"\\]|\\.)*)"') | first | default('', true),
+      'fixes': ((((_rn_calls.results[1].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true) | regex_findall('"summary"\s*:\s*"((?:[^"\\]|\\.)*)"') | first | default('', true),
+      'documentation': ((((_rn_calls.results[2].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true) | regex_findall('"summary"\s*:\s*"((?:[^"\\]|\\.)*)"') | first | default('', true),
+      'overview': _rn_overview_summary,
+      'highlights': _rn_overview_highlights}
+      | dict2items | rejectattr('value', 'equalto', '') | items2dict }}
+  no_log: true
+
+- name: "Take each call's HTTP status (hidden; 0 when a call was not made)"
+  ansible.builtin.set_fact:
+    _rn_statuses: "{{ [_rn_calls.results[0].status | default(0, true), _rn_calls.results[1].status | default(0, true), _rn_calls.results[2].status | default(0, true), _rn_overview.status | default(0, true)] }}"
+  no_log: true
+
+- name: "Name what each part did (one state word per part; no reply is printed)"
+  ansible.builtin.set_fact:
+    _rn_summary_state:
+      features: "{{ 'none (no pull requests)' if (_rn_sections.counts.features | int) == 0 else ('summarised' if 'features' in _rn_summaries else ('skipped: no key' if not _rn_has_key else ('skipped: no route' if _rn_host | length == 0 else ('skipped: no summary in the reply' if _rn_statuses[0] == 200 else ('skipped: no answer from the gateway' if _rn_statuses[0] == 0 else 'skipped: gateway HTTP ' ~ (_rn_statuses[0] | string)))))) }}"
+      fixes: "{{ 'none (no pull requests)' if (_rn_sections.counts.fixes | int) == 0 else ('summarised' if 'fixes' in _rn_summaries else ('skipped: no key' if not _rn_has_key else ('skipped: no route' if _rn_host | length == 0 else ('skipped: no summary in the reply' if _rn_statuses[1] == 200 else ('skipped: no answer from the gateway' if _rn_statuses[1] == 0 else 'skipped: gateway HTTP ' ~ (_rn_statuses[1] | string)))))) }}"
+      documentation: "{{ 'none (no pull requests)' if (_rn_sections.counts.documentation | int) == 0 else ('summarised' if 'documentation' in _rn_summaries else ('skipped: no key' if not _rn_has_key else ('skipped: no route' if _rn_host | length == 0 else ('skipped: no summary in the reply' if _rn_statuses[2] == 200 else ('skipped: no answer from the gateway' if _rn_statuses[2] == 0 else 'skipped: gateway HTTP ' ~ (_rn_statuses[2] | string)))))) }}"
+      overview: "{{ 'none (no pull requests)' if (_rn_pr_total | int) == 0 else ('summarised' if 'overview' in _rn_summaries else ('skipped: no key' if not _rn_has_key else ('skipped: no route' if _rn_host | length == 0 else ('skipped: no summary in the reply' if _rn_statuses[3] == 200 else ('skipped: no answer from the gateway' if _rn_statuses[3] == 0 else 'skipped: gateway HTTP ' ~ (_rn_statuses[3] | string)))))) }}"
+
+- name: "Render the release body (the model text on stdin; the renderer drops any unsafe part)"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-I"
+      - "{{ playbook_dir }}/../../scripts/semver.py"
+      - "--repo"
+      - "{{ _rv_tmp.path }}/repo"
+      - release-notes
+      - "--tag"
+      - "{{ _rn_tag }}"
+      - "--render"
+    stdin: "{{ _rn_summaries | to_json }}"
+  environment:
+    GIT_CONFIG_GLOBAL: /dev/null
+    GIT_CONFIG_NOSYSTEM: "1"
+    GIT_TERMINAL_PROMPT: "0"
+  register: _rn_render
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: "Require a rendered body (exit 0); the renderer's own message is named"
+  ansible.builtin.assert:
+    that:
+      - _rn_render.rc == 0
+    fail_msg: "semver.py release-notes --render exited {{ _rn_render.rc }}: {{ _rn_render.stderr }}"
+    quiet: true
+
+# The renderer names each model part it dropped, by rule only (never the text), so a "summarised" part above that
+# the renderer then refused is visible here.
+- name: "Show the parts the renderer dropped (rule names only)"
+  ansible.builtin.debug:
+    msg: "{{ _rn_render.stderr_lines }}"
+  when: _rn_render.stderr_lines | default([]) | length > 0
+
+- name: "Take the rendered body"
+  ansible.builtin.set_fact:
+    _rn_body: "{{ _rn_render.stdout }}"
+
+- name: "Show the summary state (one word per part)"
+  ansible.builtin.debug:
+    msg: "Release notes for {{ _rn_tag }} - summaries: features {{ _rn_summary_state.features }}; fixes {{ _rn_summary_state.fixes }}; documentation {{ _rn_summary_state.documentation }}; overview {{ _rn_summary_state.overview }}."
+
+- name: "Show the rendered body (the review artefact: a dry run prints what a real run would publish)"
+  ansible.builtin.debug:
+    msg: "{{ _rn_body }}"
