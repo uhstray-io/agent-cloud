@@ -45,6 +45,7 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 | shared read `secret/services/agentgateway:client_<role>` (`secrets['client_<role>']`) | `SKYNET_GATEWAY_KEY_<ROLE>`, omitted when the key exists but is empty. A missing key stops the deploy (the shared read is all-or-nothing) |
 | shared read `secret/services/launch-gate:caller_skynet_token`, only when `skynet_launch_gate_url` is set | `SKYNET_LAUNCH_GATE_TOKEN` (skynet's bearer at the launch gate; the gate's deploy generates it) |
 | inventory `skynet_launch_gate_url` (optional) | `SKYNET_LAUNCH_GATE_URL`. Production also renders its host part and `skynet_launch_gate_ip` (required then, IPv4) as `SKYNET_LAUNCH_GATE_HOSTNAME`, `SKYNET_LAUNCH_GATE_IP`, substituted into `compose.launch-gate.yml` `extra_hosts` |
+| inventory `skynet_tls` (optional, default off) with `skynet_bind`, `skynet_port` (default 8443), `skynet_server_leaf` (default `skynet-server`), `skynet_tls_server_name` (default `skynet.<dns_site>.<dns_zone>`) | `SKYNET_TLS_CERT_FILE`, `SKYNET_TLS_KEY_FILE` (the leaf under `/certs/<leaf>/current/`), `SKYNET_TLS_PUBLISH_BIND`, `SKYNET_TLS_PUBLISH_PORT` (substituted into `compose.tls.yml` `ports:`), `SKYNET_TLS_NAME`. Rendered only when `skynet_tls` is on |
 | inventory `skynet_gateway_url`, `skynet_model`, `skynet_opa_url`, `skynet_semaphore_url`, `skynet_semaphore_project`, `skynet_semaphore_catalog`, `skynet_image` | the matching `SKYNET_*` variables |
 
 - The six roles are `infra-agent`, `security-agent`, `o11y-agent`, `service-agent`,
@@ -113,6 +114,35 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
   rendered token is the one the gate holds without creating a task. In production the gate's firewall
   must admit `skynet_svc`.
 
+## HTTPS listener (`skynet_tls`)
+
+The Dispatch Console reaches skynet over HTTPS, so its bearer never crosses the LAN in cleartext
+(skynet DESIGN-DECISIONS §20). The image serves the same routes, with the same token scopes, on
+container port 8443 once `SKYNET_TLS_CERT_FILE` and `SKYNET_TLS_KEY_FILE` are set; plain 8080 is
+unchanged. The listener checks the leaf's files on every new connection and reloads them when
+their identity changes, so a renewal needs no restart.
+
+- **Leaf.** `internal_leaves` declares `skynet-server` for this host: profile `server`, dir
+  `<deploy>/certs/skynet-server`, `reload: none`, the TLS name in its SANs. The deploy refuses
+  anything else, then issues the leaf through `tasks/mint-internal-cert.yml` (production: signed on
+  the `step_ca_svc` host and kept; local-dev: re-issued when under 7 days remain). Production also
+  needs the SAN in the CA's name policy, which `Deploy step-ca (Dev)` applies from `internal_leaves`.
+- **Publish.** `deploy.sh` loads `compose.tls.yml` when `.env` carries `SKYNET_TLS_CERT_FILE`, and
+  publishes `skynet_bind:skynet_port` to 8443. Production refuses an undeclared or loopback
+  `skynet_bind`, and a `skynet_port` equal to `skynet_publish_port`. The firewall must admit the
+  Dispatch Console VM to `skynet_port`.
+- **Key access.** The image runs as uid 10001. Production maps the deploy account to it with
+  `userns_mode: keep-id` (`compose.prod.yml`, every production deploy), so it can read the 0600
+  key; the deploy refuses podman older than 4.3. Local-dev runs as `1001:0`, the local Semaphore
+  container's uid that writes the key (`compose.local.yml`).
+- **Renewal.** `Renew Internal Certs` admits the leaf through the `skynet-server` row in
+  `vars/renew-listener-servers.yml` (prefix `skynet`, gated on `skynet_tls`) and proves the new
+  serial is served on `skynet_bind:skynet_port`. `deploy.sh` hashes only the trust bundles, so a
+  renewed leaf does not recreate the container on the next deploy.
+- **Verify.** From the host, against `certs/step-ca-bundle.crt`: `GET /skynet/healthz` over TLS
+  answers 200, `GET /skynet/runs` with no token answers 401, and plain HTTP to the TLS port does not
+  answer 200. Local-dev dials the TLS name on 8443 through its `local-dev` network alias.
+
 ## Networks and reachability
 
 - Production: `skynet` publishes `${SKYNET_PUBLISH_BIND}:${SKYNET_PUBLISH_PORT}` to container
@@ -144,7 +174,8 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
   `skynet_publish_bind` refuses `0.0.0.0`, and the compose defaults stay on loopback.
 - Don't render `SKYNET_BIND` or `SKYNET_PORT` into `.env`. The image sets `SKYNET_BIND=0.0.0.0`, and
   `env_file` would hand a rendered value to the container. The publish knobs are
-  `SKYNET_PUBLISH_BIND` and `SKYNET_PUBLISH_PORT`.
+  `SKYNET_PUBLISH_BIND` and `SKYNET_PUBLISH_PORT`. The same goes for `SKYNET_TLS_PORT`, the image's
+  HTTPS listen port: the host port is `SKYNET_TLS_PUBLISH_PORT`.
 - Don't put `SSL_CERT_FILE` in the base file. Each overlay sets it: `compose.local.yml` and `compose.prod.yml`.
 - Don't copy a secret into a template as a default. Required values have none.
 - Don't commit `.env` or `certs/`. The `.gitignore` here and the root `*.env` rule cover them.
