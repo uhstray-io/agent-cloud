@@ -53,6 +53,7 @@ def _environment():
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
     env.filters["mandatory"] = _mandatory
+    env.filters["o11y_effective_scrape_limits"] = BUDGET.o11y_effective_scrape_limits
     return env
 
 
@@ -1514,3 +1515,61 @@ def test_candidate_digest_block_skips_a_dry_run_runs_for_real_and_leaves_no_temp
     else:
         assert re.search(r"digest=[0-9a-f]{64}", proc.stdout), proc.stdout
     assert not any(scratch.iterdir()), sorted(path.name for path in scratch.iterdir())
+
+
+# ---- one definition of the limits Alloy runs with ------------------------------------------
+# Production declared o11y_scrape_limits.sample_limit 8192 with the stricter
+# o11y_scrape_sample_limit 2000. env.j2 gave Alloy 2000 while the availability source gate was
+# handed the raw 8192, so the first real enabled deploy (Semaphore task 14414) failed its
+# post-apply readback with native_limits_mismatch.
+PRODUCTION_SHAPED_LIMITS = {
+    "body_size_limit_bytes": 1048576,
+    "sample_limit": 8192,
+    "label_limit": 128,
+    "label_name_length_limit": 128,
+    "label_value_length_limit": 256,
+}
+SOURCE_REVIEW_CALLERS = [
+    "platform/playbooks/deploy-o11y.yml",
+    "platform/playbooks/tasks/prepare-o11y-availability.yml",
+    "platform/playbooks/survey-o11y-expected-metrics-targets.yml",
+    "platform/playbooks/survey-o11y-scrape-baseline.yml",
+]
+
+
+def test_effective_limits_apply_the_stricter_sample_ceiling():
+    effective = BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, True)
+    assert effective == {**PRODUCTION_SHAPED_LIMITS, "sample_limit": 2000}
+    assert BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 20000, False, True)["sample_limit"] == 8192
+
+
+def test_effective_limits_withhold_unreviewed_production_limits_and_default_local_ones():
+    assert BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, False) == {}
+    assert BUDGET.o11y_effective_scrape_limits(None, 2000, True, False) == {**LIMITS, "sample_limit": 2000}
+    assert BUDGET.o11y_effective_scrape_limits("not-a-mapping", 2000, False, True) == {}
+
+
+def test_the_rendered_alloy_sample_limit_is_the_value_the_source_gate_expects():
+    env = _environment().from_string((DEPLOY / "templates/env.j2").read_text(encoding="utf-8"))
+    rendered = env.render(
+        local_mode=False,
+        o11y_zone="example.test",
+        o11y_scrape_limits=PRODUCTION_SHAPED_LIMITS,
+        o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000,
+        secrets={"grafana_admin_password": "test", "grafana_oidc_client_secret": "test"},
+    )
+    env_values = dict(line.split("=", 1) for line in rendered.splitlines() if "=" in line)
+    gate_limits = BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, True)
+    assert env_values["O11Y_SCRAPE_SAMPLE_LIMIT"] == str(gate_limits["sample_limit"]) == "2000"
+    assert env_values["O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"] == str(gate_limits["body_size_limit_bytes"])
+    assert env_values["O11Y_SCRAPE_LABEL_LIMIT"] == str(gate_limits["label_limit"])
+
+
+@pytest.mark.parametrize("caller", SOURCE_REVIEW_CALLERS)
+def test_every_source_review_payload_passes_the_effective_limits(caller):
+    text = (ROOT / caller).read_text(encoding="utf-8")
+    payloads = re.findall(r"'shared_limits':\s*([^\n]+)", text)
+    assert payloads, f"{caller} has no shared_limits payload"
+    for payload in payloads:
+        assert "o11y_effective_scrape_limits(" in payload, f"{caller} passes raw limits: {payload}"

@@ -140,13 +140,18 @@ PY
 }
 
 @test "o11y: Grafana OIDC uses local bridge only in local mode" {
-  python3 - "$DEPLOY_DIR/templates/env.j2" <<'PY'
+  python3 - "$DEPLOY_DIR/templates/env.j2" "$DEPLOY_DIR/../../../playbooks/filter_plugins/o11y_scrape_budget.py" <<'PY'
+import importlib.util
 import sys
 from jinja2 import Environment, StrictUndefined
 
+spec = importlib.util.spec_from_file_location('o11y_scrape_budget', sys.argv[2])
+budget = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(budget)
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['mandatory'] = lambda value: value
+env.filters['o11y_effective_scrape_limits'] = budget.o11y_effective_scrape_limits
 template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
 secrets = {'grafana_admin_password': 'test-only', 'grafana_oidc_client_secret': 'test-only'}
 limits = {'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,

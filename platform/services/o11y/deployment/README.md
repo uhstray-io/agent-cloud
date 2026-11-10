@@ -165,7 +165,10 @@ number, so its config appends the `B` unit to the bytes carried in
 crash-loops the container. The other four limits stay numeric.
 
 The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
-receiver-host and host-node exporters. All scrape paths retain the forbidden
+receiver-host and host-node exporters, and for Alloy's own scrapes. One filter,
+`o11y_effective_scrape_limits` (`platform/playbooks/filter_plugins/o11y_scrape_budget.py`), defines
+the limits Alloy runs with: `templates/env.j2` renders them, and every availability source-review
+caller passes the same result, so the source gate compares Alloy against the limit it was given. All scrape paths retain the forbidden
 label drop and target identity labels. Per-scrape bounds restrict one response
 at a time; they do not cap lifetime series churn as label values change across
 scrapes. Live target readback, over-budget refusal checks, and calibration of

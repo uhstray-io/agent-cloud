@@ -882,12 +882,48 @@ def o11y_availability_namespace_diagnostic(result: Any) -> str:
         return generic
 
 
+# Finite local-dev limits env.j2 has always applied when local inventory declares none.
+_LOCAL_SCRAPE_LIMIT_DEFAULTS = {
+    "body_size_limit_bytes": 16777216,
+    "sample_limit": 10000,
+    "label_limit": 64,
+    "label_name_length_limit": 128,
+    "label_value_length_limit": 2048,
+}
+
+
+def o11y_effective_scrape_limits(limits: Any, sample_ceiling: Any = 2000, local: Any = False,
+                                 reviewed: Any = False) -> dict[str, Any]:
+    """The scrape limits Alloy actually runs with: the one definition env.j2 renders.
+
+    Unreviewed production limits are withheld ({}), local mode falls back to finite defaults,
+    and `o11y_scrape_sample_limit` stays the stricter ceiling on `sample_limit`. Every
+    source-review caller passes this result as `shared_limits`, so the gate compares the live
+    Alloy scrape against the value it was actually given.
+    """
+    if not (local is True or reviewed is True):
+        return {}
+    if limits is None:
+        limits = _LOCAL_SCRAPE_LIMIT_DEFAULTS if local is True else {}
+    if not isinstance(limits, Mapping):
+        return {}
+    effective = dict(limits)
+    sample = effective.get("sample_limit")
+    if (
+        isinstance(sample, int) and not isinstance(sample, bool)
+        and isinstance(sample_ceiling, int) and not isinstance(sample_ceiling, bool)
+    ):
+        effective["sample_limit"] = min(sample, sample_ceiling)
+    return effective
+
+
 class FilterModule:
     """Expose the pure preview as an Ansible filter."""
 
     def filters(self) -> dict[str, Any]:
         return {
             "o11y_scrape_budget_preview": o11y_scrape_budget_preview,
+            "o11y_effective_scrape_limits": o11y_effective_scrape_limits,
             "o11y_loaded_scrape_limit_coverage": o11y_loaded_scrape_limit_coverage,
             "o11y_source_scrape_limit_coverage": o11y_source_scrape_limit_coverage,
             "o11y_availability_source_coverage": o11y_availability_source_coverage,

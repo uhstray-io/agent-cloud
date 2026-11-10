@@ -75,7 +75,7 @@ and why.
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
-| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | 1 | Test + **repo-wide normalisation outstanding** |
+| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied — **x2** (2026-11-10: the o11y availability source gate expected the raw scrape sample limit while Alloy ran the stricter ceiling) | Correctness | 2 | Test + **repo-wide normalisation outstanding**; scrape limits: one filter (`o11y_effective_scrape_limits`) |
 | 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
@@ -1826,6 +1826,8 @@ here instead of being called done.
 
 ### 2.14 One value, five resolution rules, and a verdict that lied because of it
 
+**Occurrences: 2** — (first undated), 2026-11-10
+
 **What happened.** A review found that the access gate reported `NO-GO` while the
 secrets it needed were available. The gate resolved the secret-store address as
 `openbao_addr | default('')`; the shared resolver I had just added used
@@ -1857,6 +1859,19 @@ reverting the gate to the no-fallback form.
 reconciled. Normalising the address across every playbook — including retiring the
 localhost-defaulting variant, which is the dangerous one — is a separate change,
 recorded here so it is not mistaken for done.
+
+**Occurrence 2 — 2026-11-10.** The o11y Alloy self-scrape sample limit had two definitions. The receiver's
+`env.j2` gave Alloy `min(o11y_scrape_sample_limit, o11y_scrape_limits.sample_limit)`, 2000 in production, as the
+o11y README says the older ceiling should. The availability source gate's five callers handed it the raw
+`o11y_scrape_limits`, so it expected 8192. Before availability was enabled, Prometheus produced Alloy's
+self-metrics and the native-limits comparison never ran. The first real enabled `Deploy o11y (Dev)` (Semaphore
+task 14414) applied the stack, and its post-apply readback refused. The deploy step did not print the category; a
+read-only dry run (14417) named it, `native_limits_mismatch`. Why the rule did not fire: the source gate was
+written against the declared limits, not against what the template renders, and no test rendered the two with
+the ceiling below the declared limit. One filter, `o11y_effective_scrape_limits`, now defines the effective
+limits for `env.j2` and every source-review caller. A test renders `env.j2` with production-shaped limits and
+requires the rendered value to equal the gate's input, and another requires every caller to pass the filter
+(both mutation-checked). The post-apply readback now prints its fixed category.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
 **Occurrences: 4** — 2026-08-25, 2026-08-25, 2026-11-02, 2026-11-04
