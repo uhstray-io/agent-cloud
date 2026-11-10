@@ -21,10 +21,11 @@ pending invitations with `desired`:
   remove        a member, or a pending invitation, whose email is not desired
 
 Never touched: the automation account, any owner, and bots (`membership_type=people`). Plane lets
-an owner manage another owner (permissions/system_roles.py:373-375 in the v3.3.3 image), so leaving owners alone is this script's policy: an owner who is no
-longer desired as one is listed under `owners_unmanaged` instead, for an operator to offboard by
-hand. Plane v3.3.3 removes a member by deactivating the row, so an
-inactive row counts as absent and a returning person is invited again.
+an owner manage another owner (permissions/system_roles.py:373-375 in the v3.3.3 image), so
+leaving owners alone is this script's policy: an owner who is no longer desired as one is listed
+under `owners_unmanaged` instead, for an operator to offboard by hand. Plane v3.3.3 removes a
+member by deactivating the row, so an inactive row counts as absent and a returning person is
+invited again.
 
 Without `apply` it changes nothing and reports the plan; with it, it applies the plan. An apply
 that would remove more than one person and more than half of the removable roster, or that was
