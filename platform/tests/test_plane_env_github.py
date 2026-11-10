@@ -279,3 +279,35 @@ def test_every_org_action_refuses_a_missing_org_before_any_call(action):
     ):
         gat.main()
     assert exc.value.code == 2 and calls == []
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "summary,ok",
+    [
+        ({"url": "https://x.test/h", "content_type": "json", "secret_set": False}, True),
+        ({"error": "ERROR: set-hook-secret: boom"}, False),
+    ],
+)
+def test_the_webhook_assert_renders_with_and_without_an_error(tmp_path, summary, ok):
+    # ansible-core 2.19+ renders fail_msg even when the assertion holds (Deploy Plane task 14711).
+    import yaml
+
+    play = next(p for p in _plays() if p.get("name") == "Phase 3d: GitHub App webhook")
+    block = next(t for t in play["tasks"] if "block" in t)
+    task = next(t for t in block["block"] if t.get("name") == "App webhook converged")
+    (tmp_path / "play.yml").write_text(
+        yaml.safe_dump(
+            [{"hosts": "localhost", "gather_facts": False, "vars": {"_plane_hook_summary": summary}, "tasks": [task]}]
+        )
+    )
+    proc = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert (proc.returncode == 0) is ok, proc.stdout[-1500:]
+    if not ok:
+        assert "boom" in proc.stdout

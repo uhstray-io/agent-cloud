@@ -205,6 +205,7 @@ and why.
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
 | 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
 | 10.35 | Merged a tag-pushing workflow whose push path no run had exercised; GitHub refused its first tag because the job token lacked the `workflows` permission | Mechanism never exercised | 1 | Convention (pre-merge write probe with the real credential) |
+| 10.36 | An assert's `fail_msg` read a key only a failed summary carries; ansible-core renders `fail_msg` even when the assertion holds, so a successful Deploy Plane run failed after recreating the stack | Mechanism unexercised | 1 | Test (`test_the_webhook_assert_renders_with_and_without_an_error` runs the task through ansible-playbook both ways); the general form Convention |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -6344,6 +6345,16 @@ records that probe.
 (`platform/playbooks/release-version.yml`), had that probe first (2.37 records the run that
 proved nothing and its valid rerun), and its check mode mints the real token and builds every tag
 in a throwaway clone before any push.
+
+### 10.36 An assert's `fail_msg` dereferenced a key that only exists on failure
+
+**What happened.** Deploy Plane (Dev) task 14711 (2026-11-10) recreated the production Plane stack with the new GitHub settings and set the App's webhook secret. It then failed at `App webhook converged` (`platform/playbooks/deploy-plane.yml`): "Finalization of task args for 'ansible.builtin.assert' failed: Error while resolving value for 'fail_msg': object of type 'dict' has no attribute 'error'". The webhook step had succeeded, so its summary had no `error` key, and `fail_msg` read `_plane_hook_summary.error` with no default. The verify phase, with its unsigned-delivery probe, never ran. Plane stayed healthy.
+
+**Root cause.** ansible-core 2.19+ finalizes every task argument before the module runs, and that includes an assert's `fail_msg` when the assertion would pass. A `fail_msg` written as if it were evaluated only on failure breaks the success path. No test ran the task: the playbook's tests were structural, and the render test covered `env.j2` only. The sibling licence and token asserts in the same playbook already used `| default(...)`, so they did not break.
+
+**The rule.** Treat `fail_msg` and `success_msg` as rendered on every run. Any key that only one outcome carries is read with `| default(...)`. A new assert on a result summary gets a test that runs the task through `ansible-playbook` with both a passing and a failing input.
+
+**Enforced by.** Test for this task: `test_the_webhook_assert_renders_with_and_without_an_error` in `platform/tests/test_plane_env_github.py`. The general form is Convention. A lint that flags a `fail_msg` dereferencing an attribute without `default` is the mechanical guard to build if this recurs.
 
 ## 11. The largest one
 

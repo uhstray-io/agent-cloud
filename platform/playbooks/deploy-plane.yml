@@ -510,7 +510,9 @@
           ansible.builtin.assert:
             that:
               - _plane_hook_summary.error is not defined
-            fail_msg: "plane GitHub App webhook: {{ _plane_hook_summary.error }}"
+            # default(''): ansible-core 2.19+ renders fail_msg even when the assertion holds, and a
+            # successful summary has no error key (Deploy Plane (Dev) task 14711).
+            fail_msg: "plane GitHub App webhook: {{ _plane_hook_summary.error | default('') }}"
             quiet: true
 
         - name: "Report"
