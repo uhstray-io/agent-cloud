@@ -343,6 +343,17 @@ Retirement is declared as code too:
 3. Run it again without Dry run. It deletes each matching template's schedules,
    drains its task history, then deletes the template, and reads both back.
 
+Steps 2 and 3 are for production. Local-dev applies retirements itself: `make
+local-bootstrap` and `./scripts/local-dev.sh templates` both run
+[`converge-local-catalog.yml`](converge-local-catalog.yml), which publishes the
+catalog and then runs the retirement against the local Semaphore. Before #956,
+nothing ran the retirement on local-dev, so retired templates stayed live there
+and their schedules kept failing. The retirement step runs only when the local
+Semaphore is at `http://127.0.0.1:3000`, the one address the retirement
+playbook sends its token to. With a different `local_semaphore_port`, the run
+prints a notice and skips it, so run **Retire Semaphore Templates (Dev)** in the
+local Semaphore instead.
+
 Before any API call, the playbook refuses a name that `templates.yml` or
 `templates-local.yml` still declares. Before any deletion, it refuses a name that
 matches more than one live template. A name with no live template is reported as
