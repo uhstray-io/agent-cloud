@@ -247,8 +247,9 @@ CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check
 working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
 `make git-setup`, no install step. `bats platform/tests/` is byte-identical to CI's. Both
 suites run on the locked environment when `uv` is installed: the hook runs `uv sync --locked`
-and puts `.venv/bin` first on `PATH`, as CI does. Without uv it falls back, with a warning,
-to whatever `python3` and tools are on your `PATH`.
+and puts `.venv/bin` first on `PATH`, as CI does. Without uv, when the sync fails, or when
+`UV_PROJECT_ENVIRONMENT` points outside the checkout's `.venv`, it falls back, with a
+warning, to whatever `python3` and tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails; CI blocks *the merge*. A green push means the suites passed on your machine

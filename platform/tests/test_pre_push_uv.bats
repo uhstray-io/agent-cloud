@@ -55,8 +55,8 @@ SH
   printf '#!/usr/bin/env sh\nexit 0\n' > "$T/nouv/bats"
 
   # Fake uv: records its arguments, exits FAKE_UV_RC, and on success creates .venv/bin's
-  # python and python3 as the real sync does, unless FAKE_UV_NOVENV=1 (a sync into
-  # UV_PROJECT_ENVIRONMENT elsewhere succeeds and leaves no .venv).
+  # python and python3 as the real sync does, unless FAKE_UV_NOVENV=1 (a sync that
+  # reports success but leaves no .venv/bin/python).
   cat > "$T/fakebin/uv" <<SH
 #!/usr/bin/env sh
 echo "\$*" >> "\$FAKE_UV_LOG"
@@ -107,6 +107,8 @@ push() {
   assert_grep 'fakebin/python3 ' "$LOG"
   refute_grep '\.venv/bin' "$LOG"
   assert_grep 'UV_PROJECT_ENVIRONMENT points outside' <(printf '%s' "$output")
+  # The hook must not sync at all here: a sync would land outside the checkout.
+  [ ! -s "$T/uv.log" ] || { echo "uv was invoked: $(cat "$T/uv.log")"; false; }
 }
 
 @test "pre-push uv: a failed sync falls back to python3 with a warning" {
