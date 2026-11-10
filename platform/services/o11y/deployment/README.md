@@ -165,7 +165,15 @@ number, so its config appends the `B` unit to the bytes carried in
 crash-loops the container. The other four limits stay numeric.
 
 The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
-receiver-host and host-node exporters. All scrape paths retain the forbidden
+receiver-host and host-node exporters, and for the scrapes of Alloy's own self-metrics. One filter,
+`o11y_effective_scrape_limits` (`platform/playbooks/filter_plugins/o11y_scrape_budget.py`), defines
+that sample limit for both producers: `templates/env.j2` gives it to Alloy's self-scrape,
+`templates/prometheus.yml.j2` to Prometheus's `alloy` and `receiver-host` jobs, and every availability
+source-review caller passes the same result, so the source gate compares whichever producer is current
+against the limit it was given. The other Prometheus jobs keep the declared `sample_limit`.
+The scrape-baseline survey's budget preview and loaded-limit coverage read the same capped-job set
+(`CEILED_SAMPLE_JOBS` in that module: `receiver-host`, `host-node` and `alloy`), so they judge each job
+against the limit it actually runs with. All scrape paths retain the forbidden
 label drop and target identity labels. Per-scrape bounds restrict one response
 at a time; they do not cap lifetime series churn as label values change across
 scrapes. Live target readback, over-budget refusal checks, and calibration of
@@ -233,8 +241,27 @@ its fixed reason set does not change.
 The survey reads no activation switch, places nothing, and prints no container, process or namespace
 identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
 an `isolated` result does not accept availability: the source, placement and post-apply gates still
-apply. Candidate-mode checks of the effective compose file (`deploy.sh --candidate`) keep the generic
-`namespace_unverified` category; the survey covers only the pre-placement runtime proof.
+apply. The survey covers only the pre-placement runtime proof.
+
+**Candidate-mode refusals.** The effective compose file checks run in candidate mode (`deploy.sh`,
+on the real enabled deploy, at three points: before the first start, before the final start, and
+after apply). Each refusal names the decision point that raised it:
+`namespace_candidate_compose_unreadable` (an overlay file is missing, `compose config` failed, its
+output is not UTF-8 or YAML, `services` is not a mapping of 1 to 32 entries, a service entry is not a
+mapping, or the project `name` is missing or empty),
+`namespace_candidate_inputs_label` (more than one final label overlay, an overlay path or file that
+does not validate, a label service set that differs from the services, or an
+`io.agent-cloud.inputs-sha256` label that does not match), `namespace_candidate_pod` (enabled mode
+without `x-podman: {in_pod: false}`), `namespace_candidate_alloy_spec` (the `alloy` service is missing
+or not a mapping, or its entrypoint, command, network mode, image or config mount differs from the
+declared one; the config mount is read in either form, the long mapping Docker Compose emits or the
+short `source:target:ro` string `podman-compose config` keeps), `namespace_candidate_ports` (a port list or entry is malformed, a port uses 12345, or
+an Alloy port is outside the declared target, protocol or loopback and private address rules),
+`namespace_candidate_project` (the running Alloy belongs to a different project than the candidate),
+and `namespace_network_mode` (a service other than `alloy` declares a network mode; Alloy's own network mode is part of `namespace_candidate_alloy_spec`). `deploy.sh` prints one line,
+`Availability gate category: <category>`, before its error message, so the failing decision is in the
+deploy output. It never prints the helper's raw output. The producer source gate folds all of these
+to `namespace_unverified`.
 
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the

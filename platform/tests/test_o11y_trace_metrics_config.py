@@ -33,6 +33,9 @@ def _mandatory(value):
 plugin_spec = importlib.util.spec_from_file_location("tempo_config", PLUGIN)
 tempo_config = importlib.util.module_from_spec(plugin_spec)
 plugin_spec.loader.exec_module(tempo_config)
+budget_spec = importlib.util.spec_from_file_location("o11y_scrape_budget", PLUGIN.parent / "o11y_scrape_budget.py")
+o11y_scrape_budget = importlib.util.module_from_spec(budget_spec)
+budget_spec.loader.exec_module(o11y_scrape_budget)
 
 
 def _render_env(derived_metrics: bool) -> dict[str, str]:
@@ -40,6 +43,7 @@ def _render_env(derived_metrics: bool) -> dict[str, str]:
     template = Environment(undefined=StrictUndefined)
     template.filters["bool"] = bool
     template.filters["mandatory"] = _mandatory
+    template.filters["o11y_effective_scrape_limits"] = o11y_scrape_budget.o11y_effective_scrape_limits
     source = (DEPLOY / "templates/env.j2").read_text(encoding="utf-8")
     rendered = template.from_string(source).render(
         secrets={

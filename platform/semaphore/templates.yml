@@ -3690,6 +3690,32 @@ templates:
     schedule:
       cron: "*/45 * * * *"
 
+  # Version tags and the GitHub Release for main (plan 20). The planner (scripts/semver.py release-tags) decides what
+  # is owed; release-version.yml pushes it with the uhstray-io-release-automation App's token. That token holds
+  # `workflows: write`. The GITHUB_TOKEN tag push that the planned GitHub Actions tagging job relied on was refused
+  # (Actions run 42693944852: a workflow file in the tagged commit), so this template replaces that job. Every 15 minutes:
+  # a missed run is caught up by the next, because the planner owes every merge that has no tag yet. Dev-bound for the
+  # reason the GitHub refresh above gives: a schedule on the main-bound base would run `main`, which has no copy of this
+  # playbook until promotion. No survey: a schedule cannot answer one.
+  - name: Release Version (Dev)
+    playbook: platform/playbooks/release-version.yml
+    repository: agent-cloud dev
+    schedule:
+      cron: "*/15 * * * *"
+
+  # The manual major release (plan 20): the only path to a major version. Automation never cuts one, so this template has
+  # no schedule and an operator launches it with release_major typed. The playbook refuses unless the planner's computed
+  # next major is exactly that version, so a typo cannot cut a major.
+  - name: Release Major Version (Dev)
+    playbook: platform/playbooks/release-version.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: release_major
+        title: "Major version to cut"
+        description: "Type the version this run must cut, e.g. v1.0.0. The run refuses unless the computed next major is exactly this."
+        type: string
+        required: true
+
   # The Dispatch Console's monthly credential rotation (plan 17, D27): a new secret_id for the console AppRole (its
   # role_id is unchanged), the Grafana Viewer token renewed under its 30-day threshold, a redeploy that carries the new
   # secret_id, and only then the replaced secret_id destroyed. The playbook pins the run to the commit the console is

@@ -268,9 +268,10 @@ is a minor bump; `fix`, `perf`, `security` and `revert` are a patch; `docs`, `ch
 `ci`, `refactor`, `build`, `style`, `plan` and `promote` add none. A `!` marks a breaking change,
 which bumps the minor while on 0.x. The `Version` job on every pull request fails a title not in
 that form and shows the version the merge would produce. A merge into `dev` is tagged
-`vX.Y.Z-dev.N`; a promotion into `main` is tagged `vX.Y.Z` with a GitHub Release
-(`.github/workflows/release-version.yml`). 1.0.0, and every later major version, is cut only by a
-manual dispatch that the operator approves in the `release-major` environment. History before
+`vX.Y.Z-dev.N`; a promotion into `main` is tagged `vX.Y.Z` with a GitHub Release. Semaphore's
+`Release Version (Dev)` template runs the tagging every 15 minutes, so a merge is tagged within
+15 minutes rather than at once. 1.0.0, and every later major version, is cut only when the
+operator launches `Release Major Version (Dev)` with the exact major version expected. History before
 this was backfilled from the promotions: `main` was `v0.13.0` when versioning began. See
 `plan/development/20-semantic-versioning.md`.
 
