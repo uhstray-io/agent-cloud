@@ -1219,3 +1219,18 @@ def test_the_survey_source_read_turns_an_unexpected_exception_into_its_own_word(
     _context, result = GATE._survey_source_result(b"{}", {}, json.dumps({"reviewed": True}))
     assert result["reason"] == "native_source_internal_error"
     assert "detail" not in json.dumps(result)
+
+
+
+def test_zero_containers_is_an_alloy_count_for_the_producer_identity(monkeypatch, capsys, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row="", ids=""))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2 and readback["reason"] == "native_identity_alloy_count"
+
+
+def test_zero_containers_still_refuses_the_namespace_inspect(monkeypatch, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row="", ids=""))
+    with pytest.raises(GATE.Refusal, match="namespace_runtime_unreadable"):
+        GATE._availability_inspect_all(GATE.time.monotonic() + 5, "/usr/bin/podman")

@@ -781,7 +781,9 @@ def _validate_compose_inputs_overlay_path(path: str) -> bool:
         return False
 
 
-def _availability_inspect_all(deadline: float, podman_path: str) -> list[dict[str, Any]]:
+def _availability_inspect_all(
+    deadline: float, podman_path: str, *, allow_empty: bool = False,
+) -> list[dict[str, Any]]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise Refusal("namespace_runtime_unreadable")
@@ -793,6 +795,9 @@ def _availability_inspect_all(deadline: float, podman_path: str) -> list[dict[st
         ids = ids_raw.decode("ascii", "strict").splitlines()
     except UnicodeError:
         raise Refusal("namespace_runtime_unreadable") from None
+    if allow_empty and not ids:
+        # The producer identity read counts Alloy records itself; zero containers is a count.
+        return []
     if not 1 <= len(ids) <= MAX_AVAILABILITY_CONTAINERS or any(
         not re.fullmatch(r"[0-9a-f]{12,64}", container_id) for container_id in ids
     ) or len(ids) != len(set(ids)):
@@ -4496,7 +4501,7 @@ def _current_alloy_identity() -> tuple[dict[str, Any], dict[str, Any]]:
         if not isinstance(podman_path, str) or not os.path.isabs(podman_path):
             raise Refusal("native_identity_podman_unavailable")
         records = _availability_inspect_all(
-            time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
+            time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path, allow_empty=True,
         )
         candidates = [record for record in records if record.get("service") == "alloy"]
         if len(candidates) != 1:
