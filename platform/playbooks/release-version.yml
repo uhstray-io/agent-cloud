@@ -300,7 +300,9 @@
             that:
               - _rv_planner.rc == 0
             fail_msg: >-
-              {{ "A breaking change after 1.0.0 needs the manual major release: run Release Major Version (Dev) with release_major=vN.0.0."
+              {{ ("A breaking change after 1.0.0 needs the manual major release: promote the breaking pull request "
+                  ~ "to main first, then run Release Major Version (Dev) with release_major=vN.0.0. Cut before the "
+                  ~ "promotion, the major leaves the change behind and this run stays red.")
                  if _rv_planner.rc == 3 else "semver.py release-tags exited " ~ (_rv_planner.rc | string) ~ ": " ~ _rv_planner.stderr }}
 
         - name: "Parse the plan"

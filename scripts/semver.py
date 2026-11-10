@@ -215,7 +215,7 @@ def dev_tags(repo, ref):
 
     Catch-up runs after the newest dev-tagged pull request. When no pull request on the chain
     carries a dev tag, the answer depends on whether the repository has any dev tag at all.
-    With none (the first run ever), only ref itself is offered, and only when it is a pull
+    With none (until the first dev tag exists), only ref itself is offered, and only when it is a pull
     request, so the first run does not tag every merge since the last release. With some, the
     chain simply starts after a release that has no dev tag beyond it yet, so every pull request
     on it is offered: a run that cuts a main release must not strand the dev merges that landed

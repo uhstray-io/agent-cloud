@@ -320,6 +320,8 @@ def test_a_planner_refusal_names_the_manual_major_run_and_otherwise_shows_stderr
     msg = check["task"]["ansible.builtin.assert"]["fail_msg"]
     assert "needs the manual major release" in msg
     assert "release_major=vN.0.0" in msg
+    # A major cut before the breaking change is promoted leaves it behind, and the schedule stays red (#996 review).
+    assert "to main first, then run Release Major Version (Dev)" in msg
     assert "_rv_planner.rc == 3" in msg
     assert "_rv_planner.stderr" in msg
 
