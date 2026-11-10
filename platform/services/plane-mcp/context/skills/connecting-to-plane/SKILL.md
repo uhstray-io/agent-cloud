@@ -40,6 +40,12 @@ group, so the fix is on the platform side, not in Claude Code.
 ## Setup (once per machine)
 
 ```bash
+# 0. Already set up? `add` refuses an existing name and keeps its old URL.
+claude mcp get plane
+#    URL already https://<plane-mcp-host>/http/mcp: skip step 1.
+#    A different URL: remove it first (from the scope `get` shows), then do step 1.
+claude mcp remove plane -s user
+
 # 1. Add the server for every project on this machine (user scope)
 claude mcp add --transport http --scope user plane https://<plane-mcp-host>/http/mcp
 
