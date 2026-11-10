@@ -947,6 +947,12 @@ def test_candidate_accepts_the_short_forms_podman_compose_emits(monkeypatch, tmp
     assert _candidate(monkeypatch, tmp_path, _podman_compose_config(str(tmp_path))) == "o11y"
 
 
+def test_candidate_reads_a_double_slash_config_target_as_the_config_mount(monkeypatch, tmp_path):
+    config = _podman_compose_config(str(tmp_path))
+    _alloy(config)["volumes"] = ["./config/config.alloy://etc/alloy/config.alloy:ro"]
+    assert _candidate(monkeypatch, tmp_path, config) == "o11y"
+
+
 def test_candidate_resolves_a_relative_source_against_the_deployment_dir(monkeypatch, tmp_path):
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -979,6 +985,10 @@ SHORT_FORM_ALLOY_SPEC_DECISIONS = [
     ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/../alloy/x:ro"],
     ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc//alloy:ro"],
     ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/./alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc/alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc/alloy/extra.alloy:ro"],
     ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:etc/alloy:ro"],
     ["./config/config.alloy:etc/alloy/config.alloy:ro"],
 ]

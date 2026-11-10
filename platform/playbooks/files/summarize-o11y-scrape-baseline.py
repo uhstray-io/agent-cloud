@@ -985,7 +985,8 @@ def _availability_compose_mount(entry: Any, deployment_dir: str) -> dict[str, An
         # A container target is always absolute. Refusing anything else also refuses the
         # ambiguous two-field "target:mode" form ("/etc/alloy:ro") instead of guessing.
         raise Refusal("namespace_candidate_alloy_spec")
-    target = posixpath.normpath(target)
+    # normpath keeps exactly two leading slashes (POSIX), so collapse them before comparing.
+    target = "/" + posixpath.normpath(target).lstrip("/")
     if mount_type == "bind" and isinstance(source, str):
         source = os.path.expanduser(source)
         if not os.path.isabs(source):
