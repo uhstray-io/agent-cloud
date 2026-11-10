@@ -77,6 +77,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.11.17"
+
       - name: Python lint (ruff)
         uses: astral-sh/ruff-action@v3
         with:
@@ -90,10 +94,10 @@ jobs:
           ignore_paths: netbox-docker
 
       - name: Ansible lint
-        run: pip install ansible-lint && ansible-lint platform/playbooks/ platform/semaphore/
+        run: uvx ansible-lint platform/playbooks/ platform/semaphore/
 
       - name: YAML lint
-        run: pip install yamllint && yamllint -c .yamllint.yml .
+        run: uvx yamllint -c .yamllint.yml .
 
       - name: Dockerfile lint (netbox)
         uses: hadolint/hadolint-action@v3.3.0
@@ -148,6 +152,10 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.11.17"
+
       - name: Install pinned TruffleHog
         run: |
           curl --fail --location --silent --show-error \
@@ -169,7 +177,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update
+          # uv.lock is excluded from THIS scan only: it is generated and full of package hashes,
+          # and the SentryToken detector matched the sentry-sdk wheel's hash URL. A comment
+          # marker cannot live there because `uv lock` rewrites the file. The verified scan
+          # above still reads uv.lock, so a live credential in it still fails the job.
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update \
+            --exclude-paths .github/trufflehog-exclude-unverified.txt
 
       - name: RFC1918 IP address audit
         run: |
@@ -227,8 +240,7 @@ jobs:
 
       - name: Python security lint (bandit)
         run: |
-          pip install bandit
-          bandit -r \
+          uvx bandit -r \
             platform/services/netbox/deployment/workers/ \
             platform/services/netbox/deployment/lib/pfsense-sync.py \
             platform/services/inference-comfyui/deployment/app/ \
@@ -245,25 +257,22 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          # The one declaration of the suites' dependencies, each with its reason,
-          # including the pytest-xdist pin the run step's flags rely on. The pre-push
-          # hook reads the same file, so CI and a local push agree on the version.
-          pip install -r platform/requirements-test.txt
-          # cryptography: the BATS suite signs a real App assertion with a throwaway key
-          # and verifies it, which is the only check that the credential chain's signing
-          # is correct rather than merely well-formed. Declared for the orchestrator in
-          # platform/requirements-controller.txt.
-          pip install -r platform/requirements-controller.txt
+          # The one declaration of the suites' dependencies is pyproject.toml's dependency
+          # groups (test, controller), resolved into uv.lock. `--locked` fails when the two
+          # disagree, and the pre-push hook installs the same lock, so CI and a local push
+          # run the same versions. .python-version selects the interpreter (3.12).
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           # The playbooks' collections. Tests that run a whole playbook need its modules
           # to resolve: an unresolved module (ansible.posix.authorized_key) aborts the run
           # at parse time with empty stdout, before any play or step result is printed.
-          ansible-galaxy collection install -r collections/requirements.yml
+          uv run --locked ansible-galaxy collection install -r collections/requirements.yml
 
       # Keep pytest's configured root testpaths active so newly registered suites
       # remain covered. Deselect only the bounded NetBox, Semaphore, playbook safety,
@@ -321,15 +330,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          uv run --locked ansible-galaxy collection install -r collections/requirements.yml
 
       - name: Run Python Playbook Safety tests
         run: >-
@@ -346,15 +355,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          uv run --locked ansible-galaxy collection install -r collections/requirements.yml
 
       - name: Run Python Agentgateway tests
         run: >-
@@ -391,15 +400,15 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          uv run --locked ansible-galaxy collection install -r collections/requirements.yml
 
       - name: Run Python Playbook Runs tests
         env:
@@ -420,15 +429,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          uv run --locked ansible-galaxy collection install -r collections/requirements.yml
 
       - name: Run Semaphore Python tests
         run: pytest -v -x -n auto --dist worksteal --durations=20 platform/semaphore/tests/
@@ -439,14 +448,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run NetBox Python tests
         env:
@@ -460,14 +469,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Install BATS
         run: sudo apt-get install -y -qq bats > /dev/null 2>&1

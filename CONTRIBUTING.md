@@ -108,20 +108,21 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 
 ```bash
 # macOS
-pip install ruff ansible-lint yamllint bandit
+brew install uv              # Python dependencies and tools are managed with uv
+uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
 brew install shellcheck bats-core hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
 
-# Python 3.12 (required for tests)
-brew install python@3.12
-# The test suites' dependencies, declared once and installed by CI from the same file.
-# It includes pytest-xdist, which the pre-push hook uses to run the suite in parallel.
-pip3.12 install -r platform/requirements-test.txt
-
-# Controller packages — cryptography is needed by the BATS suite, which signs a real
-# GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
-# with a reason rather than failing, but they are then not verifying anything.
-pip3.12 install -r platform/requirements-controller.txt
+# The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
+# `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,
+# exactly as CI does; the pre-push hook runs the same command itself. The `controller`
+# group's cryptography is needed by the BATS suite, which signs a real GitHub App
+# assertion with a throwaway key; without it those tests SKIP rather than verify.
+uv sync --locked
+# To run a suite by hand on the locked versions (the playbook tests find ansible-playbook
+# on PATH, so swapping the interpreter alone is not enough):
+#   PATH="$PWD/.venv/bin:$PATH" pytest -q
+#   PATH="$PWD/.venv/bin:$PATH" bats platform/tests/
 
 # The complete BATS suite also requires a usable existing Podman or Docker engine
 # for its native PromQL test; do not start a daemon or VM just for the test.
@@ -161,9 +162,11 @@ it is collectable, with the same test paths, working directory and `PYTHONPATH` 
 via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
 so you do not need to remember them.
 
-`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
-3.12 and installs the test dependencies, while the hook uses whatever `python3` is on your
-`PATH`.
+`bats platform/tests/` is byte-identical to CI's. Both suites run on the locked environment
+when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
+`PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
+outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
+tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push

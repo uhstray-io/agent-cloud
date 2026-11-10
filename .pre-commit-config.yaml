@@ -1,6 +1,6 @@
 ---
 # Pre-commit hooks for agent-cloud
-# Install: pip install pre-commit && pre-commit install
+# Install: uv tool install pre-commit && pre-commit install
 # Manual run: pre-commit run --all-files
 # Update hooks: pre-commit autoupdate
 

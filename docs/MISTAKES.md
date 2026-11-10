@@ -44,8 +44,8 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
-| 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
+| 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
@@ -89,7 +89,7 @@ and why.
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
-| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
+| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38) | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
@@ -99,6 +99,7 @@ and why.
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
 | 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
+| 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -189,7 +190,7 @@ and why.
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
-| 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
+| 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | CI (`ruleset-drift.yml`, daily live-vs-JSON check; two fields not compared, see the 2026-11-09 status) |
 | 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
@@ -769,7 +770,7 @@ environments) before it is stated.
 
 ### 1.15 A security check's guarantee stated past what its tests exercised
 
-**Occurrences: 3** — 2026-09-25, 2026-09-26, 2026-10-05
+**Occurrences: 4** — 2026-09-25, 2026-09-26, 2026-10-05, 2026-11-10
 
 **What happened.** #256 added a run-time check that the seed run's OpenBao address is the one
 the inventory declares. After Codex showed forged helper variables bypassed the first version,
@@ -819,9 +820,23 @@ shipped. Building the guard showed it is not: the context and stateful templates
 covered because each opens with the by-name refusal; the lifted-section tests that exercise it
 alone are listed as plain-value limits.
 
+**Occurrence 4 — 2026-11-10.** Plan 21 (PR #1004, test suite runtime) proposed cutting the
+guard-class forgery tests from three spellings to one, on the claim that the run-start guard
+`refuse-internal-extra-vars.yml` renders no forged value. I had checked one name: a stateful
+forgery of `_forged_by_launch` sent to `deploy-opa.yml` was refused and its render counter never
+written. The plan stated it for every name. Review round 1 reproduced that the guard's own `when:`
+reads `_extra_var_guard_nested is defined` (`:110`, `:159`) and that a stateful forgery of that name
+writes the counter; its second task also computes `_conn_names` and `_conn_forged`. The reduction
+would have dropped the only templated-forgery coverage of the names the guard itself reads. Caught
+before merge; the plan now excludes every name the guard references, derived from the guard file,
+and requires a counter assertion and a negative meta-test fixture. Why the rule did not fire:
+`test_extra_var_refusal_tests.py` checks test code, and this was prose in a plan proposing to
+change those tests; the one experiment felt like proof of the class. The rule covers it: the
+guarantee was stated for inputs the experiment did not exercise.
+
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 3** — 2026-09-25, 2026-10-03, 2026-11-02
+**Occurrences: 4** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -874,6 +889,18 @@ is each conversation comment's). The check would refuse a body whose Evidence se
 claim on a bullet that names no command in backticks, so every such claim carries the command
 that produced it. Not built: it would refuse prose that states counts honestly in other ways,
 and its wording needs the operator's decision before it gates merges.
+
+**Occurrence 4 — 2026-11-10.** Plan 21 (merged as PR #1004) said `harness_sandbox.run` is
+used by "only 12 runners", and that the CI partition test collects the suite four times. Both came
+from a scout's report, which counted runner helpers by name rather than files calling the helper,
+and neither was re-run before writing. The post-merge grounding review counted 41 test files
+calling it (`grep -l 'harness_sandbox.run(' platform/tests/*.py | wc -l`, 40 of them also start
+`ansible-playbook`) and seven collections (`_node_ids` called for the root and six shards,
+`test_ci_python_partition.py:134`, `:136`). Re-counting while fixing #1023's review findings turned up a third relayed figure: "48 of the 65" runners setting no timeout, which an AST scan of the test files (helpers named `_run`, `run`, `_play`, `_plays` or `_ansible` that start `ansible-playbook`) puts at 19 of 66. The low runner count ("only 12") steered phase 3 toward a new runner module
+instead of extending the existing one. Corrected in PR #1023 (open when this was recorded). Why the rule did not fire: the number
+arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
+the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
+covers it: a relayed count is re-run before it is written. The proposed mechanical check above would not have caught it: it reads a pull request's Evidence section, and this count sat in a plan bullet that carried a `file:line` citation.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
@@ -2462,6 +2489,8 @@ run's output that "Controller checkout has uncommitted files" is absent unless t
 itself. The refusal-path cases still assert only the shared "no fault was induced" text; the
 every-run assertion is what stops a clean-checkout refusal from passing them.
 
+Widened by 2.38 (2026-11-10): a mutation check that restores a file can leave stale bytecode in place too.
+
 ### 2.29 The rootless-podman check ran outside the context jobs run in
 
 **What happened.** Container jobs on the GitHub runners failed with `exec: "newuidmap":
@@ -2719,6 +2748,37 @@ deleted the probe tag, and the token was revoked (204).
 
 **Enforced by.** Test (`platform/tests/test_release_version_playbook.py`): every git command in
 the release playbook carries the three variables. Workstation probes: Convention.
+
+### 2.38 A restored mutation left the mutant's bytecode in place (widens 2.28)
+
+**What happened.** On 2026-11-10, while fixing two backtracking regexes in
+`platform/services/plane/lib/openspec_to_plane.py` (PR #1009), a mutation check changed one character
+of the new pattern (`+` to `?`), ran the equivalence test (it failed, as intended), and restored the
+file with `cp` from a saved copy. The sha256 matched the original, so the restore was reported as
+byte-exact. But the test run had written `__pycache__/openspec_to_plane.cpython-312.pyc` for the
+mutant. The swap kept the file the same size, and the restore landed in the same second, so the source
+kept the size and modification time that pyc header records. Python 3.12 therefore kept loading the
+mutant's bytecode. The reviewer's first test run in that worktree failed two tests, including the new
+equivalence test, against code that was correct on disk. The reviewer traced it to the stale pyc,
+showing that the system Python 3.9 (with no 3.12 bytecode to load) compiled the correct pattern. The
+author's own passing run had come before the mutation, so no wrong result was reported. The stale file
+was deleted and the suite passed (25).
+
+**Root cause.** By default (timestamp-based pycs), Python decides whether a cached `.pyc` is current by
+the source's modification time (whole seconds) and size recorded in its header, not by content. A same-length edit and its restore in
+the same second leave both unchanged, so a byte-exact restore does not invalidate the cache. Checking
+the source's hash proves the file, not what the interpreter will load.
+
+**The rule.** Give every run in a mutation check (the mutant run, and the run after the restore) its
+own fresh, empty `PYTHONPYCACHEPREFIX` directory. Python then neither reads nor leaves bytecode from
+another version of the file. The alternative is to delete the module's `__pycache__` entry both before
+the mutant run and after the restore. `PYTHONDONTWRITEBYTECODE=1` alone is not enough, because it stops
+writes, not reads. In the review of #1016 on CPython 3.12.13, a mutant run under it still loaded the
+original's stale bytecode. The mutation was then never tested, and the check would have reported that
+the test cannot catch it. Never trust a byte-exact source restore to reset what Python imports. This
+widens 2.28 ("disable bytecode writes") from clean-copy tests to mutation checks.
+
+**Enforced by.** Convention.
 
 ## 3. Acting on live state
 
@@ -5825,6 +5885,17 @@ back and matches it. A claim of enforcement cites that read, not the file.
 
 **Enforced by.** Convention. Proposed: a scheduled CI job that reads the live ruleset with a
 read-only token (`gh api`) and fails when it differs from `protect-main.json`.
+
+**Status 2026-11-09.** The proposed job exists: `.github/workflows/ruleset-drift.yml` (commits
+`b20b5746c` and `088405c8c`, 2026-10-03) runs `.github/rulesets/check-drift.sh` daily and
+fails when any live ruleset differs from its JSON in `.github/rulesets/`. Run 42574182015
+(2026-11-09, `main`) passed: `protect-main` and `protect-dev` both match. Limits: two fields are
+reported as not compared, not checked. `bypass_actors` is returned only to a caller with
+write (Administration) access to the ruleset (`compare.py`), and the repository has no
+`RULESET_READ_TOKEN` secret, so the job runs on `GITHUB_TOKEN`, which is not shown it; a
+read-only token would not change that. And on `protect-main`,
+`require_extra_approval_for_unattributed_changes` is live `true` but not settable through the
+documented API. The Index now reads CI.
 
 ### 10.22 A renamed dashboard panel reached production with the verify still naming the old title
 
