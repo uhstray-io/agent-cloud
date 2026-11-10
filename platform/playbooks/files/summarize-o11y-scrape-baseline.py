@@ -156,10 +156,15 @@ AVAILABILITY_PROVIDER_OVERRIDE_NAMES = {
 }
 # The only reasons the namespace gate reports. Each names the decision point that refused;
 # none carries an identity. The CLI prints a Refusal's category only when it is in this set.
+# The namespace_candidate_* words are raised only by the --candidate effective-compose checks;
+# the producer source gate folds every word in this set to namespace_unverified (_current_alloy_identity).
 AVAILABILITY_NAMESPACE_REASONS = frozenset({
     "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
     "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
     "namespace_runtime_unreadable", "namespace_unverified", "namespace_internal_error",
+    "namespace_candidate_compose_unreadable", "namespace_candidate_inputs_label",
+    "namespace_candidate_pod", "namespace_candidate_alloy_spec", "namespace_candidate_ports",
+    "namespace_candidate_project",
 })
 
 
@@ -898,13 +903,13 @@ def _availability_compose_port(port: Any) -> tuple[int, int, str | None, str]:
     """Parse only normalized mappings and unambiguous IPv4 short port forms."""
     if isinstance(port, dict):
         if set(port) - {"target", "published", "protocol", "host_ip"}:
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_ports")
         target = port.get("target")
         published = port.get("published")
         protocol = port.get("protocol", "tcp")
         host_ip = port.get("host_ip")
         if host_ip is not None and not isinstance(host_ip, str):
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_ports")
     elif isinstance(port, str):
         match = re.fullmatch(
             r"(?:(?P<host_ip>(?:[0-9]{1,3}\.){3}[0-9]{1,3}):)?"
@@ -912,13 +917,13 @@ def _availability_compose_port(port: Any) -> tuple[int, int, str | None, str]:
             port,
         )
         if match is None:
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_ports")
         host_ip = match.group("host_ip")
         published = match.group("published")
         target = match.group("target")
         protocol = match.group("protocol") or "tcp"
     else:
-        raise Refusal("namespace_unverified")
+        raise Refusal("namespace_candidate_ports")
 
     def number(value: Any) -> int:
         if type(value) is int:
@@ -926,22 +931,22 @@ def _availability_compose_port(port: Any) -> tuple[int, int, str | None, str]:
         elif isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
             result = int(value)
         else:
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_ports")
         if not 1 <= result <= 65535:
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_ports")
         return result
 
     target_number = number(target)
     published_number = number(published)
     if not isinstance(protocol, str) or protocol not in {"tcp", "udp", "sctp"}:
-        raise Refusal("namespace_unverified")
+        raise Refusal("namespace_candidate_ports")
     if host_ip is not None:
         try:
             ip = ipaddress.ip_address(host_ip)
         except ValueError:
-            raise Refusal("namespace_unverified") from None
+            raise Refusal("namespace_candidate_ports") from None
         if not isinstance(ip, ipaddress.IPv4Address):
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_ports")
     return target_number, published_number, host_ip, protocol
 
 
@@ -955,56 +960,64 @@ def _verify_availability_effective_compose(
     for overlay in overlays:
         overlay_path = overlay if os.path.isabs(overlay) else os.path.join(deployment_dir, overlay)
         if not os.path.isfile(overlay_path):
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_compose_unreadable")
         if os.path.isabs(overlay):
             final_label_overlays.append(overlay)
         compose_files.extend(["-f", overlay_path])
     compose_raw = _availability_command(
         [*compose_cmd, *compose_files, "config"], timeout=10, cwd=deployment_dir,
-        refusal="namespace_provider_unverified",
+        refusal="namespace_candidate_compose_unreadable",
     )
     try:
         config = yaml.load(compose_raw.decode("utf-8", "strict"), Loader=_SourceUniqueKeyLoader)
     except (UnicodeError, yaml.YAMLError):
-        raise Refusal("namespace_unverified") from None
+        raise Refusal("namespace_candidate_compose_unreadable") from None
     services = config.get("services") if isinstance(config, dict) else None
     if not isinstance(services, dict) or not 1 <= len(services) <= 32:
-        raise Refusal("namespace_unverified")
+        raise Refusal("namespace_candidate_compose_unreadable")
     if len(final_label_overlays) > 1:
-        raise Refusal("namespace_unverified")
+        raise Refusal("namespace_candidate_inputs_label")
     if final_label_overlays:
         path = final_label_overlays[0]
         if not _validate_compose_inputs_overlay_path(path):
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_inputs_label")
         try:
             with open(path, encoding="utf-8") as handle:
                 label_overlay = yaml.load(handle, Loader=_SourceUniqueKeyLoader)
         except (OSError, UnicodeError, yaml.YAMLError):
-            raise Refusal("namespace_unverified") from None
+            raise Refusal("namespace_candidate_inputs_label") from None
         label_services = label_overlay.get("services") if isinstance(label_overlay, dict) else None
         if not isinstance(label_services, dict) or set(label_services) != set(services):
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_inputs_label")
         for service_name, expected in label_services.items():
-            effective_labels = services[service_name].get("labels")
-            input_digest = expected["labels"]["io.agent-cloud.inputs-sha256"]
+            effective = services[service_name]
+            if not isinstance(effective, dict):
+                raise Refusal("namespace_candidate_compose_unreadable")
+            effective_labels = effective.get("labels")
+            expected_labels = expected.get("labels") if isinstance(expected, dict) else None
+            input_digest = (
+                expected_labels.get("io.agent-cloud.inputs-sha256") if isinstance(expected_labels, dict) else None
+            )
             if (
                 not isinstance(effective_labels, dict)
+                or not isinstance(input_digest, str)
                 or effective_labels.get("io.agent-cloud.inputs-sha256") != input_digest
             ):
-                raise Refusal("namespace_unverified")
+                raise Refusal("namespace_candidate_inputs_label")
 
-    alloy_service = services.get("alloy")
-    if not isinstance(alloy_service, dict):
-        raise Refusal("namespace_unverified")
     expected_listener = (
         "127.0.0.1:12345" if os.environ.get("O11Y_AVAILABILITY_ENABLED") == "true" else "0.0.0.0:12345"
     )
+    if os.environ.get("O11Y_AVAILABILITY_ENABLED") == "true" and config.get("x-podman") != {"in_pod": False}:
+        raise Refusal("namespace_candidate_pod")
+
+    alloy_service = services.get("alloy")
+    if not isinstance(alloy_service, dict):
+        raise Refusal("namespace_candidate_alloy_spec")
     effective_command = alloy_service.get("command")
     expected_mount_source = os.path.realpath(os.path.join(deployment_dir, "config", "config.alloy"))
     volumes = alloy_service.get("volumes")
     if (
-        os.environ.get("O11Y_AVAILABILITY_ENABLED") == "true" and config.get("x-podman") != {"in_pod": False}
-    ) or (
         alloy_service.get("entrypoint") is not None
         or effective_command != ["run", f"--server.http.listen-addr={expected_listener}", "/etc/alloy/config.alloy"]
         or not isinstance(effective_command, list)
@@ -1012,7 +1025,7 @@ def _verify_availability_effective_compose(
         or alloy_service.get("image") != "docker.io/grafana/alloy:v1.5.1"
         or not isinstance(volumes, list)
     ):
-        raise Refusal("namespace_unverified")
+        raise Refusal("namespace_candidate_alloy_spec")
     config_mounts = [
         mount for mount in volumes
         if isinstance(mount, dict) and mount.get("target") == "/etc/alloy/config.alloy"
@@ -1020,7 +1033,8 @@ def _verify_availability_effective_compose(
     if (
         len(config_mounts) != 1
         or config_mounts[0].get("type") != "bind"
-        or os.path.realpath(config_mounts[0].get("source", "")) != expected_mount_source
+        or not isinstance(config_mounts[0].get("source"), str)
+        or os.path.realpath(config_mounts[0]["source"]) != expected_mount_source
         or config_mounts[0].get("read_only") is not True
         or any(
             isinstance(mount, dict) and isinstance(mount.get("target"), str)
@@ -1029,30 +1043,32 @@ def _verify_availability_effective_compose(
             for mount in volumes
         )
     ):
-        raise Refusal("namespace_unverified")
+        raise Refusal("namespace_candidate_alloy_spec")
     for service in services.values():
-        if not isinstance(service, dict) or service.get("network_mode") is not None:
-            raise Refusal("namespace_unverified")
+        if not isinstance(service, dict):
+            raise Refusal("namespace_candidate_compose_unreadable")
+        if service.get("network_mode") is not None:
+            raise Refusal("namespace_network_mode")
         ports = service.get("ports", [])
         if not isinstance(ports, list):
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_ports")
         for port in ports:
             target, published, host_ip, protocol = _availability_compose_port(port)
             if target == 12345 or published == 12345:
-                raise Refusal("namespace_unverified")
+                raise Refusal("namespace_candidate_ports")
             if service is alloy_service and (target not in {4317, 4318} or protocol != "tcp"):
-                raise Refusal("namespace_unverified")
+                raise Refusal("namespace_candidate_ports")
             if service is alloy_service:
                 if host_ip is None:
-                    raise Refusal("namespace_unverified")
+                    raise Refusal("namespace_candidate_ports")
                 ip = ipaddress.ip_address(host_ip)
                 if not (ip.is_loopback or ip in ipaddress.ip_network("10.0.0.0/8")
                         or ip in ipaddress.ip_network("172.16.0.0/12")
                         or ip in ipaddress.ip_network("192.168.0.0/16")):
-                    raise Refusal("namespace_unverified")
+                    raise Refusal("namespace_candidate_ports")
     project = config.get("name")
     if not isinstance(project, str) or not project:
-        raise Refusal("namespace_unverified")
+        raise Refusal("namespace_candidate_compose_unreadable")
     return project
 
 
@@ -1068,14 +1084,10 @@ def verify_availability_namespace(*, validate_candidate: bool = False) -> dict[s
     ) = _availability_provider_context()
     candidate_project = None
     if validate_candidate:
-        try:
-            candidate_project = _verify_availability_effective_compose(
-                os.environ["O11Y_DEPLOYMENT_DIR"], compose_cmd, overlays,
-            )
-        except Refusal:
-            # Candidate effective-config checks keep the generic category; the provider and
-            # runtime categories describe the pre-placement proof, not the compose config read.
-            raise Refusal("namespace_unverified") from None
+        # A candidate refusal keeps the category of the decision point that raised it.
+        candidate_project = _verify_availability_effective_compose(
+            os.environ["O11Y_DEPLOYMENT_DIR"], compose_cmd, overlays,
+        )
     podman_path = executable_identity["podman"]["path"]
     first = _availability_runtime_pass(podman_path)
     second = _availability_runtime_pass(podman_path)
@@ -1091,7 +1103,7 @@ def verify_availability_namespace(*, validate_candidate: bool = False) -> dict[s
     if validate_candidate:
         running_alloy = [record for record in records if record.get("service") == "alloy"]
         if len(running_alloy) != 1 or candidate_project != running_alloy[0].get("project"):
-            raise Refusal("namespace_unverified")
+            raise Refusal("namespace_candidate_project")
     namespace_fingerprint = _availability_namespace_fingerprint(records, process_identities, host_namespace)
     expected_namespace = os.environ.get("O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256", "")
     if expected_namespace and (
