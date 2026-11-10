@@ -259,6 +259,6 @@ PY
   # The edge skip is the exact webhook path on Plane's host, nothing wider.
   grep -qF 'http.request.uri.path eq \"/silo/api/github/github-webhook\"' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
   refute_grep -qF 'starts_with(http.request.uri.path, \"/silo' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
-  # Appended last, so no existing rule moved.
-  [ "$(grep -E '^      ref +=' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" | tail -n 1 | cut -d'"' -f2)" = "plane-github-webhook-bypass-challenge" ]
+  # Appended after the Plane MCP rule, so no existing rule moved.
+  [ "$(grep -E '^      ref +=' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" | cut -d'"' -f2 | grep -A1 -x plane-mcp-bypass-challenge | tail -n 1)" = "plane-github-webhook-bypass-challenge" ]
 }

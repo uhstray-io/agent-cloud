@@ -232,3 +232,36 @@ def test_set_hook_secret_refuses_a_non_object_response():
         gat.main()
     assert exc.value.code == 1 and out.getvalue() == ""
     assert "unexpected response" in err.getvalue()
+
+
+@needs_ansible
+def test_a_null_app_id_fails_the_render_instead_of_rendering_none(tmp_path):
+    proc = render(tmp_path, {**APP, "plane_github_app_id": None})
+    assert proc.returncode != 0
+    assert "GITHUB_APP_ID is empty" in proc.stdout
+
+
+def _plays():
+    import yaml
+
+    return yaml.safe_load((REPO / "platform/playbooks/deploy-plane.yml").read_text())
+
+
+def test_the_webhook_secret_reaches_github_on_stdin_only_and_never_in_check_mode():
+    play = next(p for p in _plays() if p.get("name") == "Phase 3d: GitHub App webhook")
+    block = next(t for t in play["tasks"] if "block" in t)
+    assert block["when"] == ["plane_github_app_id is defined", "not ansible_check_mode"]
+    patch_task = block["block"][0]
+    assert patch_task["no_log"] is True and patch_task["delegate_to"] == "localhost"
+    argv = patch_task["ansible.builtin.command"]["argv"]
+    assert "set-hook-secret" in argv
+    assert not any("_resolved" in str(a) for a in argv)
+    stdin = patch_task["ansible.builtin.command"]["stdin"]
+    assert "_resolved.plane_github_private_key" in stdin and "_resolved.plane_github_webhook_secret" in stdin
+
+
+def test_the_unsigned_delivery_probe_is_gated_on_the_app_and_skipped_in_check_mode():
+    verify = next(p for p in _plays() if p.get("name") == "Phase 4: Verify plane")
+    probe = next(t for t in verify["tasks"] if t.get("name") == "GitHub webhook refuses an unsigned delivery (401)")
+    assert probe["when"] == ["plane_github_app_id is defined", "not ansible_check_mode"]
+    assert "assert c == 401" in probe["ansible.builtin.command"]["argv"][-1]

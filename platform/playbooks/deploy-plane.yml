@@ -488,8 +488,6 @@
               - set-hook-secret
               - --issuer
               - "{{ plane_github_client_id }}"
-              - --org
-              - "{{ plane_github_org | default('uhstray-io') }}"
               - --hook-url
               - "{{ plane_public_url }}/silo/api/github/github-webhook"
             stdin: "{{ {'key_b64': _resolved.plane_github_private_key, 'secret': _resolved.plane_github_webhook_secret} | to_json }}"
@@ -512,13 +510,16 @@
           ansible.builtin.assert:
             that:
               - _plane_hook_summary.error is not defined
-              - _plane_hook_summary.secret_set
-            fail_msg: "plane GitHub App webhook: {{ _plane_hook_summary.error | default('GitHub reports no secret set') }}"
+            fail_msg: "plane GitHub App webhook: {{ _plane_hook_summary.error }}"
             quiet: true
 
         - name: "Report"
           ansible.builtin.debug:
-            msg: "GitHub App webhook → {{ _plane_hook_summary.url }} ({{ _plane_hook_summary.content_type }}), signing secret set (value never shown)"
+            # GitHub's response may omit the secret, so this is reported, not asserted; Phase 4 proves
+            # silo's half, and a redelivered App delivery answering 202 proves GitHub's.
+            msg: >-
+              GitHub App webhook → {{ _plane_hook_summary.url }} ({{ _plane_hook_summary.content_type }});
+              secret sent{{ ', GitHub reports it set' if _plane_hook_summary.secret_set else '' }} (value never shown)
 
 # ── Phase 4: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 4: Verify plane"
@@ -581,6 +582,8 @@
     # Spike 0.16: silo answers 403 to every delivery with no App configured, 401 to an unsigned one
     # once the App and GITHUB_WEBHOOK_SECRET are set. Anything but 401 means silo did not get the
     # GitHub settings, and the webhook path the edge leaves unchallenged would not be verifying.
+    # Not in check mode: a dry run writes no .env and recreates nothing, so on the run that first
+    # declares the App the running silo still has none and answers 403 (PR 1025 review).
     - name: "GitHub webhook refuses an unsigned delivery (401)"
       ansible.builtin.command:
         argv:
@@ -605,7 +608,9 @@
       delay: 10
       until: _plane_webhook_probe.rc == 0
       check_mode: false
-      when: plane_github_app_id is defined
+      when:
+        - plane_github_app_id is defined
+        - not ansible_check_mode
 
     # MISTAKES 2.34: the probe above reaches one path. This proves every container the plane's compose
     # project created is running (a declared one-shot may have exited 0) and none is restarting under

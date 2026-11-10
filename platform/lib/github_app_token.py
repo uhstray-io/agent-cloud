@@ -30,7 +30,7 @@ Usage:
     github_app_token.py jit-config      ... --group <name> --label <l>... --prefix <p> --count <n>
     github_app_token.py list-runners    ... --prefix <p>
     github_app_token.py prune-runners   ... --prefix <p> [--keep <name>]... [--retire <name>]
-    github_app_token.py set-hook-secret  --issuer <id> --org <org> --hook-url <url>
+    github_app_token.py set-hook-secret  --issuer <id> --hook-url <url>
 
 set-hook-secret converges the App's own webhook (PATCH /app/hook/config, App assertion): URL,
 JSON payloads, TLS verification on, and the signing secret. Its stdin is one JSON object,
@@ -467,7 +467,7 @@ def main() -> None:
         ],
     )
     ap.add_argument("--issuer", required=True, help="App client id (recommended) or app id")
-    ap.add_argument("--org", required=True)
+    ap.add_argument("--org", help="the App's organisation (every action but set-hook-secret)")
     ap.add_argument("--key", default="-", help="private key path, or '-' for stdin (default)")
     ap.add_argument("--group", help="jit-config: runner group name")
     ap.add_argument("--label", action="append", default=[], help="jit-config: a label (repeat)")
@@ -508,6 +508,8 @@ def main() -> None:
             sys.stdout.write(json.dumps(result))
         return
 
+    if args.action != "set-hook-secret" and not args.org:
+        die("--org is required for this action", 2)
     if args.action == "set-hook-secret":
         sys.stdout.write(json.dumps(set_hook_secret(args.issuer, args.hook_url or "", sys.stdin.buffer.read())))
         return

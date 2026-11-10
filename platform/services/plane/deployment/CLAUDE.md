@@ -104,7 +104,8 @@ so it is set on every deploy. Verify sends an unsigned delivery through the prox
 401: spike 0.16 showed silo answers 403 when it has no App configured and 401 to an unsigned
 delivery once it has the App and the secret. The Cloudflare challenge skip for that one path
 (`plane-github-webhook-bypass-challenge` in `platform/infra/cloudflare/waf.tf`) depends on that
-check. Apply it only after a deploy has passed it.
+check. It is safe to apply at any time: with no App configured silo answers every delivery 403, so
+it is not gated on the deploy; after both are live, redeliver one App delivery and expect 202.
 
 Connecting the workspace (Workspace settings, Integrations, GitHub) and each project's repository
 is done in Plane after the deploy (change tasks 0.6 and 3.5).
@@ -153,7 +154,7 @@ through Authentik on, and leaving it unset switches it OFF on the next deploy. `
 (default `admin`) is the role `platform-admins` get from the member reconcile; local-dev sets
 `member`, because the Admin role is a plan feature (`WORKSPACE_ADMIN_ROLE`) the Free plan lacks.
 `plane_github_app_id`, `plane_github_app_name` and `plane_github_client_id` turn the GitHub
-integration on (see Credentials); `plane_github_org` (default `uhstray-io`) is the App's owner.
+integration on (see Credentials).
 
 ## Operate
 
