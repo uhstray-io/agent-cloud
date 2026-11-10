@@ -1231,7 +1231,7 @@ assert doc["services"]["skynet"] == {"user": "10001:10001", "userns_mode": "keep
 PY
 }
 
-@test "skynet: the TLS overlay publishes the HTTPS port alone, on the two required variables" {
+@test "skynet: the TLS overlay publishes the HTTPS port alone, its two variables defaulting to loopback:8443" {
   local overlay="$DEPLOY_DIR/compose.tls.yml"
   skip_unless_service_file "$overlay"
   python3 - "$overlay" <<'PY'
@@ -1242,9 +1242,19 @@ doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 assert set(doc) == {"services"}, doc.keys()
 assert list(doc["services"]) == ["skynet"], doc["services"]
 assert doc["services"]["skynet"] == {
-    "ports": ["${SKYNET_TLS_PUBLISH_BIND:?set by the deploy}:${SKYNET_TLS_PUBLISH_PORT:?set by the deploy}:8443"],
+    "ports": ["${SKYNET_TLS_PUBLISH_BIND:-127.0.0.1}:${SKYNET_TLS_PUBLISH_PORT:-8443}:8443"],
 }, doc["services"]["skynet"]
 PY
+}
+
+@test "skynet: the listener overlays require no variable, so a teardown without the listener can load them" {
+  # tasks/clean-service.yml passes every compose.*.yml to `down -v` (only the other mode's overlay is skipped).
+  # A required variable (:?) that .env lacks stops that teardown before it removes anything.
+  local f
+  for f in compose.tls.yml compose.prod-tls.yml; do
+    skip_unless_service_file "$DEPLOY_DIR/$f"
+    refute_grep -qF ':?' <<<"$(grep -v '^[[:space:]]*#' "$DEPLOY_DIR/$f")"
+  done
 }
 
 @test "skynet: deploy.sh loads the TLS overlay on the SKYNET_TLS_CERT_FILE marker in both modes, and only then" {
@@ -1299,6 +1309,9 @@ PY
   refute_contains "$(overlays_for "$marked" true)" 'compose.prod-tls.yml'
   refute_contains "$(overlays_for "$blank" true)" 'compose.prod-tls.yml'
   refute_contains "$(overlays_for "$absent" true)" 'compose.prod-tls.yml'
+  # The extracted block is the only place deploy.sh adds the overlay: a second, unconditional assignment
+  # elsewhere would bypass the gate while every case above still passed.
+  [ "$(grep -c 'compose\.prod-tls\.yml \${COMPOSE_OVERLAYS' "$DEPLOY_DIR/deploy.sh")" -eq 1 ]
 }
 
 @test "skynet: deploy.sh hashes the trust bundles under certs/, never the directory, so a renewed leaf is not a change" {
