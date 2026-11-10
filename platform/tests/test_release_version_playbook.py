@@ -758,6 +758,15 @@ def test_the_gateway_request_is_the_schema_constrained_thinking_off_shape_the_ga
     assert "No lists" in body["messages"][0]["content"]
 
 
+def test_both_release_notes_system_prompts_tell_the_model_the_renderer_allowlist():
+    # The renderer drops a summary that holds a slash, an ampersand, a hash sign, a number or a GH- reference, so the
+    # model is told each one. Without the sentence, common prose (CI/CD, R&D, (#10)) costs the whole summary.
+    for leaf in (_gateway_leaf(), _overview_leaf()):
+        system = leaf["task"]["ansible.builtin.uri"]["body"]["messages"][0]["content"].lower()  # sentence-initial Never
+        assert "never use slashes" in system
+        assert "hash signs" in system and "the letters gh followed by a dash and a number" in system
+
+
 def test_the_gateway_loops_over_a_literal_category_list_gated_on_key_route_and_pull_requests():
     gw = _gateway_leaf()["task"]
     assert [item["name"] for item in gw["loop"]] == ["features", "fixes", "documentation"]

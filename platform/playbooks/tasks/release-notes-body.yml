@@ -136,7 +136,7 @@
             additionalProperties: false
       messages:
         - role: system
-          content: "Summarise these merged pull request titles for a release note in 2 to 4 plain sentences. Describe what changed for users and operators. No lists, no headings, no links, no names, no @ mentions, no code formatting. Use only facts in the titles."
+          content: "Summarise these merged pull request titles for a release note in 2 to 4 plain sentences. Describe what changed for users and operators. No lists, no headings, no links, no names, no @ mentions, no code formatting. Use only facts in the titles. Use only letters, digits, spaces and the punctuation . , ; : ' \" ( ) ! ? % + = -. Never use slashes, ampersands, hash signs, pull request or issue numbers, or the letters GH followed by a dash and a number."
         - role: user
           content: "{{ item.label }}:\n{{ _rn_sections.sections[item.name] | map(attribute='title') | join('\\n') }}"
     timeout: 100
@@ -194,7 +194,7 @@
             additionalProperties: false
       messages:
         - role: system
-          content: "Write release notes for an infrastructure platform. summary: 2 to 4 plain sentences describing the release as a whole for users and operators. highlights: up to 5 of the most significant changes, each with the pull request number from the list and one plain sentence under 200 characters. Use only the pull requests listed; never invent numbers. No links, no names, no @ mentions, no headings, no code formatting."
+          content: "Write release notes for an infrastructure platform. summary: 2 to 4 plain sentences describing the release as a whole for users and operators. highlights: up to 5 of the most significant changes, each with the pull request number from the list and one plain sentence under 200 characters. Use only the pull requests listed; never invent numbers. No links, no names, no @ mentions, no headings, no code formatting. Use only letters, digits, spaces and the punctuation . , ; : ' \" ( ) ! ? % + = -. Never use slashes, ampersands, hash signs, pull request or issue numbers, or the letters GH followed by a dash and a number."
         - role: user
           content: "{{ _rn_overview_list }}"
     timeout: 100

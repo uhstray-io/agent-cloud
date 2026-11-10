@@ -880,6 +880,8 @@ ALLOWLIST = "contains a character outside the allowed set"
         ("ping &#64;octocat", ALLOWLIST),  # an encoded mention
         ("Fixes #9999 quickly", ALLOWLIST),  # a free-text reference to a pull request outside the release
         ("see other-org/repo#1 too", ALLOWLIST),  # a cross-repository reference
+        ("see GH-9999 now", "contains a GH- reference"),  # GH-N links to a pull request even without a hash sign
+        ("gh-1 fixed", "contains a GH- reference"),  # in any letter case
     ],
 )
 def test_model_text_outside_the_allowlist_is_dropped_under_the_rule_it_breaks(tmp_path, bad, rule):
@@ -895,6 +897,14 @@ def test_model_text_outside_the_allowlist_is_dropped_under_the_rule_it_breaks(tm
 def test_curly_quotes_dashes_and_percent_signs_stay_in_model_text(tmp_path):
     repo = _three_sections_repo(tmp_path)
     text = "The gateway’s limits — “now” enforced, 100% of the time."
+    result = _run_stdin(repo, json.dumps({"features": text}), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert f"## Features\n\n{text}\n\n<details>" in result.stdout
+
+
+def test_a_hyphenated_word_that_ends_in_gh_is_not_a_gh_reference(tmp_path):
+    repo = _three_sections_repo(tmp_path)  # \bgh- must not match inside High-5
+    text = "High-5 rated the release."
     result = _run_stdin(repo, json.dumps({"features": text}), "release-notes", "--tag", "v0.2.0", "--render")
     assert (result.returncode, result.stderr) == (0, "")
     assert f"## Features\n\n{text}\n\n<details>" in result.stdout
@@ -963,8 +973,41 @@ def test_a_contributor_name_that_is_a_link_renders_as_plain_text(tmp_path):
     _pr_as(repo, "[n](https://e.example)", "pr-70", 70, "fix: a plain title")
     repo.tag("v0.2.0")
     rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
-    assert "- \\[n\\](https://e.example) (1 commit)\n" in rendered
+    line = rendered.split("## Contributors\n\n")[1].splitlines()[0]
+    assert line == "- \\[n\\](https:​//e.example) (1 commit)"  # the scheme separator is broken, so no autolink
+    assert "https://" not in line and "www." not in line
     assert "[n](" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("name", "line"),
+    [
+        ("www.e.example", "- www​.e.example (1 commit)"),  # a bare www. is autolinked too
+        ("WWW.E.example", "- WWW​.E.example (1 commit)"),
+        ("# H", "- #​ H (1 commit)"),  # a heading inside the item, not a list item with # H
+        ("1. x", "- 1\\. x (1 commit)"),  # an ordered list inside the item
+        ("2) x", "- 2\\) x (1 commit)"),
+        ("- x", "- \\- x (1 commit)"),  # a nested bullet
+        ("+ x", "- \\+ x (1 commit)"),
+        ("Eve #1", "- Eve #​1 (1 commit)"),  # a pull request link
+        ("$a$", "- <span>$</span>a<span>$</span> (1 commit)"),  # a math span, not a formula
+    ],
+)
+def test_a_contributor_name_cannot_start_a_block_link_a_pull_request_or_a_formula(tmp_path, name, line):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, name, "pr-90", 90, "fix: a plain title")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert rendered.split("## Contributors\n\n")[1].splitlines()[0] == line
+
+
+def test_a_title_keeps_its_pull_request_references_but_breaks_its_links_and_formulas(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-83", 83, "fix: see https://x.example and www.x.example, $a$, closes #12")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- #83 fix: see https:​//x.example and www​.x.example, <span>$</span>a<span>$</span>, closes #12\n" in rendered
+    assert "https://" not in rendered and "www." not in rendered and "$" not in rendered.replace("<span>$</span>", "")
 
 
 def test_a_title_cannot_format_a_link_or_close_its_block(tmp_path):
@@ -1184,6 +1227,8 @@ def test_a_highlight_whose_text_breaks_a_rule_is_dropped_and_the_rest_kept(tmp_p
         ("www.evil.example", "contains 'www.'"),  # no banned mark, so only the www. rule catches it
         ("See WWW.Evil.example.", "contains 'www.'"),
         ("Closes #9999.", ALLOWLIST),
+        ("gh-1 fixed", "contains a GH- reference"),
+        ("Closes GH-9999.", "contains a GH- reference"),
     ],
 )
 def test_a_highlight_outside_the_allowlist_is_dropped_and_the_rest_kept(tmp_path, text, rule):

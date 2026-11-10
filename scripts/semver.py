@@ -319,7 +319,8 @@ SUMMARY_KEYS = ("features", "fixes", "documentation")
 SUMMARY_MAX = 800
 SUMMARY_BANNED = ("@", "http://", "https://", "](", "<", ">", "`")
 # Model text (summaries, the overview, highlight text) may hold only these characters. Every other mark is Markdown
-# or HTML syntax, a URL, or a reference (#N, owner/repo#N), so the text is dropped rather than rendered.
+# or HTML syntax, a URL, or a reference (#N, owner/repo#N), so the text is dropped rather than rendered. A GH-N
+# reference is letters and digits, so it passes this set and is refused separately, in _unsafe_text_problem.
 SAFE_TEXT = re.compile(r"[\w\s.,;:'\"()!?%+=–—‘’“”-]+")
 HIGHLIGHT_MAX = 200
 HIGHLIGHTS_SHOWN = 5
@@ -369,9 +370,11 @@ def _banned_problem(text):
 
 
 def _unsafe_text_problem(text):
-    """The rule model text breaks: www. in any case, or a character outside SAFE_TEXT. None when it passes."""
+    """The rule model text breaks: www. in any case, a GH- reference, or a character outside SAFE_TEXT. None if none."""
     if "www." in text.casefold():
         return "contains 'www.'"
+    if re.search(r"(?i)\bgh-\d", text):  # \b: High-5 is not a reference, GH-9999 and gh-1 are
+        return "contains a GH- reference"
     if SAFE_TEXT.fullmatch(text) is None:
         return "contains a character outside the allowed set"
     return None
@@ -494,12 +497,27 @@ ESCAPED_MARKDOWN = ("\\", "`", "*", "_", "[", "]", "~", "|")
 
 
 def _escape(text):
-    """Keep a title or a name from formatting, linking or closing the block around it, then from notifying anyone."""
+    """Keep a title or a name from formatting, linking, rendering math, closing its block or notifying anyone."""
     for mark, entity in ESCAPED_HTML:
         text = text.replace(mark, entity)
     for mark in ESCAPED_MARKDOWN:
         text = text.replace(mark, "\\" + mark)
+    # A zero-width space breaks each URL scheme separator and each www. that GitHub would autolink. The $ becomes an
+    # inline HTML span, which GitHub's math renderer does not read as a delimiter. Both come after the HTML escape,
+    # so the span is not escaped itself.
+    text = text.replace("://", ":\u200b//")
+    text = re.sub(r"(?i)(www)\.", "\\1\u200b.", text)
+    text = text.replace("$", "<span>$</span>")
     return _neutral(text)
+
+
+def _escape_name(name):
+    """A contributor name at the start of a list item: _escape, then no heading, list or #N link at its start."""
+    text = _escape(name).replace("#", "#\u200b")  # a #N in a name would link to a pull request
+    text = re.sub(r"^(\d+)([.)])", r"\1\\\2", text)  # 1. and 1) would open an ordered list
+    if text[:1] in ("-", "+", "="):  # a bullet, a setext underline or a rule would open a block
+        text = "\\" + text
+    return text
 
 
 def _render(previous, sections, breaking, contributors, model):
@@ -531,7 +549,7 @@ def _render(previous, sections, breaking, contributors, model):
         lines = "\n".join(f"- #{number} {_escape(title)}" for number, title in items)
         parts.append(f"<details><summary>{_count(len(items), 'pull request')}</summary>\n\n{lines}\n\n</details>")
     if contributors:
-        lines = "\n".join(f"- {_escape(name)} ({_count(commits, 'commit')})" for name, commits in contributors)
+        lines = "\n".join(f"- {_escape_name(name)} ({_count(commits, 'commit')})" for name, commits in contributors)
         parts.append(f"## Contributors\n\n{lines}")
     return "\n\n".join(parts) + "\n"
 
