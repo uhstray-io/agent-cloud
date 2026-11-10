@@ -29,7 +29,8 @@
 # Check mode is a dry run: the reads run, the merge and the read-back are skipped. Run the Dev
 # template in Semaphore's Dry run first and read the plan.
 #
-# OpenBao is reached at the single host of the openbao_svc group (as tasks/guard-o11y-restore-target.yml does). The
+# OpenBao is reached at openbao_addr, as the shared-environment playbooks read it, else at the single host of
+# the openbao_svc group (issue #1019 tracks why the group alone resolved empty in the shared environment). The
 # AppRole comes from BAO_ROLE_ID / BAO_SECRET_ID, or the bao_role_id / bao_secret_id extra vars the
 # other OpenBao playbooks accept. Field values are never printed.
 
@@ -46,7 +47,7 @@
     # openbao_addr first, as the shared-environment playbooks read it (deploy-authentik.yml,
     # manage-agentgateway-client-key.yml): Retire OpenBao Fields (Dev) runs in the shared
     # environment, where the inventory-group expression alone resolved empty (task 14650,
-    # 2026-11-10; the same expression passes locally on the same inventory, cause unverified).
+    # 2026-11-10; the same expression passes locally on the same inventory; cause tracked in issue #1019).
     # The inventory's single openbao_svc host stays the fallback for an environment without it.
     _bao_url: "{{ openbao_addr | default(hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"

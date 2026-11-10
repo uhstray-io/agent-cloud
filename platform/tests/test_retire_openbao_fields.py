@@ -38,7 +38,7 @@ DECLARATION = PLAYBOOKS / "vars/retired-secret-fields.yml"
 REFUSE = PLAYBOOKS / "refuse-internal-extra-vars.yml"
 TASKS = PLAYBOOKS / "tasks"
 # openbao_addr first (the shared environment sets it), else the inventory's single openbao_svc host.
-SINGLE_HOST_BAO_URL = (
+OPENBAO_URL_EXPRESSION = (
     "{{ openbao_addr | default(hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') "
     "if (groups['openbao_svc'] | default([]) | length == 1) else '', true) }}"
 )
@@ -212,12 +212,12 @@ def test_the_refusal_scans_only_the_paths_own_two_files_as_whole_words():
     assert "(?<![A-Za-z0-9_])' ~ field ~ '(?![A-Za-z0-9_])" in text
 
 
-def test_openbao_url_is_the_single_host_pattern():
+def test_openbao_url_prefers_openbao_addr_then_the_single_host():
     def bao_url(path: Path) -> str:
         play = next(play for play in playbook_yaml.plays(path) if "_bao_url" in (play.get("vars") or {}))
         return play["vars"]["_bao_url"]
 
-    assert bao_url(PLAYBOOK) == SINGLE_HOST_BAO_URL
+    assert bao_url(PLAYBOOK) == OPENBAO_URL_EXPRESSION
 
 
 def test_reads_are_check_mode_reads_with_both_statuses_and_no_log():
