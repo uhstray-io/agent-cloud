@@ -1,7 +1,7 @@
 ---
 # place-monorepo.yml — put the agent-cloud monorepo on the target and ensure the
 # podman/compose entrypoint. The shared Phase-1 preamble for composable service
-# deploys (deploy-dns, deploy-uhhcraft, and future services — ERPNext, OPA).
+# deploys (deploy-dns and the other composable service deploys).
 #
 # Two modes, selected by local_mode:
 #   prod  (unset/false): git clone/update from monorepo_repo at _branch.
@@ -119,9 +119,8 @@
 
 - name: "Ensure podman + compose entrypoint"
   # Sibling task in this directory; resolves relative to this file. Podman hosts only: a
-  # Docker host (NetBox in production, OpenHands) must not get podman installed beside
-  # it, which is why deploy-openhands.yml avoided this task entirely (its header, lines
-  # 4-5). Gating it here lets every Docker caller share the placement.
+  # Docker host (NetBox in production) must not get podman installed beside it. Gating it
+  # here lets every Docker caller share the placement.
   ansible.builtin.include_tasks: install-podman-compose.yml
   when: (container_engine | default('podman')) == 'podman'
 

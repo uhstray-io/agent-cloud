@@ -91,5 +91,4 @@
         - Host NVIDIA driver missing or wrong version.
         - PCIe passthrough not configured for this VM.
         - CDI spec at /etc/cdi/nvidia.yaml is stale (re-run this task).
-      See plan/development/UHHCRAFT-GPU-PASSTHROUGH.md (Phase 6 of the integration plan).
   when: _gpu_probe.rc != 0 or (_gpu_probe.stdout | length) == 0
