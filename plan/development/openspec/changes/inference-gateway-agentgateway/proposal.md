@@ -29,7 +29,7 @@ the team needs between the edge and the model is therefore either missing or imp
   served model, or the future move of the vLLM API into this estate all need a routing
   layer that Caddy's single `reverse_proxy` line does not give.
 - **Agent traffic is arriving.** The platform's agents (skynet's sub-agent roles,
-  WisBot, OpenCode and pi sessions) call the endpoint through OpenAI-compatible SDKs,
+  OpenCode and pi sessions) call the endpoint through OpenAI-compatible SDKs,
   and MCP tool traffic is on the roadmap; a gateway that speaks those protocols
   natively is the shape the ecosystem document asks the shortlist to be judged by.
 
