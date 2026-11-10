@@ -34,17 +34,20 @@ computer (also when Claude Code runs on a remote box):
 2. Choose the single sign-on option and sign in with your platform account.
 3. Accept the waiting invitation to `<workspace>` during onboarding.
 
-No invitation shown? Stop here and ask `<platform-admin>`. Invitations follow your identity-provider
-group, so the fix is on the platform side, not in Claude Code.
+Already a member (you land in `<workspace>` after signing in, e.g. setting up a second machine)? Go
+straight to Setup. Neither an invitation nor the workspace? Stop here and ask `<platform-admin>`.
+Invitations follow your identity-provider group, so the fix is on the platform side, not in Claude Code.
 
 ## Setup (once per machine)
 
 ```bash
 # 0. Already set up? `add` refuses an existing name and keeps its old URL.
 claude mcp get plane
-#    URL already https://<plane-mcp-host>/http/mcp: skip step 1.
-#    A different URL: remove it first (from the scope `get` shows), then do step 1.
-claude mcp remove plane -s user
+#    "Scope: User config" AND URL https://<plane-mcp-host>/http/mcp: skip step 1.
+#    Anything else: remove it from the scope `get` shows, then do step 1.
+#    A local entry also hides the user one in that project, so remove it there too.
+claude mcp remove plane -s user     # "Scope: User config"
+claude mcp remove plane -s local    # "Scope: Local config"; run in the project it names
 
 # 1. Add the server for every project on this machine (user scope)
 claude mcp add --transport http --scope user plane https://<plane-mcp-host>/http/mcp
