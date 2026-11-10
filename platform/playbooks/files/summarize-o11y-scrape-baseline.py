@@ -4348,16 +4348,16 @@ def _availability_self_identity(environment: str, cluster: str) -> dict[str, str
 def _active_prometheus_self_target(
     targets_raw: bytes | str, *, environment: str, cluster: str,
 ) -> dict[str, Any]:
-    response = _json_document(targets_raw, "native_source_unavailable")
+    response = _json_document(targets_raw, "native_targets_invalid")
     data = response.get("data")
     active = data.get("activeTargets") if isinstance(data, dict) else None
     if not isinstance(active, list) or len(active) > MAX_ROWS:
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_targets_invalid")
     identity = _availability_self_identity(environment, cluster)
     matches = []
     for target in active:
         if not isinstance(target, dict) or not isinstance(target.get("labels"), dict):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_targets_invalid")
         labels = target["labels"]
         if labels.get("job") == "alloy" and labels.get("instance") == "alloy:12345":
             if labels != identity:
@@ -4494,16 +4494,16 @@ def _current_alloy_identity() -> tuple[dict[str, Any], dict[str, Any]]:
         podman_identity = identities.get("podman") if isinstance(identities, dict) else None
         podman_path = podman_identity.get("path") if isinstance(podman_identity, dict) else None
         if not isinstance(podman_path, str) or not os.path.isabs(podman_path):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_podman_unavailable")
         records = _availability_inspect_all(
             time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
         )
         candidates = [record for record in records if record.get("service") == "alloy"]
         if len(candidates) != 1:
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_alloy_count")
         record = candidates[0]
         if not record.get("running") or not record.get("started_at") or not record.get("pid"):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_alloy_not_running")
         process = _availability_process_identity(record["pid"])
     except Refusal as error:
         # The source gate accepts only native and generic reasons. A namespace category from the
@@ -4691,7 +4691,7 @@ def collect() -> dict[str, Any]:
         except Exception:
             source_context = source_context or {"emit": True}
             source_result = {
-                "status": "unavailable", "reason": "native_source_unavailable",
+                "status": "unavailable", "reason": "native_source_internal_error",
                 "source": "unknown", "intended_source": "unknown", "matches_intended": False,
             }
     try:
@@ -4856,7 +4856,7 @@ def _availability_source_action() -> dict[str, Any]:
     declaration = _json_input_bytes(source_json) if source_json is not None else _input_document()
     source_context = _validate_availability_source_payload(declaration)
     environment, cluster = source_context["environment"], source_context["cluster"]
-    targets_raw = _run_api("/api/v1/targets?state=active", "native_source_unavailable")
+    targets_raw = _run_api("/api/v1/targets?state=active", "native_targets_unavailable")
     loaded = _loaded_limit_readback(targets_raw)
     return collect_current_availability_source(
         targets_raw, loaded, source_context["availability"], source_context["shared_limits"],

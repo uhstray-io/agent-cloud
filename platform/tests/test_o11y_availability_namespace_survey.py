@@ -725,15 +725,50 @@ def test_producer_refusal_from_provider_inspect_or_process_is_the_generic_source
 
 
 def test_native_only_producer_refusal_keeps_its_native_reason(monkeypatch, capsys, tmp_path):
-    # No single Alloy record is a native refusal; the gate's reason set must not widen for it.
+    # No single Alloy record is a native refusal with its own word, not a namespace one.
     _provider_mocks(monkeypatch, tmp_path)
     loki = f"{PRODUCER_ID}\tsha256:loki\ttrue\t4101\t2026-10-28T00:00:00Z\to11y\t{{}}\to11y\tloki\t/o11y-loki\n"
     monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=loki))
     code, readback = _source_cli(monkeypatch, capsys)
-    assert code == 2 and readback["reason"] == "native_source_unavailable"
+    assert code == 2 and readback["reason"] == "native_identity_alloy_count"
     assert BUDGET.o11y_availability_source_gate_diagnostic(
         {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
-    ) == "native_source_unavailable"
+    ) == "native_identity_alloy_count"
+
+
+def test_a_stopped_alloy_record_names_the_not_running_decision(monkeypatch, capsys, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    stopped = f"{PRODUCER_ID}\tsha256:alloy\tfalse\t0\t\to11y\t{{}}\to11y\talloy\t/o11y-alloy\n"
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=stopped))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2 and readback["reason"] == "native_identity_alloy_not_running"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
+    ) == "native_identity_alloy_not_running"
+
+
+@pytest.mark.parametrize("targets_raw", [
+    b"not json", b'{"status":"success","data":{"activeTargets":{}}}',
+    b'{"status":"success","data":{"activeTargets":["not-a-mapping"]}}',
+])
+def test_a_malformed_prometheus_targets_response_names_the_targets_decision(targets_raw):
+    with pytest.raises(GATE.Refusal, match="native_targets_invalid"):
+        GATE._active_prometheus_self_target(targets_raw, environment="prod", cluster="prod-west")
+
+
+def test_a_failed_targets_fetch_names_the_targets_fetch_decision(monkeypatch, capsys):
+    def refused(_path, reason="query_unavailable", **_kwargs):
+        raise GATE.Refusal(reason)
+
+    monkeypatch.setattr(GATE, "_validate_availability_source_payload", lambda _payload: {
+        "environment": "prod", "cluster": "prod-west",
+    })
+    monkeypatch.setattr(GATE, "_input_document", dict)
+    monkeypatch.delenv("O11Y_AVAILABILITY_SOURCE_JSON", raising=False)
+    monkeypatch.setattr(GATE, "_run_api", refused)
+    monkeypatch.setattr(GATE.sys, "argv", ["summarize-o11y-scrape-baseline.py", "--verify-availability-source"])
+    assert GATE.main() == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == "native_targets_unavailable"
 
 
 def _candidate_cli(monkeypatch, capsys, tmp_path):

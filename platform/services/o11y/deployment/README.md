@@ -277,7 +277,10 @@ the running Alloy to the reviewed candidate config, and each binding check has i
 `remotecfg` block; a `module = ...` attribute is not a block) and `native_binding_mounts`.
 `native_source_identity_changed` means the Alloy process changed during the read,
 `native_source_transition_unproven` that a producer change was not proven by a new Alloy process,
-and `native_source_internal_error` that the helper raised an unexpected error. The read-only
+and `native_source_internal_error` that the helper raised an unexpected error. Reading the current producer
+itself reports `native_identity_alloy_count` (not exactly one `alloy` service container),
+`native_identity_alloy_not_running`, `native_identity_podman_unavailable`, `native_targets_unavailable`
+(the Prometheus targets API did not answer) or `native_targets_invalid` (its response was malformed). The read-only
 `Survey o11y Scrape Baseline (Dev)` runs the same binding without applying anything.
 
 The Dev-bound survey can also emit an optional **source-only candidate

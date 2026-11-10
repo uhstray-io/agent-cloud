@@ -61,7 +61,7 @@ and why.
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) | Unverified claim | 10 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
-| 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) | Unverified claim | 1 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
+| 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1453,6 +1453,8 @@ it).
 
 ### 1.32 Diagnosed a refusal from code its path never reaches, after the fix had merged (widens 1.18)
 
+**Occurrences: 2** — 2026-11-10, 2026-11-10
+
 **What happened.** See 1.18, occurrence 3. Issue #949 explained an o11y survey refusal by
 counting the places a helper raises the refusal's category, without tracing which of them the
 survey's call path runs and without reading the exception handler that produced it. The correct
@@ -1471,6 +1473,16 @@ history (`git log origin/dev -- <file>`, linked PRs): a fix may already be there
 **Enforced by.** Convention. For one helper, `platform/tests/test_o11y_availability_namespace_survey.py`
 keeps a crash out of the decision categories; the class guard proposed under 1.18 would extend that
 to every fixed-category helper.
+
+**Occurrence 2 — 2026-11-10.** The real enabled `Deploy o11y (Dev)` (Semaphore task 14536) failed its post-apply
+readback with `native_source_unavailable`. The read-only `Survey o11y Scrape Baseline (Dev)` (task 14552)
+printed the same word, and I reported to the operator, wrote into PR #1005 and recorded under 2.22 that the
+survey reproduced the deploy refusal. It did not: the survey failed at "Require the bounded availability
+source projection", its pre-placement source read, not at the post-apply binding. The next survey (task 14570)
+failed at the same step after #1005 merged, which is how the mismatch surfaced. Why the rule did not fire:
+the shared word was read as the same branch, and the task that printed it was not checked. The rule above
+already covers this; the matching category was the whole of the evidence. The remaining shared-word sites in
+the producer identity and Prometheus targets read now have their own words, so the next run names its step.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -2299,6 +2311,10 @@ template with production-shaped probe targets and running the check; the read-on
 Baseline (Dev)` (task 14552) reproduced it. Why the rule did not fire: the input under test was our own
 template, and the test did not render it. The check now matches block syntax only, and its test renders
 `config.alloy.j2` with availability enabled (mutation-checked).
+
+**Correction — 2026-11-10.** The sentence above saying task 14552 reproduced the refusal is wrong: 14552 failed at the
+pre-placement source read, not at the binding (recorded as 1.32 occurrence 2). The binding bug itself stands; it
+was found offline by rendering the template.
 
 ### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
 
