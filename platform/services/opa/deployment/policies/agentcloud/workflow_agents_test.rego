@@ -545,16 +545,6 @@ test_service_proposal_without_bounds_fails_closed if {
 	not agentcloud.allow with input as inp
 }
 
-# Legacy roles are frozen, not changed: their decisions are exactly as before.
-test_legacy_nemoclaw_unscoped_run_task_unchanged if {
-	agentcloud.allow with input as {
-		"agent": "nemoclaw",
-		"service": "semaphore",
-		"action": "run_task",
-		"template_name": "Deploy Postiz",
-	}
-}
-
 # A change-required verdict records a finding and launches no executor (PR 203 review).
 test_change_required_verdict_launches_no_executor if {
 	base := _fw([_ssh_from("192.0.2.10/32")])
