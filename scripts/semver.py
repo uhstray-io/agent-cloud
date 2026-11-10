@@ -13,6 +13,7 @@ import json
 import re
 import subprocess  # nosec B404 — argv lists only, never a shell; every git call goes through _git()
 import sys
+from collections import Counter
 from pathlib import Path
 from typing import NamedTuple
 
@@ -307,6 +308,242 @@ def cmd_notes(repo, args):
     return 0
 
 
+CATEGORY_OF = {"feat": "features", "perf": "features", "fix": "fixes", "security": "fixes", "docs": "documentation"}
+HEADINGS = (
+    ("features", "Features"),
+    ("fixes", "Fixes"),
+    ("documentation", "Documentation Updates"),
+    ("other", "Other changes"),
+)
+SUMMARY_KEYS = ("features", "fixes", "documentation")
+SUMMARY_MAX = 800
+SUMMARY_BANNED = ("@", "http://", "https://", "](", "<", ">", "`")
+HIGHLIGHT_MAX = 200
+HIGHLIGHTS_SHOWN = 5
+INPUT_KEYS = (*SUMMARY_KEYS, "overview", "highlights")
+
+
+def _previous_release(releases, tag):
+    """The release tag just below tag, from _release_tags' list; None for the first release. Dev tags never count."""
+    target = _release_version(tag)
+    lower = [name for version, name in releases if version < target]
+    return lower[-1] if lower else None
+
+
+def _category(title):
+    """The section a pull request title files under, by its type. A type not listed, or no title form, is other."""
+    match = TITLE_RE.fullmatch(title)
+    return CATEGORY_OF.get(match["type"], "other") if match else "other"
+
+
+def _is_breaking(title):
+    """True when the title carries the breaking mark (!) on any type. A title outside the form is never breaking."""
+    match = TITLE_RE.fullmatch(title)
+    return match is not None and match["bang"] is not None
+
+
+def _sections(prs):
+    """The pull requests in each section, oldest first. Every pull request lands in exactly one section."""
+    sections = {"features": [], "fixes": [], "documentation": [], "other": []}
+    for number, title in prs:
+        sections[_category(title)].append((number, title))
+    return sections
+
+
+def _contributors(repo, start, end):
+    """(name, commits) per author of a non-merge commit in start..end: most commits first, then by name. Names only."""
+    names = _git(repo, "log", "--no-merges", "--format=%an", f"{start}..{end}").stdout.splitlines()
+    counts = Counter(name for name in names if name)
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def _banned_problem(text):
+    """The first banned mark in text as the rule it breaks, or None when there is none."""
+    for mark in SUMMARY_BANNED:
+        if mark in text:
+            return f"contains {mark!r}"
+    return None
+
+
+def _summary_problem(text):
+    """The rule a model summary breaks, or None if it may be rendered. A rejected summary is dropped, never repaired."""
+    stripped = text.strip()
+    if not 1 <= len(stripped) <= SUMMARY_MAX:
+        return f"not 1 to {SUMMARY_MAX} characters after strip"
+    problem = _banned_problem(stripped)
+    if problem is not None:
+        return problem
+    if any(line.lstrip().startswith("#") for line in stripped.splitlines()):
+        return "a line starts with '#'"
+    return None
+
+
+def _highlight_text_problem(text):
+    """The rule a highlight's text breaks, or None. Newlines are collapsed by the caller, not rejected."""
+    stripped = text.strip()
+    if not 1 <= len(stripped) <= HIGHLIGHT_MAX:
+        return f"not 1 to {HIGHLIGHT_MAX} characters after strip"
+    return _banned_problem(stripped)
+
+
+def _highlight_rule(item, in_release, breaking_numbers, seen):
+    """The rule one highlight breaks, or None if it may be shown. A rejected highlight is dropped, never repaired."""
+    if not isinstance(item, dict):
+        return "not an object"
+    number, text = item.get("number"), item.get("text")
+    if not isinstance(number, int) or isinstance(number, bool):
+        return "number is not an integer"
+    if number not in in_release:
+        return "number is not a pull request in this release"
+    if number in breaking_numbers:
+        return "a breaking change, already under Major Updates"
+    if not isinstance(text, str):
+        return "text is not a string"
+    problem = _highlight_text_problem(text)
+    if problem is not None:
+        return problem
+    if number in seen:
+        return "a duplicate of an earlier highlight"
+    return None
+
+
+def _read_highlights(value, sections, breaking):
+    """The highlights to show, in input order, at most HIGHLIGHTS_SHOWN. Each rejection prints one stderr line."""
+    if not isinstance(value, list):
+        print("highlights dropped: not a list", file=sys.stderr)
+        return []
+    in_release = {number for items in sections.values() for number, _title in items}
+    breaking_numbers = {number for number, _title in breaking}
+    accepted = []
+    for index, item in enumerate(value, start=1):
+        seen = {number for number, _text in accepted}
+        rule = _highlight_rule(item, in_release, breaking_numbers, seen)
+        if rule is not None:
+            print(f"highlight {index} dropped: {rule}", file=sys.stderr)
+            continue
+        accepted.append((item["number"], " ".join(item["text"].split())))
+    if len(accepted) > HIGHLIGHTS_SHOWN:
+        extra = len(accepted) - HIGHLIGHTS_SHOWN
+        print(f"highlights: {extra} valid beyond the first {HIGHLIGHTS_SHOWN} not shown", file=sys.stderr)
+    return accepted[:HIGHLIGHTS_SHOWN]
+
+
+def _read_input(raw, sections, breaking):
+    """The validated model input: summaries, an overview and highlights. Each rejection prints one stderr line."""
+    model = {"summaries": {}, "overview": None, "highlights": []}
+    if not raw.strip():
+        return model
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not set(data) <= set(INPUT_KEYS):
+        print(
+            "release-notes: summaries ignored: want a JSON object with keys "
+            "features, fixes, documentation, overview, highlights",
+            file=sys.stderr,
+        )
+        return model
+    for key in (*SUMMARY_KEYS, "overview"):
+        if key not in data:
+            continue
+        value = data[key]
+        problem = "not a string" if not isinstance(value, str) else _summary_problem(value)
+        if problem is not None:
+            print(f"{key} summary dropped: {problem}", file=sys.stderr)
+        elif key == "overview":
+            model["overview"] = " ".join(value.split())
+        else:
+            model["summaries"][key] = " ".join(value.split())
+    if "highlights" in data:
+        model["highlights"] = _read_highlights(data["highlights"], sections, breaking)
+    return model
+
+
+def _count(number, singular, plural=None):
+    """The number and its noun, singular at one. The plural defaults to the singular plus s."""
+    if number == 1:
+        return f"1 {singular}"
+    return f"{number} {plural or singular + 's'}"
+
+
+def _neutral(text):
+    """Keep a title or a name from notifying anyone: a zero-width space after each @, so GitHub does not link it."""
+    return text.replace("@", "@​")
+
+
+def _render(previous, sections, breaking, contributors, model):
+    """The Markdown body: Summary, Major Updates, the sections, Contributors. The first release gets one line."""
+    if previous is None:
+        return "First release.\n"
+    counts = {key: len(items) for key, items in sections.items()}
+    parts = ["## Summary"]
+    if model["overview"] is not None:
+        parts.append(model["overview"])
+    parts.append(
+        f"{_count(sum(counts.values()), 'pull request')} since {previous}: "
+        f"{_count(counts['features'], 'feature', 'features')}, "
+        f"{_count(counts['fixes'], 'fix', 'fixes')}, "
+        f"{_count(counts['documentation'], 'documentation update')}, "
+        f"{_count(counts['other'], 'other change')}."
+    )
+    lines = [f"- #{number} {_neutral(title)} (breaking change)" for number, title in breaking]
+    lines += [f"- #{number} {text}" for number, text in model["highlights"]]
+    parts.append("## Major Updates")
+    parts.append("\n".join(lines) if lines else "No breaking changes in this release.")
+    for key, heading in HEADINGS:
+        items = sections[key]
+        if not items:
+            continue
+        parts.append(f"## {heading}")
+        if key in model["summaries"]:
+            parts.append(model["summaries"][key])
+        lines = "\n".join(f"- #{number} {_neutral(title)}" for number, title in items)
+        parts.append(f"<details><summary>{_count(len(items), 'pull request')}</summary>\n\n{lines}\n\n</details>")
+    if contributors:
+        lines = "\n".join(f"- {_neutral(name)} ({_count(commits, 'commit')})" for name, commits in contributors)
+        parts.append(f"## Contributors\n\n{lines}")
+    return "\n\n".join(parts) + "\n"
+
+
+def cmd_release_notes(repo, args):
+    """One release described against the release before it: --sections prints JSON, --render prints Markdown."""
+    if args.sections == args.render:  # both, or neither
+        print("release-notes: give exactly one of --sections or --render", file=sys.stderr)
+        return 1
+    if args.tag is None:
+        print("release-notes: --tag is required", file=sys.stderr)
+        return 1
+    if RELEASE_RE.fullmatch(args.tag) is None:
+        print(f"release-notes: --tag wants vX.Y.Z, got {args.tag!r}", file=sys.stderr)
+        return 1
+    releases = _release_tags(repo)
+    if args.tag not in [name for _version, name in releases]:
+        print(f"release-notes: no release tag {args.tag} in this repository", file=sys.stderr)
+        return 1
+    previous = _previous_release(releases, args.tag)
+    prs = [] if previous is None else pr_titles(repo, f"{previous}..{args.tag}", first_parent=False)
+    contributors = [] if previous is None else _contributors(repo, previous, args.tag)
+    sections = _sections(prs)
+    breaking = [(number, title) for number, title in prs if _is_breaking(title)]
+    if not args.sections:
+        model = _read_input(sys.stdin.read(), sections, breaking)
+        print(_render(previous, sections, breaking, contributors, model), end="")
+        return 0
+    payload = {
+        "tag": args.tag,
+        "previous": previous,
+        "counts": {key: len(items) for key, items in sections.items()},
+        "breaking": [{"number": number, "title": title} for number, title in breaking],
+        "sections": {
+            key: [{"number": number, "title": title} for number, title in items] for key, items in sections.items()
+        },
+        "contributors": [{"name": name, "commits": commits} for name, commits in contributors],
+    }
+    print(json.dumps(payload))
+    return 0
+
+
 def _backfill_plan(repo, table):
     """(refusals, plan) for the backfill table. Plan rows are (version, commit, pr, state), state exists or missing."""
     refusals, plan = [], []
@@ -421,6 +658,7 @@ HANDLERS = {
     "next": cmd_next,
     "dev-tags": cmd_dev_tags,
     "notes": cmd_notes,
+    "release-notes": cmd_release_notes,
     "backfill": cmd_backfill,
     "release-tags": cmd_release_tags,
     "major": cmd_major,
@@ -442,6 +680,18 @@ def _parser():
     notes = commands.add_parser("notes", help="pull request titles in a range, as a Markdown list")
     notes.add_argument("--from", dest="start", required=True, metavar="TAG")
     notes.add_argument("--to", dest="end", required=True, metavar="REF")
+    release_notes = commands.add_parser(
+        "release-notes",
+        help="categorised notes for one release: JSON sections, or Markdown with summaries on stdin",
+        description=(
+            "Describes one release tag against the release before it. --sections prints one JSON object. --render "
+            "prints Markdown and reads optional model input from stdin: a JSON object with keys features, fixes and "
+            "documentation (summaries), overview, and highlights (a list of objects with number and text)."
+        ),
+    )
+    release_notes.add_argument("--tag", help="the release tag to describe, vX.Y.Z (it must exist in the repository)")
+    release_notes.add_argument("--sections", action="store_true", help="print the sections as one JSON object")
+    release_notes.add_argument("--render", action="store_true", help="print Markdown; summaries are read from stdin")
     backfill = commands.add_parser("backfill", help="create the committed history tags that are missing")
     backfill.add_argument("--apply", action="store_true")
     backfill.add_argument("--push", action="store_true", help="push each created tag to origin (needs --apply)")
