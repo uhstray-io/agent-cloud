@@ -548,3 +548,100 @@ def test_a_real_run_over_untagged_equivalent_rules_adds_the_tagged_ones_and_pass
     assert _tag("in", "22/tcp", SSH) in _rules(state).values()
     v = _verdict(r)
     assert v["errors"] == [] and v["would_change"] == [], v
+
+
+# ── Outbound allowlist (firewall_allow_egress, firewall_egress_mode, firewall_egress_probes) ──
+
+ALLOW_OUT = [{"port": 443}, {"port": 53, "proto": "udp"}]
+AUDIT = "allow out log to any"
+
+
+def _listening():
+    """A TCP port on 127.0.0.1 that accepts connections for the rest of the test."""
+    import socket
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    s.listen()
+    return s
+
+
+def test_audit_adds_the_allowlist_then_the_audit_rule_last_and_keeps_outgoing_allowed(tmp_path):
+    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    assert r.returncode == 0, r.stdout + r.stderr
+    specs = [rule[0] for rule in state["rules"]]
+    assert specs[-3:] == ["allow out 443/tcp", "allow out 53/udp", AUDIT]
+    assert _rules(state)[AUDIT] == _tag("out-audit", "any", "any")
+    assert state["outgoing"] == "allow"
+    assert _verdict(r)["errors"] == []
+    # converged: a second run changes nothing and leaves the audit rule where it is
+    r2, state2 = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    assert _changed(r2) == 0, r2.stdout
+    assert [rule[0] for rule in state2["rules"]] == specs
+
+
+def test_a_newly_declared_allow_lands_before_the_audit_rule(tmp_path):
+    _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    r, state = _run(tmp_path, {"firewall_allow_egress": [*ALLOW_OUT, {"port": 80}]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert [rule[0] for rule in state["rules"]][-2:] == ["allow out 80/tcp", AUDIT]
+
+
+def test_enforce_denies_outgoing_drops_the_audit_rule_and_passes_its_probe(tmp_path):
+    _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    listener = _listening()
+    try:
+        r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
+                                   "firewall_egress_probes": [{"host": "127.0.0.1",
+                                                               "port": listener.getsockname()[1]}]})
+    finally:
+        listener.close()
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state["outgoing"] == "deny"
+    assert AUDIT not in _rules(state)
+    assert {"allow out 443/tcp", "allow out 53/udp"} <= set(_rules(state))
+    assert _verdict(r)["errors"] == []
+
+
+def test_enforce_puts_outgoing_back_to_allow_when_a_probe_cannot_be_reached(tmp_path):
+    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
+                               "firewall_egress_probes": [{"host": "127.0.0.1", "port": 9, "timeout": 2}]})
+    assert r.returncode != 0
+    assert "a declared probe could not be reached (127.0.0.1)" in r.stdout, r.stdout
+    assert state["outgoing"] == "allow"
+    assert {"allow out 443/tcp", "allow out 53/udp"} <= set(_rules(state))  # the allows are kept
+
+
+def test_an_enforced_allowlist_without_dns_or_a_probe_is_refused_before_any_rule_is_added(tmp_path):
+    hosts = {"no_dns": {"vars": {"firewall_allow_egress": [{"port": 443}], "firewall_egress_mode": "enforce",
+                                 "firewall_egress_probes": [{"host": "127.0.0.1", "port": 9}]}},
+             "no_probe": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce"}},
+             "bad_mode": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "block"}}}
+    r, states = _run_many(tmp_path, hosts)
+    assert r.returncode != 0
+    for name in hosts:
+        assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
+        assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], name
+        assert states[name] is None, name
+    assert "must allow 53/udp out" in r.stdout and "needs firewall_egress_probes" in r.stdout
+    assert "'block' is not audit or enforce" in r.stdout
+
+
+def test_a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would(tmp_path):
+    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
+                               "firewall_egress_probes": [{"host": "127.0.0.1", "port": 9}]},
+                    state={"active": True, "outgoing": "allow", "rules": [
+                        [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)]]},
+                    check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state["outgoing"] == "allow"
+    assert not [line for line in _log(tmp_path) if MUTATING.search(line)], _log(tmp_path)
+    assert '"would_set_defaults_or_enable": true' in r.stdout
+    assert any("default outgoing policy is not deny" in w for w in _verdict(r)["would_change"])
+
+
+def test_a_host_without_an_allowlist_keeps_outgoing_allowed_and_no_outbound_allow(tmp_path):
+    r, state = _run(tmp_path, {})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state["outgoing"] == "allow"
+    assert not [s for s in _rules(state) if s.startswith("allow out")]

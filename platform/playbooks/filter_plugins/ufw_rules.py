@@ -16,6 +16,9 @@ Building — the ONE place the playbook's rule format lives:
 - ufw_egress_problems: why each firewall_deny_egress entry must be refused ([] when none):
   containment against the SSH CIDRs by stdlib ipaddress, so a supernet of the management
   network is refused even when flagged broad.
+- ufw_allow_egress_problems: why a firewall_allow_egress declaration (the host's outbound
+  allowlist) must be refused ([] when none), including an enforced allowlist with no DNS or no
+  probe to prove it.
 - ufw_delete_args: the arguments that delete a stored rule by its spec.
 
 Reading — what the prune step must answer from a stored rule, not from its tag:
@@ -181,17 +184,21 @@ def ufw_parse_added(lines):
 
 
 def _stored_command(action, src="any", dst="any", port="any", proto="any", iface="", out=False,
-                    route=False):
-    """src/parser.py get_command, for the rule shapes ufw_desired_rules emits."""
+                    route=False, log=False):
+    """src/parser.py get_command, for the rule shapes ufw_desired_rules emits. `log` puts the
+    rule's log keyword after its direction, as `ufw show added` prints `allow out log to any`
+    (measured on ufw 0.36.2, Ubuntu 24.04, 2026-11-09)."""
     src, dst = ufw_address(src), ufw_address(dst)
     res = action
-    if src == "any" and dst == "any" and not iface and port != "any":
+    if src == "any" and dst == "any" and not iface and port != "any" and not log:
         res += (" out" if out else "") + f" {port}" + (f"/{proto}" if proto != "any" else "")
     else:
         if iface:
             res += f" {'out' if out else 'in'} on {iface}"
         elif out:
             res += " out"
+        if log:
+            res += " log"
         if src != "any":
             res += f" from {src}"
         if dst != "any" or port != "any":
@@ -316,7 +323,7 @@ def ufw_egress_problems(deny_egress, ssh_cidrs):
 
 
 def ufw_desired_rules(ssh_cidrs, allow_rules=(), route_rules=(), detected=(), upstreams=(), rootful=False,
-                      bridges=(), deny_egress=()):
+                      bridges=(), deny_egress=(), allow_egress=(), egress_audit=False):
     """Every declared rule, in add order, once each (see the module docstring).
 
     ssh_cidrs    firewall_ssh_cidrs: an INPUT 22/tcp allow from each, added FIRST
@@ -327,6 +334,11 @@ def ufw_desired_rules(ssh_cidrs, allow_rules=(), route_rules=(), detected=(), up
                  allowed from every upstream, and mirrored on FORWARD when `rootful`
     bridges      podman bridge interfaces that get a 53/udp+tcp INPUT allow
     deny_egress  [{to, port(optional), proto(=tcp)}]: `deny out` rules
+    allow_egress [{port, proto(=tcp), to(=any)}]: `allow out` rules, the host's outbound
+                 allowlist; added after the denials, so a denial still wins
+    egress_audit with allow_egress, one last `allow out log to any`: every NEW outbound
+                 connection the allowlist does not name is logged, and still allowed, so the
+                 declaration can be measured before outgoing traffic is denied by default
     """
     rules = [_allow_in(c, 22, "tcp", is_ssh=True) for c in ssh_cidrs or []]
     # `.get(key, default)`, not `or`: like the Jinja `default()` these replace, an explicit null
@@ -355,12 +367,70 @@ def ufw_desired_rules(ssh_cidrs, allow_rules=(), route_rules=(), detected=(), up
         else:
             rules.append(_rule("out-deny", f"deny out to {e['to']}", "any", e["to"],
                                _stored_command("deny", dst=e["to"], out=True)))
+    for e in allow_egress or []:
+        to, proto = e.get("to", "any"), e.get("proto", "tcp")
+        rules.append(_rule("out-allow", f"allow out to {to} port {e['port']} proto {proto}",
+                           f"{e['port']}/{proto}", to,
+                           _stored_command("allow", dst=to, port=e["port"], proto=proto, out=True)))
+    if egress_audit and allow_egress:
+        # Last, so it only sees what every allow above passed over (the playbook moves it back
+        # to the end when a new allow is added after it).
+        rules.append(_rule("out-audit", "allow out log to any", "any", "any",
+                           _stored_command("allow", out=True, log=True)))
     seen, unique = set(), []
     for rule in rules:
         if rule["tag"] not in seen:
             seen.add(rule["tag"])
             unique.append(rule)
     return unique
+
+
+def ufw_allow_egress_problems(allow_egress, mode="audit", probes=()):
+    """Every reason a firewall_allow_egress declaration must be refused, one string each; [] when
+    it may be applied (apply-firewall.yml, "Validate the outbound allowlist").
+
+    - `mode` is `audit` (outgoing stays allowed by default; the undeclared is logged) or
+      `enforce` (outgoing is denied by default, so only the allowlist passes).
+    - Each entry is a mapping with `port`: one port 1-65535 or a range `a:b`, which ufw requires
+      a `proto` for. `proto`, when present, is tcp or udp (`any` would need a port-less rule).
+      `to`, when present, is `any` or one IPv4/IPv6 address or network.
+    - Enforced, the list must let name resolution out (53/udp) and must carry at least one
+      probe ({host, port}): without them, default-deny outgoing could silently cut the host's
+      services off from everything they call, with nothing to notice it.
+    """
+    entries = list(allow_egress or [])
+    problems = []
+    if mode not in ("audit", "enforce"):
+        problems.append(f"firewall_egress_mode {mode!r} is not audit or enforce")
+    if not entries:
+        return problems
+    for entry in entries:
+        if not isinstance(entry, dict):
+            problems.append(f"{entry!r}: an entry is a mapping with at least `port`")
+            continue
+        port = str(entry.get("port", "")).strip()
+        lo, sep, hi = port.partition(":")
+        ends = [lo, hi] if sep else [lo]
+        if not all(x.isascii() and x.isdigit() and 1 <= int(x) <= 65535 for x in ends) or (sep and int(lo) > int(hi)):
+            problems.append(f"{entry!r}: `port` must be one port 1-65535 or a range a:b")
+        proto = entry.get("proto", "tcp")
+        if proto not in ("tcp", "udp"):
+            problems.append(f"{entry!r}: `proto` {proto!r} is not tcp or udp")
+        to = entry.get("to", "any")
+        if str(to).strip() != "any" and _network(to) is None:
+            problems.append(f"{entry!r}: `to` {to!r} is not `any` or an IPv4/IPv6 address or network")
+    if mode == "enforce":
+        if not any(isinstance(e, dict) and e.get("proto", "tcp") == "udp"
+                   and _covers(str(e.get("port", "")), 53) for e in entries):
+            problems.append("an enforced allowlist must allow 53/udp out, or the host cannot resolve names")
+        if not probes:
+            problems.append("an enforced allowlist needs firewall_egress_probes [{host, port}] "
+                            "to prove it after enabling")
+        for probe in probes or []:
+            if not isinstance(probe, dict) or not str(probe.get("host", "")).strip() \
+                    or not str(probe.get("port", "")).isdigit():
+                problems.append(f"{probe!r}: a probe is a mapping with `host` and a numeric `port`")
+    return problems
 
 
 def ufw_absent(desired, current, reassert_dual_family=False):
@@ -396,6 +466,7 @@ class FilterModule:
     def filters(self):
         return {"ufw_address": ufw_address, "ufw_rule_admits_port": ufw_rule_admits_port,
                 "ufw_is_ipv4": ufw_is_ipv4, "ufw_egress_problems": ufw_egress_problems,
+                "ufw_allow_egress_problems": ufw_allow_egress_problems,
                 "ufw_parse_added": ufw_parse_added,
                 "ufw_desired_rules": ufw_desired_rules, "ufw_absent": ufw_absent,
                 "ufw_masking": ufw_masking, "ufw_delete_args": ufw_delete_args}

@@ -66,7 +66,7 @@ def _normalise(addr):
 def _parse(tokens):
     """[route] [delete] allow|deny [in|out] [on IFACE] ... -> (remove, rule dict)."""
     t = list(tokens)
-    rule = {"route": False, "direction": "in", "iface": "", "proto": "any",
+    rule = {"route": False, "direction": "in", "iface": "", "proto": "any", "log": "",
             "src": "any", "sport": "any", "dst": "any", "dport": "any", "comment": ""}
     remove = False
     if t and t[0] == "route":
@@ -83,6 +83,8 @@ def _parse(tokens):
         if t and t[0] == "on":
             t.pop(0)
             rule["iface"] = t.pop(0)
+    if t and t[0] in ("log", "log-all"):
+        rule["log"] = t.pop(0)
     last = None
     while t:
         word = t.pop(0)
@@ -107,7 +109,7 @@ def _command(r):
     """src/parser.py get_command, for the shapes the playbook emits."""
     res = r["action"]
     if (r["dst"] == "any" and r["src"] == "any" and r["sport"] == "any" and not r["iface"]
-            and r["dport"] != "any"):
+            and r["dport"] != "any" and not r["log"]):
         if r["direction"] == "out":
             res += " out"
         res += f" {r['dport']}" + (f"/{r['proto']}" if r["proto"] != "any" else "")
@@ -116,6 +118,9 @@ def _command(r):
             res += f" {r['direction']} on {r['iface']}"
         elif r["direction"] == "out":
             res += " out"
+        if r["log"]:
+            # `allow out log to any` as ufw 0.36.2 prints it (measured 2026-11-09)
+            res += f" {r['log']}"
         for loc, port, word in ((r["src"], r["sport"], "from"), (r["dst"], r["dport"], "to")):
             if loc != "any" or port != "any":
                 res += f" {word} {loc}" + (f" port {port}" if port != "any" else "")

@@ -168,6 +168,20 @@
 #                            be a single host unless the entry sets `broad: true` with a
 #                            `reason`, and is never a supernet of (or equal to) an SSH CIDR
 #                            (see the egress note below for why).
+#   firewall_allow_egress    optional OUTBOUND ALLOWLIST: [{port, proto(=tcp), to(=any), comment}].
+#                            UFW matches ports and addresses, not names, so a vendor host
+#                            (a licence server, GitHub, Discord) is admitted by its port.
+#                            Emits `ufw allow out`, after any firewall_deny_egress denials.
+#   firewall_egress_mode     `audit` (default) or `enforce`, used only with an allowlist.
+#                            audit: outgoing stays allowed by default, and one last
+#                            `allow out log to any` logs every NEW outbound connection the
+#                            allowlist does not name (kernel log, "[UFW ALLOW]"), so the
+#                            declaration is measured before anything is denied. enforce:
+#                            `default deny outgoing`; only the allowlist passes. Enforce
+#                            refuses an allowlist without 53/udp or without probes.
+#   firewall_egress_probes   [{host, port}] reached FROM the host after enabling an enforced
+#                            allowlist (TCP connect). One that fails puts `default allow
+#                            outgoing` back and fails the run: verify before hardening.
 #   ICMP echo is left at UFW's default (allowed) so ping-based monitoring works.
 #
 # Rootful podman / Docker & the FORWARD chain: published container ports are DNAT'd
@@ -254,6 +268,12 @@
     _rootful: "{{ firewall_rootful | default(_engine == 'docker') | bool }}"
     _allow_bridge_dns: "{{ firewall_allow_bridge_dns | default(true) | bool }}"
     _deny_egress: "{{ firewall_deny_egress | default([]) }}"
+    _allow_egress: "{{ firewall_allow_egress | default([]) }}"
+    _egress_mode: "{{ firewall_egress_mode | default('audit') }}"
+    _egress_probes: "{{ firewall_egress_probes | default([]) }}"
+    _egress_enforce: "{{ (_allow_egress | length > 0) and _egress_mode == 'enforce' }}"
+    # The outgoing default this run converges to: deny only under an enforced allowlist.
+    _out_policy: "{{ 'deny' if _egress_enforce | bool else 'allow' }}"
 
   tasks:
     - name: "Resolve the sudo password (host may not be hardened yet)"
@@ -375,6 +395,17 @@
         _fw_egress_problems: "{{ _deny_egress | ufw_egress_problems(_ssh_cidrs) }}"
       when: _deny_egress | length > 0
 
+    - name: "Validate the outbound allowlist (ports, protocols, DNS and probes when enforced)"
+      # filter_plugins/ufw_rules.py ufw_allow_egress_problems (platform/tests/test_ufw_rules_filter.py).
+      ansible.builtin.assert:
+        that:
+          - _fw_allow_egress_problems | length == 0
+        fail_msg: >-
+          firewall_allow_egress on {{ inventory_hostname }} is refused: {{ _fw_allow_egress_problems | join('; ') }}.
+      vars:
+        _fw_allow_egress_problems: "{{ _allow_egress | ufw_allow_egress_problems(_egress_mode, _egress_probes) }}"
+      when: _allow_egress | length > 0 or firewall_egress_mode is defined
+
     # ── Dynamic upstream allow: discover the published host ports + protocols of
     # the running containers and allow exactly those from the reverse-proxy
     # (Caddy). So a service serving 8000/tcp or 443/udp gets the matching rule
@@ -466,7 +497,8 @@
                allow_rules=_rules, route_rules=_route_rules,
                detected=_detected.stdout_lines | default([]), upstreams=_upstream_sources,
                rootful=_rootful | bool, bridges=_bridges.stdout_lines | default([]),
-               deny_egress=_deny_egress) }}
+               deny_egress=_deny_egress, allow_egress=_allow_egress,
+               egress_audit=(_allow_egress | length > 0) and not (_egress_enforce | bool)) }}
 
     - name: "Name the declared tags and specs"
       ansible.builtin.set_fact:
@@ -510,6 +542,21 @@
       loop_control:
         label: "{{ item.tag }}"
       when: not ansible_check_mode
+
+    # The audit rule must stay LAST: ufw appends a new rule, so an allow added after it would
+    # never be the rule that matches, and its traffic would be logged as undeclared. When an
+    # outbound allow is genuinely missing (not just re-asserted) and the audit rule is held,
+    # delete it here; the add below then appends it again after the new allow.
+    - name: "Move the outbound audit rule behind a newly declared allow"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw delete allow out log to any"
+      register: _fw_audit_moved
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - _fw_desired | selectattr('family', 'equalto', 'out-audit') | list | length > 0
+        - "'allow out log to any' in (_fw_added.stdout_lines | ufw_parse_added | map(attribute='spec') | list)"
+        - _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added)
+          | selectattr('family', 'equalto', 'out-allow') | list | length > 0
 
     # Every other declared rule the host lacks — static and detected INPUT allows, FORWARD
     # (route) allows for rootful podman / Docker, podman bridge DNS, egress denials — still
@@ -601,7 +648,7 @@
           held_detection_empty: "{{ _fw_held | map(attribute='spec') | list }}"
           would_set_defaults_or_enable: "{{ ansible_check_mode and ('Status: active' not in _fw_state.stdout
                                             or 'deny (incoming)' not in _fw_state.stdout
-                                            or 'allow (outgoing)' not in _fw_state.stdout) }}"
+                                            or (_out_policy ~ ' (outgoing)') not in _fw_state.stdout) }}"
 
     - name: "Report untagged rules (left alone: this playbook neither added nor prunes them)"
       ansible.builtin.debug:
@@ -711,13 +758,14 @@
         - not ansible_check_mode
         - "'Status: active' not in _fw_state.stdout or 'deny (incoming)' not in _fw_state.stdout"
 
-    - name: "Default-allow outgoing"  # noqa: command-instead-of-module
-      ansible.builtin.command: "ufw default allow outgoing"
+    # allow, unless an enforced outbound allowlist is declared (firewall_egress_mode).
+    - name: "Default outgoing policy"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw default {{ _out_policy }} outgoing"
       register: _dout
       changed_when: "'changed' in _dout.stdout"
       when:
         - not ansible_check_mode
-        - "'Status: active' not in _fw_state.stdout or 'allow (outgoing)' not in _fw_state.stdout"
+        - "'Status: active' not in _fw_state.stdout or (_out_policy ~ ' (outgoing)') not in _fw_state.stdout"
 
     - name: "Enable UFW"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw --force enable"
@@ -742,6 +790,38 @@
       when: _verify
       check_mode: false
 
+    # ── Enforced outbound allowlist: prove it from the host, or take it back. Each probe is a
+    # TCP connect from the target (name resolution included), so a missing DNS, port or
+    # address in the allowlist fails here instead of surfacing later as a service that quietly
+    # cannot reach its licence server or API. A failure restores `default allow outgoing` and
+    # fails the run: the rules stay, only the default deny is withdrawn.
+    - name: "Prove the enforced outbound allowlist"
+      when:
+        - not ansible_check_mode
+        - _egress_enforce | bool
+      block:
+        - name: "Reach each declared probe from the host"
+          ansible.builtin.wait_for:
+            host: "{{ item.host }}"
+            port: "{{ item.port | int }}"
+            timeout: "{{ item.timeout | default(10) | int }}"
+          loop: "{{ _egress_probes }}"
+          loop_control:
+            label: "{{ item.host }}:{{ item.port }}"
+      rescue:
+        - name: "Probe failed: restore default allow outgoing"  # noqa: command-instead-of-module
+          ansible.builtin.command: "ufw default allow outgoing"
+          changed_when: true
+
+        - name: "Probe failed: stop"
+          ansible.builtin.fail:
+            msg: >-
+              {{ inventory_hostname }}: with outgoing denied by default, a declared probe could not
+              be reached ({{ ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
+              | selectattr('failed') | map(attribute='item') | map(attribute='host') | join(', ') }});
+              outgoing is allowed by default again and the allow rules are kept. Add what the
+              probe needs to firewall_allow_egress (see the audit log), then re-run.
+
     # Re-read only when this run changed something; otherwise the read taken before the adds
     # IS the final state, and the report shows it.
     - name: "Capture UFW status"  # noqa: command-instead-of-module
@@ -751,7 +831,7 @@
       check_mode: false
       when: >-
         _fw_add_ssh is changed or _fw_add is changed or _fwprune is changed
-        or _din is changed or _dout is changed or _en is changed
+        or _din is changed or _dout is changed or _en is changed or _fw_audit_moved is changed
 
     - name: "Report"
       ansible.builtin.debug:
@@ -786,6 +866,8 @@
         _fw_gaps: >-
           {{ (['ufw is not active'] if 'Status: active' not in _fw_final else [])
              + (['default incoming policy is not deny'] if 'deny (incoming)' not in _fw_final else [])
+             + (['default outgoing policy is not ' ~ _out_policy]
+                if (_allow_egress | length > 0 and (_out_policy ~ ' (outgoing)') not in _fw_final) else [])
              + (['declared rules not held: ' ~ (_fw_missing | join(', '))] if _fw_missing else [])
              + (['stale tagged rules present: ' ~ (_fw_prune | map(attribute='tag') | join(', '))]
                 if (ansible_check_mode and _fw_prune) else []) }}

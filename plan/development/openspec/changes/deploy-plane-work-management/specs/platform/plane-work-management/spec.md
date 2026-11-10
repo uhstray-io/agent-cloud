@@ -98,7 +98,7 @@ The public hostnames SHALL route through the central reverse proxy. The Cloudfla
 #### Scenario: Host firewall denies inbound except from the reverse proxy
 
 - **WHEN** the firewall is applied to the Plane VM
-- **THEN** inbound traffic is denied except from the reverse proxy, and the declared egress is the only outbound path opened
+- **THEN** inbound traffic is denied except from the reverse proxy, and the declared egress is the only outbound path opened. The host firewall matches ports and addresses, not names, so the declaration is a port allowlist (`firewall_allow_egress`), measured in audit mode before it is enforced (Joseph, 2026-11-09)
 
 #### Scenario: Telemetry reaches the observability stack
 

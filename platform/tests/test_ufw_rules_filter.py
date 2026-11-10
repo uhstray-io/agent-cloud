@@ -368,3 +368,74 @@ def test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe():
 def test_every_problem_of_an_entry_is_reported_not_only_the_first():
     problems = rules.ufw_egress_problems([{"to": "192.0.0.0/16", "port": 0, "proto": "icmp"}], MGMT)
     assert len(problems) == 4, problems  # not broad, contains the SSH CIDR, port, proto
+
+
+# ── Outbound allowlist (firewall_allow_egress, firewall_egress_mode) ──────────────────────
+# Stored forms measured on ufw 0.36.2 (Ubuntu 24.04, 2026-11-09): `allow out to any port 443
+# proto tcp` is stored as `allow out 443/tcp`, a scoped one keeps `to ... port ... proto`, and
+# the audit rule is `allow out log to any`.
+
+def test_allowed_egress_comes_after_the_denials_and_the_audit_rule_last():
+    got = _desired(deny_egress=[{"to": "198.51.100.1"}],
+                   allow_egress=[{"port": 443}, {"port": 53, "proto": "udp"}, {"port": 3100, "to": "192.0.2.9"}],
+                   egress_audit=True)
+    assert got[1:] == [
+        ("deny out to 198.51.100.1", "agent-cloud:out-deny:any:198.51.100.1", "deny out to 198.51.100.1"),
+        ("allow out to any port 443 proto tcp", "agent-cloud:out-allow:443/tcp:any", "allow out 443/tcp"),
+        ("allow out to any port 53 proto udp", "agent-cloud:out-allow:53/udp:any", "allow out 53/udp"),
+        ("allow out to 192.0.2.9 port 3100 proto tcp", "agent-cloud:out-allow:3100/tcp:192.0.2.9",
+         "allow out to 192.0.2.9 port 3100 proto tcp"),
+        ("allow out log to any", "agent-cloud:out-audit:any:any", "allow out log to any"),
+    ]
+
+
+def test_the_audit_rule_exists_only_in_audit_mode_and_only_with_an_allowlist():
+    assert not [r for r in _desired(allow_egress=[{"port": 443}]) if "log" in r[0]]
+    assert not [r for r in _desired(egress_audit=True) if "log" in r[0]]
+
+
+def test_a_rule_to_any_address_is_dual_family_and_a_scoped_one_is_not():
+    got = {r["spec"]: r["dual_family"] for r in rules.ufw_desired_rules(
+        [], allow_egress=[{"port": 443}, {"port": 3100, "to": "192.0.2.9"}], egress_audit=True)}
+    assert got == {"allow out 443/tcp": True, "allow out to 192.0.2.9 port 3100 proto tcp": False,
+                   "allow out log to any": True}
+
+
+@pytest.mark.parametrize("entries", [
+    [{"port": 443}], [{"port": "80:81", "proto": "tcp"}], [{"port": 53, "proto": "udp", "to": "192.0.2.53"}],
+    [{"port": 3100, "to": "192.0.2.0/24"}], [{"port": 443, "to": "any"}],
+])
+def test_an_allowlist_the_platform_would_declare_is_accepted_in_audit(entries):
+    assert rules.ufw_allow_egress_problems(entries, "audit") == []
+
+
+@pytest.mark.parametrize("entry,why", [
+    ({"proto": "tcp"}, "`port` must be one port"), ({"port": 0}, "`port` must be one port"),
+    ({"port": 70000}, "`port` must be one port"), ({"port": "443,80"}, "`port` must be one port"),
+    ({"port": "90:80"}, "`port` must be one port"), ({"port": None}, "`port` must be one port"),
+    ({"port": 443, "proto": "any"}, "`proto` 'any' is not tcp or udp"),
+    ({"port": 443, "proto": "icmp"}, "is not tcp or udp"),
+    ({"port": 443, "to": "github.com"}, "is not `any` or an IPv4/IPv6 address"),
+    ("443/tcp", "an entry is a mapping"),
+])
+def test_a_malformed_allowlist_entry_is_refused_by_name(entry, why):
+    problems = rules.ufw_allow_egress_problems([entry], "audit")
+    assert any(why in p for p in problems), problems
+
+
+def test_an_unknown_mode_is_refused_even_without_entries():
+    assert rules.ufw_allow_egress_problems([], "block") == ["firewall_egress_mode 'block' is not audit or enforce"]
+    assert rules.ufw_allow_egress_problems([], "audit") == []
+
+
+def test_enforcing_needs_dns_out_and_a_probe():
+    dns = {"port": 53, "proto": "udp"}
+    probe = [{"host": "prime.plane.so", "port": 443}]
+    assert rules.ufw_allow_egress_problems([{"port": 443}, dns], "enforce", probe) == []
+    assert rules.ufw_allow_egress_problems([{"port": "50:60", "proto": "udp"}], "enforce", probe) == []
+    no_dns = rules.ufw_allow_egress_problems([{"port": 443}, {"port": 53}], "enforce", probe)
+    assert no_dns == ["an enforced allowlist must allow 53/udp out, or the host cannot resolve names"]
+    no_probe = rules.ufw_allow_egress_problems([dns], "enforce", [])
+    assert no_probe == ["an enforced allowlist needs firewall_egress_probes [{host, port}] to prove it after enabling"]
+    bad = rules.ufw_allow_egress_problems([dns], "enforce", [{"host": "x"}, "x:443"])
+    assert len(bad) == 2 and all("a probe is a mapping" in p for p in bad)

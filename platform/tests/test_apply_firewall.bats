@@ -196,6 +196,7 @@ tasks.append({"name": "Show the rule commands",
               "ansible.builtin.debug": {"msg": "{{ _fw_desired | map(attribute='cmd') | list }}"}})
 play = {"hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": {"_ssh_cidrs": ["192.0.2.0/24"], "_rules": [], "_route_rules": [], "_deny_egress": [],
+                 "_allow_egress": [], "_egress_enforce": False,
                  "_rootful": True, "_detected": {"stdout_lines": ["443 tcp", "53 udp"]}},
         "tasks": tasks}
 with open(sys.argv[2], "w") as target:
