@@ -44,6 +44,35 @@ def _includes_clean_service(path: Path) -> bool:
 INCLUDERS = [p for p in sorted(PLAYBOOKS.glob("clean-deploy-*.yml")) if _includes_clean_service(p)]
 IDS = [p.stem.removeprefix("clean-deploy-") for p in INCLUDERS]
 
+# The gate is one shared task, tasks/assert-reset-confirmed.yml. Every clean-deploy reaches it
+# through tasks/clean-service.yml (composition: test_every_clean_deploy_playbook_composes_clean_service
+# below); o11y and step-ca include it directly and earlier. The full forgery product runs on those
+# two and on one clean-service includer (the first that is neither); every other includer keeps
+# the plain forgery only, which the same gate must refuse.
+DIRECT_GATE_IDS = ("o11y", "step-ca")
+assert set(DIRECT_GATE_IDS) <= set(IDS), "the direct gate includers moved: update DIRECT_GATE_IDS"
+FULL_GATE_IDS = {*DIRECT_GATE_IDS, next(i for i in IDS if i not in DIRECT_GATE_IDS)}
+
+
+def _inventory_hostname_cases(forges):
+    for path, service in zip(INCLUDERS, IDS, strict=True):
+        chosen = forges if service in FULL_GATE_IDS else forges[:1]
+        for forge in chosen:
+            yield pytest.param(path, forge.values[0], id=f"{forge.id}-{service}")
+
+
+def _internal_fact_cases(forge_hosts, forge_confirm):
+    for path, service in zip(INCLUDERS, IDS, strict=True):
+        full = service in FULL_GATE_IDS
+        hosts_chosen = forge_hosts if full else forge_hosts[:1]
+        confirm_chosen = forge_confirm if full else forge_confirm[:1]
+        for limit, label in ((False, "all-hosts"), (True, "limit")):
+            for hosts in hosts_chosen:
+                for confirm in confirm_chosen:
+                    yield pytest.param(
+                        path, limit, hosts.values[0], confirm.values[0], id=f"{confirm.id}-{hosts.id}-{label}-{service}"
+                    )
+
 
 def test_every_clean_deploy_playbook_composes_clean_service():
     assert len(INCLUDERS) == len(list(PLAYBOOKS.glob("clean-deploy-*.yml"))) >= 16, INCLUDERS
@@ -109,9 +138,12 @@ def test_every_clean_deploy_refuses_an_unconfirmed_launch_before_any_teardown(pa
     assert "TASK [Verify clean]" not in proc.stdout
 
 
+# Full forgery product on FULL_GATE_IDS only (see above); every other includer, plain only.
 @needs_ansible
-@pytest.mark.parametrize("path", INCLUDERS, ids=IDS)
-@pytest.mark.parametrize("forge", forgeries.templated_forgeries("inventory_hostname", "honest-host", "forged-host"))
+@pytest.mark.parametrize(
+    "path,forge",
+    list(_inventory_hostname_cases(forgeries.templated_forgeries("inventory_hostname", "honest-host", "forged-host"))),
+)
 def test_a_forged_inventory_hostname_cannot_satisfy_the_confirmation(forge, path, tmp_path):
     # inventory_hostname CAN be set by an extra var, so a gate that compared the confirmation to
     # it would pass `-e inventory_hostname=x -e confirm_reset=x`. The play's real hosts are read
@@ -122,11 +154,17 @@ def test_a_forged_inventory_hostname_cannot_satisfy_the_confirmation(forge, path
     assert TEARDOWN not in proc.stdout, proc.stdout
 
 
+# Full 2 x 3 x 3 product on FULL_GATE_IDS only (see above); every other includer, plain at both limits.
 @needs_ansible
-@pytest.mark.parametrize("path", INCLUDERS, ids=IDS)
-@pytest.mark.parametrize("limit", [False, True], ids=["all-hosts", "limit"])
-@pytest.mark.parametrize("forge_hosts", forgeries.templated_forgeries("_reset_hosts", "honest", "x"))
-@pytest.mark.parametrize("forge_confirm", forgeries.templated_forgeries("_reset_confirm", "honest", "x"))
+@pytest.mark.parametrize(
+    "path,limit,forge_hosts,forge_confirm",
+    list(
+        _internal_fact_cases(
+            forgeries.templated_forgeries("_reset_hosts", "honest", "x"),
+            forgeries.templated_forgeries("_reset_confirm", "honest", "x"),
+        )
+    ),
+)
 def test_a_forged_internal_fact_cannot_satisfy_the_confirmation(forge_hosts, forge_confirm, path, limit, tmp_path):
     # The gate once pinned its inputs with set_fact, which an extra var of the same name outranks:
     # `-e _reset_hosts=x -e _reset_confirm=x` passed it with no confirm_reset at all. Run-start's
