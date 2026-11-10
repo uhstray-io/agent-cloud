@@ -325,6 +325,8 @@ TEMPFILE_USERS = {
     "removed in an always: block",
     "retire-tududi.yml": "tududi archive build dir on the VM and the controller's copy for the checksum, "
     "contains no SSH key, removed in an always: block",
+    "release-version.yml": "anonymous agent-cloud clone and the 0600 git credential file for the release App "
+    "token, contains no SSH key, removed in an always: block",
 }
 
 

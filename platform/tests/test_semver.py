@@ -5,6 +5,7 @@ second per commit, so history order never depends on a tie.
 """
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -467,3 +468,179 @@ def test_major_is_v1_from_zero_and_the_next_major_after_it(tmp_path):
     assert repo.git("tag", "-l", "v1.0.0") == ""  # computes only
     later = Repo(tmp_path / "later", release="v1.2.3")
     assert _run(later, "major").stdout == "v2.0.0\n"
+
+
+def _release_run(repo, *args):
+    """release-tags on a test repo with an empty backfill table, so only the scheduled or major tags are in play."""
+    table = repo.root.parent / "empty-table.tsv"
+    _table(table, [])
+    return _run(repo, "release-tags", "--main-ref", "main", "--dev-ref", "dev", "--table", str(table), *args)
+
+
+def _promotion_with_dev_merge(tmp_path):
+    """main promoted to v0.2.0 by PR 80, and PR 81 merged on dev before the main-to-dev sync brings PR 80 in."""
+    repo = _dev_repo(tmp_path)
+    repo.checkout("main")
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 80, "feat: a")
+    repo.checkout("dev")
+    repo.feature("fix-b", "fix: b")
+    repo.merge_pr("fix-b", 81, "fix: b")
+    return repo
+
+
+def test_release_tags_tags_main_then_dev_and_dev_counts_from_the_new_release(tmp_path):
+    repo = _promotion_with_dev_merge(tmp_path)
+    main_head, dev_head = repo.head("main"), repo.head("dev")
+    result = _release_run(repo)
+    assert (result.returncode, result.stderr) == (0, "")
+    payload = json.loads(result.stdout)  # one JSON object and nothing else on stdout
+    assert payload["tags"] == [{"tag": "v0.2.0", "commit": main_head}, {"tag": "v0.2.1-dev.1", "commit": dev_head}]
+    assert repo.head("v0.2.0^{commit}") == main_head
+    assert repo.head("v0.2.1-dev.1^{commit}") == dev_head
+    assert payload["release"] == {"tag": "v0.2.0", "previous": "v0.1.0", "notes": "- #80 feat: a\n"}
+
+
+def test_release_tags_rerun_creates_nothing_and_still_reports_the_newest_release(tmp_path):
+    repo = _promotion_with_dev_merge(tmp_path)
+    assert _release_run(repo).returncode == 0
+    rerun = _release_run(repo)
+    assert (rerun.returncode, rerun.stderr) == (0, "")
+    assert json.loads(rerun.stdout) == {
+        "tags": [],
+        "release": {"tag": "v0.2.0", "previous": "v0.1.0", "notes": "- #80 feat: a\n"},
+    }
+
+
+def test_release_tags_names_the_previous_release_and_lists_its_pull_requests_oldest_first(tmp_path):
+    repo = _dev_repo(tmp_path)
+    repo.checkout("main")
+    repo.commit("chore: a plain commit on main")
+    repo.tag("v0.1.1")  # the previous release is this one, not v0.1.0
+    repo.feature("one", "fix: one")
+    repo.merge_pr("one", 60, "fix: one")
+    repo.feature("two", "feat: two")
+    repo.squash_pr("two", 61, "feat: two")
+    payload = json.loads(_release_run(repo).stdout)
+    assert payload["tags"][0] == {"tag": "v0.2.0", "commit": repo.head("main")}
+    assert payload["release"] == {
+        "tag": "v0.2.0",
+        "previous": "v0.1.1",
+        "notes": "- #60 fix: one\n- #61 feat: two\n",
+    }
+
+
+def test_release_tags_first_release_has_no_previous_and_no_notes(tmp_path):
+    repo = Repo(tmp_path / "repo", release=None)
+    repo.branch("dev")  # dev stays at the first commit, so it owes no dev tag
+    repo.checkout("main")
+    repo.feature("one", "feat: one")
+    repo.merge_pr("one", 5, "feat: one")
+    result = _release_run(repo)
+    assert result.returncode == 0
+    assert json.loads(result.stdout)["release"] == {"tag": "v0.1.0", "previous": None, "notes": ""}
+
+
+def test_release_tags_backfill_comes_first_and_counts_toward_the_next_version(tmp_path):
+    repo = Repo(tmp_path / "repo", release=None)
+    first = repo.head()
+    repo.branch("dev")  # dev stays at the first commit, so it owes no dev tag
+    repo.checkout("main")
+    repo.feature("one", "feat: one")
+    repo.merge_pr("one", 5, "feat: one")
+    table = tmp_path / "table.tsv"
+    _table(table, [("v0.1.0", first, 60)])
+    result = _run(repo, "release-tags", "--main-ref", "main", "--dev-ref", "dev", "--table", str(table))
+    assert result.returncode == 0
+    assert [entry["tag"] for entry in json.loads(result.stdout)["tags"]] == ["v0.1.0", "v0.2.0"]
+    assert repo.git("cat-file", "-t", "refs/tags/v0.1.0").strip() == "tag"  # annotated, as backfill makes them
+
+
+def test_release_tags_stops_for_the_manual_major_and_tags_nothing(tmp_path):
+    repo = _dev_repo(tmp_path, release="v1.2.3")
+    repo.checkout("main")
+    repo.feature("api", "feat!: drop the old endpoint")
+    repo.merge_pr("api", 92, "feat!: drop the old endpoint")
+    result = _release_run(repo)
+    assert (result.returncode, result.stdout) == (3, "")
+    assert "manual major release" in result.stderr
+    assert repo.git("tag", "-l", "v1.*") == "v1.2.3\n"
+
+
+def test_release_tags_major_tags_the_next_major_at_main_and_no_dev_tags(tmp_path):
+    repo = _dev_repo(tmp_path, release="v0.13.0")
+    repo.checkout("main")
+    repo.feature("api", "feat!: drop the old route")
+    repo.merge_pr("api", 90, "feat!: drop the old route")
+    repo.checkout("dev")
+    repo.feature("fix-b", "fix: b")
+    repo.merge_pr("fix-b", 91, "fix: b")
+    main_head = repo.head("main")
+    result = _release_run(repo, "--major", "v1.0.0")
+    assert (result.returncode, result.stderr) == (0, "")
+    payload = json.loads(result.stdout)
+    assert payload["tags"] == [{"tag": "v1.0.0", "commit": main_head}]  # the dev merge owes a dev tag, not made
+    assert payload["release"] == {"tag": "v1.0.0", "previous": "v0.13.0", "notes": "- #90 feat!: drop the old route\n"}
+
+
+def test_release_tags_major_refuses_a_version_other_than_the_computed_one(tmp_path):
+    repo = _dev_repo(tmp_path, release="v0.13.0")
+    before = repo.git("tag", "-l", "v*")
+    mismatch = _release_run(repo, "--major", "v2.0.0")
+    assert (mismatch.returncode, mismatch.stdout) == (1, "")
+    assert "computed v1.0.0, operator expected v2.0.0; nothing tagged" in mismatch.stderr
+    malformed = _release_run(repo, "--major", "1.0.0")
+    assert (malformed.returncode, malformed.stdout) == (1, "")
+    assert "wants vN.0.0" in malformed.stderr
+    assert repo.git("tag", "-l", "v*") == before  # nothing created on either refusal
+
+
+def test_release_tags_refuses_a_moved_backfill_tag_and_creates_nothing(tmp_path):
+    repo = Repo(tmp_path / "repo", release=None)
+    first = repo.head()
+    repo.commit("feat: two")
+    second = repo.head()
+    repo.tag("v0.1.0", ref=second)  # the wrong place
+    repo.branch("dev")
+    repo.checkout("main")
+    repo.feature("feat-x", "feat: x")
+    repo.merge_pr("feat-x", 99, "feat: x")  # a release the run would otherwise create
+    table = tmp_path / "table.tsv"
+    _table(table, [("v0.1.0", first, 60), ("v0.2.0", second, 74)])
+    result = _run(repo, "release-tags", "--main-ref", "main", "--dev-ref", "dev", "--table", str(table))
+    assert (result.returncode, result.stdout) == (1, "")
+    assert "v0.1.0" in result.stderr and "tags are never moved" in result.stderr
+    assert repo.head("v0.1.0^{commit}") == second  # never moved
+    assert repo.git("tag", "-l", "v0.2.0") == ""  # nothing created on a refusal
+
+
+def test_release_tags_refuses_to_move_a_tag_that_already_exists(tmp_path, monkeypatch, capsys):
+    # Defence in depth: last_release normally sees every release tag, so a collision needs a wrong count.
+    repo = _dev_repo(tmp_path)
+    init = repo.head()
+    repo.checkout("main")
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 80, "feat: a")
+    repo.checkout("dev")
+    repo.tag("v0.2.0", ref=init)  # a release tag the count below does not see
+    monkeypatch.setattr(semver, "last_release", lambda _repo: (semver.Version(0, 1, 0), "v0.1.0"))
+    table = tmp_path / "empty.tsv"
+    _table(table, [])
+    code = semver.main(
+        ["--repo", str(repo.root), "release-tags", "--main-ref", "main", "--dev-ref", "dev", "--table", str(table)]
+    )
+    captured = capsys.readouterr()
+    assert (code, captured.out) == (1, "")
+    assert "v0.2.0 already exists locally; tags are never moved" in captured.err
+    assert repo.head("v0.2.0^{commit}") == init  # never moved
+
+
+def test_merge_guard_operator_merges_every_file_the_release_tagging_runs_from():
+    # The release playbook runs semver.py with a token that can push tags, so the merge guard must refuse those
+    # paths. test_merge_when_green iterates RELEASE_SCRIPTS, so only this pins what the tuple names.
+    spec = importlib.util.spec_from_file_location("merge_guard_pin", REPO / "scripts" / "merge-when-green.py")
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    assert "scripts/semver.py" in guard.RELEASE_SCRIPTS
+    assert "scripts/semver-backfill.tsv" in guard.RELEASE_SCRIPTS
+    assert "platform/playbooks/release-version.yml" in guard.RELEASE_SCRIPTS

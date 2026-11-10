@@ -9,6 +9,7 @@ Exit codes: 0 done (also when a channel gets no release), 1 refused or git faile
 """
 
 import argparse
+import json
 import re
 import subprocess  # nosec B404 — argv lists only, never a shell; every git call goes through _git()
 import sys
@@ -105,6 +106,20 @@ def apply(base, level):
     raise ValueError(f"no version for level {level!r}")
 
 
+def _release_version(tag):
+    """The Version a release tag names. The tag must already match RELEASE_RE."""
+    return Version(*(int(part) for part in RELEASE_RE.match(tag).groups()))
+
+
+def _release_tags(repo):
+    """Every release tag in the repository as (version, tag), oldest first. Every tag counts, see last_release."""
+    found = []
+    for tag in _git(repo, "tag", "--list", "v*").stdout.split():
+        if RELEASE_RE.match(tag) is not None:
+            found.append((_release_version(tag), tag))
+    return sorted(found)
+
+
 def last_release(repo):
     """The highest release tag in the repository, as (version, tag); ((0, 0, 0), None) when there is none.
 
@@ -112,15 +127,13 @@ def last_release(repo):
     dev can land before the main-to-dev sync brings the promotion into dev. Counting only the tags reachable
     from dev would start that merge from an older release and tag it below the version already shipped.
     """
-    best = (Version(0, 0, 0), None)
-    for tag in _git(repo, "tag", "--list", "v*").stdout.split():
-        match = RELEASE_RE.match(tag)
-        if match is None:
-            continue
-        found = Version(*(int(part) for part in match.groups()))
-        if best[1] is None or found > best[0]:
-            best = (found, tag)
-    return best
+    found = _release_tags(repo)
+    return found[-1] if found else (Version(0, 0, 0), None)
+
+
+def _next_major(base):
+    """The next major version after base: v1.0.0 from 0.x, otherwise one above base's major."""
+    return "v1.0.0" if base.major == 0 else f"v{base.major + 1}.0.0"
 
 
 def _records(output):
@@ -163,6 +176,19 @@ def _pull_requests(repo, rev_range, first_parent):
 def pr_titles(repo, rev_range, first_parent):
     """(number, title) for each pull request in rev_range, oldest first."""
     return [(number, title) for _sha, number, title in _pull_requests(repo, rev_range, first_parent)]
+
+
+def _notes(repo, start, end):
+    """The pull requests from start to end as Markdown list lines, oldest first; empty when there are none."""
+    return "".join(f"- #{number} {title}\n" for number, title in pr_titles(repo, f"{start}..{end}", first_parent=False))
+
+
+def _main_version(repo, ref):
+    """The version main's next release takes at ref, or None: cmd_next's rule for channel main, with no title."""
+    base, tag = last_release(repo)
+    rev_range = f"{tag}..{ref}" if tag else ref
+    level = _highest([_level_of_history(title) for _number, title in pr_titles(repo, rev_range, first_parent=False)])
+    return None if level == "none" else apply(base, level)
 
 
 def _dev_max(repo, version):
@@ -271,15 +297,14 @@ def cmd_dev_tags(repo, args):
 
 
 def cmd_notes(repo, args):
-    for number, title in pr_titles(repo, f"{args.start}..{args.end}", first_parent=False):
-        print(f"- #{number} {title}")
+    print(_notes(repo, args.start, args.end), end="")
     return 0
 
 
-def cmd_backfill(repo, args):
-    rows = read_table(args.table)
+def _backfill_plan(repo, table):
+    """(refusals, plan) for the backfill table. Plan rows are (version, commit, pr, state), state exists or missing."""
     refusals, plan = [], []
-    for version, commit, pr in rows:
+    for version, commit, pr in read_table(table):
         probe = _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{version}^{{commit}}", check=False)
         if probe.returncode == 0:
             if probe.stdout.strip() == commit:
@@ -292,6 +317,32 @@ def cmd_backfill(repo, args):
             refusals.append(f"{version}: commit {commit} is not in this repository")
         else:
             plan.append((version, commit, pr, "missing"))
+    return refusals, plan
+
+
+def _backfill_message(version, pr):
+    return f"agent-cloud {version} (promotion #{pr}, backfilled)"
+
+
+def _commit_of(repo, ref):
+    return _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
+
+
+def _create_tags(repo, tags, created):
+    """Create annotated (tag, commit, message) tags, all or none: every name is checked before the first is made.
+
+    A tag that already exists is refused, never moved. Each tag made is appended to created as {tag, commit}.
+    """
+    for tag, _commit, _message in tags:
+        if _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{tag}", check=False).returncode == 0:
+            raise ValueError(f"{tag} already exists locally; tags are never moved")
+    for tag, commit, message in tags:
+        _git(repo, "-c", "tag.gpgsign=false", "tag", "-a", tag, "-m", message, commit)
+        created.append({"tag": tag, "commit": commit})
+
+
+def cmd_backfill(repo, args):
+    refusals, plan = _backfill_plan(repo, args.table)
     if refusals:
         for line in refusals:
             print(line, file=sys.stderr)
@@ -302,8 +353,7 @@ def cmd_backfill(repo, args):
         elif not args.apply:
             print(f"would create {version}")
         else:
-            message = f"agent-cloud {version} (promotion #{pr}, backfilled)"
-            _git(repo, "-c", "tag.gpgsign=false", "tag", "-a", version, "-m", message, commit)
+            _git(repo, "-c", "tag.gpgsign=false", "tag", "-a", version, "-m", _backfill_message(version, pr), commit)
             print(f"created {version}")
             if args.push:
                 _git(repo, "push", "origin", f"refs/tags/{version}")
@@ -311,9 +361,52 @@ def cmd_backfill(repo, args):
     return 0
 
 
+def cmd_release_tags(repo, args):
+    """Create the tags a release owes in this local clone, then print the plan as one JSON object. Never pushes.
+
+    Scheduled (no --major): backfill the table, tag main's next version at --main-ref, then tag each dev pull
+    request still owed on --dev-ref. Dev counts from the release just made, so main goes first.
+    Major (--major VERSION): backfill, then tag VERSION at --main-ref when it is the next major. No dev tags.
+    The caller pushes the tags it reads from stdout. This command only plans them, in a throwaway clone.
+    """
+    if args.major is not None and re.fullmatch(r"v[0-9]+\.0\.0", args.major) is None:
+        print(f"error: --major wants vN.0.0, got {args.major!r}", file=sys.stderr)
+        return 1
+    refusals, plan = _backfill_plan(repo, args.table)
+    if refusals:
+        for line in refusals:
+            print(line, file=sys.stderr)
+        return 1
+    if args.major is not None:
+        # After the backfill, the release tags are the existing ones plus the table's: decide before creating anything.
+        highest = max([last_release(repo)[0], *(_release_version(version) for version, _c, _p, _s in plan)])
+        expected = _next_major(highest)
+        if args.major != expected:
+            print(f"computed {expected}, operator expected {args.major}; nothing tagged", file=sys.stderr)
+            return 1
+    created = []
+    missing = [(version, commit, pr) for version, commit, pr, state in plan if state == "missing"]
+    _create_tags(repo, [(version, commit, _backfill_message(version, pr)) for version, commit, pr in missing], created)
+    if args.major is not None:
+        _create_tags(repo, [(args.major, _commit_of(repo, args.main_ref), f"agent-cloud {args.major}")], created)
+    else:
+        version = _main_version(repo, args.main_ref)
+        if version is not None:
+            _create_tags(repo, [(f"v{version}", _commit_of(repo, args.main_ref), f"agent-cloud v{version}")], created)
+        _create_tags(repo, [(tag, sha, f"agent-cloud {tag}") for tag, sha in dev_tags(repo, args.dev_ref)], created)
+    releases = _release_tags(repo)
+    release = None
+    if releases:
+        tag = releases[-1][1]
+        previous = releases[-2][1] if len(releases) > 1 else None
+        release = {"tag": tag, "previous": previous, "notes": _notes(repo, previous, tag) if previous else ""}
+    print(json.dumps({"tags": created, "release": release}))
+    return 0
+
+
 def cmd_major(repo, args):
     base, _tag = last_release(repo)
-    print("v1.0.0" if base.major == 0 else f"v{base.major + 1}.0.0")
+    print(_next_major(base))
     return 0
 
 
@@ -323,6 +416,7 @@ HANDLERS = {
     "dev-tags": cmd_dev_tags,
     "notes": cmd_notes,
     "backfill": cmd_backfill,
+    "release-tags": cmd_release_tags,
     "major": cmd_major,
 }
 
@@ -346,6 +440,21 @@ def _parser():
     backfill.add_argument("--apply", action="store_true")
     backfill.add_argument("--push", action="store_true", help="push each created tag to origin (needs --apply)")
     backfill.add_argument("--table", type=Path, default=TABLE, help=argparse.SUPPRESS)
+    release = commands.add_parser(
+        "release-tags",
+        help="create the release tags owed in this local clone and print the plan as JSON; never pushes",
+        description=(
+            "Creates the owed tags LOCALLY in the repository given by --repo (a throwaway clone) and prints one JSON "
+            "object: the tags created, in order, and the release they make up. It never pushes; the caller pushes "
+            "the tags it reads from the output."
+        ),
+    )
+    release.add_argument("--main-ref", default="origin/main", help="the main ref whose next release is tagged")
+    release.add_argument("--dev-ref", default="origin/dev", help="the dev ref whose owed -dev tags are created")
+    release.add_argument(
+        "--major", metavar="VERSION", help="tag VERSION (vN.0.0) at --main-ref as the manual major release"
+    )
+    release.add_argument("--table", type=Path, default=TABLE, help=argparse.SUPPRESS)
     commands.add_parser("major", help="the next major version; computes only, never tags")
     return parser
 

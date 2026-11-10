@@ -43,9 +43,9 @@ SEMVER = Path(__file__).resolve().with_name("semver.py")
 _semver_spec = importlib.util.spec_from_file_location("semver_for_merge_guard", SEMVER)
 semver = importlib.util.module_from_spec(_semver_spec)
 _semver_spec.loader.exec_module(semver)
-# release-version.yml runs these with contents: write on every push to dev and main (plan 20), so a pull
-# request that changes either one is merged by the operator, never through this gate.
-RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv")
+# The Semaphore Release Version templates run these with a GitHub App token that can push tags (plan 20), so a
+# pull request that changes any of them is merged by the operator, never through this gate.
+RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv", "platform/playbooks/release-version.yml")
 
 
 class Refusal(Exception):

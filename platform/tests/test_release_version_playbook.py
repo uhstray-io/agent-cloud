@@ -1,0 +1,495 @@
+"""Structure of release-version.yml and its two templates (plan 20).
+
+The playbook pushes version tags with a GitHub App token that holds contents and workflows write. What
+goes wrong quietly is: a grant that widens, the token reaching argv or a visible task, a push that can
+move or delete a ref, a planned name reaching a refspec before it is validated, a credential that a
+system helper can answer for, a scratch directory or token left behind, and a template that schedules
+the major release. The playbook is read as data; no OpenBao, GitHub, git or Ansible run is started.
+"""
+
+import re
+from pathlib import Path
+
+import yaml
+
+REPO = Path(__file__).resolve().parents[2]
+PLAYBOOK = REPO / "platform/playbooks/release-version.yml"
+TEMPLATES = REPO / "platform/semaphore/templates.yml"
+PLAYBOOK_PATH = "platform/playbooks/release-version.yml"
+GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
+# Names that hold the token, the App credentials, an OpenBao client token, or a response that carries one.
+SECRET_NAME = re.compile(r"\b_rv_(token|app_fields|auth|github_secret|mint|release_get|release_post)\b")
+KEYWORDS = {
+    "name",
+    "register",
+    "when",
+    "no_log",
+    "changed_when",
+    "failed_when",
+    "check_mode",
+    "environment",
+    "vars",
+    "tags",
+    "become",
+    "loop",
+    "ignore_errors",
+    "delegate_to",
+    "connection",
+    "loop_control",
+}
+FORCE_ARGV = {"-f", "--force", "--force-with-lease", "-d", "--delete", "--mirror"}
+
+
+def _plays():
+    return yaml.safe_load(PLAYBOOK.read_text())
+
+
+def _play():
+    return _plays()[1]
+
+
+def _walk(tasks, section, hidden, env, out):
+    """Every task that runs, in document order, with what Ansible inherits: no_log and environment
+    from the enclosing block (a task's own no_log wins), and the section it sits in."""
+    for task in tasks:
+        if any(k in task for k in ("block", "rescue", "always")):
+            inner_hidden = task.get("no_log", hidden)
+            inner_env = {**env, **(task.get("environment") or {})}
+            for key in ("block", "rescue", "always"):
+                _walk(task.get(key) or [], key, inner_hidden, inner_env, out)
+            continue
+        out.append(
+            {
+                "task": task,
+                "name": task.get("name", ""),
+                "section": section,
+                "no_log": task.get("no_log", hidden),
+                "env": {**env, **(task.get("environment") or {})},
+            }
+        )
+    return out
+
+
+LEAVES = _walk(_play()["tasks"], "tasks", False, {}, [])
+
+
+def _module(task):
+    keys = [k for k in task if k not in KEYWORDS]
+    assert len(keys) == 1, task.get("name")
+    return keys[0].rsplit(".", 1)[-1], task[keys[0]]
+
+
+def _argv(task):
+    module, args = _module(task)
+    return args.get("argv") if module == "command" else None
+
+
+def _one(pred, what):
+    hits = [leaf for leaf in LEAVES if pred(leaf)]
+    assert len(hits) == 1, f"{what}: expected one task, found {len(hits)}"
+    return hits[0]
+
+
+def _index(leaf):
+    return LEAVES.index(leaf)
+
+
+def _by_module(module, pred=lambda args: True):
+    return [leaf for leaf in LEAVES if _module(leaf["task"])[0] == module and pred(_module(leaf["task"])[1])]
+
+
+def _registered(name):
+    return _one(lambda leaf: leaf["task"].get("register") == name, name)
+
+
+def _sets(leaf, fact):
+    module, args = _module(leaf["task"])
+    return module == "set_fact" and fact in args
+
+
+def _tag_regex():
+    return _values()["_rv_tag_re"]
+
+
+def _values():
+    """The play's values: the first task's set_fact (the play carries no vars: block, see below)."""
+    first = _play()["tasks"][0]
+    assert first.get("name") == "Set the play's values", first.get("name")
+    return first["ansible.builtin.set_fact"]
+
+
+def test_the_play_has_no_vars_block_so_no_forced_write_can_be_redirected():
+    # test_check_mode_contract.py refuses a forced check-mode write under vars:, play-level included.
+    assert "vars" not in _play()
+
+
+def test_the_playbook_imports_the_internal_name_guard_first():
+    first = _plays()[0]
+    key = next(k for k in first if k.endswith("import_playbook"))
+    assert first[key] == "refuse-internal-extra-vars.yml"
+
+
+def test_the_release_identity_is_literal_and_not_overridable():
+    vars_ = _values()
+    assert vars_["_rv_org"] == "uhstray-io"
+    assert vars_["_rv_repository"] == "agent-cloud"
+    assert vars_["_rv_clone_url"] == "https://github.com/uhstray-io/agent-cloud.git"
+    for name in ("_rv_org", "_rv_repository", "_rv_clone_url", "_rv_permissions"):
+        assert "{{" not in str(vars_[name]), name
+
+
+def test_the_grant_is_exactly_contents_workflows_and_metadata_and_is_declared_once():
+    assert _values()["_rv_permissions"] == {"contents": "write", "workflows": "write", "metadata": "read"}
+
+
+def test_the_mint_requests_the_declared_grant_and_one_repository_of_one_org():
+    argv = _argv(_registered("_rv_mint")["task"])
+    for flag, value in (
+        ("--permissions", "{{ _rv_permissions | to_json }}"),
+        ("--repository", "{{ _rv_repository }}"),
+        ("--org", "{{ _rv_org }}"),
+    ):
+        assert argv[argv.index(flag) + 1] == value, flag
+        assert argv.count(flag) == 1, flag
+
+
+def test_the_signing_key_arrives_on_stdin_and_never_on_argv():
+    mint = _registered("_rv_mint")["task"]
+    argv = _argv(mint)
+    assert argv[argv.index("--key") + 1] == "-"
+    assert (
+        mint["command" if "command" in mint else "ansible.builtin.command"]["stdin"]
+        == "{{ _rv_app_fields.release_app_key }}"
+    )
+    # The client id is the public issuer and may be an argument; the key and the token may not.
+    assert not any("release_app_key" in a or "_rv_token" in a for a in argv), argv
+
+
+def test_the_token_is_never_an_argument_and_no_visible_debug_names_a_secret():
+    for leaf in LEAVES:
+        argv = _argv(leaf["task"])
+        if argv is not None:
+            assert not any("_rv_token" in str(a) for a in argv), leaf["name"]
+        module, args = _module(leaf["task"])
+        if module == "debug" and not leaf["no_log"]:
+            assert not SECRET_NAME.search(yaml.safe_dump(leaf["task"])), leaf["name"]
+
+
+def test_every_task_that_holds_a_secret_is_hidden_and_no_assert_names_one():
+    for leaf in LEAVES:
+        module, args = _module(leaf["task"])
+        text = yaml.safe_dump(leaf["task"])
+        if module == "assert":
+            # An assert prints its expression at failure; its fail_msg must not name a secret.
+            assert not SECRET_NAME.search(str(args.get("fail_msg", ""))), leaf["name"]
+            continue
+        holds = SECRET_NAME.search(text) or "Authorization" in text or "X-Vault-Token" in text
+        if holds:
+            assert leaf["no_log"] is True, f"not hidden: {leaf['name']}"
+
+
+def test_the_openbao_login_and_secret_read_are_hidden_and_pin_check_mode():
+    login = _one(
+        lambda lf: (
+            _module(lf["task"])[0] == "uri"
+            and str(_module(lf["task"])[1].get("url", "")).endswith("/v1/auth/approle/login")
+        ),
+        "login",
+    )
+    read = _one(
+        lambda lf: (
+            _module(lf["task"])[0] == "uri" and "X-Vault-Token" in str(_module(lf["task"])[1].get("headers", {}))
+        ),
+        "read",
+    )
+    for leaf in (login, read):
+        assert leaf["no_log"] is True, leaf["name"]
+        assert leaf["task"].get("check_mode") is False, leaf["name"]
+    assert _values()["_rv_github_path"] == "services/github"
+
+
+def test_the_app_fields_the_exit_code_and_the_token_are_taken_by_hidden_set_facts():
+    for fact in ("_rv_app_fields", "_rv_mint_rc", "_rv_token"):
+        leaf = _one(lambda lf, f=fact: _sets(lf, f), fact)
+        assert leaf["no_log"] is True, fact
+    assert "release_app_key" in str(_play()["tasks"]) and "release_app_client_id" in str(_play()["tasks"])
+
+
+def test_every_command_is_argv_and_every_command_carries_the_three_git_variables():
+    for leaf in LEAVES:
+        module, args = _module(leaf["task"])
+        assert module != "shell", leaf["name"]
+        if module == "command":
+            assert isinstance(args, dict) and "argv" in args, leaf["name"]
+            for key, value in GIT_ENV.items():
+                assert leaf["env"].get(key) == value, f"{leaf['name']}: {key}"
+
+
+def test_no_command_names_a_global_or_system_git_config():
+    for leaf in _by_module("command"):
+        assert "--global" not in str(leaf["task"]) and "--system" not in str(leaf["task"]), leaf["name"]
+
+
+def test_the_clone_is_anonymous_and_the_credential_helper_is_set_on_the_clone_only():
+    clone = _one(lambda lf: "clone" in (_argv(lf["task"]) or []), "clone")
+    assert "x-access-token" not in str(clone["task"]) and "_rv_token" not in str(clone["task"])
+    helper = _one(lambda lf: "credential.helper" in (_argv(lf["task"]) or []), "helper")
+    argv = _argv(helper["task"])
+    assert argv[:3] == ["git", "-C", "{{ _rv_tmp.path }}/repo"], argv
+    assert argv[-1] == "store --file={{ _rv_tmp.path }}/cred", argv
+
+
+def test_the_credential_file_is_0600_hidden_and_written_after_the_plan_is_validated_and_before_any_push():
+    cred = _one(
+        lambda lf: (
+            _module(lf["task"])[0] == "copy" and "x-access-token" in str(_module(lf["task"])[1].get("content", ""))
+        ),
+        "cred",
+    )
+    assert cred["no_log"] is True
+    copy_args = _module(cred["task"])[1]
+    assert str(copy_args["mode"]) == "0600"
+    assert cred["task"].get("check_mode") is False
+    assert copy_args["dest"] == "{{ _rv_tmp.path }}/cred"
+    planner = _registered("_rv_planner")
+    validate = _one(
+        lambda lf: (
+            lf["task"].get("ansible.builtin.assert", {}).get("that")
+            and "_rv_tag_re" in str(lf["task"]["ansible.builtin.assert"]["that"])
+        ),
+        "validate",
+    )
+    push = _registered("_rv_push")
+    assert _index(planner) < _index(validate) < _index(cred) < _index(push)
+
+
+def test_the_planner_and_the_push_are_visible_and_the_mint_clone_and_planner_run_in_check_mode():
+    planner, push = _registered("_rv_planner"), _registered("_rv_push")
+    assert planner["no_log"] is False and push["no_log"] is False
+    assert planner["task"].get("check_mode") is False
+    assert planner["task"].get("failed_when") is False
+    assert push["task"].get("failed_when") is False
+    assert "not ansible_check_mode" in str(push["task"].get("when"))
+    mint = _registered("_rv_mint")
+    assert mint["task"].get("check_mode") is False and mint["no_log"] is True
+    clone = _one(lambda lf: "clone" in (_argv(lf["task"]) or []), "clone")
+    assert clone["task"].get("check_mode") is False
+
+
+def test_the_planner_command_is_the_contract_and_the_major_flag_is_added_only_when_given():
+    base = _one(lambda lf: lf["task"].get("name", "").startswith("Build the planner command"), "base")
+    argv = base["task"]["ansible.builtin.set_fact"]["_rv_planner_base"]
+    assert argv[:2] == ["python3", "-I"]
+    assert argv[2] == "{{ playbook_dir }}/../../scripts/semver.py"
+    assert argv[argv.index("release-tags") :] == [
+        "release-tags",
+        "--main-ref",
+        "origin/main",
+        "--dev-ref",
+        "origin/dev",
+    ]
+    assert argv[argv.index("--repo") + 1] == "{{ _rv_tmp.path }}/repo"
+    add = _one(lambda lf: _sets(lf, "_rv_planner_argv"), "add")
+    assert add["task"]["ansible.builtin.set_fact"]["_rv_planner_argv"] == (
+        "{{ _rv_planner_base + (['--major', _rv_major] if _rv_major | length > 0 else []) }}"
+    )
+    assert _argv(_registered("_rv_planner")["task"]) == "{{ _rv_planner_argv }}"
+    assert _values()["_rv_major"] == "{{ release_major | default('') | trim }}"
+
+
+def test_the_major_must_be_empty_or_vN_0_0_by_the_assert_that_runs_first():
+    # Task 0 sets the play's values (no network, no write); the major check is the first one that can refuse.
+    first = _play()["tasks"][1]
+    assert first["ansible.builtin.assert"]["that"] == [
+        "_rv_major | length == 0 or _rv_major is match('^v[0-9]+[.]0[.]0$')"
+    ]
+    assert re.match("^v[0-9]+[.]0[.]0$", "v1.0.0")
+    for bad in ("1.0.0", "v1.2.0", "v1.0.0 x", "v1.0.0-dev.1"):
+        assert not re.match("^v[0-9]+[.]0[.]0$", bad), bad
+
+
+def test_a_planner_refusal_names_the_manual_major_run_and_otherwise_shows_stderr():
+    check = _one(
+        lambda lf: lf["task"].get("ansible.builtin.assert", {}).get("that") == ["_rv_planner.rc == 0"], "planner assert"
+    )
+    msg = check["task"]["ansible.builtin.assert"]["fail_msg"]
+    assert "needs the manual major release" in msg
+    assert "release_major=vN.0.0" in msg
+    assert "_rv_planner.rc == 3" in msg
+    assert "_rv_planner.stderr" in msg
+
+
+def test_the_planned_names_are_validated_before_any_refspec_is_built_and_only_release_form_passes():
+    tag_re = _tag_regex()
+    assert tag_re == "^v[0-9]+[.][0-9]+[.][0-9]+(-dev[.][0-9]+)?$"
+    for good in ("v0.1.0", "v12.3.45", "v0.1.1-dev.1"):
+        assert re.match(tag_re, good), good
+    for bad in (
+        "x:refs/heads/dev",
+        "--force",
+        "+refs/heads/dev",
+        "-f",
+        "refs/heads/dev",
+        "v0.1",
+        "v0.1.0-dev",
+        "v0.1.0 x",
+        "v0.1.0:refs/heads/main",
+        "v0.1.0-dev.1-x",
+        "--mirror",
+    ):
+        assert not re.match(tag_re, bad), bad
+    validate = _one(
+        lambda lf: (
+            lf["task"].get("ansible.builtin.assert", {}).get("that")
+            and "_rv_tag_re" in str(lf["task"]["ansible.builtin.assert"]["that"])
+        ),
+        "validate",
+    )
+    that = str(validate["task"]["ansible.builtin.assert"]["that"])
+    assert "_rv_tag_re" in that and "_rv_sha_re" in that and "_rv_plan.release is none" in that
+    assert "nothing was pushed" in validate["task"]["ansible.builtin.assert"]["fail_msg"]
+    assert _values()["_rv_sha_re"] == "^[0-9a-f]{40}$"
+    push_argv = _one(lambda lf: _sets(lf, "_rv_push_argv"), "push argv")
+    assert _index(validate) < _index(push_argv)
+    assert _index(push_argv) < _index(_registered("_rv_push"))
+
+
+def test_the_push_is_one_atomic_argv_of_refs_tags_and_never_forced():
+    push_argv = _one(lambda lf: _sets(lf, "_rv_push_argv"), "push argv")["task"]["ansible.builtin.set_fact"][
+        "_rv_push_argv"
+    ]
+    assert push_argv.startswith("{{ ['git', '-C', _rv_tmp.path ~ '/repo', 'push', '--atomic', 'origin'] + ")
+    assert "map('regex_replace', '^', 'refs/tags/')" in push_argv
+    push = _registered("_rv_push")
+    assert _argv(push["task"]) == "{{ _rv_push_argv }}"
+    for leaf in _by_module("command"):
+        argv = _argv(leaf["task"])
+        if isinstance(argv, list):
+            assert not (set(argv) & FORCE_ARGV), leaf["name"]
+            assert not any(str(a).startswith("--force") or str(a).startswith("+") for a in argv), leaf["name"]
+    assert "--force" not in yaml.safe_dump(_play()["tasks"])
+
+
+def test_the_push_and_the_release_write_are_skipped_in_check_mode():
+    assert "not ansible_check_mode" in str(_registered("_rv_push")["task"]["when"])
+    post = _one(
+        lambda lf: (
+            _module(lf["task"])[0] == "uri"
+            and _module(lf["task"])[1].get("method") == "POST"
+            and str(_module(lf["task"])[1].get("url", "")).endswith("/releases")
+        ),
+        "POST",
+    )
+    assert post["no_log"] is True
+    assert "not ansible_check_mode" in str(post["task"]["when"])
+    assert post["task"]["ansible.builtin.uri"]["status_code"] == [201]
+    assert post["task"]["ansible.builtin.uri"]["body"]["tag_name"] == "{{ _rv_plan.release.tag }}"
+
+
+def test_the_release_lookup_is_hidden_and_accepts_only_200_or_404():
+    get = _one(
+        lambda lf: _module(lf["task"])[0] == "uri" and "/releases/tags/" in str(_module(lf["task"])[1].get("url", "")),
+        "GET",
+    )
+    assert get["no_log"] is True
+    assert get["task"]["ansible.builtin.uri"]["status_code"] == [200, 404]
+    assert get["task"]["ansible.builtin.uri"]["url"] == (
+        "https://api.github.com/repos/{{ _rv_org }}/{{ _rv_repository }}/releases/tags/{{ _rv_plan.release.tag }}"
+    )
+
+
+def test_the_scratch_directory_is_made_first_in_the_block_and_removed_in_always_with_the_token_revoked():
+    # First in the block, so the always: below removes it whatever fails after it is made.
+    make = _one(lambda lf: _module(lf["task"])[0] == "tempfile", "tempfile")
+    block_first = next(lf for lf in LEAVES if lf["section"] == "block")
+    assert make is block_first
+    args = _module(make["task"])[1]
+    assert args["prefix"] == ".release-version-"
+    assert args["path"] == "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
+    assert make["task"].get("delegate_to") == "localhost"
+    removal = _one(lambda lf: lf["section"] == "always" and _module(lf["task"])[0] == "file", "remove")
+    assert _module(removal["task"])[1]["state"] == "absent"
+    assert _module(removal["task"])[1]["path"] == "{{ _rv_tmp.path }}"
+    assert removal["task"].get("check_mode") is False
+    assert removal["task"].get("delegate_to") == "localhost"
+    revoke = _one(lambda lf: lf["section"] == "always" and _module(lf["task"])[0] == "uri", "revoke")
+    args = _module(revoke["task"])[1]
+    assert args["url"] == "https://api.github.com/installation/token"
+    assert args["method"] == "DELETE"
+    assert args["status_code"] == [204]
+    assert args["headers"]["Authorization"] == "Bearer {{ _rv_token }}"
+    assert revoke["no_log"] is True and revoke["task"].get("failed_when") is False
+    assert revoke["task"].get("check_mode") is False
+    assert "_rv_token is defined" in str(revoke["task"]["when"])
+
+
+def test_the_block_does_not_hide_its_tasks_so_each_secret_task_carries_its_own_no_log():
+    block_task = next(t for t in _play()["tasks"] if "block" in t)
+    assert "no_log" not in block_task
+
+
+def test_every_register_and_set_fact_carries_the_underscore_prefix():
+    for leaf in LEAVES:
+        reg = leaf["task"].get("register")
+        if reg:
+            assert reg.startswith("_rv_"), leaf["name"]
+        module, args = _module(leaf["task"])
+        if module == "set_fact":
+            assert all(k.startswith("_") for k in args), leaf["name"]
+
+
+def test_the_play_vars_are_all_internal_or_the_openbao_connection():
+    for name in _values():
+        assert name.startswith(("_rv_", "_bao_")), name
+
+
+def test_the_only_input_read_from_outside_is_release_major_and_it_is_read_once_into_the_major_variable():
+    code = yaml.safe_dump(_play())
+    assert code.count("{{ release_major") == 1
+    assert _values()["_rv_major"] == "{{ release_major | default('') | trim }}"
+    assert "survey" not in code
+
+
+def _templates():
+    return yaml.safe_load(TEMPLATES.read_text())["templates"]
+
+
+def test_the_version_template_runs_every_15_minutes_dev_bound_with_no_survey():
+    entries = [t for t in _templates() if t.get("name") == "Release Version (Dev)"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["playbook"] == PLAYBOOK_PATH
+    assert entry["repository"] == "agent-cloud dev"
+    assert entry["schedule"] == {"cron": "*/15 * * * *"}
+    assert "survey_vars" not in entry
+
+
+def test_the_major_template_has_no_schedule_and_one_typed_version_input():
+    entries = [t for t in _templates() if t.get("name") == "Release Major Version (Dev)"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["playbook"] == PLAYBOOK_PATH
+    assert entry["repository"] == "agent-cloud dev"
+    assert "schedule" not in entry
+    assert entry["survey_vars"] == [
+        {
+            "name": "release_major",
+            "title": "Major version to cut",
+            "description": (
+                "Type the version this run must cut, e.g. v1.0.0. "
+                "The run refuses unless the computed next major is exactly this."
+            ),
+            "type": "string",
+            "required": True,
+        }
+    ]
+
+
+def test_both_release_templates_are_the_only_ones_on_this_playbook_and_carry_the_dev_suffix():
+    entries = [t for t in _templates() if t.get("playbook") == PLAYBOOK_PATH]
+    assert sorted(t["name"] for t in entries) == ["Release Major Version (Dev)", "Release Version (Dev)"]
+    assert all(t["name"].endswith(" (Dev)") for t in entries)
+
+
+def test_the_playbook_file_exists_where_the_templates_point():
+    assert PLAYBOOK.is_file()
