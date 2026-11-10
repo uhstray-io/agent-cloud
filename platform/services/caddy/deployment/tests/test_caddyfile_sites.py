@@ -35,7 +35,7 @@ CADDYFILE = """\
 }
 
 # a hand-maintained route
-nocodb.example.io {
+plane.example.io {
 \ttls {
 \t\tdns cloudflare {$CLOUDFLARE_API_KEY}
 \t\tresolvers 1.1.1.1
@@ -57,7 +57,7 @@ alpha.example.io, beta.example.io {
 }
 
 # BEGIN ANSIBLE MANAGED — agent-cloud extra sites
-canvas.example.io {
+postiz.example.io {
 \troute {
 \t\treverse_proxy /outpost.goauthentik.io/* http://192.0.2.3:9000
 \t\tforward_auth http://192.0.2.3:9000 {
@@ -87,24 +87,24 @@ def test_global_options_block_is_not_a_site(sites):
 def test_finds_every_site_and_no_nested_block(sites):
     found = [a for s in sites for a in s["addresses"]]
     assert found == [
-        "nocodb.example.io",
+        "plane.example.io",
         "devlog.example.io",
         "alpha.example.io",
         "beta.example.io",
-        "canvas.example.io",
+        "postiz.example.io",
     ]
     # `tls {`, `route {`, and `forward_auth ... {` are nested, never sites.
 
 
 def test_managed_region_is_distinguished(sites):
-    assert find_site(sites, "canvas.example.io")["managed"] is True
+    assert find_site(sites, "postiz.example.io")["managed"] is True
     assert find_site(sites, "devlog.example.io")["managed"] is False
 
 
 def test_upstreams_are_reported(sites):
     assert find_site(sites, "devlog.example.io")["upstreams"] == ["http://192.0.2.2:8000"]
     # A matcher token is not an upstream; both real upstreams are kept.
-    assert find_site(sites, "canvas.example.io")["upstreams"] == [
+    assert find_site(sites, "postiz.example.io")["upstreams"] == [
         "http://192.0.2.3:9000",
         "192.0.2.4:3000",
     ]
@@ -123,7 +123,7 @@ def test_retire_removes_only_the_named_block(sites):
     assert already_managed == []
     assert "devlog.example.io" not in out
     # Everything else survives, including the block that followed it.
-    for keep in ("nocodb.example.io", "alpha.example.io", "canvas.example.io"):
+    for keep in ("plane.example.io", "alpha.example.io", "postiz.example.io"):
         assert keep in out
     assert "email admin@example.com" in out
 
@@ -141,19 +141,19 @@ def test_retire_leaves_an_already_adopted_block_alone_and_says_so():
     # converge on every later run — an earlier version raised here, and the
     # first re-run after adopting a route failed on the production Caddy
     # (rolled back, but unable to complete until the inventory was edited).
-    out, removed, already_managed = retire(CADDYFILE, ["canvas.example.io"])
+    out, removed, already_managed = retire(CADDYFILE, ["postiz.example.io"])
     assert removed == []
-    assert already_managed == ["canvas.example.io"]
+    assert already_managed == ["postiz.example.io"]
     assert out == CADDYFILE
 
 
 def test_retire_mixes_an_adopted_name_with_a_real_retirement():
-    out, removed, already_managed = retire(CADDYFILE, ["canvas.example.io", "devlog.example.io"])
+    out, removed, already_managed = retire(CADDYFILE, ["postiz.example.io", "devlog.example.io"])
     assert removed == ["devlog.example.io"]
-    assert already_managed == ["canvas.example.io"]
+    assert already_managed == ["postiz.example.io"]
     assert "devlog.example.io" not in out
     # The adopted block survives as a parsed, still-managed site, not merely as text.
-    assert find_site(parse_sites(out), "canvas.example.io")["managed"] is True
+    assert find_site(parse_sites(out), "postiz.example.io")["managed"] is True
 
 
 def test_retire_refuses_a_shared_block():
@@ -166,10 +166,10 @@ def test_retire_leaves_the_file_parseable():
     out, _, _ = retire(CADDYFILE, ["devlog.example.io"])
     remaining = [a for s in parse_sites(out) for a in s["addresses"]]
     assert remaining == [
-        "nocodb.example.io",
+        "plane.example.io",
         "alpha.example.io",
         "beta.example.io",
-        "canvas.example.io",
+        "postiz.example.io",
     ]
 
 

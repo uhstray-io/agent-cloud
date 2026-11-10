@@ -5,7 +5,7 @@
 #
 # Patterns:
 #   - The legacy {$VAR}-driven routes below stay as-is during the transition.
-#   - New services (UhhCraft etc.) land as sites/<name>.caddy fragments.
+#   - New services land as sites/<name>.caddy fragments.
 #   - See plan/architecture/05-platform-infra.md for the full convention.
 import sites/*.caddy
 
@@ -38,22 +38,6 @@ import sites/*.caddy
 	reverse_proxy @collabora {$CLOUD_IP}:{$CLOUD_PORT_COLLABORA}
 }
 
-{$NOCODB_DOMAIN} {
-	tls {
-		dns cloudflare {$CLOUDFLARE_API_KEY}
-		resolvers 1.1.1.1 1.0.0.1
-	}
-	reverse_proxy {$NOCODB_IP}:{$NOCODB_PORT}
-}
-
-{$WISBOT_DOMAIN} {
-	tls {
-		dns cloudflare {$CLOUDFLARE_API_KEY}
-		resolvers 1.1.1.1 1.0.0.1
-	}
-	reverse_proxy {$WISBOT_IP}:{$WISBOT_PORT}
-}
-
 {$MIXPOST_DOMAIN} {
 	tls {
 		dns cloudflare {$CLOUDFLARE_API_KEY}
@@ -68,14 +52,6 @@ import sites/*.caddy
 		resolvers 1.1.1.1 1.0.0.1
 	}
 	reverse_proxy {$O11Y_IP}:{$O11Y_PORT}
-}
-
-{$N8N_DOMAIN} {
-	tls {
-		dns cloudflare {$CLOUDFLARE_API_KEY}
-		resolvers 1.1.1.1 1.0.0.1
-	}
-	reverse_proxy {$N8N_IP}:{$N8N_PORT}
 }
 
 {$SUPERSET_DOMAIN} {
