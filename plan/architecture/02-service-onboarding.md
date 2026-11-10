@@ -3,7 +3,7 @@
 >
 > **Depends on:** 00, 01
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
+> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
@@ -16,10 +16,10 @@
 **Contributors:** Architecture, Security, Automation, Infrastructure, DevOps review agents
 
 **References:**
-- [AUTOMATION-COMPOSABILITY.md](AUTOMATION-COMPOSABILITY.md) — Composable task library and deploy patterns
-- [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) — Secret generation, storage, rotation
-- [TESTING-AND-LINTING-PLAN.md](TESTING-AND-LINTING-PLAN.md) — CI/CD, linting, and testing requirements
-- [BRANCH-TESTING-WORKFLOW.md](BRANCH-TESTING-WORKFLOW.md) — Branch deploy and validation workflow
+- [AUTOMATION-COMPOSABILITY.md](../archive/architecture/AUTOMATION-COMPOSABILITY.md) — Composable task library and deploy patterns
+- [CREDENTIAL-LIFECYCLE-PLAN.md](../archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md) — Secret generation, storage, rotation
+- [TESTING-AND-LINTING-PLAN.md](../archive/architecture/TESTING-AND-LINTING-PLAN.md) — CI/CD, linting, and testing requirements
+- [BRANCH-TESTING-WORKFLOW.md](../archive/architecture/BRANCH-TESTING-WORKFLOW.md) — Branch deploy and validation workflow
 
 ---
 
@@ -329,7 +329,7 @@ See `plan/architecture/01-automation-model.md` (Migration Path section) for the 
 
 Websites — both customer-facing storefronts and internal portals — go through one extra layer before the standard onboarding checklist applies: the **WebSmith agent** at [`agents/websmith/`](../../agents/websmith/). WebSmith is a prompt-only meta-framework that walks a human through five phases (purpose, template, tooling, style, considerations) plus an optional intake to produce a signed `SPEC.md`. Only after the spec is signed does the build start.
 
-For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md). The short version:
+For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-BUILDING-AGENT.md`](../archive/architecture/WEBSITE-BUILDING-AGENT.md). The short version:
 
 ### How website onboarding differs
 
@@ -337,7 +337,7 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
 2. **Spec lives with the service.** The six phase artefacts + assembled `SPEC.md` land at `platform/services/<sitename>/context/spec/`. This is a deviation from WebSmith's framework default (which writes to a separate working directory) — but inside agent-cloud, the spec is committed alongside the implementation it constrains.
 3. **agent-cloud preset is surfaced during Phase 3.** Tooling phase presents the platform's defaults (Postgres, Podman, central Caddy, OpenBao, Semaphore, dedicated Proxmox VM, generate-in-CI) as the recommended path. User overrides are recorded in `SPEC.md` under `## Alignment with agent-cloud conventions` or `## Tracking future deviations`.
 4. **Standard onboarding picks up at Phase 0.** Once `SPEC.md` is signed, the rest of this document applies: Planning → Infrastructure → Repository → Credentials → Automation → Inventory → Testing → Documentation. The signed spec drives the answers to the questions Phase 0 asks (tier classification, dependencies, sizing).
-5. **Recipe is fixed.** Every site lands as a `platform/services/<sitename>/` with the same `deployment/ + context/` shape UhhCraft uses. The second site doesn't get to be bespoke — see the "second-site recipe" in [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md).
+5. **Recipe is fixed.** Every site lands as a `platform/services/<sitename>/` with the same `deployment/ + context/` shape UhhCraft uses. The second site doesn't get to be bespoke — see the "second-site recipe" in [`integration-with-agent-cloud.md`](../../agents/websmith/context/architecture/integration-with-agent-cloud.md).
 
 ### Reference site
 
@@ -345,8 +345,8 @@ For a fuller treatment of the WebSmith ↔ agent-cloud contract, read [`WEBSITE-
 
 ### Cross-references
 
-- [`WEBSITE-BUILDING-AGENT.md`](WEBSITE-BUILDING-AGENT.md) — architectural contract.
-- [`../development/WEBSMITH-INTEGRATION-PLAN.md`](../development/WEBSMITH-INTEGRATION-PLAN.md) — 11-phase rollout (current sites).
+- [`WEBSITE-BUILDING-AGENT.md`](../archive/architecture/WEBSITE-BUILDING-AGENT.md) — architectural contract.
+- [`WEBSMITH-INTEGRATION-PLAN.md`](../archive/development/WEBSMITH-INTEGRATION-PLAN.md) — 11-phase rollout (current sites).
 - [`agents/websmith/context/architecture/integration-with-agent-cloud.md`](../../agents/websmith/context/architecture/integration-with-agent-cloud.md) — second-site recipe (agent-facing).
 
 ---

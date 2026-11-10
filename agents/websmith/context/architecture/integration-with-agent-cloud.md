@@ -1,7 +1,7 @@
 # WebSmith ↔ agent-cloud integration
 
 > **Audience:** the LLM running a WebSmith session inside agent-cloud, and the humans reviewing what that session produced.
-> **Architecture doc:** [`plan/architecture/WEBSITE-BUILDING-AGENT.md`](../../../../plan/architecture/WEBSITE-BUILDING-AGENT.md) — the platform-side architectural contract.
+> **Architecture doc:** [`plan/archive/architecture/WEBSITE-BUILDING-AGENT.md`](../../../../plan/archive/architecture/WEBSITE-BUILDING-AGENT.md) — the platform-side architectural contract.
 
 This document is the **second-site recipe**. It tells the agent how to take a signed `SPEC.md` and turn it into a real `platform/services/<sitename>/` service that drops into agent-cloud with no Phase-2-style rewriting work.
 
@@ -127,7 +127,7 @@ Minimum useful skeleton:
 
 The fragment is rendered on the service host by the deploy playbook, slurped, copied to the Caddy host's `sites/<sitename>.caddy`, and Caddy is reloaded — all via `tasks/distribute-caddy-site.yml`. Zero-downtime.
 
-See [`plan/architecture/CADDY-REVERSE-PROXY.md`](../../../../plan/architecture/CADDY-REVERSE-PROXY.md) for the full convention.
+See [`plan/archive/architecture/CADDY-REVERSE-PROXY.md`](../../../../plan/archive/architecture/CADDY-REVERSE-PROXY.md) for the full convention.
 
 ---
 
@@ -201,7 +201,7 @@ The real `<sitename>_host` value lives in the private site-config inventory, nev
 
 Add an entry to [`platform/hypervisor/proxmox/vm-specs.example.yml`](../../../../platform/hypervisor/proxmox/vm-specs.example.yml) documenting the VM shape. The real `vm-specs.yml` lives in site-config.
 
-For GPU-using sites, also add a `hostpci` entry; see [`plan/development/UHHCRAFT-GPU-PASSTHROUGH.md`](../../../../plan/development/UHHCRAFT-GPU-PASSTHROUGH.md) for the host-side prep.
+For GPU-using sites, also add a `hostpci` entry; see [`plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md`](../../../../plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md) for the host-side prep.
 
 ---
 
@@ -275,12 +275,12 @@ If you find yourself doing 17 — adding something that's not in this list — p
 
 ## Cross-references
 
-- Architecture: [`plan/architecture/WEBSITE-BUILDING-AGENT.md`](../../../../plan/architecture/WEBSITE-BUILDING-AGENT.md)
-- Integration plan: [`plan/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md)
+- Architecture: [`plan/archive/architecture/WEBSITE-BUILDING-AGENT.md`](../../../../plan/archive/architecture/WEBSITE-BUILDING-AGENT.md)
+- Integration plan: [`plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md)
 - agent-cloud preset (catalog): [`../catalogs/stack-presets/agent-cloud-preset.md`](../catalogs/stack-presets/agent-cloud-preset.md)
 - Reference service: [`platform/services/uhhcraft/`](../../../../platform/services/uhhcraft/)
 - Reference deploy playbook: [`platform/playbooks/deploy-uhhcraft.yml`](../../../../platform/playbooks/deploy-uhhcraft.yml)
-- Caddy convention: [`plan/architecture/CADDY-REVERSE-PROXY.md`](../../../../plan/architecture/CADDY-REVERSE-PROXY.md)
+- Caddy convention: [`plan/archive/architecture/CADDY-REVERSE-PROXY.md`](../../../../plan/archive/architecture/CADDY-REVERSE-PROXY.md)
 - Composability foundation: [`plan/architecture/01-automation-model.md`](../../../../plan/architecture/01-automation-model.md)
-- Service onboarding (general): [`plan/architecture/SERVICE-INTEGRATION-PLAN.md`](../../../../plan/architecture/SERVICE-INTEGRATION-PLAN.md)
-- Container runtime conventions: [`plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../../../../plan/architecture/PODMAN-VS-DOCKER-COMPOSE.md)
+- Service onboarding (general): [`plan/archive/architecture/SERVICE-INTEGRATION-PLAN.md`](../../../../plan/archive/architecture/SERVICE-INTEGRATION-PLAN.md)
+- Container runtime conventions: [`plan/archive/architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../../../../plan/archive/architecture/PODMAN-VS-DOCKER-COMPOSE.md)

@@ -1,11 +1,14 @@
 # 04 — Credential Lifecycle & Access Governance
-> **Consolidates:** CREDENTIAL-LIFECYCLE-PLAN.md, ACCESS-BOUNDARIES.md (originals archived in `plan/archive/`)
+> **Consolidates:** CREDENTIAL-LIFECYCLE-PLAN.md, ACCESS-BOUNDARIES.md (originals archived in `plan/archive/architecture/`)
 >
 > **Depends on:** 00, 01
 >
 > **Constitution:** `PRINCIPLES.md` is the platform constitution; this document elaborates its Section 3 (Identity, Secrets & the Guardrail Triad) — credential lifecycle, the OpenBao -> Ansible -> Jinja -> `.env` boundary, the genesis exemption, and the role-based access model. Where the two disagree, PRINCIPLES.md wins.
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). See `ARCHITECTURE.md` for the big-picture 4-layer map.
+> Part of the dependency-ordered `plan/architecture/` set (00–09). See `ARCHITECTURE.md` for the big-picture 4-layer map.
+
+**Date:** 2026-11-04
+**Status:** ACTIVE
 
 
 <!-- ======================= source: CREDENTIAL-LIFECYCLE-PLAN.md ======================= -->

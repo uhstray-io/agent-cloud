@@ -7,7 +7,7 @@
 > Config-as-Code, Composability, Identity/Secrets, AI-Invariant, and Automation/Promotion
 > principles. When this doc and `PRINCIPLES.md` disagree, the constitution wins.
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
+> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
 
 
@@ -45,10 +45,10 @@ end-state in `PRINCIPLES.md` Section 6 **supersedes** that; read the rest of thi
   (Semaphore, which already holds the repo) renders the service's `compose.yml` + non-secret
   config and **copies only those artifacts** to a per-service runtime dir (`~/services/<name>/`,
   mode 0700). It does **not** clone the monorepo. The host is a dumb container host.
-- **Secrets flow OpenBao -> Ansible -> container-engine secret, never a persistent `.env`.**
-  Ansible delivers each secret to the engine's secret store (`podman secret` / `docker secret`),
+- **Target secret flow is OpenBao -> Ansible -> container-engine secret, never a persistent `.env`.**
+  The target delivers each secret to the engine's secret store (`podman secret` / `docker secret`),
   mounted at `/run/secrets` on **tmpfs** — RAM-only, vanishing on reboot, no persistent secret
-  file on disk to leak.
+  file on disk to leak. This describes the generalized target, not every current service.
 - **`deploy.sh` runs `compose up` over the copied artifacts** — lifecycle-only, unchanged
   (verify -> pull/build -> `compose up` -> wait healthy -> migrate); still never touches OpenBao.
 - **`git sparse-checkout` (service dir + `platform/lib` only) is the FALLBACK**, used **only**
@@ -76,12 +76,15 @@ flowchart LR
   UP --> CTR["Container running: no repo tree, no persistent .env"]
 ```
 
-**As-built: NOT YET TRUE.** Today `manage-secrets.yml` renders `.env` **into the clone**; the
-artifact-render/copy and engine-secret (`/run/secrets` tmpfs) delivery do not exist, and the
-sparse-checkout/runtime-dir tasks are `[PLANNED]`. Until they ship, `.gitignore` + the
-pre-commit/CI **trufflehog** gate are the real (fragile) secret boundary — not filesystem
-isolation. Resolve the [two build caveats](#build-caveats) first; build this first — the liveness
-loop and every honest secret-isolation claim in this doc depend on it.
+**As-built: NOT YET TRUE platform-wide.** Today `manage-secrets.yml` renders `.env` **into the clone**;
+the generalized artifact-render/copy and Ansible-to-engine-secret delivery are not implemented,
+and the sparse-checkout/runtime-dir tasks are `[PLANNED]`. NetBox is a specific exception: its
+Diode client secret is written under the deployment clone and bind-mounted read-only at
+`/run/secrets/netbox_to_diode`; this is a file bind mount, not the target engine-secret tmpfs
+flow. Until the generalized target ships, `.gitignore` + the pre-commit/CI **trufflehog** gate
+are the real (fragile) platform-wide secret boundary — not filesystem isolation. Resolve the
+two [build caveats](#build-caveats) first; build this first — the liveness loop and every honest
+secret-isolation claim in this doc depend on it.
 
 ### Architecture
 
@@ -125,7 +128,7 @@ graph LR
     LIB -. "symlink" .-> CLONE
 ```
 
-See `plan/SPARSE-CHECKOUT-MIGRATION.md` for the full directory layout and migration details.
+See `plan/archive/development/SPARSE-CHECKOUT-MIGRATION.md` for the full directory layout and migration details.
 
 ### Why Env Files on Disk?
 
@@ -252,12 +255,12 @@ platform/playbooks/
   harden-ssh.yml           NOPASSWD sudo + sshd lockdown  
   install-docker.yml       Install Docker CE (standalone)  
   sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)  
-  rotate-diode-credentials.yml  Monthly Diode client rotation (Hydra admin API)  
-  rotate-ssh-keys.yml           Annual SSH key rotation  
-  audit-credentials.yml         Weekly credential inventory + stale detection  
+  rotate-diode-credentials.yml  Monthly Diode client rotation (Hydra admin API) [PLANNED]
+  rotate-ssh-keys.yml           Annual SSH key rotation [PLANNED]
+  audit-credentials.yml         Weekly credential inventory + stale detection [PLANNED]
 ```
 
-`[PLANNED]` tasks are design targets that do **not** yet exist in `platform/playbooks/tasks/` — current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead (see `deploy-uhhcraft.yml` for the live pattern). Implement on demand; tracked in `plan/development/00-foundation-local-dev.md` Phase 0A.
+`[PLANNED]` entries are design targets that do **not** yet exist at their listed path. Current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead (see `deploy-uhhcraft.yml` for the live pattern). Implement on demand; tracked in `plan/development/00-foundation-local-dev.md` Phase 0A.
 
 ### Task Responsibilities
 
@@ -275,13 +278,13 @@ platform/playbooks/
 - Authenticate to OpenBao via AppRole; fetch existing secrets from `secret/data/{{ vault_secret_prefix }}/{{ service_name }}` (default prefix `"services"`)
 - Generate missing secrets per `_secret_definitions`, store all (existing + generated) back to OpenBao
 - Write KV v2 custom metadata (`created_at`, `creator`, `purpose`, `rotation_schedule`) after storing — see Credential Lifecycle Plan
-- Template service-specific env files into `_runtime_dir` (not the clone)
-- Backward compatible: `vault_secret_prefix | default('services')` for paths, `_runtime_dir | default(...)` for template destinations
+- **[TARGET]** Template service-specific env files into `_runtime_dir` (not the clone)
+- **[TARGET]** Backward compatible: `vault_secret_prefix | default('services')` for paths, `_runtime_dir | default(...)` for template destinations
 - `_secret_definitions` list `[{name, type, length}]`: `random` (generated if missing — passwords, tokens), `django` (Django key if missing), `user` (user-managed, never auto-generated — SNMP, API keys), `dynamic` (Phase 6 OpenBao DB-engine creds, not in KV — see Credential Lifecycle Plan)
 - `_env_templates` list of Jinja2 templates to render; `_secret_metadata` dict `{purpose, rotation_schedule}` written to KV v2
 
 **`run-deploy.yml`**
-- `cd` to `_runtime_dir` (e.g. `~/services/netbox/`), run deploy.sh from clone path; passes `CONTAINER_ENGINE` + `CLONE_DIR` env vars
+- **[TARGET]** `cd` to `_runtime_dir` (e.g. `~/services/netbox/`), run deploy.sh from clone path; passes `CONTAINER_ENGINE` + `CLONE_DIR` env vars
 - deploy.sh resolves `LIB_DIR` from `$CLONE_DIR/platform/lib` (not relative), validates `CLONE_DIR` has a `.git` dir before sourcing libs, verifies env files exist (does NOT generate secrets)
 - deploy.sh handles: upstream repos, image pull/build, compose lifecycle, migrations, superuser, OAuth2, agent start
 
@@ -361,13 +364,13 @@ vars:
     - include_tasks: tasks/verify-health.yml
 ```
 
-**Variable contract:** every playbook defines `_monorepo_dir` (read-only sparse checkout), `_deploy_dir` (source code within the clone), and `_runtime_dir` (mutable working dir where env files are templated and deploy.sh runs). Services needing Docker add `install-docker.yml` as a pre-phase; services needing `become` for specific steps set it per-task.
+**[TARGET] Variable contract:** each playbook in the proposed pattern defines `_monorepo_dir` (read-only sparse checkout), `_deploy_dir` (source code within the clone), and `_runtime_dir` (mutable working dir where env files are templated and deploy.sh runs). Services needing Docker add `install-docker.yml` as a pre-phase; services needing `become` for specific steps set it per-task. No playbook under `platform/` currently defines `_runtime_dir`.
 
-**Legacy services** (not yet on sparse checkout) omit `_runtime_dir` and keep using `clone-and-deploy.yml`; `manage-secrets.yml` falls back via `_runtime_dir | default(_monorepo_dir + '/' + monorepo_deploy_path)`.
+**[TARGET] Legacy compatibility:** services not yet on sparse checkout omit `_runtime_dir` and keep using `clone-and-deploy.yml`; `manage-secrets.yml` falls back via `_runtime_dir | default(_monorepo_dir + '/' + monorepo_deploy_path)`.
 
 ### Lifecycle Workflow Patterns (Non-Deploy)
 
-Not all workflows follow the 4-phase deploy pattern. Credential lifecycle workflows operate on existing deployments with their own patterns — see `plan/CREDENTIAL-LIFECYCLE-PLAN.md`.
+Not all workflows follow the 4-phase deploy pattern. Credential lifecycle workflows operate on existing deployments with their own patterns — see `plan/archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md`.
 
 **Rotation pattern (scheduled):**
 ```yaml
@@ -498,7 +501,7 @@ templates/*.j2 (in sparse checkout, read-only)
   = env files (in ~/services/<name>/, mode 0600, compose-readable)
 ```
 
-Templates are read from the clone (`_deploy_dir/templates/`); rendered files write to the runtime dir (`_runtime_dir/`) — never outside that boundary.
+**[TARGET]** Templates are read from the clone (`_deploy_dir/templates/`); rendered files write to the runtime dir (`_runtime_dir/`) — never outside that boundary.
 
 ### Principle: Clean Deploy for State Reset
 
@@ -565,7 +568,7 @@ During migration, unconverted services keep using `clone-and-deploy.yml`; the `m
 > The [two build caveats](#build-caveats) apply.
 
 - **Source/runtime separation:** the clone (`~/agent-cloud/`) is read-only source; all secrets land in the runtime dir (`~/services/<name>/`). Filesystem isolation — not `.gitignore` — is the boundary; no accidental `git add .` captures secrets.
-- **No `secrets/` directory in the clone:** eliminated; the bind-mount secret (`netbox_to_diode_client_secret.txt`) lives in `_runtime_dir/secrets/`.
+- **Target: no `secrets/` directory in copied runtime artifacts.** As built, NetBox writes `netbox_to_diode_client_secret.txt` in the deployment clone and bind-mounts it read-only at `/run/secrets/netbox_to_diode`; this is not the target tmpfs engine-secret path.
 - **Runtime dir permissions:** `chmod 700` on the dir, `600` on env files. Symlinked files (compose, libs) are world-readable — no secrets.
 - **Reduced attack surface per VM:** sparse checkout means each VM holds only its own service's code — a compromised NetBox VM can't read OpenBao/NemoClaw/other deploy scripts.
 - **Root ownership eliminated:** deploy.sh never runs with `become`; only specific sudo commands (orb-agent start) need privilege; no root-owned files in the clone.
@@ -579,10 +582,10 @@ During migration, unconverted services keep using `clone-and-deploy.yml`; the `m
 - **Audit metadata on every secret:** every `manage-secrets.yml` run writes KV v2 metadata (`created_at`, `creator`, `purpose`, `rotation_schedule`), letting the weekly inventory distinguish active from orphaned secrets.
 - **Audit logging:** OpenBao's file audit backend must be enabled and piped to Loki. Alerts fire on: same secret read >10x/minute (exfiltration), access from unknown AppRoles, failed auth attempts.
 - **Scheduled credential inventory:** weekly Semaphore-scheduled `audit-credentials.yml` compares OpenBao against inventory to detect orphaned, missing-metadata, and stale secrets.
-- **Dynamic database credentials (planned):** static Postgres passwords are highest-risk (persist indefinitely). The credential lifecycle plan migrates them to OpenBao's database engine (1-hour leases); once done, DB creds aren't templated into `.env` — containers fetch fresh creds at startup. See `plan/CREDENTIAL-LIFECYCLE-PLAN.md`.
+- **Dynamic database credentials (planned):** static Postgres passwords are highest-risk (persist indefinitely). The credential lifecycle plan migrates them to OpenBao's database engine (1-hour leases); once done, DB creds aren't templated into `.env` — containers fetch fresh creds at startup. See `plan/archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md`.
 - **Validation catches drift:** `validate-secrets.yml` detects when an OpenBao password no longer matches the database.
 - **deploy.sh has no credential access:** can't auth to OpenBao, generate secrets, or write to the clone; runs from the runtime dir only — limits blast radius if compromised.
-- **Runtime credentials (orb-agent):** created by post-deploy.sh, written to `_runtime_dir/.env`, synced to OpenBao by Ansible Phase 4 — the `.env` is a transient holding area, not the source of truth.
+- **[TARGET] Runtime credentials (orb-agent):** created by post-deploy.sh, written to `_runtime_dir/.env`, synced to OpenBao by Ansible Phase 4 — the `.env` is a transient holding area, not the source of truth.
 - **Git pull is a security property:** an always-clean clone makes `git pull` integrity trivial to verify; operators never need `git checkout .` / `git reset --hard`, which could mask malicious modifications.
 
 ---
@@ -619,7 +622,7 @@ Each AppRole gets ONLY the paths it needs; `manage-approle.yml` enforces this by
 
 ### Principle: TTL Enforcement
 
-All AppRoles must have bounded `secret_id_ttl` + `token_num_uses` (TTL=0 means a single leaked credential grants indefinite access). Secure defaults (`90d` / `25 uses`) come via `| default()` so existing callers get them automatically. `secret_id` values rotate before TTL expiry — a Semaphore-scheduled playbook responsibility, not deploy-time. See `plan/CREDENTIAL-LIFECYCLE-PLAN.md` for rationale + schedules.
+All AppRoles must have bounded `secret_id_ttl` + `token_num_uses` (TTL=0 means a single leaked credential grants indefinite access). Secure defaults (`90d` / `25 uses`) come via `| default()` so existing callers get them automatically. `secret_id` values rotate before TTL expiry — a Semaphore-scheduled playbook responsibility, not deploy-time. See `plan/archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` for rationale + schedules.
 
 ---
 
@@ -644,28 +647,33 @@ flowchart LR
 flowchart LR
     D1["deploy-netbox.yml"] --> P1["5 phases (NetBox only)"]
     D2["deploy-orb-agent.yml"] --> P2["Diode creds + agent start"]
-    D3["run-pfsense-sync.yml"] --> P3["scheduled every 15 min"]
+    D3["run-pfsense-sync.yml (planned)"] --> P3["scheduled every 15 min"]
 ```
 
-**Benefits:** retry individual workflows without the whole stack; independent scheduling (orb-agent after each NetBox deploy, pfsense-sync every 15 min); separate failure domains (orb-agent failure doesn't block NetBox); clear single-responsibility ownership.
+**Benefits:** retry individual workflows without the whole stack; independent scheduling (orb-agent after each NetBox deploy, planned pfSense sync every 15 min); separate failure domains (orb-agent failure doesn't block NetBox); clear single-responsibility ownership.
 
 ### Principle: Semaphore Templates as Workflow Triggers
 
-Each independent workflow gets its own Semaphore task template — operators run "Deploy NetBox", "Deploy Orb Agent", "Run pfSense Sync" separately, each observable and retryable in the UI.
+Each independent workflow gets its own Semaphore task template — operators run "Deploy NetBox" and "Deploy Orb Agent" separately today; "Run pfSense Sync" is planned. Each is observable and retryable in the UI.
 
 ### Implemented Workflows
 
 | Workflow | Playbook | Trigger | Depends On | Pattern |
 |----------|----------|---------|------------|---------|
-| Deploy NetBox | `deploy-netbox.yml` | Manual / CI | OpenBao unsealed | Sparse checkout + runtime dir |
-| Deploy Orb Agent | `deploy-orb-agent.yml` | After NetBox deploy | NetBox healthy + Diode auth | Mounts split: agent.yaml from runtime dir, workers from clone |
-| Clean Deploy NetBox | `clean-deploy-netbox.yml` | Manual (destructive) | OpenBao unsealed | Cleans both runtime dir + clone |
-| pfSense Sync | `run-pfsense-sync.yml` (planned) | Every 15 min | NetBox + Diode healthy | — |
+| Deploy NetBox | `deploy-netbox.yml` | Manual / CI | OpenBao unsealed | Full clone + secrets + deploy + verify |
+| Deploy Orb Agent | `deploy-orb-agent.yml` | After NetBox deploy | NetBox healthy + Diode auth | Full clone + Diode credentials + agent deploy |
+| Clean Deploy NetBox | `clean-deploy-netbox.yml` | Manual (destructive) | OpenBao unsealed | Cleans deployment containers, volumes, and clone |
 | Distribute SSH Keys | `distribute-ssh-keys.yml` | After VM provision | OpenBao has SSH keys | No monorepo needed |
 | Harden SSH | `harden-ssh.yml` | After key distribution | Keys verified working | No monorepo needed |
-| Rotate Diode Creds | `rotate-diode-credentials.yml` | Monthly (scheduled) | NetBox healthy + Hydra running | Create→Verify→Retire |
-| Rotate SSH Keys | `rotate-ssh-keys.yml` | Annual (scheduled) | OpenBao + all VMs reachable | Create→Verify→Retire |
-| Audit Credentials | `audit-credentials.yml` | Weekly (scheduled) | OpenBao unsealed | Read-only scan + report |
+
+### Planned Workflows
+
+| Workflow | Playbook | Intended trigger | Depends On | Pattern |
+|----------|----------|------------------|------------|---------|
+| pfSense Sync | `run-pfsense-sync.yml` [PLANNED] | Every 15 min | NetBox + Diode healthy | — |
+| Rotate Diode Creds | `rotate-diode-credentials.yml` [PLANNED] | Monthly (scheduled) | NetBox healthy + Hydra running | Create→Verify→Retire |
+| Rotate SSH Keys | `rotate-ssh-keys.yml` [PLANNED] | Annual (scheduled) | OpenBao + all VMs reachable | Create→Verify→Retire |
+| Audit Credentials | `audit-credentials.yml` [PLANNED] | Weekly (scheduled) | OpenBao unsealed | Read-only scan + report |
 
 ---
 
@@ -700,7 +708,7 @@ Never template `.env`, `agent.yaml`, or any generated config into `~/agent-cloud
 deploy.sh runs from the runtime dir (`~/services/<name>/`), not the clone. The runtime compose file is a symlink to the clone, but `.env` / `env/*.env` are local — running from the clone means compose can't find its env files.
 
 ### Brittle: Using monorepo_deploy_path as the deploy working directory
-`monorepo_deploy_path` is source-code location within the clone; the working dir is `~/services/<name>/`. Tasks that write files or run scripts use `_runtime_dir`, not `_monorepo_dir/monorepo_deploy_path`.
+**[TARGET]** `monorepo_deploy_path` is source-code location within the clone; the working dir is `~/services/<name>/`. Tasks that write files or run scripts use `_runtime_dir`, not `_monorepo_dir/monorepo_deploy_path`.
 
 ### Brittle: Creating convenience symlinks to the clone
 The old `~/netbox` → clone-deploy-path symlink is replaced by `~/services/<name>/`. Convenience symlinks made the clone look like a working directory, which it is not.

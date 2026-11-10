@@ -6,6 +6,8 @@
 > Part of the dependency-ordered `plan/development/` set (00–10). The source
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
+>
+> **Status:** ACTIVE (2026-11-04) — o11y is deployed in production (`platform/services/o11y/deployment/CLAUDE.md`; `AGENTS.md` Deployment Status records its boot persistence and health checks, 2026-09-26). The embedded O11Y-DEPLOYMENT plan keeps its original PROPOSED status below; treat this line as current.
 
 ## Signal identity, service visibility, and profiling contract
 
