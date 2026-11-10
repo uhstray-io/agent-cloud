@@ -65,8 +65,8 @@ _rule() {
   refute_contains "$e" '/authorize'
   [ "$(grep -o 'starts_with' <<<"$e" | wc -l | tr -d ' ')" -eq 3 ]
   refute_contains "$e" 'contains('
-  # Last in the ruleset, so no existing rule moves.
-  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 1 | cut -d'"' -f2)" = "plane-mcp-bypass-challenge" ]
+  # Appended, so no existing rule moved: only rules added after it may follow it.
+  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | cut -d'"' -f2 | sed -n '/^plane-mcp-bypass-challenge$/,$p' | tr '\n' ' ')" = "plane-mcp-bypass-challenge plane-github-webhook-bypass-challenge " ]
 }
 
 @test "cloudflare mcp: the inference skip rule and rate-limit rule are not widened to MCP" {
