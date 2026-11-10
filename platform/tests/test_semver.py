@@ -885,6 +885,10 @@ ALLOWLIST = "contains a character outside the allowed set"
         ("Fixes _GH-12_ today.", "contains a GH- reference"),  # \b misses it: _ is a word character
         ("Fixes __GH-15__ today.", "contains a GH- reference"),
         ("Fixes \u00e9GH-19 today.", "contains a GH- reference"),  # a non-ASCII letter before GH
+        ("Fixes \u017fGH-1 today.", "contains a GH- reference"),  # long s: (?i)[a-z] would match it
+        ("Fixes \u212aGH-1 today.", "contains a GH- reference"),  # Kelvin sign
+        ("Fixes \u0131GH-1 today.", "contains a GH- reference"),  # dotless i
+        ("Fixes \u0130GH-1 today.", "contains a GH- reference"),  # dotted capital I
     ],
 )
 def test_model_text_outside_the_allowlist_is_dropped_under_the_rule_it_breaks(tmp_path, bad, rule):

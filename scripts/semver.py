@@ -374,8 +374,9 @@ def _unsafe_text_problem(text):
     if "www." in text.casefold():
         return "contains 'www.'"
     # An ASCII lookbehind, not \b: Python counts _, é and Α as word characters, so \b misses _GH-1_ and éGH-1, which
-    # GitHub still links. High-5 is not a reference; x_GH-13 is refused too, which only drops a summary.
-    if re.search(r"(?i)(?<![a-z0-9])gh-\d", text):
+    # GitHub still links. High-5 is not a reference; x_GH-13 is refused too, which only drops a summary. No (?i): with
+    # it, [a-z] also matches the long s, the Kelvin sign and the dotless and dotted i, so the case is spelled out.
+    if re.search(r"(?<![A-Za-z0-9])[gG][hH]-[0-9]", text):
         return "contains a GH- reference"
     if SAFE_TEXT.fullmatch(text) is None:
         return "contains a character outside the allowed set"
