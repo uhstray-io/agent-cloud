@@ -116,8 +116,10 @@ base `compose.yml` never sets `SSL_CERT_FILE`.
 
 ## HTTPS listener (`skynet_tls`)
 
-The Dispatch Console reaches skynet over HTTPS, so its bearer never crosses the LAN in cleartext
-(skynet DESIGN-DECISIONS §20). The image serves the same routes, with the same token scopes, on
+The HTTPS listener lets the Dispatch Console reach skynet without sending its bearer across the LAN
+in cleartext (skynet DESIGN-DECISIONS §20). It is added beside the plain port, not in place of it:
+the bearer stops crossing in cleartext only once the console calls `skynet_port` and the firewall no
+longer admits it to `skynet_publish_port`. The image serves the same routes, with the same token scopes, on
 container port 8443 once `SKYNET_TLS_CERT_FILE` and `SKYNET_TLS_KEY_FILE` are set; plain 8080 is
 unchanged. The listener checks the leaf's files on every new connection and reloads them when
 their identity changes, so a renewal needs no restart.
@@ -132,8 +134,10 @@ their identity changes, so a renewal needs no restart.
   `skynet_bind`, and a `skynet_port` equal to `skynet_publish_port`. The firewall must admit the
   Dispatch Console VM to `skynet_port`.
 - **Key access.** The image runs as uid 10001. Production maps the deploy account to it with
-  `userns_mode: keep-id` (`compose.prod.yml`, every production deploy), so it can read the 0600
-  key; the deploy refuses podman older than 4.3. Local-dev runs as `1001:0`, the local Semaphore
+  `userns_mode: keep-id` (`compose.prod-tls.yml`, loaded by `deploy.sh` only outside local mode
+  with the listener on), so it can read the 0600 key; a production deploy without the listener
+  renders no `user` or `userns_mode`. With the listener, the deploy refuses podman older than 4.3,
+  checked after the repo placement that installs podman. Local-dev runs as `1001:0`, the local Semaphore
   container's uid that writes the key (`compose.local.yml`).
 - **Renewal.** `Renew Internal Certs` admits the leaf through the `skynet-server` row in
   `vars/renew-listener-servers.yml` (prefix `skynet`, gated on `skynet_tls`) and proves the new
