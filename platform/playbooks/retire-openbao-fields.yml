@@ -43,7 +43,12 @@
   become: false
   vars:
     _retired: "{{ (lookup('file', playbook_dir ~ '/vars/retired-secret-fields.yml') | from_yaml).retired_secret_fields | default([], true) }}"
-    _bao_url: "{{ hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '' }}"
+    # openbao_addr first, as the shared-environment playbooks read it (deploy-authentik.yml,
+    # manage-agentgateway-client-key.yml): Retire OpenBao Fields (Dev) runs in the shared
+    # environment, where the inventory-group expression alone resolved empty (task 14650,
+    # 2026-11-10; the same expression passes locally on the same inventory, cause unverified).
+    # The inventory's single openbao_svc host stays the fallback for an environment without it.
+    _bao_url: "{{ openbao_addr | default(hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '', true) }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
 

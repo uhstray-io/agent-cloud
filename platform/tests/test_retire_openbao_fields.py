@@ -37,10 +37,10 @@ PLAYBOOK = PLAYBOOKS / "retire-openbao-fields.yml"
 DECLARATION = PLAYBOOKS / "vars/retired-secret-fields.yml"
 REFUSE = PLAYBOOKS / "refuse-internal-extra-vars.yml"
 TASKS = PLAYBOOKS / "tasks"
-# The single-host OpenBao address expression; tasks/guard-o11y-restore-target.yml:14 uses the same one.
+# openbao_addr first (the shared environment sets it), else the inventory's single openbao_svc host.
 SINGLE_HOST_BAO_URL = (
-    "{{ hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') "
-    "if (groups['openbao_svc'] | default([]) | length == 1) else '' }}"
+    "{{ openbao_addr | default(hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') "
+    "if (groups['openbao_svc'] | default([]) | length == 1) else '', true) }}"
 )
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
 
