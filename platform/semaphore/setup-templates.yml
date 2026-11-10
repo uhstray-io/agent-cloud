@@ -121,6 +121,13 @@
         fail_msg: "Supply a nonempty list of unique, exact declared template names, including any (Dev) suffix."
       when: _scoped
 
+    - name: "Require selected enum options to match Semaphore's API schema"
+      ansible.builtin.assert:
+        that: _selected_templates | survey_enum_option_problems | length == 0
+        fail_msg: >-
+          Selected template survey enums must declare each option as an object with
+          string name and value fields: {{ _selected_templates | survey_enum_option_problems | join('; ') }}.
+
     - name: "Require one existing directly Dev-bound scheduled declaration for scoped schedule publication"
       ansible.builtin.assert:
         that:

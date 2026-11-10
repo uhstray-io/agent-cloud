@@ -64,10 +64,14 @@
   # through dynamic includes, whose tags stop at the include (review of grow-o11y-root.yml).
   tags: [always]
   vars:
-    # Named vars so neither regex line breaks the 200-char limit — a folded
-    # scalar would join with spaces INSERTED INTO the pattern. The behavioural
-    # table in test_credential_leaks.bats compiles both, exactly as decoded here.
-    _pat_strict: '^(https://|http://(localhost|127(\.[0-9]{1,3}){3}|10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2})(?::[0-9]{1,5})?(?:/|$))'
+    # Bound every IPv4 octet before accepting private or loopback HTTP. Keeping the
+    # fragments named keeps the full URL expression readable and within line limits.
+    _pat_ipv4_octet: '(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[0-9]{1,2})'
+    _pat_loopback: '127(?:\.{{ _pat_ipv4_octet }}){3}'
+    _pat_private_10: '10(?:\.{{ _pat_ipv4_octet }}){3}'
+    _pat_private_192: '192\.168(?:\.{{ _pat_ipv4_octet }}){2}'
+    _pat_private_172: '172\.(1[6-9]|2[0-9]|3[01])(?:\.{{ _pat_ipv4_octet }}){2}'
+    _pat_strict: '^(https://|http://(localhost|{{ _pat_loopback }}|{{ _pat_private_10 }}|{{ _pat_private_192 }}|{{ _pat_private_172 }})(?::[0-9]{1,5})?(?:/|$))'
     # A scheme alone does not prove that the authority is a host: userinfo or an
     # empty authority would otherwise pass the broad https:// branch above.
     _pat_https: '^https://(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*(?:\.)?|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?(?:[/?#]|$)'

@@ -21,6 +21,13 @@
 #   _ca_engine          container engine on the CA host (default: that host's
 #                       container_engine, else podman)
 #   _ca_name            step-ca container name (default: step-ca)
+#   _ca_root_combined_dest  also write a COMBINED bundle here: the same root + intermediate,
+#                       then the play host's public trust roots. For a consumer whose
+#                       SSL_CERT_FILE replaces its whole trust store. Unset: no combined bundle,
+#                       and no public roots are needed.
+#   _ca_root_system_bundles  candidate paths for the play host's public roots, first existing
+#                       wins (default: /etc/ssl/certs/ca-certificates.crt, then
+#                       /etc/pki/tls/certs/ca-bundle.crt). Read only with _ca_root_combined_dest.
 
 - name: "Assert required variables for CA-root distribution"
   ansible.builtin.assert:
@@ -95,3 +102,91 @@
   ansible.builtin.debug:
     msg: "check mode: {{ _ca_root_bundle }} would be rewritten with the CA's current root and intermediate"
   when: ansible_check_mode and _ca_root_held != _ca_root_new
+
+# ── Combined bundle (optional, _ca_root_combined_dest) ────────────────────────────────
+# SSL_CERT_FILE REPLACES the consumer's whole trust store. The local agentgateway's custom
+# upstream is a public-CA host (https://inference.uhstray.io/v1, Cloudflare-proxied), which
+# step-ca cannot sign, so its bundle must also carry the play host's public roots. Same
+# reasoning as the Semaphore bundle in bootstrap-local-dev.yml. Without the variable, every
+# task below is skipped and no public roots are read.
+- name: "Name the public trust roots the play host may hold"
+  ansible.builtin.set_fact:
+    _ca_root_system_candidates: >-
+      {{ _ca_root_system_bundles | default(['/etc/ssl/certs/ca-certificates.crt',
+                                            '/etc/pki/tls/certs/ca-bundle.crt']) }}
+  when: _ca_root_combined_dest | default('') | length > 0
+
+- name: "Find the play host's public trust roots"
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ _ca_root_system_candidates }}"
+  register: _ca_root_system_stat
+  when: _ca_root_combined_dest | default('') | length > 0
+
+- name: "Name the first public trust root that exists"
+  ansible.builtin.set_fact:
+    # first on an empty sequence yields an Undefined that default() turns into '' (the refusal below)
+    _ca_root_system_path: >-
+      {{ _ca_root_system_stat.results | selectattr('stat.exists') | map(attribute='item') | first | default('', true) }}
+  when: _ca_root_combined_dest | default('') | length > 0
+
+- name: "Refuse a combined bundle when the play host holds no public roots"
+  ansible.builtin.assert:
+    that:
+      - _ca_root_system_path | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }}: no public trust roots at {{ _ca_root_system_candidates | join(' or ') }}.
+      The combined bundle for {{ _ca_root_combined_dest }} needs them; install the distribution's CA
+      certificates package on the play host.
+    quiet: true
+  when: _ca_root_combined_dest | default('') | length > 0
+
+- name: "Read the public trust roots on the play host"
+  ansible.builtin.slurp:
+    src: "{{ _ca_root_system_path }}"
+  register: _ca_root_system_read
+  when: _ca_root_combined_dest | default('') | length > 0
+
+- name: "Read the combined bundle the consumer holds"
+  ansible.builtin.slurp:
+    src: "{{ _ca_root_combined_dest }}"
+  register: _ca_root_combined_current
+  failed_when: false
+  when: _ca_root_combined_dest | default('') | length > 0
+
+- name: "Name the combined bundle's new content"
+  ansible.builtin.set_fact:
+    _ca_root_combined_new: "{{ _ca_root_new }}{{ _ca_root_system_read.content | b64decode }}"
+    _ca_root_combined_held: "{{ (_ca_root_combined_current.content | b64decode) if (_ca_root_combined_current.content is defined) else '' }}"
+  when: _ca_root_combined_dest | default('') | length > 0
+
+- name: "Ensure the combined bundle's directory exists"
+  ansible.builtin.file:
+    path: "{{ _ca_root_combined_dest | dirname }}"
+    state: directory
+    mode: "0755"
+  when: _ca_root_combined_dest | default('') | length > 0
+
+# Written IN PLACE, as the bundle above is, and only when it differs (a renewed intermediate,
+# a new public root after an OS update); skipped under --check.
+- name: "Write the combined trust bundle to {{ _ca_root_combined_dest }}"
+  ansible.builtin.shell: |
+    set -eu
+    cat > {{ _ca_root_combined_dest | quote }}
+    chmod 0644 {{ _ca_root_combined_dest | quote }}
+  args:
+    stdin: "{{ _ca_root_combined_new }}"
+    stdin_add_newline: false
+  changed_when: true
+  when:
+    - _ca_root_combined_dest | default('') | length > 0
+    - not ansible_check_mode
+    - _ca_root_combined_held != _ca_root_combined_new
+
+- name: "Report a combined bundle a real run would rewrite"
+  ansible.builtin.debug:
+    msg: "check mode: {{ _ca_root_combined_dest }} would be rewritten with the CA's root and intermediate plus the public roots"
+  when:
+    - _ca_root_combined_dest | default('') | length > 0
+    - ansible_check_mode
+    - _ca_root_combined_held != _ca_root_combined_new

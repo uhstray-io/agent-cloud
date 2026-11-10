@@ -5,12 +5,27 @@
 # its running containers, its agent practices and the registry entries for this step and the
 # steps it feeds, and records them with set_stats under `snapshot`. No credential values.
 #
-# Usage (Semaphore): -e target_service=tududi_svc
+# Usage (Semaphore): -e target_service=honcho_svc
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Refuse a target group that matches no hosts"
+  # A play whose hosts: matches nothing exits 0 with no snapshot, which reads as a pass: the step would record a
+  # service-assess result over nothing. The same guard Verify Service Health carries (verify-service-health.yml), read
+  # from the same target_service as the snapshot below, so one override moves both.
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # Tagged so a verify-only run (--tags verify) keeps the guard, as it does for the snapshot.
+  tags: [verify]
+  tasks:
+    - name: "Require target_service to name a populated inventory group"
+      ansible.builtin.assert:
+        that: (groups.get(target_service | default(''), []) | length) > 0
+        fail_msg: "target_service '{{ target_service | default('') }}' matches no hosts in this inventory: nothing would be snapshotted."
 
 - name: "Snapshot the service assessment inputs: {{ target_service | default('(unset)') }}"
   hosts: "{{ target_service | default('ungrouped') }}"

@@ -1,0 +1,97 @@
+---
+# provision-console-semaphore-access.yml — the Dispatch Console's own read-only Semaphore identity
+# (plan/development/17-dispatch-console.md, D20).
+#
+# Why. The console lists Semaphore tasks for /v1/work (Phase 2). It needs a credential for that, and
+# the credential must not be able to launch a task: launch rights are runner rights
+# (manage-semaphore-access.yml). So the console gets a dedicated user, svc-console, at project role
+# guest, and never the controller's token (secret/services/semaphore). Guest holds no run permission:
+# the role table gives ProjectGuest 0 (upstream db/ProjectUser.go:22-26), and the task-create route
+# requires CanRunProjectTasks (upstream api/router.go:286-287, GetMustCanMiddleware at
+# api/projects/project.go:88-105), so a guest's launch probe answers 403.
+#
+# What. This play refuses a loopback override and a production run with no declared project, and resolves
+# _pid. The account, membership, store write, API token and proof are the shared task file
+# tasks/provision-semaphore-service-identity.yml, which the skynet identity play reuses. Its header
+# documents each step. Re-running converges: every step is idempotent.
+#
+# Order with deploy-console.yml: run this play first. Deploy console reads semaphore_api_token and
+# stops before any write when it is absent. Manage Semaphore Access refuses a declared team member that
+# has no Semaphore account yet (playbooks/filter_plugins/semaphore_access.py), so run this play before
+# declaring svc-console in semaphore_project_members.
+#
+# Project. This play runs on localhost, which receives no console_svc host vars, so it reads the project
+# from the console_svc host by hostvars: that host's console_semaphore_project (site-config inventory;
+# bootstrap-local-dev.yml in local-dev). Ansible precedence applies to that read too: a passed
+# console_semaphore_project extra var (-e) outranks the inventory value, so it wins when it is passed.
+# A production run with neither stops before any login or write. Only local_mode falls back to project 1.
+#
+# Check mode: reads run; every write is skipped (account, password, membership, login, mint, store).
+#
+# Unverified here: whether production Semaphore accepts password login for svc-console. The code path
+# is read at v2.19.11 (api/login.go:286-382), but no live run has been made from this change.
+#
+# Usage: the "Provision Console Semaphore Access" Semaphore template (and its (Dev) and (Local) twins).
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Provision the Dispatch Console's read-only Semaphore identity (svc-console, guest)"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # The controller's own API, loopback only. This play holds an admin token, so the URL is fixed.
+    _semaphore_url: "http://127.0.0.1:3000"
+    # The console_svc host that declares the project. Empty when the group is absent (never an error).
+    _console_svc_hosts: "{{ groups['console_svc'] | default([]) }}"
+    _console_svc_project: >-
+      {{ hostvars[_console_svc_hosts[0]].console_semaphore_project | default('')
+         if (_console_svc_hosts | length > 0) else '' }}
+    # _pid is set by the resolve task below, before any Semaphore call. It is not a play var.
+    _svc_user: "svc-console"
+    _svc_display_name: "Dispatch Console"
+    # Guest: refused at the permission gate, so the launch probe answers 403 (api/projects/project.go:97-98).
+    _svc_role: "guest"
+    _svc_launch_status: 403
+    _svc_email: "svc-console@{{ dev_zone | default('agent-cloud.test') }}"
+    _store_path: "services/console"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Every HTTP status, so a probe or write answers to a visible assert with its code, not to a
+    # censored uri failure (no_log hides the message of a failed task).
+    _any_status: "{{ range(100, 600) | list }}"
+
+  tasks:
+    - name: "Refuse a controller API destination override before authentication"
+      ansible.builtin.assert:
+        # Both the public override and the URL the requests actually use (as manage-semaphore-access.yml).
+        that:
+          - _semaphore_url == 'http://127.0.0.1:3000'
+          - (semaphore_url | default(_semaphore_url)) == 'http://127.0.0.1:3000'
+        fail_msg: "Console access provisioning may only use the controller's fixed loopback API."
+
+    # Before any login or write: the project is the console_svc host's declaration, else the extra var.
+    # Production never falls back to project 1; only local_mode does.
+    - name: "Refuse a production run with no declared Semaphore project for the console"
+      ansible.builtin.assert:
+        that:
+          - (_console_svc_project | string | length > 0) or (console_semaphore_project is defined)
+        fail_msg: >-
+          No Semaphore project is declared for the console. Set console_semaphore_project on the
+          console_svc host in site-config, or pass it as an extra var. Production never binds
+          svc-console to project 1 by default.
+      when: not (local_mode | default(false) | bool)
+
+    - name: "Resolve the Semaphore project the console is bound to"
+      ansible.builtin.set_fact:
+        _pid: >-
+          {{ _console_svc_project if (_console_svc_project | string | length > 0)
+             else (console_semaphore_project | default(1)) }}
+
+    # Every OpenBao and Semaphore request follows: the transport guard is the shared file's first task.
+    - name: "Provision the service identity (shared tasks: account, membership, token, proof)"
+      ansible.builtin.include_tasks: tasks/provision-semaphore-service-identity.yml

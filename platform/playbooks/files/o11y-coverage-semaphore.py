@@ -17,6 +17,7 @@ from contextlib import redirect_stdout
 from datetime import UTC, datetime, timedelta
 
 MAX_BINDINGS = 64
+MAX_TRANSIENT_TASK_IDS = 64
 MAX_METADATA_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 1024 * 1024
 REQUEST_TIMEOUT = 10
@@ -43,8 +44,22 @@ OBSERVATION_FIELDS = {
 }
 CONTROLLER_FIELDS = {
     "semaphore_url", "api_token", "project_id", "repository_id", "expected_repository_sha", "inventory",
+    "receipt_task_ids",
 }
 CONTROLLER_REQUIRED_FIELDS = {"expected_repository_sha", "inventory"}
+SAFE_REFUSAL_CODES = frozenset({
+    "binding_limit", "conflicting_stats", "deadline", "http_status", "invalid_binding",
+    "invalid_controller_input", "invalid_credentials", "invalid_declaration", "invalid_endpoint",
+    "invalid_template_repository", "invalid_utc_time", "launch_inputs", "malformed_json",
+    "observation_binding", "observation_shape", "observation_time_order",
+    "output_rows", "output_shape", "output_time_order", "readback_shape", "repository_mismatch",
+    "repository_revision_mismatch", "response_encoding", "response_framing", "response_size",
+    "route_refused", "task_drift", "task_identity_mismatch", "task_inventory_override",
+    "task_not_accepted", "task_override", "task_params", "task_time_order", "template_drift",
+    "template_mismatch", "terminal_stats", "transient_receipt_key", "transient_receipt_limit",
+    "transient_receipt_shape", "transient_receipt_size", "transient_receipt_legacy_pointer",
+    "transport", "truncated_response",
+})
 
 
 class Refusal(Exception):
@@ -108,9 +123,14 @@ def _int(value):
 def accept_receipt(*, binding, target, signal, project_id, repository_id,
                    repository_sha, inventory_revision, task, output_rows, template, repository, now):
     """Return bounded attribution only when one exact task/output pair proves the declaration."""
-    if (not isinstance(binding, dict) or set(binding) != {"task_id", "template_id", "observation_window_seconds"}
-            or not _positive_id(binding.get("task_id")) or not _positive_id(binding.get("template_id"))
+    if (not isinstance(binding, dict)
+            or set(binding) not in ({"template_id", "observation_window_seconds"},
+                                    {"task_id", "template_id", "observation_window_seconds"})
+            or ("task_id" in binding and not _positive_id(binding.get("task_id")))
+            or not _positive_id(binding.get("template_id"))
             or not _int(binding.get("observation_window_seconds"))):
+        raise Refusal("invalid_binding")
+    if "task_id" not in binding:
         raise Refusal("invalid_binding")
     task_id, template_id, window = (
         binding["task_id"], binding["template_id"], binding["observation_window_seconds"]
@@ -143,7 +163,8 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
     if (not _positive_id(task.get("template_id")) or task.get("template_id") != template_id
             or task.get("status") != "success"):
         raise Refusal("task_not_accepted")
-    if task.get("commit_hash") != repository_sha:
+    task_repository_sha = task.get("commit_hash")
+    if not isinstance(task_repository_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", task_repository_sha):
         raise Refusal("repository_revision_mismatch")
     if (task.get("playbook") != "" or task.get("arguments") not in (None, "")
             or task.get("git_branch") not in (None, "") or task.get("limit", "") != ""
@@ -167,7 +188,7 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
         raise Refusal("launch_inputs") from None
     expected_launch = {
         "o11y_verification_mode": "strict",
-        "expected_repository_sha": repository_sha,
+        "expected_repository_sha": task_repository_sha,
         "expected_inventory_revision": inventory_revision,
         "expected_target_id": target.get("target_id"),
         "expected_signal": signal,
@@ -205,7 +226,7 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
             or set(observation) != OBSERVATION_FIELDS):
         raise Refusal("observation_shape")
     if (observation.get("target_id") != target.get("target_id") or observation.get("signal") != signal
-            or observation.get("repository_sha") != repository_sha
+            or observation.get("repository_sha") != task_repository_sha
             or observation.get("inventory_revision") != inventory_revision
             or observation.get("observation_window_seconds") != window
             or observation.get("freshness_seconds") != freshness):
@@ -215,15 +236,13 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
     if not started <= query_end <= observed <= ended <= now:
         raise Refusal("observation_time_order")
     expires = query_end + timedelta(seconds=freshness - window)
-    if now >= expires:
-        raise Refusal("observation_expired")
     return {
-        "status": "verified",
+        "status": "incomplete" if task_repository_sha != repository_sha or now >= expires else "verified",
         "target_id": target["target_id"],
         "signal": signal,
         "task_id": task_id,
         "template_id": template_id,
-        "repository_sha": repository_sha,
+        "repository_sha": task_repository_sha,
         "inventory_revision": inventory_revision,
         "observed_at": observation["observed_at"],
         "expires_at": expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -233,20 +252,25 @@ def accept_receipt(*, binding, target, signal, project_id, repository_id,
 def _terminal_observation(task_id, rows, created, started, ended, now):
     if not isinstance(rows, list) or len(rows) < 2:
         raise Refusal("output_rows")
-    previous_id = 0
+    row_ids = [row.get("id") if isinstance(row, dict) else None for row in rows]
+    if not all(_int(value) and value >= 0 for value in row_ids):
+        raise Refusal("output_rows")
+    zero_ids = all(value == 0 for value in row_ids)
+    if not zero_ids and (any(value == 0 for value in row_ids)
+                         or any(left >= right for left, right in zip(row_ids, row_ids[1:], strict=False))):
+        raise Refusal("output_rows")
     previous_time = None
     texts = []
     stamps = []
     for row in rows:
         if (not isinstance(row, dict) or set(row) != {"id", "task_id", "stage_id", "time", "output"}
-                or not _positive_id(row.get("id")) or row["id"] <= previous_id
                 or not _positive_id(row.get("task_id")) or row.get("task_id") != task_id
                 or row.get("stage_id") is not None or not isinstance(row.get("output"), str)):
             raise Refusal("output_rows")
         stamp = _utc(row.get("time"))
         if not created <= stamp <= ended <= now or (previous_time is not None and stamp < previous_time):
             raise Refusal("output_time_order")
-        previous_id, previous_time = row["id"], stamp
+        previous_time = stamp
         output = row["output"]
         if not output.strip():
             continue
@@ -444,13 +468,63 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
         raise Refusal("invalid_controller_input")
     if inventory.get("repository_sha", repository_sha) != repository_sha:
         raise Refusal("invalid_controller_input")
-    with redirect_stdout(io.StringIO()):
-        census_module.validate(targets, inventory.get("receipt_bindings", {}))
-
     receipt_bindings = inventory.get("receipt_bindings", {})
+    with redirect_stdout(io.StringIO()):
+        census_module.validate(targets, receipt_bindings)
+    transient_task_ids = payload.get("receipt_task_ids", "")
+    if isinstance(transient_task_ids, str):
+        if len(transient_task_ids.encode("utf-8")) > MAX_METADATA_BYTES:
+            raise Refusal("transient_receipt_size")
+        try:
+            transient_task_ids = json.loads(
+                transient_task_ids, object_pairs_hook=_no_duplicate_keys, parse_constant=_reject_constant
+            ) if transient_task_ids else {}
+        except (json.JSONDecodeError, ValueError):
+            raise Refusal("transient_receipt_shape") from None
+    if not isinstance(transient_task_ids, dict):
+        raise Refusal("transient_receipt_shape")
+    targets_by_id = {target.get("target_id"): target for target in targets if isinstance(target, dict)}
+    stable_task_ids = {
+        binding["task_id"]
+        for signals in receipt_bindings.values()
+        for binding in signals.values()
+        if isinstance(binding, dict) and "task_id" in binding
+    }
+    task_ids = []
+    for target_id, signal_ids in transient_task_ids.items():
+        if (not isinstance(target_id, str) or target_id not in receipt_bindings
+                or not isinstance(signal_ids, dict) or not signal_ids):
+            raise Refusal("transient_receipt_key")
+        target = targets_by_id.get(target_id)
+        for signal, task_id in signal_ids.items():
+            binding = receipt_bindings[target_id].get(signal)
+            declarations_for_target = target.get("signals") if isinstance(target, dict) else None
+            declaration = declarations_for_target.get(signal) if isinstance(declarations_for_target, dict) else None
+            if (not isinstance(binding, dict) or not isinstance(declaration, dict)
+                    or declaration.get("applicable") is not True or not _positive_id(task_id)):
+                raise Refusal("transient_receipt_key")
+            if (signal in target.get("receipt_reference", {})
+                    or "receipt_reference" in declaration):
+                raise Refusal("transient_receipt_legacy_pointer")
+            task_ids.append(task_id)
+    if (len(task_ids) > MAX_TRANSIENT_TASK_IDS
+            or len(set(task_ids)) != len(task_ids) or stable_task_ids.intersection(task_ids)):
+        raise Refusal("transient_receipt_limit")
+    receipt_bindings = {
+        target_id: {signal: dict(binding) for signal, binding in signals.items()}
+        for target_id, signals in receipt_bindings.items()
+    }
+    for target_id, signal_ids in transient_task_ids.items():
+        for signal, task_id in signal_ids.items():
+            receipt_bindings[target_id][signal]["task_id"] = task_id
+    with redirect_stdout(io.StringIO()):
+        census_module.validate(targets, receipt_bindings)
+
     declarations = []
     for target in targets:
         for signal, binding in receipt_bindings.get(target["target_id"], {}).items():
+            if "task_id" not in binding:
+                continue
             freshness = target["signals"][signal]["freshness_seconds"]
             window = binding["observation_window_seconds"]
             if not 60 <= window <= 3600 or not window < freshness <= 86400:
@@ -492,20 +566,22 @@ def controller_report(payload, *, reader_factory=None, clock=None, census_module
             task=result["task"], output_rows=result["output"], template=result["template"],
             repository=result["repository"], now=clock(),
         )
-        verified_receipts.setdefault(target["target_id"], {})[signal] = accepted
+        if accepted["status"] == "verified":
+            verified_receipts.setdefault(target["target_id"], {})[signal] = accepted
 
     with redirect_stdout(io.StringIO()):
         report_now = clock()
         if isinstance(report_now, str):
             report_now = _utc(report_now)
         return census_module.build_report(
-            pathlib.Path(__file__).parents[3].resolve(), inventory, repository_sha,
+            pathlib.Path(__file__).parents[3].resolve(),
+            {**inventory, "receipt_bindings": receipt_bindings}, repository_sha,
             report_now, verified_receipts=verified_receipts,
         )
 
 
 def main():
-    refusal = {"status": "refused", "reason": "receipt_verification_failed"}
+    generic_refusal = {"status": "refused", "reason": "receipt_verification_failed"}
     try:
         if sys.argv[1:] != ["--controller"]:
             raise Refusal("invalid_controller_input")
@@ -513,8 +589,15 @@ def main():
         report = controller_report(payload)
         print(json.dumps(report, sort_keys=True))
         return 0
-    except (Exception, SystemExit):
+    except Refusal as exc:
+        # Only internal, reviewed literal categories may cross the controller boundary.
+        refusal = {"status": "refused", "reason": exc.code if isinstance(exc.code, str)
+                   and exc.code in SAFE_REFUSAL_CODES
+                   else generic_refusal["reason"]}
         print(json.dumps(refusal, sort_keys=True))
+        return 2
+    except (Exception, SystemExit):
+        print(json.dumps(generic_refusal, sort_keys=True))
         return 2
 
 

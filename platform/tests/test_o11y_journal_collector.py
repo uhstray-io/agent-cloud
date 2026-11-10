@@ -1,6 +1,7 @@
 """Safety contract for the bounded receiver-host journald pilot."""
 
 import ast
+import getpass
 import importlib.util
 import json
 import os
@@ -9,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -16,15 +18,12 @@ from unittest.mock import Mock
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
-from jinja2 import Environment
+from jinja2 import Environment, StrictUndefined
+from strict_chain import assert_strict_chain
 
 ROOT = Path(__file__).resolve().parents[2]
 O11Y = ROOT / "platform/services/o11y/deployment"
 PLAYBOOK = ROOT / "platform/playbooks/deploy-o11y-journal-collector.yml"
-HELPER = ROOT / "platform/playbooks/files/probe-o11y-journal-directory.py"
-SPEC = importlib.util.spec_from_file_location("o11y_journal_probe", HELPER)
-PROBE = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(PROBE)
 SURVEY_HELPER = ROOT / "platform/playbooks/files/survey-o11y-journal-directory.py"
 SURVEY_SPEC = importlib.util.spec_from_file_location("o11y_journal_survey", SURVEY_HELPER)
 SURVEY = importlib.util.module_from_spec(SURVEY_SPEC)
@@ -33,15 +32,29 @@ POSITIONS_HELPER = ROOT / "platform/playbooks/files/o11y-journal-positions.py"
 POSITIONS_SPEC = importlib.util.spec_from_file_location("o11y_journal_positions", POSITIONS_HELPER)
 POSITIONS = importlib.util.module_from_spec(POSITIONS_SPEC)
 POSITIONS_SPEC.loader.exec_module(POSITIONS)
+COMPOSE_HELPER = ROOT / "platform/playbooks/files/verify-o11y-journal-compose.py"
+COMPOSE_SPEC = importlib.util.spec_from_file_location("o11y_journal_compose", COMPOSE_HELPER)
+COMPOSE = importlib.util.module_from_spec(COMPOSE_SPEC)
+COMPOSE_SPEC.loader.exec_module(COMPOSE)
+LOG_SURVEY_HELPER = ROOT / "platform/playbooks/files/survey-o11y-log-source.py"
+LOG_SURVEY_SPEC = importlib.util.spec_from_file_location("o11y_log_source_gate", LOG_SURVEY_HELPER)
+LOG_SURVEY = importlib.util.module_from_spec(LOG_SURVEY_SPEC)
+LOG_SURVEY_SPEC.loader.exec_module(LOG_SURVEY)
 
 
 def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     top_level = {
         "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
-        "root_mode_access", "acl", "mount", "children", "journal_cursor", "free_space",
-        "survey_diagnostics", "pending_repair_diagnostic", "live_diagnostic",
+        "root_mode_access", "acl", "mount", "children", "journal_cursor", "remotecfg", "free_space",
+        "survey_diagnostics", "pending_repair_diagnostic", "live_diagnostic", "journal_components",
     }
     assert set(report) == top_level | ({"reason"} if has_reason else set())
+    assert set(report["journal_components"]) == set(POSITIONS.JOURNAL_COMPONENTS)
+    for entry in report["journal_components"].values():
+        assert set(entry) == {"presence", "cursor_validity"}
+        assert entry["presence"] in {"absent", "present", "not_directory", "unverified"}
+        assert entry["cursor_validity"] in {"absent", "valid", "invalid", "unverified"}
+    assert report["remotecfg"] in {"absent", "safe", "unsafe", "unverified"}
     diagnostics = report["survey_diagnostics"]
     assert set(diagnostics) == {"inventory_fields", "named_volume", "podman_version"}
     assert set(diagnostics["inventory_fields"]) == {"NeedsChown", "NeedsCopyUp"}
@@ -72,7 +85,14 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     ):
         assert set(field) == {"presence", "type", "value"}
     live = report["live_diagnostic"]
-    assert set(live["role_metadata"]) == {"receiver", "exporter"}
+    assert set(live["top_level"]) == {
+        "seed_file", "journal_component", "other_files", "other_directories", "other_symlinks",
+        "other_kinds", "receiver_component", "exporter_component", "attributes_processor_component",
+        "remotecfg_component",
+    }
+    for count in live["top_level"].values():
+        assert count == "unverified" or type(count) is int and 0 <= count <= POSITIONS.MAX_CHILDREN
+    assert set(live["role_metadata"]) == {"receiver", "exporter", "attributes_processor", "remotecfg"}
     for role in live["role_metadata"].values():
         assert set(role) == {"owner", "access", "acl", "mount", "children"}
     unmatched = live["unmatched_directories"]
@@ -82,6 +102,50 @@ def _assert_positions_survey_diagnostics_schema(report, has_reason=False):
     assert set(unmatched["acl"]) == {"absent", "present", "unverified"}
     assert set(unmatched["mount"]) == {"clear", "ambiguous", "unverified"}
     assert set(unmatched["children"]) == {"empty", "nonempty", "unverified"}
+    assert live["remotecfg_state"] in {"absent", "safe", "unsafe", "unverified"}
+    journal = live["journal_metadata"]
+    assert set(journal) == {
+        "component", "positions", "child_count", "temporary_file_metadata", "temporary_files", "unknown_children",
+    }
+    assert set(journal["component"]) == {
+        "presence", "type", "owner", "owner_rwx", "unsafe_mode_bits", "link_count",
+        "acl", "mount", "children",
+    }
+    assert set(journal["positions"]) == {
+        "presence", "type", "owner", "owner_rw", "unsafe_mode_bits", "link_count", "acl", "mount",
+    }
+    assert (
+        journal["child_count"] == "unverified"
+        or type(journal["child_count"]) is int and 0 <= journal["child_count"] <= 32
+    )
+    assert journal["temporary_file_metadata"] in {"not_applicable", "safe", "unsafe", "unverified"}
+    assert (
+        journal["temporary_files"] == "unverified"
+        or type(journal["temporary_files"]) is int and 0 <= journal["temporary_files"] <= 32
+    )
+    assert set(journal["unknown_children"]) == {"files", "directories", "symlinks", "other"}
+    assert all(
+        value == "unverified" or type(value) is int and 0 <= value <= 32
+        for value in journal["unknown_children"].values()
+    )
+    seed = live["seed_metadata"]
+    assert set(seed) == {
+        "presence", "type", "owner", "link_count", "owner_execute", "group_other_permissions",
+        "special_bits", "acl", "mount",
+    }
+    assert seed["presence"] in {"absent", "present", "unverified"}
+    assert seed["type"] in {"absent", "regular_file", "directory", "symlink", "other", "unverified"}
+    assert seed["owner"] in {"matches_collector", "mismatch", "unverified"}
+    assert seed["link_count"] in {"match", "mismatch", "unverified"}
+    for key in ("owner_execute", "group_other_permissions", "special_bits", "acl"):
+        assert seed[key] in {"absent", "present", "unverified"}
+    assert seed["mount"] in {"clear", "ambiguous", "unverified"}
+    assert set(live["layout_diagnostic"]) == {"root_mode", "journal_child_count"}
+    assert live["layout_diagnostic"]["root_mode"] in {"safe", "unsafe", "unverified"}
+    assert live["layout_diagnostic"]["journal_child_count"] == "unverified" or (
+        type(live["layout_diagnostic"]["journal_child_count"]) is int
+        and 0 <= live["layout_diagnostic"]["journal_child_count"] <= 32
+    )
 
 
 def _positions_state(
@@ -102,6 +166,35 @@ def _positions_state(
         "journal_cursor_presence": journal_cursor_presence,
         "cursor_checked": False,
         "journal_cursor_valid": journal_cursor_valid,
+        "remotecfg_state": "absent",
+        # Helper output carries one entry per declared component; the default allowlist is alloy alone.
+        "journal_components": {"o11y_alloy": {
+            "presence": "directory",
+            "cursor_presence": "present" if journal_cursor_presence == "present" else "absent",
+            "cursor_checked": False,
+            "cursor_valid": False,
+        }},
+        "journal_metadata": {
+            "component": {
+                "presence": "present", "type": "directory", "owner": "matches_collector",
+                "owner_rwx": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear", "children": "nonempty",
+            },
+            "positions": {
+                "presence": "present", "type": "regular_file", "owner": "matches_collector",
+                "owner_rw": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear",
+            },
+            "child_count": 1,
+            "temporary_file_metadata": "not_applicable",
+            "temporary_files": 0,
+            "unknown_children": {"files": 0, "directories": 0, "symlinks": 0, "other": 0},
+        },
+        "seed_metadata": {
+            "presence": "present", "type": "regular_file", "owner": "matches_collector",
+            "link_count": "match", "owner_execute": "absent", "group_other_permissions": "absent",
+            "special_bits": "absent", "acl": "absent", "mount": "clear",
+        },
         "free_bytes": free_bytes,
         "free_inodes": free_inodes,
         "unmatched_directories": {
@@ -118,10 +211,10 @@ def _positions_state(
 def _positions_found(metadata=None, users=0):
     return {
         "status": "observed",
-        "volume_name": "o11y_journal-collector-state",
+        "volume_name": "o11y_journal-collector-state-v3",
         "mountpoint": "/private/podman/volume/_data",
         "volume_use_count": users,
-        "mount_count": users,
+        "mount_count": 0,
         "collector_present": bool(users),
         "collector_mount_verified": bool(users),
         "project": "o11y",
@@ -140,6 +233,29 @@ def _positions_with_space_counters(found, free_bytes, free_inodes):
 
 
 def _positions_volume_reply(argv, volume):
+    if argv[:3] == ["podman", "volume", "ls"] and "--quiet" in argv:
+        volumes = volume if isinstance(volume, list) else [volume]
+        filters = [
+            argv[index + 1].split("=", 1)
+            for index, value in enumerate(argv[:-1])
+            if value == "--filter"
+        ]
+        names = []
+        for row in volumes:
+            name = row.get("Name")
+            labels = row.get("Labels", {})
+            matches = isinstance(name, str)
+            for key, value in filters:
+                if key == "name":
+                    matches = matches and re.fullmatch(value, name) is not None
+                elif key == "label":
+                    label, expected = value.split("=", 1)
+                    matches = matches and isinstance(labels, dict) and labels.get(label) == expected
+                else:
+                    matches = False
+            if matches:
+                names.append(name)
+        return SimpleNamespace(returncode=0, stdout="\n".join(names))
     if argv[:3] != ["podman", "volume", "inspect"] or "--format" not in argv:
         return None
     labels = volume.get("Labels", {})
@@ -167,10 +283,10 @@ def _flag_volume_template(volume, needs_chown="false", needs_copy_up="false"):
 
 def test_positions_template_flags_accept_omitted_json_false_and_preserve_presence():
     volume = {
-        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
+        "Name": "o11y_journal-collector-state-v3", "Driver": "local", "Scope": "local",
         "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 0,
         "NeedsCopyUp": True,
-        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"},
+        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3"},
     }
     calls = []
 
@@ -194,8 +310,8 @@ def test_positions_template_flags_accept_omitted_json_false_and_preserve_presenc
 @pytest.mark.parametrize("raw", ["<no value>", "False", "false ", "0", "", "unknown"])
 def test_positions_template_flags_refuse_unknown_or_nonliteral_producer(raw):
     volume = {
-        "Name": "o11y_journal-collector-state", "Labels": {
-            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"
+        "Name": "o11y_journal-collector-state-v3", "Labels": {
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3"
         },
         "NeedsChown": False, "NeedsCopyUp": True,
     }
@@ -210,8 +326,8 @@ def test_positions_template_flags_refuse_unknown_or_nonliteral_producer(raw):
 
 def test_positions_template_flags_refuse_identity_mismatch_and_bracket_race():
     volume = {
-        "Name": "o11y_journal-collector-state", "Labels": {
-            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"
+        "Name": "o11y_journal-collector-state-v3", "Labels": {
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3"
         },
         "NeedsChown": False, "NeedsCopyUp": True,
     }
@@ -254,6 +370,517 @@ def test_positions_metadata_parser_requires_expected_journal_cursor():
         good + b"extra: true\n",
     ):
         assert namespace["journal_cursor"](bad) is False
+
+
+def test_journal_metadata_observation_is_bounded_and_never_reads_positions_content(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_journal_metadata", "bounded_names", "journal_observation", "acl"}
+    ]
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr in {"read", "write", "chmod", "chown", "unlink", "rename", "mkdir"}
+        for function in functions for node in ast.walk(function)
+    )
+    component_name = "loki.source.journal.o11y_alloy"
+    root = tmp_path / "positions"
+    component = root / component_name
+    component.mkdir(mode=0o700, parents=True)
+    os.chmod(root, 0o700)
+    os.chmod(component, 0o700)
+    positions = component / "positions.yml"
+    positions.write_text("PRIVATE_CURSOR_CONTENT")
+    positions.chmod(0o600)
+    (component / ".positions.yml123").write_text("temporary")
+    (component / ".private-name").write_text("hidden")
+    (component / ".hidden-directory").mkdir()
+    (component / "link").symlink_to("positions.yml")
+
+    fixture_os = SimpleNamespace(**os.__dict__)
+    fixture_os.listxattr = lambda *_args, **_kwargs: []
+    real_scandir = os.scandir
+    scandir_paths = []
+    fixture_os.scandir = lambda path: (scandir_paths.append(path) or real_scandir(path))
+    namespace = {
+        "os": fixture_os,
+        "stat": stat,
+        "re": re,
+        "mount_id": lambda path: (7, str(path).split(component_name, 1)[0].rstrip("/") or "/"),
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata", "exec"), namespace)
+    result = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+
+    assert result["component"]["presence"] == "present"
+    assert result["component"]["type"] == "directory"
+    assert result["component"]["owner_rwx"] == "complete"
+    assert result["component"]["link_count"] in {"match", "mismatch"}
+    assert result["positions"]["type"] == "regular_file"
+    assert result["positions"]["owner_rw"] == "complete"
+    assert result["positions"]["link_count"] == "match"
+    assert result["temporary_files"] == 1
+    assert result["unknown_children"] == {"files": 1, "directories": 1, "symlinks": 1, "other": 0}
+    assert len(scandir_paths) == 2 and all(type(path) is int for path in scandir_paths)
+    rendered = json.dumps(result)
+    assert "PRIVATE_CURSOR_CONTENT" not in rendered
+    assert ".private-name" not in rendered
+    assert "positions.yml123" not in rendered
+
+    os.chmod(component, 0o7720)
+    os.chmod(positions, 0o644)
+    os.link(positions, component / "positions.extra")
+    unsafe = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert unsafe["component"]["unsafe_mode_bits"] == "present"
+    assert unsafe["component"]["owner_rwx"] == "complete"
+    assert unsafe["positions"]["unsafe_mode_bits"] == "present"
+    assert unsafe["positions"]["link_count"] == "mismatch"
+
+    for index in range(33):
+        (component / f"entry-{index}").touch()
+    overflow = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert set(overflow["component"].values()) == {"unverified"}
+    assert overflow["temporary_files"] == "unverified"
+
+
+def test_seed_metadata_is_descriptor_safe_bounded_and_never_reads_contents(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_seed_metadata", "seed_observation"}
+    ]
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr in {"read", "write", "chmod", "chown", "unlink", "rename", "mkdir"}
+        for function in functions for node in ast.walk(function)
+    )
+    root = tmp_path / "positions"
+    root.mkdir(mode=0o700)
+    os.chmod(root, 0o700)
+    seed = root / "alloy_seed.json"
+    seed.write_text("PRIVATE_SEED_CONTENT")
+    pinned_seed_fd = os.open(seed, os.O_RDONLY)
+
+    fixture_os = SimpleNamespace(**os.__dict__)
+    fixture_os.listxattr = lambda *_args, **_kwargs: []
+    real_open = os.open
+    fixture_os.open = lambda path, *args, **kwargs: (
+        os.dup(pinned_seed_fd) if path == "alloy_seed.json" else real_open(path, *args, **kwargs)
+    )
+    namespace = {
+        "os": fixture_os, "stat": stat,
+        "mount_id": lambda path: (7, str(path).rsplit("/", 1)[0]),
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "seed-metadata", "exec"), namespace)
+    observe = namespace["seed_observation"]
+
+    safe_modes = (0o000, 0o200, 0o400, 0o600)
+    for mode in safe_modes:
+        seed.chmod(mode)
+        observed = observe(str(root), os.lstat(root), (7, str(root)))
+        assert observed["presence"] == "present"
+        assert observed["type"] == "regular_file"
+        assert observed["owner"] == (
+            "matches_collector" if os.geteuid() == 0 and os.getegid() == 0 else "mismatch"
+        )
+        assert observed["link_count"] == "match"
+        assert observed["owner_execute"] == "absent"
+        assert observed["group_other_permissions"] == "absent"
+        assert observed["special_bits"] == "absent"
+        assert observed["acl"] == "absent" and observed["mount"] == "clear"
+        assert "PRIVATE_SEED_CONTENT" not in json.dumps(observed)
+
+    seed.chmod(0o700)
+    assert observe(str(root), os.lstat(root), (7, str(root)))["owner_execute"] == "present"
+    seed.chmod(0o640)
+    assert observe(str(root), os.lstat(root), (7, str(root)))["group_other_permissions"] == "present"
+    real_stat = os.stat
+    real_fstat = os.fstat
+
+    def with_special_bits(current):
+        return SimpleNamespace(
+            st_dev=current.st_dev, st_ino=current.st_ino, st_uid=current.st_uid,
+            st_gid=current.st_gid, st_mode=stat.S_IFREG | 0o4600,
+            st_nlink=current.st_nlink, st_mtime_ns=current.st_mtime_ns,
+        )
+
+    def special_stat(path, *args, **kwargs):
+        current = real_stat(path, *args, **kwargs)
+        return with_special_bits(current) if path == "alloy_seed.json" or path == str(seed) else current
+
+    def special_fstat(fd):
+        current = real_fstat(fd)
+        seed_stat = real_stat(seed)
+        return with_special_bits(current) if (current.st_dev, current.st_ino) == (
+            seed_stat.st_dev, seed_stat.st_ino,
+        ) else current
+
+    special_os = SimpleNamespace(**os.__dict__)
+    special_os.listxattr = lambda *_args, **_kwargs: []
+    special_os.stat = special_stat
+    special_os.fstat = special_fstat
+    special_namespace = {
+        "os": special_os, "stat": stat, "mount_id": namespace["mount_id"],
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "seed-special-mode", "exec"), special_namespace)
+    assert special_namespace["seed_observation"](str(root), os.lstat(root), (7, str(root)))["special_bits"] == "present"
+    seed.chmod(0o600)
+    os.link(seed, root / "second-link")
+    assert observe(str(root), os.lstat(root), (7, str(root)))["link_count"] == "mismatch"
+    (root / "second-link").unlink()
+    seed.unlink()
+    absent = observe(str(root), os.lstat(root), (7, str(root)))
+    assert absent["presence"] == absent["type"] == "absent"
+    seed.symlink_to("missing-target")
+    symlink = observe(str(root), os.lstat(root), (7, str(root)))
+    assert symlink["presence"] == "present" and symlink["type"] == "symlink"
+    assert symlink["owner"] == symlink["mount"] == "unverified"
+    os.close(pinned_seed_fd)
+
+
+def test_seed_layout_accepts_upstream_read_only_mode_and_refuses_unsafe_bits():
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    seed_predicate = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "component_layout" for target in node.targets)
+        and "alloy_seed.json" in ast.unparse(node)
+    )
+    predicate = compile(ast.Module(body=[seed_predicate], type_ignores=[]), "seed-layout", "exec")
+
+    def accepted(mode, *, name="alloy_seed.json", uid=0, gid=0, links=1):
+        scope = {
+            "component_layout": True, "name": name,
+            "item": SimpleNamespace(st_mode=stat.S_IFREG | mode, st_uid=uid, st_gid=gid, st_nlink=links),
+        }
+        exec(predicate, scope)
+        return scope["component_layout"]
+
+    for mode in (0o600, 0o640, 0o604, 0o644):
+        assert accepted(mode), oct(mode)
+    for mode in (0o700, 0o654, 0o646, 0o645, 0o1644, 0o2644, 0o4644):
+        assert not accepted(mode), oct(mode)
+    assert not accepted(0o644, name="unexpected")
+    assert not accepted(0o644, uid=1)
+    assert not accepted(0o644, gid=1)
+    assert not accepted(0o644, links=2)
+
+
+def test_seed_metadata_acl_mount_errors_and_identity_races_are_unverified(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_seed_metadata", "seed_observation"}
+    ]
+    root = tmp_path / "positions"
+    root.mkdir(mode=0o700)
+    os.chmod(root, 0o700)
+    seed = root / "alloy_seed.json"
+    seed.write_text("PRIVATE_SEED_CONTENT")
+    real_os = SimpleNamespace(**os.__dict__)
+    real_os.listxattr = lambda *_args, **_kwargs: ["system.posix_acl_access"]
+    namespace = {
+        "os": real_os, "stat": stat,
+        "mount_id": lambda path: (9, str(path)) if str(path).endswith("alloy_seed.json") else (7, str(path)),
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "seed-metadata-boundaries", "exec"), namespace)
+    observed = namespace["seed_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert observed["acl"] == "present" and observed["mount"] == "ambiguous"
+
+    error_os = SimpleNamespace(**os.__dict__)
+    error_os.listxattr = lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("PRIVATE_MARKER"))
+    error_namespace = {"os": error_os, "stat": stat, "mount_id": namespace["mount_id"]}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "seed-metadata-error", "exec"), error_namespace)
+    failed = error_namespace["seed_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert set(failed.values()) == {"unverified"}
+    assert "PRIVATE_MARKER" not in json.dumps(failed)
+
+    original_stat = os.stat
+    calls = 0
+
+    def changing_stat(path, *args, **kwargs):
+        nonlocal calls
+        result = original_stat(path, *args, **kwargs)
+        if path == "alloy_seed.json":
+            calls += 1
+            if calls == 2:
+                return SimpleNamespace(
+                    st_dev=result.st_dev, st_ino=result.st_ino + 1, st_uid=result.st_uid,
+                    st_gid=result.st_gid, st_mode=result.st_mode, st_nlink=result.st_nlink,
+                    st_mtime_ns=result.st_mtime_ns,
+                )
+        return result
+
+    race_os = SimpleNamespace(**os.__dict__)
+    race_os.listxattr = lambda *_args, **_kwargs: []
+    race_os.stat = changing_stat
+    race_namespace = {"os": race_os, "stat": stat, "mount_id": lambda path: (7, str(root))}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "seed-metadata-race", "exec"), race_namespace)
+    raced = race_namespace["seed_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert calls == 2 and set(raced.values()) == {"unverified"}
+
+    replace_root = tmp_path / "replace-parent"
+    replace_root.mkdir(mode=0o700)
+    os.chmod(replace_root, 0o700)
+    (replace_root / "alloy_seed.json").write_text("PRIVATE_SEED_CONTENT")
+    original_root_stat = os.lstat(replace_root)
+    moved_root = tmp_path / "original-parent"
+    replaced = False
+
+    def replace_parent_during_mount(path):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            replace_root.rename(moved_root)
+            replace_root.mkdir(mode=0o700)
+            (replace_root / "alloy_seed.json").write_text("REPLACEMENT_CONTENT")
+        return (7, str(path).rsplit("/", 1)[0])
+
+    parent_os = SimpleNamespace(**os.__dict__)
+    parent_os.listxattr = lambda *_args, **_kwargs: []
+    parent_namespace = {
+        "os": parent_os, "stat": stat, "mount_id": replace_parent_during_mount,
+    }
+    exec(
+        compile(ast.Module(body=functions, type_ignores=[]), "seed-parent-replacement", "exec"),
+        parent_namespace,
+    )
+    parent_race = parent_namespace["seed_observation"](
+        str(replace_root), original_root_stat, (7, str(replace_root)),
+    )
+    assert replaced and set(parent_race.values()) == {"unverified"}
+    assert "REPLACEMENT_CONTENT" not in json.dumps(parent_race)
+
+
+def test_journal_metadata_distinguishes_absent_symlink_and_races(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    assert not any(
+        isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
+        and node.func.attr == "listdir"
+        for node in ast.walk(tree)
+    )
+    bounded_scans = {
+        ast.unparse(node.args[0]) for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "bounded_names" and node.args
+    }
+    assert {"root_fd", "directory_fd"} <= bounded_scans
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_journal_metadata", "bounded_names", "journal_observation", "acl"}
+    ]
+    root = tmp_path / "positions"
+    root.mkdir(mode=0o700)
+    os.chmod(root, 0o700)
+    component_name = "loki.source.journal.o11y_alloy"
+    fixture_os = SimpleNamespace(**os.__dict__)
+    fixture_os.listxattr = lambda *_args, **_kwargs: []
+    namespace = {"os": fixture_os, "stat": stat, "re": re, "mount_id": lambda path: (7, str(root))}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata", "exec"), namespace)
+    observe = namespace["journal_observation"]
+    assert observe(str(root), os.lstat(root), (7, str(root)))["component"]["presence"] == "absent"
+
+    component = root / component_name
+    component.mkdir(mode=0o700)
+    (component / "positions.yml").symlink_to("missing-target")
+    unsafe = observe(str(root), os.lstat(root), (7, str(root)))
+    assert unsafe["positions"]["type"] == "symlink"
+    assert unsafe["positions"]["owner"] == "unverified"
+
+    real_scandir = os.scandir
+    component_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY)
+    component_inode = os.fstat(component_fd).st_ino
+    os.close(component_fd)
+    seen = 0
+    growth_entries = 0
+
+    def changed_enumeration(path):
+        nonlocal seen
+        values = real_scandir(path)
+        if isinstance(path, int) and os.fstat(path).st_ino == component_inode:
+            seen += 1
+            if seen == 2:
+                class ExtraEntry:
+                    name = "new-entry"
+
+                class ExtraScandir:
+                    def __enter__(self):
+                        self.entries = values
+                        return self
+
+                    def __exit__(self, *_args):
+                        self.entries.close()
+
+                    def __iter__(self):
+                        nonlocal growth_entries
+                        yield from self.entries
+                        for _ in range(1000):
+                            growth_entries += 1
+                            yield ExtraEntry()
+
+                return ExtraScandir()
+        return values
+
+    proxy_os = SimpleNamespace(**os.__dict__)
+    proxy_os.listxattr = lambda *_args, **_kwargs: []
+    proxy_os.scandir = changed_enumeration
+    race_namespace = {"os": proxy_os, "stat": stat, "re": re, "mount_id": lambda path: (7, str(root))}
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata-race", "exec"), race_namespace)
+    raced = race_namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert seen == 2
+    assert growth_entries == 32
+    assert set(raced["component"].values()) == {"unverified"}
+
+    (component / "positions.yml").unlink()
+    (component / "positions.yml").write_text("PRIVATE")
+    real_stat = os.stat
+    position_stat_calls = 0
+
+    def drifted_stat(path, *args, **kwargs):
+        nonlocal position_stat_calls
+        observed = real_stat(path, *args, **kwargs)
+        if path == "positions.yml":
+            position_stat_calls += 1
+            if position_stat_calls == 2:
+                return SimpleNamespace(
+                    st_dev=observed.st_dev, st_ino=observed.st_ino + 1,
+                    st_uid=observed.st_uid, st_gid=observed.st_gid,
+                    st_mode=observed.st_mode, st_nlink=observed.st_nlink,
+                    st_mtime_ns=observed.st_mtime_ns,
+                )
+        return observed
+
+    identity_os = SimpleNamespace(**os.__dict__)
+    identity_os.listxattr = lambda *_args, **_kwargs: []
+    identity_os.stat = drifted_stat
+    identity_namespace = {
+        "os": identity_os, "stat": stat, "re": re,
+        "mount_id": lambda path: (7, str(root)),
+    }
+    identity_code = compile(
+        ast.Module(body=functions, type_ignores=[]), "journal-metadata-identity-race", "exec",
+    )
+    exec(identity_code, identity_namespace)
+    identity_race = identity_namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert position_stat_calls == 2
+    assert set(identity_race["component"].values()) == {"unverified"}
+
+
+def test_journal_metadata_diagnostic_rejects_malformed_schema_and_overflow():
+    base = {
+        "component": {
+            "presence": "present", "type": "directory", "owner": "mismatch",
+            "owner_rwx": "incomplete", "unsafe_mode_bits": "present", "link_count": "mismatch",
+            "acl": "present", "mount": "ambiguous", "children": "nonempty",
+        },
+        "positions": {
+            "presence": "present", "type": "regular_file", "owner": "mismatch",
+            "owner_rw": "incomplete", "unsafe_mode_bits": "present", "link_count": "mismatch",
+            "acl": "present", "mount": "ambiguous",
+        },
+        "child_count": 2,
+        "temporary_file_metadata": "unsafe",
+        "temporary_files": 32,
+        "unknown_children": {"files": 20, "directories": 10, "symlinks": 1, "other": 0},
+    }
+    safe = POSITIONS._journal_metadata_diagnostic({"journal_metadata": base})
+    assert safe == base
+    overflow = POSITIONS._journal_metadata_diagnostic({
+        "journal_metadata": {**base, "temporary_files": 33},
+    })
+    assert overflow["temporary_files"] == "unverified"
+    assert set(POSITIONS._journal_metadata_diagnostic({
+        "journal_metadata": {**base, "unknown_children": {"files": 33, "directories": 0, "symlinks": 0, "other": 0}},
+    })["unknown_children"].values()) == {"unverified"}
+    assert POSITIONS._journal_metadata_diagnostic({
+        "journal_metadata": {**base, "child_count": True},
+    })["child_count"] == "unverified"
+    malformed = POSITIONS._journal_metadata_diagnostic({
+        "journal_metadata": {**base, "component": {**base["component"], "raw_name": "PRIVATE_MARKER"}},
+    })
+    assert set(malformed["component"].values()) == {"unverified"}
+    assert "PRIVATE_MARKER" not in json.dumps(malformed)
+
+
+def test_seed_metadata_diagnostic_rejects_extra_or_injected_fields():
+    base = {
+        "presence": "present", "type": "regular_file", "owner": "matches_collector",
+        "link_count": "match", "owner_execute": "absent", "group_other_permissions": "absent",
+        "special_bits": "absent", "acl": "absent", "mount": "clear",
+    }
+    assert POSITIONS._seed_metadata_diagnostic({"seed_metadata": base}) == base
+    malformed = POSITIONS._seed_metadata_diagnostic({
+        "seed_metadata": {**base, "private": "PRIVATE_MARKER"},
+    })
+    assert set(malformed.values()) == {"unverified"}
+    assert "PRIVATE_MARKER" not in json.dumps(malformed)
+
+
+def test_survey_reduces_malformed_journal_metadata_to_unverified():
+    metadata = _positions_state()
+    metadata["journal_metadata"] = {
+        **metadata["journal_metadata"],
+        "raw_name": "PRIVATE_MARKER",
+    }
+    report = POSITIONS.survey(lambda: _positions_found(metadata))
+    journal = report["live_diagnostic"]["journal_metadata"]
+    assert set(journal["component"].values()) == {"unverified"}
+    assert set(journal["positions"].values()) == {"unverified"}
+    assert set(report["live_diagnostic"]["seed_metadata"].values()) == {"unverified"}
+    assert journal["temporary_files"] == "unverified"
+    assert set(journal["unknown_children"].values()) == {"unverified"}
+    assert "PRIVATE_MARKER" not in json.dumps(report)
+
+
+def test_survey_reduces_malformed_seed_metadata_to_unverified():
+    metadata = _positions_state()
+    metadata["seed_metadata"] = {**metadata["seed_metadata"], "private": "PRIVATE_MARKER"}
+    report = POSITIONS.survey(lambda: _positions_found(metadata))
+    assert set(report["live_diagnostic"]["seed_metadata"].values()) == {"unverified"}
+    assert "PRIVATE_MARKER" not in json.dumps(report)
+
+
+def test_journal_metadata_reports_acl_mount_and_overflow_as_bounded_categories(tmp_path):
+    tree = ast.parse(POSITIONS._METADATA_SCRIPT)
+    functions = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"unverified_journal_metadata", "bounded_names", "journal_observation", "acl"}
+    ]
+    root = tmp_path / "positions"
+    component = root / "loki.source.journal.o11y_alloy"
+    component.mkdir(mode=0o700, parents=True)
+    (component / "positions.yml").write_text("PRIVATE")
+    fixture_os = SimpleNamespace(**os.__dict__)
+    fixture_os.listxattr = lambda *_args, **_kwargs: ["system.posix_acl_access"]
+    namespace = {
+        "os": fixture_os, "stat": stat, "re": re,
+        "mount_id": lambda path: (9, str(path)) if str(path) != str(root) else (7, str(root)),
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "journal-metadata-boundaries", "exec"), namespace)
+    bounded = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert bounded["component"]["acl"] == "present"
+    assert bounded["component"]["mount"] == "ambiguous"
+    assert bounded["positions"]["acl"] == "present"
+    assert bounded["positions"]["mount"] == "ambiguous"
+
+    for index in range(33):
+        (component / f"entry-{index}").touch()
+    overflow = namespace["journal_observation"](str(root), os.lstat(root), (7, str(root)))
+    assert set(overflow["component"].values()) == {"unverified"}
+    assert set(overflow["positions"].values()) == {"unverified"}
+    assert overflow["temporary_files"] == "unverified"
+    assert set(overflow["unknown_children"].values()) == {"unverified"}
 
 
 @pytest.mark.parametrize("overflow_pass", [1, 2])
@@ -313,7 +940,7 @@ def test_role_observation_bounds_each_directory_enumeration(overflow_pass, tmp_p
     role = tmp_path / "unmatched"
     role.mkdir()
     observation = namespace["role_observation"](
-        path, os.lstat(path), (7, path), role.name, (7, str(role)),
+        path, os.lstat(path), (7, path), role.name, (7, str(role)), os.lstat(role),
     )
 
     assert counts == ([33] if overflow_pass == 1 else [32, 33])
@@ -330,6 +957,11 @@ def test_role_observation_bounds_each_directory_enumeration(overflow_pass, tmp_p
         ("unsafe", "present", False, False),
         ("oversized", "present", False, False),
         ("read_error", "present", False, False),
+        ("mounted", "present", False, False),
+        ("root_unsafe", "present", False, False),
+        ("component_unsafe", "present", False, False),
+        ("inode_swapped", "present", False, False),
+        ("post_read_mode_change", "present", False, False),
         ("valid", "present", True, True),
     ],
 )
@@ -350,24 +982,51 @@ def test_positions_cursor_checked_tracks_stable_content_examination(
     if cursor_state != "absent":
         positions.write_text("x" * 65537 if cursor_state == "oversized" else content)
         os.chmod(positions, 0o644 if cursor_state == "unsafe" else 0o600)
+    if cursor_state == "root_unsafe":
+        os.chmod(root, 0o777)
+    if cursor_state == "component_unsafe":
+        os.chmod(component, 0o777)
+    mountinfo = "1 0 0:1 / / rw - testfs /dev/test rw\n"
+    if cursor_state == "mounted":
+        mountinfo += f"2 1 0:2 / {positions} rw - testfs /dev/test rw\n"
 
-    prelude = f'''import builtins,io,os,sys,types
+    prelude = f'''import builtins,io,os,stat,sys,types
 root={str(root)!r}
 real_lstat=os.lstat
+real_stat=os.stat
 real_fstat=os.fstat
 real_open=os.open
 def root_owned(st):
-    return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,st_nlink=st.st_nlink,
+    return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,
+        st_nlink=2 if stat.S_ISDIR(st.st_mode) else st.st_nlink,
         st_dev=st.st_dev,st_ino=st.st_ino,st_size=st.st_size,st_mtime_ns=st.st_mtime_ns)
 os.lstat=lambda path,*args,**kwargs: root_owned(real_lstat(path,*args,**kwargs))
+os.stat=lambda path,*args,**kwargs: root_owned(real_stat(path,*args,**kwargs))
 os.fstat=lambda fd: root_owned(real_fstat(fd))
+positions_opens=[0]
 def fake_open(path,flags,*args,**kwargs):
     if path=="positions.yml" and {cursor_state!r}=="read_error": raise PermissionError("private")
+    if path=="positions.yml" and {cursor_state!r}=="inode_swapped":
+        positions_opens[0]+=1
+        if positions_opens[0]==2:
+            target=os.path.join(root,"loki.source.journal.o11y_alloy","positions.yml")
+            os.unlink(target)
+            with open(target,"w") as stream: stream.write({content!r})
+            os.chmod(target,0o600)
     return real_open(path,flags,*args,**kwargs)
 os.open=fake_open
+real_read=os.read
+def fake_read(fd,*args,**kwargs):
+    if {cursor_state!r} in ("mounted","root_unsafe","component_unsafe","inode_swapped"):
+        raise AssertionError("unsafe file content read")
+    content=real_read(fd,*args,**kwargs)
+    if {cursor_state!r}=="post_read_mode_change":
+        os.chmod(os.path.join(root,"loki.source.journal.o11y_alloy","positions.yml"),0o666)
+    return content
+os.read=fake_read
 original_open=builtins.open
 def fake_builtin_open(path,*args,**kwargs):
-    if path=="/proc/self/mountinfo": return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\\n")
+    if path=="/proc/self/mountinfo": return io.StringIO({mountinfo!r})
     return original_open(path,*args,**kwargs)
 builtins.open=fake_builtin_open
 os.listxattr=lambda *_args,**_kwargs: []
@@ -375,7 +1034,7 @@ sys.argv.append("true")
 exec({POSITIONS._METADATA_SCRIPT!r})
 '''
     result = subprocess.run(
-        [sys.executable, "-c", prelude, str(root), "true"],
+        [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
     )
 
@@ -395,12 +1054,38 @@ def test_positions_verification_enables_cursor_reading(monkeypatch):
     observed = []
 
     def discover(**kwargs):
-        observed.append(kwargs.get("read_cursor"))
-        return {"status": "unavailable"}
+        observed.append(kwargs)
+        found = _positions_found(_positions_state(owner=(0, 0), journal_cursor_valid=bool(kwargs.get("read_cursor"))))
+        found["metadata"]["cursor_checked"] = bool(kwargs.get("read_cursor"))
+        return found
 
     monkeypatch.setattr(POSITIONS, "discover", discover)
     POSITIONS.verify()
+    ordinary = POSITIONS.survey()
+    explicit = POSITIONS.survey(read_cursor=True)
+    assert observed == [
+        {"diagnostics": True, "read_cursor": True},
+        {"diagnostics": True, "read_cursor": False},
+        {"diagnostics": True, "read_cursor": True},
+    ]
+    assert ordinary["journal_cursor"] == "unavailable"
+    assert "cursor_validity" in ordinary["live_diagnostic"]["unverified_checks"]
+    assert explicit["journal_cursor"] == "valid"
+    assert "cursor_validity" not in explicit["live_diagnostic"]["unverified_checks"]
+
+
+def test_positions_cli_dispatches_explicit_cursor_survey(monkeypatch, capsys):
+    observed = []
+
+    def survey(*, read_cursor=False):
+        observed.append(read_cursor)
+        return {"status": "check_mode_unverified"}
+
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "survey-cursor"])
+    monkeypatch.setattr(POSITIONS, "survey", survey)
+    POSITIONS.main()
     assert observed == [True]
+    assert json.loads(capsys.readouterr().out) == {"status": "check_mode_unverified"}
 
 
 @pytest.mark.parametrize(("action", "function"), [("verify", "verify"), ("verify-live", "verify_live")])
@@ -410,6 +1095,315 @@ def test_positions_cli_dispatches_prestart_and_live_actions(action, function, mo
     monkeypatch.setattr(POSITIONS, function, lambda: result)
     POSITIONS.main()
     assert json.loads(capsys.readouterr().out) == result
+
+
+def test_positions_default_allowlist_is_alloy_only_and_cli_default_is_unchanged(monkeypatch, capsys):
+    assert POSITIONS.DEFAULT_JOURNAL_COMPONENTS == ("o11y_alloy",)
+    seen = []
+
+    def verify():
+        seen.append(POSITIONS.JOURNAL_COMPONENTS)
+        return {"status": "ready"}
+
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", POSITIONS.DEFAULT_JOURNAL_COMPONENTS)
+    monkeypatch.setattr(POSITIONS, "verify", verify)
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "verify"])
+    POSITIONS.main()
+    assert seen == [("o11y_alloy",)]
+    assert json.loads(capsys.readouterr().out) == {"status": "ready"}
+
+
+@pytest.mark.parametrize("value", [
+    "", "o11y_prometheus", "o11y_alloy,o11y_alloy", "o11y_alloy,o11y-prometheus",
+    "o11y_alloy,loki.source.journal.o11y_loki", "o11y_alloy,../escape", "o11y_alloy,",
+    "o11y_alloy,o11y-journal-collector",
+    "o11y_alloy," + ",".join(f"o11y_part{chr(97 + index)}" for index in range(16)),
+])
+def test_positions_components_argument_refuses_undeclared_or_malformed_lists(value, monkeypatch, capsys):
+    called = []
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", POSITIONS.DEFAULT_JOURNAL_COMPONENTS)
+    monkeypatch.setattr(POSITIONS, "verify", lambda: called.append(True) or {"status": "ready"})
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "verify", "--components", value])
+    POSITIONS.main()
+    assert called == []
+    assert POSITIONS.JOURNAL_COMPONENTS == POSITIONS.DEFAULT_JOURNAL_COMPONENTS
+    assert json.loads(capsys.readouterr().out) == {"status": "refused", "reason": "invalid_components"}
+
+
+def test_positions_components_argument_sets_the_declared_allowlist(monkeypatch, capsys):
+    seen = []
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", POSITIONS.DEFAULT_JOURNAL_COMPONENTS)
+    monkeypatch.setattr(POSITIONS, "survey", lambda: seen.append(POSITIONS.JOURNAL_COMPONENTS) or {"status": "ok"})
+    monkeypatch.setattr(sys, "argv", [
+        str(POSITIONS_HELPER), "survey", "--components", "o11y_alloy,o11y_prometheus,o11y_node_exporter",
+    ])
+    POSITIONS.main()
+    assert seen == [("o11y_alloy", "o11y_prometheus", "o11y_node_exporter")]
+    assert json.loads(capsys.readouterr().out) == {"status": "ok"}
+
+
+_EMBEDDED_ROOT_OWNED_PRELUDE = '''import builtins,io,os,stat,sys,types
+real_lstat=os.lstat
+real_stat=os.stat
+real_fstat=os.fstat
+def root_owned(st):
+    return types.SimpleNamespace(st_mode=st.st_mode,st_uid=0,st_gid=0,
+        st_nlink=2 if stat.S_ISDIR(st.st_mode) else st.st_nlink,
+        st_dev=st.st_dev,st_ino=st.st_ino,st_size=st.st_size,st_mtime_ns=st.st_mtime_ns)
+os.lstat=lambda path,*args,**kwargs: root_owned(real_lstat(path,*args,**kwargs))
+os.stat=lambda path,*args,**kwargs: root_owned(real_stat(path,*args,**kwargs))
+os.fstat=lambda fd: root_owned(real_fstat(fd))
+original_open=builtins.open
+def fake_builtin_open(path,*args,**kwargs):
+    if path=="/proc/self/mountinfo": return io.StringIO("1 0 0:1 / / rw - testfs /dev/test rw\\n")
+    return original_open(path,*args,**kwargs)
+builtins.open=fake_builtin_open
+os.listxattr=lambda *_args,**_kwargs: []
+'''
+
+
+def _embedded_run(root, *args):
+    # The script's own argv contract: sys.argv[1]=root, [2]=read_cursor, [3]=component JSON (optional).
+    code = _EMBEDDED_ROOT_OWNED_PRELUDE + f"exec({POSITIONS._METADATA_SCRIPT!r})\n"
+    return subprocess.run(
+        [sys.executable, "-c", code, str(root), *args],
+        check=False, capture_output=True, text=True,
+    )
+
+
+def _embedded_metadata(root, *args):
+    result = _embedded_run(root, *args)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+# Exact bytes Alloy v1.9.2 writes for a journal source with no position yet: yaml.Marshal of
+# File{Positions: map[Entry]string{}} with the rfratto/go-yaml fork of yaml.v2 Alloy builds against.
+_EMPTY_POSITIONS = "positions: {}\n"
+
+def _cursor_text(component, cursor="s=1a;i=2b;b=3c;m=4d;t=5e;x=6f"):
+    return (
+        "positions:\n  ? path: cursor-" + component + "\n    labels: \"\"\n  : \"" + cursor + "\"\n"
+    )
+
+
+def _declared_root(tmp_path, *components):
+    root = tmp_path / "positions"
+    root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    for component in components:
+        directory = root / f"loki.source.journal.{component}"
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+    return root
+
+
+def test_embedded_positions_admit_declared_components_and_refuse_undeclared(tmp_path):
+    root = _declared_root(tmp_path, "o11y_alloy", "o11y_prometheus")
+    declared = '["o11y_alloy", "o11y_prometheus"]'
+
+    metadata = _embedded_metadata(root, "false", declared)
+    assert metadata["component_layout"] is True
+    assert metadata["top_level"]["journal_component"] == 2
+    assert metadata["top_level"]["other_directories"] == 0
+    assert metadata["unmatched_directories"]["count"] == 0
+    assert metadata["journal_components"] == {
+        "o11y_alloy": {"presence": "directory", "cursor_presence": "absent",
+                       "cursor_checked": False, "cursor_valid": False},
+        "o11y_prometheus": {"presence": "directory", "cursor_presence": "absent",
+                            "cursor_checked": False, "cursor_valid": False},
+    }
+
+    _declared_root(tmp_path, "o11y_loki")
+    metadata = _embedded_metadata(root, "false", declared)
+    assert metadata["component_layout"] is False
+    assert metadata["top_level"]["other_directories"] == 1
+    assert metadata["unmatched_directories"]["count"] == 1
+    assert set(metadata["journal_components"]) == {"o11y_alloy", "o11y_prometheus"}
+
+    # Without the list the helper admits only the alloy component, so prometheus is unmatched.
+    metadata = _embedded_metadata(root, "false")
+    assert metadata["component_layout"] is False
+    assert metadata["top_level"]["journal_component"] == 1
+    assert metadata["top_level"]["other_directories"] == 2
+    assert set(metadata["journal_components"]) == {"o11y_alloy"}
+
+
+def test_embedded_positions_default_report_shape_adds_only_journal_components(tmp_path):
+    root = _declared_root(tmp_path, "o11y_alloy")
+    metadata = _embedded_metadata(root, "false")
+    assert set(metadata) == {
+        "status", "root", "children", "child_count", "acl", "top_level", "role_metadata",
+        "journal_metadata", "seed_metadata", "layout_diagnostic", "remotecfg_state",
+        "unmatched_directories", "root_is_mount", "child_mount", "component_layout",
+        "journal_cursor_presence", "cursor_checked", "journal_cursor_valid", "journal_components",
+        "free_bytes", "free_inodes",
+    }
+
+
+@pytest.mark.parametrize("components", [
+    '["o11y_prometheus"]', '["o11y_alloy", "o11y_alloy"]', '["o11y_alloy", "o11y-prometheus"]', '"o11y_alloy"',
+])
+def test_embedded_positions_refuse_malformed_component_argument(tmp_path, components):
+    root = _declared_root(tmp_path, "o11y_alloy")
+    result = _embedded_run(root, "false", components)
+    assert result.returncode != 0
+    assert result.stdout == ""
+
+
+def test_embedded_positions_validate_each_declared_component_cursor(tmp_path):
+    root = _declared_root(tmp_path, "o11y_alloy", "o11y_prometheus")
+    alloy_positions = root / "loki.source.journal.o11y_alloy" / "positions.yml"
+    alloy_positions.write_text(_cursor_text("loki.source.journal.o11y_alloy"))
+    os.chmod(alloy_positions, 0o600)
+    prometheus = root / "loki.source.journal.o11y_prometheus"
+    cases = {
+        "absent": (None, "absent", False, False),
+        "valid": ("loki.source.journal.o11y_prometheus", "present", True, True),
+        "wrong_component": ("loki.source.journal.o11y_alloy", "present", True, False),
+        # Alloy v1.9.2's bytes for a source that has read no entry (yaml.v2 Marshal of an empty map).
+        "no_cursor_yet": (_EMPTY_POSITIONS, "present", True, True),
+        "empty_but_not_alloys_form": ("positions: {}\nextra: true\n", "present", True, False),
+    }
+    for case, (content_component, presence, checked, valid) in cases.items():
+        positions = prometheus / "positions.yml"
+        if positions.exists():
+            positions.unlink()
+        if content_component is not None:
+            text = content_component if content_component.startswith("positions:") else _cursor_text(content_component)
+            positions.write_text(text)
+            os.chmod(positions, 0o600)
+        metadata = _embedded_metadata(root, "true", '["o11y_alloy", "o11y_prometheus"]')
+        assert metadata["component_layout"] is True, case
+        assert metadata["journal_components"]["o11y_alloy"] == {
+            "presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": True,
+        }
+        assert metadata["journal_cursor_valid"] is True
+        assert metadata["journal_components"]["o11y_prometheus"] == {
+            "presence": "directory", "cursor_presence": presence,
+            "cursor_checked": checked, "cursor_valid": valid,
+        }, case
+
+
+
+def test_embedded_positions_keep_the_alloy_cursor_strict_for_empty_positions(tmp_path):
+    # The no-cursor-yet form admits a newly declared component only; the alloy cursor stays required.
+    root = _declared_root(tmp_path, "o11y_alloy", "o11y_prometheus")
+    alloy_positions = root / "loki.source.journal.o11y_alloy" / "positions.yml"
+    alloy_positions.write_text(_EMPTY_POSITIONS)
+    os.chmod(alloy_positions, 0o600)
+    metadata = _embedded_metadata(root, "true", '["o11y_alloy", "o11y_prometheus"]')
+    assert metadata["journal_components"]["o11y_alloy"]["cursor_valid"] is False
+    assert metadata["journal_cursor_valid"] is False
+
+_JOURNAL_ENTRY_ABSENT = {
+    "presence": "absent", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False,
+}
+
+
+def _declared_pair_found(monkeypatch, prometheus_entry):
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", ("o11y_alloy", "o11y_prometheus"))
+    metadata = _positions_state(owner=(0, 0))
+    metadata["cursor_checked"] = True
+    metadata["journal_components"] = {
+        "o11y_alloy": {"presence": "directory", "cursor_presence": "present",
+                       "cursor_checked": True, "cursor_valid": True},
+    }
+    if prometheus_entry is not None:
+        metadata["journal_components"]["o11y_prometheus"] = prometheus_entry
+    return _positions_found(metadata)
+
+
+@pytest.mark.parametrize(("prometheus_entry", "status", "reason"), [
+    (_JOURNAL_ENTRY_ABSENT, "ready", "positions_identity_verified"),
+    ({"presence": "directory", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False},
+     "ready", "positions_identity_verified"),
+    ({"presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": True},
+     "ready", "positions_identity_verified"),
+    ({"presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": False},
+     "refused", "metadata_ambiguous"),
+    ({"presence": "directory", "cursor_presence": "present", "cursor_checked": False, "cursor_valid": False},
+     "refused", "metadata_ambiguous"),
+    ({"presence": "other", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False},
+     "refused", "metadata_ambiguous"),
+    (None, "refused", "metadata_ambiguous"),
+])
+def test_positions_declared_non_alloy_component_gate(monkeypatch, prometheus_entry, status, reason):
+    result = POSITIONS.verify(lambda: _declared_pair_found(monkeypatch, prometheus_entry))
+    assert result["status"] == status
+    assert result["reason"] == reason
+
+
+def test_positions_undeclared_allowlist_keeps_the_alloy_gate_unchanged():
+    found = _positions_found(_positions_state(owner=(0, 0)))
+    found["metadata"]["journal_components"]["o11y_prometheus"] = {
+        "presence": "directory", "cursor_presence": "present", "cursor_checked": True, "cursor_valid": False,
+    }
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
+
+
+def test_survey_reports_each_declared_component_presence_and_cursor_validity(monkeypatch):
+    declared = ("o11y_alloy", "o11y_prometheus", "o11y_loki", "o11y_tempo")
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", declared)
+    metadata = _positions_state(owner=(0, 0))
+    metadata["journal_components"] = {
+        "o11y_alloy": {"presence": "directory", "cursor_presence": "present",
+                       "cursor_checked": True, "cursor_valid": True},
+        "o11y_prometheus": dict(_JOURNAL_ENTRY_ABSENT),
+        "o11y_loki": {"presence": "other", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False},
+        "o11y_tempo": {"presence": "directory", "cursor_presence": "present",
+                       "cursor_checked": True, "cursor_valid": False},
+    }
+    found = _positions_found(metadata)
+    survey = POSITIONS.survey(lambda: found)
+    assert survey["journal_components"] == {
+        "o11y_alloy": {"presence": "present", "cursor_validity": "valid"},
+        "o11y_prometheus": {"presence": "absent", "cursor_validity": "absent"},
+        "o11y_loki": {"presence": "not_directory", "cursor_validity": "absent"},
+        "o11y_tempo": {"presence": "present", "cursor_validity": "invalid"},
+    }
+    unobserved = POSITIONS.survey(lambda: {"status": "unavailable"})
+    assert unobserved["journal_components"] == {
+        component: {"presence": "unverified", "cursor_validity": "unverified"} for component in declared
+    }
+    ready = POSITIONS.verify(lambda: _positions_found(_positions_state(owner=(0, 0))))
+    assert "journal_components" not in ready
+
+
+def test_pending_resume_counts_declared_components_and_still_requires_the_alloy_directory(monkeypatch):
+    monkeypatch.setattr(POSITIONS, "JOURNAL_COMPONENTS", ("o11y_alloy", "o11y_prometheus"))
+    found = _populated_pending_resume_found()
+    metadata = found["metadata"]
+    metadata["top_level"]["journal_component"] = 2
+    metadata["children"] = [{"kind": "file"}, {"kind": "dir"}, {"kind": "dir"}, {"kind": "dir"}]
+    metadata["child_count"] = 4
+    metadata["journal_components"]["o11y_prometheus"] = {
+        "presence": "directory", "cursor_presence": "absent", "cursor_checked": False, "cursor_valid": False,
+    }
+    assert POSITIONS.verify(lambda: found)["reason"] == "pending_nocopy_cursor_verified"
+
+    metadata["journal_components"]["o11y_alloy"]["presence"] = "absent"
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
+
+
+def test_journal_component_vars_file_is_the_reviewed_allowlist():
+    path = ROOT / "platform/playbooks/vars/o11y-journal-components.yml"
+    rows = yaml.safe_load(path.read_text())["o11y_journal_components"]
+    assert [row["component"] for row in rows] == [
+        "o11y_alloy", "o11y_prometheus", "o11y_loki", "o11y_tempo",
+        "o11y_pyroscope", "o11y_grafana", "o11y_node_exporter",
+    ]
+    compose = (O11Y / "compose.yml").read_text()
+    for row in rows:
+        assert set(row) == {"component", "container", "service"}
+        assert POSITIONS._JOURNAL_COMPONENT_RE.fullmatch(row["component"])
+        assert row["container"] == "o11y-" + row["component"][len("o11y_"):].replace("_", "-")
+        assert row["service"] == "o11y/" + row["container"][len("o11y-"):]
+        # Grounded in the compose file the deploy runs: the container name and the service key.
+        assert f"container_name: {row['container']}\n" in compose
+        assert re.search(rf"^  {re.escape(row['service'].split('/', 1)[1])}:$", compose, re.M)
+    assert all(row["container"] != "o11y-journal-collector" for row in rows)
+    assert POSITIONS.parse_components(",".join(row["component"] for row in rows)) is not None
 
 
 def test_positions_survey_returns_only_bounded_metadata_categories():
@@ -429,6 +1423,7 @@ def test_positions_survey_returns_only_bounded_metadata_categories():
         "mount": "clear",
         "children": "safe_regular_files",
         "journal_cursor": "valid",
+        "remotecfg": "absent",
         "free_space": "sufficient",
         "live_diagnostic": {
             **POSITIONS._live_diagnostic(found),
@@ -438,6 +1433,7 @@ def test_positions_survey_returns_only_bounded_metadata_categories():
             "namespace_probe": "not_run",
         },
         "pending_repair_diagnostic": POSITIONS._pending_diagnostic(found),
+        "journal_components": {"o11y_alloy": {"presence": "present", "cursor_validity": "unverified"}},
     }
     assert "/private" not in json.dumps(report)
     assert "9001" not in json.dumps(report)
@@ -514,7 +1510,7 @@ print(json.dumps(results))
 @needs_ansible
 def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_rendering():
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     apply_block = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -550,12 +1546,14 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         "top_level": {
             "seed_file": 1,
             "journal_component": 0,
+            "remotecfg_component": 0,
             "other_files": 2,
             "other_directories": 3,
             "other_symlinks": 4,
             "other_kinds": 5,
             "receiver_component": 1,
             "exporter_component": 0,
+            "attributes_processor_component": 0,
         },
         "role_metadata": {
             "receiver": {
@@ -566,7 +1564,38 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
                 "owner": "unverified", "access": "unverified", "acl": "unverified",
                 "mount": "unverified", "children": "unverified",
             },
+            "attributes_processor": {
+                "owner": "unverified", "access": "unverified", "acl": "unverified",
+                "mount": "unverified", "children": "unverified",
+            },
+            "remotecfg": {
+                "owner": "unverified", "access": "unverified", "acl": "unverified",
+                "mount": "unverified", "children": "unverified",
+            },
         },
+        "remotecfg_state": "absent",
+        "journal_metadata": {
+            "component": {
+                "presence": "present", "type": "directory", "owner": "matches_collector",
+                "owner_rwx": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear", "children": "nonempty",
+            },
+            "positions": {
+                "presence": "present", "type": "regular_file", "owner": "matches_collector",
+                "owner_rw": "complete", "unsafe_mode_bits": "absent", "link_count": "match",
+                "acl": "absent", "mount": "clear",
+            },
+            "temporary_files": 0,
+            "child_count": 1,
+            "temporary_file_metadata": "not_applicable",
+            "unknown_children": {"files": 0, "directories": 0, "symlinks": 0, "other": 0},
+        },
+        "seed_metadata": {
+            "presence": "present", "type": "regular_file", "owner": "matches_collector",
+            "link_count": "match", "owner_execute": "absent", "group_other_permissions": "absent",
+            "special_bits": "absent", "acl": "absent", "mount": "clear",
+        },
+        "layout_diagnostic": {"root_mode": "safe", "journal_child_count": 1},
         "unmatched_directories": {
             "count": 2,
             "owner": {"matches_collector": 0, "mismatch": 2, "unverified": 0},
@@ -630,6 +1659,33 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
                 "children": {**base["unmatched_directories"]["children"], "empty": 33},
             },
         }),
+        ("journal_extra_key", {
+            **base,
+            "journal_metadata": {**base["journal_metadata"], "private": "PRIVATE_MARKER"},
+        }),
+        ("journal_count_overflow", {
+            **base,
+            "journal_metadata": {**base["journal_metadata"], "temporary_files": 33},
+        }),
+        ("journal_boolean_count", {
+            **base,
+            "journal_metadata": {
+                **base["journal_metadata"],
+                "unknown_children": {**base["journal_metadata"]["unknown_children"], "files": True},
+            },
+        }),
+        ("seed_extra_key", {
+            **base,
+            "seed_metadata": {**base["seed_metadata"], "private": "PRIVATE_MARKER_SEED"},
+        }),
+        ("seed_category", {
+            **base,
+            "seed_metadata": {**base["seed_metadata"], "owner_execute": "PRIVATE_MARKER_SEED"},
+        }),
+        ("layout_count_boolean", {
+            **base,
+            "layout_diagnostic": {**base["layout_diagnostic"], "journal_child_count": True},
+        }),
     ]
     def evaluate_all(diagnostics):
         job = {
@@ -661,6 +1717,9 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         "receiver_role=",
         "exporter_role=",
         "unmatched_directories=",
+        "journal_metadata=",
+        "seed_metadata=",
+        "layout_diagnostic=",
     ):
         assert expected in valid_rendered
 
@@ -669,6 +1728,8 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         assert summary == rescue, name
         assert "helper=unavailable" in rendered, name
         assert "PRIVATE_MARKER" not in rendered, name
+        assert set(summary["live_diagnostic"]["seed_metadata"].values()) == {"unverified"}
+        assert "PRIVATE_MARKER_SEED" not in rendered
 
 
 @pytest.mark.parametrize("field", ["NeedsChown", "NeedsCopyUp"])
@@ -689,14 +1750,14 @@ def test_survey_initialization_diagnostics_expose_only_type_and_real_boolean(
     field, value, expected_type, expected_value, monkeypatch
 ):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v3",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -718,8 +1779,8 @@ def test_survey_initialization_diagnostics_expose_only_type_and_real_boolean(
             return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
                 "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
             }}}]))
-        if argv[:3] == ["podman", "volume", "inspect"] and "--all" in argv:
-            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        if argv[:3] == ["podman", "volume", "ls"]:
+            return _positions_volume_reply(argv, volume)
         template_reply = _positions_volume_reply(argv, volume)
         if template_reply is not None:
             return template_reply
@@ -751,10 +1812,13 @@ def test_survey_initialization_diagnostics_expose_only_type_and_real_boolean(
     assert [argv for argv in calls if argv[:2] == ["podman", "version"]] == [
         ["podman", "version", "--format", "json"]
     ]
-    named_calls = [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"] and "--all" not in argv]
-    assert len(named_calls) == 3
-    assert named_calls[0] == named_calls[2] == ["podman", "volume", "inspect", "o11y_journal-collector-state"]
-    assert named_calls[1][3] == "--format"
+    named_calls = [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"]]
+    assert len(named_calls) == 4
+    assert named_calls[0] == ["podman", "volume", "inspect", "o11y_journal-collector-state-v3"]
+    assert [argv[3] for argv in named_calls] == [
+        "o11y_journal-collector-state-v3", "o11y_journal-collector-state-v3",
+        "--format", "o11y_journal-collector-state-v3",
+    ]
     assert "PRIVATE_MARKER" not in json.dumps(report)
     assert "/private/" not in json.dumps(report)
 
@@ -762,8 +1826,8 @@ def test_survey_initialization_diagnostics_expose_only_type_and_real_boolean(
 @pytest.mark.parametrize(
     ("named_result", "expected_outcome", "expected_identity"),
     [
-        ("PRIVATE_MARKER_MALFORMED", "unavailable", "unverified"),
-        (["duplicate", "duplicate"], "unavailable", "unverified"),
+        ("PRIVATE_MARKER_MALFORMED", "identity_unverified", "unverified"),
+        (["duplicate", "duplicate"], "identity_unverified", "unverified"),
         (["mismatch"], "identity_mismatch", "mismatch"),
     ],
 )
@@ -771,14 +1835,14 @@ def test_survey_named_volume_diagnostic_is_categorical_and_redacted(
     named_result, expected_outcome, expected_identity, monkeypatch
 ):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v3",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
         "MountCount": 0,
         "NeedsChown": "PRIVATE_MARKER_FIELD",
@@ -792,20 +1856,18 @@ def test_survey_named_volume_diagnostic_is_categorical_and_redacted(
             return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
                 "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
             }}}]))
-        if argv[:3] == ["podman", "volume", "inspect"] and "--all" in argv:
-            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
-        template_reply = _positions_volume_reply(argv, volume)
-        if template_reply is not None:
-            return template_reply
+        if argv[:3] == ["podman", "volume", "ls"]:
+            return _positions_volume_reply(argv, volume)
         if argv[:3] == ["podman", "volume", "inspect"]:
+            if "--format" not in argv:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
             if named_result == "PRIVATE_MARKER_MALFORMED":
                 return SimpleNamespace(returncode=0, stdout='"PRIVATE_MARKER_MALFORMED"')
             if named_result[0] == "duplicate":
-                return SimpleNamespace(returncode=0, stdout=json.dumps([volume, volume]))
-            mismatch = {**volume, "Name": "PRIVATE_MARKER_NAME", "Labels": {
-                "com.docker.compose.project": "PRIVATE_MARKER_PROJECT"
-            }}
-            return SimpleNamespace(returncode=0, stdout=json.dumps([mismatch]))
+                return SimpleNamespace(returncode=0, stdout="PRIVATE_MARKER_DUPLICATE\nPRIVATE_MARKER_DUPLICATE")
+            return SimpleNamespace(returncode=0, stdout=(
+                "PRIVATE_MARKER_NAME\nPRIVATE_MARKER_PROJECT\n\nfalse\nfalse"
+            ))
         if argv[:2] == ["podman", "version"]:
             return SimpleNamespace(returncode=0, stdout="{}")
         if argv[:2] == ["podman", "ps"]:
@@ -827,14 +1889,14 @@ def test_survey_named_volume_diagnostic_is_categorical_and_redacted(
 
 def test_survey_named_volume_version_queries_run_only_after_exact_identity(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v3",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
         "MountCount": 0,
         "NeedsChown": "invalid",
@@ -850,12 +1912,12 @@ def test_survey_named_volume_version_queries_run_only_after_exact_identity(monke
             return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
                 "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
             }}}]))
-        if argv[:3] == ["podman", "volume", "inspect"] and "--all" in argv:
-            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
         template_reply = _positions_volume_reply(argv, volume)
         if template_reply is not None:
             return template_reply
         if argv[:3] == ["podman", "volume", "inspect"]:
+            if "--format" not in argv:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
             return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
         if argv[:2] == ["podman", "version"]:
             return SimpleNamespace(returncode=0, stdout=json.dumps({
@@ -867,8 +1929,8 @@ def test_survey_named_volume_version_queries_run_only_after_exact_identity(monke
 
     monkeypatch.setattr(POSITIONS, "_inspect_metadata", lambda *_args, **_kwargs: _positions_state(owner=(0, 0)))
     report = POSITIONS.survey(lambda: POSITIONS.discover(run=run, diagnostics=True))
-    query_names = [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"] and "--all" not in argv]
-    assert len(query_names) == 3
+    query_names = [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"]]
+    assert len(query_names) == 4
     assert report["status"] == "volume_initialization_unverified"
     assert report["survey_diagnostics"]["podman_version"] == {
         "client": "5.4.2", "server": "unavailable"
@@ -881,12 +1943,12 @@ def test_survey_named_volume_version_queries_run_only_after_exact_identity(monke
 
 def test_survey_default_discovery_has_exact_diagnostic_schema(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
+        "Name": "o11y_journal-collector-state-v3", "Driver": "local", "Scope": "local",
         "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 0,
         "NeedsChown": False, "NeedsCopyUp": True,
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
     }
     calls = []
@@ -899,8 +1961,6 @@ def test_survey_default_discovery_has_exact_diagnostic_schema(monkeypatch):
             return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
                 "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
             }}}]))
-        if argv[:4] == ["podman", "volume", "inspect", "--all"]:
-            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
         if argv[:2] == ["podman", "ps"]:
             return SimpleNamespace(returncode=0, stdout="[]")
         template_reply = _positions_volume_reply(argv, volume)
@@ -939,6 +1999,67 @@ def test_survey_early_refusal_keeps_exact_unverified_diagnostic_schema(monkeypat
     assert report["status"] == "not_rootless"
     assert not any(argv[:3] == ["podman", "volume", "inspect"] for argv in calls)
     assert not any(argv[:2] == ["podman", "version"] for argv in calls)
+
+
+_EVALUATE_SURVEY = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for report in job["reports"]:
+    variables = {"_journal_positions_survey": {"rc": 0, "stdout": json.dumps(report)}}
+    templar = Templar(loader=DataLoader(), variables=variables)
+    results.append([
+        templar.evaluate_conditional(trust_as_template(condition))
+        for condition in job["conditions"]
+    ])
+print(json.dumps(results))
+"""
+
+
+@needs_ansible
+def test_survey_assertion_accepts_helper_and_check_mode_schemas(monkeypatch):
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    assertion = next(
+        task["ansible.builtin.assert"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Require bounded positions-volume survey fields"
+    )
+    check_mode = next(
+        task["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"]
+        for play in plays
+        for task in play.get("tasks", [])
+        if task.get("name") == "Record positions-volume survey as unverified in check mode"
+    )
+
+    observed = _positions_found(_positions_state())
+    observed["survey_diagnostics"] = POSITIONS._unverified_diagnostics()
+    observed_report = POSITIONS.survey(lambda: observed)
+
+    monkeypatch.setattr(
+        POSITIONS, "_call",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="false"),
+    )
+    early_report = POSITIONS.survey()
+    check_mode_report = json.loads(check_mode)
+    malformed_report = json.loads(json.dumps(observed_report))
+    malformed_report["live_diagnostic"]["journal_metadata"]["component"]["raw_name"] = "PRIVATE_MARKER"
+    reports = [observed_report, early_report, check_mode_report, malformed_report]
+
+    result = subprocess.run(
+        [ansible_python(), "-c", _EVALUATE_SURVEY],
+        input=json.dumps({"conditions": assertion["that"], "reports": reports}),
+        text=True, capture_output=True, check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+    )
+    assert result.returncode == 0, result.stderr
+    outcomes = json.loads(result.stdout)
+    assert len(outcomes) == len(reports)
+    assert all(all(report_conditions) for report_conditions in outcomes[:-1]), outcomes
+    assert any(not condition for condition in outcomes[-1]), outcomes
+    assert not all(outcomes[-1])
 
 
 def test_survey_flag_assertions_require_literal_booleans():
@@ -985,14 +2106,14 @@ def test_survey_flag_assertions_require_literal_booleans():
 
 def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v3",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -1028,9 +2149,20 @@ def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(mon
     assert all("volume create" not in " ".join(argv) and "chown" not in " ".join(argv) for argv in calls)
     assert not any(argv[:2] == ["podman", "version"] for argv in calls)
     assert cursor_reads == [False]
-    assert [argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"]][0] == [
-        "podman", "volume", "inspect", "--all"
+    volume_lists = [argv for argv in calls if argv[:3] == ["podman", "volume", "ls"]]
+    assert volume_lists == [
+        ["podman", "volume", "ls", "--quiet", "--filter", "name=^o11y_journal\\-collector\\-state\\-v3$"],
+        [
+            "podman", "volume", "ls", "--quiet", "--filter",
+            "label=com.docker.compose.project=o11y", "--filter",
+            "label=com.docker.compose.volume=journal-collector-state-v3",
+        ],
     ]
+    assert all(
+        argv[:3] != ["podman", "volume", "inspect"]
+        or argv[-1] == "o11y_journal-collector-state-v3"
+        for argv in calls
+    )
 
     volume["Labels"].pop("com.docker.compose.volume")
     assert POSITIONS.discover(run=run)["status"] == "observed"
@@ -1040,9 +2172,19 @@ def test_positions_discovery_requires_exact_compose_labels_and_unused_volume(mon
     ("volumes", "containers", "expected"),
     [
         ([], [], "bootstrap_allowed"),
-        ([{"Name": "o11y_journal-collector-state", "Labels": {"com.docker.compose.project": "other"}}], [], "refused"),
+        ([{"Name": "o11y_journal-collector-state", "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state",
+        }}], [], "bootstrap_allowed"),
+        ([{"Name": "o11y_journal-collector-state-v2", "Labels": {
+            "com.docker.compose.project": "o11y",
+            "com.docker.compose.volume": "journal-collector-state-v2",
+        }}], [], "bootstrap_allowed"),
+        ([{"Name": "o11y_journal-collector-state-v3", "Labels": {
+            "com.docker.compose.project": "other"
+        }}], [], "refused"),
         ([{"Name": "old_volume", "Labels": {
-            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3"
         }}], [], "refused"),
         ([], [{"Names": [POSITIONS.COLLECTOR]}], "refused"),
         ([], None, "refused"),
@@ -1064,8 +2206,12 @@ def test_positions_missing_volume_requires_complete_inventory_no_collision_and_n
             return SimpleNamespace(returncode=0, stdout=json.dumps([{"Config": {"Labels": {
                 "com.docker.compose.project": "o11y", "com.docker.compose.service": "alloy"
             }}}]))
+        template_reply = _positions_volume_reply(argv, volumes)
+        if template_reply is not None:
+            return template_reply
         if argv[:3] == ["podman", "volume", "inspect"]:
-            return SimpleNamespace(returncode=0, stdout=json.dumps(volumes))
+            selected = next((row for row in volumes if row.get("Name") == argv[3]), None)
+            return SimpleNamespace(returncode=0, stdout=json.dumps([selected] if selected else []))
         if argv[:2] == ["podman", "ps"]:
             output = "invalid json" if containers is None else json.dumps(containers)
             return SimpleNamespace(returncode=0, stdout=output)
@@ -1079,6 +2225,11 @@ def test_positions_missing_volume_requires_complete_inventory_no_collision_and_n
     result = POSITIONS.verify(lambda: POSITIONS.discover(run=run))
     assert result["status"] == expected
     assert ["podman", "ps", "--all", "--format", "json"] in calls
+    assert not any(
+        argv[:3] == ["podman", "volume", "inspect"]
+        and argv[-1] in {"o11y_journal-collector-state", "o11y_journal-collector-state-v2"}
+        for argv in calls
+    )
 
 
 @pytest.mark.parametrize(
@@ -1094,14 +2245,14 @@ def test_positions_missing_volume_requires_complete_inventory_no_collision_and_n
 )
 def test_positions_discovery_requires_boolean_initialization_flags(field, value, expected, monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v3",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -1137,14 +2288,14 @@ def test_positions_discovery_requires_boolean_initialization_flags(field, value,
 
 def test_positions_discovery_allows_repair_of_initialized_empty_volume(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v3",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
         "MountCount": 0,
         "NeedsChown": False,
@@ -1191,19 +2342,19 @@ def test_positions_discovery_allows_repair_of_initialized_empty_volume(monkeypat
     )
 
     assert result == {"status": "repaired", "reason": "verified"}
-    assert len([argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"] and "--all" not in argv]) == 12
+    assert len([argv for argv in calls if argv[:3] == ["podman", "volume", "inspect"]]) == 16
 
 
 def test_positions_survey_allowlist_accepts_helper_initialization_status(monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state",
+        "Name": "o11y_journal-collector-state-v3",
         "Driver": "local",
         "Scope": "local",
         "Options": {},
         "Mountpoint": "/private/podman/volume/_data",
         "Labels": {
             "com.docker.compose.project": "o11y",
-            "com.docker.compose.volume": "journal-collector-state",
+            "com.docker.compose.volume": "journal-collector-state-v3",
         },
         "MountCount": 0,
         "NeedsChown": True,
@@ -1246,7 +2397,7 @@ def _missing_volume_found(**overrides):
     return {
         "status": "volume_missing",
         "project": "o11y",
-        "volume_name": "o11y_journal-collector-state",
+        "volume_name": "o11y_journal-collector-state-v3",
         "volume_inventory_complete": True,
         "name_collision": False,
         "collector_present": False,
@@ -1259,22 +2410,28 @@ def _empty_pending_volume_found(needs_chown=False, needs_copy_up=False, **overri
     return {
         "status": "volume_initialization_pending",
         "project": "o11y",
-        "volume_name": "o11y_journal-collector-state",
+        "volume_name": "o11y_journal-collector-state-v3",
         "mountpoint": "/private/podman/volume/_data",
         "volume_inventory_complete": True,
         "name_collision": False,
-        "collector_present": False,
+        "collector_present": overrides.get("collector_present", False),
+        "collector_project": (
+            POSITIONS.COLLECTOR_PROJECT if overrides.get("collector_present", False) else None
+        ),
+        "collector_networks": (
+            [POSITIONS.NETWORK_NAME] if overrides.get("collector_present", False) else []
+        ),
         "storage_space": {"free_bytes": 64 * 1024 * 1024, "free_inodes": 256},
         "volume_use_count": 0,
         "mount_count": 0,
         "needs_chown": needs_chown,
         "needs_copy_up": needs_copy_up,
         "volume": {
-            "Name": "o11y_journal-collector-state",
+            "Name": "o11y_journal-collector-state-v3",
             "CreatedAt": "2026-10-09T12:00:00Z",
             "Labels": {
                 "com.docker.compose.project": "o11y",
-                "com.docker.compose.volume": "journal-collector-state",
+                "com.docker.compose.volume": "journal-collector-state-v3",
             },
             "NeedsChown": needs_chown,
             "NeedsCopyUp": needs_copy_up,
@@ -1497,7 +2654,9 @@ def test_pending_diagnostic_is_read_only_and_sanitized(monkeypatch):
 
 
 def test_positions_bootstrap_allows_only_proven_missing_volume_without_collision_or_collector():
-    assert POSITIONS.verify(lambda: _missing_volume_found())["status"] == "bootstrap_allowed"
+    missing_volume = _missing_volume_found()
+    assert missing_volume.get("metadata") is None
+    assert POSITIONS.verify(lambda: missing_volume)["status"] == "bootstrap_allowed"
     for found in (
         _missing_volume_found(volume_inventory_complete=False),
         _missing_volume_found(name_collision=True),
@@ -1507,11 +2666,9 @@ def test_positions_bootstrap_allows_only_proven_missing_volume_without_collision
 
 
 @pytest.mark.parametrize("needs_chown,needs_copy_up", [(False, False), (True, False), (False, True), (True, True)])
-def test_positions_bootstrap_allows_empty_unique_volume_with_boolean_flags(needs_chown, needs_copy_up):
+def test_positions_bootstrap_refuses_any_preexisting_volume_state(needs_chown, needs_copy_up):
     found = _empty_pending_volume_found(needs_chown, needs_copy_up)
-    assert POSITIONS.verify(lambda: found)["status"] == (
-        "bootstrap_allowed" if (needs_chown, needs_copy_up) == (False, True) else "refused"
-    )
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
 
 
 @pytest.mark.parametrize(
@@ -2230,7 +3387,7 @@ def test_positions_post_start_empty_volume_with_initialized_flags_stays_strict_r
         needs_copy_up=True,
         collector_present=True,
         volume_use_count=1,
-        mount_count=1,
+        mount_count=0,
         collector_mount_verified=True,
         metadata=_positions_state(owner=(0, 0), children=[{
             "name": "positions-file", "kind": "file", "uid": 0, "gid": 0,
@@ -2245,7 +3402,7 @@ def test_positions_post_start_empty_volume_with_initialized_flags_stays_strict_r
     {"collector_present": False},
     {"volume_use_count": 0},
     {"volume_use_count": 2},
-    {"mount_count": 0},
+    {"mount_count": 1},
     {"mount_count": 2},
     {"collector_mount_verified": False},
 ])
@@ -2267,8 +3424,8 @@ def test_positions_post_start_refuses_partial_copy_hidden_entry_or_missing_curso
     found = _positions_found(metadata, users=1)
     found["needs_copy_up"] = True
     found["volume"] = {
-        "Name": "o11y_journal-collector-state",
-        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"},
+        "Name": "o11y_journal-collector-state-v3",
+        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3"},
         "NeedsChown": False,
         "NeedsCopyUp": True,
     }
@@ -2279,10 +3436,10 @@ def test_positions_post_start_refuses_partial_copy_hidden_entry_or_missing_curso
 @pytest.mark.parametrize("source_matches", [True, False])
 def test_positions_discovery_verifies_live_collector_volume_source(source_matches, monkeypatch):
     volume = {
-        "Name": "o11y_journal-collector-state", "Driver": "local", "Scope": "local",
-        "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 1,
+        "Name": "o11y_journal-collector-state-v3", "Driver": "local", "Scope": "local",
+        "Options": {}, "Mountpoint": "/private/podman/volume/_data", "MountCount": 0,
         "NeedsChown": False, "NeedsCopyUp": False,
-        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state"},
+        "Labels": {"com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3"},
     }
 
     def run(argv, **_kwargs):
@@ -2302,11 +3459,16 @@ def test_positions_discovery_verifies_live_collector_volume_source(source_matche
         if argv[:3] == ["podman", "inspect", "--type"] and argv[-1] == POSITIONS.COLLECTOR:
             mount_source = volume["Mountpoint"] if source_matches else "/private/other-volume/_data"
             return SimpleNamespace(returncode=0, stdout=json.dumps([{
+                    "Id": "a" * 64,
+                    "NetworkSettings": {"Networks": {POSITIONS.NETWORK_NAME: {}}},
                 "Mounts": [{
                     "Destination": POSITIONS.DATA_PATH, "Name": volume["Name"], "Type": "volume",
                     "Source": mount_source, "RW": True,
                 }],
-                "Config": {"User": "0:0"},
+                    "Config": {"User": "0:0", "Labels": {
+                        "com.docker.compose.project": POSITIONS.COLLECTOR_PROJECT,
+                        "com.docker.compose.service": "journal-collector",
+                    }},
             }]))
         raise AssertionError("unexpected live positions discovery command")
 
@@ -2320,6 +3482,9 @@ def test_positions_discovery_verifies_live_collector_volume_source(source_matche
     )
     if source_matches:
         assert report["collector_mount_verified"] is True
+        assert report["collector_project"] == POSITIONS.COLLECTOR_PROJECT
+        assert report["collector_networks"] == [POSITIONS.NETWORK_NAME]
+        assert POSITIONS.verify_live(lambda: report)["status"] == "ready"
     else:
         assert report["live_mount"]["source"] == "mismatch"
 
@@ -2369,8 +3534,8 @@ def test_positions_repair_rechecks_fresh_evidence_before_chown_and_verifies_acce
 
     assert result == {"status": "repaired", "reason": "verified"}
     assert calls == [
-        ("chown", "o11y_journal-collector-state"),
-        ("access-test", "o11y_journal-collector-state"),
+        ("chown", "o11y_journal-collector-state-v3"),
+        ("access-test", "o11y_journal-collector-state-v3"),
     ]
 
 
@@ -2512,7 +3677,7 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
     assert "_journal_positions_gate_summary.status in ['ready', 'bootstrap_allowed']" in source
     assert "_journal_positions_pre_mount_status in ['ready', 'bootstrap_allowed']" in source
     plays = yaml.safe_load(source)
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     def walk(tasks):
         for task in tasks or []:
             yield task
@@ -2523,9 +3688,104 @@ def test_positions_verify_returns_ready_and_matches_successful_playbook_contract
         task for task in walk(apply_play["tasks"])
         if task.get("name") == "Verify the live collector positions mount and access"
     )
-    assert live_gate["ansible.builtin.command"]["argv"] == ["python3", "-", "verify-live"]
+    assert live_gate["ansible.builtin.command"]["argv"] == [
+        "python3", "-", "verify-live", "--components", "{{ _journal_components_arg }}",
+    ]
     assert '"journal_cursor_presence":cursor_presence' in POSITIONS_HELPER.read_text()
     assert '"children": "alloy_component_layout"' in POSITIONS_HELPER.read_text()
+
+
+def _populated_pending_resume_found():
+    metadata = _positions_state(owner=(0, 0), children=[
+        {"kind": "file"}, {"kind": "dir"}, {"kind": "dir"},
+    ])
+    metadata["cursor_checked"] = True
+    metadata["top_level"] = {
+        "seed_file": 1, "journal_component": 1, "remotecfg_component": 1,
+        "other_files": 0, "other_directories": 0, "other_symlinks": 0,
+        "other_kinds": 0, "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0,
+    }
+    found = _empty_pending_volume_found(needs_copy_up=True, metadata=metadata)
+    found["volume"].update({
+        "Driver": "local", "Scope": "local", "Options": {},
+        "Mountpoint": found["mountpoint"],
+    })
+    found["survey_diagnostics"] = {
+        "podman_version": {"client": "4.9.3", "server": "unavailable"}
+    }
+    return found
+
+
+def test_positions_prestart_admits_only_populated_reviewed_pending_volume():
+    found = _populated_pending_resume_found()
+    assert POSITIONS.verify(lambda: found)["reason"] == "pending_nocopy_cursor_verified"
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
+
+
+def test_positions_live_accepts_plain_local_volume_with_zero_host_mount_count():
+    found = _populated_pending_resume_found()
+    found.update({
+        "collector_present": True,
+        "collector_project": POSITIONS.COLLECTOR_PROJECT,
+        "collector_networks": [POSITIONS.NETWORK_NAME],
+        "volume_use_count": 1,
+        "mount_count": 0,
+        "collector_mount_verified": True,
+    })
+    assert POSITIONS.verify_live(lambda: found)["status"] == "ready"
+    found["mount_count"] = 1
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("collector_project", "o11y"), ("collector_networks", [])],
+)
+def test_positions_live_requires_isolated_project_and_receiver_network(field, value):
+    found = _populated_pending_resume_found()
+    found.update({
+        "collector_present": True,
+        "collector_project": POSITIONS.COLLECTOR_PROJECT,
+        "collector_networks": [POSITIONS.NETWORK_NAME],
+        "volume_use_count": 1,
+        "mount_count": 0,
+        "collector_mount_verified": True,
+    })
+    assert POSITIONS.verify_live(lambda: found)["status"] == "ready"
+    found[field] = value
+    assert POSITIONS.verify_live(lambda: found)["status"] == "refused"
+
+
+@pytest.mark.parametrize("path,value", [
+    ("needs_chown", True), ("needs_copy_up", False),
+    ("volume_inventory_complete", False), ("name_collision", True),
+    ("collector_present", True), ("volume_use_count", 1), ("mount_count", 1),
+    ("volume_name", "other"), ("volume.Name", "other"),
+    ("volume.Labels.com.docker.compose.project", "other"),
+    ("volume.Options", {"unexpected": "value"}), ("volume.Driver", "image"),
+    ("volume.CreatedAt", "unavailable"),
+    ("survey_diagnostics.podman_version.client", "4.9.4"),
+    ("metadata.child_count", 0), ("metadata.cursor_checked", False),
+    ("metadata.journal_cursor_valid", False), ("metadata.component_layout", False),
+    ("metadata.acl", True), ("metadata.root_is_mount", True),
+    ("metadata.root.uid", 88),
+    ("metadata.top_level.other_directories", 1),
+    ("metadata.free_bytes", POSITIONS.MIN_FREE_BYTES - 1),
+    ("storage_space.free_inodes", POSITIONS.MIN_FREE_INODES - 1),
+])
+def test_positions_prestart_pending_resume_refuses_changed_evidence(path, value):
+    found = _populated_pending_resume_found()
+    if path.startswith("volume.Labels."):
+        found["volume"]["Labels"][path.removeprefix("volume.Labels.")] = value
+        assert POSITIONS.verify(lambda: found)["status"] == "refused"
+        return
+    target = found
+    for key in path.split(".")[:-1]:
+        target = target[key]
+    target[path.split(".")[-1]] = value
+    assert POSITIONS.verify(lambda: found)["status"] == "refused"
 
 
 def _cursorless_prestart_found(**overrides):
@@ -2538,7 +3798,7 @@ def _cursorless_prestart_found(**overrides):
     found.update({
         "project": "o11y",
         "volume": {
-            "Name": "o11y_journal-collector-state",
+            "Name": "o11y_journal-collector-state-v3",
             "Driver": "local",
             "Scope": "local",
             "Options": {},
@@ -2546,7 +3806,7 @@ def _cursorless_prestart_found(**overrides):
             "MountCount": 0,
             "Labels": {
                 "com.docker.compose.project": "o11y",
-                "com.docker.compose.volume": "journal-collector-state",
+                "com.docker.compose.volume": "journal-collector-state-v3",
             },
         },
         "needs_chown": False,
@@ -2562,14 +3822,14 @@ def _cursorless_prestart_found(**overrides):
 
 @pytest.mark.parametrize("children", [[], [{"kind": "file", "uid": 0, "gid": 0, "nlink": 1}],
     [{"kind": "dir", "uid": 0, "gid": 0, "nlink": 2}]])
-def test_positions_prestart_allows_only_observed_absent_cursor_safe_layout(children):
+def test_positions_prestart_refuses_existing_v2_state_without_cursor(children):
     found = _cursorless_prestart_found(metadata=_positions_state(
         owner=(0, 0), children=children, journal_cursor_valid=False,
         journal_cursor_presence="absent",
     ))
     result = POSITIONS.verify(lambda: found)
-    assert result["status"] == "ready"
-    assert result["reason"] == "positions_cursor_absent_prestart_retry"
+    assert result["status"] == "refused"
+    assert result["reason"] == "metadata_ambiguous"
     result = POSITIONS.verify_live(lambda: found)
     assert result["status"] == "refused"
     assert result["reason"] == "collector_mount_unverified"
@@ -2669,7 +3929,7 @@ def test_embedded_positions_metadata_retries_only_the_expected_rename_race(tmp_p
         mountpoint = root.parent
         temp = component / ".positions.yml123456789"
         positions = component / "positions.yml"
-        prelude = f'''import builtins,io,os,sys,types
+        prelude = f'''import builtins,io,os,stat,sys,types
 sys.argv.append("false")
 original_open=builtins.open
 def fake_open(path,*args,**kwargs):
@@ -2679,6 +3939,7 @@ def fake_open(path,*args,**kwargs):
 builtins.open=fake_open
 os.listxattr=lambda *_args,**_kwargs: []
 original_lstat=os.lstat
+original_stat=os.stat
 disappeared={{"done":False}}
 def fake_lstat(path):
     if path=={str(temp)!r} and {disappearance!r}:
@@ -2695,6 +3956,21 @@ def fake_lstat(path):
             st_dev=st.st_dev,st_ino=st.st_ino,st_size=st.st_size,st_mtime_ns=st.st_mtime_ns)
     return st
 os.lstat=fake_lstat
+def fake_stat(path,*args,**kwargs):
+    if path=={temp.name!r} and {disappearance!r}:
+        if {disappearance!r}=="always" or not disappeared["done"]:
+            disappeared["done"]=True
+            if {disappearance!r}=="once": os.rename({str(temp)!r},{str(positions)!r})
+            raise FileNotFoundError(path)
+    if path=="positions.yml" and {disappearance!r}=="unexpected":
+        raise FileNotFoundError(path)
+    observed=original_stat(path,*args,**kwargs)
+    if path in ({temp.name!r},"positions.yml"):
+        return types.SimpleNamespace(st_mode=observed.st_mode,st_uid=0,st_gid=0,
+            st_nlink=observed.st_nlink,st_dev=observed.st_dev,st_ino=observed.st_ino,
+            st_size=observed.st_size,st_mtime_ns=observed.st_mtime_ns)
+    return observed
+os.stat=fake_stat
 exec({POSITIONS._METADATA_SCRIPT!r})
 '''
         result = subprocess.run(
@@ -2786,13 +4062,41 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     assert metadata["status"] == "observed"
     assert metadata["journal_cursor_presence"] == "absent"
     assert metadata["journal_cursor_valid"] is False
+    assert metadata["journal_metadata"]["component"]["presence"] == "absent"
+    assert metadata["journal_metadata"]["component"]["type"] == "absent"
     assert metadata["top_level"] == {
         "seed_file": 0, "journal_component": 0, "other_files": 0,
         "other_directories": 0, "other_symlinks": 0, "other_kinds": 0,
         "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0,
+        "remotecfg_component": 0,
     }
 
     component = root / "loki.source.journal.o11y_alloy"
+    component.write_text("private component contents")
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["journal_metadata"]["component"]["presence"] == "present"
+    assert metadata["journal_metadata"]["component"]["type"] == "file"
+    assert "private component contents" not in result.stdout
+
+    component.unlink()
+    component.symlink_to("missing-target")
+    result = subprocess.run(
+        [sys.executable, "-c", prelude, str(root)],
+        check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    metadata = json.loads(result.stdout)
+    assert metadata["journal_metadata"]["component"]["presence"] == "present"
+    assert metadata["journal_metadata"]["component"]["type"] == "symlink"
+    assert "missing-target" not in result.stdout
+
+    component.unlink()
     component.mkdir(mode=0o700)
     positions = component / "positions.yml"
     positions.write_text("invalid positions")
@@ -2853,9 +4157,10 @@ def test_embedded_positions_metadata_aggregates_roles_without_emitting_names_or_
     assert result.returncode == 0, result.stderr
     metadata = json.loads(result.stdout)
     assert metadata["top_level"] == {
-        "seed_file": 1, "journal_component": 1, "other_files": 1,
+        "seed_file": 1, "journal_component": 1, "remotecfg_component": 0, "other_files": 1,
         "other_directories": 1, "other_symlinks": 1, "other_kinds": 0,
         "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0,
     }
     assert all(value <= POSITIONS.MAX_CHILDREN for value in metadata["top_level"].values())
     assert "private-name-marker" not in result.stdout
@@ -2865,18 +4170,25 @@ def test_embedded_positions_metadata_aggregates_roles_without_emitting_names_or_
 def test_embedded_metadata_classifies_only_exact_component_directories_without_disclosing_names(tmp_path):
     receiver_name = "otelcol.receiver.loki.journal"
     exporter_name = "otelcol.exporter.otlp.journal"
+    attributes_processor_name = "otelcol.processor.attributes.journal_labels"
     unknown_name = "private-directory-marker"
 
-    def inspect(name, kind="directory", *, acl=False, mounted=False, race=False, child_count=0):
-        root = tmp_path / f"{name.replace('.', '-')}-{kind}-{acl}-{mounted}-{race}-{child_count}"
+    def inspect(
+        name, kind="directory", *, acl=False, mounted=False, race=False, child_count=0,
+        mode=0o700, owner=True, inaccessible=False, inaccessible_open=False, empty_race=False,
+    ):
+        root = tmp_path / (
+            f"{name.replace('.', '-')}-{kind}-{acl}-{mounted}-{race}-{child_count}-{mode}-"
+            f"{owner}-{inaccessible}-{inaccessible_open}-{empty_race}"
+        )
         root.mkdir(mode=0o700)
         os.chmod(root, 0o700)
         role_path = root / name
         if kind == "directory":
             role_path.mkdir(mode=0o700)
-            os.chmod(role_path, 0o700)
+            os.chmod(role_path, mode)
             for index in range(child_count):
-                (role_path / f"child-{index}").touch()
+                (role_path / (".hidden-child" if index == 0 else f"child-{index}")).touch()
         elif kind == "file":
             role_path.write_text("PRIVATE_CONTENT_MARKER")
         else:
@@ -2889,21 +4201,67 @@ sys.argv.append("false")
 root={str(root)!r}
 role_path={str(role_path)!r}
 role_name={name!r}
+role_uid={0 if owner else 99}
 real_stat=os.stat
+real_lstat=os.lstat
+real_fstat=os.fstat
+real_scandir=os.scandir
 real_open=builtins.open
+real_os_open=os.open
+role_original=real_stat(role_path)
 real_listxattr=getattr(os,"listxattr",lambda *_args,**_kwargs: [])
 def fake_open(path,*args,**kwargs):
     if path=="/proc/self/mountinfo": return io.StringIO({''.join(mount_lines)!r})
     return real_open(path,*args,**kwargs)
 builtins.open=fake_open
+def fake_os_open(path,*args,**kwargs):
+    if {inaccessible_open!r} and role_name=="remotecfg" and path==role_name and kwargs.get("dir_fd") is not None:
+        raise PermissionError("private")
+    return real_os_open(path,*args,**kwargs)
+os.open=fake_os_open
 def fake_listxattr(path,*args,**kwargs):
+    if {inaccessible!r} and isinstance(path,int): raise PermissionError("private")
     if {acl!r} and isinstance(path,int):
-        return ["system.posix_acl_access"]
+        return ["system.posix_acl_default" if {acl!r}=="default" else "system.posix_acl_access"]
     return real_listxattr(path,*args,**kwargs)
 os.listxattr=fake_listxattr
+scan_count={{"value":0}}
+class Scan:
+    def __init__(self, entries): self.entries=entries
+    def __enter__(self): return iter(self.entries)
+    def __exit__(self,*_args): return False
+def fake_scandir(fd):
+    entries=list(real_scandir(fd))
+    if {empty_race!r}:
+        scan_count["value"]+=1
+        if scan_count["value"]==2:
+            with open(os.path.join(role_path,".appeared-during-scan"),"w"): pass
+    return Scan(entries)
+os.scandir=fake_scandir
+def fake_fstat(fd):
+    value=real_fstat(fd)
+    if (role_name=="remotecfg" and (value.st_dev,value.st_ino)==
+            (role_original.st_dev,role_original.st_ino)):
+        return types.SimpleNamespace(st_mode=value.st_mode,st_uid=role_uid,st_gid=role_uid,
+            st_dev=value.st_dev,st_ino=value.st_ino,st_nlink=value.st_nlink,
+            st_mtime_ns=value.st_mtime_ns)
+    return value
+os.fstat=fake_fstat
+def fake_lstat(path,*args,**kwargs):
+    value=real_lstat(path,*args,**kwargs)
+    if role_name=="remotecfg" and path==role_path:
+        return types.SimpleNamespace(st_mode=value.st_mode,st_uid=role_uid,st_gid=role_uid,
+            st_dev=value.st_dev,st_ino=value.st_ino,st_nlink=value.st_nlink,
+            st_size=value.st_size,st_mtime_ns=value.st_mtime_ns)
+    return value
+os.lstat=fake_lstat
 stat_calls={{"value":0}}
 def fake_stat(path,*args,**kwargs):
     value=real_stat(path,*args,**kwargs)
+    if role_name=="remotecfg" and path==role_name and kwargs.get("dir_fd") is not None:
+        value=types.SimpleNamespace(st_mode=value.st_mode,st_uid=role_uid,st_gid=role_uid,
+            st_dev=value.st_dev,st_ino=value.st_ino,st_nlink=value.st_nlink,
+            st_mtime_ns=value.st_mtime_ns)
     if {race!r} and path==role_name and kwargs.get("dir_fd") is not None:
         stat_calls["value"]+=1
         if stat_calls["value"]==2:
@@ -2923,7 +4281,11 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout), result.stdout
 
-    for name, role in ((receiver_name, "receiver"), (exporter_name, "exporter")):
+    for name, role in (
+        (receiver_name, "receiver"),
+        (exporter_name, "exporter"),
+        (attributes_processor_name, "attributes_processor"),
+    ):
         metadata, _ = inspect(name)
         assert metadata["top_level"][f"{role}_component"] == 1
         assert metadata["top_level"]["other_directories"] == 1
@@ -2936,7 +4298,9 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     assert metadata["top_level"]["other_directories"] == 1
     assert metadata["top_level"]["receiver_component"] == 0
     assert metadata["top_level"]["exporter_component"] == 0
+    assert metadata["top_level"]["attributes_processor_component"] == 0
     assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
+    assert set(metadata["role_metadata"]["attributes_processor"].values()) == {"unverified"}
 
     for kind, count_key in (("file", "other_files"), ("symlink", "other_symlinks")):
         metadata, _ = inspect(receiver_name, kind)
@@ -2960,8 +4324,39 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         if kwargs.get("race") or kwargs.get("child_count"):
             assert set(metadata["role_metadata"]["receiver"].values()) == {"unverified"}
 
+    metadata, _ = inspect("remotecfg")
+    assert metadata["top_level"]["remotecfg_component"] == 1
+    assert metadata["remotecfg_state"] == "safe"
+    assert metadata["component_layout"] is True
+    assert metadata["unmatched_directories"]["count"] == 0
+
+    for kwargs, expected in (
+        ({"child_count": 1}, "unsafe"),
+        ({"mode": 0o722}, "unsafe"),
+        ({"mode": 0o600, "inaccessible_open": True}, "unverified"),
+        ({"mode": 0o1700}, "unsafe"),
+        ({"owner": False}, "unsafe"),
+        ({"acl": True}, "unsafe"),
+        ({"acl": "default"}, "unsafe"),
+        ({"mounted": True}, "unsafe"),
+        ({"race": True}, "unverified"),
+        ({"inaccessible": True}, "unverified"),
+        ({"empty_race": True}, "unverified"),
+    ):
+        metadata, _ = inspect("remotecfg", **kwargs)
+        assert metadata["remotecfg_state"] == expected, (kwargs, metadata["role_metadata"]["remotecfg"])
+        assert metadata["component_layout"] is False
+        assert metadata["top_level"]["remotecfg_component"] == 1
+
+    for kind in ("file", "symlink"):
+        metadata, _ = inspect("remotecfg", kind)
+        assert metadata["remotecfg_state"] == "unsafe"
+        assert metadata["component_layout"] is False
+
     visible = json.dumps(POSITIONS._live_diagnostic({"status": "observed", "metadata": metadata}))
-    assert receiver_name not in visible and exporter_name not in visible and unknown_name not in visible
+    assert all(name not in visible for name in (
+        receiver_name, exporter_name, attributes_processor_name, unknown_name,
+    ))
     assert "PRIVATE_CONTENT_MARKER" not in visible
     assert re.search(r"[0-9a-f]{64}", visible) is None
 
@@ -2995,6 +4390,7 @@ def test_embedded_metadata_reports_three_entry_layout_with_anonymous_unknown_dir
         "seed_file": 1, "journal_component": 1, "other_files": 0,
         "other_directories": 1, "other_symlinks": 0, "other_kinds": 0,
         "receiver_component": 0, "exporter_component": 0,
+        "attributes_processor_component": 0, "remotecfg_component": 0,
     }
     assert metadata["component_layout"] is False
     assert metadata["unmatched_directories"]["count"] == 1
@@ -3241,7 +4637,7 @@ def test_positions_access_test_uses_isolated_collector_restrictions_and_cleans_c
             return SimpleNamespace(returncode=0, stdout="[]")
         raise AssertionError("unexpected access-test command")
 
-    assert POSITIONS._access_test("o11y_journal-collector-state", run=run)
+    assert POSITIONS._access_test("o11y_journal-collector-state-v3", run=run)
     probe = calls[0]
     assert probe[probe.index("--entrypoint") + 1] == "/bin/bash"
     assert "--network" in probe and probe[probe.index("--network") + 1] == "none"
@@ -3315,45 +4711,6 @@ os.open=race_open
     assert moved.stat().st_ino == stat.st_ino
     assert root.stat().st_ino != stat.st_ino
     assert (root / "positions.db").exists() is False
-
-
-def test_journal_probe_reports_only_a_sanitized_exact_target_count():
-    runner = Mock(
-        return_value=SimpleNamespace(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "CONTAINER_NAME": ["o11y-alloy"],
-                    "_SYSTEMD_UNIT": "private-unit.service",
-                    "MESSAGE": "private log message",
-                    "CONTAINER_ID_FULL": "private-id",
-                }
-            ),
-        )
-    )
-
-    report = PROBE.probe("/var/log/journal", run=runner)
-
-    assert report == {"status": "observed", "matching_entries": 1}
-    assert "private" not in json.dumps(report)
-    argv = runner.call_args.args[0]
-    assert "--output-fields=CONTAINER_NAME" in argv
-    assert argv[-1] == "CONTAINER_NAME=o11y-alloy"
-
-
-def test_journal_probe_fails_closed_for_unmatched_or_malformed_entries():
-    unmatched = Mock(
-        return_value=SimpleNamespace(returncode=0, stdout='{"CONTAINER_NAME":"other"}\n')
-    )
-    malformed = Mock(return_value=SimpleNamespace(returncode=0, stdout='not-json\n'))
-    failed = Mock(return_value=SimpleNamespace(returncode=1, stdout=""))
-
-    assert PROBE.probe("/var/log/journal", run=unmatched) == {
-        "status": "unavailable",
-        "matching_entries": 0,
-    }
-    assert PROBE.probe("/var/log/journal", run=malformed)["status"] == "unavailable"
-    assert PROBE.probe("/var/log/journal", run=failed)["status"] == "unavailable"
 
 
 def _journal_survey_runner(viable_paths, rootless="true"):
@@ -3590,6 +4947,7 @@ def test_compose_mount_is_read_only_and_state_is_separate():
     service = compose["services"]["journal-collector"]
 
     assert service["image"] == "docker.io/grafana/alloy:v1.9.2"
+    assert compose["name"] == "o11y-journal"
     assert service["restart"] == "always"
     assert service["read_only"] is True
     assert service["user"] == "0:0"
@@ -3605,21 +4963,462 @@ def test_compose_mount_is_read_only_and_state_is_separate():
     assert journal["read_only"] is True
     assert journal["bind"]["create_host_path"] is False
     assert "--storage.path=/alloy-state" in service["command"]
-    assert "journal-collector-state:/alloy-state" in service["volumes"]
-    assert "journal-collector-state" in compose["volumes"]
-    assert compose["volumes"]["journal-collector-state"]["labels"] == {
-        "com.docker.compose.volume": "journal-collector-state"
+    positions_volume = next(volume for volume in service["volumes"] if volume.get("target") == "/alloy-state")
+    assert positions_volume == {
+        "type": "volume", "source": "journal-collector-state-v3", "target": "/alloy-state",
+        "volume": {"nocopy": True},
     }
+    assert compose["volumes"]["journal-collector-state-v3"] == {
+        "name": "o11y_journal-collector-state-v3", "external": True,
+    }
+    assert compose["networks"]["o11y"] == {"name": "o11y_o11y", "external": True}
     assert POSITIONS.DATA_PATH == "/alloy-state"
+    assert POSITIONS.VOLUME_KEY == "journal-collector-state-v3"
     playbook_source = PLAYBOOK.read_text()
     assert "/alloy-state/.positions-live-gate." in playbook_source
     assert playbook_source.count('eq .Destination \\"/alloy-state\\"') == 2
     assert "select('search', '/var/lib/alloy|/alloy-state')" in playbook_source
 
 
-def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), "survey"])
-    monkeypatch.setattr(POSITIONS, "survey", lambda: (_ for _ in ()).throw(RuntimeError("private detail")))
+def test_resolved_compose_gate_requires_the_v3_volume_and_nocopy():
+    resolved = {
+        "name": "o11y-journal",
+        "services": {"journal-collector": {"networks": ["o11y"], "volumes": [{
+            "type": "volume",
+            "source": "journal-collector-state-v3",
+            "target": "/alloy-state",
+            "volume": {"nocopy": True},
+        }]}},
+        "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+        "volumes": {"journal-collector-state-v3": {
+            "name": "o11y_journal-collector-state-v3", "external": True,
+        }},
+    }
+    assert COMPOSE.verify_config(resolved)
+    for mismatch in (
+        {**resolved, "services": {"journal-collector": {"volumes": [
+            {**resolved["services"]["journal-collector"]["volumes"][0], "source": "journal-collector-state"}
+        ]}}},
+        {**resolved, "services": {"journal-collector": {"volumes": [
+            {**resolved["services"]["journal-collector"]["volumes"][0], "volume": {"nocopy": False}}
+        ]}}},
+        {**resolved, "services": {"journal-collector": {"volumes": [
+            *resolved["services"]["journal-collector"]["volumes"],
+            resolved["services"]["journal-collector"]["volumes"][0],
+        ]}}},
+        {**resolved, "volumes": {}},
+    ):
+        assert not COMPOSE.verify_config(mismatch)
+
+
+def test_resolved_compose_gate_requires_only_fixed_read_only_tls_mounts_when_enabled():
+    deploy_dir = "/srv/agent-cloud/platform/services/o11y/deployment"
+    tls_mounts = [
+        {"type": "bind", "source": f"{deploy_dir}/certs/o11y-journal",
+         "target": "/certs/journal-client", "read_only": True},
+        {"type": "bind", "source": f"{deploy_dir}/certs/step-ca-bundle.crt",
+         "target": "/certs/step-ca-bundle.crt", "read_only": True},
+    ]
+    resolved = {
+        "name": "o11y-journal",
+        "services": {"journal-collector": {"networks": ["o11y"], "volumes": [
+            {"type": "volume", "source": "journal-collector-state-v3", "target": "/alloy-state",
+             "volume": {"nocopy": True}},
+            *tls_mounts,
+        ]}},
+        "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+        "volumes": {"journal-collector-state-v3": {
+            "name": "o11y_journal-collector-state-v3", "external": True,
+        }},
+    }
+    assert COMPOSE.verify_config(resolved, tls_enabled=True, deploy_dir=deploy_dir)
+    assert not COMPOSE.verify_config(resolved, tls_enabled=False, deploy_dir=deploy_dir)
+    relative_mounts = [
+        {**tls_mounts[0], "source": "./certs/o11y-journal"},
+        {**tls_mounts[1], "source": "certs/step-ca-bundle.crt"},
+    ]
+    relative = {**resolved, "services": {"journal-collector": {
+        **resolved["services"]["journal-collector"],
+        "volumes": [resolved["services"]["journal-collector"]["volumes"][0], *relative_mounts],
+    }}}
+    assert COMPOSE.verify_config(relative, tls_enabled=True, deploy_dir=deploy_dir)
+    for bad_mounts in (
+        [tls_mounts[0], {**tls_mounts[1], "read_only": False}],
+        [{**tls_mounts[0], "source": f"{deploy_dir}/certs/other"}, tls_mounts[1]],
+        tls_mounts[:1],
+        [*tls_mounts, tls_mounts[0]],
+    ):
+        mismatch = {**resolved, "services": {"journal-collector": {
+            **resolved["services"]["journal-collector"],
+            "volumes": [resolved["services"]["journal-collector"]["volumes"][0], *bad_mounts],
+        }}}
+        assert not COMPOSE.verify_config(mismatch, tls_enabled=True, deploy_dir=deploy_dir)
+
+
+def test_o11y_tls_preflight_accepts_synthetic_pairs_and_refuses_invalid_identity(tmp_path):
+    deploy_dir = tmp_path / "agent-cloud/platform/services/o11y/deployment"
+    cert_root = deploy_dir / "certs"
+    server_dir = cert_root / "o11y-otlp-server"
+    journal_dir = cert_root / "o11y-journal"
+    ca_dir = tmp_path / "synthetic-ca"
+    for directory in (server_dir, journal_dir, ca_dir):
+        directory.mkdir(parents=True)
+    ca_key, ca_cert = ca_dir / "ca.key", ca_dir / "ca.crt"
+    subprocess.run([
+        "openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+        "-nodes", "-days", "2", "-subj", "/CN=synthetic-o11y-root",
+        "-addext", "basicConstraints=critical,CA:TRUE", "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+        "-keyout", str(ca_key), "-out", str(ca_cert),
+    ], check=True, capture_output=True)
+    server_name = "otlp.dc1.example.internal"
+    leaves = [
+        ("o11y-otlp-server", "server", "serverAuth", server_dir, server_name),
+        ("o11y-journal", "client", "clientAuth", journal_dir, "journal.dc1.example.internal"),
+    ]
+    declarations = []
+    for name, profile, eku, directory, san in leaves:
+        serial_dir = directory / "01"
+        serial_dir.mkdir()
+        key, csr = serial_dir / "key.pem", serial_dir / "request.csr"
+        cert, ext = serial_dir / "cert.pem", serial_dir / "extensions.cnf"
+        # Python 3.13+ VERIFY_X509_STRICT rejects a CA-signed leaf without an Authority Key Identifier.
+        ext.write_text(
+            f"subjectAltName=DNS:{san}\nextendedKeyUsage={eku}\n"
+            "basicConstraints=critical,CA:FALSE\nkeyUsage=digitalSignature\n"
+            "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n",
+            encoding="utf-8",
+        )
+        subprocess.run([
+            "openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-nodes", "-subj", f"/CN={san}", "-keyout", str(key), "-out", str(csr),
+        ], check=True, capture_output=True)
+        subprocess.run([
+            "openssl", "x509", "-req", "-in", str(csr), "-CA", str(ca_cert), "-CAkey", str(ca_key),
+            "-CAcreateserial", "-days", "2", "-extfile", str(ext), "-out", str(cert),
+        ], check=True, capture_output=True)
+        assert_strict_chain(ca_cert, cert)
+        os.chmod(key, 0o600)
+        (directory / "current").symlink_to("01")
+        declarations.append({
+            "name": name, "host": "o11y-test", "dir": str(directory),
+            "profile": profile, "reload": "none", "sans": [san],
+        })
+    (cert_root / "step-ca-bundle.crt").write_bytes(ca_cert.read_bytes())
+
+    playbook = tmp_path / "preflight.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "hosts": "o11y_svc", "gather_facts": False,
+        "vars": {"_deploy_dir": str(deploy_dir)},
+        "tasks": [{"ansible.builtin.include_tasks": str(ROOT / "platform/playbooks/tasks/assert-o11y-otlp-tls.yml")}],
+    }]), encoding="utf-8")
+    inventory_base = {
+        "all": {
+            "vars": {"dns_site": "dc1", "dns_zone": "example.internal"},
+            "children": {
+                "o11y_svc": {"hosts": {"o11y-test": {
+                    "ansible_connection": "local", "ansible_user": getpass.getuser(),
+                    "o11y_otlp_tls_enabled": True, "o11y_otlp_tls_server_name": server_name,
+                }}},
+                "step_ca_svc": {"hosts": {"ca-test": {
+                    "ansible_connection": "local", "internal_leaves": declarations,
+                }}},
+            },
+        },
+    }
+    local_tmp = tmp_path / "ansible"
+    local_tmp.mkdir()
+
+    def run(inventory):
+        path = tmp_path / "inventory.yml"
+        path.write_text(yaml.safe_dump(inventory), encoding="utf-8")
+        return subprocess.run(
+            ["ansible-playbook", "--check", "-i", str(path), str(playbook)],
+            check=False, capture_output=True, text=True,
+            env=os.environ | {"ANSIBLE_LOCAL_TEMP": str(local_tmp)},
+        )
+
+    valid = run(inventory_base)
+    assert valid.returncode == 0, valid.stdout + valid.stderr
+
+    wrong_name = yaml.safe_load(yaml.safe_dump(inventory_base))
+    wrong_name["all"]["children"]["o11y_svc"]["hosts"]["o11y-test"][
+        "o11y_otlp_tls_server_name"
+    ] = "wrong.dc1.example.internal"
+    assert run(wrong_name).returncode != 0
+
+    wrong_key = journal_dir / "current/key.pem"
+    original_key = wrong_key.read_bytes()
+    wrong_key.write_bytes((server_dir / "current/key.pem").read_bytes())
+    assert run(inventory_base).returncode != 0
+    wrong_key.write_bytes(original_key)
+    os.chmod(wrong_key, 0o644)
+    assert run(inventory_base).returncode != 0
+
+
+def test_collector_project_config_keeps_volume_and_network_external():
+    compose = yaml.safe_load((O11Y / "compose.journal.yml").read_text())
+    assert compose["name"] == "o11y-journal"
+    assert compose["networks"]["o11y"] == {"name": "o11y_o11y", "external": True}
+    assert compose["volumes"]["journal-collector-state-v3"] == {
+        "name": "o11y_journal-collector-state-v3", "external": True,
+    }
+    resolved = {
+        "name": "o11y-journal",
+        "services": {"journal-collector": {"networks": {"o11y": {}}, "volumes": [{
+            "type": "volume", "source": "journal-collector-state-v3",
+            "target": "/alloy-state", "volume": {"nocopy": True},
+        }]}},
+        "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+        "volumes": {"journal-collector-state-v3": {
+            "name": "o11y_journal-collector-state-v3", "external": True,
+        }},
+    }
+    assert COMPOSE.verify_config(resolved)
+    assert not COMPOSE.verify_config({**resolved, "name": "o11y"})
+    assert not COMPOSE.verify_config({
+        **resolved,
+        "volumes": {"journal-collector-state-v3": {"name": "other", "external": True}},
+    })
+    assert not COMPOSE.verify_config({
+        **resolved,
+        "networks": {"o11y": {"name": "other", "external": True}},
+    })
+
+
+def test_positions_network_identity_requires_exact_existing_receiver_network():
+    valid = {"name": "o11y_o11y", "labels": {
+        "com.docker.compose.project": "o11y",
+    }}
+
+    def run(argv, **_kwargs):
+        assert argv == ["podman", "network", "inspect", "--format", "json", "o11y_o11y"]
+        return SimpleNamespace(returncode=0, stdout=json.dumps([valid]))
+
+    assert POSITIONS.verify_network(run) == {
+        "status": "verified", "reason": "network_identity_verified",
+    }
+    assert POSITIONS.verify_network(lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=0, stdout=json.dumps([{**valid, "name": "other"}]),
+    ))["status"] == "refused"
+
+
+def test_legacy_collector_retirement_uses_its_verified_id_and_preserves_volume(monkeypatch):
+    volume = {
+        "Name": "o11y_journal-collector-state-v3", "Driver": "local", "Scope": "local",
+        "Options": {}, "Mountpoint": "/run/user/1000/containers/storage/volumes/state/_data",
+        "CreatedAt": "2026-10-18T00:00:00Z", "Labels": {
+            "com.docker.compose.project": "o11y", "com.docker.compose.volume": "journal-collector-state-v3",
+        },
+    }
+    found = {
+        "status": "observed", "project": "o11y", "volume_name": volume["Name"],
+        "volume": volume, "collector_present": True, "collector_project": "o11y",
+        "collector_networks": [POSITIONS.NETWORK_NAME],
+        "collector_id": "a" * 64, "collector_mount_verified": True,
+    }
+    monkeypatch.setattr(POSITIONS, "discover", lambda **_kwargs: found)
+    monkeypatch.setattr(POSITIONS, "verify", lambda _discover: {"status": "ready"})
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv)
+        if argv[:3] == ["podman", "rm", "--force"]:
+            return SimpleNamespace(returncode=0, stdout="")
+        if argv == ["podman", "ps", "--all", "--format", "json"]:
+            return SimpleNamespace(returncode=0, stdout="[]")
+        if argv == ["podman", "volume", "inspect", volume["Name"]]:
+            return SimpleNamespace(returncode=0, stdout=json.dumps([volume]))
+        raise AssertionError(argv)
+
+    assert POSITIONS.retire_legacy_collector(run) == {
+        "status": "retired", "reason": "legacy_collector_removed_volume_preserved",
+    }
+    assert ["podman", "rm", "--force", "--time", "10", "a" * 64] in calls
+    assert not any("volume" in argv and "rm" in argv for argv in calls)
+
+
+def test_apply_transition_accepts_verified_cursor_pending_volume_without_collector(monkeypatch):
+    # Matches the survey-cursor receipt shape: the old container is absent, but
+    # v3 remains in the reviewed no-copy-up pending state with a valid cursor.
+    found = _populated_pending_resume_found()
+    calls_to_discover = []
+
+    def discover_stub(**kwargs):
+        calls_to_discover.append(kwargs)
+        return found
+
+    monkeypatch.setattr(POSITIONS, "discover", discover_stub)
+    calls = []
+
+    result = POSITIONS.retire_legacy_collector(
+        lambda argv, **_kwargs: calls.append(argv) or SimpleNamespace(returncode=1, stdout="")
+    )
+
+    assert result == {
+        "status": "already_absent",
+        "reason": "collector_absent_positions_verified",
+    }
+    assert POSITIONS.verify(lambda: found)["status"] == "ready"
+    assert found["metadata"]["journal_cursor_valid"] is True
+    assert found["metadata"]["cursor_checked"] is True
+    assert len(calls_to_discover) == 1
+    assert calls_to_discover[0]["diagnostics"] is True
+    assert calls_to_discover[0]["read_cursor"] is True
+    assert calls == []
+
+
+def test_legacy_collector_retirement_never_removes_the_isolated_project(monkeypatch):
+    found = {
+        "status": "observed", "collector_present": True,
+        "collector_project": POSITIONS.COLLECTOR_PROJECT,
+        "collector_networks": [POSITIONS.NETWORK_NAME],
+        "collector_mount_verified": True,
+    }
+    monkeypatch.setattr(POSITIONS, "discover", lambda **_kwargs: found)
+    monkeypatch.setattr(POSITIONS, "verify", lambda _discover: {"status": "ready"})
+    calls = []
+    result = POSITIONS.retire_legacy_collector(
+        lambda argv, **_kwargs: calls.append(argv) or SimpleNamespace(returncode=0, stdout="")
+    )
+    assert result == {"status": "already_isolated", "reason": "collector_project_verified"}
+    assert calls == []
+
+
+def test_provider_config_command_output_is_redacted(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(COMPOSE_HELPER), "/tmp/deployment"])
+    calls = []
+
+    def run(*args, **_kwargs):
+        calls.append(args[0])
+        return SimpleNamespace(
+            returncode=0,
+            stdout=yaml.safe_dump({
+                "name": "o11y-journal",
+                "services": {"journal-collector": {"networks": ["o11y"], "volumes": [{
+                    "type": "volume", "source": "journal-collector-state-v3",
+                    "target": "/alloy-state", "volume": {"nocopy": True},
+                }]}},
+                "networks": {"o11y": {"name": "o11y_o11y", "external": True}},
+                "volumes": {"journal-collector-state-v3": {
+                    "name": "o11y_journal-collector-state-v3", "external": True,
+                }},
+                "x-private": "PRIVATE_CONFIG_MARKER",
+            }),
+        )
+
+    monkeypatch.setattr(
+        COMPOSE.subprocess,
+        "run",
+        run,
+    )
+    COMPOSE.main()
+    report = capsys.readouterr().out
+    assert json.loads(report) == {"status": "verified", "reason": "provider_config_exact"}
+    assert "PRIVATE_CONFIG_MARKER" not in report
+    assert calls == [["podman-compose", "-p", "o11y-journal", "-f", "compose.journal.yml", "config"]]
+
+
+def test_survey_and_apply_use_redacted_resolved_compose_gate():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    gate = next(play for play in plays if "Verify resolved journal Compose configuration" in play.get("name", ""))
+    revision = next(
+        index for index, task in enumerate(gate["tasks"])
+        if task.get("name") == "Read the installed receiver checkout revision before Compose configuration"
+    )
+    sha_guard = next(
+        index for index, task in enumerate(gate["tasks"])
+        if task.get("name") == "Require the installed receiver checkout to equal the reviewed SHA"
+    )
+    config = next(
+        index for index, task in enumerate(gate["tasks"])
+            if task.get("name") == "Resolve Compose configuration and verify the exact v3 no-copy mount"
+    )
+    assert revision < sha_guard < config
+    assert gate["tasks"][sha_guard]["ansible.builtin.assert"]["that"] == (
+        "_journal_provider_revision.stdout | default('') | trim == expected_repository_sha"
+    )
+    assert "no_log" not in gate["tasks"][revision]
+    assert "no_log" not in gate["tasks"][sha_guard]
+    assert "not in ['stage', 'survey', 'survey-cursor', 'apply']" in gate["tasks"][0]["when"]
+    command = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Resolve Compose configuration and verify the exact v3 no-copy mount"
+    )
+    assert command["no_log"] is True
+    assert "podman-compose" not in json.dumps(command)
+
+
+def test_provider_gate_check_mode_skips_runtime_reads_and_reports_unverified():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    gate = next(play for play in plays if "Verify resolved journal Compose configuration" in play.get("name", ""))
+    check_mode_report = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Report provider configuration as unverified in check mode"
+    )
+    assert check_mode_report["when"] == "ansible_check_mode"
+    assert "check_mode_unverified" in check_mode_report["ansible.builtin.debug"]["msg"]
+    assert "configuration: verified" not in check_mode_report["ansible.builtin.debug"]["msg"]
+    sha_guard = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Require the installed receiver checkout to equal the reviewed SHA"
+    )
+    provider_assert = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Require the provider-resolved v3 no-copy mount"
+    )
+    verified_report = next(
+        task for task in gate["tasks"]
+        if task.get("name") == "Report the fixed provider configuration result"
+    )
+    assert sha_guard["when"] == "not ansible_check_mode"
+    assert provider_assert["when"] == "not ansible_check_mode"
+    assert verified_report["when"] == "not ansible_check_mode"
+    runtime_reads = {
+        "Read the installed receiver checkout revision before Compose configuration",
+        "Resolve Compose configuration and verify the exact v3 no-copy mount",
+    }
+    for task in gate["tasks"]:
+        if task.get("name") in runtime_reads:
+            assert task["when"] == "not ansible_check_mode"
+            assert task.get("check_mode") is not False
+
+
+def test_stage_places_exact_sha_without_starting_collector_or_touching_positions():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    stage = next(
+        play for play in plays
+        if play.get("name") == "Stage exact reviewed checkout for the journal collector"
+    )
+    tasks = json.dumps(stage["tasks"])
+    placement = next(
+        task for task in stage["tasks"]
+        if task.get("name") == "Place the reviewed SHA through the shared monorepo mechanism"
+    )
+    stage_assert = next(
+        task for task in stage["tasks"]
+        if task.get("name") == "Require a Dev-bound non-check-mode stage"
+    )
+    assert placement["ansible.builtin.include_tasks"] == "tasks/place-monorepo.yml"
+    assert placement["vars"]["_branch"] == "{{ expected_repository_sha }}"
+    assert "not ansible_check_mode" in stage_assert["ansible.builtin.assert"]["that"]
+    assert "journal-collector-state" not in tasks
+    assert "o11y-journal-collector" not in tasks
+    assert "podman-compose" not in tasks
+    assert "journal_collector_action | default('apply') != 'stage'" in stage["tasks"][0]["when"]
+    survey = next(play for play in plays if play.get("name") == "Survey fixed standard journal directory candidates")
+    assert "tasks/place-monorepo.yml" not in json.dumps(survey["tasks"])
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    apply_placement = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Place the reviewed monorepo on the receiver through the shared mechanism"
+    )
+    assert apply_placement["vars"]["_branch"] == "{{ expected_repository_sha }}"
+
+
+@pytest.mark.parametrize("action", ["survey", "survey-cursor"])
+def test_positions_survey_exception_keeps_bounded_receipt_schema(action, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [str(POSITIONS_HELPER), action])
+    monkeypatch.setattr(POSITIONS, "survey", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("private detail")))
 
     POSITIONS.main()
 
@@ -3636,9 +5435,11 @@ def test_positions_survey_exception_keeps_bounded_receipt_schema(monkeypatch, ca
         "mount": "unavailable",
         "children": "unavailable",
         "journal_cursor": "unavailable",
+        "remotecfg": "unverified",
         "free_space": "unavailable",
         "survey_diagnostics": POSITIONS._unverified_diagnostics(),
         "pending_repair_diagnostic": POSITIONS._pending_diagnostic({}),
+        "journal_components": {"o11y_alloy": {"presence": "unverified", "cursor_validity": "unverified"}},
         "live_diagnostic": {
             **POSITIONS._live_diagnostic({"status": "unavailable"}),
             "helper_reason": "survey_failed",
@@ -3665,6 +5466,11 @@ def test_positions_check_mode_receipt_keeps_new_mode_fields_unverified():
     report = json.loads(task["ansible.builtin.set_fact"]["_journal_positions_survey"]["stdout"])
 
     assert report["status"] == "check_mode_unverified"
+    journal = report["live_diagnostic"]["journal_metadata"]
+    assert set(journal["component"].values()) == {"unverified"}
+    assert set(journal["positions"].values()) == {"unverified"}
+    assert journal["temporary_files"] == "unverified"
+    assert set(journal["unknown_children"].values()) == {"unverified"}
     assert all(report["pending_repair_diagnostic"][key] == "unverified" for key in (
         "group_write", "other_write", "setuid", "setgid", "sticky",
     ))
@@ -3672,10 +5478,21 @@ def test_positions_check_mode_receipt_keeps_new_mode_fields_unverified():
 
 def test_alloy_config_uses_only_the_fixed_bounded_selector_and_otlp():
     config = (O11Y / "templates/journal.alloy.j2").read_text()
+    # The o11y_alloy selector is asserted on the RENDERED block: the template loops the declared
+    # cohort, so the literal is no longer in the source.
+    rendered = render_journal(declared_cohort())
+    alloy = rendered.split('loki.source.journal "o11y_alloy" {', 1)[1].split("\n}", 1)[0]
 
-    assert 'matches    = "CONTAINER_NAME=o11y-alloy"' in config
-    assert 'max_age    = "15m"' in config
-    assert 'labels     = { service = "o11y/alloy", signal = "container" }' in config
+    assert 'matches    = "CONTAINER_NAME=o11y-alloy"' in alloy
+    assert 'max_age    = "15m"' in alloy
+    assert 'labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }' in alloy
+    assert 'logs = [otelcol.processor.attributes.journal_labels.input]' in config
+    assert 'otelcol.processor.attributes "journal_labels"' in config
+    assert 'action = "upsert"' in config
+    assert 'value  = "service,signal,target_id"' in config
+    assert config.index('otelcol.receiver.loki "journal"') < config.index(
+        'otelcol.processor.attributes "journal_labels"'
+    ) < config.index('otelcol.exporter.otlp "journal"')
     assert "otelcol.exporter.otlp" in config
     assert "o11y_otlp_bind" in config
     assert "loki.write" not in config
@@ -3698,16 +5515,26 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
 
     assert guard < reviewed < place < positions_gate < validate < apply < verify < stop
     assert "groups.get('o11y_svc', []) | length == 1" in source
-    assert "journal_collector_action | default('apply') in ['survey', 'repair-positions', 'apply', 'stop']" in source
+    assert (
+        "journal_collector_action | default('apply') in "
+        "['stage', 'survey', 'survey-cursor', 'repair-positions', 'apply', 'stop']"
+    ) in source
+    assert "journal_collector_action | default('apply') != 'stage' or not ansible_check_mode" in source
     assert source.index("Verify positions volume identity and access before apply") < apply
     assert "check_mode_unverified" in source
     assert "container_inventory_unavailable" in source
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    assert "['podman-compose', '-p', 'o11y-journal', '-f', 'compose.journal.yml']" in source
+    assert "compose.journal.otlp-tls.yml" in source
+    assert "Retire only a verified legacy-project collector registration" in source
+    assert "positions volume was preserved and no Compose start was requested" in source
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     pre_apply_gate = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Verify positions volume identity and access before apply"
     )
-    assert pre_apply_gate["ansible.builtin.command"]["argv"] == ["python3", "-", "verify"]
+    assert pre_apply_gate["ansible.builtin.command"]["argv"] == [
+        "python3", "-", "verify", "--components", "{{ _journal_components_arg }}",
+    ]
     assert pre_apply_gate.get("no_log") is True
     assert "Require the actual runtime to be rootless" in source
     assert "read -r -N 1 _ < \"$file\"" in source
@@ -3715,10 +5542,13 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert "argv: [podman, rm, --force, --time, \"10\", o11y-journal-collector]" in source
     assert "podman rm -v" not in source
     assert "compose down" not in source
-    assert "up, --no-deps, -d, journal-collector" in source
+    assert "['up', '--no-deps', '-d', 'journal-collector']" in source
     assert "Require all existing receiver containers to remain unchanged" in source
     assert "_journal_verification_start" in source
-    assert "values[0][0]" in source
+    assert "_journal_proof_marker" in source
+    assert "podman exec" in source and "/proc/1/fd/1" in source
+    assert "recent exact-name entry" not in source
+    assert "['values'][0][0]" in source
     assert "State.Health.Status" in source
     assert "image: docker.io/grafana/alloy:v1.9.2" in (O11Y / "compose.journal.yml").read_text()
     assert "_journal_image: docker.io/grafana/alloy:v1.9.2" in source
@@ -3730,12 +5560,25 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     positions_survey = next(
         task for task in survey_play["tasks"]
-        if task.get("name") == "Survey existing positions volume metadata without mounting it"
+        if task.get("name") == "Survey positions metadata or explicit cursor validity without mounting"
     )
+    assert "not in ['survey', 'survey-cursor']" in survey_play["tasks"][0]["when"]
     assert positions_survey.get("no_log") is True
     assert positions_survey["when"] == "not ansible_check_mode"
-    assert positions_survey["ansible.builtin.command"]["argv"] == ["python3", "-", "survey"]
+    assert positions_survey["ansible.builtin.command"]["argv"] == [
+        "python3", "-", "{{ journal_collector_action }}", "--components", "{{ _journal_components_arg }}",
+    ]
     assert "/alloy-state/.positions-live-gate." not in str(positions_survey)
+    journal_probe_names = {
+        "Survey rootless journal path and exact-name file readability",
+        "Record check-mode survey as unverified without probing the container runtime",
+        "Require a valid sanitized standard-path survey result",
+        "Report only the fixed journal source status",
+        "Report only the bounded collector journal diagnostic",
+    }
+    for task in survey_play["tasks"]:
+        if task.get("name") in journal_probe_names:
+            assert "journal_collector_action | default('apply') == 'survey'" in str(task["when"])
     assert not any("volume create" in str(task) for task in survey_play["tasks"])
     assert not any(
         "chown" in " ".join(task.get("ansible.builtin.command", {}).get("argv", []))
@@ -3752,7 +5595,9 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert repair_task.get("no_log") is not True
     assert repair_task["when"] == "not ansible_check_mode"
-    assert repair_task["ansible.builtin.command"]["argv"] == ["python3", "-", "repair-positions"]
+    assert repair_task["ansible.builtin.command"]["argv"] == [
+        "python3", "-", "repair-positions", "--components", "{{ _journal_components_arg }}",
+    ]
 
     pre_mount = next(
         task for task in apply_play["tasks"]
@@ -3765,7 +5610,21 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     )
     assert apply_block["when"] == "not ansible_check_mode"
     apply_task_names = [task.get("name") for task in apply_block["block"]]
-    assert apply_play["tasks"].index(pre_mount) + 3 == apply_play["tasks"].index(apply_block)
+    preflight_block = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Verify the Loki query client before promoting collector config"
+    )
+    preflight_assertion = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Require Loki query client and successful JSON response before config promotion"
+    )
+    config_promotion = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Promote the validated candidate config for the collector"
+    )
+    assert apply_play["tasks"].index(preflight_block) < apply_play["tasks"].index(preflight_assertion)
+    assert apply_play["tasks"].index(preflight_assertion) < apply_play["tasks"].index(config_promotion)
+    assert apply_play["tasks"].index(pre_mount) < apply_play["tasks"].index(apply_block)
     assert apply_play["tasks"][apply_play["tasks"].index(pre_mount) + 1]["name"] == (
         "Parse immediate pre-mount positions output through a protected boundary"
     )
@@ -3935,6 +5794,17 @@ def test_playbook_guards_validation_delivery_and_non_destructive_rollback():
     assert rollback_logs["failed_when"] is False
     assert rollback_logs["check_mode"] is False
     failure_message = rollback_failure["ansible.builtin.fail"]["msg"]
+    assert "failed its startup, positions, or exact-target delivery verification gate" in failure_message
+    assert "failed its exact-target delivery gate" not in failure_message
+    positions_verify = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Verify the live collector positions mount and access"
+    )
+    loki_query = next(
+        task for task in apply_block["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    assert apply_block["block"].index(positions_verify) < apply_block["block"].index(loki_query)
     classifications = rollback_classifier["ansible.builtin.set_fact"]
     assert "container_missing" in classifications["_journal_rollback_state_class"]
     assert "permission_denied" in classifications["_journal_rollback_state_class"]
@@ -4090,15 +5960,15 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     by_name = {task.get("name"): task for task in tasks}
     visible = {
         "Run the separately selected guarded positions repair",
+        "Retire only a verified legacy-project collector registration",
     }
     protected = {
         "Verify positions volume identity and access before apply",
         "Recheck positions volume initialization immediately before mount",
         "Verify the live collector positions mount and access",
-        "Survey existing positions volume metadata without mounting it",
+        "Survey positions metadata or explicit cursor validity without mounting",
         "Read the Podman rootless UID mapping",
         "Verify effective write and rename access in the live collector namespace",
-        "Require a recent exact-name entry in the selected journal",
         "Require the pinned rootless Alloy process to read the journal bind",
         "Survey rootless journal path and exact-name file readability",
         "Render a candidate journal config with the private receiver endpoint",
@@ -4110,15 +5980,34 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     assert visible | protected <= by_name.keys()
     assert all(by_name[name].get("no_log") is not True for name in visible)
     assert all(by_name[name].get("no_log") is True for name in protected)
+    assert by_name[
+        "Emit the fixed diagnostic line through the existing Alloy container stdout"
+    ].get("no_log") is not True
     helper_actions = {
         "Verify positions volume identity and access before apply": "verify",
         "Recheck positions volume initialization immediately before mount": "verify",
         "Verify the live collector positions mount and access": "verify-live",
-        "Survey existing positions volume metadata without mounting it": "survey",
+        "Survey positions metadata or explicit cursor validity without mounting": "{{ journal_collector_action }}",
         "Run the separately selected guarded positions repair": "repair-positions",
+        "Retire only a verified legacy-project collector registration": "retire-legacy",
     }
     for name, action in helper_actions.items():
-        assert by_name[name]["ansible.builtin.command"]["argv"] == ["python3", "-", action]
+        assert by_name[name]["ansible.builtin.command"]["argv"] == [
+            "python3", "-", action, "--components", "{{ _journal_components_arg }}",
+        ]
+
+    retire = by_name["Retire only a verified legacy-project collector registration"]
+    assert "rc | default(1) == 0" in retire["changed_when"]
+    assert "stdout | default('') is regex" in retire["changed_when"]
+    assert "no_log" not in retire
+    assert retire.get("check_mode") is not False
+    assert retire["when"] == "not ansible_check_mode"
+    transition_assert = by_name["Require the old container to be absent with v3 state preserved"]
+    transition_fail_msg = transition_assert["ansible.builtin.assert"]["fail_msg"]
+    assert "regex_findall" in transition_fail_msg
+    assert "legacy_collector_removed_volume_preserved" in transition_fail_msg
+    assert "_journal_retire_legacy.stdout }}" not in transition_fail_msg
+    assert "stdout | from_json" not in str(retire | transition_assert)
 
     found = _positions_found(_positions_state(owner=(0, 0)))
     survey = POSITIONS.survey(lambda: found)
@@ -4127,10 +6016,11 @@ def test_positions_visibility_is_limited_to_bounded_helper_and_uid_probe_results
     assert set(survey) == {
         "status", "volume_use_count", "collector_present", "entry_count", "root_owner",
         "root_mode_access", "acl", "mount", "children",
-        "journal_cursor", "free_space", "pending_repair_diagnostic", "live_diagnostic",
+        "journal_cursor", "remotecfg", "free_space", "pending_repair_diagnostic", "live_diagnostic",
+        "journal_components",
     }
     assert set(verified) == (
-        set(survey) - {"pending_repair_diagnostic", "live_diagnostic"}
+        set(survey) - {"pending_repair_diagnostic", "live_diagnostic", "journal_components"}
     ) | {"reason"}
     assert repair == {"status": "already_correct", "reason": "owner_matches"}
     assert not any(value in str((survey, verified, repair)) for value in ("mountpoint", "positions.yml", "/private/"))
@@ -4151,7 +6041,7 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
     positions_command = next(
         task
         for task in survey_play["tasks"]
-        if task.get("name") == "Survey existing positions volume metadata without mounting it"
+        if task.get("name") == "Survey positions metadata or explicit cursor validity without mounting"
     )
     positions_check_mode = next(
         task
@@ -4164,7 +6054,9 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         if task.get("name") == "Record check-mode survey as unverified without probing the container runtime"
     )
 
-    assert survey_command["when"] == "not ansible_check_mode"
+    assert survey_command["when"] == [
+        "not ansible_check_mode", "journal_collector_action | default('apply') == 'survey'"
+    ]
     assert "check_mode" not in survey_command
     assert positions_command["when"] == "not ansible_check_mode"
     assert "check_mode" not in positions_command
@@ -4186,7 +6078,9 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
         "client": "unavailable", "server": "unavailable"
     }
     assert survey_play["become"] is False
-    assert check_mode_result["when"] == "ansible_check_mode"
+    assert check_mode_result["when"] == [
+        "ansible_check_mode", "journal_collector_action | default('apply') == 'survey'"
+    ]
     assert check_mode_result["ansible.builtin.set_fact"]["_journal_directory_survey"] == {
         "rc": 0,
         "stdout": '{"result":"check_mode_unverified","entry_count":0,"permission_denied_target":"unavailable"}',
@@ -4228,7 +6122,7 @@ def test_survey_check_mode_skips_container_probe_and_reports_unverified():
 
 def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume():
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     apply_task = next(
         task for task in apply["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -4238,9 +6132,65 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
         if task.get("name") == "Require an exact service and signal stream in Loki"
     )
     assert any(
-        "values[0][0] | int >= _journal_verification_start.stdout" in item
+        "['values'][0][0] | int >= _journal_verification_start.stdout" in item
         for item in delivery["ansible.builtin.assert"]["that"]
     )
+    receipt = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    argv = receipt["ansible.builtin.command"]["argv"]
+    assert argv[:3] == ["/usr/bin/timeout", "--signal=KILL", "12s"]
+    assert argv[argv.index("o11y-grafana") + 1:argv.index("wget")] == ["timeout", "-s", "KILL", "8"]
+    assert argv[argv.index("wget") + 1:argv.index("-O")] == ["-q"]
+    assert "-T" not in argv and "--timeout=5" not in argv and "--tries=1" not in argv
+    assert receipt["retries"] == 36 and receipt["delay"] == 5
+    assert argv[-1] == "{{ _journal_loki_proof_query_url }}"
+    assert any(
+        "stream.service == 'o11y/alloy'" in item
+        for item in delivery["ansible.builtin.assert"]["that"]
+    )
+    assert any(
+        "stream.signal == 'container'" in item
+        for item in delivery["ansible.builtin.assert"]["that"]
+    )
+    assert any("_journal_proof_marker in" in item for item in delivery["ansible.builtin.assert"]["that"])
+    assert "%7C%3D%20%22" in PLAYBOOK.read_text()
+    emitter_index = next(
+        index for index, task in enumerate(apply_task["block"])
+        if task.get("name") == "Emit the fixed diagnostic line through the existing Alloy container stdout"
+    )
+    lower_bound_index = next(
+        index for index, task in enumerate(apply_task["block"])
+        if task.get("name") == "Capture a fresh Loki lower bound immediately before the synthetic proof line"
+    )
+    assert lower_bound_index < emitter_index < apply_task["block"].index(receipt)
+    assert apply_task["block"][lower_bound_index]["ansible.builtin.command"]["argv"] == ["date", "+%s%N"]
+    emitter = apply_task["block"][emitter_index]
+    assert emitter["failed_when"] is False
+    assert emitter["ansible.builtin.command"]["argv"] == [
+        "/usr/bin/timeout", "--signal=KILL", "12s",
+        "podman", "exec", "--user", "0:0", "o11y-alloy", "/bin/bash", "-c",
+        'printf "%s\\\\n" "{{ _journal_proof_marker }}" > /proc/1/fd/1',
+    ]
+    assert "check_mode" not in emitter
+    assert apply_task["when"] == "not ansible_check_mode"
+    emit_gate = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Require the synthetic proof line to be written"
+    )
+    assert emit_gate["ansible.builtin.assert"]["that"] == "_journal_proof_emit.rc | default(1) == 0"
+    assert any(
+        task.get("name") == "Force-remove only the failed collector while retaining positions"
+        for task in apply_task["rescue"]
+    )
+    failure = next(
+        task for task in apply_task["rescue"]
+        if task.get("name") == "Fail closed after stopping the journal collector"
+    )
+    message = failure["ansible.builtin.fail"]["msg"]
+    assert "request_failed" in message and "response_unverified" in message
+    assert "_journal_loki_result.stdout" not in message
     rollback = next(
         task for task in apply_task["rescue"]
         if task.get("name") == "Force-remove only the failed collector while retaining positions"
@@ -4249,6 +6199,98 @@ def test_stale_exact_loki_receipt_fails_and_rollback_preserves_positions_volume(
         "podman", "rm", "--force", "--time", "10", "o11y-journal-collector",
     ]
     assert "-v" not in rollback["ansible.builtin.command"]["argv"]
+
+
+@needs_ansible
+def test_loki_assert_conditions_accept_fresh_values_key_and_reject_stale_sample():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    apply_task = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assertion = next(
+        task for task in apply_task["block"]
+        if task.get("name") == "Require an exact service and signal stream in Loki"
+    )
+
+    def evaluate(samples):
+        # Evaluate the playbook's actual `that` expressions with Ansible's templar and filters.
+        evaluator = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for response in job["responses"]:
+    variables = {
+        "_journal_loki_result": {"rc": 0, "stdout": json.dumps(response)},
+        "_journal_verification_start": {"stdout": "100"},
+            "_journal_proof_marker": "agent-cloud-o11y-journal-proof-v1",
+    }
+    templar = Templar(loader=DataLoader(), variables=variables)
+    results.append(all(
+        templar.evaluate_conditional(trust_as_template(condition))
+        for condition in job["conditions"]
+    ))
+print(json.dumps(results))
+"""
+        responses = []
+        for sample_timestamp, line, service, signal in samples:
+            responses.append({
+                "status": "success",
+                "data": {
+                    "result": [{
+                        "stream": {"service": service, "signal": signal},
+                        "values": [[str(sample_timestamp), line]],
+                    }],
+                },
+            })
+        evaluated = subprocess.run(
+            [ansible_python(), "-c", evaluator],
+            input=json.dumps({
+                "conditions": assertion["ansible.builtin.assert"]["that"],
+                "responses": responses,
+            }),
+            text=True, capture_output=True, timeout=30,
+        )
+        assert evaluated.returncode == 0, evaluated.stderr
+        return json.loads(evaluated.stdout)
+
+    marker = "agent-cloud-o11y-journal-proof-v1"
+    assert evaluate([
+        (123, marker, "o11y/alloy", "container"),
+        (99, marker, "o11y/alloy", "container"),
+        (123, "unrelated current line", "o11y/alloy", "container"),
+        (123, marker, "another-service", "container"),
+    ]) == [True, False, False, False]
+
+
+def test_journal_marker_writer_is_absent_from_check_mode_and_recent_logs_are_not_a_preflight():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    emitter = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assert emitter["when"] == "not ansible_check_mode"
+    assert all("recent exact-name entry" not in task.get("name", "") for task in apply["tasks"])
+    assert all("journal_probe_result" not in json.dumps(task) for task in apply["tasks"])
+    journal_stat = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Read the selected host journal directory"
+    )
+    assert journal_stat["ansible.builtin.stat"]["path"] == "{{ _journal_directory }}"
+    assert "Require the rootless Compose UID to read a journal file" in json.dumps(apply["tasks"])
+    url = Environment().from_string(apply["vars"]["_journal_loki_proof_query_url"]).render(
+        _journal_verification_start={"stdout": "123"},
+        _journal_proof_marker="agent-cloud-o11y-journal-proof-v1",
+    )
+    assert url == (
+        "http://loki:3100/loki/api/v1/query_range?query="
+        "%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D%20%7C%3D%20%22"
+        "agent-cloud-o11y-journal-proof-v1%22&start=123&limit=1&direction=backward"
+    )
 
 
 def test_positions_repair_check_mode_preserves_unverified_result_after_skipped_command():
@@ -4707,7 +6749,9 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
     assert variables["service_branch"]["default_value"] == "dev"
     assert variables["journal_collector_action"]["default_value"] == "survey"
     assert variables["journal_collector_action"]["values"] == [
+        {"name": "Stage reviewed checkout", "value": "stage"},
         {"name": "Survey journal paths", "value": "survey"},
+        {"name": "Survey journal cursor read-only", "value": "survey-cursor"},
         {"name": "Repair positions root ownership", "value": "repair-positions"},
         {"name": "Apply pilot", "value": "apply"},
         {"name": "Stop pilot", "value": "stop"},
@@ -4716,7 +6760,7 @@ def test_semaphore_template_is_dev_bound_and_requires_exact_sha():
 
 def test_live_namespace_create_failure_reports_create_without_relative_cleanup(tmp_path):
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     apply_block = next(
         task for task in apply_play["tasks"]
         if task.get("name") == "Apply the collector and require exact-target Loki delivery"
@@ -4758,7 +6802,7 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     normalized_status = status if status in {"ready", "bootstrap_allowed"} else "unavailable"
 
     plays = yaml.safe_load(PLAYBOOK.read_text())
-    apply_play = next(play for play in plays if play.get("hosts") == "o11y_svc")
+    apply_play = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
     tasks = apply_play["tasks"]
     boundary = next(
         task for task in tasks
@@ -4793,6 +6837,10 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     live_debug = next(
         task for task in apply_block["block"]
         if task.get("name") == "Report sanitized live positions diagnostic"
+    )
+    live_normalize = next(
+        task for task in live_boundary["block"]
+        if task.get("name") == "Normalize live positions status and diagnostic"
     )
     live_gate = next(
         task for task in apply_block["block"]
@@ -4830,34 +6878,48 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert live_boundary["block"][0]["no_log"] is True
     assert live_boundary["block"][1]["no_log"] is True
     assert live_boundary["block"][2]["no_log"] is True
-    assert live_boundary["rescue"][0]["ansible.builtin.set_fact"] == {
-        "_journal_positions_live_summary": {
-            "status": "unavailable",
-            "live_diagnostic": {
-                "role_metadata": {
-                    "receiver": {
-                        "owner": "unverified", "access": "unverified", "acl": "unverified",
-                        "mount": "unverified", "children": "unverified",
-                    },
-                    "exporter": {
-                        "owner": "unverified", "access": "unverified", "acl": "unverified",
-                        "mount": "unverified", "children": "unverified",
-                    },
-                },
-                "unmatched_directories": {
-                    "count": "unverified",
-                    "owner": {"matches_collector": "unverified", "mismatch": "unverified", "unverified": "unverified"},
-                    "access": {"read_write_execute": "unverified", "blocked": "unverified", "unverified": "unverified"},
-                    "acl": {"absent": "unverified", "present": "unverified", "unverified": "unverified"},
-                    "mount": {"clear": "unverified", "ambiguous": "unverified", "unverified": "unverified"},
-                    "children": {"empty": "unverified", "nonempty": "unverified", "unverified": "unverified"},
-                },
-            },
-        },
+    normalized_live = live_normalize["ansible.builtin.set_fact"]["_journal_positions_live_summary"]["live_diagnostic"]
+    assert normalized_live["remotecfg_state"] == "{{ _journal_positions_live_parsed.live_diagnostic.remotecfg_state }}"
+    assert normalized_live["top_level"]["remotecfg_component"] == (
+        "{{ _journal_positions_live_parsed.live_diagnostic.top_level.remotecfg_component }}"
+    )
+    fallback = live_boundary["rescue"][0]["ansible.builtin.set_fact"]["_journal_positions_live_summary"]
+    assert fallback["status"] == "unavailable"
+    fallback_live = fallback["live_diagnostic"]
+    assert fallback_live["remotecfg_state"] == "unverified"
+    assert set(fallback_live["top_level"]) == {
+        "seed_file", "journal_component", "other_files", "other_directories", "other_symlinks",
+        "other_kinds", "receiver_component", "exporter_component", "attributes_processor_component",
+        "remotecfg_component",
+    }
+    assert set(fallback_live["top_level"].values()) == {"unverified"}
+    assert set(fallback_live["role_metadata"]) == {"receiver", "exporter", "attributes_processor", "remotecfg"}
+    assert all(set(role.values()) == {"unverified"} for role in fallback_live["role_metadata"].values())
+    assert set(fallback_live["journal_metadata"]) == {
+        "component", "positions", "child_count", "temporary_file_metadata", "temporary_files", "unknown_children",
+    }
+    assert set(fallback_live["journal_metadata"]["component"].values()) == {"unverified"}
+    assert set(fallback_live["journal_metadata"]["positions"].values()) == {"unverified"}
+    assert fallback_live["journal_metadata"]["child_count"] == "unverified"
+    assert fallback_live["journal_metadata"]["temporary_file_metadata"] == "unverified"
+    assert fallback_live["journal_metadata"]["temporary_files"] == "unverified"
+    assert set(fallback_live["journal_metadata"]["unknown_children"].values()) == {"unverified"}
+    assert set(fallback_live["seed_metadata"]) == {
+        "presence", "type", "owner", "link_count", "owner_execute", "group_other_permissions",
+        "special_bits", "acl", "mount",
+    }
+    assert set(fallback_live["seed_metadata"].values()) == {"unverified"}
+    assert fallback_live["layout_diagnostic"] == {
+        "root_mode": "unverified", "journal_child_count": "unverified",
     }
     assert live_boundary["rescue"][0]["no_log"] is True
     assert "_journal_positions_live_mount.stdout" not in live_debug["ansible.builtin.debug"]["msg"]
     assert "from_json" not in live_debug["ansible.builtin.debug"]["msg"]
+    for diagnostic in (
+        "remotecfg_state", "remotecfg_component", "remotecfg_role", "journal_metadata",
+        "seed_metadata", "layout_diagnostic",
+    ):
+        assert diagnostic in live_debug["ansible.builtin.debug"]["msg"]
     assert live_gate["ansible.builtin.assert"]["that"][1] == (
         "_journal_positions_live_summary.status == 'ready'"
     )
@@ -4865,3 +6927,851 @@ def test_positions_gate_malformed_or_unexpected_json_is_unavailable(stdout):
     assert "stdout" not in pre_mount_gate["ansible.builtin.assert"]["fail_msg"]
     assert "stdout" not in debug["ansible.builtin.debug"]["msg"]
     assert "from_json" not in debug["ansible.builtin.debug"]["msg"]
+
+
+@needs_ansible
+def test_loki_preflight_refuses_before_promotion_and_uses_successful_json_status():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    def nested(nodes):
+        for node in nodes:
+            yield node
+            for section in ("block", "rescue", "always"):
+                yield from nested(node.get(section, []))
+
+    all_tasks = list(nested(apply["tasks"]))
+    preflight = next(
+        task for task in all_tasks
+        if task.get("name") == "Query Loki with Grafana's bounded wget client"
+    )
+    preflight_assertion = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Require Loki query client and successful JSON response before config promotion"
+    )
+    promotion = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Promote the validated candidate config for the collector"
+    )
+    start = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    assert apply["tasks"].index(preflight_assertion) < apply["tasks"].index(promotion)
+    assert apply["tasks"].index(promotion) < apply["tasks"].index(start)
+    argv = preflight["ansible.builtin.command"]["argv"]
+    assert argv == [
+        "/usr/bin/timeout", "--signal=KILL", "12s", "podman", "exec", "o11y-grafana",
+        "timeout", "-s", "KILL", "8", "wget", "-q", "-O", "-", "{{ _journal_loki_query_url }}",
+    ]
+    assert "-T" not in argv and "--timeout" not in argv and "--tries" not in argv
+    assert preflight["no_log"] is True
+    assert preflight["failed_when"] is False
+    condition = preflight_assertion["ansible.builtin.assert"]["that"][0]
+    classifier = next(
+        task for task in all_tasks
+        if task.get("name") == "Classify the Loki client and response shape"
+    )
+    expression = classifier["ansible.builtin.set_fact"]["_journal_loki_preflight_status"]
+    evaluator = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+results = []
+for request in job["requests"]:
+    templar = Templar(loader=DataLoader(), variables={"_journal_loki_preflight_request": request})
+    status = templar.template(trust_as_template(job["expression"]))
+    condition_templar = Templar(loader=DataLoader(), variables={"_journal_loki_preflight_status": status})
+    results.append((status, condition_templar.evaluate_conditional(trust_as_template(job["condition"]))))
+print(json.dumps(results))
+"""
+    evaluated = subprocess.run(
+        [ansible_python(), "-c", evaluator],
+        input=json.dumps({
+            "condition": condition,
+            "expression": expression,
+            "requests": [
+                {"rc": 0, "stdout": json.dumps({"status": "success", "data": {"result": []}})},
+                {"rc": 0, "stdout": json.dumps({"status": "error"})},
+                {"rc": 1, "stdout": "private response body"},
+            ],
+        }),
+        text=True, capture_output=True, timeout=30,
+    )
+    assert evaluated.returncode == 0, evaluated.stderr
+    assert json.loads(evaluated.stdout) == [
+        ["available", True], ["response_unverified", False], ["request_failed", False],
+    ]
+
+    receipt = next(
+        task for task in start["block"]
+        if task.get("name") == "Verify the exact bounded journal stream reached Loki"
+    )
+    assert receipt["ansible.builtin.command"]["argv"][:-1] == argv[:-1]
+    assert receipt["ansible.builtin.command"]["argv"][-1] == "{{ _journal_loki_proof_query_url }}"
+    assert receipt["retries"] == 36  # Ansible makes 37 total attempts.
+    assert receipt["delay"] == 5
+
+    fresh_timestamp = start["block"][0]
+    assert fresh_timestamp["name"] == "Capture the fresh post-preflight lower bound immediately before collector start"
+    assert fresh_timestamp["register"] == "_journal_verification_start"
+    assert start["block"][1]["name"] == "Start only the journal collector service"
+
+
+def test_stalled_loki_wget_is_killed_inside_the_grafana_exec_session():
+    plays = yaml.safe_load(PLAYBOOK.read_text())
+    apply = next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+    preflight_block = next(
+        task for task in apply["tasks"]
+        if task.get("name") == "Verify the Loki query client before promoting collector config"
+    )
+    preflight = next(
+        task for task in preflight_block["block"]
+        if task.get("name") == "Query Loki with Grafana's bounded wget client"
+    )
+    with tempfile.TemporaryDirectory() as temp_dir:
+        fake_bin = Path(temp_dir) / "bin"
+        fake_bin.mkdir()
+        timeout = fake_bin / "timeout"
+        timeout.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, signal, subprocess, sys\n"
+            "args = sys.argv[1:]\n"
+            "if args[0] == '--signal=KILL':\n"
+            "    seconds, command = float(args[1][:-1]), args[2:]\n"
+            "else:\n"
+            "    assert args[:2] == ['-s', 'KILL']\n"
+            "    seconds, command = float(args[2]), args[3:]\n"
+            "child = subprocess.Popen(command)\n"
+            "try:\n"
+            "    raise SystemExit(child.wait(timeout=seconds))\n"
+            "except subprocess.TimeoutExpired:\n"
+            "    child.send_signal(signal.SIGKILL)\n"
+            "    child.wait()\n"
+            "    raise SystemExit(137)\n"
+        )
+        timeout.chmod(0o755)
+        podman = fake_bin / "podman"
+        podman.write_text("#!/bin/sh\nshift 2\nexec \"$@\"\n")
+        podman.chmod(0o755)
+        wget = fake_bin / "wget"
+        wget.write_text("#!/bin/sh\nexec /bin/sleep 30\n")
+        wget.chmod(0o755)
+
+        command = list(preflight["ansible.builtin.command"]["argv"])
+        command[0] = str(timeout)
+        command[2] = "3s"
+        command[command.index("8")] = "0.2"
+        command[command.index("podman")] = str(podman)
+        started = time.monotonic()
+        result = subprocess.run(
+            command,
+            env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        elapsed = time.monotonic() - started
+
+    assert result.returncode != 0
+    assert elapsed < 2
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+# --- Receiver container cohort: one journal source per declared container ----------------------
+# The cohort is vars/o11y-journal-components.yml. The template renders it, the validation task
+# refuses an unsafe shape before any host is touched, every positions-helper call passes it, and
+# the observation step reports (never gates) the non-alloy sources in Loki.
+
+_PREVIOUS_ALLOY_BLOCK = '''loki.source.journal "o11y_alloy" {
+  path       = "/var/log/journal"
+  matches    = "CONTAINER_NAME=o11y-alloy"
+  max_age    = "15m"
+  labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }
+  forward_to = [otelcol.receiver.loki.journal.receiver]
+}
+
+'''
+
+# The whole alloy-only render. Only the two header comment lines differ from the previous
+# single-source template; the o11y_alloy block and everything after it are byte-identical.
+_ALLOY_ONLY_RENDER = """// Reads the user-journal entries of each container in the declared receiver cohort
+// (o11y_journal_components) and sends them over the receiver's existing private
+// OTLP/gRPC listener.
+loki.source.journal "o11y_alloy" {
+  path       = "/var/log/journal"
+  matches    = "CONTAINER_NAME=o11y-alloy"
+  max_age    = "15m"
+  labels     = { service = "o11y/alloy", signal = "container", target_id = "service:o11y" }
+  forward_to = [otelcol.receiver.loki.journal.receiver]
+}
+
+otelcol.receiver.loki "journal" {
+  output {
+    logs = [otelcol.processor.attributes.journal_labels.input]
+  }
+}
+
+otelcol.processor.attributes "journal_labels" {
+  action {
+    key    = "loki.attribute.labels"
+    action = "upsert"
+    value  = "service,signal,target_id"
+  }
+  output {
+    logs = [otelcol.exporter.otlp.journal.input]
+  }
+}
+
+otelcol.exporter.otlp "journal" {
+  client {
+    endpoint = "otlp.internal.test:4317"
+    tls {
+      insecure = true
+    }
+  }
+  retry_on_failure {
+    enabled = true
+  }
+  sending_queue {
+    enabled = true
+    queue_size = 100
+  }
+}"""
+
+
+def declared_cohort():
+    return yaml.safe_load((ROOT / "platform/playbooks/vars/o11y-journal-components.yml").read_text(encoding="utf-8"))[
+        "o11y_journal_components"
+    ]
+
+
+def render_journal(components):
+    """journal.alloy.j2 rendered the way Ansible renders it: trim_blocks is on, and the loop needs it."""
+    env = Environment(undefined=StrictUndefined, trim_blocks=True)
+    env.filters["to_json"] = json.dumps
+    env.filters["bool"] = bool
+    return env.from_string((O11Y / "templates/journal.alloy.j2").read_text(encoding="utf-8")).render(
+        o11y_journal_components=components,
+        o11y_otlp_bind="otlp.internal.test",
+        o11y_otlp_port=4317,
+        o11y_otlp_tls_enabled=False,
+    )
+
+
+def _row(component, container=None, service=None):
+    container = container or "o11y-" + component[len("o11y_"):].replace("_", "-")
+    service = service or "o11y/" + container[len("o11y-"):]
+    return {"component": component, "container": container, "service": service}
+
+
+def _apply_play(plays):
+    return next(play for play in plays if play.get("name") == "Deploy the bounded journal collector")
+
+
+def _walk(tasks):
+    for task in tasks or []:
+        yield task
+        for key in ("block", "rescue", "always"):
+            yield from _walk(task.get(key))
+
+
+def test_journal_template_alloy_only_render_is_the_previous_alloy_block_and_tail():
+    rendered = render_journal(declared_cohort()[:1])
+    assert _PREVIOUS_ALLOY_BLOCK in rendered
+    assert rendered == _ALLOY_ONLY_RENDER
+
+
+def test_journal_template_renders_one_source_per_declared_component_in_declared_order():
+    cohort = declared_cohort()
+    rendered = render_journal(cohort)
+    sources = re.findall(r'loki\.source\.journal "([^"]+)" \{\n(.*?)\n\}', rendered, re.S)
+    assert len(cohort) == 7
+    assert [name for name, _ in sources] == [row["component"] for row in cohort]
+    for (_name, body), row in zip(sources, cohort, strict=True):
+        labels = (
+            f'  labels     = {{ service = "{row["service"]}", signal = "container", '
+            'target_id = "service:o11y" }'
+        )
+        assert '  path       = "/var/log/journal"' in body
+        assert f'  matches    = "CONTAINER_NAME={row["container"]}"' in body
+        assert '  max_age    = "15m"' in body
+        assert labels in body
+        assert "  forward_to = [otelcol.receiver.loki.journal.receiver]" in body
+    # One shared downstream: the receiver, the attribute upsert and the exporter appear once.
+    assert rendered.count('otelcol.receiver.loki "journal" {') == 1
+    assert rendered.count('otelcol.exporter.otlp "journal" {') == 1
+    assert "o11y-journal-collector" not in rendered
+
+
+_COHORT_VERDICTS = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+verdicts = []
+for cohort in job["cohorts"]:
+    templar = Templar(loader=DataLoader(), variables={"o11y_journal_components": cohort})
+    passed = True
+    for condition in job["conditions"]:
+        try:
+            passed = passed and bool(templar.evaluate_conditional(trust_as_template(condition)))
+        except Exception:
+            passed = False
+    verdicts.append(passed)
+print(json.dumps(verdicts))
+"""
+
+
+def _cohort_verdicts(cohorts):
+    """The playbook's own validation assert, evaluated by Ansible's templar against each cohort."""
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    validation = next(play for play in plays if play.get("name") == "Validate the reviewed Dev-bound action")
+    task = next(
+        task for task in validation["tasks"]
+        if task.get("name") == "Require the declared journal component cohort to be well formed"
+    )
+    job = {"cohorts": cohorts, "conditions": task["ansible.builtin.assert"]["that"]}
+    result = subprocess.run(
+        [ansible_python(), "-c", _COHORT_VERDICTS],
+        input=json.dumps(job), text=True, capture_output=True, check=True, timeout=120,
+    )
+    return json.loads(result.stdout)
+
+
+@needs_ansible
+def test_journal_cohort_validation_accepts_the_declared_list_and_refuses_each_unsafe_shape():
+    base = declared_cohort()
+    alloy = base[0]
+    cases = {
+        "declared": base,
+        "alloy only": base[:1],
+        "sixteen sources": [alloy] + [_row("o11y_x" + "a" * i) for i in range(1, 16)],
+        "seventeen sources": [alloy] + [_row("o11y_x" + "a" * i) for i in range(1, 17)],
+        "empty": [],
+        "duplicate component": base + [_row("o11y_loki", "o11y-loki-2", "o11y/loki-2")],
+        "duplicate container": base + [_row("o11y_loki_two", "o11y-loki", "o11y/loki")],
+        "collector container": base + [_row("o11y_journal_collector")],
+        "bad component id": base + [_row("O11y_x", "o11y-x", "o11y/x")],
+        "container injection": base + [{"component": "o11y_evil", "container": 'o11y-x"', "service": 'o11y/x"'}],
+        "service not from container": base[:2] + [_row("o11y_loki", "o11y-loki", "o11y/tempo")] + base[3:],
+        "alloy not first": [base[1], base[0]] + base[2:],
+        "alloy container changed": [dict(alloy, container="o11y-alloy2", service="o11y/alloy2")] + base[1:],
+        "entry without service": [alloy, {"component": "o11y_loki", "container": "o11y-loki"}],
+    }
+    verdicts = dict(zip(cases, _cohort_verdicts(list(cases.values())), strict=True))
+    assert verdicts["declared"] is True
+    assert verdicts["alloy only"] is True
+    assert verdicts["sixteen sources"] is True
+    for name in cases:
+        if name not in ("declared", "alloy only", "sixteen sources"):
+            assert verdicts[name] is False, name
+
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    names = [play.get("name") for play in plays]
+    assert names.index("Validate the reviewed Dev-bound action") < names.index(
+        "Stage exact reviewed checkout for the journal collector"
+    ) < names.index("Deploy the bounded journal collector")
+
+
+@needs_ansible
+def test_every_positions_helper_call_passes_the_declared_cohort_and_the_helper_accepts_it():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    cohort = declared_cohort()
+    ids = [row["component"] for row in cohort]
+    arg = Environment().from_string(
+        "{{ o11y_journal_components | map(attribute='component') | join(',') }}"
+    ).render(o11y_journal_components=cohort)
+    assert arg == ",".join(ids)
+    assert POSITIONS.parse_components(arg) == tuple(ids)
+
+    actions = []
+    for play in plays:
+        for task in _walk(play.get("tasks")):
+            command = task.get("ansible.builtin.command")
+            if not isinstance(command, dict):
+                continue
+            stdin = str(command.get("stdin", ""))
+            if "o11y-journal-positions.py" not in stdin and "_journal_positions_helper" not in stdin:
+                continue
+            argv = command["argv"]
+            assert argv[-2:] == ["--components", "{{ _journal_components_arg }}"], task.get("name")
+            assert "vars/o11y-journal-components.yml" in play.get("vars_files", []), play.get("name")
+            assert "_journal_components_arg" in play.get("vars", {}), play.get("name")
+            actions.append(argv[2])
+    assert sorted(actions) == sorted([
+        "verify", "verify", "verify-live", "retire-legacy", "verify-network",
+        "repair-positions", "{{ journal_collector_action }}",
+    ])
+
+
+_CONTENT_GATE_TASKS = (
+    "Survey declared receiver log content before any change",
+    "Require an observed receiver log-content survey",
+    "Report declared receiver log-content statuses",
+    "Require every declared receiver container to be clear or without entries",
+)
+# Ansible's assert, with its templar: the first false condition refuses and later ones are not evaluated.
+# The shorts and declared expressions are the playbook's own play vars, templated in the order the tasks run.
+_CONTENT_GATE_EVALUATE = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+
+
+def template(expression, variables):
+    return Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression))
+
+
+def admitted(conditions, variables):
+    templar = Templar(loader=DataLoader(), variables=variables)
+    return all(templar.evaluate_conditional(trust_as_template(item)) for item in conditions)
+
+
+outcomes = []
+for case in job["cases"]:
+    variables = {"o11y_journal_components": case["cohort"], "_journal_content_survey": case["survey"]}
+    outcome = {"refused_at": None, "shorts": None, "statuses": None}
+    try:
+        variables["_journal_content_shorts"] = template(job["shorts"], variables)
+        outcome["shorts"] = variables["_journal_content_shorts"]
+        if not admitted(job["assert_observed"], variables):
+            outcome["refused_at"] = "observed"
+        else:
+            variables["_journal_content_declared"] = template(job["declared"], variables)
+            outcome["statuses"] = variables["_journal_content_declared"]
+            if not admitted(job["assert_admitted"], variables):
+                outcome["refused_at"] = "admitted"
+    except Exception as error:
+        outcome["refused_at"] = "error: " + type(error).__name__
+    outcomes.append(outcome)
+print(json.dumps(outcomes))
+"""
+
+
+def _content_gate_expressions():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    play = _apply_play(plays)
+    tasks = {task.get("name"): task for task in _walk(play["tasks"])}
+    return {
+        "shorts": play["vars"]["_journal_content_shorts"],
+        "declared": play["vars"]["_journal_content_declared"],
+        "assert_observed": tasks["Require an observed receiver log-content survey"]["ansible.builtin.assert"]["that"],
+        "assert_admitted": tasks[_CONTENT_GATE_TASKS[3]]["ansible.builtin.assert"]["that"],
+    }
+
+
+def _content_report(monkeypatch, running, messages=None, alloy=True):
+    """The real helper's survey() over a faked receiver: journalctl returns the given MESSAGE values."""
+    messages = messages or {}
+
+    def run(argv, timeout=8):
+        if argv[0] != "journalctl":
+            raise AssertionError("unexpected command")
+        name = argv[-1].removeprefix("CONTAINER_NAME=")
+        return 0, "\n".join(json.dumps({"CONTAINER_NAME": name, "MESSAGE": text}) for text in messages.get(name, []))
+
+    monkeypatch.setattr(LOG_SURVEY, "running_containers", lambda: list(running))
+    monkeypatch.setattr(LOG_SURVEY, "default_driver", lambda: "journald")
+    monkeypatch.setattr(LOG_SURVEY, "inspect", lambda name: {
+        "State": {"Running": True}, "HostConfig": {"LogConfig": {"Type": "journald"}}, "Mounts": [],
+    })
+    monkeypatch.setattr(LOG_SURVEY, "journal_status", lambda names, drivers: ("no_entries", 0))
+    monkeypatch.setattr(LOG_SURVEY, "alloy_source", lambda: True if alloy else None)
+    monkeypatch.setattr(LOG_SURVEY, "run", run)
+    return LOG_SURVEY.survey()
+
+
+def _content_gate_cases(monkeypatch):
+    """(name, cohort, survey result as the playbook registers it, expected refusal or None)."""
+    cohort = declared_cohort()
+    everything = [f"o11y-{short}" for short in LOG_SURVEY.CONTENT_CONTAINERS]
+    clean = {name: ["scrape completed"] for name in everything}
+
+    def registered(report, rc=0):
+        return {"rc": rc, "stdout": json.dumps(report, sort_keys=True)}
+
+    observed = _content_report(monkeypatch, everything, clean)
+    return [
+        ("all declared clear", cohort, registered(observed), None),
+        (
+            "loki without entries", cohort,
+            registered(_content_report(monkeypatch, everything, {**clean, "o11y-loki": []})), None,
+        ),
+        (
+            "alloy blocked", cohort,
+            registered(_content_report(monkeypatch, everything, {**clean, "o11y-alloy": ["mail ops@example.com"]})),
+            "admitted",
+        ),
+        (
+            "pyroscope clear but capped", cohort,
+            registered(_content_report(
+                monkeypatch, everything, {**clean, "o11y-pyroscope": ["scrape completed"] * LOG_SURVEY.CONTENT_CAP},
+            )),
+            "admitted",
+        ),
+        (
+            # Production task 13414's shape: grafana capped is refused now that grafana is declared.
+            "grafana clear but capped", cohort,
+            registered(_content_report(
+                monkeypatch, everything, {**clean, "o11y-grafana": ["scrape completed"] * LOG_SURVEY.CONTENT_CAP},
+            )),
+            "admitted",
+        ),
+        (
+            "pyroscope not running", cohort,
+            registered(_content_report(monkeypatch, [n for n in everything if n != "o11y-pyroscope"], clean)),
+            "admitted",
+        ),
+        (
+            "declared container missing from survey", cohort + [_row("o11y_extra")],
+            registered(observed), "admitted",
+        ),
+        (
+            "undeclared prometheus blocked", cohort[:1],
+            registered(_content_report(
+                monkeypatch, everything, {**clean, "o11y-prometheus": ["mail ops@example.com"]},
+            )),
+            None,
+        ),
+        (
+            "survey unavailable", cohort,
+            registered(_content_report(monkeypatch, everything, clean, alloy=False)), "observed",
+        ),
+        (
+            "unavailable status over clean content", cohort,
+            registered({**observed, "status": "unavailable", "reason": "alloy_source_unverified"}), "observed",
+        ),
+        (
+            "helper failed with rc 1", cohort,
+            {"rc": 1, "stdout": json.dumps({"status": "unavailable", "reason": "survey_failed"}, sort_keys=True)},
+            "observed",
+        ),
+        ("helper failed with no output", cohort, {"rc": 1, "stdout": ""}, "observed"),
+    ]
+
+
+@needs_ansible
+def test_content_gate_admits_only_declared_clear_or_empty_containers_on_an_observed_survey(monkeypatch):
+    cases = _content_gate_cases(monkeypatch)
+    job = {
+        **_content_gate_expressions(),
+        "cases": [{"name": name, "cohort": cohort, "survey": survey} for name, cohort, survey, _ in cases],
+    }
+    result = subprocess.run(
+        [ansible_python(), "-c", _CONTENT_GATE_EVALUATE],
+        input=json.dumps(job), text=True, capture_output=True, check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+    )
+    assert result.returncode == 0, result.stderr
+    outcomes = dict(zip((name for name, *_ in cases), json.loads(result.stdout), strict=True))
+    for name, _cohort, _survey, expected in cases:
+        assert outcomes[name]["refused_at"] == expected, name
+    # The gate reads the declared containers only: an undeclared blocked receiver neither refuses nor is printed.
+    assert outcomes["undeclared prometheus blocked"]["statuses"].keys() == {"alloy"}
+    assert set(outcomes["all declared clear"]["statuses"]) == {
+        row["container"].removeprefix("o11y-") for row in declared_cohort()
+    }
+    assert outcomes["grafana clear but capped"]["statuses"]["grafana"]["capped"] is True
+    # The top-level aggregate is never the gate: both non-clear aggregates below are admitted.
+    reports = {name: json.loads(survey["stdout"]) for name, _c, survey, _e in cases if survey["stdout"]}
+    assert reports["loki without entries"]["content_survey_status"] == "incomplete"
+    assert reports["undeclared prometheus blocked"]["content_survey_status"] == "blocked"
+    assert outcomes[cases[0][0]]["shorts"] == [row["container"].removeprefix("o11y-") for row in declared_cohort()]
+
+
+def test_content_gate_is_the_first_work_after_the_stop_check_and_is_never_skipped():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    play = _apply_play(plays)
+    tasks = play["tasks"]
+    names = [task.get("name") for task in tasks]
+    assert names[0] == "Leave the apply play when the reviewed action is stop"
+    gate_end = 1 + len(_CONTENT_GATE_TASKS)
+    assert names[1:gate_end] == list(_CONTENT_GATE_TASKS)
+    for host_write in (
+        "Place the reviewed monorepo on the receiver through the shared mechanism",
+        "Verify positions volume identity and access before apply",
+        "Render a candidate journal config with the private receiver endpoint",
+    ):
+        assert names.index(host_write) >= gate_end, host_write
+
+    gate = tasks[1:gate_end]
+    survey = gate[0]
+    assert survey["ansible.builtin.command"]["argv"] == ["python3", "-"]
+    assert survey["ansible.builtin.command"]["stdin"] == "{{ _journal_content_helper }}"
+    assert survey["register"] == "_journal_content_survey"
+    assert survey["changed_when"] is False
+    assert survey["failed_when"] is False
+    assert survey["check_mode"] is False
+    assert play["vars"]["_journal_content_helper"] == (
+        "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/survey-o11y-log-source.py') }}"
+    )
+    assert LOG_SURVEY_HELPER.is_file()
+    for task in gate:
+        assert task.get("tags") == ["always"], task.get("name")
+        assert "when" not in task, task.get("name")
+        assert "no_log" not in task, task.get("name")
+        assert "content_survey_status" not in json.dumps(task), task.get("name")
+        if "register" in task:
+            assert task["register"].startswith("_"), task.get("name")
+    observed_fail_msg = gate[1]["ansible.builtin.assert"]["fail_msg"]
+    # The observed gate names one fixed survey reason and reads no survey output into its message.
+    assert re.findall(r"\{\{\s*(.*?)\s*\}\}", observed_fail_msg) == ["_journal_survey_reason"]
+    assert "stdout" not in observed_fail_msg
+    assert "from_json" not in observed_fail_msg
+    assert "{{" not in gate[3]["ansible.builtin.assert"]["fail_msg"], gate[3].get("name")
+    assert "content_survey_status" not in json.dumps(play["vars"])
+
+
+def test_content_gate_cohort_containers_are_all_surveyed_containers():
+    assert LOG_SURVEY.O11Y_PREFIX == "o11y-"
+    shorts = [row["container"].removeprefix(LOG_SURVEY.O11Y_PREFIX) for row in declared_cohort()]
+    assert shorts and set(shorts) <= set(LOG_SURVEY.CONTENT_CONTAINERS)
+
+
+# Ansible's templar renders the observed gate's play vars and fail_msg as the playbook writes them, in the order
+# the play resolves them: the reason expressions first, then the message that names the reason.
+_SURVEY_REASON_EVALUATE = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+outcomes = []
+for case in job["cases"]:
+    variables = {"_journal_content_survey": case["survey"], "_journal_survey_refusal_reasons": job["reasons"]}
+    for name, expression in (("_journal_survey_reason_raw", job["raw"]), ("_journal_survey_reason", job["reason"])):
+        variables[name] = Templar(loader=DataLoader(), variables=variables).template(trust_as_template(expression))
+    outcomes.append(Templar(loader=DataLoader(), variables=variables).template(trust_as_template(job["msg"])))
+print(json.dumps(outcomes))
+"""
+
+
+@needs_ansible
+def test_observed_gate_names_only_a_fixed_survey_reason_and_never_free_text():
+    plays = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    play = _apply_play(plays)
+    tasks = {task.get("name"): task for task in _walk(play["tasks"])}
+    reasons = play["vars"]["_journal_survey_refusal_reasons"]
+    assert reasons == [
+        "container_metadata_unavailable",
+        "no_running_o11y_containers",
+        "alloy_source_unverified",
+        "survey_failed",
+    ]
+    survey_plays = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-log-source.yml").read_text(encoding="utf-8"))
+    assert reasons == next(
+        survey["vars"]["_survey_refusal_reasons"]
+        for survey in survey_plays
+        if "_survey_refusal_reasons" in survey.get("vars", {})
+    )
+    sentinel = "ops@example.com"
+    cases = [
+        (
+            f"survey names {reason}",
+            {"rc": 0, "stdout": json.dumps({"reason": reason, "status": "unavailable"}, sort_keys=True)},
+            reason,
+        )
+        for reason in reasons
+    ] + [
+        (
+            "helper exits 1 after naming a reason",
+            {"rc": 1, "stdout": json.dumps({"reason": "alloy_source_unverified", "status": "unavailable"})},
+            "survey_failed",
+        ),
+        ("helper exits 1 with no output", {"rc": 1, "stdout": ""}, "survey_failed"),
+        (
+            "reason outside the fixed list",
+            {"rc": 0, "stdout": json.dumps({"reason": "something_else", "status": "unavailable"})},
+            "unclassified",
+        ),
+        (
+            "reason holds free text",
+            {"rc": 0, "stdout": json.dumps({"reason": f"contact {sentinel}", "status": "unavailable"})},
+            "unclassified",
+        ),
+        ("empty output with exit 0", {"rc": 0, "stdout": ""}, "unclassified"),
+        ("output is not JSON", {"rc": 0, "stdout": f"not json {sentinel}"}, "unclassified"),
+        ("truncated JSON", {"rc": 0, "stdout": '{"reason": "container_metadata_unavail'}, "unclassified"),
+        ("observed report without a reason", {"rc": 0, "stdout": json.dumps({"status": "observed"})}, "unclassified"),
+    ]
+    job = {
+        "raw": play["vars"]["_journal_survey_reason_raw"],
+        "reason": play["vars"]["_journal_survey_reason"],
+        "msg": tasks["Require an observed receiver log-content survey"]["ansible.builtin.assert"]["fail_msg"],
+        "reasons": reasons,
+        "cases": [{"name": name, "survey": survey} for name, survey, _ in cases],
+    }
+    result = subprocess.run(
+        [ansible_python(), "-c", _SURVEY_REASON_EVALUATE],
+        input=json.dumps(job), text=True, capture_output=True, check=False,
+        env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+    )
+    assert result.returncode == 0, result.stderr
+    messages = json.loads(result.stdout)
+    assert len(messages) == len(cases)
+    for (name, _survey, expected), message in zip(cases, messages, strict=True):
+        assert f"did not observe the receiver ({expected})." in message, name
+        assert sentinel not in message, name
+        assert "{{" not in message, name
+
+
+_OBSERVATION_TASKS = (
+    "Capture the Loki observation window for the new receiver container sources",
+    "Observe each new receiver container source in Loki without failing the apply",
+    "Classify each new receiver container source observation without exposing Loki output",
+    "Report the bounded Loki observation of each new receiver container source",
+)
+
+
+@needs_ansible
+def test_loki_observation_runs_after_the_apply_block_and_can_never_gate_it():
+    apply_play = _apply_play(yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8")))
+    names = [task.get("name") for task in apply_play["tasks"]]
+    apply_index = names.index("Apply the collector and require exact-target Loki delivery")
+    indexes = [names.index(name) for name in _OBSERVATION_TASKS]
+    assert indexes == sorted(indexes)
+    assert indexes[0] > apply_index
+    apply_block = apply_play["tasks"][apply_index]
+    block_names = {task.get("name") for task in apply_block["block"] + apply_block["rescue"]}
+    assert not set(_OBSERVATION_TASKS) & block_names
+    for task in apply_play["tasks"][indexes[0]:]:
+        assert "ansible.builtin.assert" not in task, task.get("name")
+        assert "ansible.builtin.fail" not in task, task.get("name")
+
+    observe = apply_play["tasks"][indexes[1]]
+    assert observe["loop"] == "{{ o11y_journal_components | rejectattr('component', 'equalto', 'o11y_alloy') | list }}"
+    assert observe["failed_when"] is False
+    assert observe["no_log"] is True
+    assert observe["check_mode"] is False
+    assert "until" not in observe and "retries" not in observe
+    argv = observe["ansible.builtin.command"]["argv"]
+    assert argv[:3] == ["/usr/bin/timeout", "--signal=KILL", "12s"]
+    assert argv[argv.index("o11y-grafana"):argv.index("o11y-grafana") + 2] == ["o11y-grafana", "timeout"]
+    report = apply_play["tasks"][indexes[3]]
+    assert "failed_when" not in report
+
+
+_OBSERVATION_URLS = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+urls = []
+for item in job["items"]:
+    templar = Templar(loader=DataLoader(), variables={
+        "_journal_observation_now": {"stdout": job["now"]}, "item": item,
+    })
+    urls.append(templar.template(trust_as_template(job["url"])))
+print(json.dumps(urls))
+"""
+
+
+@needs_ansible
+def test_loki_observation_queries_each_source_by_its_own_service_label_over_the_last_300_seconds():
+    apply_play = _apply_play(yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8")))
+    observe = next(task for task in apply_play["tasks"] if task.get("name") == _OBSERVATION_TASKS[1])
+    items = [row for row in declared_cohort() if row["component"] != "o11y_alloy"]
+    now = 1000000000000000000
+    job = {"now": str(now), "items": items, "url": observe["ansible.builtin.command"]["argv"][-1]}
+    result = subprocess.run(
+        [ansible_python(), "-c", _OBSERVATION_URLS],
+        input=json.dumps(job), text=True, capture_output=True, check=True, timeout=120,
+    )
+    urls = json.loads(result.stdout)
+    assert len(urls) == len(items) == len(declared_cohort()) - 1
+    for row, url in zip(items, urls, strict=True):
+        encoded = row["service"].replace("/", "%2F")
+        assert url == (
+            "http://loki:3100/loki/api/v1/query_range?query=%7Bservice%3D%22"
+            f"{encoded}%22%2Ctarget_id%3D%22service%3Ao11y%22%7D"
+            f"&start={now - 300_000_000_000}&limit=1&direction=backward"
+        ), row["component"]
+    assert all("o11y%2Falloy" not in url for url in urls)
+
+
+_OBSERVATION_CLASSES = """
+import json, sys
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar, trust_as_template
+job = json.load(sys.stdin)
+out = []
+for item in job["items"]:
+    templar = Templar(loader=DataLoader(), variables={
+        "item": item, "_journal_observation_by_service": {},
+    })
+    out.append(templar.template(trust_as_template(job["expression"])))
+print(json.dumps([value if isinstance(value, (dict, list)) else str(value) for value in out]))
+"""
+
+
+@needs_ansible
+def test_loki_observation_maps_each_reply_to_one_fixed_category_and_never_raises():
+    apply_play = _apply_play(yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8")))
+    classify = next(task for task in apply_play["tasks"] if task.get("name") == _OBSERVATION_TASKS[2])
+    expression = classify["ansible.builtin.set_fact"]["_journal_observation_by_service"]
+    prometheus = _row("o11y_prometheus", "o11y-prometheus", "o11y/prometheus")
+    success_spaced = (
+        '{"status": "success", "data": {"result": [{"stream": {"service": "o11y/prometheus"}, '
+        '"values": [["1", "x"]]}]}}'
+    )
+    success_compact = '{"status":"success","data":{"result":[{"stream":{"service":"o11y/prometheus"}}]}}'
+    other_service = '{"status":"success","data":{"result":[{"stream":{"service":"o11y/loki"}}]}}'
+    cases = [
+        ("observed (spaced)", {"rc": 0, "stdout": success_spaced}, "observed"),
+        ("observed (compact)", {"rc": 0, "stdout": success_compact}, "observed"),
+        ("empty result", {"rc": 0, "stdout": '{"status":"success","data":{"result":[]}}'}, "not_yet_observed"),
+        ("other service only", {"rc": 0, "stdout": other_service}, "not_yet_observed"),
+        ("request failed", {"rc": 8, "stdout": ""}, "query_unverified"),
+        ("failed with a success body", {"rc": 8, "stdout": success_compact}, "query_unverified"),
+        ("not json", {"rc": 0, "stdout": "not json"}, "query_unverified"),
+        ("no rc recorded", {"stdout": success_compact}, "query_unverified"),
+    ]
+    items = [{"item": prometheus, **reply} for _label, reply, _expected in cases]
+    result = subprocess.run(
+        [ansible_python(), "-c", _OBSERVATION_CLASSES],
+        input=json.dumps({"expression": expression, "items": items}),
+        text=True, capture_output=True, check=True, timeout=120,
+    )
+    values = json.loads(result.stdout)
+    for (label, _reply, expected), value in zip(cases, values, strict=True):
+        if isinstance(value, str):
+            value = ast.literal_eval(value)
+        assert value == {"o11y/prometheus": expected}, label
+
+
+@needs_ansible
+def test_exact_o11y_alloy_delivery_proof_still_gates_only_the_o11y_alloy_stream():
+    source = PLAYBOOK.read_text(encoding="utf-8")
+    apply_play = _apply_play(yaml.safe_load(source))
+    assert "%7Bservice%3D%22o11y%2Falloy%22%2Csignal%3D%22container%22%7D" in source
+    acceptance = next(
+        task for task in apply_play["tasks"]
+        if task.get("name") == "Apply the collector and require exact-target Loki delivery"
+    )
+    gate = next(
+        task for task in acceptance["block"]
+        if task.get("name") == "Require an exact service and signal stream in Loki"
+    )
+    assert any(
+        condition.endswith(".stream.service == 'o11y/alloy'")
+        for condition in gate["ansible.builtin.assert"]["that"]
+    )
+    for name in _OBSERVATION_TASKS:
+        task = next(task for task in apply_play["tasks"] if task.get("name") == name)
+        assert "_journal_loki_result" not in str(task)
+        assert "_journal_loki_proof_query_url" not in str(task)
+        assert "_journal_proof_marker" not in str(task)
+
+
+def test_content_gate_refuses_non_object_output_before_parsing_it():
+    # The fail_msg names "unclassified" for empty or non-JSON output only if no condition
+    # raises first: the object-shape check must precede every from_json condition.
+    play = _apply_play(yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8")))
+    task = next(t for t in play["tasks"] if t.get("name") == "Require an observed receiver log-content survey")
+    that = task["ansible.builtin.assert"]["that"]
+    shape = "(_journal_content_survey.stdout | default('')) is regex('^\\\\{.*\\\\}$')"
+    assert that.index(shape) == 1
+    assert all("from_json" in condition for condition in that[2:])
+    assert "from_json" not in "".join(that[:2])

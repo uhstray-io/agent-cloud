@@ -377,11 +377,23 @@ This change owns the gateway side and lists the o11y items as dependencies.
    local-dev only on the landed private, non-loopback bind behind the host firewall
    (`deploy-o11y.yml:164-175`), until `production-internal-ca` can issue both leaves.
    When the o11y session turns on the receiver's `tls` block with `client_ca_file`, the
-   gateway follows the receiver's declaration, which it reads from the receiver's
+   declaration is `o11y_otlp_tls_enabled` (default false) and its required server name
+   is `o11y_otlp_tls_server_name`. The gateway follows those values from the receiver's
    hostvars the same way it reads `o11y_otlp_bind` today (`deploy-agentgateway.yml:108`).
    It then renders `backendTLS.{root, cert, key, hostname}` on both exporters and
-   refuses to render plaintext against a TLS-declared receiver. unverified: the name of
-   the receiver's TLS declaration, which the o11y session picks (task 6.1 records it).
+   refuses to render plaintext against a TLS-declared receiver. The receiver uses its
+   fixed `o11y-otlp-server` server leaf and the authoritative step-ca root/intermediate
+   bundle. The receiver-host journal collector is also a sender on this same gRPC
+   listener, so it must use its fixed `o11y-journal` client leaf, trust the same bundle,
+   and verify `o11y_otlp_tls_server_name` before the receiver can be enabled. Both
+   leaves use existing staged `current` paths and native Alloy TLS reload; their fixed
+   directories are mounted read-only. Default rendering and the existing HTTP 4318 and
+   internal Alloy-to-Tempo hops stay unchanged. Alloy's client-CA check authenticates
+   CA membership, not a gateway-specific SAN; the source-scoped firewall remains the
+   sender boundary. Source implementation and actual leaf lifecycle are recorded
+   separately from live enablement: receiver and journal must be prepared together,
+   and task 6.5 still requires a real Semaphore-run handshake and refusal proof. No
+   plaintext fallback or readiness waiver is part of this contract.
    The receiver cannot check the client certificate's name at Alloy `v1.5.1` (Context),
    so the firewall rule admitting only the gateway host to the OTLP port is what binds
    the sender. That is accepted: the receiver serves nothing back, so a forged sender can
@@ -493,3 +505,25 @@ Rollback is in `proposal.md`.
 None open for Joe. The dependencies recorded as unverified are resolved by tasks that
 name them: the `/v1/models` record fields (task 4.2), the collector's reach (task 3.3),
 the receiver TLS declaration's name (task 6.1), and other Tempo producers (task 8.2).
+
+## Implementation receipt — sampling source contract (2026-10-20)
+
+OpenSpec task 2.1 is implemented in the gateway template: unset
+`agw_trace_sampling` renders `randomSampling: 0.1`, an explicit `0.05` remains supported,
+and `clientSampling` always renders the literal `false`. The existing random sampling
+guard remains `(0, 0.1]`. The rendered-runtime inspector now accepts only boolean false
+for client sampling and refuses `true` or numeric values, including a numeric value that
+matches random sampling.
+
+Focused source verification passed: `python3 -m pytest -q
+platform/tests/test_agentgateway_runtime_proof.py
+platform/tests/test_agentgateway_access_signal.py` (35 passed), `ruff check
+platform/playbooks/files/inspect-agentgateway-runtime.py
+platform/tests/test_agentgateway_runtime_proof.py
+platform/tests/test_agentgateway_access_signal.py`, and
+`ANSIBLE_LOCAL_TEMP=/private/tmp/agw-sampling-ansible-tmp bats
+platform/tests/test_service_agentgateway.bats` (35 passed). The BATS command required
+the writable temp directory and execution outside the restricted sandbox because
+Ansible's local RPC subprocess could not start inside it. These checks establish source
+rendering and inspection only; the client-started `traceparent` runtime drill and live
+sampling acceptance remain open under task 8.3.

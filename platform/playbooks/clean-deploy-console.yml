@@ -1,0 +1,30 @@
+---
+# clean-deploy-console.yml — Destroy and redeploy the Dispatch Console from scratch.
+#
+# WARNING: Destroys the console's data — the console-data named volume (the SQLite preferences
+#          database at /data/prefs.db). Every stored preference is lost. The console holds no
+#          secret, so nothing is re-seeded from OpenBao. Local-dev shares one deploy tree, so the
+#          clone is NOT removed (clean-service.yml branches on local_mode).
+#          The built image is kept: the fresh deploy rebuilds only when its inputs changed.
+#
+# Uses composable tasks/clean-service.yml then runs deploy-console.yml.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Clean console deployment"
+  hosts: console_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+  tasks:
+    - name: "Destroy existing deployment"
+      ansible.builtin.include_tasks: tasks/clean-service.yml
+
+- name: "Fresh deploy"
+  import_playbook: deploy-console.yml
+  vars:
+    _extra_var_guard_nested: true

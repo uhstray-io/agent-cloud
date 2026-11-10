@@ -52,7 +52,11 @@ def main() -> int:
         if not isinstance(labels, dict):
             return fail("prometheus_series_invalid")
         name = labels.get("__name__")
-        if name not in required or not required[name](labels):
+        if (
+            name not in required
+            or not required[name](labels)
+            or labels.get("target_id") != "service:o11y"
+        ):
             continue
         if any(label in labels for label in ("device", "client_id", "session_id", "email", "api_key")):
             return fail("forbidden_label_present")

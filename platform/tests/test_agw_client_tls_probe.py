@@ -22,7 +22,8 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
+from strict_chain import assert_strict_chain
 
 REPO = playbook_yaml.REPO
 PLAYBOOK = REPO / "platform/playbooks/probe-agentgateway-client-tls.yml"
@@ -52,9 +53,15 @@ def _leaf(directory: Path, ca: str, name: str, san: str, usage: str, dest: Path)
     """A leaf at <dest>/current/{cert,key}.pem, signed by `ca`."""
     _openssl("req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
              "-keyout", f"{name}.key", "-out", f"{name}.csr", "-subj", f"/CN={name}", cwd=directory)
-    (directory / f"{name}.ext").write_text(f"subjectAltName={san}\nextendedKeyUsage={usage}\n")
+    # On Python 3.13+, ssl.create_default_context() (the probe client via urllib) sets
+    # VERIFY_X509_STRICT, which requires an Authority Key Identifier on the leaf.
+    (directory / f"{name}.ext").write_text(
+        f"subjectAltName={san}\nextendedKeyUsage={usage}\n"
+        "subjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\n"
+    )
     _openssl("x509", "-req", "-in", f"{name}.csr", "-CA", f"{ca}.crt", "-CAkey", f"{ca}.key", "-CAcreateserial",
              "-days", "2", "-out", f"{name}.crt", "-extfile", f"{name}.ext", cwd=directory)
+    assert_strict_chain(directory / f"{ca}.crt", directory / f"{name}.crt")
     (dest / "current").mkdir(parents=True)
     (dest / "current/cert.pem").write_text((directory / f"{name}.crt").read_text())
     (dest / "current/key.pem").write_text((directory / f"{name}.key").read_text())
@@ -288,12 +295,8 @@ def test_a_server_certificate_the_probe_cannot_verify_is_inconclusive_not_a_refu
     assert gw.seen == []
 
 
-def test_a_gateway_that_is_not_listening_is_inconclusive(tmp_path, pki, listener):
-    gw = listener("san-first")
-    port = gw.server_port
-    gw.shutdown()
-    gw.server_close()
-    rc, out = _run(tmp_path, pki, f"https://localhost:{port}")
+def test_a_gateway_that_is_not_listening_is_inconclusive(tmp_path, pki):
+    rc, out = _run(tmp_path, pki, f"https://localhost:{refused_port()}")
     assert rc != 0 and "inconclusive" in out, out
     assert set(_report(out)["classes"].values()) == {"connection-refused"}, out
 

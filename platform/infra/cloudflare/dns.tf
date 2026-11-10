@@ -13,6 +13,7 @@ locals {
   platform_subdomains = [
     "auth",   # Authentik IdP
     "canvas", # OpenHands
+    "console",
     "devlog",
     "inference", # vLLM on the DGX Spark pair (adopted 2026-09-15; waf.tf + ratelimit.tf govern it)
     # agentgateway operator UI — NEW record (created by apply, not imported), proxied like
@@ -26,12 +27,12 @@ locals {
     "mixpost",
     "n8n",
     "netbox",
-    "nocodb",
-    "o11y", # Grafana
+    "o11y",      # Grafana
+    "plane",     # Plane work tracker (NEW record; native Authentik OIDC in-app)
+    "plane-mcp", # Plane MCP server (NEW record; authenticates every call itself)
     "postiz",
     "pve", # Proxmox
     "semaphore",
-    "todo", # tududi
     "wisbot",
   ]
 }

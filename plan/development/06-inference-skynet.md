@@ -3,6 +3,8 @@
 >
 > **Depends on:** 00, 01, 03
 >
+> **Status:** ACTIVE (2026-11-04) — skynet is deployed in production (`Deploy skynet (Dev)`, recorded in `AGENTS.md` Deployment Status, 2026-10-30). Still open: the WisAI-to-skynet operational migration (PLANNING, below), the skynet doc realignment (PROPOSED, below), and NetClaw (PROPOSED, below).
+>
 > Part of the dependency-ordered `plan/development/` set (00–10). The source
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
@@ -21,14 +23,16 @@
 > vLLM API as the inference edge (per-client keys, per-key token budgets, request
 > telemetry), alongside skynet, not instead of it. Mentions of "no separate gateway" below
 > predate that decision. Record: `plan/architecture/05-platform-infra.md`,
-> "Inference gateway: agentgateway alongside skynet" (still **Proposed**, awaiting operator
-> confirmation). Service: `platform/services/agentgateway/`. Change:
+> "Inference gateway: agentgateway alongside skynet" (**Accepted** 2026-10-12; in the
+> production `/v1` path since 2026-10-14). Service: `platform/services/agentgateway/`. Change:
 > `plan/development/openspec/changes/inference-gateway-agentgateway`.
 
 
 <!-- ======================= source: SKYNET-REPLACEMENT-PLAN.md ======================= -->
 
 # Plan — align agent-cloud docs with the skynet replacement + harvest its use-cases
+
+**Status:** PROPOSED — skynet's recommendation for realigning these docs; the realignment is still open (checked 2026-11-04).
 
 > **Origin / provenance.** Authored in the **skynet** repo
 > (`github.com/uhstray-io/skynet`, `docs/agent-cloud-doc-migration-plan.md`) and raised here
@@ -406,7 +410,7 @@ flowchart TD
 # NetClaw Integration Plan — Network Management & Automation
 
 **Date:** 2026-03-29
-**Status:** Proposed
+**Status:** PROPOSED
 **Context:** Workflow Agents project — Phase 1 enhancement
 
 ---

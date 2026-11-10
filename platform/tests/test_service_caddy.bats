@@ -21,9 +21,9 @@ setup() {
   grep -qE '\$\{CADDYFILE' "$f"
 }
 
-@test "caddy: prod defaults are byte-identical (cloudflare image, 80/443, committed Caddyfile)" {
+@test "caddy: prod defaults (registry-qualified cloudflare image, 80/443, committed Caddyfile)" {
   local f="$DEPLOY_DIR/compose.yml"
-  grep -qE '\$\{CADDY_IMAGE:-iarekylew00t/caddy-cloudflare:2\.11\.4-alpine\}' "$f"
+  grep -qE '\$\{CADDY_IMAGE:-docker\.io/iarekylew00t/caddy-cloudflare:2\.11\.4-alpine\}' "$f"
   grep -qE '\$\{CADDY_HTTP_PORT:-80\}:80' "$f"
   grep -qE '\$\{CADDY_HTTPS_PORT:-443\}:443' "$f"
   grep -qE '\$\{CADDYFILE:-\./Caddyfile\}' "$f"
@@ -237,7 +237,7 @@ _render_mcp() {
 @test "caddy: env template prod defaults match the compose defaults" {
   local f="$DEPLOY_DIR/templates/env.j2"
   [ -f "$f" ]
-  grep -qE "caddy_image \| default\('iarekylew00t/caddy-cloudflare:2\.11\.4-alpine'\)" "$f"
+  grep -qE "caddy_image \| default\('docker\.io/iarekylew00t/caddy-cloudflare:2\.11\.4-alpine'\)" "$f"
   grep -qE "caddy_file \| default\('\./Caddyfile'\)" "$f"
 }
 
@@ -250,6 +250,35 @@ _render_mcp() {
   # Ports/image/Caddyfile are env-param in the base — an overlay ports list
   # would APPEND (not replace), so it must not appear here.
   ! grep -qE '^[[:space:]]*ports:' "$f"
+}
+
+@test "caddy: local overlay aliases the auth, inference, Semaphore and OPA names onto local-dev" {
+  # Skynet and the other local-dev containers reach the edge by these names over HTTPS; each
+  # alias must sit on the local-dev network (the one the gateway, Semaphore and OPA share), not
+  # on the default network.
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
+  python3 - "$DEPLOY_DIR/compose.local.yml" <<'PY'
+import sys, yaml
+svc = yaml.safe_load(open(sys.argv[1]))["services"]["caddy"]
+aliases = svc["networks"]["local-dev"]["aliases"]
+want = ["auth.agent-cloud.test", "inference.agent-cloud.test", "semaphore.agent-cloud.test", "opa.agent-cloud.test"]
+assert sorted(aliases) == sorted(want), aliases
+PY
+}
+
+@test "caddy: the OPA site renders as a plain TLS proxy to opa:8181, with no edge gate" {
+  # Template pin: a route with no gate flags renders as a plain TLS proxy. It feeds a hand-written route,
+  # so it does not guard the inventory; the declared OPA route itself (no forward_auth, no allowlist flag)
+  # is pinned by test_local_dev_inventory.bats. OPA limits itself to decisions and health with its own
+  # authorization policy: the site adds server authentication for callers and nothing else.
+  _render_caddy '[{host: opa.agent-cloud.test, upstream: "opa:8181"}]'
+  local c="$BATS_TEST_TMPDIR/Caddyfile"
+  assert_grep -qF 'opa.agent-cloud.test {' "$c"
+  assert_grep -qF 'reverse_proxy opa:8181' "$c"
+  refute_grep -qF 'forward_auth' "$c"
+  refute_grep -qF 'respond 401' "$c"
+  refute_grep -qF 'handle' "$c"
 }
 
 @test "caddy: reviewed revision gates the controller and production receiver" {

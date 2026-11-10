@@ -86,7 +86,11 @@ cd -
 # Bash tests
 bats platform/tests/
 
-# Go (required if touching platform/services/uhhcraft/deployment/**)
+# Go (required for the full Python test/pre-push suite; Go 1.26+)
+# The native Podman-template regression in the Python suite executes Go's text/template.
+# `brew bundle` from the repository root installs the Go toolchain from Brewfile.
+
+# UhhCraft-only generators and static analysis
 cd platform/services/uhhcraft/deployment
 templ generate              # regenerate *_templ.go from .templ source
 sqlc generate               # regenerate internal/db/sqlcdb/ from db/queries/*.sql
@@ -106,6 +110,7 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 # macOS
 pip install ruff ansible-lint yamllint bandit
 brew install shellcheck bats-core hadolint
+brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
 
 # Python 3.12 (required for tests)
 brew install python@3.12
@@ -117,6 +122,9 @@ pip3.12 install -r platform/requirements-test.txt
 # GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
 # with a reason rather than failing, but they are then not verifying anything.
 pip3.12 install -r platform/requirements-controller.txt
+
+# The complete BATS suite also requires a usable existing Podman or Docker engine
+# for its native PromQL test; do not start a daemon or VM just for the test.
 
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
@@ -176,7 +184,7 @@ and a lock left by a push that has exited is reclaimed automatically (`docs/MIST
 
 ## Adding a New Service
 
-Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN.md) for the complete onboarding checklist. At minimum:
+Follow the [Service Integration Plan](plan/architecture/02-service-onboarding.md) for the complete onboarding checklist. At minimum:
 
 1. Create `platform/services/<name>/deployment/` with `deploy.sh`, `compose.yml`, and Jinja2 templates
 2. `deploy.sh` handles container lifecycle only — no secret generation or OpenBao interaction
@@ -188,6 +196,23 @@ Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN
 ---
 
 ## Writing BATS Tests
+
+The complete `bats platform/tests/` run requires BATS, Python 3.12+ with the test and
+controller requirements above, and a usable existing container engine. The native
+PromQL regression uses the literal fallback Prometheus image from the committed o11y
+Compose file and its `/bin/promtool`; it needs no standalone `promtool` installation
+or new engine package. Locally it prefers a usable existing Podman engine; CI uses
+Docker. An unavailable engine, image, or evaluator fails the test. The runner is
+bounded to 300 seconds total, at most one image acquisition, three evaluator
+containers and invocation-owned cleanup. Timeout cleanup verifies each exact
+container name and invocation labels before force-removing it with its anonymous
+volumes; normal `--rm` evaluation also removes its anonymous storage.
+
+Run the focused native regression with:
+
+```bash
+bats platform/tests/test_o11y_native_promql.bats
+```
 
 Four conventions, each earned by a defect that reached a pull request. `docs/MISTAKES.md`
 records the incident behind each; this is the short form you need while writing one.
@@ -266,10 +291,10 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 | -------- | ------- |
 | `CLAUDE.md` | AI agent guidance (conventions, deployment rules, secrets management) |
 | `plan/architecture/01-automation-model.md` | Composable Ansible task architecture |
-| `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation |
-| `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | New service onboarding checklist |
-| `plan/architecture/TESTING-AND-LINTING-PLAN.md` | Testing strategy and implementation status |
-| `plan/architecture/BRANCH-TESTING-WORKFLOW.md` | Branch deploy and validation workflow |
+| `plan/architecture/04-credentials-access.md` | Secret generation, storage, rotation |
+| `plan/architecture/02-service-onboarding.md` | New service onboarding checklist |
+| `plan/architecture/03-testing-ci-quality.md` | Testing strategy and implementation status |
+| `plan/architecture/03-testing-ci-quality.md` (section "Branch Testing Workflow") | Branch deploy and validation workflow |
 
 ---
 

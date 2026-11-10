@@ -9,6 +9,7 @@ secrets/
 !**/.env.example
 platform/services/o11y/deployment/config/journal.alloy
 platform/services/o11y/deployment/config/.journal.alloy.candidate
+platform/services/o11y/deployment/certs/
 
 # Container data volumes
 data/

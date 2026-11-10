@@ -265,10 +265,10 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-    # The enrolled CLIENTS: agw_identities without the internal MCP self-call identity (config.yaml.j2
-    # `_internal_ids`), which no client holds, so a `direct_mcp-self` copy of the vLLM key would be
-    # published for nobody (and one already there is withdrawn).
-    _declared: "{{ agw_identities | reject('in', ['mcp-self']) | list }}"
+    # The enrolled CLIENTS: agw_identities without the internal MCP self-call identity and the shared-pool
+    # identities (config.yaml.j2 `_internal_ids`), which no client holds, so a `direct_<name>` copy of the vLLM
+    # key would be published for nobody (and one already there is withdrawn).
+    _declared: "{{ agw_identities | reject('in', ['mcp-self'] + _agw_pool_identities) | list }}"
   tasks:
     - name: "Load the shared platform admin list"
       tags: [verify]
@@ -385,7 +385,9 @@
     # Guarded on the key itself: the shared task refuses if vllm_api_key no longer holds the
     # value read above, and writes at the KV version it fetched (check-and-set), so a rotation
     # landing between the read and the write fails the run instead of publishing a stale key
-    # to every client. The guard covers set-only merges, so withdrawal is a second write.
+    # to every client. The withdrawal below is a separate, unguarded write. The shared task can
+    # now guard a set and a removal in one write (its 2026-10-14 compare-and-set change); this
+    # play still keeps them apart.
     - name: "Direct: publish the copies (shared merge task, guarded on the vLLM key and its KV version)"
       ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
       vars:

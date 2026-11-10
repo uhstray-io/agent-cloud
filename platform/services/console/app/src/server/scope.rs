@@ -1,0 +1,368 @@
+//! Scope file (rendered from inventory `console_tenants`). The console only
+//! reads it: it is the catalogue the UI picks from, never a store it writes.
+//!
+//! A tenant is the hard isolation boundary (PRINCIPLES.md, plan 17 D16). Each
+//! tenant lists the Authentik groups that may see it; the API filters on them.
+
+use serde::{Deserialize, Serialize};
+
+/// The Authentik group that sees every tenant and the platform-wide pages. It is the group declared in
+/// `platform/services/authentik/deployment/blueprints/platform-groups.yaml`.
+pub const ADMIN_GROUP: &str = "platform-admins";
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Scope {
+    /// True when the file is the example catalogue, so the UI can say so.
+    #[serde(default)]
+    pub example: bool,
+    pub tenants: Vec<Tenant>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Tenant {
+    pub id: String,
+    pub name: String,
+    /// Authentik groups that may see this tenant. Empty means platform admins
+    /// only. Never serialized: the API returns ids and names, not membership.
+    #[serde(default, skip_serializing)]
+    pub groups: Vec<String>,
+    #[serde(default)]
+    pub orgs: Vec<Org>,
+}
+
+/// True when the caller holds the platform-admin group. Exact and case-sensitive, as Authentik names groups.
+pub fn is_platform_admin(groups: &[String]) -> bool {
+    groups.iter().any(|group| group == ADMIN_GROUP)
+}
+
+impl Tenant {
+    /// True when the caller is a platform admin or shares one group with this
+    /// tenant. Matching is exact and case-sensitive, as Authentik names groups.
+    pub fn visible_to(&self, groups: &[String]) -> bool {
+        groups
+            .iter()
+            .any(|group| group == ADMIN_GROUP || self.groups.contains(group))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Org {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub sites: Vec<Site>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct Site {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub envs: Vec<String>,
+    /// The NetBox site slug this site maps to (plan 17 D23). Absent means the site is not
+    /// mapped: the console never guesses a NetBox site from the name.
+    #[serde(default)]
+    pub netbox_site: Option<String>,
+}
+
+impl Scope {
+    pub fn parse(text: &str) -> Result<Scope, String> {
+        let scope: Scope =
+            serde_json::from_str(text).map_err(|err| format!("invalid JSON: {err}"))?;
+        scope.validate()?;
+        Ok(scope)
+    }
+
+    pub fn tenant(&self, id: &str) -> Option<&Tenant> {
+        self.tenants.iter().find(|tenant| tenant.id == id)
+    }
+
+    /// The tenants the caller may see, in scope-file order.
+    pub fn visible_tenants(&self, groups: &[String]) -> Vec<&Tenant> {
+        self.tenants
+            .iter()
+            .filter(|tenant| tenant.visible_to(groups))
+            .collect()
+    }
+
+    /// The tenant when the caller may see it. A tenant the caller may not see is
+    /// `None`, exactly as an unknown id is, so the API cannot probe for it.
+    pub fn visible_tenant(&self, id: &str, groups: &[String]) -> Option<&Tenant> {
+        self.tenant(id).filter(|tenant| tenant.visible_to(groups))
+    }
+
+    /// Every `netbox_site` slug the scope declares, sorted. `validate` already refuses a slug
+    /// declared twice, so each appears once. The inventory refresh reads exactly these sites.
+    pub fn netbox_sites(&self) -> Vec<String> {
+        let mut slugs = std::collections::BTreeSet::new();
+        for site in self
+            .tenants
+            .iter()
+            .flat_map(|tenant| &tenant.orgs)
+            .flat_map(|org| &org.sites)
+        {
+            if let Some(slug) = &site.netbox_site {
+                slugs.insert(slug.clone());
+            }
+        }
+        slugs.into_iter().collect()
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        let mut tenant_ids = std::collections::HashSet::new();
+        // The first site that declared each NetBox slug, across every tenant.
+        let mut slug_owner: std::collections::HashMap<&str, String> =
+            std::collections::HashMap::new();
+        for tenant in &self.tenants {
+            require_id(&tenant.id, &tenant.name)?;
+            if !tenant_ids.insert(tenant.id.as_str()) {
+                return Err(format!("duplicate tenant id {}", tenant.id));
+            }
+            for org in &tenant.orgs {
+                require_id(&org.id, &org.name)?;
+                for site in &org.sites {
+                    require_id(&site.id, &site.name)?;
+                    let Some(slug) = site.netbox_site.as_deref() else {
+                        continue;
+                    };
+                    require_slug(&site.id, slug)?;
+                    let here = format!("{}/{}/{}", tenant.id, org.id, site.id);
+                    if let Some(first) = slug_owner.get(slug) {
+                        return Err(format!(
+                            "netbox_site \"{slug}\" is declared by both {first} and {here}; \
+                             a NetBox site maps to exactly one console site"
+                        ));
+                    }
+                    slug_owner.insert(slug, here);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A NetBox slug is one token: no blank value, and no whitespace at either end or inside.
+fn require_slug(site_id: &str, slug: &str) -> Result<(), String> {
+    if slug.trim().is_empty() {
+        return Err(format!("site {site_id} has a blank netbox_site"));
+    }
+    if slug != slug.trim() || slug.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "site {site_id} netbox_site \"{slug}\" must not contain whitespace"
+        ));
+    }
+    Ok(())
+}
+
+fn require_id(id: &str, name: &str) -> Result<(), String> {
+    if id.trim().is_empty() || name.trim().is_empty() {
+        return Err("every tenant, org and site needs a non-empty id and name".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE: &str = r#"{
+        "example": true,
+        "tenants": [{
+            "id": "acme", "name": "Acme",
+            "orgs": [{"id": "ops", "name": "Ops", "sites": [
+                {"id": "dc1", "name": "DC 1", "envs": ["prod", "dev"]}
+            ]}]
+        }]
+    }"#;
+
+    #[test]
+    fn parses_and_looks_up_tenant_tree() {
+        let scope = Scope::parse(SAMPLE).expect("valid scope");
+        assert!(scope.example);
+        let acme = scope.tenant("acme").expect("tenant found");
+        assert_eq!(acme.name, "Acme");
+        assert_eq!(acme.orgs[0].sites[0].envs, vec!["prod", "dev"]);
+    }
+
+    #[test]
+    fn unknown_tenant_is_none() {
+        let scope = Scope::parse(SAMPLE).expect("valid scope");
+        assert!(scope.tenant("globex").is_none());
+    }
+
+    #[test]
+    fn example_defaults_to_false() {
+        let scope = Scope::parse(r#"{"tenants": []}"#).expect("valid scope");
+        assert!(!scope.example);
+    }
+
+    #[test]
+    fn rejects_empty_id_and_duplicate_tenant() {
+        assert!(Scope::parse(r#"{"tenants": [{"id": " ", "name": "x"}]}"#).is_err());
+        let dup = r#"{"tenants": [{"id": "a", "name": "A"}, {"id": "a", "name": "B"}]}"#;
+        assert!(Scope::parse(dup)
+            .unwrap_err()
+            .contains("duplicate tenant id a"));
+    }
+
+    #[test]
+    fn rejects_malformed_json() {
+        assert!(Scope::parse("{").is_err());
+    }
+
+    const GROUPED: &str = r#"{"tenants": [
+        {"id": "acme", "name": "Acme", "groups": ["ops"]},
+        {"id": "initech", "name": "Initech", "groups": ["finance", "ops"]},
+        {"id": "hidden", "name": "Hidden"}
+    ]}"#;
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|name| name.to_string()).collect()
+    }
+
+    fn ids(scope: &Scope, groups: &[String]) -> Vec<String> {
+        scope
+            .visible_tenants(groups)
+            .iter()
+            .map(|tenant| tenant.id.clone())
+            .collect()
+    }
+
+    #[test]
+    fn platform_admin_sees_every_tenant_including_ungrouped_ones() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert_eq!(
+            ids(&scope, &names(&[ADMIN_GROUP])),
+            ["acme", "initech", "hidden"]
+        );
+    }
+
+    #[test]
+    fn member_sees_only_tenants_that_list_one_of_their_groups() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert_eq!(ids(&scope, &names(&["ops"])), ["acme", "initech"]);
+        assert_eq!(ids(&scope, &names(&["finance"])), ["initech"]);
+    }
+
+    #[test]
+    fn non_member_sees_no_tenant() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert!(ids(&scope, &names(&["users"])).is_empty());
+        assert!(ids(&scope, &[]).is_empty());
+        assert!(scope.visible_tenant("acme", &names(&["users"])).is_none());
+    }
+
+    #[test]
+    fn tenant_without_groups_is_platform_admin_only() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert!(scope
+            .visible_tenant("hidden", &names(&["ops", "finance"]))
+            .is_none());
+        assert!(scope
+            .visible_tenant("hidden", &names(&[ADMIN_GROUP]))
+            .is_some());
+    }
+
+    #[test]
+    fn group_match_is_exact_and_case_sensitive() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        assert!(ids(&scope, &names(&["Ops"])).is_empty());
+        assert!(ids(&scope, &names(&["ops-old"])).is_empty());
+        assert!(ids(&scope, &names(&["platform-admins-old"])).is_empty());
+    }
+
+    #[test]
+    fn visible_tenant_is_the_lookup_gated_by_membership() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        let finance = names(&["finance"]);
+        assert_eq!(
+            scope
+                .visible_tenant("initech", &finance)
+                .map(|t| t.name.as_str()),
+            Some("Initech")
+        );
+        // acme exists in the file but lists no group this caller has.
+        assert!(scope.visible_tenant("acme", &finance).is_none());
+        assert!(scope.visible_tenant("nope", &finance).is_none());
+    }
+
+    #[test]
+    fn groups_are_read_but_never_serialized() {
+        let scope = Scope::parse(GROUPED).expect("valid scope");
+        let json = serde_json::to_string(&scope.tenants[0]).expect("serialize tenant");
+        assert!(!json.contains("groups"), "{json}");
+        assert_eq!(scope.tenants[0].groups, names(&["ops"]));
+    }
+
+    const MAPPED: &str = r#"{"tenants": [
+        {"id": "acme", "name": "Acme", "orgs": [{"id": "ops", "name": "Ops", "sites": [
+            {"id": "dc1", "name": "DC 1", "netbox_site": "dc-1"},
+            {"id": "dc2", "name": "DC 2"}
+        ]}]},
+        {"id": "initech", "name": "Initech", "orgs": [{"id": "lab", "name": "Lab", "sites": [
+            {"id": "hq", "name": "HQ", "netbox_site": "dc-2"},
+            {"id": "annex", "name": "Annex", "netbox_site": "annex"}
+        ]}]}
+    ]}"#;
+
+    #[test]
+    fn netbox_site_is_parsed_and_absent_means_unmapped() {
+        let scope = Scope::parse(MAPPED).expect("valid scope");
+        let sites = &scope.tenants[0].orgs[0].sites;
+        assert_eq!(sites[0].netbox_site.as_deref(), Some("dc-1"));
+        assert_eq!(sites[1].netbox_site, None);
+    }
+
+    #[test]
+    fn netbox_sites_lists_the_declared_slugs_sorted() {
+        let scope = Scope::parse(MAPPED).expect("valid scope");
+        assert_eq!(scope.netbox_sites(), ["annex", "dc-1", "dc-2"]);
+    }
+
+    #[test]
+    fn a_slug_declared_by_two_tenants_is_refused_and_both_sites_are_named() {
+        let dup = r#"{"tenants": [
+            {"id": "acme", "name": "Acme", "orgs": [{"id": "ops", "name": "Ops", "sites": [
+                {"id": "dc1", "name": "DC 1", "netbox_site": "dc-1"}]}]},
+            {"id": "initech", "name": "Initech", "orgs": [{"id": "lab", "name": "Lab", "sites": [
+                {"id": "hq", "name": "HQ", "netbox_site": "dc-1"}]}]}
+        ]}"#;
+        let err = Scope::parse(dup).expect_err("must fail");
+        assert!(err.contains("\"dc-1\""), "{err}");
+        assert!(err.contains("acme/ops/dc1"), "{err}");
+        assert!(err.contains("initech/lab/hq"), "{err}");
+    }
+
+    #[test]
+    fn a_slug_declared_twice_in_one_tenant_is_refused() {
+        let dup = r#"{"tenants": [{"id": "acme", "name": "Acme", "orgs": [{"id": "ops", "name": "Ops",
+            "sites": [
+                {"id": "dc1", "name": "DC 1", "netbox_site": "dc-1"},
+                {"id": "dc3", "name": "DC 3", "netbox_site": "dc-1"}]}]}]}"#;
+        let err = Scope::parse(dup).expect_err("must fail");
+        assert!(err.contains("both acme/ops/dc1 and acme/ops/dc3"), "{err}");
+    }
+
+    #[test]
+    fn a_slug_with_whitespace_is_refused() {
+        for slug in [" dc-1", "dc-1 ", "dc 1"] {
+            let text = format!(
+                r#"{{"tenants": [{{"id": "a", "name": "A", "orgs": [{{"id": "o", "name": "O",
+                "sites": [{{"id": "s", "name": "S", "netbox_site": "{slug}"}}]}}]}}]}}"#
+            );
+            let err = Scope::parse(&text).expect_err("must fail");
+            assert!(
+                err.contains("must not contain whitespace"),
+                "{slug:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_netbox_site_is_rejected() {
+        let blank = r#"{"tenants": [{"id": "a", "name": "A", "orgs": [{"id": "o", "name": "O",
+            "sites": [{"id": "s", "name": "S", "netbox_site": "  "}]}]}]}"#;
+        let err = Scope::parse(blank).expect_err("must fail");
+        assert!(err.contains("blank netbox_site"), "{err}");
+    }
+}

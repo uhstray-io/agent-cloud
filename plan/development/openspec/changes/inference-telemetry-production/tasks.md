@@ -29,7 +29,7 @@
       and separate: root `CLAUDE.md` still lists OpenHands as deployed at `canvas.uhstray.io`,
       and the Caddy route for canvas is still declared and live; removing the route, the
       inventory entries and those docs is its own step.
-- [ ] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
+- [x] 0.3 Allocate the o11y VM in site-config `proxmox/vm-specs.yml` (Auxiliary tier,
       Podman) and provision it through the onboarding checklist phases 1 to 2
       2026-10-02 rescope: PARTIAL — the VM is reserved and provisioned under
       `observability-estate` (DHCP refusal task 1342, reservation 1347, provisioned by 1353,
@@ -51,6 +51,17 @@
       the operator merges site-config #63 (the o11y SSH keypair backup; site-config main has
       no `secrets/ssh/o11y` entry), then Verify Host Access (Dev) and Harden SSH (Dev) run on
       `o11y_svc`. Not ticked.
+      2026-10-15 (task output read from production Semaphore by the lead): done. The operator approved
+      the merge, and site-config #63 merged as fb0367f1 after a pr-reviewer round: the public key
+      derived from the private file matches the committed one. Verify Host Access (Dev) task 6063 on
+      `o11y_svc` returned PENDING-OPERATOR: key-only login from the runner with password and
+      keyboard-interactive refused, and escalation works.
+      The operator half was proven from the lead's workstation (not a Semaphore task): a key-only
+      login with the site-config backup key, as the deploy account, with password authentication off.
+      Harden SSH (Dev) dry run 6066, then real run 6069, both `failed=0`. Its own checks passed: key
+      auth still works, and password auth is confirmed off. Re-checked afterwards from the
+      workstation: the key login works, and a password attempt is refused with
+      `Permission denied (publickey)`.
 - [x] 0.4 Validation gate: `openspec validate inference-telemetry-production --store
       agent-cloud` passes; the VM answers SSH via the distributed key; proves nothing in
       the spec yet and unblocks section 1
@@ -297,6 +308,10 @@
       spark-1; restored and verified." The real run is also the key-only login proof for the
       o11y-drill account from the Semaphore runner (sshd admits it only from the Semaphore
       host). Ticked: the drill induced the fault, the alert fired, the exporter was restored.
+      2026-10-26 correction (from dgx-spark): the 2026-10-12 note says dgx-spark reads the
+      drill's public key from site-config. Since dgx-spark PR 32 (2026-10-14), dgx-spark
+      commits the key in its own repository as `keys/o11y-fault-drill.pub` and installs it
+      from there on both nodes. The site-config copy is the backup.
 - [x] 2.6 Validation gate: 2.4 proves scenario "All node targets up" and scenario "Boot
       journal is queryable"; 2.5 proves scenario "Missing scrape is a telemetry failure"
       including the alert firing;

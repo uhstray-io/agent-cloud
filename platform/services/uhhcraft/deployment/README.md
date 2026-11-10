@@ -120,7 +120,7 @@ No DB migration, no Go change.
 
 ## Outstanding integration items
 
-Tracked in [`../../../../plan/development/07-websmith-uhhcraft.md`](../../../../plan/development/07-websmith-uhhcraft.md). **Phases 1–9 and 11 are merged** (OpenBao policy/AppRole, composable `deploy-uhhcraft.yml`, Caddy fragment pattern, Proxmox VM specs, Semaphore templates, Go/templ/sqlc/gosec CI, architecture docs, second-site recipe), and the `./uhhcraft healthcheck` + `./uhhcraft river migrate-up` subcommands are implemented (`cmd/server/main.go`).
+Tracked in [`../../../../plan/development/07-websmith-uhhcraft.md`](../../../../plan/development/07-websmith-uhhcraft.md); the archived integration plan is [`../../../../plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md). **Phases 1–9 and 11 are merged** (OpenBao policy/AppRole, composable `deploy-uhhcraft.yml`, Caddy fragment pattern, Proxmox VM specs, Semaphore templates, Go/templ/sqlc/gosec CI, architecture docs, second-site recipe), and the `./uhhcraft healthcheck` + `./uhhcraft river migrate-up` subcommands are implemented (`cmd/server/main.go`).
 
 The remaining item is **Phase 10 — validation** (hardware-gated):
 
@@ -128,7 +128,7 @@ The remaining item is **Phase 10 — validation** (hardware-gated):
 - `validate-all.yml` green on all four hosts; `uhhcraft.uhstray.io` served behind central Caddy with a valid cert.
 - Exercise the rollback procedure (above) at least once.
 
-Open decisions feeding Phase 10: Stripe test-vs-live mode, CSP for the Three.js/WASM 3D canvas, container registry (GHCR vs Harbor), and the GPU-passthrough §1 host decision (`../../../../plan/development/UHHCRAFT-GPU-PASSTHROUGH.md`).
+Open decisions feeding Phase 10: Stripe test-vs-live mode, CSP for the Three.js/WASM 3D canvas, container registry (GHCR vs Harbor), and the GPU-passthrough §1 host decision ([`plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md`](../../../../plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md)).
 
 ## Related
 

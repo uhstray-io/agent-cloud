@@ -41,43 +41,9 @@
     - name: "Install Docker CE"
       when: _docker_check.rc != 0
       block:
-        - name: "Install prerequisites"
-          ansible.builtin.apt:
-            name:
-              - ca-certificates
-              - curl
-            state: present
-            update_cache: true
-
-        - name: "Create keyrings directory"
-          ansible.builtin.file:
-            path: /etc/apt/keyrings
-            state: directory
-            mode: "0755"
-
-        - name: "Add Docker GPG key"
-          ansible.builtin.get_url:
-            url: https://download.docker.com/linux/ubuntu/gpg
-            dest: /etc/apt/keyrings/docker.asc
-            mode: "0644"
-
-        - name: "Get architecture"
-          ansible.builtin.command: dpkg --print-architecture
-          register: _arch
-          changed_when: false
-          check_mode: false
-
-        - name: "Get Ubuntu codename"
-          ansible.builtin.shell: . /etc/os-release && echo "${VERSION_CODENAME}"
-          register: _codename
-          changed_when: false
-          check_mode: false
-
-        - name: "Add Docker apt repository"
-          ansible.builtin.apt_repository:
-            repo: "deb [arch={{ _arch.stdout }} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ _codename.stdout }} stable"
-            state: present
-            filename: docker
+        - name: "Add Docker's apt repository"
+          # Shared with install-podman.yml, which installs only the Docker CLI client.
+          ansible.builtin.include_tasks: tasks/add-docker-apt-repo.yml
 
         - name: "Install Docker packages"
           ansible.builtin.apt:

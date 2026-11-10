@@ -240,7 +240,7 @@ def test_the_netbox_local_host_declares_its_unlabelled_orb_agent():
 def test_the_semaphore_inventory_the_bootstrap_generates_declares_the_same_extra():
     # The local Semaphore runs with bootstrap-local-dev.yml's _inv_ini, not local-dev.yml.
     play = yaml.safe_load((PLAYBOOKS / "bootstrap-local-dev.yml").read_text())[0]
-    task = next(t for t in play["tasks"] if t["name"] == "Create or update local inventory")
+    task = next(t for t in play["tasks"] if t["name"] == "Write the local inventory INI source")
     ini = task["vars"]["_inv_ini"]
     block = ini.split("[netbox_svc:vars]")[1].split("\n[")[0]
     assert 'stop_extra_containers=["netbox-orb-agent"]' in block.splitlines()

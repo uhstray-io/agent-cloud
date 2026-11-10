@@ -1,8 +1,10 @@
 # agentgateway — the inference edge gateway
 
 Author: Joseph A. Wisneski IV <stray@uhstray.io>. Status: local-dev proven (2026-09-17). Prod VM (node, vmid and address declared in site-config) provisioned, keyed and
-SSH-hardened through Semaphore (2026-09-18); the prod gateway rollout (Authentik app,
-edge record, key seed, deploy, firewall, Caddy block) is pending.
+SSH-hardened through Semaphore (2026-09-18). Production `/v1` traffic has been routed through
+the gateway since 2026-10-14 (the route switch in OpenSpec change
+`inference-gateway-agentgateway`). Still open: retiring the shared vLLM key (2026-11-13,
+"Shared-key retirement" below) and TLS from the gateway to vLLM.
 
 ## Role
 
@@ -13,7 +15,7 @@ identity itself; Caddy in front of it keeps TLS, the path allowlist and a header
 Bearer check only.
 
 Decision record: `plan/architecture/05-platform-infra.md`, "Inference gateway:
-agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec change:
+agentgateway alongside skynet" (Accepted 2026-10-12). OpenSpec change:
 `plan/development/openspec/changes/inference-gateway-agentgateway`.
 
 ## Shape
@@ -199,10 +201,12 @@ per-client layer. Everything is inventory-driven code (design §10):
 |---|---|
 | Add a client | Add the name to `agw_clients` (site-config / local inventory), or declare the admin in `platform_admins`, and deploy: manage-secrets mints `client_<name>` once and reuses it; the config enrols its sha256 hash |
 | Per-client policy | `agw_client_policies.<name>.allowed_models` and `.tokens_per_hour` render `allowedModels` and the budget amount |
+| Shared model cap | `pool_identity: <name>` on an `agw_models` entry, `<name>` in `agw_clients` with `agw_client_policies.<name>.tokens_per_hour`: every caller together is held to that figure for the model (v1.5.0 has no per-model budget, so the public entry relays over the loopback listener to a hidden `pool/<name>` entry only the pool identity may call). Calls are charged twice (caller and pool) and count twice against the global request bucket |
+| Budget tiers | `agw_tier_tokens_per_hour` maps `admin`, `developer`, `business` to hourly figures; `platform_admins` identities are `admin`, others set `agw_client_policies.<name>.tier`. Own `tokens_per_hour` wins, then the tier, then `agw_rate_tokens_per_hour` |
 | Rotate | Semaphore `Manage agentgateway Client Key`, `client=<name> action=rotate` (name must be declared); merges a new value, re-renders, reloads |
 | Revoke | Remove the name from `agw_clients` and `platform_admins` FIRST, then `action=revoke`: deletes the field (KV-v2 merge-patch null), re-renders, reloads; the old key is 401 |
 | Hand out | `Back Up Credentials to site-config` with `credential_service=agentgateway credential_fields=client_<name>`: a site-config branch, names only in the task output |
-| pi client | `context/clients/pi-provider/` (README there): a pi package, `pi install <path>`; `/login uhstray` validates the key against `GET /v1/models` and pi stores it in `auth.json`; the model list is the gateway's own, per key, discovered live and kept as pi's persisted snapshot; streaming is pi's built-in OpenAI Chat Completions client. No secret in the package; `UHSTRAY_INFERENCE_BASE_URL` points it at the local-dev gateway |
+| pi client | Lives in the harness repository, not here: `harnesses/pi/extensions/uhstray-provider/` in `uhstray-io/harness`. `/login uhstray` validates the key against `GET /v1/models` and pi stores it in `auth.json`; the model list is the gateway's own, per key, discovered live and kept as pi's persisted snapshot; streaming is pi's built-in OpenAI Chat Completions client. No secret in the package; `UHSTRAY_INFERENCE_BASE_URL` points it at the local-dev gateway |
 | UI key editor | Disabled on purpose: `UI_READ_ONLY=true` in `.env` puts the config store in read-only mode (writes get 403), and `config.yaml` is mounted `:ro`; configuration is code |
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
@@ -238,10 +242,15 @@ the key nor its hash is printed. `legacy-shared` may not appear in `agw_clients`
 `VLLM_API_KEY` at vLLM and in OpenBao belongs to dgx-spark, which owns the key; the rollback
 `restore` mode does not rotate it either.
 
-Retirement date: _not yet set_ — `legacy_shared_expires` is the route-switch date + 14 days
-(task 4.7), recorded here when the route switches.
+Retirement date: **2026-11-13** (`legacy_shared_expires` in the production inventory, site-config #81;
+first set by task 4.7 as the route-switch date + 14 days, then moved from 2026-10-28). A deploy on or
+after that date drops `legacy-shared`, and fails until the vLLM key has been rotated (gateway task 5.1).
+If the key is rotated before the date, the grace-period probe is skipped rather than reporting a
+false failure (#631).
 
 ## Upstream
+
+Source paths under `crates/`, `entrypoints/`, `management/` and `http/`, and upstream project documentation under `docs/`, refer to the respective upstream agentgateway, vLLM, Pi or dgx-spark repositories, not this repository. The repository-local `docs/MISTAKES.md` references remain local.
 
 `custom` provider, `formats: [{type: completions}, {type: responses}]`, `params.baseUrl` from inventory
 `agw_upstream_base_url`, one model entry per name in `agw_models` (an optional
@@ -272,7 +281,7 @@ in place until that run reports them.
 
 | Environment | `agw_upstream_base_url` | Key |
 |---|---|---|
-| local-dev | `http://host.containers.internal:1234/v1` (LM Studio on the Mac) | LM Studio's API token, seeded as `vllm_api_key` with `seed-openbao-key.yml` (2026-09-17); before that, none — `params.apiKey` omitted |
+| local-dev | `https://inference.uhstray.io/v1`, the public edge, while the operator is off the LAN (2026-10-20); on the LAN, the DGX directly (address only in the gitignored local inventory). Until 2026-10-20: `http://host.containers.internal:1234/v1` (LM Studio) | the production `local-gateway` identity's key, seeded as `vllm_api_key` in local OpenBao |
 | prod | `http://<spark-1>:8000/v1` (site-config) | `secret/services/agentgateway:vllm_api_key`, seeded by a separate playbook |
 
 ## OpenRouter models (change `agentgateway-openrouter`)
@@ -325,10 +334,48 @@ agw_openrouter_admins: false          # true: also every admin-derived identity 
   system roots, so a local gateway cannot verify `openrouter.ai`'s certificate. The commented
   example in `platform/inventory/local-dev.yml.example` is off for that reason. Production sets no
   `SSL_CERT_FILE`, and the image ships public roots (`/etc/ssl/certs/ca-certificates.crt`).
+  - *2026-10-20:* the local upstream is now the public edge (`https://inference.uhstray.io/v1`,
+    Cloudflare-proxied, public certificate), which step-ca cannot sign. So `SSL_CERT_FILE` now names
+    `certs/ca-bundle-combined.crt`: step-ca's root and intermediate, then the play host's public
+    roots (the first of `/etc/ssl/certs/ca-certificates.crt`, `/etc/pki/tls/certs/ca-bundle.crt` that
+    exists; the play fails if neither does). `tasks/distribute-ca-root.yml` writes it beside the
+    step-ca-only `certs/step-ca-bundle.crt`, which other consumers still read. Local OpenRouter
+    models verify through the same bundle.
 - **Probes.** The conformance run, the isolation probe and the MCP verify's chat call never pick an
   OpenRouter model (`agw_conformance_model` still names one explicitly). `mcp-self` and
   `legacy-shared` can never be granted OpenRouter models, and a glob character in any model name is
   refused.
+
+## skynet orchestration route (workflow task 3.3, render half)
+
+With `agw_skynet_route_enabled`, the gateway serves skynet's orchestration API at `/skynet/...` on the
+`default` gateway. It is off by default: the render carries no `routes:` block and the deploy reads no
+skynet secret. The verify probes for this route are a later task.
+
+```yaml
+agw_skynet_route_enabled: true
+agw_skynet_backend: host.containers.internal:18556   # host:port only, the one fixed upstream
+agw_skynet_route_identities: [dev-local]             # declared identities; never mcp-self or legacy-shared
+```
+
+- **Admission.** The route has its own `apiKey` policy, strict, the same header location as `/v1`.
+  Its keys are the `client_<name>` hashes of the named identities only. It carries no budget and no
+  model list: it is not an LLM surface. A keyless call, or a key the route does not name, is 401 at
+  the gateway and never reaches skynet.
+- **Backend credential.** `backendAuth.key` is the env reference `$SKYNET_API_TOKEN`. It replaces the
+  caller's `Authorization` on the upstream call, so skynet receives only its own bearer. The value is
+  `secret/services/skynet:api_token`, shared-read from skynet (never generated here), and it is written
+  to `.env` only while the route is on. An empty value is refused; a missing key stops `manage-secrets`
+  by name, so skynet deploys first.
+- **No rewrite.** The path reaches skynet unchanged; skynet serves under `/skynet/` itself.
+- **Refusals before any restart.** `_agw_skynet_route_problems` (`vars/secret-declarations/agentgateway.yml`)
+  refuses a backend that is not `host:port`, an empty or non-list identity list, an undeclared, internal
+  or repeated name. The render check then requires the routes block to match the flag, to carry a strict
+  key policy, and to enrol exactly the declared identities.
+- **A route identity is also a `/v1` identity.** `config.yaml.j2` enrols every entry of `agw_identities`
+  in the `llm` key policy, so a key named here also passes `/v1`, under that identity's budget and
+  model list. The route narrows nothing about `/v1`. Naming an identity here is therefore a grant on
+  both surfaces. Checked against the template (`config.yaml.j2` `llm` policy); not run against the gateway.
 
 ## Conformance against direct vLLM (tasks 2.1, 2.2)
 

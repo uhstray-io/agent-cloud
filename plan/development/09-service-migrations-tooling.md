@@ -1,5 +1,5 @@
 # 09 — Service Migrations & Tooling
-> **Consolidates:** nocodb-n8n-composable-migration.md, PODMAN-UPGRADE-PLAN.md, SPARSE-CHECKOUT-MIGRATION.md (originals archived in `plan/archive/`)
+> **Consolidates:** nocodb-n8n-composable-migration.md, PODMAN-UPGRADE-PLAN.md, SPARSE-CHECKOUT-MIGRATION.md (originals archived in [`plan/archive/`](../archive/README.md))
 >
 > **Depends on:** 00, 01
 >
@@ -1195,11 +1195,11 @@ Total: 7 files created, 5 files modified, 9 commits.
 
 ## Cross-references
 
-- [AUTOMATION-COMPOSABILITY.md](../architecture/AUTOMATION-COMPOSABILITY.md) -- Composable deployment pattern and task library
-- [CREDENTIAL-LIFECYCLE-PLAN.md](../architecture/CREDENTIAL-LIFECYCLE-PLAN.md) -- Secret generation, storage, rotation, and retirement
-- [architecture-reference.md](../architecture/architecture-reference.md) -- Document standards and master index
-- [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) -- Full implementation plan (phases, architecture, decisions)
-- [SERVICE-INTEGRATION-PLAN.md](../architecture/SERVICE-INTEGRATION-PLAN.md) -- Service onboarding checklist
+- [AUTOMATION-COMPOSABILITY.md](../archive/architecture/AUTOMATION-COMPOSABILITY.md) -- Composable deployment pattern and task library
+- [CREDENTIAL-LIFECYCLE-PLAN.md](../archive/architecture/CREDENTIAL-LIFECYCLE-PLAN.md) -- Secret generation, storage, rotation, and retirement
+- [architecture-reference.md](../archive/architecture/architecture-reference.md) -- Document standards and master index
+- [IMPLEMENTATION_PLAN.md](../archive/development/IMPLEMENTATION_PLAN.md) -- Full implementation plan (phases, architecture, decisions)
+- [SERVICE-INTEGRATION-PLAN.md](../archive/architecture/SERVICE-INTEGRATION-PLAN.md) -- Service onboarding checklist
 
 ---
 

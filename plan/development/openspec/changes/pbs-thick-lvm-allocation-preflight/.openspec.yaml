@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-10-18
+goal: Establish repeatable API-reported identity, direct LVM lineage, SMART
+  health, and residual VG headroom evidence without authorizing allocation or
+  writes.

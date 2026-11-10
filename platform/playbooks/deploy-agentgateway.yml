@@ -23,8 +23,8 @@
 # Design: identities/limits §4, no retry/timeouts §3, telemetry §6.
 #
 # Inventory (agentgateway_svc host):
-#   agw_upstream_base_url  e.g. http://<head>:8000/v1 (prod) or
-#                          http://host.containers.internal:1234/v1 (local LM Studio)
+#   agw_upstream_base_url  e.g. http://<head>:8000/v1 (prod) or, local-dev off the LAN,
+#                          https://inference.uhstray.io/v1 (the public edge, as identity local-gateway)
 #   agw_models             [{name, upstream_model?, provider?}] one entry per served name
 #                          `provider: openrouter` (agentgateway-openrouter) serves the entry from OpenRouter
 #                          instead of the vLLM upstream: `upstream_model` (vendor/model) is then required,
@@ -37,6 +37,10 @@
 #                          secret/services/agentgateway:openrouter_api_key (Seed OpenBao Key; never generated)
 #   agw_verify_openrouter  (default false) send ONE completion (max_tokens 8) to the first OpenRouter model
 #                          the verifying identity may use; off, the verify only checks the keyed listing
+#   agw_verify_json_schema (default true) send ONE schema-constrained completion (`response_format`
+#                          type json_schema) to the verifying model and require a reply that parses
+#                          against that schema: skynet's structured output depends on the gateway
+#                          passing it through unchanged (service-deployment-workflow 0.5/3.3)
 #   agw_clients            [names] one API-key identity each -> secret field client_<name>
 #   agw_admin_identities_enabled (default false) gate for the personal identities below: off,
 #                          agw_identities == agw_clients and the admin list is not read
@@ -49,7 +53,11 @@
 #                          `agw_identity` if set, else its `username`. Merged with agw_clients into
 #                          agw_identities (vars/secret-declarations/agentgateway.yml); a name in both
 #                          is one identity (the same client_<name>), reported as an overlap
-#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N}}
+#   agw_client_policies    (optional) {name: {allowed_models: [...], tokens_per_hour: N, tier: T}}
+#   agw_models[].pool_identity  (optional) a shared hourly cap on that model for every caller together: the
+#                          named agw_clients identity's tokens_per_hour (config.yaml.j2, "Shared model pools")
+#   agw_tier_tokens_per_hour  (optional) {tier: N}: hourly budget per tier; platform_admins identities
+#                          are tier `admin`, others join with agw_client_policies.<name>.tier
 #                          rotate/revoke: manage-agentgateway-client-key.yml
 #   legacy_shared_expires  (optional) ISO date ending the shared-key grace period: before it the
 #                          shared vLLM key is enrolled as identity `legacy-shared` (budget from
@@ -60,6 +68,8 @@
 #   agw_upstream_requires_key            (default true) refuse a deploy with an empty vllm_api_key;
 #                                        false makes the key optional (still sent when present)
 #   agw_otlp_host          (optional) declared o11y Alloy OTLP host:port
+#   agw_otlp_logs          (default false) export access logs; requires agw_otlp_host
+#   agw_otlp_traces        (default false) export traces; requires agw_otlp_host
 #   agw_oidc_issuer / agw_ui_redirect_uri / agw_ui_admin_group  operator UI OIDC (defaults local)
 #   agw_ui_enabled                       (default true) false = no UI listener, no OIDC, no Authentik read
 #   agw_mcp_enabled                      (default false) serve MCP at /mcp on the default gateway (key-gated: the admin-derived
@@ -71,6 +81,12 @@
 #                                        gateway's own /v1, the schema a .json file in deployment/mcp-schemas/; nothing
 #                                        else is accepted (_agw_mcp_problems)
 #   agw_loopback_port                    (default 4002) the loopback gateway's port, never published
+#   agw_skynet_route_enabled             (default false) serve skynet's orchestration API at /skynet/ on the default
+#                                        gateway; false renders no routes block and reads no skynet secret
+#   agw_skynet_backend                   (required when enabled) host:port of the skynet API the route proxies to
+#   agw_skynet_route_identities          (required when enabled) the declared identities that may call /skynet/;
+#                                        each must be in agw_identities and never mcp-self or legacy-shared
+#                                        (_agw_skynet_route_problems)
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -127,9 +143,13 @@
     # The UI's OIDC client secret is owned by authentik (the IdP). Read-only, so the
     # gateway's clientSecret matches what agentgateway-oidc.yaml injected via !Env.
     # Skipped with agw_ui_enabled: false, so /v1 deploys before that client exists.
+    # The skynet route's backend token (agentgateway task 3.3) is skynet's own secret, read the same way and
+    # only while the route is enabled: a missing key stops manage-secrets by name, so skynet deploys first.
     _shared_reads: >-
-      {{ [{'from_service': 'authentik', 'read_keys': ['agentgateway_oidc_client_secret']}]
-         if (agw_ui_enabled | default(true) | bool) else [] }}
+      {{ ([{'from_service': 'authentik', 'read_keys': ['agentgateway_oidc_client_secret']}]
+          if (agw_ui_enabled | default(true) | bool) else [])
+         + ([{'from_service': 'skynet', 'read_keys': ['api_token']}]
+          if (agw_skynet_route_enabled | default(false) | bool) else []) }}
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
       # 0644 on purpose: the gateway image runs as a non-root user and the file is
@@ -205,6 +225,39 @@
         that: _agw_mcp_problems | length == 0
         fail_msg: "agw_mcp_enabled cannot be rendered: {{ _agw_mcp_problems | join('; ') }}."
         quiet: true
+
+    # Budget tiers: every agw_client_policies.<name>.tier must name a figure in agw_tier_tokens_per_hour
+    # (vars/secret-declarations/agentgateway.yml, _agw_tier_problems), refused before anything is rendered.
+    - name: "Refuse a budget tier with no figure"
+      ansible.builtin.assert:
+        that: _agw_tier_problems | length == 0
+        fail_msg: "The budget tiers cannot be rendered: {{ _agw_tier_problems | join('; ') }}."
+        quiet: true
+
+    # Shared model pools: a pool identity must be a budgeted service identity of its own, and `pool/` is
+    # reserved (vars/secret-declarations/agentgateway.yml, _agw_pool_problems), refused before anything is rendered.
+    - name: "Refuse a shared model pool that cannot be rendered safely"
+      ansible.builtin.assert:
+        that: _agw_pool_problems | length == 0
+        fail_msg: "The shared model pools cannot be rendered: {{ _agw_pool_problems | join('; ') }}."
+        quiet: true
+
+    # The skynet route (agentgateway task 3.3): its backend, identities and reserved names are checked before
+    # anything is rendered, so a bad declaration stops the deploy before the gateway is restarted.
+    - name: "Refuse a malformed skynet route declaration"
+      ansible.builtin.assert:
+        that: _agw_skynet_route_problems | length == 0
+        fail_msg: "agw_skynet_route_enabled cannot be rendered: {{ _agw_skynet_route_problems | join('; ') }}."
+        quiet: true
+
+    # The route sends skynet's bearer to its backend over plain HTTP, so the backend must be loopback or
+    # private (single-label container names only under local_mode): the platform's transport rule.
+    - name: "Refuse a cleartext skynet route backend outside the private network"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "http://{{ agw_skynet_backend }}"
+        _assert_url_label: "skynet route backend"
+      when: agw_skynet_route_enabled | default(false) | bool
 
     # `legacy-shared` is rendered from the vLLM key's fingerprint, never minted as a client key,
     # and its expiry must be a real calendar date in ISO form, or the string comparison above
@@ -322,20 +375,45 @@
       check_mode: false
       when: _tls and (local_mode | default(false) | bool)
 
-    - name: "Require a declared o11y receiver for agentgateway tracing"
+    - name: "Refuse an OTLP receiver address without an enabled signal"
+      ansible.builtin.assert:
+        that:
+          - agw_otlp_logs | default(false) | bool or agw_otlp_traces | default(false) | bool
+        fail_msg: "A declared agw_otlp_host requires agw_otlp_logs or agw_otlp_traces."
+        quiet: true
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Refuse an OTLP signal without its receiver address"
+      ansible.builtin.assert:
+        that:
+          - agw_otlp_host | default('') | length > 0
+        fail_msg: "agw_otlp_logs and agw_otlp_traces each require agw_otlp_host."
+        quiet: true
+      when:
+        - agw_otlp_logs | default(false) | bool or agw_otlp_traces | default(false) | bool
+
+    - name: "Require a declared o11y receiver for agentgateway OTLP"
       ansible.builtin.assert:
         that:
           - groups.get('o11y_svc', []) | length == 1
           - agw_otlp_host is match('^[A-Za-z0-9.-]+:[0-9]{1,5}$')
           - agw_otlp_host == (hostvars[groups['o11y_svc'][0]].o11y_otlp_bind | default('')) ~ ':' ~ (hostvars[groups['o11y_svc'][0]].o11y_otlp_port | default(4317) | string)
+        fail_msg: "Gateway OTLP needs the declared o11y receiver and matching listener address."
+        quiet: true
+      when: agw_otlp_host | default('') | length > 0
+
+    - name: "Require valid sampling when agentgateway traces are enabled"
+      ansible.builtin.assert:
+        that:
           - agw_trace_sampling | default(0.05) | float > 0
           - agw_trace_sampling | default(0.05) | float <= 0.1
         fail_msg: "Gateway tracing needs the declared o11y OTLP listener and sampling in (0, 0.1]."
-      when: agw_otlp_host | default('') | length > 0
+        quiet: true
+      when: agw_otlp_traces | default(false) | bool
 
     - name: "Require the recorded trace rollout gate before gateway tracing"
       ansible.builtin.include_tasks: tasks/assert-o11y-trace-rollout.yml
-      when: agw_otlp_host | default('') | length > 0
+      when: agw_otlp_traces | default(false) | bool
 
     - name: "Require the declared receiver's Tempo to answer before gateway tracing"
       ansible.builtin.command:
@@ -351,7 +429,7 @@
       delegate_to: "{{ groups.get('o11y_svc', []) | first | default(inventory_hostname) }}"
       changed_when: false
       check_mode: false
-      when: agw_otlp_host | default('') | length > 0
+      when: agw_otlp_traces | default(false) | bool
 
     - name: "Require the gateway host to reach Alloy's declared OTLP listener"
       ansible.builtin.wait_for:
@@ -539,6 +617,11 @@
             mcp = text.split("\nmcp:\n", 1)[1] if "\nmcp:\n" in text else None
             if mcp is not None:
                 mcp = re.split(r"^[^\s#]", mcp, maxsplit=1, flags=re.M)[0]
+            # The skynet route the same way. Its block is a top-level list, so its first line starts with "-":
+            # the split is on the next column-0 KEY, not on any non-space character.
+            skynet = text.split("\nroutes:\n", 1)[1] if "\nroutes:\n" in text else None
+            if skynet is not None:
+                skynet = re.split(r"^[A-Za-z]", skynet, maxsplit=1, flags=re.M)[0]
             names = r"^[ \t]+metadata:\n[ \t]+name: (\S+)[ \t]*$"
             print(json.dumps({
                 "names": re.findall(names, block, re.M),
@@ -548,6 +631,9 @@
                 "mcp_names": re.findall(names, mcp, re.M) if mcp else [],
                 "mcp_entries": len(re.findall(r"^[ \t]*- (?:keyHash|key):", mcp, re.M)) if mcp else 0,
                 "loopback": bool(re.search(r"^  loopback:$", text, re.M)),
+                "skynet_route": skynet is not None,
+                "skynet_apikey": bool(skynet and re.search(r"^    apiKey:$", skynet, re.M) and re.search(r"^      mode: strict$", skynet, re.M)),
+                "skynet_names": re.findall(names, skynet, re.M) if skynet else [],
             }))
           - "{{ _deploy_dir }}/config.yaml"
       register: _agw_render_read
@@ -588,6 +674,18 @@
         _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
       when: not ansible_check_mode
 
+    # The count the render wrote, printed on every run (agentgateway-mcp 6.3, 6.8). Counts only: the reader
+    # above prints no key or hash, so this task needs no no_log either.
+    - name: "Report the rendered identities and key entries"
+      ansible.builtin.debug:
+        msg: >-
+          The rendered config enrols {{ (_agw_render_read.stdout | from_json).names | length }} identities
+          with {{ (_agw_render_read.stdout | from_json).entries }} key entries
+          ({{ _expected | length }} declared).
+      vars:
+        _expected: "{{ agw_identities + (['legacy-shared'] if _legacy_shared_active | bool else []) }}"
+      when: not ansible_check_mode
+
     # The MCP surface in the render (agentgateway-mcp tasks 3.2, 3.7). One assert per property again. Names and
     # counts only. The first two are the fail-closed ones: an mcp block with no key policy answers every
     # request (spike 1.1), so it must never reach a restart; and with the flag false nothing MCP may render.
@@ -595,13 +693,16 @@
       ansible.builtin.assert:
         that:
           - _render.mcp | bool == (agw_mcp_enabled | default(false) | bool)
-          - _render.loopback | bool == (agw_mcp_enabled | default(false) | bool)
+          - _render.loopback | bool == _want_loopback | bool
         fail_msg: >-
           The rendered config.yaml has an mcp block: {{ _render.mcp }}, a loopback gateway: {{ _render.loopback }},
-          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }}; the two must agree.
+          but agw_mcp_enabled is {{ agw_mcp_enabled | default(false) | bool }} and a shared model pool is
+          {{ 'declared' if _pools else 'not declared' }}; the loopback gateway exists exactly when either does.
         quiet: true
       vars:
         _render: "{{ _agw_render_read.stdout | from_json }}"
+        _pools: "{{ agw_models | default([]) | selectattr('pool_identity', 'defined') | list | length > 0 }}"
+        _want_loopback: "{{ (agw_mcp_enabled | default(false) | bool) or (_pools | bool) }}"
       when: not ansible_check_mode
 
     - name: "Require the rendered mcp block to carry its own strict key policy"
@@ -635,6 +736,48 @@
         - not ansible_check_mode
         - agw_mcp_enabled | default(false) | bool
 
+    # The skynet route in the render (agentgateway task 3.3). Names and counts only, one assert per property. A
+    # routes block with no strict key policy would hand skynet to every caller, so it must never reach a restart;
+    # with the flag false no routes block may render at all.
+    - name: "Require the rendered skynet route to match agw_skynet_route_enabled"
+      ansible.builtin.assert:
+        that: _render.skynet_route | bool == (agw_skynet_route_enabled | default(false) | bool)
+        fail_msg: >-
+          The rendered config.yaml has a skynet routes block: {{ _render.skynet_route }}, but agw_skynet_route_enabled is
+          {{ agw_skynet_route_enabled | default(false) | bool }}; the two must agree.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the rendered skynet route to carry its own strict key policy"
+      ansible.builtin.assert:
+        that: not (_render.skynet_route | bool) or (_render.skynet_apikey | bool)
+        fail_msg: >-
+          The rendered config.yaml has a skynet routes block with no strict apiKey policy: /skynet/ would
+          reach skynet without a key.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: "Require the skynet route's key policy to enrol exactly the declared route identities"
+      ansible.builtin.assert:
+        that:
+          - _missing | length == 0
+          - _extra | length == 0
+          - _render.skynet_names | length == _expected | length
+        fail_msg: >-
+          The rendered skynet key policy does not enrol exactly the declared route identities: missing {{ _missing | join(', ') }};
+          not allowed {{ _extra | join(', ') }}; {{ _render.skynet_names | length }} key entries for {{ _expected | length }} identities.
+        quiet: true
+      vars:
+        _render: "{{ _agw_render_read.stdout | from_json }}"
+        _expected: "{{ (agw_skynet_route_identities | default([])) if (agw_skynet_route_enabled | default(false) | bool) else [] }}"
+        _missing: "{{ _expected | difference(_render.skynet_names) | sort }}"
+        _extra: "{{ _render.skynet_names | difference(_expected) | sort }}"
+      when: not ansible_check_mode
+
     # vllm_api_key is `existing`: manage-secrets renders it empty when the store has
     # none, and an empty key starts a gateway that is ready but answers every client
     # with the upstream's invalid_api_key. Refuse that unless the inventory declares
@@ -650,6 +793,19 @@
           value staged by scripts/semaphore-seed-input.py) before deploying, or set
           agw_upstream_requires_key: false for an upstream that takes no key.
         success_msg: "Upstream key present (or not required by this upstream)."
+
+    # The skynet token is shared-read, so manage-secrets refuses a missing KEY by name; this refuses an EMPTY
+    # value, which would render a route that presents an empty bearer to skynet. Presence only; never printed.
+    - name: "Refuse a skynet route whose backend token is empty"
+      ansible.builtin.assert:
+        that: (_shared | default({})).api_token | default('', true) | length > 0
+        fail_msg: >-
+          secret/services/skynet:api_token is empty: the skynet route cannot present a token to skynet.
+          Seed skynet's token before enabling agw_skynet_route_enabled.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - agw_skynet_route_enabled | default(false) | bool
 
     # Shared-key retirement (gateway task 5.1): while the grace period runs, record the shared
     # key's sha256 fingerprint once; on or after legacy_shared_expires the render above has
@@ -672,6 +828,10 @@
         # The task resolves the CA host's own container_engine (review of af16a670: `omit` is a
         # module-argument placeholder, not a way to leave a task variable unset).
         _ca_host: "{{ inventory_hostname if (local_mode | default(false) | bool) else (groups['step_ca_svc'] | first) }}"
+        # Local only: compose.local.yml's SSL_CERT_FILE replaces the trust store, so the gateway's
+        # bundle also carries the play host's public roots (its upstream is a public-CA host).
+        # Production sets no SSL_CERT_FILE and never builds this bundle.
+        _ca_root_combined_dest: "{{ (_deploy_dir ~ '/certs/ca-bundle-combined.crt') if (local_mode | default(false) | bool) else '' }}"
       when: (local_mode | default(false) | bool) or _tls
 
     # Pull through deploy.sh's shared Compose resolver first; validation and deployment
@@ -845,6 +1005,8 @@
     _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
     _legacy_shared_active: "{{ (_legacy_expires | length > 0) and (_agw_today < _legacy_expires) }}"
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
+    # The OpenRouter model names the refusal probe below may ask for (agentgateway-openrouter).
+    _or_all: "{{ agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list }}"
 
   tasks:
     # The admin list the identities above derive from (a no-op with the gate off).
@@ -907,7 +1069,8 @@
       check_mode: false
       when:
         - not ansible_check_mode
-        - agw_otlp_host | default('') | length > 0
+        - groups.get('o11y_svc', []) | length == 1
+        - hostvars[groups['o11y_svc'][0]].agentgateway_metrics_address is defined
 
     - name: "Require the receiver to collect the restarted gateway"
       ansible.builtin.command:
@@ -935,7 +1098,8 @@
             > (_gateway_ready_epoch.stdout | float)
       when:
         - not ansible_check_mode
-        - agw_otlp_host | default('') | length > 0
+        - groups.get('o11y_svc', []) | length == 1
+        - hostvars[groups['o11y_svc'][0]].agentgateway_metrics_address is defined
 
     # All three probes below go through the one gateway probe path (tasks/agw-probe.yml, task
     # 6.1a): a `uri` call from this host to the published port. With listener TLS it presents
@@ -1227,7 +1391,7 @@
 
     - name: "Require a completion the upstream produced"
       # The gateway answers a completion only by reaching agw_upstream_base_url; `model` is the
-      # upstream's own served name (local-dev: openai/gpt-oss-20b), and usage is its count.
+      # upstream's own served name (qwen3.8-flash-next, locally through the public edge), and usage is its count.
       ansible.builtin.assert:
         that:
           - (_keyed_chat.status | int) == 200
@@ -1241,6 +1405,67 @@
         - not ansible_check_mode
         - _verify_client | length > 0
         - not (_verify_refused | bool)
+
+    # ONE schema-constrained completion (agw_verify_json_schema, default on). The gateway must hand
+    # `response_format` to the upstream unchanged, which constrains the reply to the schema; a reply
+    # that is not exactly {"reply": <string>} means the field was dropped or rewritten on the way.
+    - name: "An enrolled identity completes one schema-constrained request through the upstream"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [200]
+        _agwp_timeout: 120
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
+          model: "{{ _verify_models[0] }}"
+          max_tokens: 512
+          messages: [{role: user, content: "Reply with the word pong."}]
+          response_format:
+            type: json_schema
+            json_schema:
+              name: verify_reply
+              strict: true
+              schema:
+                type: object
+                properties: {reply: {type: string}}
+                required: [reply]
+                additionalProperties: false
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
+
+    - name: "Keyed probes: keep the schema-constrained response"
+      ansible.builtin.set_fact:
+        _keyed_schema: "{{ _agwp_out }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
+
+    - name: "Require a reply that parses against the requested schema"
+      ansible.builtin.assert:
+        that:
+          - (_keyed_schema.status | int) == 200
+          - _schema_content is match('^\\s*\\{')
+          - (_schema_content | from_json) is mapping
+          - (_schema_content | from_json | list) == ['reply']
+          - (_schema_content | from_json).reply is string
+        fail_msg: >-
+          Schema-constrained completion as {{ _verify_client }} for {{ _verify_models[0] }} did not
+          return a reply matching its schema (HTTP {{ _keyed_schema.status }}): the gateway or the
+          upstream did not honour response_format type json_schema.
+        success_msg: "response_format json_schema passed through: the reply parses against its schema."
+      vars:
+        _schema_content: "{{ _keyed_schema.json.choices[0].message.content | default('', true) | string }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - agw_verify_json_schema | default(true) | bool
 
     # Opt-in (agw_verify_openrouter): ONE completion with max_tokens 8 to the first OpenRouter model
     # the verifying identity may use, so a deploy proves the OpenRouter path only when the operator
@@ -1312,6 +1537,76 @@
         - _verify_client | length > 0
         - agw_verify_openrouter | default(false) | bool
         - not (_verify_refused | bool)
+
+    # Every deploy (agentgateway-openrouter task 3.8): an identity NOT allowed OpenRouter models must be
+    # refused one. The gateway denies it at the request, before any upstream is contacted, so the probe
+    # costs nothing upstream. The refusal is HTTP 403 with error code `model_not_allowed` (measured with
+    # the pinned image by test_the_gateway_sends_the_openrouter_id_and_key_and_gates_the_model_by_identity).
+    # A 200 means the identity reached OpenRouter, which fails the deploy. A 429 counts only when its body
+    # is the gateway's own request bucket (`rate limit exceeded`): nothing is proven, so it fails unless
+    # agw_verify_allow_unproven accepts an unproven run, as the keyed round-trip does. Any other status or
+    # code fails. With agw_verify_openrouter the verifier is OpenRouter-allowed, so this check skips that
+    # run: the positive and negative OpenRouter proofs come from different identities or runs. Only the
+    # status, the error code and the bucket flag are kept; the response body is never printed.
+    - name: "Keyed probes: pick an OpenRouter model the verifying identity may not use"
+      ansible.builtin.set_fact:
+        _verify_or_denied_model: "{{ _or_all | first }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
+
+    - name: "A service identity is refused an OpenRouter model"
+      ansible.builtin.include_tasks: tasks/agw-probe.yml
+      vars:
+        _agwp_path: /v1/chat/completions
+        _agwp_method: POST
+        _agwp_status: [403, 429]
+        _agwp_timeout: 30
+        _agwp_key: "{{ _resolved['client_' ~ _verify_client] }}"
+        _agwp_body:
+          model: "{{ _verify_or_denied_model }}"
+          max_tokens: 8
+          messages: [{role: user, content: "Reply with one word: pong"}]
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
+
+    - name: "Keyed probes: keep the refusal's status, error code and bucket flag"
+      ansible.builtin.set_fact:
+        _keyed_or_refused: "{{ _agwp_out.status | int }}"
+        _keyed_or_refused_code: "{{ ((_agwp_out.json | default({}, true)).error | default({}, true)).code | default('', true) }}"
+        _keyed_or_refused_bucket: "{{ (_agwp_out.status | int) == 429 and (_agwp_out.content | default('') | trim) == 'rate limit exceeded' }}"
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
+
+    - name: "Require the gateway to refuse an OpenRouter model the identity may not use"
+      ansible.builtin.assert:
+        that: >-
+          ((_keyed_or_refused | int) == 403 and _keyed_or_refused_code == 'model_not_allowed')
+          or ((_keyed_or_refused_bucket | bool) and (agw_verify_allow_unproven | default(false) | bool))
+        fail_msg: >-
+          {% if _keyed_or_refused_bucket | bool %}{{ _verify_client }}'s OpenRouter refusal probe was refused by
+          the gateway's own request bucket (HTTP 429), so the allow-list was not proven; rerun after the window,
+          or accept with agw_verify_allow_unproven=true.{% else %}{{ _verify_client }} is not allowed OpenRouter
+          models, but a request for {{ _verify_or_denied_model }} answered HTTP {{ _keyed_or_refused }}{{ (' (' ~ _keyed_or_refused_code ~ ')') if _keyed_or_refused_code else '' }},
+          not the gateway's refusal (403 model_not_allowed): the allow-list did not hold or the gateway changed its refusal.{% endif %}
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - _verify_client | length > 0
+        - not (_verify_refused | bool)
+        - _verify_client not in (_agw_openrouter_identities | default([]))
+        - _or_all | length > 0
 
     # ── MCP (agentgateway-mcp task 3.4) ─────────────────────────────────────────────────────────
     # agw_mcp_enabled true: a request with no key is 401 (answered before any target is contacted), an
@@ -1757,6 +2052,10 @@
           ({{ _keyed_chat.json.usage.completion_tokens }} completion tokens).
           {% if _keyed_or_chat is defined %}One OpenRouter completion for {{ _verify_or_model }}
           answered HTTP {{ _keyed_or_chat.status }}.{% endif %}
+          {% if _keyed_or_refused_bucket | default(false) | bool %}The OpenRouter refusal for
+          {{ _verify_client }} was not proven (HTTP 429, request bucket).{% elif _keyed_or_refused is defined %}The
+          OpenRouter model {{ _verify_or_denied_model }} is refused for {{ _verify_client }} (HTTP
+          403, model_not_allowed).{% endif %}
           {% else %}No enrolled identity (agw_identities is empty): the keyed round-trip was not
           run.{% endif %}
 
@@ -1769,7 +2068,7 @@
         _service_deploy_result:
           skipped: "{{ _deploy is not defined or _deploy is skipped }}"
           changed: "{{ (_deploy | default({})).changed | default(false) }}"
-          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) }}"
+          verified: "{{ not (_verify_refused | default(false) | bool) and not (_mcp_unproven | default(false) | bool) and not (_keyed_or_refused_bucket | default(false) | bool) }}"
 
     - name: "Record the service-deploy step result"
       ansible.builtin.include_tasks: tasks/emit-service-deploy-result.yml

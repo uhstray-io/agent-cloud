@@ -48,6 +48,17 @@ The source configs are `templates/config.alloy.j2` and
 `templates/prometheus.yml.j2`; `Deploy o11y` renders their runtime files under
 `config/` before starting the containers.
 
+Receiver-owned signals carry the bounded `target_id="service:o11y"` alongside
+their existing `service` labels. Prometheus applies it to the seven static
+receiver scrape targets; Alloy applies it only to local container logs and
+opt-in metrics whose Compose project is exactly `o11y`. The journal pilot adds
+the same identity to its fixed `o11y-alloy` source, then a source-local
+attributes processor upserts the Loki label hint to
+`service,signal,target_id` before OTLP export. The shared receiver retains its
+`service,signal` insert default, preserving the journal-provided hint without
+adding `target_id` to other OTLP logs. This source slice does not establish a
+receiver trace producer or a live receipt.
+
 The agentgateway operations dashboard currently displays raw 4xx access records
 from Loki. Its `http.status` filter does not parse or group a rejection reason.
 Gateway tasks 4.2/4.3 must capture a real OTLP record and verify the exported
@@ -62,6 +73,25 @@ receiver, so it needs no new port and the same receiver-inbound rule from the
 gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
 model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
 inference latency dashboard links to it.
+
+## OTLP receiver mutual TLS source contract
+
+`o11y_otlp_tls_enabled` defaults false. When enabled, the existing OTLP gRPC
+listener requires a step-ca client certificate, and the receiver-host journal
+collector presents its fixed `o11y-journal` client leaf while verifying the required
+`o11y_otlp_tls_server_name`. The receiver uses its fixed `o11y-otlp-server` leaf and
+the authoritative root/intermediate bundle. Both certificate directories and the
+bundle are mounted read-only. Alloy rereads staged leaves natively; existing
+connections are not immediately reauthenticated after a reload.
+
+Alloy's client-CA check verifies trust-chain membership, not a gateway-specific SAN,
+so the existing source-scoped firewall remains part of the sender boundary. The
+source change does not enable private inventory or prove live activation. Leaf
+issuance, gateway exporter transport, coordinated journal/receiver rollout, runtime
+mount and delivery checks, and OpenSpec task 6.5 handshake/refusal evidence remain
+separate gates. Keep the switch false until those owners coordinate the rollout.
+TLS-enabled Clean Deploy is refused because it would remove the issued certificate
+tree.
 
 ## OTLP receiver resource bounds — source slice for task 3.3
 
@@ -135,12 +165,120 @@ number, so its config appends the `B` unit to the bytes carried in
 crash-loops the container. The other four limits stay numeric.
 
 The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
-receiver-host and host-node exporters. All scrape paths retain the forbidden
+receiver-host and host-node exporters, and for the scrapes of Alloy's own self-metrics. One filter,
+`o11y_effective_scrape_limits` (`platform/playbooks/filter_plugins/o11y_scrape_budget.py`), defines
+that sample limit for both producers: `templates/env.j2` gives it to Alloy's self-scrape,
+`templates/prometheus.yml.j2` to Prometheus's `alloy` and `receiver-host` jobs, and every availability
+source-review caller passes the same result, so the source gate compares whichever producer is current
+against the limit it was given. The other Prometheus jobs keep the declared `sample_limit`.
+The scrape-baseline survey's budget preview and loaded-limit coverage read the same capped-job set
+(`CEILED_SAMPLE_JOBS` in that module: `receiver-host`, `host-node` and `alloy`), so they judge each job
+against the limit it actually runs with. All scrape paths retain the forbidden
 label drop and target identity labels. Per-scrape bounds restrict one response
 at a time; they do not cap lifetime series churn as label values change across
 scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
+
+### Native endpoint availability source contract — task 2.2/3.3 source slice
+
+The private estate declaration remains the only target authority. An applicable
+`signals.health` entry may opt into `collection_method: alloy-blackbox-http`
+with one fixed RFC1918 IPv4 HTTP(S) GET endpoint, exact accepted statuses, and
+`budget.health` interval, timeout, body, and sample limits. HTTPS requires a
+reviewed DNS server name and `system` or `internal-ca` trust; certificate
+verification stays enabled. Redirects and environment proxying are disabled.
+Endpoints, TLS names, and activation limits belong in site-config, never in this
+repository, command logs, or rendered labels.
+
+Source validation requires a matching canonical inventory revision, explicit
+reviewed enablement, a nonempty deployed target set, receiver-matching
+environment, and finite limits. Source safety ceilings are 64 targets, 30–3600
+second intervals, probe timeout at most 10 seconds, scrape timeout at most 30
+seconds with probe < scrape <= interval, response bodies at most 65,536 bytes,
+raw scrape samples at most 256 and within the existing shared cap, aggregate
+probe timeout at most 120 seconds, and at most 384 retained series. These are
+hard source ceilings, not production defaults or a measured cadence. The
+candidate retains six fixed families and fixed service, target, environment,
+cluster, job, and instance labels; endpoint text is not a label.
+
+Availability is explicitly off by default. Enabling it requires
+`o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed` to be
+true, a revision-matched `estate_coverage_inventory` target declaration, and
+finite reviewed limits. Before placement and immediately before lifecycle
+apply, the deployer must prove the actual Linux network namespace is distinct;
+after apply it must bind the new Alloy process to the reviewed candidate and
+pass the fixed component, target, loaded-limit, and fresh-sample readback gates.
+These source gates and their regressions are implemented. A bounded pinned
+Alloy v1.5.1 fixture also parsed the expected component metadata after warm-up.
+No production inventory or live source transition has been accepted, and the
+fixture does not prove fresh sample delivery or endpoint health; runtime
+availability and probe traffic remain unverified. Candidate rendering, source
+tests, and the public source flag alone do not establish runtime availability.
+The Alloy handler and profile consumer use loopback in the availability overlay;
+internal-CA trust uses the existing public CA bundle in a read-only mount,
+deduplicated with the OTLP TLS overlay. Existing self-monitor labels and metrics
+are forwarded through the existing private receiver path. Keep task 3.3 and all
+live acceptance gates open.
+
+**Proving the namespace gate before the first enable.** `Survey o11y Availability Gate (Dev)`
+(`survey-o11y-availability-gate.yml`) runs the pre-placement namespace proof in enabled mode and
+prints one fixed category. `isolated` means the proof passed for the receiver as it runs at that
+moment. Any other value names the decision point that refused: `namespace_alloy_unavailable` (no
+single project Alloy container running with a start time), `namespace_alloy_host_port`
+(a container publishes host port 12345), `namespace_shared` (the Alloy network namespace equals the
+host's, which is the helper's own network namespace, or a project sibling's), `namespace_network_mode` (a network mode that is host, none, or joins
+another namespace), `namespace_provider_unverified` (the compose or podman provider, its version or
+executable identity, or the enabled-mode overlay does not match), `namespace_unstable` (two passes
+disagree, or an expected fingerprint does not match), `namespace_runtime_unreadable` (an inspect,
+`/proc` (including the helper's own namespace) or listing read failed or was malformed, or a running
+container had no usable pid), `namespace_internal_error` (the helper raised an unexpected error; no
+detail is printed), and `namespace_unverified` for every other refusal. The filter adds
+`namespace_helper_failed` when the helper exited with a code other than 0 or 2 before printing a
+result. The producer source gate
+(`--verify-availability-source`) reports `namespace_unverified` in place of the finer categories, so
+its fixed reason set does not change.
+The survey reads no activation switch, places nothing, and prints no container, process or namespace
+identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
+an `isolated` result does not accept availability: the source, placement and post-apply gates still
+apply. The survey covers only the pre-placement runtime proof.
+
+**Candidate-mode refusals.** The effective compose file checks run in candidate mode (`deploy.sh`,
+on the real enabled deploy, at three points: before the first start, before the final start, and
+after apply). Each refusal names the decision point that raised it:
+`namespace_candidate_compose_unreadable` (an overlay file is missing, `compose config` failed, its
+output is not UTF-8 or YAML, `services` is not a mapping of 1 to 32 entries, a service entry is not a
+mapping, or the project `name` is missing or empty),
+`namespace_candidate_inputs_label` (more than one final label overlay, an overlay path or file that
+does not validate, a label service set that differs from the services, or an
+`io.agent-cloud.inputs-sha256` label that does not match), `namespace_candidate_pod` (enabled mode
+without `x-podman: {in_pod: false}`), `namespace_candidate_alloy_spec` (the `alloy` service is missing
+or not a mapping, or its entrypoint, command, network mode, image or config mount differs from the
+declared one; the config mount is read in either form, the long mapping Docker Compose emits or the
+short `source:target:ro` string `podman-compose config` keeps), `namespace_candidate_ports` (a port list or entry is malformed, a port uses 12345, or
+an Alloy port is outside the declared target, protocol or loopback and private address rules),
+`namespace_candidate_project` (the running Alloy belongs to a different project than the candidate),
+and `namespace_network_mode` (a service other than `alloy` declares a network mode; Alloy's own network mode is part of `namespace_candidate_alloy_spec`). `deploy.sh` prints one line,
+`Availability gate category: <category>`, before its error message, so the failing decision is in the
+deploy output. It never prints the helper's raw output. The producer source gate folds all of these
+to `namespace_unverified`.
+
+**Post-apply source readback refusals.** After the lifecycle apply, the deploy reads the Alloy
+self-metrics producer back and prints `Post-apply self-metrics producer diagnostic: <category>`
+when it does not observe the reviewed producer (the pre-placement read prints the same line as
+`Current self-metrics producer diagnostic`). With availability enabled the readback also binds
+the running Alloy to the reviewed candidate config, and each binding check has its own category:
+`native_binding_digest_invalid` (no valid candidate digest), `native_binding_started_before_apply`
+(Alloy was not restarted after the apply boundary), `native_binding_argv` (Alloy's command line),
+`native_binding_compose` (the effective compose project), `native_binding_image`,
+`native_binding_config_digest` (the placed config is not the reviewed candidate),
+`native_binding_config_bytes` (the config Alloy loaded differs from the placed one),
+`native_binding_components` (an unknown root component or a config-loading `import`, `module` or
+`remotecfg` block; a `module = ...` attribute is not a block) and `native_binding_mounts`.
+`native_source_identity_changed` means the Alloy process changed during the read,
+`native_source_transition_unproven` that a producer change was not proven by a new Alloy process,
+and `native_source_internal_error` that the helper raised an unexpected error. The read-only
+`Survey o11y Scrape Baseline (Dev)` runs the same binding without applying anything.
 
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
@@ -276,6 +414,19 @@ separate loaded-limit receipt, keep task 3.3 open, and treat check mode as
 `check_mode_unverified`. No live survey or deployment is claimed for this
 source slice.
 
+**Read-only scrape baseline task 6190 (2026-10-16):** The Dev-bound survey
+failed while consuming the protected helper response. The helper can return a
+top-level `{"status":"unavailable","reason":"<fixed category>"}` on a
+collection refusal, while the playbook expected the successful nested receipt
+and dereferenced `baseline` before validating the envelope. That wrapper error
+masked the helper's reason. The task output retained here does not identify the
+underlying helper refusal category; it remains unknown. No baseline receipt was
+produced, and task 6190 is not baseline or coverage evidence. The playbook now
+classifies the exact successful envelope or an allowlisted fixed refusal before
+reading nested fields; empty or malformed JSON maps to
+`status=unavailable, reason=malformed_helper_response`. This source change has
+not been exercised by a live survey, and task 1.3 remains open.
+
 The Dev-bound `Survey o11y Alloy Health (Dev)` is a separate read-only
 diagnostic for the fixed `o11y-alloy` receiver container. It requires the exact
 reviewed controller SHA, one production `o11y_svc` target, and the receiver's
@@ -401,7 +552,7 @@ scrape to be healthy. Keep the separate Loki log receipt for log shippers.
 
 `deploy.sh` starts the stack through `compose_up_if_changed` (`platform/lib/common.sh`). It
 hashes every input that must restart a container — the compose files in effect (including
-`compose.prod.yml` and the probe overlay when set), `.env`, `env/*.env` and everything under
+`compose.prod.yml` and the capacity textfile overlay when enabled), `.env`, `env/*.env` and everything under
 `config/` — and stores the digest as a label on each container. A deploy whose digest and
 image IDs match the running containers leaves them alone; a changed input, a re-pulled tag,
 a stopped or missing container, or a leftover container whose service is no longer
@@ -437,6 +588,21 @@ validated before placement and serialized as PromQL/YAML strings. Target rules
 use `absent_over_time(up{...}[5m])` and hold for two minutes. An endpoint that
 still exists with `up=0` remains the service-down condition; a target missing
 from Prometheus for five minutes is the disappeared-target condition.
+
+The optional native endpoint-health rules keep three observations separate:
+`probe_success=0` means the reviewed health contract failed while its scrape is
+healthy, `up=0` means telemetry collection failed, and an absent exact
+`probe_success` series is missing health data. The failed-probe rule requires
+`up=1` for the same six-label target identity. The missing-probe rule uses the
+reviewed health freshness window and is suppressed only by `up=0` for that same
+identity. The existing generic service rule reports a telemetry scrape failure
+and does not claim the application is down. Both endpoint rules use the
+existing alert enablement, canary, ownership, and Discord route; disabling the
+source, alerts, or activating the canary removes the rules through the existing
+`deleteRules` cleanup. A rendered rule and source-level PromQL evaluation do not
+prove Grafana readback, live firing/recovery, endpoint behavior, or notification
+delivery. The `agent-cloud-conformance` silence duration remains private and
+must follow its verified schedule; no default cadence is inferred here.
 
 When production alerts or the reviewed-target gate turns off, Grafana's generated
 file keeps every validated previously owned target UID as a paused `vector(0)`
@@ -583,8 +749,10 @@ What an enabled deploy installs:
   `/var/lib/node_exporter/textfile`. `inference-probe.timer` runs it at `OnCalendar=*:0/5`.
   The key reaches curl as a config line on stdin, so it never appears in an argument list
   or the journal.
-- **node_exporter overlay.** `probe/compose.textfile.yml` adds `--collector.textfile` to
-  the existing receiver-host node_exporter. The host directory is already visible through
+- **node_exporter overlay.** Production deploys always apply
+  `capacity/compose.textfile.yml`, whether or not the inference probe is enabled.
+  Local mode skips the capacity sampler and applies this overlay only when the
+  optional inference probe is enabled. The host directory is already visible through
   the read-only `/:/host` mount. The existing `receiver-host` scrape job collects the
   metrics, so no new scrape job or published port is needed.
 - **Metrics.** Three gauges, each labelled `model_name`:
@@ -684,8 +852,9 @@ Caveats:
   not use the route: that mode moves only Caddy and leaves the gateway running, so the
   probe keeps its `client_<name>` key (and a `direct_` field is refused there).
 - **Local canary.** The local-only `Drill o11y Alert Canary` restarts the stack through
-  `deploy.sh` without this overlay. On that host the textfile collector stays off until
-  the next deploy.
+  `deploy.sh` without the textfile overlay. In local mode the capacity timer is not
+  installed; the overlay is applied by `deploy-o11y.yml` only when the optional
+  inference probe is enabled.
 - **Runtime evidence and gaps.** The first enabled production deploy (2026-10-05, Deploy
   o11y (Dev) task 2967) ran the gateway client-identity path: its forced sample read back
   success 1 for the configured model, so the served model accepts `reasoning_effort: none`
@@ -746,6 +915,80 @@ contact-point removal from code, removes the webhook line from the existing
 OpenBao is unavailable. Persistent alert enablement is a separate reviewed
 inventory rollout after a successful canary receipt.
 
+## Query errors keep the last state
+
+Alert rules set `execErrState: KeepLast`. When a rule's query errors or runs past
+Grafana's 30s evaluation timeout, the rule keeps the state it had before the error
+instead of moving to `Alerting` and paging as a datasource error. The 2026-11-04
+review found that I/O-wait spikes on the receiver host pushed rule evaluations past
+that timeout, and under the earlier `Alerting` setting every rule paged together for
+those transient timeouts. Most of the Discord firing notifications in that review
+came from them.
+
+A sustained failure still pages once. The `alerting-health` group's rule
+`o11y_alert_evaluations_failing` fires when rule evaluations have failed more than
+five times in a five-minute window, and that holds for fifteen minutes, so only a stall
+that keeps failing for about fifteen minutes pages; a short spike does not. A 14-day
+backtest against production (2026-10-21 to 2026-11-04) gave 4 such episodes; counting
+failures over fifteen minutes instead of five would have paged 17 times. It keeps
+`execErrState: Alerting`, so a prolonged disruption is reported by one alert rather
+than by every rule. Rules whose queries are still failing hold their last state while
+it fires; check the receiver host's I/O wait and Prometheus health.
+
+The same group's `o11y_grafana_db_check_failing` warns when Grafana's own database check
+(`/api/health` answering 503) fails more than four times in an hour and that holds for
+fifteen minutes. The external liveness watcher retries each probe before it pages, so this
+rule is what still reports Grafana's store failing in short bursts. Backtested on the 14
+days before the SQLite fix was deployed (merged 2026-11-07, deployed 2026-11-08; window 2026-10-25 to 2026-11-08), it would have fired twice,
+on 2026-10-30 and 2026-11-07; a threshold of more than three would have fired seven times.
+
+Order matters. Run `Deploy o11y (Dev)` with this change before any alert drill or recover
+template. `Drill o11y Active Alert Delivery (Dev)` and `Recover o11y Active Alert Drill (Dev)`
+validate the live rules against the KeepLast contracts and refuse `live_target_drift` until a
+deploy has re-provisioned them. `Restore o11y Alert Baseline (Dev)` accepts either state, and so
+does the transition check at deploy, so a deploy interrupted between writing the file and
+Grafana's reload can simply be rerun. Main-bound o11y templates cannot apply this change until
+the `dev` to `main` promotion.
+
+A full Grafana or Prometheus outage is covered by the external liveness watcher
+(`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs
+from the Semaphore host and does not depend on Grafana's rule evaluation. Each probe is
+retried twice, `o11y_watch_retry_delay` seconds apart (default 10), before it counts, so a
+page means about 20 s of failure rather than one lost request. Only a datasource health
+400, Prometheus's own unhealthy verdict, is reported as `prometheus datasource unhealthy`.
+A 500 is reported as `grafana datasource health errored`: Grafana itself errored (loading
+the datasource, building the plugin context, the plugin call, or parsing its details), and
+`grafana_plugin_request_total{endpoint="checkHealth"}` shows only whether the plugin call
+failed. A 401 or 403 is reported as `watcher token rejected by Grafana`. Any other status,
+such as a 502 from the edge while Grafana is down, is reported as
+`grafana datasource health probe failed`. The 500 and probe-failure messages name the datasource uid, so a mistyped
+`o11y_watch_prometheus_uid` (Grafana answers it with 500 too) is visible in the message.
+
+Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
+that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed:
+Grafana's logs reach Loki only since the journal collector added it on 2026-11-08 (after
+the fix), and Grafana logs `Database locked, sleeping then retrying` whenever a lock retry
+fires. What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
+`/api/health` 503 (database check) in 26 separate hours and datasource health 500 in at least 4, with
+zero Prometheus plugin `checkHealth` errors, which rules out a failed plugin call but not the
+other 500 paths; the watcher, then unretried, paged on any single 500. `compose.yml` sets
+`GF_DATABASE_WAL=true` and `GF_DATABASE_QUERY_RETRIES=10` (10 attempts, waits doubling from
+10 ms to the 1 s cap, about 3.3 s in all, per Grafana's `pkg/util/retryer`). To judge the fix, compare
+`sum by (handler, status_code) (increase(grafana_http_request_duration_seconds_count{status_code=~"5.."}[7d]))`
+for a week after the deploy against that baseline. A drop is consistent with the suspected
+cause, not proof of it; Grafana's error log would confirm it.
+
+Rolling the setting back does not take the database out of WAL mode. SQLite stores WAL
+mode in the database file and reopens it in WAL ("Persistence of WAL mode",
+<https://www.sqlite.org/wal.html>), and Grafana 11.4 adds `_journal_mode=WAL` to its
+connection only when `wal` is true (`pkg/services/sqlstore/database_config.go`), never
+the reverse. A WAL-mode file with `wal=false` keeps working. Returning to the rollback
+journal means running `PRAGMA journal_mode=DELETE;` on `grafana.db` in the `grafana-data`
+volume with Grafana stopped; no playbook does that yet, so write one before it is needed.
+
+If the 503s persist, the next step is an
+external Postgres for Grafana.
+
 ## Production alert-delivery drill
 
 When production alerts are already enabled, use `Drill o11y Active Alert
@@ -765,6 +1008,89 @@ safe to repeat and clears the marker only after Prometheus no longer has the
 drill job and the active alert/contact state is read back. It does not remove
 stored metrics, logs, or traces. This recovery is separate from the paused
 canary's `Restore o11y Alert Baseline (Dev)` workflow.
+
+## Endpoint availability drill
+
+`Drill o11y Endpoint Availability (Dev)` proves that the endpoint availability rule
+(`o11y_endpoint_probe_failed`) fires to Discord for one reviewed availability target. It
+sets that target's only expected status code to 599, which the target never returns, so
+its health probe fails. A second deploy then restores the normal projection. The drill
+sends a real Discord alert, so tell the operator before it runs.
+
+The drill cannot run until availability is enabled and reviewed in production. The census
+refuses it unless `o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed`
+are both set. Tasks 2.3c.1 to 2.3c.3 in
+`plan/development/openspec/changes/estate-wide-observability-instrumentation/tasks.md` must be
+complete first.
+
+The survey takes the reviewed Dev commit (`expected_repository_sha`), the branch both
+deploys clone (`service_branch`, default `dev`), and `availability_drill_target_id`, which
+must name one selected availability target of this receiver. The drill refuses a
+check-mode run, a local-mode run, a run with alerts disabled, and a run with no declared
+Discord channel.
+
+Before it claims anything, the play checks that the controller checkout is at the reviewed
+commit with no uncommitted files. It refuses to start while the paused-canary markers
+(`config/scrape.d/o11y-prod-canary.yml` and `config/.o11y-alert-canary-active`) or an
+active alert drill's markers (`config/.o11y-active-alert-drill` and
+`config/scrape.d/o11y-prod-alert-drill.yml`) exist in the receiver's deploy directory, or
+while an earlier endpoint drill marker exists. It also requires the rule to exist and be
+unpaused, the Grafana contact point `o11y_ops_discord` to exist exactly once, and the Discord
+credentials to be usable: the bot token must be present, the stored alert webhook must be a
+Discord webhook URL, and the channel's message history must be readable. The census then
+requires the named target to be one selected availability target of this receiver. The target's
+health probe must read 1 and its endpoint alert must not be firing or pending now. Every
+drill-specific refusal (target, availability, markers, rule, contact, Discord, current target
+health and alert) happens before the marker is claimed, so a refused run leaves nothing to recover.
+
+Only then does the play create the marker, an empty directory named `.o11y-endpoint-drill`
+in the parent of the monorepo checkout on the receiver. It sits outside the checkout, so
+placing the monorepo never touches it. The drilled deploy imports `deploy-o11y.yml` with the
+internal input `_o11y_availability_drill`, which names the target and status code 599. The
+census replaces only that target's expected status codes in the projection it prepares.
+
+The shared alert probe (`tasks/o11y-alert-probe.yml`) then waits for three things, in order.
+The `probe_success` series for the target reads 0. Grafana reports the rule's alert as
+firing for the target. A Discord message newer than the last one seen before the probe
+names the drill's delivery marker and carries a ` - instance = <target_id>` line. Each wait
+has a fixed retry budget in `tasks/o11y-alert-probe.yml`. The waits run inside a block with a rescue. A pass
+records the outcome `passed`. A failure records `failed` and does not stop the run, so the
+restore still runs.
+
+The second import of `deploy-o11y.yml`, without the drill input, restores the normal
+projection. If either deploy fails, the run stops there and the marker stays.
+
+The final play waits for one fresh `probe_success` series for the target to read 1, and for
+Grafana to stop reporting the rule as firing for the target. If either proof fails, the run
+says the marker stays and fails. Otherwise it removes the marker with `rmdir`, prints the
+census command only when the outcome is `passed`, and fails unless the outcome is `passed`.
+The marker is removed before that last check. A run whose restored projection is proven but
+whose Discord proof failed therefore clears the marker and still fails.
+
+A passed drill still needs its census, because the drill does not launch the strict health
+receipt or the census. From a workstation, the operator runs:
+
+```bash
+python3 scripts/o11y-coverage-refresh.py --url <semaphore-https-origin> \
+  --reviewed-dev-sha <reviewed-sha> --target-signal <target_id>:health < <token-file>
+```
+
+The script reads the Semaphore token from standard input, so the command ends with a
+redirect from a token file. It requires the local checkout to be
+on `dev` at the reviewed commit with no uncommitted files, and it refuses unless
+`receipt_bindings[<target_id>][health]` is declared in the `estate_coverage_inventory` that
+the Semaphore inventory holds. Task 2.3c.1 covers that declaration. Each binding carries the id of the
+`Verify o11y Target Receipt` template and a positive `observation_window_seconds`, and
+`task_id` is optional.
+
+A run that stops after the marker is claimed leaves `.o11y-endpoint-drill` in place, and the
+next drill refuses to start. Run `Recover o11y Endpoint Drill (Dev)` with the reviewed commit.
+It needs a clean reviewed checkout and a real production run with alerts still enabled. It
+runs a normal `deploy-o11y.yml` import, then removes the marker. It does not check endpoint
+health, so a target that is really down can still be recovered. A normal deploy does not
+refuse on this marker, because a deploy is the recovery path. Other Deploy o11y refusals, and a
+dev move during the drill, can stop the drilled or the restoring deploy after the marker is
+claimed; Recover o11y Endpoint Drill (Dev) is the path back.
 
 ## Fault drills (`o11y Fault Drill (Dev)`)
 
@@ -932,13 +1258,48 @@ per-backend stored-byte growth, the forecast meets >=30% free disk, >=25%
 memory headroom, and CPU p95 <70%, and any guest filesystem growth is repeatable
 with backup before resize. The 30% current backing-filesystem preflight is
 limited to production retention expansion; it does not block ordinary deploy
-or recovery. Code now includes a private-network receiver-host
-node_exporter with no published port, read-only root mount, and bounded CPU,
-memory, root-filesystem, and load collectors. Its exact container isolation,
-metrics availability, and host-versus-guest root filesystem parity require a
-passing Semaphore runtime readback. No seven-day history or backend growth
-receipt exists, so the target remains undeployable. The numeric ID is only a
-reference; it is not itself a capacity forecast or proof.
+or recovery. Code now includes a private-network receiver-host node_exporter
+with no published port, read-only root mount, and bounded CPU, memory,
+root-filesystem, and load collectors. Its exact container isolation, metrics
+availability, and host-versus-guest root filesystem parity require a passing
+Semaphore runtime readback.
+
+`instrument-host-o11y.yml` can attach a reviewed estate target ID to host
+exporter series with the inventory boolean `o11y_host_metrics_identity_enabled: true`.
+It resolves the existing deployed declaration by exact `inventory_host` and
+effective service identity, validates the full declaration through the existing
+coverage schema, and refuses before exporter or scrape changes if the binding is
+missing or ambiguous. Absent/false preserves legacy labels. The target labels
+include `target_id`, `component=node-exporter`, and `metrics_scope=host`; returned
+`node_memory_MemAvailable_bytes` must match all three and the host. This host
+probe does not rewrite or satisfy an application-specific metrics selector and
+does not establish application health or other signal coverage. It is a source
+mechanism only; private enrollment and runtime receipts remain separate gates.
+
+In production, `deploy-o11y.yml` installs an idempotent daily rootless-Podman sampler. Local mode
+skips the systemd sampler and applies the textfile collector overlay only when the optional
+inference probe is enabled. The production sampler
+reuses `inspect-o11y-volume-capacity.py`, which refuses incomplete or ambiguous
+volume state, and atomically publishes only the five fixed backend names and
+stored-byte values to the node-exporter textfile directory. The file includes
+`o11y_capacity_sample_timestamp_seconds`; a failed inspection leaves the last
+complete file and timestamp unchanged, so old data ages out instead of becoming
+fresh evidence. The production textfile collector overlay remains active even
+when `o11y_inference_probe_enabled` is false. Probe cleanup still removes only
+the probe's unit, timer, environment file, and metric file.
+
+Run `Survey o11y Seven-Day Capacity History (Dev)` with exact reviewed
+controller and deployed receiver SHAs. The read-only survey checks distinct
+source timestamps spanning at least seven days, a latest sample no older than
+26 hours, bounded source gaps, exactly one receiver-host CPU/memory/rootfs
+series, and all five backend byte series at each source timestamp. CPU, memory,
+rootfs, and source/backend queries use five-minute evaluations over eight days;
+each response is capped at 2 MB and each query at 20 seconds. CPU p95 is the p95
+of the evaluated five-minute CPU means. A ready
+receipt reports observed values for a separate forecast review; it does not
+forecast, approve a retention change, or authorize VM/filesystem growth. No
+live Semaphore receipt or seven-day history exists yet, so task 5.3 remains
+open. The numeric ID remains only a reference, not a forecast or proof.
 
 Read-only Semaphore receipts on 2026-09-28: task 1793 resolved all five
 observability volumes to the guest root filesystem and measured 777 MB free
@@ -1051,10 +1412,11 @@ values to both candidates. Podman logging is disabled for both temporary
 containers. The enabled candidate must expose a healthy
 `pyroscope.scrape.alloy_self_profile` component through Alloy's local component
 API; a listening HTTP port alone is not accepted. The disabled candidate must
-show the rendered config's existing `prometheus.scrape.local_containers`
-component and no profile component through that same API. The receipt also
-records that the enabled candidate contains only the fixed CPU self-profile
-target and profile type set.
+show the shared production `loki.write.default` component and no profile
+component through that same API. Socket-dependent container discovery and
+scraping are rendered only in local mode. The receipt also records that the
+enabled candidate contains only the fixed CPU self-profile target and profile
+type set.
 Both temporary containers must be absent after checked cleanup; otherwise the
 preflight reports `cleanup_failed`. This proves public-revision-bound rendering,
 candidate config digests, image parity, and isolated config/component loading. It
@@ -1151,24 +1513,122 @@ the declared private `o11y_otlp_bind`, at port `4318` and path `/v1/logs`.
 This receiver is separate from the gateway's OTLP/gRPC listener on `4317`.
 Site-config allows TCP/4318 only from the controller CIDR. The collector checks
 that its URL exactly matches the receiver bind and fails visibly when delivery
-fails. Alloy applies `job`, `service`, `step`, and `status` as the conformance-
-specific Loki labels. The shared Loki writer also adds `cluster` and
+fails. Alloy's conformance-specific label hint includes `job`, `service`,
+`step`, `status`, and `kind`. Existing per-step records retain their four-label
+schema; the fixed completion receipt adds only `kind=run` and has no `service`
+or `step`. Per-service dashboard queries require nonempty `service` and `step`
+labels, keeping that global clock record out of service state, failure, and
+inventory-marker rows. The shared Loki writer also adds `cluster` and
 `environment` labels; task identifiers and error details stay in the log body.
-Local development keeps the loopback direct-Loki path.
+This source contract does not prove a live receipt or Loki readback. Local
+development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 
-The `Deploy o11y Journal Collector (Dev)` apply action gates the named
-`journal-collector-state` volume before it starts the collector. A missing volume
-can bootstrap only after bounded volume inventory proves no exact-name collision
-and an all-container query, including stopped containers, proves
-`o11y-journal-collector` absent. An existing pending volume can bootstrap only
-with exact project/name identity, zero consumers and mounts, effective template
-flags `NeedsChown=false` and `NeedsCopyUp=true`, and a read-only observation of
-an empty root owned by `0:0`, owner RWX, no group/other write or special bits,
-no ACL or nested mount, and no metadata ambiguity. Require at least 16 MiB free
-bytes and 128 free inodes both on GraphRoot and on the pending volume filesystem
-for this small first mount; this gate is separate from the 30% retention headroom gate.
+The `Deploy o11y Journal Collector (Dev)` workflow runs the collector in its own
+Compose project, `o11y-journal`, so the normal `o11y` deploy's
+`--remove-orphans` reconciliation cannot stop it. It joins the existing
+`o11y_o11y` network and mounts the exact external volume
+`o11y_journal-collector-state-v3` at `/alloy-state` with long-syntax
+`volume.nocopy: true`. Volume identity remains tied to the receiver project
+label `o11y`; the provider and runtime checks require the exact external network,
+volume name and labels, collector project/service labels, and live volume mount.
+The v1 `journal-collector-state` and v2
+`journal-collector-state-v2` volumes remain preserved for separate review. The
+new pilot never inspects, mounts, repairs, deletes, or falls back to either volume;
+survey, repair, verify, apply, and stop resolve only v3.
+
+During the one-time project transition, apply removes only the old
+`o11y-journal-collector` container by its inspected ID after its current project,
+network, v3 mount, readable cursor, and volume identity pass the existing gates.
+It then verifies the container is absent and the same v3 volume identity remains
+before starting the isolated Compose project. Removal never uses `-v`; a failed
+transition preserves the volume and refuses startup. Future main o11y deploys
+continue using `--remove-orphans` unchanged.
+
+After this playbook reaches Dev, select `stage` with the exact reviewed Dev SHA.
+The stage action uses the shared `place-monorepo.yml` task, reads back receiver
+`HEAD`, and refuses check mode. That shared task also ensures Podman/Compose and
+rootless boot prerequisites. Stage does not start or recreate containers or
+inspect, mount, or change either positions volume. Next run
+the separate read-only `survey` action. Survey never calls placement; its provider
+gate first requires the installed receiver checkout to equal
+`expected_repository_sha`, then runs the provider config parser. Run `apply` as a
+third, separate action only after reviewing survey evidence. Apply repeats the
+same pre-provider SHA gate and retains the idempotent shared placement at the exact
+reviewed SHA before its existing positions and collector start gates.
+Check mode skips provider runtime reads and reports `check_mode_unverified`; the
+`stage` action refuses check mode.
+
+Apply does not require a recent incidental Alloy log before starting. It first
+checks the selected standard journal directory and verifies that the pinned
+rootless Alloy image can read a journal file. After the isolated collector is
+healthy, it writes the fixed, non-sensitive
+`agent-cloud-o11y-journal-proof-v1` line to PID 1's stdout in the existing
+`o11y-alloy` container. The receiver is not restarted or reloaded. The playbook
+captures a fresh Loki lower bound immediately before that write, then requires
+the exact `service=o11y/alloy`, `signal=container` stream to return the marker
+after that bound. A failed write or receipt enters the existing collector-only
+rollback, which preserves the positions volume and all seven receiver
+containers. Check mode skips the entire apply block and cannot emit the marker.
+
+Production collector apply task 6873 (2026-10-18) refused during preflight
+because the healthy Alloy process had no recent journal entry; no collector
+start or receiver mutation occurred. The deterministic marker proof is a source
+follow-up to that refusal. It has not been run in production and does not provide
+a live journal or dashboard coverage receipt.
+
+Receiver container cohort. The collector reads one `loki.source.journal` component
+per receiver container declared in `platform/playbooks/vars/o11y-journal-components.yml`
+(`o11y_journal_components`): `o11y_alloy` first, then prometheus, loki, tempo,
+pyroscope, grafana and node-exporter. Each source matches `CONTAINER_NAME=<container>`
+and labels its entries `service="o11y/<name>"`, `signal="container"` and
+`target_id="service:o11y"`. The same list is the template's loop input, the positions
+helper's `--components` allowlist and the input to the deploy's validation, so the three
+cannot diverge. The deploy refuses before it touches any host unless the list has
+`o11y_alloy` first with `o11y-alloy` and `o11y/alloy`, no duplicate component or
+container, container names of the form `o11y-<name>`, no `o11y-journal-collector`, and
+each service `o11y/<name>`. The same apply first runs the receiver log-content survey
+afresh and refuses before any host change unless every declared container is `clear` or
+`no_entries` from an uncapped scan (`platform/playbooks/README.md`). `o11y_alloy` remains the delivery proof: its exact
+`service="o11y/alloy"` marker gates apply as before. A newly declared source has no
+cursor and replays at most its 15-minute `max_age` window, never history. After apply,
+a read-only observation queries Loki once per non-alloy source over the last 300 seconds,
+filtered by that source's own `service` label, and prints one category per service:
+`observed`; `not_yet_observed` (no line in the window yet, expected for a quiet
+container); or `query_unverified` (the request failed or returned an unexpected body).
+The observation never fails the apply and is a report, not a delivery receipt.
+
+First bootstrap requires the v3 volume to be absent: bounded volume inventory
+must prove no exact-name collision, and an all-container query, including stopped
+containers, must prove `o11y-journal-collector` absent. An unexpected existing
+v3 volume without a valid cursor refuses bootstrap; there is no automatic repair
+or cursorless retry. When v3 is absent, the pre-start gate checks at least 16 MiB
+free bytes and 128 free inodes on GraphRoot before Compose creates the volume.
+The volume filesystem's own counters can be checked only after a volume exists;
+pending-volume repair checks both GraphRoot and that existing volume filesystem.
+This threshold is separate from the 30% retention headroom gate.
+
+The `stage`, read-only `survey`, and `apply` actions require the installed target
+checkout to equal `expected_repository_sha` before they run the installed
+`podman-compose config` parser under `no_log`, then require its resolved journal
+service to retain the isolated project name, exact external network and volume
+names, `/alloy-state` destination, and `nocopy: true`. Survey and apply also
+read back the existing network's exact Compose identity. This is a provider-rendered
+configuration check. It is not proof
+that Podman applied the mount behavior; the operator must verify the actual new
+volume identity and runtime mount in the fresh Dev survey before any production
+collector start.
+
+`nocopy: true` controls only volume creation. Docker documents it as a long-syntax
+volume option in its [Compose service reference](https://docs.docker.com/reference/compose-file/services/);
+Podman's [volume documentation](https://docs.podman.io/en/latest/markdown/podman-volume-create.1.html)
+says create options do not apply to an existing
+volume. The versioned key therefore isolates the fresh start from both preserved
+v1 and v2 state. A fresh collector start can replay only Alloy's supported
+[`max_age` window](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.journal/)
+(configured as 15 minutes), not older journal entries. This replay boundary is a
+data limitation, not evidence of full history.
 
 Podman may omit false-valued initialization flags from JSON. The helper therefore
 uses one fixed `podman volume inspect --format` template, accepts only literal
@@ -1186,7 +1646,8 @@ initialized repair requires it on the volume filesystem. Counter changes above
 threshold do not invalidate root, child, ACL, or mount evidence, while a below-
 threshold reading refuses the repair.
 
-The separate `repair-positions` action keeps its initialized-volume behavior:
+The separate `repair-positions` action is scoped to v3 only and keeps its
+initialized-volume behavior:
 fresh evidence must prove an unused root with only safe regular direct files has
 an owner mismatch that alone blocks collector access; repair changes only root
 owner/group, reads it back, and runs the restricted write/rename/delete probe in
@@ -1205,14 +1666,11 @@ history cannot be proved from a later empty state. A converged rerun reports
 `already_correct` without another mutation.
 
 Compose `up` is the only volume creation/initialization action. The pre-apply and
-immediate pre-start `verify` gates accept `bootstrap_allowed` only for the proven
-missing-volume or safe pending-volume cases above. They also permit a bounded
-cursorless retry when a complete read-only observation proves an exact volume
-with both initialization flags false, the
-collector absent from all containers, zero consumers and mounts, safe `0:0` root
-and allowlisted layout, `positions.yml` absent, access, ACL/mount checks, and
-capacity on GraphRoot and the volume filesystem. This `ready` result authorizes
-only a start attempt; it does not prove delivery. A present invalid or unreadable
+immediate pre-start `verify` gates accept `bootstrap_allowed` only when the v3
+volume is absent and bounded inventory proves its expected name unused. They do
+not bootstrap an existing pending v3 volume and do not allow a cursorless retry.
+An existing v3 volume must pass strict identity, access, layout, and parsed-cursor
+checks before it can be started again. A present invalid or unreadable
 cursor, unknown cursor presence, or any incomplete evidence refuses. `cursor_checked`
 is true only when the safe, bounded file was read completely with stable identity
 and its contents were parsed; absent, unsafe, oversized, or unreadable files leave
@@ -1231,9 +1689,10 @@ valid journal cursor. Also require healthy status, unchanged seven receiver
 containers, and a fresh exact-target Loki receipt. An empty image destination
 may leave copy-up pending. After start, an absent cursor, a present invalid or
 unreadable cursor file, a pending temporary positions file, or any layout outside
-the allowlist refuses as incomplete state; the cursorless pre-start retry is not
-post-start acceptance. Failed-start rollback removes only the pilot container
-without `-v`. The positions helper reports `check_mode_unverified` without its
+the allowlist refuses as incomplete state. An existing v3 volume without a valid
+parsed cursor refuses before start; only a proven-missing v3 volume can bootstrap.
+Failed-start rollback removes only the pilot container without `-v`. The
+positions helper reports `check_mode_unverified` without its
 own Podman or filesystem operations; the surrounding playbook may still run
 other checks. Survey exceptions produce a bounded unavailable receipt
 with fixed reason `survey_failed`.
@@ -1266,15 +1725,20 @@ acceptance predicates.
 
 The read-only positions survey may report top-level entry roles and aggregate
 entry kinds, but it does not inspect cursor contents or run a namespace probe.
-It compares extra directories only against the two exact public journal receiver
-and OTLP exporter component roles. Matching directories get bounded owner,
-access, ACL, mount, and direct-child categories. Unmatched direct child
-directories also receive aggregate owner/access/ACL/mount/empty-or-nonempty
-counts, without names, paths, hashes, contents, numeric identities, or exception
+It compares extra directories against the exact public journal receiver,
+configured `otelcol.processor.attributes.journal_labels` attributes processor,
+OTLP exporter roles, and the optional exact `remotecfg` service directory.
+Only `remotecfg` can extend the accepted layout, and only when descriptor-relative
+no-follow checks prove it is the same empty directory (including hidden entries),
+owned by namespace `0:0`, owner-RWX, without group/other write or special bits,
+ACL-free, mount-clear, and stable across rechecks. Absence is allowed. Every
+other extra directory remains refused. Unsafe or unverified `remotecfg` is also
+refused. Fixed role/state categories distinguish it from aggregated unknown names,
+without exposing names, paths, hashes, contents, numeric identities, or exception
 details. A race, symlink substitution, ACL/mount ambiguity, malformed metadata,
-or incomplete observation makes that directory's categories `unverified`.
-Both recognized and unknown extra directories remain outside the accepted
-component layout. Its live receipt marks host/collector UID maps, equality, and
+or incomplete observation fails closed. This exception does not relax cursor
+validation; an existing cursorless v3 volume still refuses start. Its live receipt
+marks host/collector UID maps, equality, and
 the namespace probe `not_run`. If the collector is absent, mount comparisons are
 `unverified`; survey evidence cannot satisfy the live gate.
 
@@ -1343,3 +1807,104 @@ bounded Podman versions. Raw Podman output is never reported.
 OpenSpec task 1.2 remains unchecked until the reviewed Semaphore run records the
 production runtime and Loki evidence. Unit tests and metadata-only survey results
 do not close that task.
+
+**Dev journal pilot follow-up (2026-10-15):** Dev-bound Semaphore tasks 6049
+(publisher), 6052 (stage), 6053 (read-only survey), 6054 (apply), and 6056
+(post-rollback read-only survey) record the latest attempt. Survey 6053 reported
+the v2 volume missing. Apply 6054 failed closed at the live positions
+`component_layout` check with `seed_file=1`, `journal_component=1`, and one
+unknown safely owned, empty top-level directory. Mount, UID-map, and namespace
+access checks matched, and the pilot was healthy. Rollback removed only the
+pilot and preserved v2. Survey 6056 reported the collector absent, v2
+`volume_initialization_pending`, three entries, and the journal source available.
+The receipts do not identify the unknown directory or establish a root cause.
+
+The read-only positions survey now classifies the exact configured
+`otelcol.processor.attributes.journal_labels` directory with bounded owner,
+access, ACL, mount, and empty/nonempty categories. That directory remains in the
+unmatched-directory aggregate and outside the accepted component layout; all
+unknown-directory refusals remain active. After this change reaches Dev, the
+next step is a fresh read-only survey to determine whether that exact configured
+directory accounts for the previously unknown entry. Review any disposition as
+a separate decision. Classification does not authorize repair, apply, or a
+volume change; task 1.2 remains open.
+
+**Dev journal pilot receipt (2026-10-16):** Dev-bound task 6156 passed collector
+health, exact positions mount and namespace access, and unchanged receiver
+containers. Its final Loki receipt command failed; rollback removed only the
+collector and preserved the positions volume. Independent production Grafana
+MCP readback found six entries with the exact `service="o11y/alloy"`,
+`signal="container"` labels and an increase in the receiver's accepted-log
+counter during that task window. Dev-bound task 6169 at exact SHA
+`21450230d7265d4c2649b7a191c79712b8300678` again passed collector health,
+exact positions mount/namespace and unchanged-receiver checks, but its Loki
+receipt classified as `request_failed`; rollback again removed only the
+collector and preserved the positions volume. Independent production Grafana
+MCP readback found ten exact-label samples during task 6169's window. These
+queries establish stream presence, not a successful playbook receipt or a
+sample meeting its post-start timestamp assertion. Follow-up read-only survey
+task 6172 reported the collector absent and positions state safe; it did not
+start the collector or authorize another apply.
+
+Read-only Dev-bound task 6170 succeeded for `expected_service=o11y/alloy` and
+`expected_log_signal=container`, with metrics and traces disabled. That workflow
+queries Loki with the Grafana-container `wget -q -O -` argument form and a
+15-minute window. The protected stderr from task 6169 was not retained, so the
+exact reason its receipt request failed is unknown; attributing it to wget's
+`-T` option is an inference. The source fix uses Grafana's in-container BusyBox
+`timeout -s KILL 8` around the proven wget form, with an outer 12-second host
+timeout. Before promoting collector config, preflight requires a successful
+JSON `status` but allows an empty result, protects response bodies, and reports
+only fixed categories. The in-container deadline kills stalled wget before a
+later retry; preflight refusal leaves the live config untouched. After config
+promotion and the other gates, the playbook captures a fresh nanosecond
+timestamp immediately before collector start. Post-start delivery still
+requires the exact labels and a sample at or after that timestamp. Polling uses
+36 retries (37 total attempts) with five-second delays and individually bounded
+requests. The tagged Grafana 11.4.0 Dockerfile uses Alpine 3.19.1; BusyBox's
+`timeout -s KILL SECS PROG ARGS` syntax is present in its [1.36 source](https://github.com/mirror/busybox/blob/1_36_stable/coreutils/timeout.c).
+A future apply executes the full timeout/wget/JSON capability check before
+promotion, so missing capability refuses safely.
+After review and merge, require exact-SHA stage, a separate read-only cursor
+survey, a separately launched apply, and a successful exact post-start Loki
+receipt. No retry or volume recovery is authorized by these source changes;
+OpenSpec task 1.2 remains open.
+
+**Dev receiver-host journal acceptance (2026-10-16):** PR #682 head
+`8e32c3dbe0da05e58e303a2aab7c5647fa7780fa` passed independent review/fixes and
+green final-head CI, then merged to `dev` as
+`dbd06dd74b73f61e9cf464123729eb653fdb3af7`. At that exact merge SHA, stage
+task 6182 and separate read-only cursor survey 6183 succeeded. The survey found
+a valid cursor, absent collector, no volume users, sufficient space, no failed
+live checks, `NeedsChown=false`, and `NeedsCopyUp=true`. Non-destructive apply
+6184 succeeded 07:22:52–07:25:04 UTC: preflight passed; collector health,
+exact mount fields, UID-map equality, namespace write/rename probe, unchanged
+seven receiver containers, and all task results passed. A fresh exact
+`{service="o11y/alloy",signal="container"}` Loki receipt succeeded after one
+retry. Independent read-only Grafana MCP readback found six exact-label samples
+in 07:23:56–07:25:56 UTC. Post-apply read-only survey 6185 found the collector
+present, one volume user, valid cursor, no failed or unverified live checks,
+and `NeedsCopyUp=true`. These receipts complete OpenSpec 1.2f.2 only; parent
+1.2 remains open for private ingress and seven-day baseline acceptance. The
+baseline starts at 07:25:04 UTC; the earliest full seven-day window ends
+2026-10-23 07:25:04 UTC, subject to completeness and representativeness.
+
+**Gateway controlled verification limit (2026-10-16):** Dev-bound task 6186
+completed 100 anonymous `401` requests to `/v1/models`, then its exact
+`signal=access-log` Loki check failed; the trace check did not run. Independent
+read-only Loki inspection found approximately 100 unlabelled
+`service=agentgateway` INFO records in 07:20–07:40 UTC (99 matched 401
+`/v1/models`) and 14 `signal=span` records. Tempo search found 14 agentgateway
+traces started 07:28:31–07:30:28 UTC. The current gateway template's OTLP
+access fields include service and identity/path but no `signal`; Alloy's label
+hints are `service,signal`. This is a gateway-owned dependency. Do not treat
+these results as proof that each canary request correlated to a trace or as
+completion of OpenSpec task 1.4.
+
+**Expected-target survey (2026-10-16):** Read-only Dev-bound task 6189 at
+`dbd06dd74b73f61e9cf464123729eb653fdb3af7` returned
+`status=observed`, `reason=exact_match`, expected=11, active=11, matched=11,
+missing=0, unexpected=0, unhealthy=0. This is point-in-time target matching;
+it does not establish the seven-day baseline, loaded budget acceptance, alert
+delivery, or recovery. No retention change, VM growth, or PBS allocation is
+authorized by these receipts.

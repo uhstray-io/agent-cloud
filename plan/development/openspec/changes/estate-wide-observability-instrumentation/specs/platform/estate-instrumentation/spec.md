@@ -15,6 +15,29 @@ The platform SHALL maintain a reviewable coverage declaration for every deployed
 - **WHEN** a source directory exists without a deployed target declaration
 - **THEN** the coverage report lists it as planned or unclassified and does not assert live telemetry
 
+### Requirement: Operator inventory synchronization preserves stdin isolation and the canonical lifecycle
+
+The operator inventory-sync frontend SHALL read credentials only from stdin and pass them to the canonical inventory-sync play only through a named pipe in a private (0700) temporary directory that is removed when the run ends. It SHALL NOT place credential values in argv, environment, files, or visible output. The existing parsed-inventory and transport checks SHALL run for every authentication route. Existing callers SHALL retain their declared environment/AppRole behavior.
+
+Proposal intent remains unchanged. Production deployment, template/repository mutation, retention expansion, VM growth, PBS operations and backup/restore acceptance are outside these additions.
+
+#### Scenario: Stdin credential reaches only the canonical child input
+- **WHEN** a synthetic operator credential is supplied to the frontend
+- **THEN** the actual canonical child input receives it through that named pipe, and inspected arguments, environment, files and visible output do not contain it
+- **AND** invalid input refuses before any API write.
+
+#### Scenario: Validated synchronization is idempotent and preserves metadata
+- **WHEN** the source is nonempty valid YAML with actual Ansible hosts and the declared existing record is selected
+- **THEN** matching content performs no PUT; differing content performs at most one PUT and requires exact content readback
+- **AND** id, name, project, type and SSH/become key bindings remain preserved
+- **AND** empty, malformed or hostless sources and missing records refuse without a write.
+
+#### Scenario: Uncertain write acknowledgement requires reconciliation
+- **WHEN** a possible inventory write fails or loses its acknowledgement
+- **THEN** the outcome remains uncertain until read-only reconciliation
+- **AND** the frontend neither retries automatically nor claims that no write occurred
+- **AND** readback mismatch refuses success without exposing private inventory, credentials, headers or raw responses.
+
 ### Requirement: Required telemetry is collected and correlated
 Every deployed target SHALL declare applicable logs, metrics, health, and traces with a verified source or a reviewed exclusion reason. Supported host and application logs SHALL be queryable; metrics-capable targets SHALL expose verified metrics; request-serving targets SHALL provide traces when their runtimes support safe instrumentation. The same declared service identity and inventory-derived environment SHALL join applicable logs, metrics, and traces, and verification SHALL use a fresh signal from the exact target.
 
@@ -22,9 +45,385 @@ Every deployed target SHALL declare applicable logs, metrics, health, and traces
 - **WHEN** a service is declared to require logs, metrics, and traces and emits a controlled request
 - **THEN** verification finds a fresh matching log, a healthy named metric target, and a retrievable trace with the declared service identity
 
+#### Scenario: Gateway access-log receipt proves the controlled request cohort
+- **WHEN** the gateway's controlled anonymous request cohort is used for three-signal verification
+- **THEN** Loki verification requires the exact `service="agentgateway"` and `signal="access-log"` labels, and the named metrics target and trace must match the declared gateway identity
+- **AND** an unlabelled access record or a standalone `signal="span"` record does not satisfy the access-log receipt
+- **AND** a trace search that was not run, or a set of traces without request-level correlation evidence, does not establish that every controlled request correlated to a trace
+
 #### Scenario: Instrumentation is unsupported
 - **WHEN** automatic tracing is incompatible with a target runtime or would violate its security boundary
 - **THEN** the declaration records the reason and an approved alternative signal or manual instrumentation plan, without claiming trace coverage
+
+### Requirement: Optional legacy gateway canary obeys the shared trace rollout gate
+Before the optional legacy gateway canary captures a receiver timestamp,
+inspects remote TLS material, resolves the listener or emits traffic, its
+existing play SHALL include `tasks/assert-o11y-trace-rollout.yml` in
+`pre_tasks`, guarded by the existing `_canary_on` legacy-plus-boolean-emit
+condition. Fact gathering SHALL remain disabled, and the existing first
+`tasks` entry SHALL remain the receiver-clock capture. The shared gate and
+its receiver-host prerequisite lookup SHALL remain unchanged; missing or
+ambiguous receivers and missing/invalid prerequisites SHALL refuse before any
+canary operation. Strict mode and legacy nonemitting verification SHALL NOT
+acquire these canary prerequisites. String `"false"` SHALL remain nonemitting.
+
+This source follow-up SHALL preserve strict selectors, freshness, transport,
+TLS verification, verifier leaf/CA use, read-only name resolution and the
+credential-free 100 GET `/v1/models` requests expecting 401 with proxy/netrc
+use disabled. It SHALL NOT change templates, surveys, repository bindings or
+invent launcher/API flags. Source tests SHALL execute the actual Ansible
+preflight/include/assertions and play conditions with synthetic inventory,
+receiver-only prerequisite values and safe progression sentinels; they SHALL
+NOT execute real network, secret, VM, container, command or remote-inspection
+operations. A copied predicate or include-presence assertion alone SHALL NOT
+satisfy this source gate. Source closure SHALL NOT establish launch provenance,
+a runtime request cohort, three-signal acceptance or parent 1.1/1.3/1.4 closure.
+
+#### Scenario: Legacy emitting canary refuses before any canary operation
+- **WHEN** legacy mode emits the canary and each shared receipt/budget prerequisite is omitted separately, a flag is disabled, a prerequisite is invalid under the existing shared predicate, or the receiver set has zero or multiple hosts
+- **THEN** actual Ansible execution of the shared preflight refuses before timestamp, TLS inspection, resolution and traffic progression sentinels
+- **AND** the source regression fails against a temporary gate-removed copy; no live action is used to establish RED or GREEN
+
+#### Scenario: Complete canary prerequisites permit progression
+- **WHEN** legacy emit is true, exactly one receiver has every valid shared prerequisite, and gateway/localhost do not carry substitute prerequisite values
+- **THEN** the real shared assertions pass and the safe harness reaches progression sentinels
+- **AND** existing TLS tests and the BATS first-task clock assumption remain satisfied; this is source evidence only, not traffic or delivery proof
+
+#### Scenario: Strict and nonemitting verification skip the canary gate
+- **WHEN** legacy emit is absent, boolean false or string `"false"`, or strict mode is selected with either emit value
+- **THEN** the new preflight include and canary operations skip without requiring trace-rollout prerequisites
+- **AND** existing strict target/selector/freshness validation and nonemitting checks retain their own unchanged contracts
+
+### Requirement: Endpoint availability probes are reviewed, isolated, and bounded
+Continuous HTTP(S) endpoint availability MAY be enabled only for targets with a
+reviewed entry in the existing private `estate_coverage_inventory.targets`
+authority, with its canonical inventory revision, binding one exact endpoint
+and supported health contract to stable service, environment, cluster, and
+`target_id` identity. The feature SHALL default off with explicit
+`enabled=false` and reviewed flags/limits required for activation; enabled
+empty targets SHALL refuse. No caller/extra-var value may override the private
+endpoint declaration or activation controls. The candidate is the existing
+pinned Alloy v1.5.1 `prometheus.exporter.blackbox` component; source support
+does not prove it is loaded or effective. No new container, published listener,
+runtime URL override, or production target is implied.
+
+Each endpoint SHALL be one literal RFC1918 IPv4 HTTP(S) GET URL. Declarations
+SHALL reject duplicates, userinfo, query or fragment, credentials, headers,
+request-body matching, proxies, unchecked/unreviewed redirects, and any
+unreviewed destination. The health contract SHALL use exact reviewed status
+codes. HTTPS SHALL include a reviewed DNS `tls_server_name` and trust choice
+`system` or `internal-ca`; HTTP SHALL have no TLS trust field. TLS certificate
+verification SHALL be enabled and environment proxying disabled. A target
+without a safe fixed health contract SHALL remain undeclared.
+
+Source validation SHALL enforce hard ceilings without assigning production
+defaults: 64 targets; 30–3600-second interval; probe timeout at most 10 seconds;
+scrape timeout at most 30 seconds with `probe < scrape <= interval`; response
+body at most 65,536 bytes; raw samples at most 256 and within the existing
+shared cap; summed probe timeouts at most 120 seconds; and at most 384 retained
+series (64 targets × 6 families). Only `up`, `probe_success`,
+`probe_duration_seconds`, `probe_http_status_code`, `scrape_samples_scraped`,
+and `scrape_body_size_bytes` SHALL be retained for probes, with
+`extra_metrics=true`; this filter SHALL NOT constrain Alloy self-monitor
+metrics. Only fixed identity labels SHALL be exported. Raw endpoint and
+request/client/trace/secret values SHALL NOT become labels. The exact probe
+health selector SHALL bind job, `target_id`, environment, and cluster.
+
+Before placement, immediately before the lifecycle applies the Compose
+configuration, and after apply, the receiver SHALL prove that the effective
+Linux network namespace for Alloy is distinct from every project sibling and
+other container explicitly joining Alloy's namespace. The proof SHALL compare
+kernel namespace identity `(st_dev, st_ino)` and bracket stable container IDs,
+running PIDs, and process start times. It SHALL use the effective provider,
+arguments, environment, and overlays that the lifecycle will apply, and SHALL
+recheck them immediately inside that lifecycle. Pod membership or an IP/path
+string alone SHALL NOT prove namespace identity. The availability overlay
+SHALL declare top-level `x-podman.in_pod=false`; loopback binding alone SHALL
+NOT count as isolation. Unknown, unstable, unreadable, conflicting, shared, or
+host-network identity; an effective published Alloy admin listener; or provider/process
+drift SHALL refuse before the handler is enabled. A failed privilege or
+inspection read SHALL remain unverified, never trigger a permission bypass.
+Pre-apply proof SHALL NOT require a future native sample; post-apply source
+acceptance is separate.
+Existing private Prometheus forwarding, Alloy self-monitor identity/selectors,
+and profile consumers SHALL be preserved without duplicate writers or
+self-scrapes. Off mode SHALL preserve existing behavior. Existing Grafana
+expected-target rule UIDs, five-label identities, and queries SHALL remain
+unchanged in this source slice; producer verification SHALL use the private
+inventory declaration and actual runtime evidence rather than duplicating
+producer ownership in alert annotations or tombstones. The normalized private
+expected-metrics rows MAY carry additive `source: prometheus|alloy`; omission
+SHALL mean the legacy Prometheus source. This field SHALL survive normalization
+and the existing budget, survey, and deploy-guard projections. Current source
+SHALL be proven only from active Prometheus targets or the fixed native Alloy
+detail plus fresh forwarded diagnostics. Ownership projection alone SHALL NOT
+prove producer acceptance.
+
+An omitted source SHALL retain the legacy Prometheus behavior and exact
+eight-field Prometheus coverage projection. When a reviewed Alloy source is
+declared, the expected-target and budget/survey inputs SHALL preserve that
+source without treating the native health row as a Prometheus active target,
+as a direct HTTP survey target, or as a member of Prometheus loaded-limit
+counts and synthetic scrape pools. Native coverage and native budget evidence
+SHALL be reported in a separate projection with its point-in-time measurement
+domain; the existing Prometheus projection SHALL count only Prometheus-owned
+rows. An Alloy declaration without its fixed loaded native component and
+fresh forwarded sample evidence SHALL remain unverified.
+
+The source gate SHALL compare the proven current producer with the reviewed
+intended producer. It MAY permit a reviewed Prometheus-to-Alloy or
+Alloy-to-Prometheus change without requiring the future producer before apply,
+but it SHALL prove the old/current producer before changing configuration. An
+idempotent rerun SHALL prove its actual current source. Mixed, duplicate,
+missing, stale, or ambiguous current producers SHALL refuse. A Grafana UID or
+five-label identity match SHALL remain rule-ownership evidence only and SHALL
+NOT prove which producer currently emits the series.
+
+Post-apply Alloy acceptance SHALL read the loaded fixed exporter/scrape
+components, effective finite limits, target identity and health, and fresh
+forwarded samples. Fresh raw-sample timestamps SHALL be later than both the
+host UTC pre-apply lower bound and the new Alloy process start; query
+evaluation time or a historical maximum SHALL NOT substitute. A proven
+`probe_success=0` with a healthy scrape SHALL report observed endpoint failure,
+separately from scrape failure and missing telemetry. The scrape body counter
+measures Alloy's exporter-metrics response, not the remote health response.
+Survey and budget checks SHALL NOT replay the health endpoint. A return to
+Prometheus SHALL prove the new Prometheus target/limits and fresh diagnostics,
+absence of the native components, and absence of duplicate producers. Failed
+post-apply proof SHALL be reported as unverified; it SHALL NOT automatically
+delete, stop, revert, or recreate containers, pods, or volumes.
+
+The fixed Alloy v1.5.1 `/api/v0/web/components` response SHALL be treated as a
+complete root graph only; it SHALL NOT be treated as a registry for isolated
+module or remote-config controllers. The empty `moduleID` and omitted
+`createdModuleIDs` fields SHALL NOT prove those controller scopes absent. A
+return-to-Prometheus absence proof SHALL require a normal apply that created a
+new Alloy process after installing the exact reviewed flat candidate. It SHALL
+bind the actual container ID, image, PID, start time, executed arguments, sole
+read-only `/etc/alloy/config.alloy` mount, and actual mounted config bytes to
+the reviewed rendered candidate. Ready and root-list observations SHALL be
+bracketed by unchanged process/config identity; expected healthy service
+sentinels SHALL be present and every forbidden native root component absent.
+Imports, custom modules, `remotecfg`, nested or remote controller scope, an
+unbound command/mount/config, or lack of a provably fresh process SHALL leave
+the result unverified. A same-process root list SHALL NOT prove absence, and
+the playbook SHALL NOT force-restart core services or consult a prior-component
+registry to satisfy this gate.
+
+Profile candidate acceptance SHALL use the same validated private availability
+projection and fixed profile target address as deployment. It SHALL validate
+the rendered candidate before writing temporary configuration, and SHALL
+preserve the existing profile-operation gates and restoration behavior.
+
+Native forwarded-sample timestamp queries SHALL use one exact-name selector
+per requested fixed family, apply `timestamp()` directly to each selector,
+restore that family's fixed `__name__` with `label_replace`, and combine
+branches with `or on(__name__)`. Every identity matcher and returned label
+SHALL be preserved. Value-query PromQL expressions SHALL remain unchanged;
+HTTP evaluation-time binding SHALL follow the snapshot contract below. Raw sample time
+SHALL NOT be replaced with evaluation time. The existing exact parser,
+identity/uniqueness, freshness, required-metric and positive body-evidence
+checks SHALL remain authoritative, including loaded `extra_metrics=true`.
+Missing native body evidence SHALL NOT receive a legacy unavailable-body
+exception. The six-API-call ceiling, 4096-character path ceiling, aggregate
+byte and deadline limits SHALL remain unchanged; oversized paths SHALL refuse.
+
+Every related native and legacy value/raw-timestamp HTTP query within one
+current-source invocation SHALL reuse one validated positive non-boolean integer
+receiver UTC evaluation snapshot T, encoded as exactly one canonical `time`
+parameter. No per-request clock capture, extra clock API request or public
+launch clock override SHALL be introduced. Native raw sample time SHALL remain
+strictly later than the maximum of process start, preapply bound and T minus
+freshness, and no later than T; legacy SHALL retain its existing applicable
+lower bounds and strict future bound. Response evaluation timestamps SHALL NOT
+replace raw timestamp values. Exact identities, uniqueness, required families,
+loaded `extra_metrics=true` and positive native body evidence SHALL remain
+mandatory. Missing body evidence SHALL NOT acquire an optional-metric or
+legacy acceptance exception.
+
+The existing live DETAIL batch SHALL use separate finite positive fractional
+receiver UTC observation bounds D0 at entry and D at completion. Neither SHALL
+be truncated or rounded to integer seconds. Booleans, invalid types,
+nonfinite/nonpositive observations, D < D0 and existing monotonic deadline
+exhaustion SHALL refuse. DETAIL scrape timestamps SHALL be later than the
+applicable process/preapply bounds and D minus the unchanged applicable
+freshness width, and no later than D. T SHALL remain independent: D SHALL NOT
+refresh sample evaluation time, and comparing D with T SHALL NOT replace the
+D0/D within-batch regression check. Internal clock seams MAY be injected or
+patched for deterministic tests; no public schema, clock override, tolerance or
+window-width change is permitted. The two observation domains SHALL NOT be
+claimed as an atomic configuration/sample transaction.
+
+The snapshot repair SHALL retain native two/four sample requests and at most
+six composed current-source sample requests, the existing legacy pair, 4096
+encoded-path cap, aggregate response bytes and shared deadlines. Actual maximum
+encoded paths including `time` SHALL be measured during implementation; an
+estimated length SHALL NOT be reported as observed. It SHALL add no collector
+retry, extra API, receiver restart/deploy/upgrade or native network, port, mount,
+image or engine dependency. That snapshot repair's source changes SHALL be limited to the three
+existing planning artifacts, existing helper, baseline Python tests and native
+runner; the BATS entry point, CONTRIBUTING, playbooks, workflow, merge
+guard/fixtures, Compose, dependencies and unrelated files SHALL remain
+unchanged unless a demonstrated necessary interface adjustment is returned to
+root before scope expansion.
+
+The required native semantic regression SHALL enter through one BATS test and
+a Python runner outside pytest discovery in the existing Bash Tests job. It
+SHALL evaluate expressions from the actual production query builder using
+`/bin/promtool` from the literal fallback Prometheus image in committed
+Compose, without deployment environment overrides. Workflow, merge guard and
+fixtures, Compose and dependency declarations SHALL remain unchanged for this
+bounded repair. Engine/image/evaluator unavailability SHALL fail, never skip.
+Use supported Docker in CI and prefer usable existing Podman locally; no new
+engine package or standalone promtool installation is required. The full BATS
+prerequisite SHALL be documented with the repository's BATS/Python prerequisites.
+Discovery, at most one image acquisition, three evaluator runs and cleanup
+SHALL fit within 300 seconds total with reserved cleanup time and capped output.
+Evaluation SHALL use `--rm -i --network none --pull=never --entrypoint
+/bin/promtool <image> test rules /dev/stdin`, unique invocation-owned names and
+ownership labels. No bind mounts, named/shared volumes, host network, published
+ports, privilege, VM/daemon start, connection change or image deletion/prune is
+permitted. Failure/timeout cleanup SHALL remove only exact containers proven
+owned by this invocation, accounting for their anonymous storage.
+
+Ordinary deployment with availability disabled SHALL retain the staged Compose
+path whenever legacy self-metrics source review is required. Only the staged
+availability namespace invocation SHALL be conditional on literal
+`O11Y_AVAILABILITY_ENABLED=true`; unique current-source verification, strict
+receipt validation, pre-apply source/container hash/epoch and fresh post-apply
+producer proof SHALL remain mandatory for that source-reviewed path. Enabled
+availability SHALL retain initial, final pre-start and post-apply namespace
+checks, with final refusal before Compose execution.
+
+Effective-Compose validation SHALL permit the existing required Alloy OTLP
+publications to container ports `4317` and `4318`, including the reviewed
+configured host mapping. It SHALL refuse publication of the `12345` admin
+listener even through a different host port, use of host port `12345`, and
+malformed or ambiguous port data. Supported normalized mappings and narrow
+unambiguous short forms SHALL be validated without a broad parser rewrite;
+unsupported shapes SHALL remain refused. This compatibility correction SHALL
+preserve every other candidate/provider, namespace/network, command, image,
+mount, parser, producer, identity, freshness and work-budget gate. Existing OTLP
+ingress SHALL NOT count as an admin-listener publication or weaken enabled
+private-listener isolation. Synthetic source proof SHALL NOT establish an
+installed-provider result, real deployment or profile delivery.
+
+#### Scenario: Disabled availability retains staged source-reviewed deployment
+- **WHEN** availability is false and a source-review declaration is supplied to the actual shell lifecycle
+- **THEN** valid unique synthetic source evidence reaches staged mocked Compose without invoking namespace proof, while invalid source evidence refuses before Compose
+- **AND** pre-apply source/container-hash/epoch output and the existing fresh post-apply producer boundary remain required; disabled availability cannot bypass producer validation
+- **AND** executable regressions distinguish the unmodified failing dispatch from the correction without a real deploy
+
+#### Scenario: Enabled availability retains every namespace checkpoint
+- **WHEN** availability is literal true and source-reviewed lifecycle dispatch runs
+- **THEN** executable regression observes initial, final pre-start and post-apply namespace checks in order
+- **AND** a failed final check prevents Compose execution; enabled private-listener, topology, network and current-producer gates remain strict
+
+#### Scenario: Effective Compose retains OTLP without publishing the admin listener
+- **WHEN** the actual effective-Compose helper reads synthetic normalized base OTLP `4317`/`4318` publications or narrow supported unambiguous short forms in either availability mode
+- **THEN** those port representations pass the port contract while all remaining mode-specific candidate gates still apply
+- **AND** admin `12345` publication, including remapped publication, host port `12345`, malformed mappings/types/values and ambiguous short forms refuse
+- **AND** existing namespace/network/parser/current-producer regressions remain authoritative, with no installed-provider or runtime acceptance inferred
+
+#### Scenario: Native timestamp queries preserve families, identities, and raw sample times
+- **WHEN** the production builder's timestamp expressions are evaluated for the three self families and six health families across multiple identities
+- **THEN** the native evaluator returns every present fixed family with its complete original labels and restored exact metric name
+- **AND** timestamp values equal raw source sample times distinct from the later evaluation time; missing families remain absent
+- **AND** an unexpected extra label survives query evaluation and the unchanged exact-label consumer rejects that row
+
+#### Scenario: Native timestamp repair preserves strict refusal and work limits
+- **WHEN** required native body evidence is absent, identities or samples are invalid/stale/ambiguous, or an encoded path exceeds 4096 characters
+- **THEN** the unchanged strict consumer or work-budget gate refuses; query repair does not establish producer acceptance
+- **AND** supported maximum-context self and six-family health paths are covered without increasing API-call, aggregate-byte or deadline limits
+- **AND** no optional body metric, native legacy exception or changed value-query PromQL expression bypasses refusal
+
+#### Scenario: Delayed sample queries share one receiver evaluation snapshot
+- **WHEN** native self-only, health/self, legacy or composed current-source reads are delayed while fixed sample histories gain newer observations
+- **THEN** EVERY actual production-built value/raw-timestamp URL carries exactly one canonical HTTP `time` with the same validated receiver T, and selects matching values/raw times at T despite request delay
+- **AND** the fake API selects from fixed histories according to actual production URLs, rather than returning fixtures based only on the expression; current missing-time behavior must produce RED and the corrected binding GREEN
+- **AND** no per-request time recapture or extra clock API call is used
+
+#### Scenario: Snapshot binding preserves raw-time refusal and work limits
+- **WHEN** raw time is future-to-T, genuinely stale despite later arrivals, equal to process/preapply bounds, or evidence has missing families, missing/zero native body, malformed/duplicate/wrong identities or invalid snapshot inputs
+- **THEN** strict validation refuses even when a response evaluation timestamp is fresh
+- **AND** oversized paths, aggregate-byte exhaustion and deadlines remain refusers; supported maximum contexts including time are measured without increasing the six-call/4096-path/byte/deadline budgets
+- **AND** the existing native Promtool positive and grouped-timestamp/plain-`or` semantic mutant kills, 20-series fixture and six identity decoys remain covered; native runner changes require only URL-context coverage for time
+
+#### Scenario: Live DETAIL uses fractional entry and completion observations
+- **WHEN** the existing live DETAIL reader/parser/validator observes a valid fractional scrape time between its fractional entry D0 and completion D
+- **THEN** unchanged freshness/process/preapply/future checks use D without integer truncation, and meaningful current-code RED becomes corrected GREEN
+- **AND** future-to-D, stale, process/preapply equality, D < D0, malformed/type-invalid/nonfinite/nonpositive clock observations and deadline exhaustion refuse
+- **AND** T remains independent, with no public clock override, tolerance, new schema or atomic configuration/sample claim
+
+#### Scenario: Native semantic regression detects the actual query defects
+- **WHEN** synthetic expression tests run through the actual production builder and native PromQL evaluator
+- **THEN** the repaired positive expression passes complete-label/raw-time expectations, and original grouped-timestamp and plain-`or` mutants fail those same expectations from duplicate output or expected-label/result mismatch
+- **AND** engine, image, evaluator, syntax or fixture-setup failures cannot count as successful mutation detection
+- **AND** the bounded exact container invocation must be executed successfully during implementation; source support alone is not execution evidence
+
+#### Scenario: Probe activation remains gated without a reviewed target and isolation
+- **WHEN** a target declaration, endpoint contract, finite budget, actual pre-placement namespace proof, or effective handler isolation is missing or unverified
+- **THEN** activation refuses before configuration placement and no target is treated as covered
+- **AND** a Pod membership field alone does not establish namespace sharing; kernel network-namespace identity decides whether the probe shares a namespace
+- **AND** check mode, source validation, and rendered configuration do not count as live acceptance
+
+#### Scenario: Endpoint failure, scrape failure, and missing probe data remain distinct
+- **WHEN** an exact reviewed probe target is evaluated
+- **THEN** `probe_success=0` represents a failed endpoint health contract, `up=0` represents a failed scrape, and an absent exact declared probe series represents missing telemetry
+- **AND** none of these states is rendered or interpreted as healthy
+- **AND** probe-failed and missing-probe alerts reuse the existing gated Grafana alert owner, labels, grouping, and Discord route
+
+#### Scenario: Endpoint alerts distinguish failure, missing data, and scrape failure
+- **WHEN** the validated availability source is enabled with alerts enabled and no alert canary
+- **THEN** the failed-endpoint rule fires only for the exact target identity with `up=1` and `probe_success=0`
+- **AND** the missing-endpoint rule uses the reviewed `signals.health.freshness_seconds` window and fires when the exact probe series is absent
+- **AND** only `up=0` with the same fixed six-label identity suppresses the missing-endpoint rule; missing `up` or unrelated identity does not suppress it
+- **AND** the existing generic scrape rule continues to own `up=0` and its title/annotations describe telemetry scrape failure without asserting that the application is down
+- **AND** both endpoint rules are omitted and deleted through the existing ownership cleanup when availability is disabled, alerts are disabled, or the canary is active
+- **AND** rule rendering or query evaluation does not prove live Grafana readback, firing/recovery, or notification delivery
+
+#### Scenario: Probe labels and resource work stay within the reviewed budget
+- **WHEN** reviewed targets are rendered and scraped
+- **THEN** only their fixed service/environment/cluster/`target_id` identity labels are retained, with no endpoint or request-derived labels
+- **AND** the fixed six-family output and hard target, interval, timeout, body, scrape, series, and aggregate-work ceilings bound collection
+- **AND** exact-binary validation, receiver readback, target failure/recovery, missing-series behavior, and existing-route delivery remain separate live acceptance evidence
+
+#### Scenario: Source rendering does not prove post-apply probe acceptance
+- **WHEN** source validation or a rendered configuration succeeds without a fresh readback from the running pinned receiver
+- **THEN** availability remains unverified and no runtime coverage or alert-delivery acceptance is claimed
+- **AND** the post-apply check requires the loaded native component, finite effective limits, current target identity/health, and fresh samples newer than both the pre-apply receiver-time bound and the new Alloy process start
+- **AND** historical series, including a 24-hour maximum, cannot prove a new producer transition
+
+#### Scenario: Native producer survey lacks source evidence
+- **WHEN** an expected row declares Alloy but no fixed native component detail and fresh forwarded sample evidence are available
+- **THEN** the source survey returns a fixed unverified result rather than matching a Prometheus target or claiming native acceptance
+- **AND** a same-UID/same-five-label Grafana ownership match does not satisfy producer acceptance
+
+#### Scenario: A reviewed source transition proves the current producer first
+- **WHEN** a reviewed declaration changes an expected target from Prometheus to Alloy or from Alloy to Prometheus
+- **THEN** preflight proves the actual current producer and effective namespace isolation before placement
+- **AND** preflight does not require a future producer sample before apply
+- **AND** unchanged alert UID and five-label ownership do not replace source proof
+- **AND** an idempotent rerun proves the currently declared producer rather than assuming a migration
+
+#### Scenario: Post-apply source acceptance rejects old or stale producer samples
+- **WHEN** an applied Alloy source has only the former Prometheus target, the wrong/missing native component, or samples older than the pre-apply bound or new process start
+- **THEN** producer acceptance is unverified even if the Grafana rule identity is unchanged
+- **AND** the native health target is never replayed by the baseline survey
+- **AND** no automatic destructive rollback or duplicate-producer remediation occurs
+
+#### Scenario: Prometheus and native budget projections remain separate
+- **WHEN** no expected row declares a source or every row uses the legacy Prometheus source
+- **THEN** the existing eight-field Prometheus coverage result and budget behavior remain unchanged
+- **WHEN** a reviewed native Alloy row is present
+- **THEN** Prometheus counts, 24-hour maxima, direct HTTP checks, and loaded-limit pools include only Prometheus rows
+- **AND** native limits and point-in-time forwarded samples are returned in a separate source-labelled projection
+
+#### Scenario: Profile acceptance uses the validated availability mode before writing
+- **WHEN** profile candidates are prepared while availability is enabled
+- **THEN** the same validated private projection selects the fixed loopback profile target
+- **AND** invalid projection or candidate data refuses before temporary config is written
+- **AND** existing profile operation and restoration guards remain in force
 
 ### Requirement: Expected metrics targets are reviewed and compared exactly
 Production per-target missing-telemetry rules SHALL be active only when
@@ -99,20 +498,33 @@ loaded-limit, candidate, and alert-input receipts.
 - **WHEN** the declaration is missing, unreviewed, empty, or check mode skips Prometheus access
 - **THEN** the survey reports an unverified status rather than coverage success
 
-### Requirement: Receiver journal positions state is surveyed and repaired safely
-The receiver-host journal collector SHALL retain its existing Compose named positions volume, mounted at `/alloy-state`, with Alloy `--storage.path=/alloy-state`. Every helper access probe, exact live-mount check, and rollback volume lookup SHALL require that same destination. A survey SHALL identify only the unique existing local volume with the exact expected name and receiver Compose project. A missing logical-volume label is allowed only for that exact name and project; a conflicting label SHALL be refused. The survey SHALL read bounded root/direct-child metadata in the rootless Podman user namespace without mounting the volume or reading positions content. Initialization flags SHALL come from a fixed-template named-volume read bracketed by JSON identity reads; JSON field presence SHALL remain distinct from effective flag values because false-valued fields may be omitted. Only literal template `false` or `true` values with matching inventory/named identity SHALL be accepted. Repair SHALL refuse shared or in-use volumes, ACLs, mount boundaries, symlinks, non-regular or multiply linked children, child ownership ambiguity, and unsafe modes except for the pending-only write-bit reduction defined below. For an initialized empty volume whose root ownership alone blocks collector access, repair MAY change only root owner/group to `0:0` after fresh checks, preserve mode/children, verify readback, and run the restricted isolated write/rename/delete probe. As a narrow exception, repair MAY do the same root-only change for the exact empty unused pending state `NeedsChown=false` and `NeedsCopyUp=true`; this branch SHALL not mount an access-probe container, and it SHALL verify empty contents and the exact expected root mode. Repair success SHALL NOT authorize first mount or collector apply; those require an explicit later task and full fresh pre-start checks. Pending repair SHALL compare the volume creation timestamp and stable volume/root identity across pre-mutation observations. After any pending-volume mutation, a failure SHALL preserve the volume and return bounded uncertain status; automatic mode or owner restoration is prohibited because a mount followed by removal cannot be ruled out from current state. Check mode SHALL report the positions-helper result as unverified without that helper's Podman or filesystem operations. Operator output SHALL use fixed categories and bounded counts. The survey's `pending_repair_diagnostic` SHALL additionally classify group write, other write, setuid, setgid, and sticky bits independently as `present`, `absent`, or `unverified`, using the same metadata snapshot and preserving the combined unsafe-bit category and exact `failed_checks` gate semantics. These five fields SHALL remain `unverified` when mode metadata is unavailable, including check mode and survey-exception receipts; they SHALL NOT alter repair acceptance.
+## MODIFIED Requirements
 
-The read-only survey MAY compare extra top-level directories only against the two exact public journal receiver and OTLP exporter component names. It SHALL emit fixed role counts bounded to 0 through 32 and, for each exact directory match, only categorical owner/access, ACL, mount, and direct-child state (`empty`, `nonempty`, or `unverified`). Classification SHALL use descriptor-relative no-follow opens and identity rechecks; unsafe links, races, and metadata errors SHALL report unverified or refuse. Unknown directory names SHALL remain aggregated and unidentifiable. Every extra directory, recognized or unknown, SHALL keep `component_layout=false`; these diagnostics SHALL NOT change pre-start or verify-live acceptance, inspect nested contents, infer queue state, or add a survey write, probe, or mount. The read-only Dev survey task 4009 at merged SHA `9bc543d7d0f80be77ddab3983f9db6a983257f06` observed one other directory in a three-entry pending volume but did not identify its purpose; live mount and namespace fields remained unverified/not run.
+### Requirement: Receiver journal positions state is surveyed and repaired safely
+The receiver-host journal collector SHALL use a fresh, versioned Compose named positions volume `journal-collector-state-v3`, mounted at `/alloy-state` with long-syntax `volume.nocopy: true`, and Alloy SHALL use `--storage.path=/alloy-state`. Every helper access probe, exact live-mount check, and rollback volume lookup SHALL require that same destination and resolve only the v3 logical volume. Both legacy `journal-collector-state` (v1) and `journal-collector-state-v2` (v2) volumes SHALL remain untouched for later independent forensic/disposition review; no collector helper or Compose service SHALL inspect, admit, repair, delete, or mount either preserved volume. A fresh first-start gate SHALL permit `bootstrap_allowed` only when complete bounded inventory proves the v3 expected name absent and an all-container query proves the collector absent, including stopped containers. Any preexisting v3 volume without a valid parsed journal cursor SHALL refuse first-start bootstrap; a pending or cursorless volume SHALL NOT use repair or retry as an automatic recovery path. Existing v3 state may start again only after strict exact identity, access, layout, and cursor checks. Initialization flags SHALL come from a fixed-template named-volume read bracketed by JSON identity reads; JSON field presence SHALL remain distinct from effective values, and only literal template `false` or `true` values with matching inventory/named identity SHALL be accepted. Check mode SHALL report the positions-helper result as unverified without Podman or filesystem operations. Survey SHALL read bounded root/direct-child metadata in the rootless Podman user namespace without mounting v3 or reading positions content. Operator output SHALL use fixed categories and bounded counts. A fresh start can replay only Alloy's supported `max_age` window; it does not recover older journal entries. Source tests and parsed Compose output SHALL NOT establish Podman provider runtime behavior; separate reviewed runtime and exact-target Loki acceptance remains required.
+
+The read-only survey MAY compare extra top-level directories against the exact `remotecfg` service name under the guarded exception below and the three exact configured component names: the public journal receiver, the `otelcol.processor.attributes.journal_labels` attributes processor, and the public OTLP exporter. It SHALL emit fixed role counts bounded to 0 through 32 and, for each exact directory match, only categorical owner/access, ACL, mount, and direct-child state (`empty`, `nonempty`, or `unverified`). Classification SHALL use descriptor-relative no-follow opens and identity rechecks; unsafe links, races, and metadata errors SHALL report unverified or refuse. Unknown directory names SHALL remain aggregated and unidentifiable. Except for the narrowly admitted empty `remotecfg` service directory below, every extra directory, recognized or unknown, SHALL keep `component_layout=false`; these diagnostics SHALL NOT change pre-start or verify-live acceptance, inspect nested contents, infer queue state, or add a survey write, probe, or mount. The read-only Dev survey task 4009 at merged SHA `9bc543d7d0f80be77ddab3983f9db6a983257f06` observed one other directory in a three-entry pending volume but did not identify its purpose; live mount and namespace fields remained unverified/not run.
+
+Before any journal collector config promotion or start, the apply playbook SHALL query Loki using the same Grafana-container `wget -q -O -` client and exact query selector as its post-start receipt. The in-container BusyBox `timeout -s KILL 8` SHALL bound and kill a stalled wget process; a host-side 12-second timeout SHALL cap the command as a second bound. The preflight SHALL require a successful JSON `status` but SHALL accept an empty result, protect the response body from visible output, and report only fixed categories. A failed or unverified preflight SHALL refuse before config promotion and collector startup. Immediately before collector start, the playbook SHALL capture a new nanosecond lower bound after preflight and config promotion. After startup, the receipt SHALL still require the exact `service="o11y/alloy"` and `signal="container"` stream and at least one sample whose timestamp is no earlier than that fresh lower bound. Each query SHALL be bounded; polling SHALL retain 36 retries (37 total attempts) and a five-second inter-attempt delay. Dev-bound tasks 6156 and 6169 both passed health, positions mount/namespace, and unchanged-receiver checks but failed the Loki receipt and rolled back only the collector while preserving the positions volume; their production Grafana MCP queries found six and ten exact-label samples during the respective windows. Read-only task 6170 succeeded with the same wget form for that exact service/signal expectation, metrics and traces disabled, and a 15-minute window. These independent receipts prove neither successful apply-query response nor the post-start timestamp assertion. Task 6169 did not retain protected stderr, so the reason for its request failure and any `-T` incompatibility remain unproven. The live apply and parent acceptance task remain open.
 
 #### Scenario: Positions survey runs without collector initialization
 - **WHEN** the explicit positions survey runs and the journal collector container is absent
-- **THEN** it resolves one existing locally scoped named volume from receiver Compose labels, reports bounded ownership, mode-access, ACL, mount, child-type, and use-count categories, and does not create, mount, initialize, or read positions content
+- **THEN** it resolves only the v3 locally scoped named volume from receiver Compose labels and never inspects or mounts either preserved v1/v2 volume, reports bounded ownership, mode-access, ACL, mount, child-type, and use-count categories, and does not create, mount, initialize, or read positions content
 - **AND** when mode metadata is observed, `pending_repair_diagnostic` separately classifies group write, other write, setuid, setgid, and sticky bits as `present` or `absent`; missing mode metadata reports `unverified`, while the existing combined unsafe-bit field and exact `failed_checks` remain unchanged
 
+#### Scenario: Stage, survey, and apply require the exact installed checkout before provider configuration
+- **WHEN** the operator selects stage, read-only survey, or apply
+- **THEN** stage uses the shared monorepo placement task pinned to `expected_repository_sha`, reads back the exact target `HEAD`, and refuses Ansible check mode
+- **AND** stage does not start or recreate a container or inspect, mount, or change any positions volume; survey remains read-only and does not call placement
+- **AND** each action requires the installed target `HEAD` to equal `expected_repository_sha` before running the installed Compose provider config parser; stale SHA refuses before provider configuration is read
+- **AND** in Ansible check mode, provider runtime reads are skipped and the gate reports `check_mode_unverified`, never `verified`
+- **AND** the parser runs with its full output protected and requires exactly one `/alloy-state` mount from `journal-collector-state-v3` with `volume.nocopy: true`
+- **AND** the resolved configuration check does not claim that Podman applied the runtime mount behavior; exact v3 volume identity and runtime acceptance remain separate gates
+
 #### Scenario: Extra positions directory is classified without changing acceptance
-- **WHEN** the bounded read-only survey finds one of the exact public receiver or exporter component directories at the top level
+- **WHEN** the bounded read-only survey finds one of the exact public receiver, configured attributes processor, or exporter component directories at the top level
 - **THEN** it reports a fixed role count and only bounded owner/access, ACL, mount, and direct-child categories, using no-follow descriptor-relative observation and identity rechecks
-- **AND** an unknown directory remains aggregated, and every extra directory keeps `component_layout=false`; the diagnostic does not infer queue state or authorize a start
+- **AND** an unknown directory remains aggregated, and each of these diagnostic-only component directories keeps `component_layout=false`; the diagnostic does not infer queue state or authorize a start
 
 #### Scenario: Positions repair is limited to a proven root ownership mismatch
 - **WHEN** the operator selects `repair-positions` and fresh evidence proves the unused volume root owner alone blocks the configured collector identity while all supported safety checks pass
@@ -159,26 +571,113 @@ The read-only survey MAY compare extra top-level directories only against the tw
 - **AND** missing observed metadata, an unavailable root mode, or missing/invalid volume or GraphRoot capacity is reported as unverified or failed and cannot pass the initial checklist; a passing checklist does not replace later identity rechecks or authorize repair
 - **AND** check mode and exception fallback retain the schema with unverified categories, without filesystem or Podman operations
 
-### Requirement: First collector start is gated by safe positions-volume bootstrap
-The collector SHALL allow first initialization only through its declared Compose `up`. Before start, the positions gate MAY return `bootstrap_allowed` for a missing expected volume only when bounded inventory is complete, no expected-name collision exists, and an all-container query proves the collector absent, including stopped containers. An existing pending volume SHALL prove one exact local identity, zero consumers and mounts, effective template flags `NeedsChown=false` and `NeedsCopyUp=true`, and an observed empty `0:0` root with owner RWX, no group/other write or special bits, ACL, nested mount, or metadata ambiguity. The gate SHALL require at least 16 MiB available and 128 available inodes both on the Podman graph root and on the pending volume filesystem for this small first mount; this threshold is separate from the 30% retention headroom gate. A missing legacy volume-key label is allowed only with the exact expected name and project; a conflicting label refuses. `bootstrap_allowed` is accepted only by pre-apply and immediately-before-start gates, and the latter runs outside rollback handling. After the first mount, `NeedsCopyUp=true` alone SHALL NOT prove success: post-start verification requires an exact live RW mount, namespace write/rename/delete, bounded allowlisted Alloy layout, the expected `loki.source.journal.o11y_alloy` cursor parsed from `positions.yml`, health, unchanged seven receiver containers, and a fresh exact-target Loki receipt. A still-pending flag may be accepted only when all these checks pass, because an empty image destination can leave copy-up pending. Partial copy or unexpected layout SHALL refuse and preserve the volume; rollback removes only the pilot container without `-v`, never restores ownership or deletes copied state. Unexpected survey exceptions return bounded `survey_failed`; check mode remains unverified and nonmutating.
+### Requirement: Journal component diagnostics remain metadata-only and cannot admit state
+The existing descriptor-safe read-only positions survey SHALL expose fixed bounded categories for the exact journal component's presence/type, owner match, owner RWX, forbidden write/special bits, link-count predicate, ACL, mount safety and direct-child layout. It SHALL separately classify the exact positions-file role's presence/type, owner match, required owner RW and forbidden mode bits, single-link predicate, ACL and mount safety, with bounded temporary-file counts and aggregated unknown direct-child kinds. Counts SHALL be integers in 0 through 32 or `unverified`; missing or unstable evidence SHALL remain unverified, never a passing observation. Descriptor-relative no-follow observation and parent/child identity rechecks SHALL reject symlinks, races, ACL/mount ambiguity and overflow. It SHALL NOT read file contents, enumerate deeper descendants, emit raw names/paths/modes/IDs/hashes/sizes/cursors/secrets/stderr/exceptions, create a probe, mount, mutate state or add a survey action. Public names used in this specification identify fixed roles, not permission to emit observed names.
 
-The helper SHALL expose separate pre-start `verify` and post-start `verify-live` actions. Pre-start MAY return `ready` without a cursor only when a complete observation proves both initialization flags false, collector absent from all containers, zero consumers and mounts, exact safe volume identity, root `0:0`, access, GraphRoot and volume-filesystem capacity, no ACL or nested mount, a safe allowlisted empty/seed/component layout, and `positions.yml` explicitly absent. This result authorizes a bounded start attempt only. Present invalid or unreadable cursor files, unknown cursor presence, and incomplete or unsafe positions artifacts SHALL refuse. For this requirement, partial copy means a present invalid/unreadable cursor, pending temporary positions file, or layout outside the allowlist; proven pre-start absence is a separate retry case. `verify-live` SHALL require a present collector, exactly one consumer and mount, the exact expected RW volume mount, and a valid parsed cursor; it SHALL never return `bootstrap_allowed`. No gate may delete or replace positions state or automatically restore mode or ownership after pending mutation. An empty or allowlisted layout does not establish historical copy-up completion or cursor-loss history; replay/loss safety remains unverified.
+The helper and playbook SHALL validate and expose only the bounded diagnostic schema through the protected parsing and summary boundary, retaining unverified check-mode and error fallbacks. The diagnostic SHALL NOT change any acceptance predicate, repair eligibility, bootstrap refusal, parsed-cursor requirement or live gate. An absent or unparsed survey cursor SHALL NOT be described as proven corruption. Failed startup, positions or delivery verification SHALL retain collector-only rollback and preserve all volumes. The rescue wording SHALL cover all three stages without claiming that a Loki query ran after an earlier positions failure. No automatic retry, repair, deletion or v4 bootstrap is permitted by this diagnostic follow-up.
+
+#### Scenario: Journal metadata explains categories without reading positions content
+- **WHEN** the explicit read-only survey observes the exact journal component in an unused v3 volume
+- **THEN** it reports only bounded component/file metadata and structural categories, distinguishes absent from unverified, and aggregates unknown children without names or content reads
+- **AND** existing cursorless-v3 pre-start and verify-live refusals remain unchanged even when every diagnostic metadata category passes
+
+#### Scenario: Journal diagnostic ambiguity remains unverified
+- **WHEN** metadata is missing, malformed, inaccessible, linked, ACL/mount-ambiguous, racing or over the observation bound, or execution is in check mode or exception fallback
+- **THEN** the diagnostic retains its fixed schema with affected fields unverified or refusal, with no probe, mount, content read or mutation
+- **AND** malformed helper output cannot leak through the visible playbook summary or become a passing gate
+
+#### Scenario: Positions failure precedes delivery verification
+- **WHEN** a healthy collector first fails the live positions readiness assertion before the Loki query
+- **THEN** rescue describes a startup, positions, or exact-target delivery verification failure, removes only the pilot and preserves its volume
+- **AND** neither the message nor the receipt claims a failed Loki query, successful delivery, root cause or permission for automatic retry
+
+### Requirement: Seed and remaining layout diagnostics cannot authorize apply
+The existing descriptor-safe read-only survey SHALL expose only categorical metadata for the exact seed-file role: presence/type, owner match, single-link predicate, owner-execute/group-other-permission/special-bit presence, ACL and mount safety. The group/other-permission category is observational and may include safe read-only bits. The diagnostic introduced in task 1.2c did not add an owner-RW requirement or change acceptance. It SHALL reuse existing root, top-level-role, journal/positions and temporary/unknown-child observations to account for remaining `component_layout` conditions, adding only missing fixed categories for seed refusal, nested child-count/role/file-metadata failure or incomplete/unstable observation. It SHALL NOT introduce another acceptance evaluator or turn independently passing metadata into root-cause proof; unexplained disagreement SHALL remain unverified.
+
+Observation SHALL use the existing bounded descriptor-relative no-follow scan and stable parent/child identity, mode/link, ACL and mount rechecks. Counts SHALL be integers in 0..32 or `unverified`; enumeration SHALL stop on the 33rd entry and overflow SHALL remain unverified/refused. The diagnostic SHALL NOT traverse deeper, read file contents, emit observed names/paths/raw modes/IDs/link counts/sizes/hashes/cursors/secrets/stderr/exceptions, add a Podman call/probe/mount/action or mutate state. Exact schema keys, mapping shapes, enums and count types/bounds SHALL be validated inside the protected helper/Ansible parsing and summary boundary; boolean counts, missing/extra keys and injected text SHALL be rejected before visible output. Only validated safe categories SHALL reach the visible summary. Check-mode/error fallbacks SHALL retain the complete schema with affected evidence unverified and no check-mode runtime probes.
+
+Task 1.2c SHALL remain behind an explicit production no-apply gate: source implementation and a reviewed, exact-revision read-only stage/survey may proceed, while source tests and diagnostics SHALL NOT authorize collector apply/retry, repair, delete/recreate, mount, content read, permission normalization, cursor synthesis, v4 bootstrap or fallback to v1/v2. All source acceptance, repair, parsed-cursor, bootstrap, verify-live and collector-only rollback predicates SHALL remain unchanged; v1/v2/v3 SHALL be preserved. This session launched and read back Dev-bound stage 6099 and survey 6100 through the Semaphore API; those receipts SHALL NOT establish root cause, cursor validity or delivery. Parent task 1.2 SHALL remain incomplete.
+
+#### Scenario: Seed metadata distinguishes a layout condition without proving cause
+- **WHEN** the survey observes the seed role in the existing unused initialization-pending v3 volume
+- **THEN** it reports only fixed seed metadata categories against the unchanged predicates, distinguishing absent, unsafe and unverified observations without a content read
+- **AND** a reported seed failure describes an observed condition, not its historical cause; passing seed categories do not establish cursor validity or readiness
+
+#### Scenario: Remaining layout conditions stay bounded and unverified on disagreement
+- **WHEN** `component_layout` fails despite passing journal/positions categories, or metadata races, errors, links, mount/ACL ambiguity or overflow prevent a complete stable explanation
+- **THEN** the diagnostic reuses bounded existing observations and exposes only any missing fixed condition categories, marking unexplained disagreement or unstable evidence unverified
+- **AND** it neither emits raw identifiers nor changes the failed-check list, acceptance or rollback decisions
+
+#### Scenario: Seed diagnostic schema fails closed without apply
+- **WHEN** helper fields are malformed, missing, extra or injected, counts are booleans/out of bounds, or execution uses check mode or error fallback
+- **THEN** protected validation prevents raw output and preserves the fixed unverified/refusal schema before any safe visible summary
+- **AND** no runtime check-mode probe, apply/retry, repair, mount, content read or state mutation occurs; existing cursorless-v3 refusal and v1/v2/v3 preservation remain unchanged
+
+### Requirement: Alloy seed acceptance matches the pinned upstream read-only mode
+The collector layout predicate SHALL accept only the exact owner-matching, single-link regular seed with absent ACL and mount boundary, absent owner execute and special bits, and absent group/other write or execute. Group/other read bits MAY be present. This changes no cursor, pre-start, repair, rollback or volume-preservation rule.
+
+#### Scenario: Alloy's read-only seed mode is accepted without mutation
+- **WHEN** the exact `alloy_seed.json` is an owner-matching, single-link regular file with absent ACL and mount boundary and mode `0644` or stricter read-only group/other bits
+- **THEN** the helper SHALL accept its mode for `component_layout` while retaining the existing owner-execute, group/other write-or-execute and special-bit refusal
+- **AND** the bounded diagnostic SHALL continue to report group/other permission presence without treating read-only bits alone as unsafe
+- **AND** no seed chmod, content read, volume recreation, collector start or cursorless-v3 exception SHALL follow from this source correction
+
+### Requirement: Cursor validity can be proved by an explicit read-only survey
+The Dev-bound journal workflow SHALL expose a distinct `survey-cursor` action in its declared Semaphore survey, published through the scoped Dev-bound template workflow. It SHALL use the same exact reviewed revision, provider configuration, volume identity, protected output validation and fixed summary schema as ordinary `survey`. Only `survey-cursor` MAY invoke the helper's existing bounded positions-content parser; ordinary `survey` SHALL remain metadata-only. The explicit action SHALL report only fixed cursor validity/presence categories and no raw content, cursor value, error text or private path. It SHALL not mutate, mount, repair, start the collector or change the pending-state/pre-start/rollback gates. Check mode SHALL report unverified without a runtime read.
+
+#### Scenario: Explicit cursor survey proves only a valid parsed cursor
+- **WHEN** `survey-cursor` finds the exact safe positions file with stable descriptor identity and a valid expected journal cursor within the existing 64 KiB limit
+- **THEN** it reports the fixed valid category and no cursor value or file contents
+- **AND** the existing pending v3 volume remains blocked from collector apply until a separately reviewed safe-resume gate passes
+
+#### Scenario: Unsafe or unreadable cursor remains unverified or refused
+- **WHEN** the positions file is absent, oversized, malformed, unreadable, linked, wrongly owned, mode-unsafe, ACL/mount-ambiguous or changes during the bounded read
+- **THEN** the action emits only fixed unavailable/refusal categories and preserves the volume and collector state
+- **AND** ordinary `survey` and check mode never read positions contents
+
+### Requirement: Only a safe empty remotecfg service directory may extend the positions layout
+The layout observer SHALL conditionally accept at most one optional exact direct child `remotecfg` only when descriptor-relative no-follow observation and parent/child identity rechecks prove a real empty directory, namespace owner/group `0:0`, owner RWX, no group/other write or special bits, no access/default ACL, and no mount boundary or exact bind mount. Emptiness SHALL include hidden entries and SHALL be rechecked against the same identity. Unknown, malformed, inaccessible or racing evidence SHALL refuse. Absence SHALL remain allowed. Every other extra directory SHALL remain refused, including the diagnostic-only receiver, exporter and attributes processor. Fixed bounded role/count/state fields SHALL distinguish safe, unsafe and unverified exact `remotecfg` from aggregated unknown names in survey, check-mode and failure output without printing raw names or private paths. Survey SHALL remain read-only and SHALL NOT read cursor content, probe-mount, repair, create or delete state. Layout acceptance SHALL NOT relax cursor, identity, capacity, access, bootstrap or live gates; existing cursorless v3 SHALL refuse start, and v1/v2 SHALL remain preserved and excluded.
+
+#### Scenario: Exact safe empty remotecfg is accepted only as layout
+- **WHEN** `remotecfg` is absent or its exact optional directory passes every emptiness, ownership, mode, ACL, mount and stable-identity check, and the remaining layout passes
+- **THEN** layout acceptance is permitted and bounded diagnostics distinguish it from unknown extras
+- **AND** an existing cursorless volume still refuses pre-start; live success requires the parsed expected journal cursor and all other live gates
+
+#### Scenario: Unsafe remotecfg or any other extra directory refuses
+- **WHEN** the exact directory is nonempty (including hidden entries), linked, wrongly owned, unsafe in mode, ACL-bearing, mounted, inaccessible, malformed, unstable, or unverified, or any other extra directory exists
+- **THEN** layout refuses without changing contents, permissions or ownership, with bounded diagnostics only
+
+### Requirement: First collector start is gated by safe positions-volume bootstrap
+The collector SHALL allow first initialization only through its declared Compose `up`, with explicit long-syntax `volume.nocopy: true` on the new v3 volume. Before start, the positions gate MAY return `bootstrap_allowed` only when complete bounded inventory proves the exact v3 expected name absent and an all-container query proves the collector absent, including stopped containers. Any existing v3 volume without a valid parsed journal cursor SHALL refuse bootstrap; neither initialization-pending state nor proven cursor absence authorizes a retry. A separate explicit repair action may operate only on the exact v3 identity and SHALL never resolve either preserved v1/v2 volume. For a missing v3 volume, the pre-start gate SHALL require at least 16 MiB available and 128 available inodes on GraphRoot before Compose creates it. It cannot check the new volume filesystem before that volume exists. Existing-volume checks use that volume filesystem's counters; pending-volume repair additionally requires the same thresholds on GraphRoot. This threshold is separate from the 30% retention headroom gate. The first mount remains outside rollback handling. After startup, post-start verification requires an exact live RW mount, namespace write/rename/delete, bounded allowlisted Alloy layout, the expected `loki.source.journal.o11y_alloy` cursor parsed from `positions.yml`, health, unchanged seven receiver containers, and a fresh exact-target Loki receipt. Any unexpected layout SHALL refuse and preserve the new volume; rollback removes only the pilot container without `-v`. Unexpected survey exceptions return bounded `survey_failed`; check mode remains unverified and nonmutating. Source validation SHALL NOT be represented as proof of Podman honoring `nocopy` or exact runtime volume identity.
+
+The helper SHALL expose separate pre-start `verify` and post-start `verify-live` actions. Pre-start MAY return `bootstrap_allowed` only when complete bounded inventory proves the v3 volume absent and the collector absent from all containers, including stopped containers; this path checks GraphRoot capacity before Compose creates the volume. Any preexisting v3 volume without a valid parsed cursor SHALL refuse first start, including an empty volume, initialization-pending volume, or a volume whose cursor is explicitly absent, invalid, unreadable, or unknown. No cursorless pre-start retry or bootstrap of existing v3 state is permitted. Existing v3 state may start only when strict identity, access, layout, capacity, and cursor checks pass. `verify-live` SHALL require a present collector, exactly one consumer and mount, the exact expected RW volume mount, and a valid parsed cursor; it SHALL never return `bootstrap_allowed`. No gate may delete or replace positions state or automatically restore mode or ownership after pending mutation. An empty or allowlisted layout does not establish historical copy-up completion or cursor-loss history; replay/loss safety remains unverified.
 
 #### Scenario: Missing expected volume is safe to initialize
 - **WHEN** bounded volume and all-container inventories complete, no expected-name collision exists, and the named collector is absent
 - **THEN** the pre-start gate returns `bootstrap_allowed` and Compose `up` is the only operation that creates or initializes the volume
 
-#### Scenario: Existing empty volume is awaiting initialization
-- **WHEN** one exact local project volume has zero consumers and mounts, effective template flags `NeedsChown=false` and `NeedsCopyUp=true`, sufficient first-mount free bytes/inodes, and an empty unambiguous root with `0:0` ownership and required access
-- **THEN** the pre-start gate returns `bootstrap_allowed`; any unknown identity, unsafe metadata, or conflicting label refuses
+#### Scenario: Existing empty v3 volume refuses first start without a valid cursor
+- **WHEN** one exact local project volume has zero consumers and mounts, including an initialization-pending volume with an empty unambiguous root and no valid parsed cursor
+- **THEN** the pre-start gate refuses; only a proven-missing v3 volume can return `bootstrap_allowed`
 
-#### Scenario: Safe observed volume has no positions cursor before start
-- **WHEN** both initialization flags are false, the collector is absent from all containers, consumers and mounts are zero, capacity/access/identity/layout checks pass, and metadata explicitly proves `positions.yml` absent
-- **THEN** pre-start `verify` returns `ready` for a start attempt, while `verify-live` refuses until a valid parsed cursor exists
+#### Scenario: Existing v3 volume with an absent positions cursor refuses before start
+- **WHEN** initialization flags are false, the collector is absent from all containers, consumers and mounts are zero, capacity/access/identity/layout checks pass, and metadata explicitly proves `positions.yml` absent
+- **THEN** pre-start `verify` refuses, and `verify-live` also refuses until a valid parsed cursor exists
 
-#### Scenario: Present or unreadable positions cursor cannot use the retry path
+#### Scenario: Populated pending v3 resumes only under reviewed Podman semantics
+- **WHEN** the exact v3 volume remains initialization-pending with literal `NeedsChown=false` and `NeedsCopyUp=true`, has a nonempty allowlisted layout and a stable valid parsed cursor, and the collector is absent with zero users and mounts
+- **AND** bounded identity, ownership, access, ACL, mount, volume and GraphRoot capacity checks pass under the reviewed local Podman 4.9.3 client
+- **THEN** pre-start `verify` MAY return `ready` with a fixed pending-resume reason, without changing the volume or its flags; the same conditions SHALL be rechecked immediately before Compose mount
+- **AND** any changed, unknown, cursorless, unsafe, differently versioned or incomplete observation SHALL refuse before start; post-start exact live mount, namespace access, valid cursor, health, unchanged receiver set and fresh exact-target Loki delivery remain mandatory
+
+#### Scenario: Plain local volume has zero Podman host mounts while one container uses it
+- **WHEN** the reviewed local v3 volume has empty options, the collector is its one verified consumer, and Podman reports `MountCount=0`
+- **THEN** post-start verification SHALL use the exact inspected container mount and namespace access as the live mount proof while retaining every cursor, health, receiver and Loki acceptance gate
+- **AND** any nonzero or unverified host-mount count, extra consumer, changed volume identity, or nonmatching container mount SHALL refuse; no failed collector may cause removal of the named volume
+
+#### Scenario: Invalid, unreadable, or unknown positions cursor refuses without retry
 - **WHEN** `positions.yml` is present but invalid or unreadable, or its presence cannot be determined
-- **THEN** both pre-start and post-start verification refuse; only a proven absent cursor may use the bounded pre-start retry
+- **THEN** pre-start and post-start verification refuse; no existing-volume state may use a cursorless retry
 
 #### Scenario: Survey raises an unexpected exception
 - **WHEN** an unexpected exception interrupts the explicit positions survey
@@ -195,6 +694,11 @@ The helper SHALL expose separate pre-start `verify` and post-start `verify-live`
 #### Scenario: Loki contains only a stale matching stream
 - **WHEN** the exact `o11y/alloy` container stream's newest receipt predates the current apply start time
 - **THEN** the delivery gate refuses success and performs only pilot-container rollback while preserving the positions volume
+
+#### Scenario: Loki receipt request fails without exposing response content
+- **WHEN** the bounded post-start Loki query command fails or returns an unverified response
+- **THEN** the workflow reports only a fixed failure category, refuses success, and removes only the pilot container while preserving the positions volume
+- **AND** a successful receipt still requires the exact `service="o11y/alloy"` and `signal="container"` labels and a sample timestamp at or after the apply start time
 
 ### Requirement: Telemetry is private and bounded
 Collection SHALL use declared private network paths and source-scoped firewall rules, protect credentials and sensitive content, and enforce per-signal retention and ingestion/cardinality budgets before broadening the rollout. Remote logs and traces SHALL enter through receiver Alloy; remote metrics SHALL use declared private scrapes unless another reviewed path is established. The receiver SHALL surface dropped or refused telemetry and low disk headroom as observable failures.
@@ -217,6 +721,18 @@ For each backend, forecast inputs SHALL include seven timestamped complete UTC 2
 The receipt SHALL distinguish controller/deployed-receiver Git SHAs from the 64-character effective-inventory digest; these values SHALL NOT be substituted for one another. Only a trusted verifier SHALL bind task attribution, target, observations, and revisions to authoritative controller, deployment, inventory, and Semaphore state. Sanitized receipts SHALL omit private topology, raw backend responses, task/target identifiers, credentials, and exception text. Source fixtures/tests SHALL establish evaluator behavior only and SHALL NOT close baseline, calibration, or live acceptance gates. Live acceptance SHALL require a fresh read-only Dev-bound Semaphore receipt tied to reviewed source and effective-inventory evidence. Forecast evaluation SHALL NOT mutate retention, VM capacity, or senders. Any separately authorized resize SHALL still require VM/guest readback, verified backup and isolated restore, and telemetry-preservation gates.
 
 When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destructive capacity change and post-change readback.
+
+#### Scenario: Retained history observations do not close baseline or forecast acceptance
+- **WHEN** a private structured history receipt reports `ready_for_separate_forecast_review` with canonical source-event span, freshness/gap observations, receiver-host and five fixed backend summaries
+- **THEN** receipt accounting accepts only those history observations and keeps evaluation-point counts distinct from independent source events
+- **AND** historical sample ages do not establish current freshness, and backend stored-byte changes do not establish calibrated persisted-byte conversion
+- **AND** representative baseline, isolated calibration, forecast, backup/restore, retention and disk-growth acceptance remain separate open gates; source tests and point-query proof cannot close them
+
+#### Scenario: Current legacy producer and point budgets do not accept native rollout or capacity expansion
+- **WHEN** fresh source-specific readback verifies the current legacy Prometheus producer, its existing unavailable-body category, exact target membership and point retention/series/volume/headroom budgets
+- **THEN** only those observations are accepted; split loaded limits remain unverified when the receipt cannot prove them, even when split on-disk limits match reviewed source
+- **AND** earlier Alloy ExtraMetrics hypotheses do not become a current diagnosis or authorize a native-body workaround; native positive body evidence and all native gates remain unchanged
+- **AND** a receiver checkout HEAD remains separate from loaded revision/configuration and image identity; merged source validation closes only its source child, not representative seven-day baseline, calibration/forecast, backup/immutable isolated restore, retention expansion or growth acceptance
 
 #### Scenario: Wave exceeds capacity
 - **WHEN** the forecasted wave exceeds a declared capacity or retention budget

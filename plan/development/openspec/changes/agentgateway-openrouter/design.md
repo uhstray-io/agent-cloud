@@ -73,6 +73,9 @@ unknown `stream_options` key is unverified, and a 400 on every stream would be w
 weaker guarantee. Consequence: on an OpenRouter stream, usage arrives only on the final chunk, so
 a client that disconnects before it is not charged. The vLLM models keep the every-chunk
 behaviour. Revisit when OpenRouter's behaviour on the extra key is measured.
+Measured 2026-10-15 (tasks 3.5): OpenRouter answers HTTP 200 with the extra key and still sends
+usage only on the final chunk, so the decision stands; adopting the vLLM transformation would
+change nothing.
 
 **D6. Verify.** The keyed `/v1/models` listing must include every OpenRouter model the verifying
 identity may use (it is in the identity's expected set only if it is in

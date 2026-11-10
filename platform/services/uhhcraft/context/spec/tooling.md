@@ -266,7 +266,7 @@ Internet
 - **JS (3D canvas only):** esbuild — bundles Three.js + canvas interaction code into `static/js/canvas.js`. No Node package manager for the site shell; esbuild used only for the canvas bundle.
 - **Package manager:** Go modules (`go.mod`). No Node package manager in the Go project.
 - **Monorepo:** No — single repo: Go app + templ templates + Python AI service in `ai/` subdirectory.
-- **Language versions:** Go 1.26+ pinned in `go.mod`. Python 3.11+ pinned in `ai/pyproject.toml`.
+- **Language versions:** Go 1.26+ pinned in `go.mod`. Python 3.11+ pinned in `ai/pyproject.toml` (not in this repository).
 
 ---
 
@@ -304,7 +304,7 @@ Internet
     ├── Playwright E2E (against dev build)
     ├── Lighthouse CI (performance budget check)
     └── Build binary + Tailwind CSS + esbuild canvas bundle
-  
+
   Merge to main
     └── Kamal deploy to main server via SSH
   ```

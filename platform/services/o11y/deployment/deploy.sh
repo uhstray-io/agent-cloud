@@ -46,14 +46,115 @@ step_pull_image() {
   compose pull
 }
 
+# availability_candidate_category RC OUTPUT
+#   Print one line, "Availability gate category: <word>", for a refused candidate namespace-gate
+#   run. RC is the helper's exit status and OUTPUT its captured stdout. The word is the helper's
+#   reason only for a status-2 result and only when it is a namespace_* word; any other status
+#   reports namespace_helper_failed, and an unusable reason reports namespace_unverified. OUTPUT is
+#   parsed and never printed, so no raw helper text reaches the deploy log.
+availability_candidate_category() {
+  local rc="${1:-}" output="${2:-}" word
+  case "$rc" in
+    0|2)
+      word=$(printf '%s' "$output" | python3 -c '
+import json, re, sys
+try:
+    reason = json.load(sys.stdin).get("reason")
+except Exception:
+    reason = None
+print(reason if isinstance(reason, str) and re.fullmatch(r"namespace_[a-z_]{1,48}", reason) else "namespace_unverified")
+') || word=namespace_unverified
+      ;;
+    *) word=namespace_helper_failed ;;
+  esac
+  printf 'Availability gate category: %s\n' "$word"
+}
+
 step_start() {
   info "Step 3: Starting o11y (prometheus + loki + alloy + grafana), recreating only on change..."
+  local availability_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"
   # Grafana reads runtime config (admin pw, OIDC client settings) from `env_file: .env`, and
   # every service reads its config from ./config bind mounts at start. Neither is a
   # compose-spec change, so compose_up_if_changed (common.sh) hashes them with the compose
   # files in effect and recreates only when that digest or an image differs from what the
   # running containers started with. A re-run with identical inputs touches nothing.
+  if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
+    [ -f "$availability_helper" ] || error "Availability runtime verifier is missing."
+    export COMPOSE_CMD
+    local availability_gate_output="" availability_gate_rc=0
+    availability_gate_output=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" python3 "$availability_helper" --verify-availability-namespace --candidate) \
+      || availability_gate_rc=$?
+    if [ "$availability_gate_rc" -ne 0 ]; then
+      availability_candidate_category "$availability_gate_rc" "$availability_gate_output"
+      error "Availability refused because the effective provider, candidate network configuration, or Linux namespace proof is unverified."
+    fi
+    info "Availability provider and current Linux namespace proof passed immediately before lifecycle apply."
+  fi
+  if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ] && [ -z "${O11Y_AVAILABILITY_SOURCE_FILE:-}" ]; then
+    error "Availability refused because the reviewed current-source declaration is missing."
+  fi
+  if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
+    export TMPDIR=/tmp
+  fi
+  if [ -n "${O11Y_AVAILABILITY_SOURCE_FILE:-}" ]; then
+    [[ -f "$availability_helper" && -f "$O11Y_AVAILABILITY_SOURCE_FILE" ]] \
+      || error "The reviewed current-source input is unavailable."
+    local availability_preapply_source_receipt
+    if ! availability_preapply_source_receipt=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" \
+      python3 "$availability_helper" --verify-availability-source \
+      < "$O11Y_AVAILABILITY_SOURCE_FILE"); then
+      error "The current Alloy self-metrics producer is not uniquely verified."
+    fi
+    local availability_preapply_binding
+    availability_preapply_binding=$(printf '%s' "$availability_preapply_source_receipt" | python3 -c '
+import json, re, sys
+try:
+    value = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(1)
+if not isinstance(value, dict):
+    raise SystemExit(1)
+source = value.get("source")
+container_sha256 = value.get("container_identity_sha256")
+if (value.get("status") != "observed" or source not in {"prometheus", "alloy"}
+        or not isinstance(container_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", container_sha256) is None):
+    raise SystemExit(1)
+print(source, container_sha256)
+') || error "The current Alloy self-metrics source is unverified."
+    local availability_preapply_source availability_preapply_container_sha256
+    read -r availability_preapply_source availability_preapply_container_sha256 <<< "$availability_preapply_binding"
+    printf 'O11Y_AVAILABILITY_PREAPPLY_SOURCE=%s\n' "$availability_preapply_source"
+    printf 'O11Y_AVAILABILITY_PREAPPLY_CONTAINER_SHA256=%s\n' "$availability_preapply_container_sha256"
+    local availability_preapply_epoch
+    availability_preapply_epoch=$(date -u +%s) \
+      || error "Cannot record the source-transition apply boundary."
+    [[ "$availability_preapply_epoch" =~ ^[1-9][0-9]{8,}$ ]] \
+      || error "Cannot record the source-transition apply boundary."
+    printf 'O11Y_AVAILABILITY_PREAPPLY_EPOCH=%s\n' "$availability_preapply_epoch"
+    compose_staged_up() {
+      if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
+        local availability_gate_output="" availability_gate_rc=0
+        availability_gate_output=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_AVAILABILITY_FINAL_START=true \
+          python3 "$availability_helper" --verify-availability-namespace --candidate) || availability_gate_rc=$?
+        if [ "$availability_gate_rc" -ne 0 ]; then
+          availability_candidate_category "$availability_gate_rc" "$availability_gate_output"
+          error "Availability final pre-start namespace and effective-compose proof is unverified."
+        fi
+      fi
+      compose up -d --force-recreate --remove-orphans || return 1
+    }
+  fi
   compose_up_if_changed config
+  if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
+    local availability_gate_output="" availability_gate_rc=0
+    availability_gate_output=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256="" \
+      python3 "$availability_helper" --verify-availability-namespace --candidate) || availability_gate_rc=$?
+    if [ "$availability_gate_rc" -ne 0 ]; then
+      availability_candidate_category "$availability_gate_rc" "$availability_gate_output"
+      error "Availability post-apply Linux namespace proof is unverified; the running stack is preserved for review."
+    fi
+    info "Availability post-apply Linux namespace proof passed."
+  fi
 }
 
 step_wait_healthy() {

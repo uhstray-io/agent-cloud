@@ -698,6 +698,22 @@
       (it was 2026-10-28) and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it (task
       output read from production Semaphore by the lead). Earlier notes naming 2026-10-28 are
       left as written. Not ticked.
+      2026-10-16: the operator did NOT approve dgx-spark ADR-0018 (OpenBao as the only source of the vLLM
+      key, read by dgx-spark's deploy job). It stays Proposed. So the retirement on or after 2026-11-13
+      is the two-step rotation in dgx-spark#34's plan:
+      - dgx-spark writes the new value to its local key file and does one planned restart of both ranks,
+        in a window the operator names. The operator may choose a two-restart variant instead: both keys
+        in the first restart, the new key only in the second, which removes the 401 window
+        (dgx-spark design decision 6, task 5.1);
+      - dgx-spark hands the value to the operator out of band;
+      - the operator seeds `secret/services/agentgateway:vllm_api_key` with `Seed OpenBao Key`;
+      - the operator runs Deploy agentgateway (Dev), then Rollback Inference Route (Dev) in `restore` mode.
+      Not ticked.
+      2026-10-24: the agent-cloud side is complete. Follow-up (2) of 2026-10-14 landed in #631
+      (`3fd86bb6`): when the vLLM key no longer matches the recorded fingerprint, the grace-period
+      probe is skipped instead of failing. The retirement date, 2026-11-13, is now recorded in
+      `context/architecture.md`, "Shared-key retirement". Left: the rotation itself (dgx-spark and the
+      operator, on or after 2026-11-13) and the `vllm_api_allowed_cidr` narrowing. Not ticked.
 - [x] 5.2 Accept the architecture record; append a dated pointer line to
       `plan/development/06-inference-skynet.md`; `platform/services/inference/` stub
       gains a README pointing at the gateway service and the dgx-spark roadmap record
@@ -871,6 +887,48 @@
       base URL, once dgx-spark
       serves vLLM over HTTPS (dgx-spark session: `--ssl-certfile`, `--ssl-keyfile`,
       `--enable-ssl-refresh`)
+      2026-10-16: dgx-spark answered the handoff with dgx-spark#34 (merged 455129b5), change
+      `inference-upstream-tls-and-key-retirement`, ADR-0017. The operator APPROVED ADR-0017 the same day,
+      with agent-cloud's side held until the operator says go. The design:
+      - spark-1 becomes a certificates-only consumer host of agent-cloud's internal-CA issuance, under
+        its own unprivileged account. Its name and public key come from dgx-spark.
+      - vLLM serves `--ssl-certfile`/`--ssl-keyfile`/`--enable-ssl-refresh`: server-only first, mutual
+        TLS once every caller presents a leaf.
+      - The daily renewal job re-issues the leaf once less than a third of its 30-day lifetime is left.
+        vLLM serves the new leaf without a restart. Whether its refresher follows the symlink swap is
+        unproven until dgx-spark's drill (its decision 3, task 3.4); the fallback is a fixed-name copy.
+      agent-cloud's pieces, in order:
+      - `internal_leaves` for `vllm-server`, `vllm-lifecycle` and `agw-upstream`;
+      - a spark-1 inventory host in its own group;
+      - `distribute-ca-root.yml` placing `step-ca-bundle.crt` beside the spark-1 leaves (dgx-spark task
+        2.2 waits on it);
+      - renewal proof paths for a non-gateway server leaf (`vllm-server`) and for a client leaf with
+        reload `none` on a non-gateway host (`vllm-lifecycle`);
+      - this task's `https://` upstream with `tls`;
+      - Caddy `/health` and the o11y `dgx-spark-vllm` scrape over HTTPS;
+      - Rollback Inference Route `direct` mode gaining an HTTPS transport (a point from dgx-spark's review).
+      Not started; not ticked.
+      2026-10-26 (dgx-spark handoff, operator-relayed): dgx-spark PR 38 (merged `76660cb`)
+      created the consumer account `vllm-tls` on spark-1: key-only, admitted only from the
+      Semaphore host, keys read from a root-owned file, leaf directories under the account's
+      `certs` directory. It has no login until dgx-spark commits `keys/vllm-tls.pub` and
+      re-applies. Done here, with the operator's go for these launches: `Generate Service SSH
+      Key (Dev)` `service_name=vllm-tls` (dry run 9407, real run 9408) and `Back Up Service SSH
+      Key (Dev)` (dry run 9409, real run 9410; site-config #116). The operator sent the reply
+      the same day. It carries the public half, confirms the Semaphore host as the issuance
+      source, and counter-proposes the server SAN. dgx-spark proposed `vllm.<site>.<zone>`.
+      The reply follows `internal-dns-naming` decision 14 for the server leaf:
+      `vllm-primary.<site>.<zone>` plus `dgx01.vllm-primary.<site>.<zone>`. For the client
+      leaf it proposes `lifecycle.vllm-primary.<site>.<zone>`. Decision 14 does not cover that
+      name; it copies the shape of the existing client leaves (`verifier.gateway`,
+      `probe.o11y`), which the naming scheme does not define either (open question recorded on
+      naming task 5.3). Two additions the build side needs that the list above lacks:
+      (a) the inventory name `spark-1` is already taken by `dgx_drill_svc` as `o11y-drill`, so
+      the certificates host needs its own inventory name, which `internal_leaves[].host` names;
+      (b) issuance, renewal and `distribute-ca-root.yml` must connect with the `vllm-tls` key
+      from OpenBao, the way the fault drill does, because Semaphore's own key is not
+      authorized for that account. The build itself still waits on the operator's go. Not
+      ticked.
 - [ ] 6.4 Validation gate: a request without a client certificate is refused at the
       gateway, proving scenario "A request without a client certificate is refused"; a
       throwaway client-profile leaf declared with a SAN on no allowlist entry (issued as in

@@ -167,6 +167,11 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       findings; normal runs are unchanged by construction (every guard is inert without
       --check), BATS 0 failures, pytest 339, ansible-lint and syntax-check clean. Check-mode
       RUNS of wave 2 are not done: each is proven when its service is next dry-run
+      - 2026-10-17: added the Dev-bound Semaphore API URL reconcile playbook. It validates
+        the private HTTPS root endpoint, proves the stored API token against the authenticated
+        current-user endpoint before writing, and uses the shared version-guarded merge to set
+        only `secret/services/semaphore:url`; local focused checks cover its check-mode and
+        fail-closed contract. No live Semaphore run was performed.
 - [x] 2.4 Allowlist in 1.4 is empty; the guard now fails on any new violation
 - [ ] 2.5 Validation gate: spec scenarios "Dry run changes nothing", "Read-only probe is not
       skipped", "Legacy dry-run argument still works" and "Verify-only run" pass
@@ -209,21 +214,49 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         So section 3's local gateway runs against the public edge (subject to its rate limit)
         until the VM path is fixed. Ticked once the measured result and the
         degraded path were recorded in `design.md` (Risks, "Measured 2026-10-12")
-- [ ] 3.2 Local inventory: agentgateway upstream set to the DGX API in `local-dev.yml` only;
-      `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the environment
-      secret, never an argv; `agw_clients` gains the four role identities and `skynet-eval`
+- [x] 3.2 Local inventory: agentgateway upstream set in `local-dev.yml` only to the DGX API,
+      directly on the LAN or, while 3.1's degraded path holds, through the public edge that
+      fronts it; `vllm_api_key` seeded into local OpenBao with `Seed OpenBao Key` from the
+      environment secret, never an argv; `agw_clients` gains the five role identities (plan
+      15's four plus `network-agent`) and `skynet-eval`
+      - 2026-10-24: task text amended on review. It first named the DGX API without the
+        degraded path, and four role identities.
+      - 2026-10-24, upstream: the public edge (`https://inference.uhstray.io/v1`), not the DGX
+        LAN address. That is the degraded path recorded in 3.1, kept by operator decision while
+        the VM path to the LAN stays cut; `local-dev.yml.example` documents the LAN override for
+        a gitignored `local-dev.yml`.
+      - `vllm_api_key` seeded by local `Seed OpenBao Key (Dev)` task 6767 (success), the value
+        staged as the encrypted `BAO_VALUE` environment input by `scripts/semaphore-seed-input.py`,
+        never a task parameter or argv. `Deploy agentgateway (Local)` task 6768 then passed its
+        verify: a chat completion came back from the upstream for `dev-local`.
+      - `agw_clients` in `local-dev.yml.example` lists `infra-agent`, `security-agent`,
+        `o11y-agent`, `service-agent`, `network-agent` and `skynet-eval`. Five role identities,
+        not four: `network-agent` joined plan 15's role table on 2026-10-04 (edge-dns), after
+        this task was written.
 - [ ] 3.3 agentgateway route for skynet's orchestration API on the default gateway, key-gated,
       restricted to the operator identity; deploy and verify locally. The verify also sends
       one `response_format: json_schema` request through the gateway to the DGX and asserts
       the reply parses against the schema (live half of 0.5)
+      - 2026-10-24, json_schema half done: PR #737 (merged `3a00cac1`) adds the probe to the
+        deploy's verify; `Deploy agentgateway (Local)` task 6872 passed it ("response_format
+        json_schema passed through: the reply parses against its schema"). Endpoint: the run's
+        verify names its upstream as `https://inference.uhstray.io/v1` (model
+        `nvidia/Qwen3.8-Flash-Next-NVFP4`), the public edge in front of vLLM on the DGX Spark
+        head. So the request reached the DGX through the edge, not over the LAN. Open: the route
+        deploy, which needs `Deploy skynet (Local)` first, and that needs a GitHub PAT with
+        `read:packages` in local OpenBao (`secret/services/github:pat`) to pull the image.
 - [ ] 3.4 **[skynet]** Drop Bifrost from the agent-cloud path: Tier 2 calls the gateway's `/v1`
       with the calling role's key; Tier 1 stays only for skynet-local models
 - [ ] 3.5 **[skynet]** Postgres checkpointer in place of the in-memory saver; its own small
       Postgres in skynet's compose
 - [ ] 3.6 **[skynet]** A deployable image and compose file for Tier 2
-- [ ] 3.7 `skynet_svc` in `local-dev.yml.example`, `deploy-skynet.yml` and
+- [x] 3.7 `skynet_svc` in `local-dev.yml.example`, `deploy-skynet.yml` and
       `clean-deploy-skynet.yml` from the shared tasks, local templates in
       `templates-local.yml`; secrets through manage-secrets; BATS test
+      - 2026-10-24: merged in PR #732 (`07f2dc84`): `skynet_svc` / `skynet-local` in
+        `local-dev.yml.example`, both playbooks, `Deploy skynet (Local)` in `templates-local.yml`,
+        `platform/tests/test_service_skynet.bats`. The live deploy is part of 3.8; it waits on
+        the same GitHub PAT as 3.3.
 - [ ] 3.8 Validation gate: spec scenarios "Agent calls are attributable per role",
       "Orchestration route is key-gated", "Restart mid-run" and "No private address in the
       public repo" pass on local-dev
@@ -641,6 +674,12 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         incomplete" was empty by its `== 2` filter (no history window full). Collector schedule
         live: tasks 3493, 3495, 3500, 3510. The "Validate the latest-state conformance read
         model" item above stays open: the rendered matrix needs an operator browser check.
+      - [x] **Completion source contract:** add one fixed final `kind=run,status=success` receipt variant after required reads/parsing and configured required writes; preserve the existing per-service marker and six-status schemas. Keep local Loki push and production private OTLP/HTTP transport environment-specific, protect NetBox's nonblocking behavior, and prevent sending on known pre-boundary failures. Treat lost response/timeout after possible remote acceptance as failed/UNKNOWN publication that may nevertheless be queryable; do not claim absence or add retry, retraction, or transaction machinery. Extend receiver classification and focused tests without weakening the single-writer boundary. Source-only completion is recorded 2026-10-28 after both child slices and focused regressions passed; Alloy receipt delivery, Loki readback, and alert acceptance remain open.
+        - [x] Collector-side source: classify complete NetBox reads; known zero/multiple matches remain nonblocking and select no write, while failed/incomplete/unknown reads suppress completion. A unique-match PATCH is required and must return exactly one explicit HTTP 200. Add a fixed receipt encoder and separate final receipt publication after the existing data batch is accepted; add focused collector regressions.
+          - 2026-10-28: Four focused collector suites plus `test_no_request_in_loop_items.py` and `test_no_log_error_redaction.py` pass (219 tests). Local fake-Loki cases prove prior-data acknowledgement precedes a separate receipt-only request and cover prior/final non-204 outcomes. This is source-only evidence; Alloy receiver integration and live Loki readback/alert acceptance remain open.
+        - [x] Alloy receiver and consumers: allow only the fixed `kind=run,status=success` variant alongside the existing exact per-step schema; add `kind` to the conformance label hint and require nonempty `service`/`step` labels in per-service dashboard queries so the global receipt cannot appear as service state, a failure, or an inventory marker.
+          - 2026-10-28: Source-only consumer integration after PR #756 merged to Dev at `0bc41a8`: four focused Python suites passed (384 tests) with the authorized loopback-socket retry, and the focused Alloy BATS test passed. The shared receiver remains an unactivated candidate; no live receipt or Loki readback is claimed.
+      - [ ] **Completion silence acceptance:** verify the effective scheduled cadence and normal run duration, then select the smallest supported integer-hour silence allowing the reviewed missed-run budget. Read back a successful Loki completion receipt, prove a known pre-boundary failure sends no receipt, and inspect the shared silence rule and notification delivery. Treat an ambiguous post-acceptance acknowledgement as UNKNOWN and reconcile it through Loki readback; do not claim the record is absent or the clock could not reset. Preserve CA's existing 36-hour default; do not tick task 7.5 from source evidence alone.
 - [ ] 7.6 **[skynet]** Role packs, `service_onboarding` graph built from the registry, proposer
       wiring with the three schemas, eval harness with thresholds in CI
 - [x] 7.7 `agent-practices.md` for agentgateway
@@ -744,10 +783,23 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - 2026-10-14: the step count is twenty-three. `platform/workflows/service-onboarding/registry.yml`
         carries 23 `- id:` entries (counted 2026-10-14); the 2026-10-04 note under 7.1 records
         the step that raised it from twenty-two. Not ticked
+      - 2026-10-15: the operator picked **hickory-dns** as the pilot service. It runs locally and is
+        planned for production, and its production rollout also unblocks section 7 of
+        inference-gateway-agentgateway ("needs hickory-dns in production"). The run itself waits
+        on 7.6 (the skynet-built onboarding graph). Not ticked
 - [ ] 10.2 Update the diagram to the twenty-three steps, plan 15 status, root `AGENTS.md`
       workflow rows
       - 2026-10-14: same count as 10.1 (23 registry entries; the diagram must show twenty-three).
         Not ticked
+      - 2026-10-24: three of the four parts done. `docs/agent-cloud-service-deploy.excalidraw` draws all
+        twenty-three steps: SSH Key Backup, Secrets & AppRole, Edge Route, Edge DNS and Credential
+        Backup are inserted in flow order, with owner lanes, including a new Network agent lane over
+        Edge DNS. Every registry entry now carries a `diagram_label`, and
+        `test_workflow_registry.py` requires each to name a box in the drawing (mutation-checked: a
+        wrong label fails). Plan 15 is ACTIVE, with a 23-row step table (Edge DNS is 16, the later
+        rows renumbered, including the schema and role tables). Root `AGENTS.md` gains the one
+        missing workflow row, `Create VM Template`. Open: re-export `docs/agent-cloud-service-deploy.svg`
+        from the updated drawing (Excalidraw's export needs a browser). Not ticked
 - [ ] 10.3 On archive, retain the outcome (worked / dead end / corrected) into bank
       `agent-cloud-750a33b9`
 - [ ] 10.4 Validation gate: `openspec validate service-deployment-workflow --store

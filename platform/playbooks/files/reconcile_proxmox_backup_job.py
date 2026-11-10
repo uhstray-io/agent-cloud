@@ -149,68 +149,77 @@ def _safe_refusal(exc: BaseException) -> str:
     return message if message in SAFE_REFUSALS else FALLBACK_REFUSAL
 
 
-def inspect_candidates(payload: Mapping[str, object]) -> dict[str, object]:
-    """Return a small allow-listed view of the backup-job list for survey mode."""
+def inspect_selected_job(payload: Mapping[str, object]) -> dict[str, object]:
+    """Summarize the privately selected job without returning its identity or config."""
     target_vmid = _parse_vmid(str(payload.get("vmid", "")))
     jobs = payload.get("jobs")
     _require(isinstance(jobs, list), "Proxmox returned a malformed backup-job list.")
     _require(all(isinstance(job, Mapping) for job in jobs),
              "Proxmox returned a malformed backup-job list.")
-
-    candidates = []
+    selected_id = payload.get("job_id")
+    selected_id_valid = isinstance(selected_id, str) and JOB_ID.fullmatch(selected_id) is not None
+    matches = []
     for job in jobs:
         job_id = job.get("id")
         _require(isinstance(job_id, str) and JOB_ID.fullmatch(job_id) is not None,
                  "Proxmox returned a backup job with a malformed ID.")
+        if selected_id_valid and job_id == selected_id:
+            matches.append(job)
+
+    if not selected_id_valid or not matches:
+        match_status = "missing"
+    elif len(matches) > 1:
+        match_status = "ambiguous"
+    else:
+        match_status = "unique"
+
+    selected = {
+        "match": match_status,
+        "enabled": None,
+        "enabled_state": "unknown",
+        "selector": "unavailable",
+        "includes_o11y": None,
+        "selection_unverified": True,
+    }
+    if match_status == "unique":
+        job = matches[0]
         enabled = job.get("enabled", True)
         if enabled is True or (type(enabled) is int and enabled == 1):
-            enabled_status = "enabled"
+            selected["enabled"] = True
+            selected["enabled_state"] = "enabled"
         elif enabled is False or (type(enabled) is int and enabled == 0):
-            enabled_status = "disabled"
-        else:
-            enabled_status = "unknown"
+            selected["enabled"] = False
+            selected["enabled_state"] = "disabled"
 
-        raw_vmids = job.get("vmid")
-        if isinstance(raw_vmids, str) and VMID_LIST.fullmatch(raw_vmids) is not None:
-            member_ids = [_parse_vmid(value) for value in raw_vmids.split(",")]
-            explicit_membership = len(member_ids) == len(set(member_ids))
-        else:
-            member_ids = []
-            explicit_membership = False
-
-        if job.get("all") is True or job.get("all") == 1:
-            selector = "all"
+        if job.get("all") is True or (type(job.get("all")) is int and job.get("all") == 1):
+            selected["selector"] = "all"
         elif job.get("pool") not in (None, ""):
-            selector = "pool"
+            selected["selector"] = "pool"
         elif job.get("exclude") not in (None, ""):
-            selector = "exclude"
-        elif explicit_membership:
-            selector = "explicit-vmid"
+            selected["selector"] = "exclude"
+        elif job.get("type", "vzdump") != "vzdump":
+            selected["selector"] = "unsupported-type"
         else:
-            selector = "malformed-or-unspecified"
-
-        candidates.append({
-            "id": job_id,
-            "type": job.get("type") if isinstance(job.get("type"), str) else "vzdump",
-            "enabled": enabled_status,
-            "selector": selector,
-            "member_count": len(member_ids) if explicit_membership else None,
-            "includes_declared_o11y_vmid": target_vmid in member_ids if explicit_membership else None,
-            "schedule": job.get("schedule") if isinstance(job.get("schedule"), str) else None,
-        })
-    _require(len({candidate["id"] for candidate in candidates}) == len(candidates),
-             "Proxmox returned duplicate backup-job IDs.")
-    return {"candidate_count": len(candidates), "candidates": candidates}
+            try:
+                member_ids = _validated_membership(job, selected_id, require_enabled=False)
+            except (TypeError, ValueError):
+                selected["selector"] = "malformed-or-unspecified"
+            else:
+                selected["selector"] = "explicit-vmid"
+                selected["includes_o11y"] = target_vmid in member_ids
+                selected["selection_unverified"] = False
+    return {"candidate_count": len(jobs), "selected_job": selected}
 
 
-def _validated_membership(job: object, job_id: str) -> list[int]:
+def _validated_membership(job: object, job_id: str, *, require_enabled: bool = True) -> list[int]:
     _require(isinstance(job, Mapping), "Proxmox returned a malformed backup job.")
     _require(job.get("id") == job_id, "The selected backup job identity changed.")
     _require(job.get("type", "vzdump") == "vzdump", "The selected job is not a vzdump backup job.")
 
     enabled = job.get("enabled", True)  # Proxmox documents enabled=true as the default.
-    _require(enabled is True or (type(enabled) is int and enabled == 1),
-             "The selected backup job is disabled or has malformed enabled state.")
+    if require_enabled:
+        _require(enabled is True or (type(enabled) is int and enabled == 1),
+                 "The selected backup job is disabled or has malformed enabled state.")
 
     all_mode = job.get("all")
     _require(all_mode is None or all_mode is False or (type(all_mode) is int and all_mode == 0),
@@ -958,7 +967,7 @@ def main() -> int:
         if (
             operation in {
                 "node-failure-plan", "node-failure-pages", "node-failure-summary",
-                "node-failure-identity", "storage-summary",
+                "node-failure-identity", "storage-summary", "inspect",
             }
             and not isinstance(payload, Mapping)
         ):
@@ -966,7 +975,7 @@ def main() -> int:
         if operation == "plan":
             result = prepare_plan(payload)
         elif operation == "inspect":
-            result = inspect_candidates(payload)
+            result = inspect_selected_job(payload)
         elif operation == "recheck":
             result = assert_unchanged(payload["plan"], payload["detail"])
         elif operation == "verify":

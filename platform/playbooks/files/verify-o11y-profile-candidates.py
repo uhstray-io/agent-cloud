@@ -22,7 +22,7 @@ SCRAPE_ENV_LIMITS = {
     "O11Y_SCRAPE_LABEL_NAME_LENGTH_LIMIT": 1_280,
     "O11Y_SCRAPE_LABEL_VALUE_LENGTH_LIMIT": 20_480,
 }
-BASELINE_COMPONENT = "prometheus.scrape.local_containers"
+BASELINE_COMPONENT = "loki.write.default"
 PROFILE_COMPONENT = "pyroscope.scrape.alloy_self_profile"
 API_READ_LOOP = 'while IFS= read -r line || [[ -n $line ]]; do printf \'%s\\n\' "$line"; done'
 IMAGE_TIMEOUT = 8
@@ -116,13 +116,14 @@ def _profile_blocks(config: str) -> dict[str, str]:
     return blocks
 
 
-def validate_candidates(disabled: str, enabled: str) -> dict[str, object]:
+def validate_candidates(disabled: str, enabled: str, profile_address: str = "alloy:12345") -> dict[str, object]:
     """Check the two rendered configurations contain exactly the approved pilot."""
-    if not isinstance(disabled, str) or not isinstance(enabled, str):
+    if (not isinstance(disabled, str) or not isinstance(enabled, str)
+            or profile_address not in {"alloy:12345", "127.0.0.1:12345"}):
         raise Refusal("candidate_invalid")
     if max(len(disabled.encode("utf-8")), len(enabled.encode("utf-8"))) > MAX_CONFIG_BYTES:
         raise Refusal("candidate_invalid")
-    if not re.search(r'(?m)^\s*prometheus\.scrape\s+"local_containers"\s*\{', disabled):
+    if not re.search(r'(?m)^\s*loki\.write\s+"default"\s*\{', disabled):
         raise Refusal("candidate_invalid")
     if _profile_blocks(disabled):
         raise Refusal("candidate_invalid")
@@ -138,7 +139,7 @@ def validate_candidates(disabled: str, enabled: str) -> dict[str, object]:
     writer = blocks["pyroscope.write.private"]
     required_scrape = (
         'job_name = "o11y/alloy"',
-        '"__address__" = "alloy:12345"',
+        f'"__address__" = "{profile_address}"',
         '"service_name" = "o11y/alloy"',
         '"target_id" = "service:o11y"',
         'scrape_interval = "60s"',
@@ -158,7 +159,12 @@ def validate_candidates(disabled: str, enabled: str) -> dict[str, object]:
         pattern = rf"profile\.{profile_type}\s*\{{\s*enabled\s*=\s*{str(enabled_value).lower()}\s*\}}"
         if len(re.findall(pattern, scrape)) != 1:
             raise Refusal("candidate_invalid")
-    return {"target_count": 1, "profile_type_count": len(PROFILE_TYPES), "profile_types": list(PROFILE_TYPES)}
+    return {
+        "target_count": 1,
+        "profile_type_count": len(PROFILE_TYPES),
+        "profile_types": list(PROFILE_TYPES),
+        "profile_address": profile_address,
+    }
 
 
 def _bounded_command(argv: list[str], *, timeout: float, max_bytes: int) -> tuple[int, bytes]:
@@ -527,9 +533,13 @@ def _project_disabled_components(components: object) -> str:
 
 
 def validate_runtime(payload: object) -> dict[str, object]:
-    if not isinstance(payload, dict) or set(payload) != {"disabled", "enabled"}:
+    if not isinstance(payload, dict) or set(payload) not in (
+        {"disabled", "enabled"}, {"disabled", "enabled", "profile_address"}
+    ):
         raise Refusal("candidate_invalid")
-    structure = validate_candidates(payload["disabled"], payload["enabled"])
+    structure = validate_candidates(
+        payload["disabled"], payload["enabled"], payload.get("profile_address", "alloy:12345")
+    )
     image_id, image_ref = _image_identity()
     live_image_id = _live_receiver_image_identity()
     if live_image_id != image_id:

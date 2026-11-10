@@ -61,13 +61,28 @@ def _deploy_rel(service: str) -> str:
     return f"platform/services/{service}/deployment"
 
 
+class _ComposeLoader(yaml.SafeLoader):
+    """SafeLoader that also reads compose-spec merge tags (!override, !reset) as plain values,
+    as test_restart_policy.bats does, so an overlay that uses them is scanned, not an error."""
+
+
+_ComposeLoader.add_multi_constructor(
+    "!",
+    lambda loader, _suffix, node: (
+        loader.construct_mapping(node) if isinstance(node, yaml.MappingNode)
+        else loader.construct_sequence(node) if isinstance(node, yaml.SequenceNode)
+        else loader.construct_scalar(node)
+    ),
+)
+
+
 def _bind_sources(service: str) -> set[str]:
     """Repo-relative bind-mount sources."""
     out: set[str] = set()
     for f in sorted((SERVICES / service / "deployment").rglob("*compose*.yml")):
         if "netbox-docker" in f.parts:  # the untracked upstream clone, not this repo's compose
             continue
-        doc = yaml.safe_load(f.read_text()) or {}
+        doc = yaml.load(f.read_text(), Loader=_ComposeLoader) or {}  # noqa: S506 - SafeLoader subclass
         for svc in (doc.get("services") or {}).values():
             for vol in (svc or {}).get("volumes") or []:
                 src = vol.get("source", "") if isinstance(vol, dict) else str(vol).split(":", 1)[0]

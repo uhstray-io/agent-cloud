@@ -1,0 +1,41 @@
+---
+# Dev-only PBS entry point. Target identity and template come from the sole private
+# pbs_svc declaration; the shared lifecycle performs the existing provision workflow.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/provision-pbs-vm.yml
+      - platform/playbooks/provision-vm.yml
+      - platform/playbooks/preflight-o11y-restore-target-inputs.yml
+      - platform/playbooks/tasks/preflight-o11y-restore-target.yml
+      - platform/playbooks/tasks/assert-bao-transport.yml
+      - platform/playbooks/tasks/guard-o11y-restore-target.yml
+      - platform/playbooks/files/guard_o11y_restore_target.py
+      - platform/playbooks/files/o11y_restore_coordination.py
+      - platform/semaphore/templates.yml
+
+- name: Require one declared PBS target before provisioning
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Refuse a non-PBS or ambiguous target
+      ansible.builtin.assert:
+        that:
+          - target_service | default('pbs') == 'pbs'
+          - groups['pbs_svc'] | default([]) | length == 1
+          - not ansible_check_mode
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+        fail_msg: "PBS provisioning requires its single private declaration, exact reviewed SHA, and write-mode Dev execution."
+        quiet: true
+
+- name: Provision only the private PBS declaration through the shared lifecycle
+  ansible.builtin.import_playbook: provision-vm.yml
+  vars:
+    target_service: pbs
+    _extra_var_guard_nested: true

@@ -85,7 +85,8 @@
     _control_named: "{{ agw_isolation_control | default('', true) | string | trim }}"
     _control: >-
       {{ _control_named if (_control_named | length > 0)
-         else (agw_identities | default([]) | reject('equalto', _burst) | list | first | default('')) }}
+         else (agw_identities | default([]) | reject('equalto', _burst) | reject('in', _agw_pool_identities)
+               | list | first | default('')) }}
     # Never burst an identity that has a real budget: the probe spends it down on purpose.
     _budget_cap: 1000
     _burst_budget: "{{ ((agw_client_policies | default({}))[_burst] | default({})).tokens_per_hour | default('', true) }}"
@@ -161,6 +162,18 @@
           The control identity '{{ _control }}' must be declared in agw_identities and differ from the burst
           identity '{{ _burst }}' (agw_isolation_control; default: the first other identity).
           Declared: {{ agw_identities | join(', ') | default('none', true) }}.
+        quiet: true
+
+    # A shared-pool identity (agw_models[].pool_identity) may call only the hidden pool/ names, never a public
+    # model, so either role would be refused by the gateway for the wrong reason. Refused here, before any request.
+    - name: "Refuse a shared-pool identity as the burst or control identity"
+      ansible.builtin.assert:
+        that:
+          - _burst not in _agw_pool_identities
+          - _control not in _agw_pool_identities
+        fail_msg: >-
+          '{{ _burst if _burst in _agw_pool_identities else _control }}' is a shared-pool identity
+          (agw_models[].pool_identity): it may call no public model. Name an ordinary identity.
         quiet: true
 
     - name: "Refuse an identity that may use no declared model"

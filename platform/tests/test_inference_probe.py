@@ -16,6 +16,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import unquote
 
+import playbook_yaml
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -398,7 +399,7 @@ def test_the_leaf_directory_is_gitignored():
 def test_the_overlay_is_the_base_exporter_command_plus_only_the_textfile_collector():
     base_svc = yaml.safe_load((DEPLOY / "compose.yml").read_text())["services"]["node-exporter"]
     base = base_svc["command"]
-    overlay = yaml.safe_load((PROBE_DIR / "compose.textfile.yml").read_text())
+    overlay = yaml.safe_load((DEPLOY / "capacity/compose.textfile.yml").read_text())
     assert list(overlay["services"]) == ["node-exporter"]
     # `restart` is repeated only for the per-directory restart-policy guard, and must equal the base.
     assert sorted(overlay["services"]["node-exporter"]) == ["command", "restart"]
@@ -449,7 +450,10 @@ def _evaluate(tmp_path, host_vars):
     """Evaluate the deploy's own secrets/env/overlay expressions for one host."""
     p1 = _phase("Phase 1")
     p2 = _phase("Phase 2")
-    run = next(t for t in p2["tasks"] if t.get("name") == "Run deploy.sh (container lifecycle)")
+    run = next(
+        t for t in playbook_yaml.tasks(p2["tasks"])
+        if t.get("name") == "Run deploy.sh (container lifecycle)"
+    )
     names = ["_probe_enabled", "_probe_textfile_dir", "_shared_reads", "_env_templates"]
     pv = {k: p1["vars"][k] for k in names}
     pv["_overlays"] = run["environment"]["COMPOSE_OVERLAYS"]
@@ -475,11 +479,12 @@ PRE_PROBE_ENV = [{"src": "env.j2", "dest": ".env", "mode": "0600"}]
 
 @needs_ansible
 @pytest.mark.parametrize("host_vars", [{}, {"o11y_inference_probe_enabled": False}])
-def test_probe_off_reads_and_renders_exactly_the_pre_probe_set(tmp_path, host_vars):
+def test_probe_off_keeps_secret_and_env_wiring_off_but_capacity_textfiles_enabled(tmp_path, host_vars):
     w = _evaluate(tmp_path, host_vars)
     assert w["shared"] == PRE_PROBE_SHARED
     assert w["env"] == PRE_PROBE_ENV
-    assert w["overlays"] == ""
+    assert w["overlays"] == "capacity/compose.textfile.yml"
+    assert (DEPLOY / w["overlays"]).is_file()
 
 
 @needs_ansible
@@ -489,7 +494,7 @@ def test_probe_on_reads_its_key_from_the_owning_service_into_a_separate_file(tmp
     assert w["shared"] == PRE_PROBE_SHARED + [{"from_service": "agentgateway", "read_keys": ["client_o11y-probe"]}]
     assert w["env"] == PRE_PROBE_ENV + [
         {"src": "../probe/inference-probe.env.j2", "dest": "probe/inference-probe.env", "mode": "0600"}]
-    assert w["overlays"] == "probe/compose.textfile.yml"
+    assert w["overlays"] == "capacity/compose.textfile.yml"
     assert (DEPLOY / "templates" / w["env"][1]["src"]).resolve() == PROBE_DIR / "inference-probe.env.j2"
     assert (DEPLOY / w["overlays"]).is_file()
 

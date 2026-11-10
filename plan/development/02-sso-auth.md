@@ -3,6 +3,8 @@
 >
 > **Depends on:** 00, 01
 >
+> **Status:** ACTIVE (2026-11-04) — Authentik is deployed in production at `auth.uhstray.io` (`AGENTS.md`, Deployment Status). Per-service SSO state is in the sections below. Semaphore's production upgrade path is `platform/semaphore/README.md`; the `semaphore-upgrade.sh` script named in the historical sections lives in site-config and is not tracked in this repo.
+>
 > Part of the dependency-ordered `plan/development/` set (00–10). The source
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
@@ -13,7 +15,7 @@
 # Auth / SSO Deployment Plan — Authentik Central IdP
 
 > **Location:** `plan/development/02-sso-auth.md`
-> **Date:** 2026-06-13 · **Status:** PHASE 0 DONE (local) · **Owner:** uhstray-io
+> **Date:** 2026-06-13 · **Status:** ACTIVE (Phase 0 done locally, 2026-06-13; production state in the sections below) · **Owner:** uhstray-io
 > **Context:** agent-cloud has machine auth (OpenBao secrets, OPA policy, AppRole) but **no human-identity layer**. This plan adds a central Identity Provider — **Authentik** — to give every Caddy-fronted service single sign-on, operator login, and (later) storefront-customer auth. Local-dev first (it deploys with the composable pattern already proven for DNS/Caddy/NetBox), then prod/main.
 >
 > **IMPLEMENTED (local-dev, Phase 0 + live) — 2026-06-14:** the composable service is built and **deployed + healthy via local Semaphore** (`platform/services/authentik/`, `deploy-authentik.yml`): server+worker+Postgres+Redis, `ak healthcheck` green, `/api/v3/root/config/` → 200, server on the `local-dev` network (Caddy reaches `authentik-server:9000`). Secrets (`secret_key`, `bootstrap_password`, `bootstrap_token`, `db_password`) generated once into `secret/services/authentik` and reused. Host debug port is `127.0.0.1:9300` (step-ca owns `:9000`). Wired: `authentik_svc` inventory group, bootstrap `_inv_ini`, "Deploy Authentik (Local)" template, seed blueprint (agent-cloud group), BATS (8). **Deferred to Phase 1/2:** the `auth.agent-cloud.test` Caddy route + `forward_auth` gating (the `caddy_routes` `forward_auth` shape below) — that's where SSO actually gates a service.
@@ -272,7 +274,7 @@ Membership is assigned in the Authentik UI (or a future user-seed blueprint).
 
 # Production SSO Rollout Plan — Authentik for Semaphore, Proxmox, NetBox (+ Grafana)
 
-Status: IN PROGRESS (2026-06-25). Owner: platform. Supersedes nothing; extends
+Status: ACTIVE (2026-06-25). Owner: platform. Supersedes nothing; extends
 `plan/development/02-sso-auth.md` with the prod promotion + composability.
 
 ## Goal
@@ -451,7 +453,7 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
    Semaphore prod OIDC with `semaphore-upgrade.sh apply` (operator-side;
    snapshot+validate → env-override → restart → verify → auto-rollback);
    verify SSO login (local admin fallback intact). Gate. **DONE.**
-3. **tududi (native OIDC) + honcho (`/docs` forward_auth)** promoted to prod
+3. **tududi (native OIDC)** (retired as work tracker 2026-10-23; torn down 2026-11-09) **+ honcho (`/docs` forward_auth)** promoted to prod
    (`todo.uhstray.io` / `memory.uhstray.io`), guarded by the assert+verify.
    Named platform users (`wisward` admin, `andrew.godlewsky` developer+business).
    **DONE.**

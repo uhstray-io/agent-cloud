@@ -641,6 +641,128 @@ def test_the_playbook_documents_the_new_inventory_names():
         assert name in text.split("- name:", 1)[0], name
 
 
+# -- Every deploy: the render is counted, and a service identity is refused OpenRouter -----------
+
+COUNT_TASK = "Report the rendered identities and key entries"
+REFUSAL_PROBE = "A service identity is refused an OpenRouter model"
+REFUSAL_ASSERT = "Require the gateway to refuse an OpenRouter model the identity may not use"
+
+
+def test_the_rendered_count_is_printed_on_every_run_and_holds_no_secret():
+    task = _task(PHASE1, COUNT_TASK)
+    assert "ansible.builtin.debug" in task
+    assert "no_log" not in task
+    assert task.get("when") == "not ansible_check_mode"
+
+
+def test_the_refusal_probe_expects_a_refusal_for_a_non_openrouter_identity_only():
+    probe = _task(PHASE3, REFUSAL_PROBE)
+    assert probe["vars"]["_agwp_status"] == [403, 429]  # only the gateway's refusal and its own bucket
+    assert 200 not in probe["vars"]["_agwp_status"]
+    assert probe["vars"]["_agwp_method"] == "POST"
+    assert "_verify_client not in (_agw_openrouter_identities | default([]))" in probe["when"]
+    assert "_or_all | length > 0" in probe["when"]
+    assert "not (_verify_refused | bool)" in probe["when"]
+
+
+FACT_TASK = "Keyed probes: keep the refusal's status, error code and bucket flag"
+VERIFIED_TASK = "Gather this host's service-deploy result"
+
+
+def _probe_out(status: int, content: str = "", code: str | None = None) -> dict:
+    # The shape tasks/agw-probe.yml keeps: status, content, json (the gateway's error code lives there), msg.
+    return {"status": status, "content": content, "json": {"error": {"code": code}} if code else {}, "msg": ""}
+
+
+def _refusal(tmp: Path, out: dict, unproven: bool, extra: tuple = (), **more) -> subprocess.CompletedProcess:
+    # The real fact task reads a probe result and the real assert judges it: no expression is re-typed.
+    tasks = [_task(PHASE3, FACT_TASK), _task(PHASE3, REFUSAL_ASSERT), *extra]
+    play_vars = {
+        "_agwp_out": out,
+        "_verify_client": "ws",
+        "_verify_refused": False,
+        "_or_all": [OR_MINI["name"]],
+        "_verify_or_denied_model": OR_MINI["name"],
+        **more,
+    }
+    return _ansible(tmp, {"agw_verify_allow_unproven": unproven}, tasks, play_vars)
+
+
+@pytest.mark.parametrize(
+    "out, unproven, passes",
+    [
+        (_probe_out(403, code="model_not_allowed"), False, True),  # the gateway's measured refusal
+        (_probe_out(403, code="model_not_allowed"), True, True),
+        (_probe_out(403, code="invalid_api_key"), False, False),  # a 403 for another reason is not the allow-list
+        (_probe_out(403), False, False),  # a 403 with no error code
+        (_probe_out(400, code="model_not_allowed"), False, False),  # only the 403 is the refusal
+        (_probe_out(404, code="model_not_allowed"), False, False),
+        (_probe_out(200), False, False),  # the identity reached OpenRouter
+        (_probe_out(200), True, False),
+        (_probe_out(401), True, False),
+        (_probe_out(429, "rate limit exceeded"), True, True),  # the gateway's own bucket, accepted as unproven
+        (_probe_out(429, "rate limit exceeded"), False, False),  # the same 429 without the acceptance fails
+        (_probe_out(429, "upstream said slow down"), True, False),  # a 429 with another body is not the bucket
+        (_probe_out(429), True, False),
+    ],
+)
+def test_the_refusal_passes_only_the_gateways_403_model_not_allowed_or_its_own_bucket_when_accepted(
+    tmp_path, out, unproven, passes
+):
+    r = _refusal(tmp_path, out, unproven)
+    assert (r.returncode == 0) == passes, r.stdout + r.stderr
+
+
+@pytest.mark.parametrize(
+    "out, unproven, verified",
+    [
+        (_probe_out(403, code="model_not_allowed"), False, True),  # a refusal the gateway made is proof
+        (_probe_out(429, "rate limit exceeded"), True, False),  # its own bucket is not
+    ],
+)
+def test_the_run_is_unverified_only_when_the_refusal_was_the_gateways_bucket(tmp_path, out, unproven, verified):
+    want = {"ansible.builtin.assert": {"that": ["(_service_deploy_result.verified | bool) == (_want_verified | bool)"]}}
+    r = _refusal(
+        tmp_path,
+        out,
+        unproven,
+        extra=(_task(PHASE3, VERIFIED_TASK), want),
+        _deploy={"changed": True},
+        _want_verified=verified,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_the_refusal_facts_and_assert_are_guarded_like_the_probe():
+    for name in (FACT_TASK, REFUSAL_ASSERT):
+        when = _task(PHASE3, name)["when"]
+        assert "not ansible_check_mode" in when, name
+        assert "_verify_client not in (_agw_openrouter_identities | default([]))" in when, name
+        assert "not (_verify_refused | bool)" in when, name
+        assert "_or_all | length > 0" in when, name
+
+
+def test_the_refusal_keeps_the_status_the_code_and_the_bucket_flag_never_the_whole_result():
+    facts = _task(PHASE3, FACT_TASK)["ansible.builtin.set_fact"]
+    assert set(facts) == {"_keyed_or_refused", "_keyed_or_refused_code", "_keyed_or_refused_bucket"}
+    assert all("_agwp_out }}" not in value for value in facts.values())
+
+
+def test_the_probe_picks_from_the_same_openrouter_names_the_verify_splits_by():
+    # The probe's pool (`_or_all`) and the verify's OpenRouter split (`_orn`) must name the same models.
+    pool = " ".join(PHASE3["vars"]["_or_all"].split())
+    split = " ".join(_task(PHASE3, PICK_TASK)["vars"]["_orn"].split())
+    assert pool == split
+
+
+def test_the_report_names_the_refusal_only_when_the_probe_ran_and_says_when_it_was_not_proven():
+    msg = _task(PHASE3, "Report")["ansible.builtin.debug"]["msg"]
+    assert "{% if _keyed_or_refused_bucket | default(false) | bool %}" in msg
+    assert "was not proven (HTTP 429, request bucket)" in msg
+    assert "{% elif _keyed_or_refused is defined %}" in msg
+    assert "is refused for {{ _verify_client }} (HTTP 403, model_not_allowed)" in msg
+
+
 # -- On the pinned image ---------------------------------------------------------------------------
 
 live = pytest.mark.skipif(not _image_present(), reason=f"podman or {IMAGE} not available")
@@ -719,7 +841,7 @@ class Recorder(DrainingHandler):
         self.wfile.write(data)
 
 
-def _post(port, body, key):
+def _post_full(port, body, key) -> tuple[int, bytes]:
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/v1/chat/completions",
         json.dumps(body).encode(),
@@ -727,10 +849,13 @@ def _post(port, body, key):
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
-            r.read()
-            return r.status
+            return r.status, r.read()
     except urllib.error.HTTPError as e:
-        return e.code
+        return e.code, e.read()
+
+
+def _post(port, body, key):
+    return _post_full(port, body, key)[0]
 
 
 @live
@@ -794,8 +919,9 @@ def test_the_gateway_sends_the_openrouter_id_and_key_and_gates_the_model_by_iden
         chat = {"model": "or-mini", "messages": [{"role": "user", "content": "x"}]}
         assert _post(port, chat, STORE["client_skynet"]) == 200
         assert _post(port, {**chat, "stream": True}, STORE["client_skynet"]) == 200
-        refused = _post(port, chat, STORE["client_ws"])
-        assert refused in (400, 403, 404), refused
+        status, raw = _post_full(port, chat, STORE["client_ws"])
+        assert status == 403, (status, raw)  # the gateway's refusal, not a 429 bucket or a routing fault
+        assert json.loads(raw)["error"]["code"] == "model_not_allowed", raw
         assert len(Recorder.seen) == 2, Recorder.seen
         for call in Recorder.seen:
             assert call["path"] == "/api/v1/chat/completions"

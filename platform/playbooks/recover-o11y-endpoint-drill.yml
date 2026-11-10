@@ -1,0 +1,91 @@
+---
+# Separate recovery for an interrupted endpoint availability drill. A normal deploy restores
+# the reviewed projection (the drilled target's expected status code goes back to its
+# declared value), and only then is the endpoint-drill marker removed. It does not gate on
+# endpoint health: a target that really is down must stay recoverable.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Verify the reviewed Dev checkout before endpoint-drill recovery
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Read the controller checkout revision
+      ansible.builtin.command:
+        argv: [git, rev-parse, HEAD]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _endpoint_controller_revision
+      changed_when: false
+      check_mode: false
+
+    - name: Require the exact reviewed revision
+      ansible.builtin.assert:
+        that:
+          - expected_repository_sha | default('') is match('^[0-9a-f]{40}$')
+          - _endpoint_controller_revision.stdout == expected_repository_sha
+          - not ansible_check_mode
+        fail_msg: "Semaphore checked out a different revision or is in check mode; endpoint-drill recovery did not run."
+
+    - name: Read controller checkout changes
+      ansible.builtin.command:
+        argv: [git, status, --porcelain, --untracked-files=all]
+        chdir: "{{ playbook_dir | dirname | dirname }}"
+      register: _endpoint_controller_changes
+      changed_when: false
+      check_mode: false
+
+    - name: Require a clean reviewed checkout
+      ansible.builtin.assert:
+        that: _endpoint_controller_changes.stdout | length == 0
+        fail_msg: "Candidate checkout has uncommitted files; endpoint-drill recovery did not run."
+
+- name: Require a real production run for endpoint-drill recovery
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: Require a real production run with alerts still enabled
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - not (local_mode | default(false) | bool)
+          - o11y_alerts_enabled | default(false) | bool
+        fail_msg: "Endpoint-drill recovery requires a real production run with alerts still enabled."
+
+# The normal deploy restores the projection. A failed deploy stops the run before the marker
+# is removed, so the marker stays and this playbook can be run again.
+- name: Restore the normal o11y projection
+  ansible.builtin.import_playbook: deploy-o11y.yml
+  vars:
+    _extra_var_guard_nested: true
+
+- name: Clear the endpoint-drill marker after the normal deploy
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _endpoint_marker: "{{ _monorepo_dir | dirname }}/.o11y-endpoint-drill"
+  tasks:
+    # rmdir, not a recursive removal: the marker is an empty directory, so anything else in it
+    # is refused rather than deleted. removes: makes a second run a no-op.
+    - name: Clear the endpoint-drill marker
+      ansible.builtin.command:
+        argv: [rmdir, "{{ _endpoint_marker }}"]
+        removes: "{{ _endpoint_marker }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: Report the endpoint-drill recovery
+      ansible.builtin.debug:
+        msg: "The normal o11y projection is deployed and the endpoint-drill marker is absent."

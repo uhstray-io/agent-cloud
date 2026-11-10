@@ -14,6 +14,16 @@ path "secret/metadata/services/*" {
   capabilities = ["read", "list"]
 }
 
+# Fixed o11y isolated-restore coordination record. This is the only non-service
+# path needed by the cooperating mutator guard and coordination workflow.
+path "secret/data/coordination/o11y-restore-target" {
+  capabilities = ["create", "read", "update"]
+}
+
+path "secret/metadata/coordination/o11y-restore-target" {
+  capabilities = ["read"]
+}
+
 # AppRole management (create/update roles and policies for services)
 path "sys/policies/acl/*" {
   capabilities = ["create", "read", "update", "delete"]

@@ -27,6 +27,7 @@ import os
 import shutil
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 from contextlib import ExitStack, contextmanager
@@ -42,7 +43,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, refused_port
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/renew-internal-certs.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
@@ -67,6 +68,9 @@ def _copy_playbook(tmp: Path, password_fails: bool = False) -> Path:
     shutil.copy(PLAYBOOK, dest / PLAYBOOK.name)
     # The run's first play, imported by name next to the playbook.
     shutil.copy(PLAYBOOK.parent / playbook_yaml.OVERRIDE_GUARD, dest / playbook_yaml.OVERRIDE_GUARD)
+    # The self-reloading listener table both plays load (vars_files: vars/renew-listener-servers.yml).
+    (dest / "vars").mkdir()
+    shutil.copy(PLAYBOOK.parent / "vars/renew-listener-servers.yml", dest / "vars/renew-listener-servers.yml")
     issue = dest / "tasks/issue-internal-leaf.yml"
     tasks = yaml.safe_load(issue.read_text())
     swapped = 0
@@ -305,6 +309,118 @@ def _loki(pushes: list):
     return ThreadingHTTPServer(("127.0.0.1", 0), Handler)
 
 
+@contextmanager
+def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, server_frames=None,
+                       split_reads=False, expect_ack=True, server_alpn=("h2",), observed_requests=None):
+    """Small TLS 1.3 / HTTP2 fixture for the o11y-specific renewal proof."""
+    d = Path(server_leaf["dir"])
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = context.maximum_version = ssl.TLSVersion.TLSv1_3
+    context.load_cert_chain(d / "current/cert.pem", d / "current/key.pem")
+    context.verify_mode = ssl.CERT_REQUIRED if client_behaviors is None else ssl.CERT_NONE
+    context.load_verify_locations(cadata=ca["bundle"])
+    context.set_alpn_protocols(list(server_alpn))
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(4)
+    listener.settimeout(0.2)
+    port = listener.getsockname()[1]
+    behaviors = list(client_behaviors or ["settings", "settings", "settings"])
+    frames = list(server_frames or [b"\x00\x00\x00\x04\x00\x00\x00\x00\x00"] * len(behaviors))
+    fixture_errors = []
+    stop = threading.Event()
+
+    def read_exact(sock, size):
+        result = bytearray()
+        while len(result) < size:
+            chunk = sock.recv(size - len(result))
+            if not chunk:
+                break
+            result.extend(chunk)
+        return bytes(result)
+
+    def serve():
+        for behavior, frame in zip(behaviors, frames, strict=True):
+            while not stop.is_set():
+                try:
+                    raw, _address = listener.accept()
+                    break
+                except TimeoutError:
+                    continue
+                except OSError:
+                    return
+            else:
+                break
+            if behavior == "plaintext_auth_alert":
+                # A raw TLS alert without ServerHello/certificate must not prove refusal.
+                raw.sendall(b"\x15\x03\x03\x00\x02\x02\x74")
+                raw.close()
+                continue
+            try:
+                with context.wrap_socket(raw, server_side=True) as tls:
+                    tls.settimeout(2)
+                    request = bytearray()
+                    if behavior in ("early_data", "early_eof"):
+                        if behavior == "early_data":
+                            tls.sendall(b"x")
+                        try:
+                            request.extend(tls.recv(1))
+                        except TimeoutError:
+                            pass
+                        if observed_requests is not None:
+                            observed_requests.append(bytes(request))
+                        continue
+                    while len(request) < 33:
+                        chunk = tls.recv(33 - len(request))
+                        if not chunk:
+                            break
+                        request.extend(chunk)
+                    if observed_requests is not None:
+                        observed_requests.append(bytes(request))
+                    if behavior == "settings":
+                        if split_reads:
+                            for byte in frame:
+                                tls.sendall(bytes([byte]))
+                        else:
+                            tls.sendall(frame)
+                        if expect_ack:
+                            ack = read_exact(tls, 9)
+                            if ack != b"\x00\x00\x00\x04\x01\x00\x00\x00\x00":
+                                raise RuntimeError("client did not acknowledge valid SETTINGS")
+                    elif behavior == "short":
+                        tls.sendall(b"\x00\x00")
+                    elif behavior == "unexpected":
+                        tls.sendall(b"\x00\x00\x00\x01\x00\x00\x00\x00\x00")
+                    elif behavior == "stall":
+                        tls.recv(1)
+            except (OSError, ssl.SSLError):
+                raw.close()
+            except RuntimeError as exc:
+                fixture_errors.append(str(exc))
+                raw.close()
+        listener.close()
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield port
+    finally:
+        stop.set()
+        listener.close()
+        thread.join(timeout=3)
+        assert not thread.is_alive(), "TLS fixture thread did not stop"
+        assert not fixture_errors, "; ".join(fixture_errors)
+
+
+def _settings_frame(settings=(), *, stream_id=0, reserved=False):
+    payload = b"".join(setting.to_bytes(2, "big") + value.to_bytes(4, "big")
+                       for setting, value in settings)
+    encoded_stream = stream_id | (0x80000000 if reserved else 0)
+    return (len(payload).to_bytes(3, "big") + b"\x04\x00" +
+            encoded_stream.to_bytes(4, "big") + payload)
+
+
 # Shadowing the interpreter's own sitecustomize would drop what it does (Homebrew's adds its
 # site-packages), so the next one on sys.path is run first.
 SITECUSTOMIZE = f"""import os, socket, sys
@@ -382,6 +498,7 @@ class World:
                                       "o11y_loki_port": str(loki.server_port)}},
             }
             for group, over in (host_over or {}).items():
+                hosts.setdefault(group, {})
                 for name, value in over.items():
                     if value is None:
                         hosts[group].pop(name, None)
@@ -429,6 +546,22 @@ class World:
 @pytest.fixture
 def world(tmp_path):
     return World(tmp_path)
+
+
+def _o11y_leaves(world):
+    deployment = world.tmp / "o11y-agent-cloud/platform/services/o11y/deployment"
+    certs = deployment / "certs"
+    leaves = [
+        {"name": "o11y-otlp-server", "host": "o11y", "dir": str(certs / "o11y-otlp-server"),
+         "profile": "server", "sans": ["otlp.dc1.example.internal"], "reload": "none"},
+        {"name": "o11y-journal", "host": "o11y", "dir": str(certs / "o11y-journal"),
+         "profile": "client", "sans": ["journal.dc1.example.internal"], "reload": "none"},
+        {"name": "o11y-inference-probe", "host": "o11y",
+         "dir": str(world.tmp / "o11y-probe/certs/o11y-inference-probe"),
+         "profile": "client", "sans": ["probe.dc1.example.internal"], "reload": "none"},
+    ]
+    serials = {leaf["name"]: _place(world.ca, leaf, FRESH) for leaf in leaves}
+    return leaves, deployment, serials
 
 
 # ── Threshold and the per-host decision ────────────────────────────────────────
@@ -643,6 +776,7 @@ def test_a_verify_run_proves_every_leaf_in_use_and_issues_nothing(world):
     assert len(world.gw_handshakes) >= 3
     assert world.caddy_asked == [(ROUTE, "/v1/models")]
     assert out.count("verified in use") >= 3
+    assert "probe path answered 401, refused without a client certificate" in out
     assert '"status": "success"' in out
 
 
@@ -816,12 +950,440 @@ def test_the_template_runs_daily_from_dev_right_after_issue_internal_leaf():
 
 def test_the_proof_scripts_never_print_a_key():
     play = playbook_yaml.plays(PLAYBOOK)[1]
-    for name in ("_renew_reader", "_renew_server_prover", "_renew_route_prover"):
+    for name in ("_renew_reader", "_renew_server_prover", "_renew_o11y_tls_prover", "_renew_route_prover"):
         script = play["vars"][name]
         assert "key.pem" not in script and "PRIVATE" not in script, name
     # No task in the renewal itself is hidden: secrets live only inside the issuance task.
     for task in playbook_yaml.tasks(playbook_yaml.load(PLAYBOOK)):
         assert "no_log" not in task, task.get("name")
+
+
+def test_o11y_tls_proof_requires_valid_client_http2_and_refuses_missing_and_foreign_clients(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    server_serial = _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    cert = Path(journal_leaf["dir"]) / "current/cert.pem"
+    key = Path(journal_leaf["dir"]) / "current/key.pem"
+    ca_bundle = Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(ca_bundle), str(cert), str(key)],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == f"O11Y_MTLS_PROVEN:{server_serial}"
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(("reason", "phase", "expected_rc", "expected_stdout", "expected_diag"), [
+    ("SSLV3_ALERT_BAD_CERTIFICATE", "AUTH_ALERT_READ", 0, "O11Y_MTLS_PROVEN:", ""),
+    ("SSLV3_ALERT_CERTIFICATE_UNKNOWN", "AUTH_ALERT_READ", 0, "O11Y_MTLS_PROVEN:", ""),
+    ("SSLV3_ALERT_UNSUPPORTED_CERTIFICATE", "AUTH_ALERT_READ", 1, "UNVERIFIED_NO_CLIENT_AUTH",
+     "O11Y_MTLS_DIAG:NO_CLIENT_AUTH_ALERT_READ"),
+    ("TLSV13_ALERT_CERTIFICATE_REQUIRED", "TLS_HANDSHAKE", 1, "UNVERIFIED_NO_CLIENT_AUTH",
+     "O11Y_MTLS_DIAG:NO_CLIENT_TLS_HANDSHAKE"),
+])
+def test_o11y_tls_proof_classifies_only_explicit_certificate_alert_reasons(
+    tmp_path, reason, phase, expected_rc, expected_stdout, expected_diag
+):
+    """Exercise auth-alert classification before and after verified TLS/ALPN."""
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    script = script.replace(
+        "def probe(cert=None, key=None, expect_rejection=False):",
+        f"class _SyntheticSSLAlert(ssl.SSLError):\n    reason = {reason!r}\n"
+        "def probe(cert=None, key=None, expect_rejection=False):",
+        1,
+    )
+    if phase == "AUTH_ALERT_READ":
+        script = script.replace(
+            "                    if tls.recv(1):",
+            "                    raise _SyntheticSSLAlert()\n                    if tls.recv(1):",
+            1,
+        )
+    else:
+        script = script.replace(
+            "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
+            "            if cert is None:\n                raise _SyntheticSSLAlert()\n"
+            "            with ctx.wrap_socket(raw, server_hostname=name) as tls:",
+            1,
+        )
+    assert "_SyntheticSSLAlert" in script
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    server_serial = _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode == expected_rc
+    assert result.stdout.startswith(expected_stdout)
+    if expected_rc == 0:
+        assert result.stdout.strip().endswith(server_serial)
+        assert result.stderr == ""
+    else:
+        assert result.stdout.strip() == expected_stdout
+        assert result.stderr.strip() == expected_diag
+
+
+@pytest.mark.parametrize("frame,split_reads", [
+    (_settings_frame(), False),
+    (_settings_frame([(1, 0xffffffff), (2, 0), (3, 0xffffffff),
+                      (4, 0x7fffffff), (5, 16384), (5, 16777215), (6, 0xffffffff),
+                      (65000, 0xffffffff)], reserved=True), True),
+])
+def test_o11y_tls_proof_accepts_valid_settings_and_unknown_ids(tmp_path, frame, split_reads):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    server_serial = _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, server_frames=[frame] * 3,
+                            split_reads=split_reads) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == f"O11Y_MTLS_PROVEN:{server_serial}"
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize("frame", [
+    _settings_frame(stream_id=1),
+    _settings_frame([(2, 1)]),
+    _settings_frame([(4, 0x80000000)]),
+    _settings_frame([(5, 16383)]),
+    _settings_frame([(5, 16777216)]),
+    _settings_frame([(5, 16383), (5, 16384)]),
+    b"\x00\x00\x00\x04\x01\x00\x00\x00\x00",
+    b"\x00\x00\x00\x01\x00\x00\x00\x00\x00",
+    b"\x00\x00\x01\x04\x00\x00\x00\x00\x00x",
+])
+def test_o11y_tls_proof_does_not_accept_malformed_valid_client_settings(tmp_path, frame):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, server_frames=[frame] * 3,
+                            expect_ack=False) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert "O11Y_MTLS_PROVEN" not in result.stdout
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:SETTINGS_INVALID"
+
+
+def test_o11y_tls_proof_deadline_expiry_during_frame_read_is_unverified(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    fake_clock = (
+        "import time\n"
+        "_ticks = iter([0, 0, 0, 0, 8])\n"
+        "time.monotonic = lambda: next(_ticks, 8)\n"
+    )
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, expect_ack=False) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", fake_clock + script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert "O11Y_MTLS_PROVEN" not in result.stdout
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:DEADLINE"
+
+
+@pytest.mark.parametrize(("failure", "reason"), [("short", "SETTINGS_READ"), ("alpn", "ALPN")])
+def test_o11y_tls_proof_reports_fixed_reason_for_settings_or_alpn_failure(tmp_path, failure, reason):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    receiver = {"client_behaviors": ["short"], "expect_ack": False} if failure == "short" else {
+        "client_behaviors": ["settings"], "expect_ack": False, "server_alpn": ("http/1.1",),
+    }
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, **receiver) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert result.stderr.strip() == f"O11Y_MTLS_DIAG:{reason}"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
+
+
+def test_o11y_tls_proof_reports_connect_failure_without_exception_details(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    result = subprocess.run(
+        [sys.executable, "-c", script, "127.0.0.1", str(refused_port()), "o11y.internal.test",
+         str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+         str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+         str(Path(journal_leaf["dir"]) / "current/key.pem")],
+        check=False, capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:CONNECT"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
+
+
+def test_o11y_tls_proof_reports_tls_handshake_failure_without_exception_details(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    untrusted_dir = tmp_path / "untrusted"
+    untrusted_dir.mkdir()
+    untrusted_ca = _ca(untrusted_dir)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(untrusted_ca["dir"] / "bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_VALID_CLIENT_HTTP2"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:TLS_HANDSHAKE"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
+
+
+@pytest.mark.parametrize(("failure", "reason"), [
+    ("early_data", "NO_CLIENT_AUTH_DATA"),
+    ("early_eof", "NO_CLIENT_AUTH_EOF"),
+])
+def test_o11y_tls_proof_does_not_treat_no_client_data_or_eof_as_rejection(
+    tmp_path, failure, reason
+):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    observed_requests = []
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, ["settings", failure],
+                            observed_requests=observed_requests) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=20,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_NO_CLIENT_AUTH"
+    assert result.stderr.strip() == f"O11Y_MTLS_DIAG:{reason}"
+    assert observed_requests[0] == b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00\x00\x00\x00\x00"
+    assert observed_requests[1] == b""
+
+
+def test_o11y_tls_proof_does_not_accept_plaintext_auth_alert_without_server_identity(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"]
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path, ["settings", "plaintext_auth_alert"]) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=20,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_NO_CLIENT_AUTH"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:NO_CLIENT_TLS_HANDSHAKE"
+    assert "O11Y_MTLS_PROVEN" not in result.stdout
+
+
+def test_o11y_tls_proof_reports_foreign_ca_unverified_result_without_details(tmp_path):
+    play = playbook_yaml.plays(PLAYBOOK)[1]
+    script = play["vars"]["_renew_o11y_tls_prover"].replace(
+        "foreign, _, foreign_reason = probe(foreign_cert, foreign_key, expect_rejection=True)",
+        "foreign, _, foreign_reason = ('unverified', None, 'TLS_HANDSHAKE')",
+        1,
+    )
+    assert "foreign, _, foreign_reason = ('unverified', None, 'TLS_HANDSHAKE')" in script
+    ca = _ca(tmp_path)
+    server_leaf = {"dir": str(tmp_path / "o11y-server"), "sans": ["o11y.internal.test"], "profile": "server"}
+    journal_leaf = {"dir": str(tmp_path / "o11y-journal"), "sans": ["journal.internal.test"], "profile": "client"}
+    _place(ca, server_leaf, FRESH)
+    _place(ca, journal_leaf, FRESH)
+    with _o11y_tls_receiver(ca, server_leaf, tmp_path) as port:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(port), "o11y.internal.test",
+             str(Path(server_leaf["dir"]).parent / "step-ca-bundle.crt"),
+             str(Path(journal_leaf["dir"]) / "current/cert.pem"),
+             str(Path(journal_leaf["dir"]) / "current/key.pem")],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode != 0
+    assert result.stdout.strip() == "UNVERIFIED_FOREIGN_CA_AUTH"
+    assert result.stderr.strip() == "O11Y_MTLS_DIAG:FOREIGN_CA_TLS_HANDSHAKE"
+    assert "o11y.internal.test" not in result.stderr
+    assert str(tmp_path) not in result.stderr
+
+
+def test_o11y_probe_client_keeps_legacy_classification_when_receiver_tls_is_off(world):
+    probe = {"name": "o11y-inference-probe", "host": "o11y",
+             "dir": str(world.tmp / "o11y-probe/certs/o11y-inference-probe"),
+             "profile": "client", "sans": ["probe.dc1.example.internal"], "reload": "none"}
+    _place(world.ca, probe, FRESH)
+    rc, out = world.run(
+        check=True,
+        leaves=[*world.leaves.values(), probe],
+        host_over={
+            "agentgateway_svc": {"gw": {"agw_listener_tls": False}},
+            "o11y_svc": {"o11y": {"agw_verify_base_url": "https://gateway.dc1.example.internal:4000"}},
+        },
+    )
+    assert rc == 0, out
+    assert "o11y-inference-probe (probe-client)" in out
+    assert "not in use: gateway listener TLS off, left alone" in out
+
+
+def test_declared_fixed_o11y_tls_leaves_are_skipped_while_receiver_tls_is_off(world):
+    world.place()
+    o11y_leaves, deployment, _serials = _o11y_leaves(world)
+    rc, out = world.run(
+        check=True,
+        leaves=[*world.leaves.values(), *o11y_leaves],
+        host_over={"o11y_svc": {"o11y": {
+            "local_monorepo_dir": str(deployment.parents[3]),
+            "o11y_otlp_tls_enabled": False,
+            "agw_verify_base_url": "https://gateway.dc1.example.internal:4000",
+        }}},
+    )
+    assert rc == 0, out
+    assert "o11y-otlp-server" not in out and "o11y-journal (o11y-journal-client)" not in out
+    assert "o11y-inference-probe (probe-client)" in out
+    assert "agw-server (gateway-server)" in out and "caddy (caddy-client)" in out
+    assert world.signed() == [] and world.reloads() == []
+
+
+def test_malformed_fixed_o11y_tls_leaf_is_still_refused_while_tls_is_off(world):
+    world.place()
+    o11y_leaves, deployment, _serials = _o11y_leaves(world)
+    leaves = [*world.leaves.values(), *(dict(leaf) for leaf in o11y_leaves)]
+    next(leaf for leaf in leaves if leaf["name"] == "o11y-journal")["dir"] += "/wrong"
+    rc, out = world.run(
+        leaves=leaves,
+        host_over={"o11y_svc": {"o11y": {
+            "local_monorepo_dir": str(deployment.parents[3]),
+            "o11y_otlp_tls_enabled": False,
+            "agw_verify_base_url": "https://gateway.dc1.example.internal:4000",
+        }}},
+    )
+    _refused(world, out, rc, "an inactive o11y TLS leaf must be the fixed same-host leaf")
+
+
+def test_o11y_receiver_leaves_are_proved_in_verify_mode_when_gateway_tls_is_off(world):
+    world.place()
+    o11y_leaves, deployment, serials = _o11y_leaves(world)
+    server_leaf = o11y_leaves[0]
+    server_serial = _current_serial(server_leaf)
+    server_name = server_leaf["sans"][0]
+    host_vars = {
+        "local_monorepo_dir": str(deployment.parents[3]),
+        "o11y_otlp_tls_enabled": True,
+        "o11y_otlp_tls_server_name": server_name,
+        "o11y_otlp_bind": "127.0.0.1",
+        "o11y_verify_base_url": "https://gateway.dc1.example.internal:4000",
+        "agw_verify_base_url": "https://gateway.dc1.example.internal:4000",
+    }
+    host_vars["o11y_otlp_port"] = "0"
+    # Point the play at the fixture's ephemeral listener; the server name and certificate SAN
+    # remain the fixed declared receiver identity.
+    with _o11y_tls_receiver(world.ca, server_leaf, world.tmp) as port:
+        host_vars["o11y_otlp_port"] = str(port)
+        rc, out = world.run(
+            tags="verify",
+            leaves=[*world.leaves.values(), *o11y_leaves],
+            host_over={
+                "agentgateway_svc": {"gw": {"agw_listener_tls": False}},
+                "o11y_svc": {"o11y": host_vars},
+            },
+        )
+    assert rc == 0, out
+    assert "o11y-otlp-server (o11y-server)" in out
+    assert "o11y-journal (o11y-journal-client)" in out
+    assert "o11y-inference-probe (probe-client)" in out
+    assert "not in use: gateway listener TLS off, left alone" in out
+    assert "TASK [Prove receiver HTTP/2, the issued server leaf, and client-auth enforcement]" in out
+    expected_server_serial = format(server_serial, "X")
+    if len(expected_server_serial) % 2:
+        expected_server_serial = "0" + expected_server_serial
+    assert f'"serial": "{expected_server_serial}"' in out
+    assert (
+        "receiver TLS 1.3/h2 complete SETTINGS; server serial matched; journal client accepted; "
+        "missing and foreign-CA clients refused"
+    ) in out
+    assert (
+        "journal client accepted by receiver TLS 1.3/h2 complete SETTINGS; server serial matched; "
+        "missing and foreign-CA clients refused"
+    ) in out
+    assert "_renew_after" not in out
+    assert world.signed() == [] and world.reloads() == []
+    assert int(server_serial) == _current_serial(server_leaf)
+    assert _current_serial(o11y_leaves[1]) == int(serials["o11y-journal"], 16)
 
 
 def test_the_serial_python_reports_is_the_serial_openssl_prints(tmp_path):
@@ -840,3 +1402,307 @@ def test_the_serial_python_reports_is_the_serial_openssl_prints(tmp_path):
         with (socket.create_connection(("127.0.0.1", server.server_port)) as raw,
               ctx.wrap_socket(raw, server_hostname=f"gateway.{ZONE}") as tls):
             assert int(tls.getpeercert()["serialNumber"], 16) == int(serial, 16)
+
+
+# ── The OPA listener's server leaf (opa_svc: deploy-opa.yml's TLS listener) ────
+
+def _opa_leaf(tmp: Path) -> dict:
+    """The OPA host's server leaf, at the path the TLS deploy gives it (<deploy>/certs/<leaf>)."""
+    return {"name": "opa-server", "host": "opa", "dir": str(tmp / "opa-root/opa-deploy/certs/opa-server"),
+            "profile": "server", "sans": [f"opa.{ZONE}"], "reload": "none"}
+
+
+def _opa_host(tmp: Path, port, **over) -> dict:
+    """The opa_svc host's vars: TLS on, the default name (dns_site/dns_zone), the deploy dir under
+    the test root."""
+    host = {"opa_tls": True, "opa_bind": "127.0.0.1", "opa_port": str(port),
+            "local_monorepo_dir": str(tmp / "opa-root"), "monorepo_deploy_path": "opa-deploy"}
+    return {**host, **over}
+
+
+def _opa_listener(world, leaf, frozen=False):
+    """An OPA-shaped listener: serves the leaf in `current` on every connection (or, `frozen`, the
+    one it started with) and asks for no client certificate."""
+    scratch = world.tmp / "opa-scratch"
+    scratch.mkdir(exist_ok=True)
+    return _thread(_gateway(world.ca, leaf, [], scratch, frozen, True))
+
+
+def test_an_opa_server_leaf_is_admitted_renewed_and_proven_by_its_name(world):
+    opa = _opa_leaf(world.tmp)
+    _place(world.ca, opa, DUE)
+    world.place()
+    before = _current_serial(opa)
+    with _opa_listener(world, opa) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), opa],
+                            host_over={"opa_svc": {"opa": _opa_host(world.tmp, listener.server_port)}})
+    assert rc == 0, out
+    assert "opa-server (opa-server)" in out and "host renews" in out
+    assert "OPA listener served the expected serial, verified by name against the bundle" in out
+    assert _current_serial(opa) != before
+    assert [c["sans"] for c in world.signed()] == [[f"opa.{ZONE}"]]
+    assert world.reloads() == [], "OPA re-reads its leaf itself: nothing is reloaded or restarted"
+    [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert run["stream"]["status"] == "success"
+    assert json.loads(run["values"][0][1])["renewed"] == ["opa-server"]
+
+
+def test_an_opa_listener_still_serving_the_old_leaf_fails_the_run(world):
+    opa = _opa_leaf(world.tmp)
+    _place(world.ca, opa, DUE)
+    world.place()
+    with _opa_listener(world, opa, frozen=True) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), opa], extra={"renew_proof_retries": 1},
+                            host_over={"opa_svc": {"opa": _opa_host(world.tmp, listener.server_port)}})
+    assert rc != 0
+    assert "Prove OPA serves the new server leaf" in out
+    runs = [s["stream"] for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert runs == [{"job": "renew-internal-certs", "kind": "run", "status": "failure"}]
+
+
+@pytest.mark.parametrize("change,host_over", [
+    (lambda leaf, tmp: None, {"opa_tls": False}),
+    (lambda leaf, tmp: leaf.update(reload="restart"), {}),
+    (lambda leaf, tmp: leaf.update(dir=str(tmp / "opa-root/elsewhere/opa-server")), {}),
+    (lambda leaf, tmp: leaf.update(sans=[f"other.{ZONE}"]), {}),
+], ids=["opa-tls-off", "reload-restart", "dir-off-deploy", "name-not-in-sans"])
+def test_an_opa_server_leaf_outside_its_declared_shape_is_refused_before_issuance(world, change, host_over):
+    opa = _opa_leaf(world.tmp)
+    change(opa, world.tmp)
+    _place(world.ca, opa, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), opa],
+                        host_over={"opa_svc": {"opa": _opa_host(world.tmp, 8281, **host_over)}})
+    _refused(world, out, rc, "the OPA server leaf is admitted only as the opa_svc host's own")
+
+
+def test_the_server_proof_presents_a_client_leaf_only_when_one_is_given(tmp_path):
+    # The OPA listener asks for no client certificate, so the proof must not load one from an
+    # empty path (the gateway's callers still pass theirs).
+    script = playbook_yaml.plays(PLAYBOOK)[1]["vars"]["_renew_server_prover"]
+    ca = _ca(tmp_path)
+    leaf = {"dir": str(tmp_path / "opa/certs/opa-server"), "sans": [f"opa.{ZONE}"], "profile": "server"}
+    serial = _place(ca, leaf, FRESH)
+    bundle = Path(leaf["dir"]).parent / "step-ca-bundle.crt"
+    with _thread(_gateway(ca, leaf, [], tmp_path, cert_optional=True)) as server:
+        result = subprocess.run(
+            [sys.executable, "-c", script, "127.0.0.1", str(server.server_port), f"opa.{ZONE}",
+             str(bundle), "", ""],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert int(result.stdout.strip(), 16) == int(serial, 16)
+
+
+def test_the_opa_refusal_names_the_declared_shape_word_for_word(world):
+    # Byte-identity pin for the OPA admission message: the refusals above match only its opening
+    # words, so a change to the tail would pass them. Written against the pre-table playbook.
+    opa = _opa_leaf(world.tmp)
+    opa.update(reload="restart")
+    _place(world.ca, opa, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), opa],
+                        host_over={"opa_svc": {"opa": _opa_host(world.tmp, 8281)}})
+    _refused(world, out, rc, "opa-server: the OPA server leaf is admitted only as the opa_svc host's own "
+                             "(opa_tls on, opa_server_leaf, reload none, dir <deploy>/certs/<leaf>, "
+                             "SAN opa_tls_server_name)")
+
+
+# ── The launch gate's server leaf (launch_gate_svc: platform/services/launch-gate) ─
+
+def _gate_leaf(tmp: Path) -> dict:
+    """The launch gate host's server leaf, at the path its TLS deploy gives it (<deploy>/certs/<leaf>)."""
+    return {"name": "launch-gate-server", "host": "gate",
+            "dir": str(tmp / "gate-root/gate-deploy/certs/launch-gate-server"),
+            "profile": "server", "sans": [f"launch-gate.{ZONE}"], "reload": "none"}
+
+
+def _gate_host(tmp: Path, port, **over) -> dict:
+    """The launch_gate_svc host's vars: the bind and port the proof connects to, the deploy dir
+    under the test root. The gate has no TLS switch (HTTPS-only), so none is set; its name defaults
+    to launch-gate.<dns_site>.<dns_zone>."""
+    host = {"launch_gate_bind": "127.0.0.1", "launch_gate_port": str(port),
+            "local_monorepo_dir": str(tmp / "gate-root"), "monorepo_deploy_path": "gate-deploy"}
+    return {**host, **over}
+
+
+def _gate_listener(world, leaf, frozen=False):
+    """A gate-shaped listener: the gate reloads its TLS context on every connection, so it serves
+    `current` on each handshake (or, `frozen`, the leaf it started with) and requires no client
+    certificate (its context leaves verify_mode at the default, CERT_NONE)."""
+    scratch = world.tmp / "gate-scratch"
+    scratch.mkdir(exist_ok=True)
+    return _thread(_gateway(world.ca, leaf, [], scratch, frozen, True))
+
+
+def test_a_launch_gate_server_leaf_is_admitted_renewed_and_proven_by_its_name(world):
+    gate = _gate_leaf(world.tmp)
+    _place(world.ca, gate, DUE)
+    world.place()
+    before = _current_serial(gate)
+    with _gate_listener(world, gate) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), gate],
+                            host_over={"launch_gate_svc": {"gate": _gate_host(world.tmp, listener.server_port)}})
+    assert rc == 0, out
+    assert "launch-gate-server (launch-gate-server)" in out and "host renews" in out
+    assert "launch gate listener served the expected serial, verified by name against the bundle" in out
+    assert _current_serial(gate) != before
+    assert [c["sans"] for c in world.signed()] == [[f"launch-gate.{ZONE}"]]
+    assert world.reloads() == [], "the gate re-reads its leaf itself: nothing is reloaded or restarted"
+    [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert run["stream"]["status"] == "success"
+    assert json.loads(run["values"][0][1])["renewed"] == ["launch-gate-server"]
+
+
+def test_a_launch_gate_listener_still_serving_the_old_leaf_fails_the_run(world):
+    gate = _gate_leaf(world.tmp)
+    _place(world.ca, gate, DUE)
+    world.place()
+    with _gate_listener(world, gate, frozen=True) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), gate], extra={"renew_proof_retries": 1},
+                            host_over={"launch_gate_svc": {"gate": _gate_host(world.tmp, listener.server_port)}})
+    assert rc != 0
+    assert "Prove OPA serves the new server leaf, and each other self-reloading listener its own" in out
+    runs = [s["stream"] for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert runs == [{"job": "renew-internal-certs", "kind": "run", "status": "failure"}]
+
+
+@pytest.mark.parametrize("change", [
+    lambda leaf, tmp: leaf.update(reload="restart"),
+    lambda leaf, tmp: leaf.update(dir=str(tmp / "gate-root/elsewhere/launch-gate-server")),
+    lambda leaf, tmp: leaf.update(sans=[f"other.{ZONE}"]),
+    lambda leaf, tmp: leaf.update(name="gate-server", dir=str(tmp / "gate-root/gate-deploy/certs/gate-server")),
+], ids=["reload-restart", "dir-off-deploy", "name-not-in-sans", "wrong-leaf-name"])
+def test_a_launch_gate_server_leaf_outside_its_declared_shape_is_refused_before_issuance(world, change):
+    gate = _gate_leaf(world.tmp)
+    change(gate, world.tmp)
+    _place(world.ca, gate, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), gate],
+                        host_over={"launch_gate_svc": {"gate": _gate_host(world.tmp, 8443)}})
+    _refused(world, out, rc, "the launch gate server leaf is admitted only as the launch_gate_svc host's own")
+
+
+def test_a_server_leaf_on_a_host_in_no_listener_group_keeps_the_gateway_refusal(world):
+    # Neither a table group nor the gateway's host: the gateway's message, as before the table.
+    stray = {"name": "stray-server", "host": "stray", "dir": str(world.tmp / "stray-root/certs/stray-server"),
+             "profile": "server", "sans": [f"stray.{ZONE}"], "reload": "none"}
+    _place(world.ca, stray, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), stray],
+                        host_over={"unlisted_svc": {"stray": {}}})
+    _refused(world, out, rc,
+             "a server leaf can be proven only as the gateway's own (agentgateway_svc, agw_server_leaf)")
+
+
+# ── The skynet API's HTTPS listener leaf (skynet_svc: deploy-skynet.yml's skynet_tls listener) ──
+
+def _skynet_leaf(tmp: Path) -> dict:
+    """The skynet host's server leaf, at the path the TLS deploy gives it (<deploy>/certs/<leaf>)."""
+    return {"name": "skynet-server", "host": "skynet",
+            "dir": str(tmp / "skynet-root/skynet-deploy/certs/skynet-server"),
+            "profile": "server", "sans": [f"skynet.{ZONE}"], "reload": "none"}
+
+
+def _skynet_host(tmp: Path, port, **over) -> dict:
+    """The skynet_svc host's vars: the TLS switch on, the bind and port the proof connects to, the deploy dir under
+    the test root. The name defaults to skynet.<dns_site>.<dns_zone>."""
+    host = {"skynet_tls": True, "skynet_bind": "127.0.0.1", "skynet_port": str(port),
+            "local_monorepo_dir": str(tmp / "skynet-root"), "monorepo_deploy_path": "skynet-deploy"}
+    return {**host, **over}
+
+
+def _skynet_listener(world, leaf, frozen=False):
+    """A skynet-shaped listener: it serves `current` on each new connection (or, `frozen`, the leaf it started with)
+    and asks for no client certificate."""
+    scratch = world.tmp / "skynet-scratch"
+    scratch.mkdir(exist_ok=True)
+    return _thread(_gateway(world.ca, leaf, [], scratch, frozen, True))
+
+
+def test_a_skynet_server_leaf_is_admitted_renewed_and_proven_by_its_name(world):
+    skynet = _skynet_leaf(world.tmp)
+    _place(world.ca, skynet, DUE)
+    world.place()
+    before = _current_serial(skynet)
+    with _skynet_listener(world, skynet) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), skynet],
+                            host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, listener.server_port)}})
+    assert rc == 0, out
+    assert "skynet-server (skynet-server)" in out and "host renews" in out
+    assert "skynet listener served the expected serial, verified by name against the bundle" in out
+    assert _current_serial(skynet) != before
+    assert [c["sans"] for c in world.signed()] == [[f"skynet.{ZONE}"]]
+    assert world.reloads() == [], "skynet re-reads its leaf itself: nothing is reloaded or restarted"
+    [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert run["stream"]["status"] == "success"
+    assert json.loads(run["values"][0][1])["renewed"] == ["skynet-server"]
+
+
+def test_a_skynet_listener_still_serving_the_old_leaf_fails_the_run(world):
+    skynet = _skynet_leaf(world.tmp)
+    _place(world.ca, skynet, DUE)
+    world.place()
+    with _skynet_listener(world, skynet, frozen=True) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), skynet], extra={"renew_proof_retries": 1},
+                            host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, listener.server_port)}})
+    assert rc != 0
+    assert "Prove OPA serves the new server leaf, and each other self-reloading listener its own" in out
+    runs = [s["stream"] for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert runs == [{"job": "renew-internal-certs", "kind": "run", "status": "failure"}]
+
+
+@pytest.mark.parametrize("change,host_over", [
+    (lambda leaf, tmp: None, {"skynet_tls": False}),
+    (lambda leaf, tmp: leaf.update(reload="restart"), {}),
+    (lambda leaf, tmp: leaf.update(dir=str(tmp / "skynet-root/elsewhere/skynet-server")), {}),
+    (lambda leaf, tmp: leaf.update(sans=[f"other.{ZONE}"]), {}),
+    (lambda leaf, tmp: leaf.update(name="skynet-api", dir=str(tmp / "skynet-root/skynet-deploy/certs/skynet-api")), {}),
+], ids=["skynet-tls-off", "reload-restart", "dir-off-deploy", "name-not-in-sans", "wrong-leaf-name"])
+def test_a_skynet_server_leaf_outside_its_declared_shape_is_refused_before_issuance(world, change, host_over):
+    skynet = _skynet_leaf(world.tmp)
+    change(skynet, world.tmp)
+    _place(world.ca, skynet, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), skynet],
+                        host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, 8443, **host_over)}})
+    _refused(world, out, rc, "the skynet server leaf is admitted only as the skynet_svc host's own")
+
+
+def test_the_skynet_refusal_names_the_declared_shape_word_for_word(world):
+    # Byte-identity pin for the skynet admission message, as the OPA and launch-gate pins above: a change to the tail
+    # of the message would pass the prefix-only refusals.
+    skynet = _skynet_leaf(world.tmp)
+    skynet.update(reload="restart")
+    _place(world.ca, skynet, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), skynet],
+                        host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, 8443)}})
+    _refused(world, out, rc, "skynet-server: the skynet server leaf is admitted only as the skynet_svc host's own "
+                             "(skynet_tls on, skynet_server_leaf, reload none, dir <deploy>/certs/<leaf>, "
+                             "SAN skynet_tls_server_name)")
+
+
+# ── The listener table's fallbacks match each service's own compose default ──
+# A row's default_port is what the proof connects to when the host declares no port. If it drifted from
+# the port the service publishes, a host relying on the default would fail its proof every day, and the
+# behaviour tests (which all set the port) would not notice. Review of PR 842.
+# Each entry: the file that holds the service's default port, the text that comes just before the default, and the
+# character that ends it. skynet publishes through compose.tls.yml's required variable (no default there), so its
+# default is the one the deploy's env template renders.
+_LISTENER_DEFAULTS = {
+    "opa-server": ("platform/services/opa/deployment/compose.yml", "${OPA_PORT:-", "}"),
+    "launch-gate-server": ("platform/services/launch-gate/deployment/compose.yml", "${LAUNCH_GATE_PORT:-", "}"),
+    "skynet-server": ("platform/services/skynet/deployment/templates/env.j2", "skynet_port | default(", ")"),
+}
+
+
+def test_each_listener_row_defaults_to_its_services_published_port():
+    table = yaml.safe_load((playbook_yaml.REPO / "platform/playbooks/vars/renew-listener-servers.yml").read_text())
+    rows = {row["class"]: row for row in table["_renew_listener_servers"]}
+    assert sorted(rows) == sorted(_LISTENER_DEFAULTS)
+    for cls, (path, marker, end) in _LISTENER_DEFAULTS.items():
+        text = (playbook_yaml.REPO / path).read_text()
+        start = text.index(marker) + len(marker)
+        published = text[start:text.index(end, start)]
+        assert rows[cls]["default_port"] == published, (cls, rows[cls]["default_port"], published)

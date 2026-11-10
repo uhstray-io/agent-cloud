@@ -173,6 +173,21 @@
       changed_when: false
       check_mode: false
 
+    - name: Report a bounded checkout mismatch without accepting it
+      ansible.builtin.debug:
+        msg:
+          status: observed_unverified
+          revision_comparison: >-
+            {{ 'match' if (_agw_revision.stdout | trim) is match('^[0-9a-f]{40}$')
+               and (_agw_revision.stdout | trim) == expected_repository_sha
+               else 'mismatch' if (_agw_revision.stdout | trim) is match('^[0-9a-f]{40}$')
+               else 'unknown' }}
+          observed_checkout_sha: >-
+            {{ _agw_revision.stdout | trim if (_agw_revision.stdout | trim) is match('^[0-9a-f]{40}$')
+               else 'unknown' }}
+          expected_checkout_sha: "{{ expected_repository_sha }}"
+      when: (_agw_revision.stdout | trim) != expected_repository_sha
+
     - name: Require the reviewed Dev revision
       ansible.builtin.assert:
         that: _agw_revision.stdout | trim == expected_repository_sha
@@ -217,7 +232,7 @@
 
     - name: Compare rendered inputs to the running deployment without mutation
       ansible.builtin.command:
-        argv: [bash, deploy.sh, --verify-only]
+        argv: [python3, -c, "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/verify-agentgateway-runtime-inputs.py') }}"]
         chdir: "{{ _deploy_dir }}"
       environment: "{{ _agw_deploy_env }}"
       register: _agw_runtime_match
@@ -229,8 +244,32 @@
       ansible.builtin.assert:
         that:
           - _agw_runtime_match.rc == 0
-          - "'runtime-inputs-result: pass' in (_agw_runtime_match.stdout | default(''))"
-        fail_msg: "The running gateway does not match the current rendered inputs, pinned image, and readiness; no sampling receipt was produced."
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report) is mapping
+          - >-
+            (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).keys() | list | sort ==
+            ['error', 'pass_marker', 'rc', 'reason', 'result']
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).rc is integer
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).rc is not boolean
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).result is string
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).reason is string
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).pass_marker is boolean
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).error is string
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).result == 'pass'
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).rc == 0
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).pass_marker == true
+          - (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).error == 'none'
+          - >-
+            (_agw_runtime_match.stdout | default('', true) | agw_runtime_report).reason in
+            ['matched', 'gateway-state-unavailable', 'gateway-not-running', 'inputs-not-matched',
+            'project-enumeration-unavailable', 'image-not-matched', 'readiness-unproven',
+            'diagnostic-unavailable']
+        fail_msg: >-
+          The running gateway does not match the current rendered inputs, pinned image, and
+          readiness (reason={{ (_agw_runtime_match.stdout | default('', true) |
+          agw_runtime_report).reason }},
+          adapter={{ (_agw_runtime_match.stdout | default('', true) |
+          agw_runtime_report).error }});
+          no sampling receipt was produced.
         quiet: true
 
     - name: Read safe metadata again after runtime comparison
@@ -343,5 +382,6 @@
           image: "{{ (_agw_metadata_after.stdout | from_json).image }}"
           random_sampling: "{{ (_agw_metadata_after.stdout | from_json).random_sampling }}"
           client_sampling: "{{ (_agw_metadata_after.stdout | from_json).client_sampling }}"
+          access_log_otlp: "{{ (_agw_metadata_after.stdout | from_json).access_log_otlp | to_json | from_json }}"
           checkout_revision: "{{ (_agw_metadata_after.stdout | from_json).checkout_revision }}"
           running_image_id: "{{ _agw_running_image_id.stdout | trim }}"

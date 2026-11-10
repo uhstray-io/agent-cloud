@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# skynet — container lifecycle only.
+#
+# The skynet deploy playbook renders .env (skynet's own API bearer and database password from
+# OpenBao, the Semaphore token and gateway client keys as shared reads, plus inventory values)
+# BEFORE this runs. This script does NOT generate secrets — it pulls the image, starts skynet
+# and its own Postgres, and waits for skynet to report healthy.
+#
+# Usage: ./deploy.sh [--no-pull]
+# Steps (idempotent): verify .env present, pull, up, wait healthy.
+
+set -euo pipefail
+
+SKIP_PULL=false
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LIB_DIR="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")/lib"
+cd "${SCRIPT_DIR}"
+
+# shellcheck source=/dev/null
+source "${LIB_DIR}/common.sh"
+
+# Production (outside LOCAL_MODE): compose.prod.yml maps the OPA name and points SSL_CERT_FILE at the
+# combined trust bundle. Local-dev loads compose.local.yml instead, which common.sh adds by itself.
+if [ "${LOCAL_MODE:-}" != "true" ]; then
+  COMPOSE_OVERLAYS="compose.prod.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
+# Production with the launch gate declared: .env carries SKYNET_LAUNCH_GATE_HOSTNAME, which env.j2 renders only
+# outside local mode and only when skynet_launch_gate_url is set. compose.launch-gate.yml maps the gate's name.
+# .env is the one decision point, so the overlay and the variables it needs cannot disagree. Undeclared, the
+# overlay is not loaded and the stack is what it was before the gate existed.
+if [ "${LOCAL_MODE:-}" != "true" ] && grep -qE '^SKYNET_LAUNCH_GATE_HOSTNAME=.' .env 2>/dev/null; then
+  COMPOSE_OVERLAYS="compose.launch-gate.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
+# Both modes: .env carries SKYNET_TLS_CERT_FILE only when the inventory declares skynet_tls, and env.j2 renders it in
+# both modes. compose.tls.yml publishes the HTTPS port; the certificate directory is mounted by the mode overlays.
+# .env is the one decision point, as for the launch gate. Undeclared, the overlay is not loaded.
+if grep -qE '^SKYNET_TLS_CERT_FILE=.' .env 2>/dev/null; then
+  COMPOSE_OVERLAYS="compose.tls.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
+# Production with the HTTPS listener: compose.prod-tls.yml maps uid 10001 with keep-id, so the 0600 key under
+# ./certs is readable. Outside LOCAL_MODE only, and only when .env carries SKYNET_TLS_CERT_FILE.
+if [ "${LOCAL_MODE:-}" != "true" ] && grep -qE '^SKYNET_TLS_CERT_FILE=.' .env 2>/dev/null; then
+  COMPOSE_OVERLAYS="compose.prod-tls.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-pull) SKIP_PULL=true ;;
+    *) echo "Unknown option: $arg"; echo "Usage: ./deploy.sh [--no-pull]"; exit 1 ;;
+  esac
+done
+
+step_verify_env() {
+  info "Step 1: Verifying templated .env is present..."
+  [ -f "${SCRIPT_DIR}/.env" ] || error "${SCRIPT_DIR}/.env not found. Render it with the skynet deploy playbook first."
+  info "  .env present."
+}
+
+step_pull_images() {
+  if [ "$SKIP_PULL" = true ]; then info "Step 2: Skipping image pull (--no-pull)."; return 0; fi
+  info "Step 2: Pulling images..."
+  if ! compose pull; then
+    # The skynet image is pinned by digest and may not be in the registry yet (local-dev
+    # bring-up on a locally built image). Only that case is tolerated; a pull failure with NO
+    # local image is still fatal.
+    local img
+    img=$(grep -E '^SKYNET_IMAGE=' .env | cut -d= -f2-)
+    # env.j2 always renders SKYNET_IMAGE; an empty value is a templating bug, not a
+    # pull-tolerance case — fail loud rather than probe a bogus ref.
+    [ -n "$img" ] || error "compose pull failed and SKYNET_IMAGE is missing from .env."
+    if "${CONTAINER_ENGINE}" image exists "$img"; then
+      info "  pull failed but ${img} is in the local store — continuing."
+    else
+      error "compose pull failed and ${img} is not present locally."
+    fi
+  fi
+}
+
+step_start() {
+  info "Step 3: Starting skynet (orchestration API + checkpoint database)..."
+  # skynet reads its runtime config from `env_file: .env`. An env_file content change is NOT a
+  # compose-spec change, so plain `up -d` would leave the old containers running with stale env.
+  # compose_up_if_changed hashes .env with the compose files and recreates only when that digest
+  # or an image changed, and prints DEPLOY_CHANGED=true|false for the playbook.
+  # The trust bundles under certs/ are hashed, and only those: each is the process's trust store
+  # (SSL_CERT_FILE names one), so a changed bundle recreates the containers. The HTTPS leaf is NOT
+  # hashed: skynet re-reads its certificate on every new connection, so a renewal must not recreate
+  # the containers. Hashing the whole certs/ directory would make every renewal a restart. Only
+  # bundles that exist are passed, because compose_inputs_digest refuses a path it cannot read.
+  local bundles=() b
+  for b in certs/step-ca-bundle.crt certs/ca-bundle-combined.crt; do
+    if [ -f "$b" ]; then bundles+=("$b"); fi
+  done
+  if [ "${#bundles[@]}" -gt 0 ]; then
+    compose_up_if_changed "${bundles[@]}"
+  else
+    compose_up_if_changed
+  fi
+}
+
+step_wait_healthy() {
+  info "Step 4: Waiting for skynet to become healthy..."
+  wait_for_healthy skynet 120
+}
+
+# Staged start (Rule 4, plan/architecture/05-platform-infra.md): the checkpoint database first,
+# gated on its own healthcheck, then the API. skynet's depends_on: service_healthy would also order
+# them, but the rule is explicit staging, not reliance on a compose condition. --no-deps keeps the
+# second up from touching skynet-db again. common.sh calls this in place of the one-shot up when the
+# inputs changed; the hook owns recreating, ordering and orphan removal, and each command chains
+# `|| return 1` because the helper runs it with errexit suspended.
+compose_staged_up() {
+  compose up -d --force-recreate --remove-orphans skynet-db || return 1
+  wait_for_healthy skynet-db 120
+  compose up -d --force-recreate --no-deps skynet || return 1
+}
+
+main() {
+  info "=== skynet deployment (container lifecycle) ==="
+  detect_runtime
+  info "Container engine: ${CONTAINER_ENGINE}"
+  step_verify_env
+  step_pull_images
+  step_start
+  step_wait_healthy
+  info "=== skynet container lifecycle complete ==="
+}
+
+main "$@"

@@ -10,7 +10,10 @@ This directory only pulls and runs that prebuilt image — it does not build sou
 
 - **wisbot** (`agent-wisbot`) — single container, the prebuilt image. Exposes an
   internal HTTP `GET /health` on port 8080 (no public web UI, no Caddy route).
-  Connects outbound to Discord and to WisAI/Ollama for `/wisllm`.
+  Connects outbound to Discord and to an Ollama-compatible endpoint for
+  `/wisllm`, set by `wisbot_ollama_endpoint` (site-config inventory), which
+  renders as `OLLAMA_ENDPOINT` in `templates/wisbot.env.j2`. That endpoint has
+  historically been WisAI; moving WisBot to agentgateway has not been done.
 
 ## Configuration layers
 
@@ -19,7 +22,9 @@ This directory only pulls and runs that prebuilt image — it does not build sou
   for the SQLite DB (`/app/data`) and recordings (`/app/recordings`).
 - `config/wisbot.env` — rendered by Ansible (`manage-secrets.yml`) from
   `templates/wisbot.env.j2`. Holds the Discord token (from OpenBao) and site
-  config (guild id, WisAI endpoint). Mode 0600, gitignored, never committed.
+  config (guild id, `OLLAMA_ENDPOINT` — the Ollama-compatible endpoint, from
+  the WisAI-era `wisbot_ollama_endpoint` inventory var). Mode 0600, gitignored,
+  never committed.
 
 ## Secrets
 
@@ -58,4 +63,6 @@ agents/wisbot/
 - The image installs `libopus0` for Discord voice; `libsodium`/SQLite natives
   ship with the .NET publish. See the WisBot repo for image internals.
 - Deployment is wired by `platform/playbooks/deploy-wisbot.yml` (composable
-  pattern). Inventory host vars (guild id, WisAI endpoint) live in site-config.
+  pattern). Inventory host vars (guild id, `wisbot_ollama_endpoint`) live in
+  site-config. The endpoint is Ollama-compatible and came from WisAI; there is
+  no agentgateway wiring for WisBot yet.

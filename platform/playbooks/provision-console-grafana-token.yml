@@ -1,0 +1,321 @@
+---
+# provision-console-grafana-token.yml — keep the Dispatch Console's Grafana token current
+# (plan 17, task 8.0a). Mints a Viewer service-account token on the o11y Grafana through the
+# admin API, with a finite lifetime, and stores it at secret/services/o11y:console_grafana_token
+# with its token id at console_grafana_token_id.
+#
+# Runs against the o11y host and talks to Grafana on its loopback inside the container,
+# authenticated by the admin password Grafana already holds in its own environment, so no
+# admin credential crosses the network or a process argument. Unlike the MCP Grafana
+# playbook, this one mints the token itself: there is no UI step and no staged candidate.
+#
+# Decision on the stored token:
+#   reused     it authenticates (200) as the exact `console` account AND its token id is still
+#              listed with more than console_grafana_token_renew_days (default 30) left.
+#              Nothing is written.
+#   minted     otherwise: absent, rejected, close to expiry, or the account was recreated.
+#              A new token is minted with secondsToLive 7776000 (90 days), proven to
+#              authenticate as the exact account BEFORE it is stored, then stored with its id
+#              in one KV-v2 merge. The merge is refused if either stored field changed since
+#              it was read.
+#   refused    any other status from Grafana (an outage): the run fails and mints nothing,
+#              because an outage must not mint a token on every run.
+#
+# Superseded tokens are NOT deleted. Each one expires on its own, 90 days after it was
+# minted. Grafana's default for an absent secondsToLive is 0, which never expires, so the
+# lifetime is always sent explicitly.
+#
+# The `console` account is used only when it is enabled and has the Viewer role. Anything
+# else is refused by name rather than edited. Rotate Console Credentials (Dev) imports this
+# playbook monthly, only when console_grafana_api_enabled is true. A manual run also renews the
+# token, at any time, under the same threshold.
+#
+# This playbook does not redeploy the console. Rotate Console Credentials (Dev) imports it, then
+# redeploys (deploy-console.yml), so the console reads the renewed token.
+#
+# Check mode reports the decision and changes nothing.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+
+- name: Provision the console Grafana token
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+    # Grafana as seen from inside its own container.
+    _gf: "{{ o11y_grafana_local_url | default('http://127.0.0.1:3000') }}"
+    _sa_name: console
+    _sa_role: Viewer
+    # 90 days. Always sent: Grafana's default for an absent secondsToLive is 0, never expires.
+    _ttl_seconds: 7776000
+    # Renew when the stored token has no more than this many days left. A play var, so an
+    # operator can override it with -e; it moves the renewal point, never the lifetime.
+    console_grafana_token_renew_days: 30
+    # Admin basic auth from the container's own environment, written to curl's stdin
+    # config; the password never appears in argv. $1 is always the Grafana base URL.
+    _admin_curl: >-
+      printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
+      curl -fsS --config - -H 'Content-Type: application/json'
+    # Token on stdin; /api/user returns the typed identity UID for service-account bearer
+    # tokens (Grafana 11.4, the image pinned in the o11y compose), followed by the HTTP status
+    # delimiter.
+    _token_check: >-
+      read -r t; printf 'header = "Authorization: Bearer %s"\n' "$t" |
+      curl -sS -w '\n__HTTP_STATUS__%{http_code}' --config -
+      "$1/api/user"
+  tasks:
+    - name: Refuse a cleartext OpenBao endpoint
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Authenticate to OpenBao (AppRole)
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _bao_auth
+      changed_when: false
+      delegate_to: localhost
+      no_log: true
+      check_mode: false
+
+    - name: Read the stored console token and its id
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/services/o11y"
+        follow_redirects: none
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200]
+      register: _o11y_secret
+      delegate_to: localhost
+      no_log: true
+      check_mode: false
+
+    - name: Hold the stored token and its id in memory
+      ansible.builtin.set_fact:
+        _stored_token: "{{ _o11y_secret.json.data.data.console_grafana_token | default('') }}"
+        _stored_token_id: "{{ _o11y_secret.json.data.data.console_grafana_token_id | default('') }}"
+      no_log: true
+
+    - name: Find the console service account
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, '{{ _admin_curl }} "$1/api/serviceaccounts/search?query=$2"', sa-search, "{{ _gf }}", "{{ _sa_name }}"]
+      register: _sa_search
+      changed_when: false
+      check_mode: false
+
+    - name: Select the exact-named account
+      ansible.builtin.set_fact:
+        _sa_id: "{{ ((_sa_search.stdout | from_json).serviceAccounts | default([])
+                     | selectattr('name', 'equalto', _sa_name) | map(attribute='id') | list
+                     | first) | default('') }}"
+
+    - name: Read the existing account
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, '{{ _admin_curl }} "$1/api/serviceaccounts/$2"', sa-get, "{{ _gf }}", "{{ _sa_id }}"]
+      register: _sa_get
+      changed_when: false
+      check_mode: false
+      when: _sa_id | string | length > 0
+
+    - name: Refuse an account that is not an enabled Viewer
+      ansible.builtin.assert:
+        that:
+          - (_sa_get.stdout | from_json).role == _sa_role
+          - (_sa_get.stdout | from_json).isDisabled is sameas false
+        fail_msg: >-
+          Grafana service account {{ _sa_name }} (id {{ _sa_id }}) has role
+          {{ (_sa_get.stdout | from_json).role }} and isDisabled
+          {{ (_sa_get.stdout | from_json).isDisabled }}; the console needs an enabled
+          Viewer. Nothing was minted. Set it to Viewer and enable it, or delete it so this
+          playbook recreates it, then re-run.
+      when: _sa_id | string | length > 0
+
+    - name: Test the stored token against Grafana's authenticated identity API
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, -i, o11y-grafana, sh, -c, "{{ _token_check }}", token-check, "{{ _gf }}"]
+        stdin: "{{ _stored_token }}"
+      register: _stored_check
+      changed_when: false
+      failed_when: false
+      when: _stored_token | length > 0
+      no_log: true
+      check_mode: false
+
+    - name: Reduce the stored-token check to its status and identity
+      ansible.builtin.set_fact:
+        _stored_status: "{{ (_stored_check.stdout | default('none') | split('__HTTP_STATUS__') | last) if _stored_check is not skipped else 'none' }}"
+        _stored_uid: >-
+          {{ ((_stored_check.stdout | split('__HTTP_STATUS__') | first | trim | from_json).uid | default(''))
+             if (_stored_check is not skipped and _stored_check.stdout | default('') is search('__HTTP_STATUS__200$'))
+             else '' }}
+      no_log: true
+
+    - name: Refuse to replace the stored token on a non-authentication failure
+      ansible.builtin.assert:
+        that: _stored_status in ['200', '401', '403', 'none']
+        fail_msg: >-
+          Grafana answered the stored console token with status {{ _stored_status }}, which
+          is not an authentication rejection. Nothing was minted or stored; fix Grafana and
+          re-run.
+
+    - name: List the account's tokens (ids and expiry only, never a key)
+      ansible.builtin.command:
+        argv: ["{{ _engine }}", exec, o11y-grafana, sh, -c, '{{ _admin_curl }} "$1/api/serviceaccounts/$2/tokens"', sa-tokens, "{{ _gf }}", "{{ _sa_id }}"]
+      register: _sa_tokens
+      changed_when: false
+      check_mode: false
+      when: _sa_id | string | length > 0
+
+    - name: Read the account's token list
+      ansible.builtin.set_fact:
+        _token_list: "{{ (_sa_tokens.stdout | default('[]')) | from_json }}"
+
+    - name: Index the account's token ids
+      ansible.builtin.set_fact:
+        _listed_ids: "{{ _token_list | map(attribute='id') | map('string') | list }}"
+
+    - name: Find the stored token's remaining lifetime in seconds (-1 when it is not listed)
+      ansible.builtin.set_fact:
+        _stored_seconds_left: "{{ _token_list[_listed_ids.index(_stored_token_id | string)].get('secondsUntilExpiration', 0) | int if (_stored_token_id | string) in _listed_ids else -1 }}"
+
+    - name: Decide whether the stored token is reused
+      ansible.builtin.set_fact:
+        _reuse_token: "{{ _stored_status == '200' and _stored_uid == ('service-account:' ~ (_sa_id | string)) and (_stored_seconds_left | int) > ((console_grafana_token_renew_days | int) * 86400) }}"
+
+    - name: Mint, prove and store a new console token
+      when: not _reuse_token | bool and not ansible_check_mode
+      block:
+        - name: Create the console service account (Viewer)
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                {{ _admin_curl }} -X POST
+                -d "{\"name\":\"$2\",\"role\":\"$3\",\"isDisabled\":false}"
+                "$1/api/serviceaccounts"
+              - sa-create
+              - "{{ _gf }}"
+              - "{{ _sa_name }}"
+              - "{{ _sa_role }}"
+          register: _sa_create
+          changed_when: true
+          when: _sa_id | string | length == 0
+
+        - name: Record the account id
+          ansible.builtin.set_fact:
+            _sa_id: "{{ (_sa_create.stdout | from_json).id if _sa_create is changed else _sa_id }}"
+
+        - name: Pick the token name from the controller's UTC epoch seconds
+          # `now(fmt='%s')` is not used: strftime %s reads the UTC wall clock as local time,
+          # so it is off by the controller's UTC offset. The date binary's -u is exact.
+          ansible.builtin.set_fact:
+            _console_token_name: "console-{{ lookup('ansible.builtin.pipe', 'date -u +%s') }}"
+
+        - name: Mint the console token (90-day lifetime; the key is returned once)
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - o11y-grafana
+              - sh
+              - -c
+              - >-
+                {{ _admin_curl }} -X POST
+                -d "{\"name\":\"$3\",\"secondsToLive\":$4}"
+                "$1/api/serviceaccounts/$2/tokens"
+              - sa-token
+              - "{{ _gf }}"
+              - "{{ _sa_id }}"
+              - "{{ _console_token_name }}"
+              - "{{ _ttl_seconds }}"
+          register: _sa_token
+          changed_when: true
+          no_log: true
+
+        - name: Hold the minted token and its id in memory
+          ansible.builtin.set_fact:
+            _new_key: "{{ (_sa_token.stdout | from_json).key }}"
+            _new_token_id: "{{ (_sa_token.stdout | from_json).id }}"
+          no_log: true
+
+        - name: Test the minted token against Grafana's authenticated identity API
+          ansible.builtin.command:
+            argv: ["{{ _engine }}", exec, -i, o11y-grafana, sh, -c, "{{ _token_check }}", token-check, "{{ _gf }}"]
+            stdin: "{{ _new_key }}"
+          register: _new_check
+          changed_when: false
+          failed_when: false
+          no_log: true
+          check_mode: false
+
+        - name: Reduce the minted-token check to its status and identity
+          ansible.builtin.set_fact:
+            _new_status: "{{ _new_check.stdout | split('__HTTP_STATUS__') | last }}"
+            _new_uid: >-
+              {{ ((_new_check.stdout | split('__HTTP_STATUS__') | first | trim | from_json).uid | default(''))
+                 if _new_check.stdout is search('__HTTP_STATUS__200$') else '' }}
+          no_log: true
+
+        - name: Require the minted token to authenticate as the exact console account before storing it
+          ansible.builtin.assert:
+            that:
+              - _new_status == '200'
+              - _new_uid == ('service-account:' ~ (_sa_id | string))
+            fail_msg: >-
+              The minted console token did not authenticate as the console service account
+              (HTTP status {{ _new_status }}). Nothing was stored. The minted token is not
+              deleted; it expires on its own 90 days after it was minted.
+
+        - name: Hold the stored token fields the store must still find unchanged
+          ansible.builtin.set_fact:
+            _console_guard_values: "{{ _o11y_secret.json.data.data | dict2items | selectattr('key', 'in', ['console_grafana_token', 'console_grafana_token_id']) | list | items2dict }}"
+            _console_guard_absent: "{{ ['console_grafana_token', 'console_grafana_token_id'] | difference(_o11y_secret.json.data.data.keys() | list) | list }}"
+          no_log: true
+
+        - name: Store the verified token and its id in secret/services/o11y
+          ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+          no_log: true
+          vars:
+            _bm_url: "{{ _bao_url }}"
+            _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+            _bm_path: services/o11y
+            _bm_data:
+              console_grafana_token: "{{ _new_key }}"
+              console_grafana_token_id: "{{ _new_token_id }}"
+            _bm_on_missing: fail
+            _bm_missing_msg: "secret/services/o11y does not exist; deploy o11y first."
+            # Both fields are compared with the read taken before the mint. A value that changed
+            # (a concurrent rotation) fails closed; a field that was absent must still be absent.
+            _bm_guard_values: "{{ _console_guard_values }}"
+            _bm_guard_absent_keys: "{{ _console_guard_absent }}"
+
+    - name: Report the decision (names and days only, never a value)
+      ansible.builtin.debug:
+        msg: >-
+          {% if _reuse_token | bool %}console Grafana token: reused, {{ (_stored_seconds_left | int) // 86400 }} days remaining
+          {% elif ansible_check_mode %}console Grafana token: would be minted for {{ _ttl_seconds // 86400 }} days
+          {% else %}console Grafana token: minted, {{ _ttl_seconds // 86400 }} days remaining
+          {% endif %}
