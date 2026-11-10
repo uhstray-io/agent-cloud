@@ -841,7 +841,7 @@ which refuses an underscore name by its presence and never renders its value, ma
 and asserts the stateful forgery is never rendered; `by_name` refuses a name without the
 underscore prefix and any name the guard file itself references (`_extra_var_guard_nested` is
 read by its own `when:`); and `test_extra_var_refusal_tests.py` accepts `by_name` only where the test
-positively asserts the guard's own message for the forged name. A value-reading refusal, a gate run without the guard, and a connection
+positively asserts the guard's own message (naming the forged name when that name is a literal; a computed name is not cross-checked). A value-reading refusal, a gate run without the guard, and a connection
 variable keep all three spellings.
 
 ### 1.16 A count written into a committed plan without running the count

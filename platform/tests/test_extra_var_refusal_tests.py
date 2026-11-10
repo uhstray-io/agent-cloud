@@ -94,9 +94,11 @@ def _guard_helpers(tree) -> set[str]:
     """Module-level functions that return a positive membership test of the guard's message
     (test_agw_conformance.py's `_refused_first`); a same-named function checking anything else
     does not count."""
-    return {f.name for f in tree.body if isinstance(f, ast.FunctionDef)
-            and any(isinstance(r, ast.Return) and r.value is not None and _positive_guard_compare(r.value)
-                    for r in ast.walk(f))}
+    def returns(f):
+        return [r for r in ast.walk(f) if isinstance(r, ast.Return)]
+    # Every return must be the compare: an early `return True` beside it would skip the check.
+    return {f.name for f in tree.body if isinstance(f, ast.FunctionDef) and returns(f)
+            and all(r.value is not None and _positive_guard_compare(r.value) for r in returns(f))}
 
 
 def _conjuncts(expr):
@@ -130,13 +132,17 @@ def _asserts_guard_message(func, helpers: set[str], names: list) -> bool:
         for expr in _conjuncts(node.test):
             if _positive_guard_compare(expr):
                 text = _constant_text(expr.left)
-                if isinstance(expr.left, ast.Constant) and any(
-                        f"Refusing to run: {n} {GUARD_TEXT}" not in text for n in literal):
+                # A literal forged name needs a literal message naming it; an f-string cannot be checked.
+                if literal and (not isinstance(expr.left, ast.Constant) or any(
+                        f"Refusing to run: {n} {GUARD_TEXT}" not in text for n in literal)):
                     continue
                 return True
             if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id in helpers:
                 arg = expr.args[1] if len(expr.args) > 1 else None
-                if isinstance(arg, ast.Constant) and any(n != arg.value for n in literal):
+                # A literal forged name needs the same literal, positionally; a keyword or a variable
+                # cannot be checked.
+                if literal and (expr.keywords or not isinstance(arg, ast.Constant)
+                                or any(n != arg.value for n in literal)):
                     continue
                 return True
     return False
@@ -188,7 +194,8 @@ def _case(body: str, helper: str = "") -> str:
 
 def test_by_name_is_accepted_only_with_a_positive_assert_of_the_guard_message():
     assert _classify(_case("    assert 'Refusing to run: _x set from outside the playbook' in out\n"))
-    assert _classify(_case("    assert f'Refusing to run: {n} set from outside the playbook' in out\n"))
+    computed = "def test_forged(out, n):\n    f = forgeries.by_name(n, 1, 2)\n"
+    assert _classify(computed + "    assert f'Refusing to run: {n} set from outside the playbook' in out\n")
     assert _classify(_case("    assert out.rc != 0 and _refused_first(out, '_x'), out\n", HELPER))
     # A comment, a negated check, another name, or a helper that checks nothing: refused.
     comment_only = "    # Refusing to run: _x set from outside the playbook\n    assert 'refused' in out\n"
@@ -198,6 +205,12 @@ def test_by_name_is_accepted_only_with_a_positive_assert_of_the_guard_message():
     assert not _classify(_case("    assert _refused_first(out, '_y')\n", HELPER))
     fake = "def _refused_first(out, name):\n    return True\n\n"
     assert not _classify(_case("    assert _refused_first(out, '_x')\n", fake))
+    # A literal forged name cannot be cross-checked through an f-string, a keyword or a variable.
+    assert not _classify(_case("    assert f'Refusing to run: _y set from outside the playbook{1}' in out\n"))
+    assert not _classify(_case("    assert _refused_first(out, name='_y')\n", HELPER))
+    assert not _classify(_case("    y = '_y'\n    assert _refused_first(out, y)\n", HELPER))
+    early = "def _refused_first(out, name):\n    if out:\n        return True\n" + HELPER.split("\n", 1)[1]
+    assert not _classify(_case("    assert _refused_first(out, '_x')\n", early))
 
 
 def test_by_name_refuses_a_name_the_guard_references():
