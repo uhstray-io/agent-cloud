@@ -260,7 +260,7 @@ platform/playbooks/
   audit-credentials.yml         Weekly credential inventory + stale detection [PLANNED]
 ```
 
-`[PLANNED]` entries are design targets that do **not** yet exist at their listed path. Current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead (see `deploy-uhhcraft.yml` for the live pattern). Implement on demand; tracked in `plan/development/00-foundation-local-dev.md` Phase 0A.
+`[PLANNED]` entries are design targets that do **not** yet exist at their listed path. Current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead (see `platform/playbooks/tasks/place-monorepo.yml` for the live pattern). Implement on demand; tracked in `plan/development/00-foundation-local-dev.md` Phase 0A.
 
 ### Task Responsibilities
 
@@ -539,7 +539,7 @@ During migration, unconverted services keep using `clone-and-deploy.yml`; the `m
 | Post-deploy creds sync | orb-agent creds written to `.env` → Phase 4 patches OpenBao |
 | check-secrets reports accurately | Lists all secrets, flags missing |
 | validate-secrets tests credentials | DB/API/Redis auth verified against live services |
-| Task reuse works | Same manage-secrets.yml for netbox, nocodb, n8n |
+| Task reuse works | Same manage-secrets.yml for netbox, honcho, postiz |
 | Idempotent end-to-end | Running deploy twice = same state, same passwords |
 | deploy.sh split works | deploy.sh completes independently; post-deploy.sh retryable |
 | Git pull after deploy works | `git -C ~/agent-cloud pull` succeeds, clean working tree |
@@ -570,7 +570,7 @@ During migration, unconverted services keep using `clone-and-deploy.yml`; the `m
 - **Source/runtime separation:** the clone (`~/agent-cloud/`) is read-only source; all secrets land in the runtime dir (`~/services/<name>/`). Filesystem isolation — not `.gitignore` — is the boundary; no accidental `git add .` captures secrets.
 - **Target: no `secrets/` directory in copied runtime artifacts.** As built, NetBox writes `netbox_to_diode_client_secret.txt` in the deployment clone and bind-mounts it read-only at `/run/secrets/netbox_to_diode`; this is not the target tmpfs engine-secret path.
 - **Runtime dir permissions:** `chmod 700` on the dir, `600` on env files. Symlinked files (compose, libs) are world-readable — no secrets.
-- **Reduced attack surface per VM:** sparse checkout means each VM holds only its own service's code — a compromised NetBox VM can't read OpenBao/NemoClaw/other deploy scripts.
+- **Reduced attack surface per VM:** sparse checkout means each VM holds only its own service's code — a compromised NetBox VM can't read OpenBao or other services' deploy scripts.
 - **Root ownership eliminated:** deploy.sh never runs with `become`; only specific sudo commands (orb-agent start) need privilege; no root-owned files in the clone.
 - **CLONE_DIR validation:** deploy.sh checks `CLONE_DIR` contains `.git` before sourcing libs — prevents library injection via env-var manipulation.
 - **Minimal disk footprint:** only `.env` + `env/*.env` (Compose-required) exist in the runtime dir, overwritten every deploy.
@@ -759,7 +759,7 @@ flowchart TB
 
 - **D — declared-state:** you hand the tool the end state; it computes the diff; re-running is *intrinsically* a no-op. `ansible.builtin.template`/`file`/`lineinfile`/`apt`/`authorized_key`, `.j2`/`.hcl`/compose/`templates.yml` data, and server-side upserts (Vault policy `PUT`, Semaphore template `PUT`-by-id).
 - **GI — guarded-imperative:** imperative *form*, declarative *effect*, where convergence is **hand-built** per task: a guard (`creates:`, a `when:` precondition, a `container exists` check) plus an **honest `changed_when`**. Legitimate and unavoidable at boundaries with no faithful module (podman/compose, in-container CLIs, vendor HTTP APIs). `run-migrations.yml`, `mint-internal-cert.yml`, the thin `deploy.sh` wrappers.
-- **I — imperative-raw:** a mutating `shell`/`command` with **no** convergence — re-run behavior depends on side effects, not desired state. Outside genuine bootstrap/one-time genesis, this is a **defect**. The legacy n8n/nocodb secret-generating `deploy.sh` is the canonical instance.
+- **I — imperative-raw:** a mutating `shell`/`command` with **no** convergence — re-run behavior depends on side effects, not desired state. Outside genuine bootstrap/one-time genesis, this is a **defect**.
 
 > **The sharpest, most testable rule** (its own §6/§7): *a bare `changed_when: true` on a mutating `shell`/`command`/`podman exec` is an **unverified convergence claim** — GI-debt by default, and often I masquerading as GI.* Convergence in this repo is **authored, not free**; the author can get it wrong, and `manage-approle.yml` proves they did.
 
@@ -792,25 +792,23 @@ Mapping to the **four-layer guardrails model** (see ARCHITECTURE.md): *Platform*
 | OpenBao secret *values* | TRIGGER-CONVERGED | GI (generate-if-missing) | Stateful + verification-gated; blind convergence would destroy data. Correctly never-regenerate. |
 | `manage-approle.yml` | TRIGGER-CONVERGED | **I (defect)** | Mints a fresh `secret_id` every run, `secret_id_ttl: 0` — see §7. |
 | OpenBao policies / `templates.yml` | TRIGGER-CONVERGED | D (data) over GI (apply) | Declarative source, idempotent upsert. |
-| `deploy.sh` (dns/caddy/step-ca/uhhcraft/n8n) | TRIGGER-CONVERGED | GI (correct) | Thin lifecycle; no module does podman-compose+overlay faithfully. n8n is now composable (`.env` from `manage-secrets`; secrets no longer generated in `deploy.sh`). |
-| legacy `deploy.sh` (nocodb) | TRIGGER-CONVERGED | **I (debt)** | Sources `bao-client.sh`, on-VM `secrets/` dir, programmatic admin/token creation — violates two Critical Rules. §7. |
+| `deploy.sh` (dns/caddy/step-ca) | TRIGGER-CONVERGED | GI (correct) | Thin lifecycle; no module does podman-compose+overlay faithfully. |
 | `mint-internal-cert.yml` | TRIGGER-CONVERGED | GI | Re-mints each run by design (cheap, overwrite); honest. |
 | `run-migrations.yml` | TRIGGER-CONVERGED | GI (textbook) | goose idempotent at target + honest `changed_when`. |
 | `harden-ssh.yml` | TRIGGER-CONVERGED | **D** | `lineinfile`+handler+`validate`+`assert` — best-in-repo. |
 | bootstrap (local + prod genesis) | TRIGGER-CONVERGED | GI (sequenced) | ~25% irreducible ordering, ~75% reducible (§7). |
 | OpenBao auth / OPA | DECISION-ENGINE | D (policy) | Per-request allow/deny; not a state reconciler. |
 | host-side macOS wiring (resolver/forwarder/trust) | n/a (host) | GI (idempotent) | Forced imperative — outside the VM (§6). |
-| n8n workflows | (unmanaged today) | — → D | Should be exported-as-code + applied via API (§7). |
 
 ---
 
 ## 4. Principles (the rules for choosing)
 
 1. **Tag every surface on both axes.** "Is it declarative?" is ambiguous; "is it RECONCILED or TRIGGER-CONVERGED, and is it D / GI / I?" is answerable and actionable.
-2. **Declarative *description* is mandatory; put desired state in data, never in shell.** Env contents, policies, the template catalog, zones, compose, n8n flows → files a tool reads (`.j2`/`.hcl`/`.yml`/JSON). Killing the legacy `common.sh generate_*_env()` heredocs is an instance.
+2. **Declarative *description* is mandatory; put desired state in data, never in shell.** Env contents, policies, the template catalog, zones, compose → files a tool reads (`.j2`/`.hcl`/`.yml`/JSON). Killing the legacy `common.sh generate_*_env()` heredocs is an instance.
 3. **Reach for the module before `shell`.** `shell`/`command` is a last resort — justified only when no faithful module exists (podman/compose, in-container CLI, vendor API) or a module would be more convoluted than honest, guarded shell. `harden-ssh.yml` proves most "imperative" ops have a module.
 4. **`changed_when` must be *true*, not `true`.** A mutating `shell`/`command` asserting `changed_when: true` is GI-debt unless the op genuinely always changes. Fix order: make the *operation* idempotent (read-guard before mutate), *then* report change honestly where a "changed" triggers a handler/restart/rotation. Enforce in CI (§7, rule AC-1).
-5. **One reconciler per surface; never two sources of truth.** Secrets reconcile from OpenBao via `manage-secrets`; never *also* via `deploy.sh`. The n8n/nocodb dual path is the canonical violation.
+5. **One reconciler per surface; never two sources of truth.** Secrets reconcile from OpenBao via `manage-secrets`; never *also* via `deploy.sh`.
 6. **Imperative sequencing is legitimate only at genuine ordering boundaries** — genesis (first unseal/token/AppRole), `Create→Verify→Retire` rotation, staged stack start, destructive resets. Everywhere else, order is an *emergent property of declared state*, not a script.
 7. **Liveness self-heals continuously; CONFIG convergence is authored — and pursued on this estate if safely feasible (PRINCIPLES.md Section 5).** The always-on loop is **liveness** (Podman Quadlet / systemd `Restart=on-failure` — crashed/post-reboot containers self-heal without a Semaphore run). CONFIG convergence is always from a **human-authored** Git target (never AI-authored — §8) and does **not** auto-wait for k8s — see the TL;DR "authored convergence on a timer" decision (scheduled re-apply does not violate the AI Invariant; feasibility, not safety, is open; k8s is richer-substrate-not-prerequisite). [TARGET]/INVESTIGATE: build + prove the scheduled reconcile loop (drift detect + safe, reversible-aware re-apply) on a non-customer service first; ship after the runtime-dir/engine-secret split.
 8. **Genesis decomposes.** Process-genesis (running OpenBao+Semaphore) → declarative compose + a thin reconcile play. Only identity/trust-genesis (first unseal, first token, first `secret_id`) is irreducibly imperative-one-directional. Don't accept a 594-line hand-rolled bootstrap as inherent.
@@ -825,7 +823,7 @@ The imperative surfaces split cleanly. **FORCED** are correct — never "refacto
 | FORCED — imperative by real constraint | DEBT — imperative by choice/incompleteness |
 |---|---|
 | macOS host wiring: `/etc/resolver`, the `socat` LaunchDaemon, keychain trust — host files outside the podman VM, cannot go through Semaphore | `manage-approle.yml` `secret_id_ttl: 0` + unconditional `secret_id` mint — security defect |
-| Privileged ports <1024 → root LaunchDaemon forwarder (no sysctl escape on macOS) | legacy n8n/nocodb secret generation in `deploy.sh` (+ `psql INSERT`) — violates 2 Critical Rules |
+| Privileged ports <1024 → root LaunchDaemon forwarder (no sysctl escape on macOS) |  |
 | Local token-mint cert issuance (`*.<zone>` not ACME-validatable inside the podman net) | `assert-orchestrated.yml` unwired — Critical Rule #1 unenforced *in the plays* |
 | `.env`-on-disk secret bridge — Compose has no native OpenBao integration | env files templated into the clone, not a runtime dir — the doc's own anti-pattern; `[PLANNED]` runtime-dir tasks unbuilt |
 | Semaphore env-var credential injection → `lookup('env','BAO_ROLE_ID')` | `changed_when: true` on idempotent `uri` API calls (bootstrap) — false change signal |
@@ -844,14 +842,12 @@ Some imperative surfaces are **laws of the environment**, not preferences (all F
 ## 7. Action backlog (ranked)
 
 1. **`manage-approle.yml` — secret_id churn + `secret_id_ttl: 0` (SECURITY, do first).** It POSTs a fresh `/secret-id` on **every** run (orphaning the prior, which — with TTL 0 — never expires) and hardcodes `secret_id_ttl: 0` / `token_num_uses: 0` despite the security doc mandating bounded TTLs. Its sibling `provision-orb-agent-approle.yml` even documents the intended contract: *"run once, again only to rotate."* **Fix:** read the stored creds; generate a new `secret_id` only when absent / expired / `_approle_force_rotate`; on rotate, **revoke** the prior (`Create→Verify→Retire`); set a bounded `secret_id_ttl` (the doc's 90d). Converts the task from **I → D-effect**. (Note: local bootstrap inlines its own AppRole with bounded TTLs, so this bites the *prod/service* path.)
-2. **Retire the legacy nocodb secret-generating path** (`common.sh:generate_*_env`, the on-VM `secrets/` dir, BAO creds passed into `deploy.sh` via `clone-and-deploy.yml`, the programmatic admin/API-token creation). Replace with `manage-secrets.yml` + `.env.j2` (→ D) and an idempotent post-deploy API bootstrap (→ GI). Held only on pre-seeding stateful secrets into OpenBao before cutover. (n8n already converted — composable `deploy.sh` + `manage-secrets`.)
-3. **Wire `assert-orchestrated.yml`** as a declarative precondition in every deploy play (Critical Rule #1 is enforced today only by the `local-dev.sh` bash guard + convention).
-4. **CI rule AC-1 (`changed_when` honesty):** a `shell`/`command`/`raw` task must not carry `changed_when: true` unless it bears an inline `# always-changes: <reason>` allow-comment. Carve-outs (annotate, don't change): `mint-internal-cert` (re-mints by design), `place-monorepo` local `tar|tar` (full re-sync), `clean-service` (destructive). ansible-lint's `no-changed-when` covers the *missing* case; AC-1 covers the *dishonest-`true`* case.
-5. **Reconcile the Composability half of this doc with reality:** the `[PLANNED]` runtime-dir tasks (`sparse-checkout`/`setup-runtime-dir`/`run-deploy`/`verify-health`) don't exist, and `manage-secrets.yml` renders env *into the clone* — the doc's own anti-pattern. Either build the runtime-dir split or keep it clearly marked as an unbuilt target.
-6. **Decompose bootstrap** (§4.8): control-plane containers → a `compose.bootstrap.yml`; Semaphore resources → an "ensure resources" reconcile play (or a provider). Keep only the identity/seal kernel imperative.
-7. **n8n workflows as managed declarative state:** export flows as JSON-in-repo, apply via an idempotent API task mirroring `setup-templates.yml`. Today they live only in n8n's DB — an unmanaged declarative surface.
-8. **Liveness reconciliation (single-site, the cheap must-have):** Podman Quadlet / systemd `Restart=on-failure` for crash + post-reboot self-heal — a standing loop that does not smuggle in autonomous config mutation. The liveness unit must `start` the existing container, never `up` (which re-reads possibly-drifted on-disk state); it is a dedicated composable task (`configure-podman-systemd.yml`) invoked by Ansible as the final deploy phase (**not** inside `deploy.sh` — lifecycle-only boundary), engine-parameterized (Quadlet/systemd for Podman; native `restart` + systemd wrapper for Docker/NetBox), and ships **after** the runtime-dir/engine-secret split. *Interim, landed 2026-09-22:* post-reboot start is carried by podman's own `podman-restart.service`, which also `start`s rather than `up`s, over `restart: always` containers (05-platform-infra §11). Crash restart and the Quadlet task remain planned.
-9. **[TARGET]/INVESTIGATE — scheduled CONFIG reconcile on the VM/Podman estate (PRINCIPLES.md Section 5, owner decision — NOT deferred to k8s):** build and prove "authored convergence on a timer" — a Semaphore-scheduled (or `ansible-pull`) deterministic re-apply of the **human-authored** Git desired-state, with drift detection + safe reversible-aware re-apply, on a non-customer service first. Rationale/AI-Invariant compatibility per §4.7.
+2. **Wire `assert-orchestrated.yml`** as a declarative precondition in every deploy play (Critical Rule #1 is enforced today only by the `local-dev.sh` bash guard + convention).
+3. **CI rule AC-1 (`changed_when` honesty):** a `shell`/`command`/`raw` task must not carry `changed_when: true` unless it bears an inline `# always-changes: <reason>` allow-comment. Carve-outs (annotate, don't change): `mint-internal-cert` (re-mints by design), `place-monorepo` local `tar|tar` (full re-sync), `clean-service` (destructive). ansible-lint's `no-changed-when` covers the *missing* case; AC-1 covers the *dishonest-`true`* case.
+4. **Reconcile the Composability half of this doc with reality:** the `[PLANNED]` runtime-dir tasks (`sparse-checkout`/`setup-runtime-dir`/`run-deploy`/`verify-health`) don't exist, and `manage-secrets.yml` renders env *into the clone* — the doc's own anti-pattern. Either build the runtime-dir split or keep it clearly marked as an unbuilt target.
+5. **Decompose bootstrap** (§4.8): control-plane containers → a `compose.bootstrap.yml`; Semaphore resources → an "ensure resources" reconcile play (or a provider). Keep only the identity/seal kernel imperative.
+6. **Liveness reconciliation (single-site, the cheap must-have):** Podman Quadlet / systemd `Restart=on-failure` for crash + post-reboot self-heal — a standing loop that does not smuggle in autonomous config mutation. The liveness unit must `start` the existing container, never `up` (which re-reads possibly-drifted on-disk state); it is a dedicated composable task (`configure-podman-systemd.yml`) invoked by Ansible as the final deploy phase (**not** inside `deploy.sh` — lifecycle-only boundary), engine-parameterized (Quadlet/systemd for Podman; native `restart` + systemd wrapper for Docker/NetBox), and ships **after** the runtime-dir/engine-secret split. *Interim, landed 2026-09-22:* post-reboot start is carried by podman's own `podman-restart.service`, which also `start`s rather than `up`s, over `restart: always` containers (05-platform-infra §11). Crash restart and the Quadlet task remain planned.
+7. **[TARGET]/INVESTIGATE — scheduled CONFIG reconcile on the VM/Podman estate (PRINCIPLES.md Section 5, owner decision — NOT deferred to k8s):** build and prove "authored convergence on a timer" — a Semaphore-scheduled (or `ansible-pull`) deterministic re-apply of the **human-authored** Git desired-state, with drift detection + safe reversible-aware re-apply, on a non-customer service first. Rationale/AI-Invariant compatibility per §4.7.
 
 ---
 
@@ -903,6 +899,6 @@ Consensus: adopt Axis-1 loop-ownership as the architectural truth (zero standing
 After this plan is adopted as the reference standard:
 
 - Every new automation surface is authored with an explicit Axis-1/Axis-2 coordinate, and reviews reject **I masquerading as GI** (bare `changed_when: true` on mutating shell) via CI rule AC-1.
-- The `manage-approle` defect is fixed (`Create→Verify→Retire`, bounded TTL); the legacy n8n/nocodb secret path is retired; `assert-orchestrated.yml` is wired.
+- The `manage-approle` defect is fixed (`Create→Verify→Retire`, bounded TTL); `assert-orchestrated.yml` is wired.
 - The Composability half of this doc describes the system that actually exists (runtime-dir built, or the design dropped).
 - The drift story is stated honestly — *liveness self-heals continuously; config is detect-only on the compose tier, with "authored convergence on a timer" pursued on this estate if safely feasible, not auto-deferred to k8s (the richer substrate, not a prerequisite)* — and the AI layer is constrained by **hard** invariant to **proposing** into gated pipelines (incl. propose-only self-improvement), never closing loops or authoring a reconciled target.
