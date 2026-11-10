@@ -96,6 +96,7 @@ and why.
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
+| 2.36 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -200,6 +201,7 @@ and why.
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
 | 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
+| 10.35 | Merged a tag-pushing workflow whose push path no run had exercised; GitHub refused its first tag because the job token lacked the `workflows` permission | Mechanism never exercised | 1 | Convention (pre-merge write probe with the real credential) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -2521,6 +2523,32 @@ it spans the alphabet), next to where it is built. Seed a generator once and dra
 
 **Enforced by.** Test: the module asserts `set(_RANDOM_BASE64) == set(_BASE64)` at import, and restoring the
 per-character seed fails collection (mutation-checked). The class rule stays `Convention`.
+
+### 2.36 A credential probe passed on the operator's own git login
+
+**What happened.** On 2026-11-09, to prove that the new release GitHub App could push a tag the
+job token had been refused, a probe minted an App installation token, wrote it into a git
+credential-store file in a throwaway clone, and pushed `probe/workflows-<timestamp>` at
+`v0.1.0`'s backfill commit. The mint had failed: `uv run` read the working directory's
+`pyproject.toml` and exited 2, so the stored password was empty. The push succeeded anyway.
+Git also consulted the helpers configured outside the clone: a github.com-scoped
+`gh auth git-credential` in the global config and Apple git's built-in `osxkeychain`. One of them
+answered with the operator's login; which one is not established. The probe tag was pushed under
+the operator's identity and deleted in the same command (no `probe/*` tag remained). The result
+read as "the App can push" until the mint's exit code was read.
+
+**Root cause.** The probe added one credential helper without removing the others, and did not
+stop on an empty token.
+
+**The rule.** A test of one credential first removes every other path to authentication, shows
+what is left, and refuses an empty credential. For git: `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, then
+`git config --show-origin --get-all credential.helper` must list only the helper under test. The
+rerun did all three: the helper list showed the clone's own file only, the App token pushed and
+deleted the probe tag, and the token was revoked (204).
+
+**Enforced by.** Test (`platform/tests/test_release_version_playbook.py`): every git command in
+the release playbook carries the three variables. Workstation probes: Convention.
 
 ## 3. Acting on live state
 
@@ -6046,6 +6074,33 @@ previous playbook. `compose.yml` sets `GF_DATABASE_WAL=true` and
 drop is a production measurement, recorded in the o11y README against this baseline. A drop
 would be consistent with the suspected cause, not proof of it; only Grafana's own error log
 would confirm it.
+
+### 10.35 Merged a tag-pushing workflow whose push path had never run
+
+**What happened.** PR #935 (plan 20) added `.github/workflows/release-version.yml`, which tagged
+merges into `dev` and `main` and pushed the tags with the job's `GITHUB_TOKEN` at
+`contents: write`. Its triggers were pushes to `dev` and `main` and a manual dispatch, so no pull
+request run could execute it. Three review rounds and CI exercised `scripts/semver.py`, never a
+push. The first two runs after the merge (Actions runs 42692977437 and 42693944852, 2026-11-09)
+both failed on the first backfill push:
+`! [remote rejected] v0.1.0 -> v0.1.0 (refusing to allow a GitHub App to create or update workflow .github/workflows/lint-and-test.yml without workflows permission)`.
+No `v*` tag reached the remote. The workflow was disabled the same day.
+
+**Root cause.** The design took `contents: write` to cover any tag push. GitHub refused a tag at
+a commit whose `.github/workflows/lint-and-test.yml` it counts as a workflow change, because the
+job token did not hold the `workflows` permission. Which comparison GitHub makes is not stated in
+the refusal; the refusal itself is the established fact. Nothing before the merge performed the
+write the workflow existed to perform.
+
+**The rule.** A mechanism whose only trigger is post-merge is proven before the merge by running
+its exact write with its real credential against the real remote: here, a disposable tag outside
+the `v*` namespace at one of the commits it must tag, pushed and then deleted. The pull request
+records that probe.
+
+**Enforced by.** Convention. The replacement, the Semaphore `Release Version (Dev)` template
+(`platform/playbooks/release-version.yml`), had that probe first (2.36 records the run that
+proved nothing and its valid rerun), and its check mode mints the real token and builds every tag
+in a throwaway clone before any push.
 
 ## 11. The largest one
 
