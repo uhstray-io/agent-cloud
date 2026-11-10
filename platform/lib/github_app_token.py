@@ -493,6 +493,8 @@ def main() -> None:
     if (args.permissions is not None or args.repository) and args.action != "installation-token":
         die("--permissions and --repository apply to installation-token only", 2)
 
+    if args.action != "set-hook-secret" and not args.org:
+        die("--org is required for this action", 2)
     if args.action in ("jit-config", "list-runners", "prune-runners"):
         prefix = check_prefix(args.prefix or "")
         if args.action == "jit-config" and not args.group:
@@ -508,8 +510,6 @@ def main() -> None:
             sys.stdout.write(json.dumps(result))
         return
 
-    if args.action != "set-hook-secret" and not args.org:
-        die("--org is required for this action", 2)
     if args.action == "set-hook-secret":
         sys.stdout.write(json.dumps(set_hook_secret(args.issuer, args.hook_url or "", sys.stdin.buffer.read())))
         return

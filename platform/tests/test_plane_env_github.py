@@ -265,3 +265,17 @@ def test_the_unsigned_delivery_probe_is_gated_on_the_app_and_skipped_in_check_mo
     probe = next(t for t in verify["tasks"] if t.get("name") == "GitHub webhook refuses an unsigned delivery (401)")
     assert probe["when"] == ["plane_github_app_id is defined", "not ansible_check_mode"]
     assert "assert c == 401" in probe["ansible.builtin.command"]["argv"][-1]
+
+
+@pytest.mark.parametrize("action", ["jit-config", "list-runners", "prune-runners", "installation-token"])
+def test_every_org_action_refuses_a_missing_org_before_any_call(action):
+    calls = []
+    argv = ["github_app_token.py", action, "--issuer", "Iv-fake", "--prefix", "r-jit-", "--group", "g"]
+    with (
+        patch.object(gat, "api", lambda *a, **k: calls.append(a)),
+        patch.object(sys, "argv", argv),
+        contextlib.redirect_stderr(io.StringIO()),
+        pytest.raises(SystemExit) as exc,
+    ):
+        gat.main()
+    assert exc.value.code == 2 and calls == []
