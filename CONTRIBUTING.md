@@ -162,7 +162,8 @@ it is collectable, with the same test paths, working directory and `PYTHONPATH` 
 via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
 so you do not need to remember them.
 
-`bats platform/tests/` is byte-identical to CI's. Both suites run on the locked environment
+`bats platform/tests/` runs the same files as CI, serially; CI runs them with `--jobs 4
+--no-parallelize-within-files` (plan 21, D4). Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
 outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and

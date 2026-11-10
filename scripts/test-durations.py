@@ -9,9 +9,16 @@ testcase carries ``file`` and maps back to a node ID. A run stopped by ``-x`` is
 durations file would say nothing about the tests it never reached.
 
 Each testcase's ``time`` is pytest's total for that test (setup, call and teardown summed, the
-``junit_duration_report`` default). A testcase carrying a ``<skipped>`` child is kept with
-``"skipped": true``, never dropped, so a test that CI skips is not mistaken for a missing one.
-Testcases sharing a node ID are summed; such a node is skipped only when every one of them was.
+``junit_duration_report`` default). Testcases sharing a node ID are summed; such a node counts as
+skipped only when every one of them was.
+
+The file holds one entry per test FILE, never per node: ``time`` (its nodes summed), ``max`` (its
+slowest node), ``nodes`` (how many), ``skipped`` (true when any node was skipped, so a test CI skips
+is not mistaken for a missing one) and ``tests`` (the test function names, without parameters or
+class, which a static ``def test_`` scan of the file can be compared with). Per node it was 1.8 MB,
+over the repository's large-file limit, and parametrized node IDs carry the private addresses some
+tests take as input, which the private-IP gates refuse. The shard hook and the pre-push fast lane
+both decide per file. Times are rounded to the millisecond.
 
 Stdlib only. Output is sorted JSON with one entry per line. The reader is the stdlib XML parser on
 purpose: its input is the CI runner's own report, never untrusted XML (the two lines that import and
@@ -58,11 +65,22 @@ def build(reports: list[Path]) -> dict[str, dict]:
             skips[nodeid] = skips.get(nodeid, True) and skipped
     if not times:
         raise ValueError("no testcases found in the report(s): refusing to write an empty durations file")
-    return {nodeid: {"time": times[nodeid], "skipped": skips[nodeid]} for nodeid in sorted(times)}
+    files: dict[str, dict] = {}
+    for nodeid in sorted(times):
+        path, rest = nodeid.split("::", 1)
+        entry = files.setdefault(path, {"max": 0.0, "nodes": 0, "skipped": False, "tests": set(), "time": 0.0})
+        entry["time"] += times[nodeid]
+        entry["max"] = max(entry["max"], times[nodeid])
+        entry["nodes"] += 1
+        entry["skipped"] = entry["skipped"] or skips[nodeid]
+        # Parameters first: one may itself contain "::" (an IPv6 address).
+        entry["tests"].add(rest.split("[", 1)[0].rsplit("::", 1)[-1])
+    return {path: {**entry, "max": round(entry["max"], 3), "time": round(entry["time"], 3),
+                   "tests": sorted(entry["tests"])} for path, entry in files.items()}
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Build the per-test durations file from junit XML.")
+    parser = argparse.ArgumentParser(description="Build the per-file test durations file from junit XML.")
     parser.add_argument("reports", nargs="+", type=Path, help="junit XML report(s) from a green CI run")
     parser.add_argument("--out", required=True, type=Path, help="durations JSON to write")
     args = parser.parse_args(argv)
@@ -71,9 +89,10 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, ET.ParseError) as exc:
         print(f"test-durations: {exc}", file=sys.stderr)
         return 1
-    lines = [json.dumps(nodeid) + ": " + json.dumps(durations[nodeid], sort_keys=True) for nodeid in durations]
+    lines = [json.dumps(path) + ": " + json.dumps(durations[path], sort_keys=True) for path in durations]
     args.out.write_text("{\n" + ",\n".join(lines) + "\n}\n", encoding="utf-8")
-    print(f"test-durations: {len(durations)} node IDs -> {args.out}")
+    nodes = sum(entry["nodes"] for entry in durations.values())
+    print(f"test-durations: {nodes} node IDs in {len(durations)} files -> {args.out}")
     return 0
 
 

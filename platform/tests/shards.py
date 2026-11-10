@@ -3,9 +3,10 @@
 Pure stdlib, and it never imports pytest: the root conftest.py loads it only when PYTEST_SHARD is
 set, and every xdist worker computes the same assignment from the same inputs.
 
-A file's weight is the sum of its recorded per-test times in the durations file. A file with no
-recorded entry is weighted by its count of ``def test_`` lines times the median recorded per-test
-time (1.0 when nothing is recorded), read as text so the file is never imported.
+A file's weight is its recorded time in the durations file (one entry per file, built by
+scripts/test-durations.py). A file with no recorded entry is weighted by its count of ``def test_``
+lines times the median, over recorded files, of the mean time per test (1.0 when nothing is
+recorded), read as text so the file is never imported.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ def enumerate_files(root: Path, testpaths: list[str]) -> list[str]:
 
 
 def load_durations(path: Path) -> dict:
-    """The durations file: ``{nodeid: {"time": float, "skipped": bool}}``. A missing file is an empty map."""
+    """The durations file: ``{path: {"time", "max", "nodes", "skipped", "tests"}}``. A missing file is an empty map."""
     if not path.is_file():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
@@ -44,20 +45,12 @@ def count_def_tests(path: Path) -> int:
 
 
 def file_weights(files: list[str], durations: dict, root: Path) -> dict[str, float]:
-    """Recorded time per file; a file with no recorded entry gets its def-test count times the median."""
-    per_file: dict[str, float] = {}
-    for nodeid, entry in durations.items():
-        file_part = nodeid.split("::")[0]
-        per_file[file_part] = per_file.get(file_part, 0.0) + float(entry["time"])
-    recorded = [float(entry["time"]) for entry in durations.values()]
-    median = statistics.median(recorded) if recorded else 1.0
-    weights: dict[str, float] = {}
-    for rel in files:
-        if rel in per_file:
-            weights[rel] = per_file[rel]
-        else:
-            weights[rel] = count_def_tests(root / rel) * median
-    return weights
+    """Recorded time per file; a file with no recorded entry gets its def-test count times the median
+    per-test mean of the recorded files."""
+    means = [float(entry["time"]) / entry["nodes"] for entry in durations.values() if entry["nodes"]]
+    median = statistics.median(means) if means else 1.0
+    return {rel: float(durations[rel]["time"]) if rel in durations else count_def_tests(root / rel) * median
+            for rel in files}
 
 
 def assign(files: list[str], weights: dict[str, float], n: int) -> dict[str, int]:
