@@ -32,10 +32,11 @@
 # distrust it.
 #
 # WHAT DOES NOT: local execution, and therefore the result. CI installs uv.lock with
-# `uv sync --locked` (Python 3.12, from .python-version). When `uv` is on PATH this hook
-# does the same into the checkout's .venv and runs that interpreter, so the versions
-# match CI. Without uv, or when the sync fails, it falls back to whatever `python3` is on
-# the developer's PATH, with a warning that its packages may differ. The pytest command
+# `uv sync --locked` (Python 3.12, from .python-version) and puts .venv/bin on PATH. When
+# `uv` is on PATH this hook does the same into the checkout's .venv and puts its bin FIRST
+# on PATH for both suites, so `python3`, `pytest` and `ansible-playbook` are the locked
+# versions. Without uv, or when the sync fails, the suites run on whatever is already on
+# the developer's PATH, with a warning that its versions may differ. The pytest command
 # also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing test
 # names on every push is noise people learn to scroll past, and `<python> -m pytest`
 # rather than bare `pytest` so it uses that interpreter's pytest instead of whatever is
@@ -215,6 +216,35 @@ fi
 
 failed=0
 
+# ── Locked Python environment ───────────────────────────────────────────────
+# Before BOTH suites: with uv and uv.lock present, install the lock into this checkout's
+# .venv and put .venv/bin FIRST on PATH. Swapping only the interpreter is not enough: the
+# playbook tests find `ansible-playbook` on PATH, and the BATS suite runs `python3`, so a
+# system install would otherwise answer with other versions, or with none (tests skip).
+# PATH is what CI sets too (`.venv/bin` into $GITHUB_PATH).
+#
+# Fail-open, like everything else here: no uv, a failed sync (stale lock, no network), or a
+# sync that did not produce .venv/bin/python (UV_PROJECT_ENVIRONMENT pointing elsewhere)
+# leaves PATH alone, with a warning.
+py_locked=0
+if [ -f pyproject.toml ]; then
+  if command -v uv >/dev/null 2>&1 && [ -f uv.lock ]; then
+    if uv sync --locked --quiet && [ -x "$root/.venv/bin/python" ]; then
+      PATH="$root/.venv/bin:$PATH"
+      export PATH
+      py_locked=1
+    else
+      printf 'pre-push WARNING: `uv sync --locked` failed or did not create .venv (stale uv.lock,\n' >&2
+      printf '  no network, or UV_PROJECT_ENVIRONMENT set). The suites run on the tools already on\n' >&2
+      printf '  PATH, whose versions may differ from the lock. CI runs `--locked` and fails on a\n' >&2
+      printf '  stale lock: after editing pyproject.toml, run `uv lock` and commit uv.lock.\n' >&2
+    fi
+  else
+    printf 'pre-push WARNING: uv not found, so the suites run on python3 and the tools on PATH,\n' >&2
+    printf '  whose versions may differ from uv.lock. Install uv to run the same versions as CI.\n' >&2
+  fi
+fi
+
 # ── BATS ────────────────────────────────────────────────────────────────────
 if [ -d platform/tests ]; then
   if command -v bats >/dev/null 2>&1; then
@@ -261,22 +291,8 @@ fi
 # import — a defect, and the push FAILS. Only the python3 fallback still skips it.
 py_pp=platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
 if [ -f pyproject.toml ]; then
+  # On the locked environment this is .venv/bin/python3 (PATH set above).
   py=python3
-  py_locked=0
-  if command -v uv >/dev/null 2>&1 && [ -f uv.lock ]; then
-    # Installs into this checkout's .venv; quiet because an unchanged lock is a no-op.
-    if uv sync --locked --quiet; then
-      py=.venv/bin/python
-      py_locked=1
-    else
-      printf 'pre-push WARNING: `uv sync --locked` failed (stale uv.lock, or no network). Falling back\n' >&2
-      printf '  to python3 on PATH, whose packages may differ from the lock. CI runs `--locked` and\n' >&2
-      printf '  fails on a stale lock: after editing pyproject.toml, run `uv lock` and commit uv.lock.\n' >&2
-    fi
-  else
-    printf 'pre-push WARNING: uv not found, so the Python suite runs on python3 from PATH, whose\n' >&2
-    printf '  packages may differ from uv.lock. Install uv to run the same versions as CI.\n' >&2
-  fi
   # COLLECTION decides whether to run, not `import pytest` — and its OUTPUT decides
   # whether a failure is forgivable. Keeping the output means no dependency list has
   # to be maintained here to drift out of step with what the tests actually import.

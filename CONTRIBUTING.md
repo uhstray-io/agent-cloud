@@ -119,6 +119,10 @@ brew install go              # Go 1.26+ for the full test/pre-push suite; also i
 # group's cryptography is needed by the BATS suite, which signs a real GitHub App
 # assertion with a throwaway key; without it those tests SKIP rather than verify.
 uv sync --locked
+# To run a suite by hand on the locked versions (the playbook tests find ansible-playbook
+# on PATH, so swapping the interpreter alone is not enough):
+#   PATH="$PWD/.venv/bin:$PATH" pytest -q
+#   PATH="$PWD/.venv/bin:$PATH" bats platform/tests/
 
 # The complete BATS suite also requires a usable existing Podman or Docker engine
 # for its native PromQL test; do not start a daemon or VM just for the test.
