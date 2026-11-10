@@ -12,8 +12,13 @@ changes nothing. reset_marketplace_app_secrets is deliberately NOT used: it dele
 that connected integrations depend on.
 
 Prints one JSON line: {"created": [...], "present": [...], "missing": [...]} or {"error": ...}.
+create_applications generates client secrets and the playbook task is visible, so its stdout and
+stderr are discarded and an exception is reported by type only: a database error can quote the
+row it refused, secret included.
 """
 
+import contextlib
+import io
 import json
 
 from plane.license.models import InstanceAdmin
@@ -26,12 +31,18 @@ if admin is None:
     print(json.dumps({"error": "no instance admin yet; first-run setup has not completed"}))
 else:
     before = {k for k in APPLICATIONS if ApplicationSecret.objects.filter(key=f"x-{k}-id").exists()}
+    error = None
     if before != set(APPLICATIONS):
-        create_applications(admin.user.id)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                create_applications(admin.user.id)
+        except Exception as exc:  # noqa: BLE001 - reported by type only, never its message
+            error = f"create_applications raised {type(exc).__name__}"
     after = {k for k in APPLICATIONS if ApplicationSecret.objects.filter(key=f"x-{k}-id").exists()}
     print(
         json.dumps(
             {
+                **({"error": error} if error else {}),
                 "created": sorted(after - before),
                 "present": sorted(before),
                 "missing": sorted(set(APPLICATIONS) - after),

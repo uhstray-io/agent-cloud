@@ -322,6 +322,8 @@ def test_the_marketplace_script_creates_without_resetting_secrets():
     assert "create_applications(admin.user.id)" in src
     # reset deletes the secrets connected integrations depend on; it must never run on a deploy.
     assert "reset_marketplace" not in src.split('"""', 2)[2]
+    # Secrets are generated inside the call: its output is discarded, an error reported by type only.
+    assert "redirect_stdout" in src and "redirect_stderr" in src and "type(exc).__name__" in src
 
 
 @needs_ansible
