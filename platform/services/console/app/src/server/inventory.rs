@@ -1399,7 +1399,7 @@ mod tests {
             "stopped while active"
         );
         assert_eq!(vm_named(&body, "planned-vm")["rag"], "amber", "planned");
-        assert_eq!(vm_named(&body, "wiki")["rag"], "green");
+        assert_eq!(vm_named(&body, "plane")["rag"], "green");
         assert_eq!(vm_named(&body, "ghost")["rag"], "grey", "no live match");
         assert!(vm_named(&body, "ghost")["live_status"].is_null());
         assert!(vm_named(&body, "gateway")["workflow"].is_null());
@@ -1437,7 +1437,7 @@ mod tests {
         assert_eq!(body["links"]["grafana_conformance"], conformance);
         assert_eq!(vm_named(&body, "postiz")["grafana_url"], expected);
         assert!(
-            vm_named(&body, "wiki")["grafana_url"].is_string(),
+            vm_named(&body, "plane")["grafana_url"].is_string(),
             "every VM gets one"
         );
 
@@ -1701,20 +1701,20 @@ mod tests {
     async fn a_name_held_by_two_declared_sites_gets_no_live_state() {
         let nb_mock = nb::Mock::default();
         nb_mock
-            .lab_wiki_duplicate
+            .lab_plane_duplicate
             .store(true, std::sync::atomic::Ordering::SeqCst);
         let (state, _, _) = live_state_using(nb_mock, None).await;
         let (url, cookie) = signed_in(state, &["platform-admins"]).await;
 
         let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/inventory").await;
         let body: serde_json::Value = serde_json::from_str(&text).expect("json");
-        let wiki = vm_named(&body, "wiki");
+        let plane = vm_named(&body, "plane");
         assert!(
-            wiki["live_status"].is_null(),
-            "a duplicated name is not joined: {wiki}"
+            plane["live_status"].is_null(),
+            "a duplicated name is not joined: {plane}"
         );
-        assert!(wiki["vmid"].is_null());
-        assert_eq!(wiki["rag"], "grey");
+        assert!(plane["vmid"].is_null());
+        assert_eq!(plane["rag"], "grey");
         assert_eq!(
             vm_named(&body, "postiz")["live_status"],
             "running",
@@ -1724,7 +1724,7 @@ mod tests {
         // The lab copy is held the same way, so its own view joins nothing either.
         let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/initech/inventory").await;
         let lab: serde_json::Value = serde_json::from_str(&text).expect("json");
-        assert!(vm_named(&lab, "wiki")["live_status"].is_null());
+        assert!(vm_named(&lab, "plane")["live_status"].is_null());
     }
 
     #[tokio::test]
@@ -1780,7 +1780,7 @@ mod tests {
 
         let (status, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/inventory").await;
         assert_eq!(status, 200);
-        for foreign in ["pve-lab", "lab-wiki", "lab-01", "pve-rack"] {
+        for foreign in ["pve-lab", "lab-plane", "lab-01", "pve-rack"] {
             assert!(
                 !text.contains(foreign),
                 "{foreign} leaked into acme: {text}"
@@ -1961,7 +1961,7 @@ mod tests {
         );
 
         assert_eq!(
-            vm_named(&acme, "wiki")["domains"],
+            vm_named(&acme, "plane")["domains"],
             serde_json::json!(["domain-products", "domain-professional-services"]),
             "in the order of the domain list"
         );
@@ -2259,7 +2259,7 @@ mod tests {
             "a failed step stays red"
         );
         assert_eq!(
-            vm_named(&body, "wiki")["rag"],
+            vm_named(&body, "plane")["rag"],
             "amber",
             "stale turns a clean VM amber"
         );
