@@ -83,7 +83,7 @@ and why.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
-| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x2** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back) | False-green fixture | 2 | Shared filter test + playbook fixture |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x3** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back; 2026-11-10: the availability candidate fixture used Docker Compose's long volume form, `podman-compose config` keeps the short form, and the first real enabled o11y deploy refused) | False-green fixture | 3 | Shared filter test + playbook fixture + real `podman-compose` output fixture; class guard proposed (CI runs pinned `podman-compose config`) |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x3** (widened by 2.31) | Wrong-reason pass | 3 | Image references: `test_compose_image_qualified.py`; class: proposal in 2.31 |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
@@ -2177,7 +2177,7 @@ Widened in 2.25.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
-**Occurrences: 2** — (first undated), 2026-11-08
+**Occurrences: 3** — (first undated), 2026-11-08, 2026-11-10
 
 **What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
 provisioner from `dev`, then refused its newly created isolated environment as
@@ -2217,6 +2217,24 @@ not fire: the fixture was written against the shape the helper already parsed, a
 what the pinned provider writes before its first read. The helper now accepts exactly those
 bytes for any declared non-alloy component, as it already accepted an absent file (`o11y_alloy` stays strict), and the test fixture is
 the reproduced bytes, with both halves mutation-checked.
+
+**Occurrence 3 — 2026-11-10.** The o11y availability candidate check (`deploy.sh --candidate`, effective
+compose verification in `summarize-o11y-scrape-baseline.py`) was tested only against a crafted `compose config`
+result in Docker Compose's normalized long form: Alloy's config mount as a `{type, source, target, read_only}`
+mapping. `podman-compose config`, the provider the gate pins (1.0.6, 1.3.0 or 1.6.0), keeps the short form the
+compose file declares, `./config/config.alloy:/etc/alloy/config.alloy:ro`. The check counted only mapping
+entries, found no config mount, and the first real enabled `Deploy o11y (Dev)` (Semaphore task 14401) refused
+with `namespace_candidate_alloy_spec` before starting anything. The same filter also skipped short-form
+entries in the "no other mount under `/etc/alloy/`" rule, so it failed open for that form. Reproduced locally by
+running the real check over real `podman-compose` 1.6.0 output. Why the rule did not fire: the fixture was
+written from the compose specification's long form, and nobody ran the pinned provider to see what it emits.
+The check now normalizes both forms, resolving a relative source against the deployment directory, and the test
+fixture is the captured `podman-compose` output (mutation-checked three ways).
+
+**Count 3: proposed mechanical guard.** A CI job installs each `podman-compose` version the gate accepts and
+runs `config` over the repo's o11y compose files with the enabled overlays, then feeds the output through the
+real effective-compose check, so a fixture can no longer drift from the provider. It needs `podman-compose`
+added to CI, a new dependency awaiting the operator's decision.
 
 ### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
 

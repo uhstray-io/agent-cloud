@@ -246,7 +246,8 @@ does not validate, a label service set that differs from the services, or an
 `io.agent-cloud.inputs-sha256` label that does not match), `namespace_candidate_pod` (enabled mode
 without `x-podman: {in_pod: false}`), `namespace_candidate_alloy_spec` (the `alloy` service is missing
 or not a mapping, or its entrypoint, command, network mode, image or config mount differs from the
-declared one), `namespace_candidate_ports` (a port list or entry is malformed, a port uses 12345, or
+declared one; the config mount is read in either form, the long mapping Docker Compose emits or the
+short `source:target:ro` string `podman-compose config` keeps), `namespace_candidate_ports` (a port list or entry is malformed, a port uses 12345, or
 an Alloy port is outside the declared target, protocol or loopback and private address rules),
 `namespace_candidate_project` (the running Alloy belongs to a different project than the candidate),
 and `namespace_network_mode` (a service other than `alloy` declares a network mode; Alloy's own network mode is part of `namespace_candidate_alloy_spec`). `deploy.sh` prints one line,
