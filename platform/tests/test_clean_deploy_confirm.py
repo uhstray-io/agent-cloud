@@ -101,8 +101,9 @@ def _gate_path_is_the_shared_one(path: Path) -> list[str]:
 
 def test_every_plain_only_includer_reaches_the_gate_the_same_way():
     # The cut matrix rests on this: a clean-deploy that gains its own gate path must join FULL_GATE_IDS.
+    # The representative (agentgateway) is held to the same shape, or it would stop representing.
     shaped = {service: _gate_path_is_the_shared_one(path) for path, service in zip(INCLUDERS, IDS, strict=True)
-              if service not in FULL_GATE_IDS}
+              if service not in DIRECT_GATE_IDS}
     assert shaped and {s: p for s, p in shaped.items() if p} == {}, shaped
     # The two direct includers really do differ, which is why they keep the full matrix.
     for service in DIRECT_GATE_IDS:
