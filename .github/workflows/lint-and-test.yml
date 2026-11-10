@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+# Every job runs on ubuntu-24.04, pinned rather than ubuntu-latest: on 2026-11-10 GitHub moved
+# ubuntu-latest to 26.04, whose OpenSSL 3.5 made test_verify_service_health.py's pinned-address HTTPS
+# test fail on every pull request. Moving to 26.04 is a deliberate follow-up, not a label change.
+
 jobs:
   # Detect which areas changed so language-specific jobs only fire when
   # relevant. The existing lint / security / test jobs continue to run on
@@ -17,7 +21,7 @@ jobs:
   # gate on these outputs.
   changes:
     name: Detect changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       go: ${{ steps.filter.outputs.go }}
       python_inference: ${{ steps.filter.outputs.python_inference }}
@@ -45,7 +49,7 @@ jobs:
   # so a re-run after a title edit sees the edit.
   version:
     name: Version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -73,7 +77,7 @@ jobs:
 
   lint:
     name: Static Analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -146,7 +150,7 @@ jobs:
 
   security:
     name: Security Scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
@@ -249,7 +253,7 @@ jobs:
 
   python-core:
     name: Python core
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Backstop, not the capacity fix. The suite runs in parallel (below), which is what
     # keeps it well under this. 20 minutes was a serial-era cap that green runs reached
     # 19.9 minutes against before one was cancelled at 20m5s (run 37048305528).
@@ -323,7 +327,7 @@ jobs:
 
   python-playbook-safety:
     name: Python Playbook Safety
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -348,7 +352,7 @@ jobs:
 
   python-agentgateway:
     name: Python Agentgateway
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -393,7 +397,7 @@ jobs:
   # worker-seconds. Same dependencies, collections, environment and xdist options as core.
   python-playbook-runs:
     name: Python Playbook Runs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -424,7 +428,7 @@ jobs:
 
   python-semaphore:
     name: Python Semaphore
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -444,7 +448,7 @@ jobs:
 
   python-netbox:
     name: Python NetBox
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -464,7 +468,7 @@ jobs:
 
   bats:
     name: Bash Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -486,7 +490,7 @@ jobs:
 
   rego:
     name: Rego Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -514,7 +518,7 @@ jobs:
     name: Unit Tests
     if: always()
     needs: [python-core, python-playbook-safety, python-agentgateway, python-playbook-runs, python-netbox, python-semaphore, bats, rego, rust-console]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every test group to succeed
         env:
@@ -547,7 +551,7 @@ jobs:
     name: Go lint (uhhcraft)
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: platform/services/uhhcraft/deployment
@@ -614,7 +618,7 @@ jobs:
     name: Go test (uhhcraft)
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: platform/services/uhhcraft/deployment
@@ -670,7 +674,7 @@ jobs:
     name: Go build (uhhcraft image)
     needs: changes
     if: needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
@@ -699,7 +703,7 @@ jobs:
   # here would fail every PR that does not touch console. It runs on every PR.
   rust-console:
     name: Rust (console)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
       run:
