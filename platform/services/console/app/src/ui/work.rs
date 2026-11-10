@@ -1031,15 +1031,15 @@ mod tests {
     #[test]
     fn filters_combine_by_role_lane_and_text() {
         let mut skynet = item("sem-1", Lane::Queued);
-        skynet.role = Some("netclaw".to_string());
+        skynet.role = Some("network-agent".to_string());
         skynet.service = Some("netbox".to_string());
         let person = item("sem-2", Lane::Queued);
         let mut other_lane = item("sem-3", Lane::Running);
-        other_lane.role = Some("netclaw".to_string());
+        other_lane.role = Some("network-agent".to_string());
         let items = [skynet, person, other_lane];
 
         let by_role = Filters {
-            role: RoleFilter::Role("netclaw".to_string()),
+            role: RoleFilter::Role("network-agent".to_string()),
             ..Filters::default()
         };
         let picked: Vec<&str> = items
@@ -1105,24 +1105,27 @@ mod tests {
         assert_eq!(RoleFilter::from_value(""), RoleFilter::Any);
         assert_eq!(RoleFilter::from_value("operator"), RoleFilter::Operator);
         assert_eq!(
-            RoleFilter::from_value("netclaw"),
-            RoleFilter::Role("netclaw".to_string())
+            RoleFilter::from_value("network-agent"),
+            RoleFilter::Role("network-agent".to_string())
         );
         assert_eq!(RoleFilter::Any.value(), "");
         assert_eq!(RoleFilter::Operator.value(), "operator");
-        assert_eq!(RoleFilter::Role("netclaw".to_string()).value(), "netclaw");
+        assert_eq!(
+            RoleFilter::Role("network-agent".to_string()).value(),
+            "network-agent"
+        );
     }
 
     #[test]
     fn roles_present_are_distinct_and_sorted() {
         let mut a = item("a", Lane::Queued);
-        a.role = Some("netclaw".to_string());
+        a.role = Some("network-agent".to_string());
         let mut b = item("b", Lane::Queued);
         b.role = Some("bridge".to_string());
         let mut c = item("c", Lane::Queued);
-        c.role = Some("netclaw".to_string());
+        c.role = Some("network-agent".to_string());
         let d = item("d", Lane::Queued);
-        assert_eq!(roles_present(&[a, b, c, d]), ["bridge", "netclaw"]);
+        assert_eq!(roles_present(&[a, b, c, d]), ["bridge", "network-agent"]);
     }
 
     #[test]
@@ -1225,7 +1228,7 @@ mod tests {
                 "ok",
                 json!([{
                     "key": "sem-9", "title": "Deploy", "lane": "running", "status": "running",
-                    "role": "netclaw", "launched_by": "skynet", "run_id": "r1", "step": "apply",
+                    "role": "network-agent", "launched_by": "skynet", "run_id": "r1", "step": "apply",
                     "service": "netbox", "created": "2026-10-26T12:00:00Z", "started": null,
                     "ended": null, "receipt_url": "https://semaphore.example.test/project/1/history?t=9",
                     "latest_in_stream": true, "stream_runs": 1
@@ -1240,7 +1243,7 @@ mod tests {
             } => {
                 assert_eq!(list.items.len(), 1);
                 assert_eq!(list.items[0].lane, Lane::Running);
-                assert_eq!(list.items[0].role.as_deref(), Some("netclaw"));
+                assert_eq!(list.items[0].role.as_deref(), Some("network-agent"));
                 assert_eq!(now_ms, Some(1));
                 assert_eq!(stale, None);
             }

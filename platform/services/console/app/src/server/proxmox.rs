@@ -253,7 +253,7 @@ pub mod fixtures {
          "mem":8589934592,"maxmem":68719476736,"uptime":123456},
         {"id":"node/pve-02","type":"node","node":"pve-02","status":"online","cpu":0.05,"maxcpu":8,
          "mem":2147483648,"maxmem":34359738368,"uptime":99999},
-        {"id":"qemu/101","type":"qemu","node":"pve-01","vmid":101,"name":"tududi","status":"running",
+        {"id":"qemu/101","type":"qemu","node":"pve-01","vmid":101,"name":"postiz","status":"running",
          "cpu":0.02,"maxcpu":2,"mem":1073741824,"maxmem":4294967296,"uptime":3600,"disk":0,"maxdisk":42949672960},
         {"id":"qemu/102","type":"qemu","node":"pve-01","vmid":102,"name":"gateway","status":"stopped",
          "maxcpu":1,"maxmem":2147483648,"uptime":0},
@@ -372,7 +372,7 @@ mod tests {
         assert_eq!(data.nodes[1].status.as_deref(), Some("online"));
         assert_eq!(data.nodes[1].maxcpu, Some(16.0));
         let guests: Vec<&str> = data.guests.iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(guests, ["tududi", "gateway", "planned-vm", "wiki"]);
+        assert_eq!(guests, ["postiz", "gateway", "planned-vm", "wiki"]);
         assert_eq!(data.guests[0].vmid, Some(101));
         assert_eq!(data.guests[0].node.as_deref(), Some("pve-01"));
         assert_eq!(data.guests[1].status.as_deref(), Some("stopped"));

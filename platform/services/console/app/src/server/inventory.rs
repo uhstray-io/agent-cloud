@@ -1327,7 +1327,7 @@ mod tests {
         for path in [
             "/v1/tenants/acme/inventory",
             "/v1/tenants/acme/services",
-            "/v1/tenants/acme/services/tududi",
+            "/v1/tenants/acme/services/postiz",
             "/v1/network",
             "/v1/flows",
             "/v1/gateway",
@@ -1352,7 +1352,7 @@ mod tests {
         assert_eq!(body["source"]["proxmox"], "ok");
         assert_eq!(body["stale"], false);
         assert!(body["links"]["grafana"].is_null(), "unset base is null");
-        assert!(vm_named(&body, "tududi")["grafana_url"].is_null());
+        assert!(vm_named(&body, "postiz")["grafana_url"].is_null());
         assert!(body["updated_at"]["netbox"].is_string());
         assert!(body["error"]["netbox"].is_null());
 
@@ -1387,12 +1387,12 @@ mod tests {
         assert_eq!(node_keys.len(), 2, "{node_keys:?}");
         assert!(cluster["nodes"][0].get("maxcpu").is_none());
 
-        let tududi = vm_named(&body, "tududi");
-        assert_eq!(tududi["rag"], "red", "failed step");
-        assert_eq!(tududi["vmid"], 101);
-        assert_eq!(tududi["live_status"], "running");
-        assert_eq!(tududi["primary_ip"], "198.51.100.5/24");
-        assert_eq!(tududi["workflow"]["failed"], serde_json::json!(["step-b"]));
+        let postiz = vm_named(&body, "postiz");
+        assert_eq!(postiz["rag"], "red", "failed step");
+        assert_eq!(postiz["vmid"], 101);
+        assert_eq!(postiz["live_status"], "running");
+        assert_eq!(postiz["primary_ip"], "198.51.100.5/24");
+        assert_eq!(postiz["workflow"]["failed"], serde_json::json!(["step-b"]));
         assert_eq!(
             vm_named(&body, "gateway")["rag"],
             "red",
@@ -1427,7 +1427,7 @@ mod tests {
         let base = "https://grafana.example.test";
         let (state, _, _) = live_state_with(Some(base)).await;
         let (url, cookie) = signed_in(state.clone(), &["ops"]).await;
-        let expected = "https://grafana.example.test/d/service-overview/service-overview?var-service=tududi&var-log_service=tududi";
+        let expected = "https://grafana.example.test/d/service-overview/service-overview?var-service=postiz&var-log_service=postiz";
         let conformance =
             "https://grafana.example.test/d/service-conformance/service-deployment-conformance";
 
@@ -1435,7 +1435,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(body["links"]["grafana"], base);
         assert_eq!(body["links"]["grafana_conformance"], conformance);
-        assert_eq!(vm_named(&body, "tududi")["grafana_url"], expected);
+        assert_eq!(vm_named(&body, "postiz")["grafana_url"], expected);
         assert!(
             vm_named(&body, "wiki")["grafana_url"].is_string(),
             "every VM gets one"
@@ -1446,7 +1446,7 @@ mod tests {
         assert_eq!(body["links"]["grafana"], base);
         assert_eq!(body["services"][0]["grafana_url"], expected);
 
-        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/services/tududi").await;
+        let (_, text) = get_json(&url, Some(&cookie), "/v1/tenants/acme/services/postiz").await;
         let body: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(body["links"]["grafana"], base);
         assert_eq!(body["vm"]["grafana_url"], expected);
@@ -1716,7 +1716,7 @@ mod tests {
         assert!(wiki["vmid"].is_null());
         assert_eq!(wiki["rag"], "grey");
         assert_eq!(
-            vm_named(&body, "tududi")["live_status"],
+            vm_named(&body, "postiz")["live_status"],
             "running",
             "unique names still join"
         );
@@ -1737,7 +1737,7 @@ mod tests {
         for path in [
             "/v1/tenants/acme/inventory",
             "/v1/tenants/acme/services",
-            "/v1/tenants/acme/services/tududi",
+            "/v1/tenants/acme/services/postiz",
         ] {
             let (status, text) = get_json(&member_url, Some(&member_cookie), path).await;
             assert_eq!(status, 200, "{path}: {text}");
@@ -1831,7 +1831,7 @@ mod tests {
         assert_eq!(body["stale"], false);
         assert!(body["error"]["netbox"].is_null());
         assert_eq!(body["sites"][0]["mapped"], true);
-        assert_eq!(vm_named(&body, "tududi")["rag"], "red");
+        assert_eq!(vm_named(&body, "postiz")["rag"], "red");
 
         let (admin_url, admin_cookie) = signed_in(state, &["platform-admins"]).await;
         let (_, text) = get_json(&admin_url, Some(&admin_cookie), "/v1/network").await;
@@ -1867,7 +1867,7 @@ mod tests {
     async fn a_tenant_the_caller_cannot_see_is_404_like_an_unknown_one() {
         let (state, _, _) = live_state().await;
         let (base, cookie) = signed_in(state, &["ops"]).await;
-        for suffix in ["inventory", "services", "services/tududi"] {
+        for suffix in ["inventory", "services", "services/postiz"] {
             let hidden = get_json(
                 &base,
                 Some(&cookie),
@@ -1904,7 +1904,7 @@ mod tests {
             .iter()
             .map(|s| s["name"].as_str().expect("name"))
             .collect();
-        assert_eq!(names, ["tududi", "planned-vm"]);
+        assert_eq!(names, ["postiz", "planned-vm"]);
         assert_eq!(body["services"][0]["rag"], "red");
         assert_eq!(
             body["services"][0]["failed_steps"],
@@ -1923,10 +1923,10 @@ mod tests {
         let (state, _, _) = live_state().await;
         let (base, cookie) = signed_in(state, &["ops"]).await;
         let (status, text) =
-            get_json(&base, Some(&cookie), "/v1/tenants/acme/services/tududi").await;
+            get_json(&base, Some(&cookie), "/v1/tenants/acme/services/postiz").await;
         assert_eq!(status, 200, "{text}");
         let body: serde_json::Value = serde_json::from_str(&text).expect("json");
-        assert_eq!(body["service"]["name"], "tududi");
+        assert_eq!(body["service"]["name"], "postiz");
         assert_eq!(body["vm"]["vmid"], 101);
         assert_eq!(body["vm"]["rag"], "red");
 
@@ -1966,7 +1966,7 @@ mod tests {
             "in the order of the domain list"
         );
         assert_eq!(
-            vm_named(&acme, "tududi")["domains"],
+            vm_named(&acme, "postiz")["domains"],
             serde_json::json!(["domain-it"])
         );
         assert_eq!(vm_named(&acme, "gateway")["domains"], serde_json::json!([]));
@@ -1998,18 +1998,18 @@ mod tests {
                 .unwrap_or_else(|| panic!("no service {name}"))
         };
         assert_eq!(
-            service("tududi")["domains"],
+            service("postiz")["domains"],
             serde_json::json!(["domain-it"])
         );
         assert_eq!(service("planned-vm")["domains"], serde_json::json!([]));
         assert_eq!(
-            service("tududi")["tags"],
-            serde_json::json!(["tududi-sync", "IT"]),
+            service("postiz")["tags"],
+            serde_json::json!(["postiz-sync", "IT"]),
             "tags stay names"
         );
 
         let (status, text) =
-            get_json(&base, Some(&cookie), "/v1/tenants/acme/services/tududi").await;
+            get_json(&base, Some(&cookie), "/v1/tenants/acme/services/postiz").await;
         assert_eq!(status, 200, "{text}");
         let one: serde_json::Value = serde_json::from_str(&text).expect("json");
         assert_eq!(one["service"]["domains"], serde_json::json!(["domain-it"]));
@@ -2032,7 +2032,7 @@ mod tests {
             "no domain is not a failed read"
         );
         assert_eq!(body["sites"].as_array().expect("sites").len(), 3);
-        assert_eq!(vm_named(&body, "tududi")["domains"], serde_json::json!([]));
+        assert_eq!(vm_named(&body, "postiz")["domains"], serde_json::json!([]));
     }
 
     #[tokio::test]
@@ -2060,7 +2060,7 @@ mod tests {
         assert_eq!(member["stale"], false);
         assert_eq!(member["sites"].as_array().expect("sites").len(), 3);
         assert_eq!(
-            vm_named(&member, "tududi")["rag"],
+            vm_named(&member, "postiz")["rag"],
             "red",
             "the VMs still join"
         );
@@ -2254,7 +2254,7 @@ mod tests {
             "last good data still served"
         );
         assert_eq!(
-            vm_named(&body, "tududi")["rag"],
+            vm_named(&body, "postiz")["rag"],
             "red",
             "a failed step stays red"
         );
