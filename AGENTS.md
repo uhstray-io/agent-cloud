@@ -139,6 +139,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/17-dispatch-console.md` — Dispatch Console build plan: the agent-cloud administration UI (all Rust, API-first, proposals-only: skynet plans, OPA decides, Semaphore executes; per-asset telemetry links to Grafana); brief, design system and reference prototype in `plan/product/dispatch-console/`
 - `plan/architecture/09-console-ui-principles.md` — Console UI principles and how operators work with agent-cloud through the console (interaction loop, information architecture, review checklist)
 - `plan/development/20-semantic-versioning.md` — Semantic versioning: PR titles set the bump, `Version` check on every PR, `-dev.N` tags on `dev`, `vX.Y.Z` tags and Releases on `main`, 0.x line with every major behind the operator-launched `Release Major Version (Dev)`
+- `plan/development/21-test-suite-runtime.md` — Test suite runtime and redundancy: measured CI baseline, the forged-extra-var matrix reduced where the guard reads names only, fixed waits given public knobs, self-balancing pytest shards from a committed durations file, a shared playbook runner with timeouts, GNU parallel for BATS, a pre-push fast lane
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
@@ -619,7 +620,8 @@ step; live as soon as `make git-setup` has been run.
 
 `bats platform/tests/` is byte-identical to CI's. Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
-`PATH`, as CI does. Without uv it falls back, with a warning, to whatever `python3` and
+`PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
+outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
 tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
