@@ -1763,10 +1763,12 @@
         _inv_id: "{{ _res.results[0].json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first }}"
         _env_id: "{{ _res.results[1].json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | first }}"
 
-    # ── Stage 4b: seed LOCAL_FAKE secrets (absent paths only) ───────────
+    # ── Stage 4b: seed LOCAL_FAKE secrets, per KEY ──────────────────────
     # Per-service key maps: operator-owned keys a deploy requires as existing secrets
-    # must EXIST locally (manage-secrets refuses the deploy when one is absent). Values
-    # are LOCAL_FAKE-class — a fake gemini_api_key means honcho deploys fine but
+    # must EXIST locally (manage-secrets refuses the deploy when one is absent). A path
+    # that is absent is created whole; a path that exists keeps every value it holds and
+    # only the spec keys it is missing (absent or empty) are merged in. Values are
+    # LOCAL_FAKE-class — a fake gemini_api_key means honcho deploys fine but
     # derivation no-ops locally; overwrite the path with a real key to exercise the deriver.
     - name: "Check existing service secrets"
       ansible.builtin.uri:
@@ -1802,6 +1804,34 @@
       loop_control:
         label: "{{ item.item.key }}"
       vars: *seed_specs
+      no_log: true
+
+    # A path that already exists is converged per KEY, never overwritten: the keys it holds with a
+    # non-empty value are kept as they are, and only the spec keys it is missing are merged in.
+    # Every task here handles a value, so every task is no_log.
+    - name: "Work out the seed keys each existing path is missing"
+      ansible.builtin.set_fact:
+        _seed_missing: "{{ _seed_missing | default({}) | combine({item.item.key: _seed_absent}) }}"
+      vars:
+        _seed_held: "{{ (item.json.data.data | default({}, true)) | dict2items | selectattr('value') | map(attribute='key') | list }}"
+        _seed_absent: "{{ item.item.value | dict2items | rejectattr('key', 'in', _seed_held) | items2dict }}"
+      loop: "{{ _seed_check.results | selectattr('status', 'equalto', 200) | list }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      no_log: true
+
+    - name: "Merge the seed keys an existing path is missing (merge-patch; a present value is never written)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url_host }}"
+        _bm_token: "{{ _bao_root_token }}"
+        _bm_path: "services/{{ item.key }}"
+        _bm_data: "{{ item.value }}"
+        _bm_on_missing: create
+      loop: "{{ _seed_missing | default({}) | dict2items | selectattr('value') | list }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when: not ansible_check_mode
       no_log: true
 
     # The controller's own API token, where production keeps it
