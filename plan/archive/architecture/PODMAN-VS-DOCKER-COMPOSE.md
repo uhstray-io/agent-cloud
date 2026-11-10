@@ -36,8 +36,6 @@ flowchart TD
 | NetBox (+ Diode pipeline) | Docker | Privileged orb-agent needs `CAP_NET_RAW` via `sudo docker run --privileged`. Compose healthcheck dependency chains are critical for the 12-container stack. `lib/common.sh` (NetBox-specific) hardcodes Docker. |
 | OpenBao | Podman | Simple single-container service. `cap_add: IPC_LOCK` works in rootless Podman. |
 | Semaphore | Podman | Two-container stack (app + postgres). |
-| NocoDB | Podman | Two-container stack (app + postgres). |
-| n8n | Podman | Four-container stack (app + worker + postgres + redis). |
 | Caddy | Podman | Single container, binds ports 80/443. |
 | Postiz | Podman | Three-container stack (app + postgres + redis). |
 
@@ -61,8 +59,8 @@ The separator difference (`-` vs `_`) breaks any script that constructs containe
 ```yaml
 # CORRECT: explicit names, runtime-agnostic
 services:
-  nocodb-postgres:
-    container_name: workflow-nocodb-postgres
+  semaphore-db:
+    container_name: workflow-semaphore-db
     image: docker.io/postgres:16.6
 
 # INCORRECT: relies on auto-generated names
@@ -72,7 +70,7 @@ services:
     # Name will be "project-postgres-1" (Docker) or "project_postgres_1" (Podman)
 ```
 
-All agent-cloud compose files use a `workflow-` prefix for container names (e.g., `workflow-nocodb`, `workflow-semaphore-db`) or a service-specific prefix (e.g., `postiz-postgres`). This convention prevents naming collisions across services on the same host and makes container names deterministic regardless of runtime.
+All agent-cloud compose files use a `workflow-` prefix for container names (e.g., `workflow-semaphore`, `workflow-semaphore-db`) or a service-specific prefix (e.g., `postiz-postgres`). This convention prevents naming collisions across services on the same host and makes container names deterministic regardless of runtime.
 
 When scripts must reference containers without knowing the name, use the `CONTAINER_SEP` variable from `lib/common.sh`:
 - Docker: `CONTAINER_SEP="-"`
@@ -105,7 +103,7 @@ volumes:
 # INCORRECT: name: property (incompatible with podman-compose < 1.3.0)
 volumes:
   db_data:
-    name: nocodb-db-data
+    name: semaphore-db-data
 ```
 
 The compose wrapper in `lib/common.sh` uses `--project-name` to ensure consistent naming:
@@ -152,10 +150,10 @@ All deploy scripts that run on Podman VMs use explicit health-wait functions fro
 
 ```bash
 # From deploy.sh — start backing services, wait, then start app
-compose up -d postgres redis
-wait_for_healthy "workflow-nocodb-postgres" 120
-compose up -d nocodb
-wait_for_http "${NOCODB_URL}/api/v1/health" "NocoDB" 120
+compose up -d semaphore-db
+wait_for_healthy "workflow-semaphore-db" 120
+compose up -d semaphore
+wait_for_http "${SEMAPHORE_URL}/api/ping" "Semaphore" 120
 ```
 
 The `wait_for_healthy()` function polls `$CONTAINER_ENGINE inspect --format='{{.State.Health.Status}}'` until the container reports `healthy` or times out. The `wait_for_http()` function polls an HTTP endpoint with curl.
@@ -192,8 +190,8 @@ Once all VMs are upgraded to podman-compose >= 1.3.0 (see `plan/development/PODM
 **Docker Compose:**
 ```json
 {
-  "Name": "workflow-nocodb",
-  "Service": "nocodb",
+  "Name": "workflow-semaphore",
+  "Service": "semaphore",
   "State": "running",
   "Health": "healthy"
 }
@@ -202,9 +200,9 @@ Once all VMs are upgraded to podman-compose >= 1.3.0 (see `plan/development/PODM
 **podman-compose (via `podman ps --format json`):**
 ```json
 {
-  "Names": ["workflow-nocodb"],
+  "Names": ["workflow-semaphore"],
   "Labels": {
-    "io.podman.compose.service": "nocodb"
+    "io.podman.compose.service": "semaphore"
   },
   "State": "running",
   "Status": "Up 2 minutes (healthy)"
@@ -253,14 +251,14 @@ podman-compose 1.0.6 requires strict `KEY=VALUE` format in env files. It does no
 
 ```bash
 # CORRECT: simple KEY=VALUE
-POSTGRES_USER=nocodb
+POSTGRES_USER=semaphore
 POSTGRES_PASSWORD=s3cur3p4ss
-POSTGRES_DB=nocodb
+POSTGRES_DB=semaphore
 
 # INCORRECT: features not supported in podman-compose 1.0.6
 POSTGRES_PASSWORD="${ADMIN_PASS}"    # Variable interpolation
 DATABASE_URL="postgres://..."        # Quotes may cause issues
-POSTGRES_DB=nocodb # the database     # Trailing comment
+POSTGRES_DB=semaphore # the database     # Trailing comment
 ```
 
 ### env_file vs environment
@@ -278,17 +276,17 @@ services:
 
 ### YAML anchors in env_file
 
-podman-compose 1.0.6 supports YAML anchors (`&name` / `*name`) for the `environment:` section but does NOT support the merge key (`<<: *anchor`). The n8n compose file uses this pattern:
+podman-compose 1.0.6 supports YAML anchors (`&name` / `*name`) for the `environment:` section but does NOT support the merge key (`<<: *anchor`). For example:
 
 ```yaml
-x-n8n-env: &n8n-env
-  N8N_HOST: localhost
+x-app-env: &app-env
+  APP_HOST: localhost
   NODE_ENV: production
 
 services:
-  n8n:
+  app:
     environment:
-      <<: *n8n-env    # Works in Docker Compose, may not work in podman-compose 1.0.6
+      <<: *app-env    # Works in Docker Compose, may not work in podman-compose 1.0.6
 ```
 
 If this causes issues on podman-compose 1.0.6, move shared env vars into the `env_file` instead.
@@ -389,7 +387,7 @@ services:
     environment:
       DB_HOST: postgres     # Resolves via compose DNS in both runtimes
   postgres:
-    container_name: workflow-nocodb-postgres  # Not used for DNS resolution
+    container_name: workflow-semaphore-db  # Not used for DNS resolution
 ```
 
 ### Custom networks
@@ -442,12 +440,12 @@ Podman containers must be managed by systemd for restart-after-reboot behavior:
 
 ```bash
 # Generate systemd unit from running container
-podman generate systemd --new --name workflow-nocodb > \
-  ~/.config/systemd/user/container-workflow-nocodb.service
+podman generate systemd --new --name workflow-semaphore > \
+  ~/.config/systemd/user/container-workflow-semaphore.service
 
 # Enable with lingering (survives logout)
 loginctl enable-linger $USER
-systemctl --user enable container-workflow-nocodb.service
+systemctl --user enable container-workflow-semaphore.service
 ```
 
 ### podman-compose + systemd
@@ -456,15 +454,15 @@ For compose-managed stacks, generate a systemd unit for the entire compose proje
 
 ```bash
 # Option A: systemd unit that runs compose up/down
-cat > ~/.config/systemd/user/nocodb-stack.service << 'EOF'
+cat > ~/.config/systemd/user/semaphore-stack.service << 'EOF'
 [Unit]
-Description=NocoDB Stack (podman-compose)
+Description=Semaphore Stack (podman-compose)
 After=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=true
-WorkingDirectory=/home/%u/services/nocodb
+WorkingDirectory=/home/%u/services/semaphore
 ExecStart=/usr/bin/podman-compose -f compose.yml up -d
 ExecStop=/usr/bin/podman-compose -f compose.yml down
 TimeoutStartSec=300
@@ -607,7 +605,7 @@ The codebase uses two naming patterns for compose files:
 
 | Pattern | Used By | Reason |
 |---------|---------|--------|
-| `compose.yml` | OpenBao, NocoDB, n8n, Semaphore, Caddy, Postiz | Modern compose spec default filename |
+| `compose.yml` | OpenBao, Semaphore, Caddy, Postiz | Modern compose spec default filename |
 | `docker-compose.yml` | NetBox | Legacy filename; NetBox's compose wrapper uses explicit `-f docker-compose.yml` |
 
 Both are valid. New services should use `compose.yml`. The `compose()` wrapper in `lib/common.sh` uses `compose.yml` by default; the NetBox-specific wrapper overrides this.
@@ -633,22 +631,3 @@ flowchart TD
 - [Docker Compose specification](https://docs.docker.com/compose/compose-file/)
 - [Podman networking (netavark)](https://docs.podman.io/en/latest/markdown/podman-network.1.html)
 - [Compose spec depends_on reference](https://docs.docker.com/compose/how-tos/startup-order/)
-
-## Appendix: UhhCraft — reference Podman service
-
-[`platform/services/uhhcraft/deployment/`](../../platform/services/uhhcraft/deployment/) is the first agent-cloud service designed Podman-first from the start. Its `compose.yml` illustrates every pattern this document recommends:
-
-| Pattern | UhhCraft applies it as |
-|---------|------------------------|
-| **Explicit `container_name:`** | `uhhcraft-postgres`, `uhhcraft-redis`, `uhhcraft-minio`, `uhhcraft-app` |
-| **Fully-qualified image names** | `docker.io/library/postgres:16-alpine` (not bare `postgres:16-alpine`) — Podman requires the registry prefix; Docker accepts both |
-| **No top-level `name:` property on volumes** | Volume keys are short (`postgres_data`, `redis_data`, `minio_data`); the project name `uhhcraft` (set by `name: uhhcraft` at the top of the file) prefixes them |
-| **`depends_on` with `condition: service_healthy`** | Declared on `app` for `postgres`/`redis`/`minio`. Honored by Docker and podman-compose ≥ 1.3.0; on podman-compose 1.0.6 it is parsed but **not** enforced (see §4), so readiness is gated by the explicit health-wait helpers in deploy/post-deploy scripts |
-| **Healthchecks on every backing service** | Postgres uses `pg_isready`, Redis uses authenticated `redis-cli ping`, MinIO uses its `/minio/health/ready` endpoint |
-| **Loopback port binding** | App is published as `127.0.0.1:3000:3000` so only the central Caddy on the same host can reach it; backing services don't expose ports at all |
-| **`env_file: [.env]`** | The Ansible-templated `.env` is the single source of compose env-vars; no literal values in `compose.yml` |
-| **`nvidia.com/gpu=all` device** | Sister services [`inference-comfyui`](../../platform/services/inference-comfyui/deployment/compose.yml) and [`inference-hunyuan3d`](../../platform/services/inference-hunyuan3d/deployment/compose.yml) use the CDI handoff for GPU passthrough under Podman |
-
-UhhCraft also demonstrates how to handle the Go + templ + sqlc generation lifecycle inside a multi-stage `Dockerfile` (Stage 1 installs the tool-chain, Stage 2 generates + builds, Stage 3 is distroless runtime). See [`platform/services/uhhcraft/deployment/Dockerfile`](../../platform/services/uhhcraft/deployment/Dockerfile) for the pattern any future Go service should mirror.
-
-Compose file: [`platform/services/uhhcraft/deployment/compose.yml`](../../platform/services/uhhcraft/deployment/compose.yml). Use it as a template when starting a new Podman-first service.
