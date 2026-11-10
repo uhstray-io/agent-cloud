@@ -868,6 +868,9 @@ ALLOY_SPEC_DECISIONS = [
     lambda c: _alloy(c)["volumes"].append(
         {"type": "bind", "source": "/tmp", "target": "/etc/alloy/", "read_only": True}
     ),
+    lambda c: _alloy(c)["volumes"].append(
+        {"type": "bind", "source": "/tmp", "target": "//etc/alloy", "read_only": True}
+    ),
 ]
 PORT_DECISIONS = [
     lambda c: _alloy(c).update(ports="4317:4317"),
