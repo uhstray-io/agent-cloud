@@ -49,15 +49,16 @@ old URL, so look first:
 claude mcp get plane
 ```
 
-Act on what it prints, then run `claude mcp get plane` again until you reach a "go to" line:
+Act on what it prints, then run `claude mcp get plane` again until a row says "go to" or "stop":
 
 | `get` prints | Do |
 |---|---|
 | `No MCP server named "plane".` | Go to step 1. |
 | `Scope: User config` and URL `https://<plane-mcp-host>/http/mcp` | Already set up: go to step 2. |
 | `Scope: User config`, any other URL | `claude mcp remove plane -s user` |
-| `Scope: Local config` | In the project it names: `claude mcp remove plane -s local`. A local entry hides a user one in its project, so the next `get` can show another. |
+| `Scope: Local config` | In the same directory you ran `get` from: `claude mcp remove plane -s local`. A local entry hides a user one in its project, so the next `get` can show another. |
 | `Scope: Project config` | Stop and ask `<platform-admin>`: it comes from a repository's shared `.mcp.json`. |
+| Anything else (managed, enterprise, ...) | Stop and ask `<platform-admin>`. |
 
 **1. Add the server for every project on this machine (user scope).**
 
