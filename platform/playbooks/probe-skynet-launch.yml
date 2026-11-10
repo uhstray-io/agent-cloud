@@ -22,6 +22,9 @@
 # tagged with that run and step. The run's state and status, and the task's own status, are reported and never
 # asserted: a service that fails its health check still proves the launch. Fail: skynet did not answer 202, the
 # task list could not be read, no task carries the tag (the run's state is named), or more than one does (ambiguous).
+# "Exactly one" holds within this probe's window only: skynet resumes a failed or interrupted run at its next start
+# (server.py, resume_unfinished), so a run the probe left in one of those states can launch one more tagged
+# check-mode task later.
 #
 # Nothing here prints a token, a header, a response body or the run's failure text. The bearers stay in the
 # container's environment (SKYNET_API_TOKEN, SKYNET_SEMAPHORE_TOKEN), read by the in-container script and never

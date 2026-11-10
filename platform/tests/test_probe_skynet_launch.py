@@ -286,7 +286,7 @@ def test_one_tagged_task_passes_and_the_run_is_bounded_to_service_validate(tmp_p
         "graph": "service_onboarding",
         "input": {"service": "opa", "mode": "check", "from_order": 14, "to_order": 14},
     }
-    assert [r["path"] for r in semaphore.seen] == [f"/api/project/{PROJECT}/tasks/last?count=200"]
+    assert [r["path"] for r in semaphore.seen] == [f"/api/project/{PROJECT}/tasks/last"]
     assert semaphore.seen[0]["auth"] == f"Bearer {SEMAPHORE_TOKEN}"
     _no_leak(out)
     semaphore.server_close()
@@ -373,6 +373,9 @@ def test_a_task_tagged_for_another_run_or_step_is_not_counted(tmp_path):
             _task(4239, f"skynet {other_run} service-validate"),
             _task(4240, f"skynet {RUN_ID} service-assess"),
             _task(4241, f"console {RUN_ID} service-validate"),
+            # The tag must be the whole message, not a part of it.
+            _task(4242, f"skynet {RUN_ID} service-validate-x"),
+            _task(4243, f"x skynet {RUN_ID} service-validate"),
         ]
     )
     rc, out = _run(tmp_path, skynet=skynet, semaphore_url=semaphore.address)
@@ -391,6 +394,21 @@ def test_skynet_refusing_the_run_fails_before_any_task_is_read(tmp_path):
     assert "run 400 - - - -" in out, out
     assert [r["method"] for r in skynet.seen] == ["POST"]
     assert semaphore.seen == []
+    _no_leak(out)
+    semaphore.server_close()
+    skynet.server_close()
+
+
+def test_a_token_carrying_a_line_break_fails_by_class_name_and_never_prints_the_token(tmp_path):
+    # http.client refuses a header value with CR or LF, and its message repeats the value (the bearer token).
+    skynet = Skynet(states=["finished"])
+    semaphore = Semaphore(rows=[_task(4242, TAG)])
+    rc, out = _run(
+        tmp_path, skynet=skynet, semaphore_url=semaphore.address, env_extra={"SKYNET_API_TOKEN": SKYNET_TOKEN + "\r"}
+    )
+    assert rc != 0, out
+    assert "run - ValueError - - -" in out, out
+    assert "Traceback" not in out, out
     _no_leak(out)
     semaphore.server_close()
     skynet.server_close()

@@ -39,6 +39,10 @@ POLL_SECONDS = 5
 # holds it; skynet resumes it at its next start). Every other state is final for this probe: finished, incomplete,
 # failed, or waiting_on_human, which a person must act on. The probe reports the state and never decides on it.
 MOVING = frozenset({"running", "interrupted"})
+# Pinned like the gate probe's context (launch-gate-allow-probe.py); test_tls_contexts_pinned.py holds every
+# context to a minimum version. Trust comes from the container's SSL_CERT_FILE.
+TLS_CONTEXT = ssl.create_default_context()
+TLS_CONTEXT.minimum_version = ssl.TLSVersion.TLSv1_2
 
 
 def _request(base, method, path, token, body=None):
@@ -46,9 +50,7 @@ def _request(base, method, path, token, body=None):
     and the status is None when it is set. The token and the raw body stay in this function."""
     parts = urllib.parse.urlsplit(base)
     if parts.scheme == "https":
-        connection = http.client.HTTPSConnection(
-            parts.hostname, parts.port, timeout=10, context=ssl.create_default_context()
-        )
+        connection = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=10, context=TLS_CONTEXT)
     elif parts.scheme == "http":
         connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
     else:
@@ -62,7 +64,9 @@ def _request(base, method, path, token, body=None):
         connection.request(method, parts.path.rstrip("/") + path, body=data, headers=headers)
         response = connection.getresponse()
         status, raw = response.status, response.read()
-    except (OSError, http.client.HTTPException) as exc:
+    # ValueError too: http.client refuses a header value carrying CR or LF with a message that repeats the value,
+    # here the bearer token, and an uncaught traceback would print it into the task output.
+    except (OSError, http.client.HTTPException, ValueError) as exc:
         return None, None, type(exc).__name__
     finally:
         connection.close()
@@ -83,7 +87,7 @@ def _task_line(run_id):
     base = os.environ["SKYNET_SEMAPHORE_URL"]
     project = os.environ["SKYNET_SEMAPHORE_PROJECT"]
     status, rows, error = _request(
-        base, "GET", f"/api/project/{project}/tasks/last?count=200", os.environ["SKYNET_SEMAPHORE_TOKEN"]
+        base, "GET", f"/api/project/{project}/tasks/last", os.environ["SKYNET_SEMAPHORE_TOKEN"]
     )
     if error is not None:
         return ["task", "-", _word(error), "-", "-"]
