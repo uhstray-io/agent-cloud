@@ -11,8 +11,13 @@ the whole suite once per worker of every shard.
 Why the hook never returns False: it is first-result, and False would override collect_ignore and
 the __pycache__ handling. None leaves the path to pytest.
 
-A test file the durations file does not know is weighted from its text and placed in shard 1, so a
-gap runs more tests, never fewer.
+A test file the durations file does not know is weighted from its count of `def test_` lines and
+bin-packed like any other file. A test file outside the enumeration (outside the testpaths or the
+rootdir) is never skipped by shard 1, so such a gap runs more tests, never fewer.
+
+Side effect even when inert: a root conftest.py without an __init__.py puts the repository root on
+sys.path under pytest's default import mode, so root-level directories become importable namespace
+packages during a test run. No test depends on that today.
 """
 
 from __future__ import annotations

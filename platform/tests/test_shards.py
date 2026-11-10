@@ -286,7 +286,7 @@ def test_the_hook_gives_each_test_file_to_exactly_one_shard_and_never_returns_fa
     assert all(value is not False for value in results.values())
 
 
-def test_a_test_file_the_durations_do_not_know_runs_in_shard_one_only(root_conftest, monkeypatch):
+def test_a_test_file_outside_the_enumeration_runs_in_shard_one_only(root_conftest, monkeypatch):
     phantom = REPO / "platform/tests/test_not_a_real_module_xyz.py"
     monkeypatch.setenv("PYTEST_SHARD", "1/2")
     assert root_conftest.pytest_ignore_collect(collection_path=phantom, config=_Config(REPO)) is None
