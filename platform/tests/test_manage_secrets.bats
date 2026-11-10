@@ -13,7 +13,7 @@ setup() {
 @test "manage-secrets: the store-back is a sibling-preserving merge, never a whole-document write" {
   # A KV-v2 POST of `_resolved` writes the FULL document, silently deleting
   # every key at the path that _secret_definitions does not declare. Measured:
-  # a deploy re-run erased the service's post-deploy n8n_api_key from the store
+  # a deploy re-run erased a service's post-deploy API key from the store
   # (docs/MISTAKES.md 10.11). Post-deploy keys (captured API keys, seeded
   # operator credentials) legitimately live beside the deploy-managed ones, so
   # the store-back must go through the shared merge-patch implementation.
