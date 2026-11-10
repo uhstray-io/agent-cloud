@@ -1,7 +1,7 @@
 """Every Clean Deploy refuses a launch that does not name the host it destroys.
 
 A Clean Deploy wipes a service's containers, volumes and clone. Only o11y and step-ca asked
-the launch to confirm which host; a main-bound `Clean Deploy n8n` (and every other template)
+the launch to confirm which host; a main-bound Clean Deploy template (and every other template)
 destroyed production data from a single click. The confirmation is now enforced once, in
 tasks/clean-service.yml (via tasks/assert-reset-confirmed.yml), which every clean-deploy-*.yml
 includes: `-e confirm_reset=<host>` must equal the play's real host list, read from
@@ -46,7 +46,7 @@ IDS = [p.stem.removeprefix("clean-deploy-") for p in INCLUDERS]
 
 
 def test_every_clean_deploy_playbook_composes_clean_service():
-    assert len(INCLUDERS) == len(list(PLAYBOOKS.glob("clean-deploy-*.yml"))) >= 16, INCLUDERS
+    assert len(INCLUDERS) == len(list(PLAYBOOKS.glob("clean-deploy-*.yml"))) >= 15, INCLUDERS
 
 
 def test_the_confirmation_is_the_first_thing_clean_service_does_after_its_inputs_exist():

@@ -386,33 +386,6 @@ templates:
         required: false
         default_value: "main"
 
-  - name: Deploy NocoDB
-    playbook: platform/playbooks/deploy-nocodb.yml
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-
-  - name: Deploy n8n
-    playbook: platform/playbooks/deploy-n8n.yml
-    dev_variant: true
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-      - name: deploy_force_recreate
-        title: "Force container recreate"
-        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
-        type: string
-        required: false
-        default_value: "false"
-
   - name: Deploy Semaphore
     playbook: platform/playbooks/deploy-semaphore.yml
     survey_vars:
@@ -595,16 +568,6 @@ templates:
         required: false
         default_value: "false"
 
-  - name: Deploy NemoClaw
-    playbook: platform/playbooks/deploy-nemoclaw.yml
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-
   - name: Deploy Authentik
     playbook: platform/playbooks/deploy-authentik.yml
     # The IdP's blueprints change on `dev` — new users, retired accounts, OIDC
@@ -679,25 +642,7 @@ templates:
     # Reads the org's API key from postiz's own Postgres (the app mints it on the
     # first authenticated request — the stored value IS the bearer token) and
     # places it at secret/services/postiz:postiz_api_key. Never printed; all
-    # key-bearing steps no_log. Automation (n8n) shared-reads it from there.
-    dev_variant: true
-
-  - name: Store n8n API Key
-    playbook: platform/playbooks/store-n8n-api-key.yml
-    # Mints (via the seeded owner's session — no manual UI step) AND captures
-    # n8n's public-API key into secret/services/n8n:n8n_api_key. Idempotent:
-    # re-runs recapture the key from n8n's own Postgres instead of re-minting.
-    # Never printed; all key-bearing steps no_log.
-    dev_variant: true
-
-  - name: Provision n8n Postiz Credential
-    playbook: platform/playbooks/provision-n8n-postiz-credential.yml
-    # Upserts the ONE postizApi credential in n8n: authenticates with
-    # secret/services/n8n:n8n_api_key, shared-reads
-    # secret/services/postiz:postiz_api_key (single custody — never copied), and
-    # tests is-connected against the self-hosted Postiz host. Idempotent and
-    # self-healing on key rotation. Local-dev without a live Postiz runs with
-    # -e allow_degraded_test=true.
+    # key-bearing steps no_log.
     dev_variant: true
 
   - name: Back Up Credentials to site-config
@@ -734,32 +679,6 @@ templates:
         type: string
         required: false
         default_value: "false"
-
-  - name: Deploy OpenHands
-    playbook: platform/playbooks/deploy-openhands.yml
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-      - name: deploy_force_recreate
-        title: "Force container recreate"
-        description: "true to recreate every container even when inputs and images match (clears a stale bind mount)"
-        type: string
-        required: false
-        default_value: "false"
-
-  - name: Deploy WisBot
-    playbook: platform/playbooks/deploy-wisbot.yml
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
 
   # The Dispatch Console (platform/services/console): the image is built on the host from the
   # committed sources (no registry). Dev-only until promotion, like agentgateway below: main has no
@@ -1146,8 +1065,8 @@ templates:
     # Five-container rootless stack: the app, its Postgres + Redis, and the
     # Temporal workflow engine + that engine's Postgres. The engine is what
     # executes scheduled publishing. Native Authentik OIDC in-app (not a Caddy
-    # forward_auth gate) so the /api/public/v1 automation path stays usable by
-    # n8n with an API key.
+    # forward_auth gate) so the /api/public/v1 automation path stays usable with
+    # an API key.
     survey_vars:
       - name: service_branch
         title: "Branch"
@@ -1208,100 +1127,6 @@ templates:
         default_value: "main"
 
   # pfSense sync runs as an orb-agent worker (every 15 min, no separate playbook)
-
-  # ── WebSmith integration: UhhCraft + inference sidecars ────────
-  - name: Deploy UhhCraft
-    playbook: platform/playbooks/deploy-uhhcraft.yml
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-
-  - name: Deploy ComfyUI Sidecar
-    playbook: platform/playbooks/deploy-inference-comfyui.yml
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-      - name: smoke
-        title: "Smoke generation"
-        description: "Set to 1 to run a smoke image generation in post-deploy (uses GPU; ~5s)"
-        type: enum
-        required: false
-        default_value: "0"
-        values:
-          - { name: "Off", value: "0" }
-          - { name: "Run smoke generation", value: "1" }
-
-  - name: Deploy Hunyuan3D Sidecar
-    playbook: platform/playbooks/deploy-inference-hunyuan3d.yml
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-      - name: smoke
-        title: "Smoke generation"
-        description: "Set to 1 to run a smoke 3D generation in post-deploy (uses GPU; ~30s)"
-        type: enum
-        required: false
-        default_value: "0"
-        values:
-          - { name: "Off", value: "0" }
-          - { name: "Run smoke generation", value: "1" }
-
-  - name: Clean Deploy UhhCraft
-    playbook: platform/playbooks/clean-deploy-uhhcraft.yml
-    survey_vars:
-      - name: confirm_reset
-        title: "Confirm: host whose data is destroyed"
-        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
-        type: string
-        required: true
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-
-  - name: Clean Deploy WisBot
-    playbook: platform/playbooks/clean-deploy-wisbot.yml
-    survey_vars:
-      - name: confirm_reset
-        title: "Confirm: host whose data is destroyed"
-        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
-        type: string
-        required: true
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-
-  - name: Clean Deploy OpenHands
-    playbook: platform/playbooks/clean-deploy-openhands.yml
-    survey_vars:
-      - name: confirm_reset
-        title: "Confirm: host whose data is destroyed"
-        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
-        type: string
-        required: true
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
 
   - name: Clean Deploy o11y
     playbook: platform/playbooks/clean-deploy-o11y.yml
@@ -1483,34 +1308,12 @@ templates:
         default_value: "main"
 
   # ── Updates ────────────────────────────────────────────────────
-  - name: Clean Deploy n8n
-    playbook: platform/playbooks/clean-deploy-n8n.yml
-    # DESTRUCTIVE: wipes n8n's containers AND volumes — the Postgres holding
-    # every workflow + execution, and the n8n_data volume. Stored workflow
-    # credentials only survive if the SAME N8N_ENCRYPTION_KEY is fetched back
-    # from OpenBao on the rebuild (it is, unless the secret was deleted there).
-    # Not a routine recovery step; for the prod cutover use Deploy n8n, never
-    # this.
-    dev_variant: true
-    survey_vars:
-      - name: confirm_reset
-        title: "Confirm: host whose data is destroyed"
-        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
-        type: string
-        required: true
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
-
   - name: Clean Deploy Postiz
     playbook: platform/playbooks/clean-deploy-postiz.yml
     # DESTRUCTIVE: wipes postiz's Postgres, Redis, uploads, AND the workflow
     # engine's Postgres. Every connected social account must be re-authorized by
     # hand afterwards, so this is not a routine recovery step. API keys survive
-    # (the signing secret is reused), so an n8n workflow keeps authenticating
+    # (the signing secret is reused), so an API key keeps authenticating
     # against an account that no longer exists — re-issue the key after
     # re-registering. Set postiz_disable_registration back to false first, or
     # nobody can sign in to the rebuilt stack.
@@ -1560,26 +1363,11 @@ templates:
         required: false
         default_value: "main"
 
-  - name: Update NocoDB
-    playbook: platform/playbooks/update-nocodb.yml
-
-  - name: Update n8n
-    playbook: platform/playbooks/update-n8n.yml
-
   - name: Update Semaphore
     playbook: platform/playbooks/update-semaphore.yml
 
   - name: Update NetBox
     playbook: platform/playbooks/update-netbox.yml
-
-  - name: Update UhhCraft
-    playbook: platform/playbooks/update-uhhcraft.yml
-
-  - name: Update ComfyUI Sidecar
-    playbook: platform/playbooks/update-inference-comfyui.yml
-
-  - name: Update Hunyuan3D Sidecar
-    playbook: platform/playbooks/update-inference-hunyuan3d.yml
 
   # ── Validation ─────────────────────────────────────────────────
   - name: Validate All Services
@@ -1931,7 +1719,7 @@ templates:
     dev_variant: true
     # Merges ONE key into an existing secret path (siblings preserved), for
     # code-managed placement of a shared secret a reader deploy needs (e.g.
-    # honcho reads secret/services/nemoclaw:gemini_api_key).
+    # honcho reads secret/services/honcho:gemini_api_key).
     #
     # The VALUE is not a survey field, because Semaphore persists survey values in
     # its database. Nor is it a launch-time extra var, which this comment used to
@@ -1957,7 +1745,7 @@ templates:
     survey_vars:
       - name: bao_path
         title: "Secret path"
-        description: "KV-v2 path under secret/ to merge into (e.g. services/nemoclaw)"
+        description: "KV-v2 path under secret/ to merge into (e.g. services/honcho)"
         type: string
         required: true
       - name: bao_key
@@ -1991,58 +1779,6 @@ templates:
     # Reads the fixed private site-config backup on the runner through the
     # OpenBao-backed deploy key. A different live key is never overwritten.
     # No credential-bearing survey or launch-time parameter is accepted.
-
-  - name: Seed n8n Secrets
-    playbook: platform/playbooks/seed-n8n-secrets.yml
-    # dev_variant because the cutover RUNS FROM dev (promotion to main comes
-    # after prod validation): the alias-aware seed only exists on dev, and the
-    # main-record template would run the old playbook, which refuses the
-    # standalone layout's ENCRYPTION_KEY spelling.
-    dev_variant: true
-    # Migration Task 0 for the EXISTING prod n8n: reads the live env file on
-    # the host (default config/n8n.env; the standalone prod layout passes
-    # -e live_n8n_env=/home/<user>/n8n/.env) and pre-seeds the STATEFUL
-    # secrets (encryption_key + both Postgres passwords) into
-    # secret/services/n8n, so the first composable Deploy n8n FETCHES them
-    # instead of generating — re-keying N8N_ENCRYPTION_KEY makes every stored
-    # workflow credential permanently undecryptable. Accepts the legacy
-    # ENCRYPTION_KEY spelling; refuses a file carrying both. Non-destructive:
-    # never touches the running service. Skip for greenfield hosts (nothing
-    # to preserve).
-
-  - name: Back Up n8n DB
-    playbook: platform/playbooks/backup-n8n-db.yml
-    # Timestamped pg_dump of an n8n Postgres container into an owner-only
-    # backup dir on the VM — the rollback artifact for n8n's one-way startup
-    # schema migrations. Run before EVERY n8n version bump; the cutover points
-    # it at the legacy project's container via the survey var. Read-only
-    # against the database; each run writes a NEW file, never overwrites.
-    # Neither value is secret, so the "survey values persist" prohibition
-    # does not apply.
-    dev_variant: true
-    survey_vars:
-      - name: n8n_pg_container
-        title: "Postgres container"
-        description: "Container to dump (default workflow-n8n-postgres; the cutover uses the legacy project's n8n_postgres_1)"
-        type: string
-        required: false
-
-  - name: Restore n8n DB
-    playbook: platform/playbooks/restore-n8n-db.yml
-    # DESTRUCTIVE: overwrites the composable stack's n8n database with a named
-    # dump. The play hard-requires n8n_dump_file, so without this survey var
-    # every UI launch would fail on task 1. Restores under --single-transaction
-    # with ON_ERROR_STOP (a failed restore rolls back); the app containers are
-    # restarted in an always: block, so a failed restore never also leaves the
-    # service down. n8n re-runs migrations at boot. The cutover's import step
-    # AND the standing upgrade rollback tool. The path is not a secret.
-    dev_variant: true
-    survey_vars:
-      - name: n8n_dump_file
-        title: "Dump file path"
-        description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
-        type: string
-        required: true
 
   - name: Reconcile Plane Members
     playbook: platform/playbooks/reconcile-plane-members.yml
@@ -3266,21 +3002,6 @@ templates:
     # Publish this policy from reviewed Dev before activating Dev-bound guard writers.
     dev_variant: true
 
-  - name: Apply Policy - NemoClaw
-    playbook: platform/playbooks/apply-policy-nemoclaw.yml
-    # The (Dev) copy applies the policy as dev has it, so the Semaphore-token deny lands
-    # before promotion (plan 01, "Launch permission is runner access").
-    dev_variant: true
-
-  - name: Apply Policy - UhhCraft
-    playbook: platform/playbooks/apply-policy-uhhcraft.yml
-
-  - name: Apply Policy - ComfyUI Sidecar
-    playbook: platform/playbooks/apply-policy-inference-comfyui.yml
-
-  - name: Apply Policy - Hunyuan3D Sidecar
-    playbook: platform/playbooks/apply-policy-inference-hunyuan3d.yml
-
   # ── SSH ────────────────────────────────────────────────────────
   - name: Distribute SSH Keys
     playbook: platform/playbooks/distribute-ssh-keys.yml
@@ -3325,7 +3046,7 @@ templates:
     survey_vars:
       - name: target_service
         title: "Target group"
-        description: "Inventory group to firewall (e.g. openhands_svc, authentik_svc)"
+        description: "Inventory group to firewall (e.g. plane_svc, authentik_svc)"
         type: string
         required: true
 
@@ -3338,7 +3059,7 @@ templates:
     survey_vars:
       - name: service_name
         title: "Service name"
-        description: "Per-service key to create at secret/services/ssh/<name> (e.g. authentik, openhands, caddy)"
+        description: "Per-service key to create at secret/services/ssh/<name> (e.g. authentik, plane, caddy)"
         type: string
         required: true
 
@@ -3346,7 +3067,7 @@ templates:
     playbook: platform/playbooks/manage-caddy-sites.yml
     # The read-report + retire + rescue version of this playbook lives on dev; main
     # still carries the insert-only one. The (Dev) variant is how a prod route lands
-    # through the current code before promotion (same pattern as Seed n8n Secrets).
+    # through the current code before promotion.
     dev_variant: true
     survey_vars:
       - name: target_service

@@ -292,7 +292,7 @@
       ansible.builtin.uri:
         url: "{{ _semaphore_url }}/api/project/{{ _project_id }}/templates/{{ item }}"
         method: DELETE
-        # A template's delete takes its task history with it. The 45-minute tududi refresher
+        # A template's delete takes its task history with it. The 45-minute refresher
         # had weeks of runs, and its delete outlasted the module's 30 s default every time
         # (Semaphore tasks 14206, 14211), while smaller templates finished. Give it time.
         timeout: 600
