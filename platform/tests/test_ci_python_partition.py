@@ -103,8 +103,7 @@ def test_python_shards_keep_root_discovery_and_select_whole_safety_files():
     runs_checkout = next(step for step in runs["steps"] if step.get("uses", "").startswith("actions/checkout@"))
     assert runs_checkout.get("with", {}).get("persist-credentials") is False
     runs_dependencies = next(step["run"] for step in runs["steps"] if step.get("name") == "Install test dependencies")
-    assert "platform/requirements-test.txt" in runs_dependencies
-    assert "platform/requirements-controller.txt" in runs_dependencies
+    assert "uv sync --locked" in runs_dependencies
     assert "collections/requirements.yml" in runs_dependencies
     assert {arg.split("=", 1)[1] for arg in core_run.split() if arg.startswith("--deselect=")} == {
         "platform/services/netbox/deployment/tests/", "platform/semaphore/tests/", *SAFETY_FILES, *agw_files,
@@ -115,15 +114,13 @@ def test_python_shards_keep_root_discovery_and_select_whole_safety_files():
     agw_checkout = next(step for step in agw["steps"] if step.get("uses", "").startswith("actions/checkout@"))
     assert agw_checkout.get("with", {}).get("persist-credentials") is False
     agw_dependencies = next(step["run"] for step in agw["steps"] if step.get("name") == "Install test dependencies")
-    assert "platform/requirements-test.txt" in agw_dependencies
-    assert "platform/requirements-controller.txt" in agw_dependencies
+    assert "uv sync --locked" in agw_dependencies
     assert "collections/requirements.yml" in agw_dependencies
     assert {arg for arg in safety_run.split() if arg.startswith("platform/tests/")} == SAFETY_FILES
     assert all(flag in core_run and flag in safety_run for flag in PYTEST_FLAGS)
     assert safety["timeout-minutes"] == 30
     dependencies = next(step["run"] for step in safety["steps"] if step.get("name") == "Install test dependencies")
-    assert "platform/requirements-test.txt" in dependencies
-    assert "platform/requirements-controller.txt" in dependencies
+    assert "uv sync --locked" in dependencies
     assert "collections/requirements.yml" in dependencies
 
 

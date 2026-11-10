@@ -1,6 +1,53 @@
 [project]
 name = "agent-cloud"
-requires-python = ">=3.11"
+# NOT the release version: that is the git tag (plan/development/20-semantic-versioning.md).
+# uv requires a version field, and a `dynamic` one makes it build the repo to read it, so
+# this placeholder never changes. Nothing builds or publishes this project.
+version = "0.0.0"
+# 3.12: ansible-core 2.20.x (pinned below) requires it. `.python-version` selects the
+# interpreter uv installs; CI and the pre-push hook both run through uv.
+requires-python = ">=3.12"
+
+# Python dependencies are managed with uv: declared here, resolved into the committed
+# uv.lock, installed with `uv sync --locked`. Edit a group, then run `uv lock` and commit
+# both files; `--locked` fails CI when they disagree.
+[dependency-groups]
+# Packages the TEST SUITES need. CI's Python jobs and the pre-push hook install the
+# lock, so a local push and CI run the same versions.
+test = [
+    "pytest",
+    # The Caddy playbook-structure suite asserts against the PARSED playbook rather than its
+    # text. It was once absent from CI and present in the author's virtualenv, which is
+    # exactly how an undeclared dependency passes locally and fails on a clean runner.
+    "pyyaml",
+    # NetBox discovery workers' unit tests.
+    "netboxlabs-diode-sdk",
+    "proxmoxer",
+    "requests",
+    # Runs the playbook suites against disposable fixtures. A runner without it cannot prove
+    # rollback. Exact pin: matches the prod Semaphore runner image v2.19.11 (ansible-core
+    # 2.20.8, Python 3.12) -- bump both together.
+    "ansible-core==2.20.8",
+    # Runs the suite across the runner's cores (`-n auto --dist worksteal`). Pinned because
+    # the scheduler flags are its interface, not pytest's.
+    "pytest-xdist==3.8.0",
+]
+# Packages the ORCHESTRATOR (Semaphore controller) needs beyond what Ansible itself pulls
+# in, used by playbooks running on localhost and never installed on a service VM. Tests
+# need them too: the BATS suite signs a real GitHub App assertion with a throwaway key.
+controller = [
+    # RS256 signing for the GitHub App credential chain (platform/lib/github_app_token.py).
+    # Declared because an earlier helper assumed it arrived with the collections; a rebuilt
+    # image that dropped it would fail inside a no_log boundary as an unexplained credential
+    # error. Any 3.x release provides the primitives used.
+    "cryptography>=3.4",
+]
+
+[tool.uv]
+# Not an installable package: uv manages only the environment for the groups above.
+package = false
+default-groups = ["test", "controller"]
+required-version = ">=0.11.17"
 
 [tool.ruff]
 target-version = "py311"
