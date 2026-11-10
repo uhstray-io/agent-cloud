@@ -324,6 +324,8 @@ def test_the_marketplace_script_creates_without_resetting_secrets():
     assert "reset_marketplace" not in src.split('"""', 2)[2]
     # Secrets are generated inside the call: its output is discarded, an error reported by type only.
     assert "redirect_stdout" in src and "redirect_stderr" in src and "type(exc).__name__" in src
+    # Plane's log handlers hold the real stderr from start-up; a redirect alone does not silence them.
+    assert "logging.disable(logging.CRITICAL)" in src and "logging.disable(logging.NOTSET)" in src
 
 
 @needs_ansible
@@ -332,6 +334,8 @@ def test_the_marketplace_script_creates_without_resetting_secrets():
     [
         ('Creating application for github\n{"created": ["github"], "present": ["slack"], "missing": []}', 0, True),
         ('{"created": [], "present": ["github", "slack"], "missing": []}', 0, True),
+        # Output after the summary: only the JSON line may be read.
+        ('{"created": ["github"], "present": [], "missing": []}\nshutting down', 0, True),
         ('{"created": [], "present": ["slack"], "missing": ["github"]}', 0, False),
         ('{"error": "no instance admin yet; first-run setup has not completed"}', 0, False),
         ("Traceback (most recent call last):", 1, False),

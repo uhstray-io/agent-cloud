@@ -12,14 +12,16 @@ changes nothing. reset_marketplace_app_secrets is deliberately NOT used: it dele
 that connected integrations depend on.
 
 Prints one JSON line: {"created": [...], "present": [...], "missing": [...]} or {"error": ...}.
-create_applications generates client secrets and the playbook task is visible, so its stdout and
-stderr are discarded and an exception is reported by type only: a database error can quote the
-row it refused, secret included.
+create_applications generates client secrets and the playbook task is visible, so its output is
+kept out of the run: stdout and stderr are redirected, logging is disabled for the call (Plane's
+log handlers hold the real stderr from Django start-up, so a redirect alone misses them), and an
+exception is reported by type only, because a database error can quote the row it refused.
 """
 
 import contextlib
 import io
 import json
+import logging
 
 from plane.license.models import InstanceAdmin
 from plane.silo.models.application_secret import ApplicationSecret
@@ -33,11 +35,14 @@ else:
     before = {k for k in APPLICATIONS if ApplicationSecret.objects.filter(key=f"x-{k}-id").exists()}
     error = None
     if before != set(APPLICATIONS):
+        logging.disable(logging.CRITICAL)
         try:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 create_applications(admin.user.id)
         except Exception as exc:  # noqa: BLE001 - reported by type only, never its message
             error = f"create_applications raised {type(exc).__name__}"
+        finally:
+            logging.disable(logging.NOTSET)
     after = {k for k in APPLICATIONS if ApplicationSecret.objects.filter(key=f"x-{k}-id").exists()}
     print(
         json.dumps(
