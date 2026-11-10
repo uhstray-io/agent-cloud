@@ -909,6 +909,18 @@ def test_curly_quotes_dashes_and_percent_signs_stay_in_model_text(tmp_path):
     assert f"## Features\n\n{text}\n\n<details>" in result.stdout
 
 
+def test_a_decoded_straight_quote_in_a_summary_is_rendered(tmp_path):
+    # The notes task decodes the reply's JSON, so the renderer receives a real double quote, never a backslash
+    # (CodeRabbit on #1021). This is the render half of that path.
+    repo = _three_sections_repo(tmp_path)
+    text = 'Adds a "quoted" change.'
+    assert json.loads(json.dumps({"summary": text}))["summary"] == text
+    result = _run_stdin(repo, json.dumps({"features": text}), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert f"## Features\n\n{text}\n\n<details>" in result.stdout
+    assert "\\" not in result.stdout.split("<details>")[0]
+
+
 def test_a_hyphenated_word_that_ends_in_gh_is_not_a_gh_reference(tmp_path):
     repo = _three_sections_repo(tmp_path)  # \bgh- must not match inside High-5
     text = "High-5 rated the release."
