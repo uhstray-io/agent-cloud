@@ -44,8 +44,8 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
-| 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
+| 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
@@ -770,7 +770,7 @@ environments) before it is stated.
 
 ### 1.15 A security check's guarantee stated past what its tests exercised
 
-**Occurrences: 3** — 2026-09-25, 2026-09-26, 2026-10-05
+**Occurrences: 4** — 2026-09-25, 2026-09-26, 2026-10-05, 2026-11-10
 
 **What happened.** #256 added a run-time check that the seed run's OpenBao address is the one
 the inventory declares. After Codex showed forged helper variables bypassed the first version,
@@ -820,9 +820,23 @@ shipped. Building the guard showed it is not: the context and stateful templates
 covered because each opens with the by-name refusal; the lifted-section tests that exercise it
 alone are listed as plain-value limits.
 
+**Occurrence 4 — 2026-11-10.** Plan 21 (PR #1004, test suite runtime) proposed cutting the
+guard-class forgery tests from three spellings to one, on the claim that the run-start guard
+`refuse-internal-extra-vars.yml` renders no forged value. I had checked one name: a stateful
+forgery of `_forged_by_launch` sent to `deploy-opa.yml` was refused and its render counter never
+written. The plan stated it for every name. Review round 1 reproduced that the guard's own `when:`
+reads `_extra_var_guard_nested is defined` (`:110`, `:159`) and that a stateful forgery of that name
+writes the counter; its second task also computes `_conn_names` and `_conn_forged`. The reduction
+would have dropped the only templated-forgery coverage of the names the guard itself reads. Caught
+before merge; the plan now excludes every name the guard references, derived from the guard file,
+and requires a counter assertion and a negative meta-test fixture. Why the rule did not fire:
+`test_extra_var_refusal_tests.py` checks test code, and this was prose in a plan proposing to
+change those tests; the one experiment felt like proof of the class. The rule covers it: the
+guarantee was stated for inputs the experiment did not exercise.
+
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 3** — 2026-09-25, 2026-10-03, 2026-11-02
+**Occurrences: 4** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -875,6 +889,18 @@ is each conversation comment's). The check would refuse a body whose Evidence se
 claim on a bullet that names no command in backticks, so every such claim carries the command
 that produced it. Not built: it would refuse prose that states counts honestly in other ways,
 and its wording needs the operator's decision before it gates merges.
+
+**Occurrence 4 — 2026-11-10.** Plan 21 (merged as PR #1004) said `harness_sandbox.run` is
+used by "only 12 runners", and that the CI partition test collects the suite four times. Both came
+from a scout's report, which counted runner helpers by name rather than files calling the helper,
+and neither was re-run before writing. The post-merge grounding review counted 41 test files
+calling it (`grep -l 'harness_sandbox.run(' platform/tests/*.py | wc -l`, 40 of them also start
+`ansible-playbook`) and seven collections (`_node_ids` called for the root and six shards,
+`test_ci_python_partition.py:134`, `:136`). Re-counting while fixing #1023's review findings turned up a third relayed figure: "48 of the 65" runners setting no timeout, which an AST scan of the test files (helpers named `_run`, `run`, `_play`, `_plays` or `_ansible` that start `ansible-playbook`) puts at 19 of 66. The low runner count ("only 12") steered phase 3 toward a new runner module
+instead of extending the existing one. Corrected in PR #1023 (open when this was recorded). Why the rule did not fire: the number
+arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
+the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
+covers it: a relayed count is re-run before it is written. The proposed mechanical check above would not have caught it: it reads a pull request's Evidence section, and this count sat in a plan bullet that carried a `file:line` citation.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 

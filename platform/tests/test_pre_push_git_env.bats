@@ -10,9 +10,6 @@
 load assert_helpers
 
 setup() {
-  # This file itself runs under the hook: clear the same variables first.
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
   REPO_ROOT=$(git rev-parse --show-toplevel)
   HOOK="$REPO_ROOT/.githooks/pre-push"
   cd "$BATS_TEST_TMPDIR"
@@ -42,4 +39,19 @@ SH
 
 @test "pre-push: the git environment is cleared before any suite runs" {
   assert_precedes "$HOOK" '^unset GIT_DIR GIT_WORK_TREE' 'if ! bats platform/tests/'
+}
+
+# The shared bats helper clears the same variables for every test that loads it
+# (platform/tests/assert_helpers.bash). The two lists are kept identical by this test,
+# so a variable added to one cannot be missed in the other.
+_unset_list() {
+  awk '/^unset GIT_DIR/ { on = 1 } on { print; if ($0 !~ /\\$/) exit }' "$1" \
+    | tr -d '\\' | tr -s ' \t' '\n' | grep '^GIT_' | sort
+}
+
+@test "pre-push: assert_helpers clears exactly the git variables the hook clears" {
+  hook=$(_unset_list "$HOOK")
+  helper=$(_unset_list "$REPO_ROOT/platform/tests/assert_helpers.bash")
+  [ "$(printf '%s\n' "$hook" | wc -l)" -ge 8 ]
+  [ "$hook" = "$helper" ]
 }

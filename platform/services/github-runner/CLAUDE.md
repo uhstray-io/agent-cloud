@@ -325,7 +325,8 @@ Listener or any Worker, and a `run.sh` that honours the trap variable. A restart
    not (the ones `KillMode=process` left behind), and wait up to 300 s for them. The
    account exists only for this runner, so any Listener of it uses this registration.
 4. SIGKILL to whatever is still in the cgroup and to any Listener that survived; the deploy
-   fails unless both are gone. If no cgroup is found, only the Listeners are handled.
+   waits up to `RUNNER_KILL_WAIT_SECONDS` (default 30) and fails unless both are gone. If no
+   cgroup is found, only the Listeners are handled.
 
 After the start, the deploy reads `deploy.sh procs` again and fails unless every line holds.
 A dry run reads the processes and reports the restart decision; it stops and starts nothing,
