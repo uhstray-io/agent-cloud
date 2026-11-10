@@ -1,6 +1,6 @@
 ---
 # update-service.yml — Update a service to the latest container image version
-# Usage: ansible-playbook update-service.yml -e "target_service=nocodb_svc"
+# Usage: ansible-playbook update-service.yml -e "target_service=plane_svc"
 # Pulls latest images, restarts compose, then validates health.
 - name: "Update {{ target_service }}"
   hosts: "{{ target_service }}"
@@ -15,7 +15,7 @@
       ansible.builtin.assert:
         that:
           - target_service | length > 0
-        fail_msg: "target_service must be set (e.g., -e target_service=nocodb_svc)"
+        fail_msg: "target_service must be set (e.g., -e target_service=plane_svc)"
 
     - name: Check compose.yml exists
       ansible.builtin.stat:
