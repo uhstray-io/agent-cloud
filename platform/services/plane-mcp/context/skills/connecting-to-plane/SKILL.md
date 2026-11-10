@@ -40,26 +40,48 @@ Invitations follow your identity-provider group, so the fix is on the platform s
 
 ## Setup (once per machine)
 
+Run one step at a time; do not paste the steps as one script.
+
+**0. Check for an existing entry.** `claude mcp add` refuses a name that already exists and keeps its
+old URL, so look first:
+
 ```bash
-# 0. Already set up? `add` refuses an existing name and keeps its old URL.
 claude mcp get plane
-#    "Scope: User config" AND URL https://<plane-mcp-host>/http/mcp: skip step 1.
-#    Anything else: remove it from the scope `get` shows, then run step 0 again: a local
-#    entry hides a user one in its project, so a remove can expose another `plane`.
-#    Do step 1 only once `get` prints: No MCP server named "plane".
-claude mcp remove plane -s user     # "Scope: User config"
-claude mcp remove plane -s local    # "Scope: Local config"; run in the project it names
+```
 
-# 1. Add the server for every project on this machine (user scope)
+Act on what it prints, then run `claude mcp get plane` again until you reach a "go to" line:
+
+| `get` prints | Do |
+|---|---|
+| `No MCP server named "plane".` | Go to step 1. |
+| `Scope: User config` and URL `https://<plane-mcp-host>/http/mcp` | Already set up: go to step 2. |
+| `Scope: User config`, any other URL | `claude mcp remove plane -s user` |
+| `Scope: Local config` | In the project it names: `claude mcp remove plane -s local`. A local entry hides a user one in its project, so the next `get` can show another. |
+| `Scope: Project config` | Stop and ask `<platform-admin>`: it comes from a repository's shared `.mcp.json`. |
+
+**1. Add the server for every project on this machine (user scope).**
+
+```bash
 claude mcp add --transport http --scope user plane https://<plane-mcp-host>/http/mcp
+```
 
-# 2. Sign in: opens a browser, approve access to the workspace
+**2. Sign in** and approve access to the workspace. With a browser on this machine:
+
+```bash
 claude mcp login plane
-#    Over SSH or without a browser: it prints the authorization URL. Open it in your local
-#    browser, approve, then paste the URL the browser lands on back into the prompt.
-claude mcp login plane --no-browser
+```
 
-# 3. Check it
+Over SSH or without a browser, use this instead. It prints the authorization URL: open it in your
+local browser, approve, then paste the URL the browser lands on back into the prompt. It waits for
+that paste, so run it yourself in a terminal, not through Claude.
+
+```bash
+claude mcp login plane --no-browser
+```
+
+**3. Check it.**
+
+```bash
 claude mcp get plane        # expect: Status: ✔ Connected
 ```
 
@@ -83,7 +105,7 @@ Claude should call the `member` tool (`me`) and the `project` tool and answer wi
 | Using `<plane-url>` as the MCP URL | That is the web app. The MCP server is `<plane-mcp-host>`. |
 | Running `claude mcp login` before joining the workspace | Do "Before you start" first. Joining first is the tested order. |
 | Leaving out `--scope user` | The default scope is `local`, so `plane` only works in the directory you added it from. From that directory run `claude mcp remove plane -s local`, then re-add with `--scope user`. |
-| `claude mcp login` is not a known command | Checked on Claude Code 2.1.318 and 2.1.321. Update Claude Code and retry. |
+| `claude mcp login` is not a known command | Checked on Claude Code 2.1.318, 2.1.321 and 2.1.322. Update Claude Code and retry. |
 
 ## Using it
 
