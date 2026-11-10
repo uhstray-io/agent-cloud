@@ -446,6 +446,8 @@ def set_hook_secret(issuer: str, hook_url: str, raw: bytes) -> dict:
         die("set-hook-secret: needs a non-empty secret and an https:// --hook-url", 2)
     body = {"url": hook_url, "content_type": "json", "insecure_ssl": "0", "secret": secret}
     got = api("/app/hook/config", sign_assertion(issuer, key_pem), method="PATCH", body=body)
+    if not isinstance(got, dict):
+        die("set-hook-secret: /app/hook/config returned an unexpected response")
     return {"url": got.get("url"), "content_type": got.get("content_type"), "secret_set": bool(got.get("secret"))}
 
 

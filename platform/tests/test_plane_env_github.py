@@ -204,3 +204,31 @@ def test_set_hook_secret_patches_the_app_hook_and_never_prints_the_secret():
 def test_set_hook_secret_refuses_bad_input_before_any_call(stdin, url):
     code, out, _err, calls = run_set_hook_secret(stdin, url)
     assert code == 2 and calls == [] and out == ""
+
+
+def test_set_hook_secret_refuses_a_non_object_response():
+    key = base64.b64encode(b"fake key bytes; signing is stubbed").decode()
+    out, err = io.StringIO(), io.StringIO()
+    raw = io.TextIOWrapper(io.BytesIO(json.dumps({"key_b64": key, "secret": "s"}).encode()))
+    argv = [
+        "github_app_token.py",
+        "set-hook-secret",
+        "--issuer",
+        "Iv-fake",
+        "--org",
+        "o",
+        "--hook-url",
+        "https://x.test/h",
+    ]
+    with (
+        patch.object(gat, "api", lambda *a, **k: None),
+        patch.object(gat, "sign_assertion", lambda i, k: "jwt"),
+        patch.object(sys, "argv", argv),
+        patch.object(sys, "stdin", raw),
+        contextlib.redirect_stdout(out),
+        contextlib.redirect_stderr(err),
+        pytest.raises(SystemExit) as exc,
+    ):
+        gat.main()
+    assert exc.value.code == 1 and out.getvalue() == ""
+    assert "unexpected response" in err.getvalue()

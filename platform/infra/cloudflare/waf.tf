@@ -235,8 +235,11 @@ resource "cloudflare_ruleset" "custom_firewall" {
     # `cf-mitigated: challenge` (HTTP 403, probed 2026-11-10), so no delivery could reach Plane.
     # Authentication stays at the origin: spike 0.16 showed silo refuses an unsigned or wrongly
     # signed delivery (401) once GITHUB_WEBHOOK_SECRET is set, env.j2 refuses to render the GitHub
-    # settings without it, and Deploy Plane's verify asserts the 401. Exact path only; the OAuth
-    # callbacks run in the user's browser, which passes a challenge.
+    # settings without it, and Deploy Plane's verify asserts the 401. Not gated on the App being
+    # declared (tofu cannot read the Ansible inventory, and needs no gate): with no App configured
+    # silo refuses every delivery with 403 (spike 0.16), so the path is closed either way; the one
+    # unsafe state, an App without the secret, is the one env.j2 refuses. Exact path only; the
+    # OAuth callbacks run in the user's browser, which passes a challenge.
     {
       ref         = "plane-github-webhook-bypass-challenge"
       action      = "skip"
