@@ -27,7 +27,7 @@
 #
 # Environment. Every git command runs with GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1 and
 # GIT_TERMINAL_PROMPT=0, so no system or global credential helper can answer. Observed 2026-11-09 on
-# a workstation (docs/MISTAKES.md 2.36): without these variables a configured global or system helper
+# a workstation (docs/MISTAKES.md 2.37): without these variables a configured global or system helper
 # answered for a personal login, so a push went out under that identity instead of failing.
 #
 # Schedule and catch-up. Release Version (Dev) runs every 15 minutes (templates.yml). The planner

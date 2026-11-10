@@ -18,7 +18,7 @@
 #
 # Bring it back: run the service's own "Deploy <Service> (Local)" template. How that restarts the
 # stopped containers depends on the service's deploy.sh (read from the scripts, 2026-10-12):
-#   - authentik, honcho, o11y, openhands, tududi call compose_up_if_changed
+#   - authentik, honcho, o11y, openhands call compose_up_if_changed
 #     (lib/common.sh): a not-running container is the reason "container not running", which
 #     recreates the project. agentgateway keeps its own copy of that comparison
 #     ("gateway container not running", deploy.sh:153), and caddy runs
