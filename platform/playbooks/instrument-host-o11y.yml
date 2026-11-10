@@ -45,7 +45,7 @@
 # Undo: none yet. Removing a host is: drop its declaration, re-run for the group (the file loses
 # it), then remove the container.
 #
-# Usage (Semaphore): -e target_service=tududi_svc
+# Usage (Semaphore): -e target_service=honcho_svc
 
 # An extra var outranks every value this playbook computes (`-e _ih_group_errors=[]` would record
 # a pass for a failing group), so refuse any that sets an internal (underscore-prefixed) name

@@ -21,7 +21,7 @@ all:
     # 127.0.0.1:3000; an integer 1024-65535. Re-run `make local-bootstrap` to apply.
     # Avoid ports the stack already uses on the Mac: 3001 (UhhCraft when run with
     # UHHCRAFT_PORT=3001), 3002 (Grafana), 3100 (Loki, also the collector's Loki URL),
-    # 3402 (tududi), 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca).
+    # 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca).
     local_semaphore_port: 3000
     # Genesis (Mac-direct) foundation deploys (§12A) place the repo like every
     # composable deploy: rsync local_workspace_dir (the working tree) into a
@@ -151,9 +151,7 @@ all:
             # (community n8n has no native OIDC — see n8n-forward-auth.yaml).
             - { host: "n8n.agent-cloud.test", upstream: "workflow-n8n:5678", forward_auth: "authentik-server:9000" }
             - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
-            # tududi uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
-            - { host: "todo.agent-cloud.test", upstream: "tududi:3002" }
-            # console uses NATIVE OIDC (not forward_auth) - plain reverse_proxy, like tududi.
+            # console uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
             - { host: "console.agent-cloud.test", upstream: "console:8080" }
             # honcho: /v3 API is JWT-authenticated in-app; only the human /docs
             # surface is Authentik-gated (path-scoped forward_auth).
@@ -292,19 +290,6 @@ all:
           # inside the container). Same /api path shape as the public route.
           n8n_postiz_credential_host: "http://postiz:5000/api"
 
-    # tududi - self-hosted to-do app (single rootless container, SQLite). Native
-    # OIDC to Authentik (blueprints/tududi-oidc.yaml). Behind Caddy at
-    # todo.agent-cloud.test. Deploy: make local-deploy-tududi.
-    tududi_svc:
-      hosts:
-        tududi-local:
-          ansible_host: 127.0.0.1
-          ansible_connection: local
-          service_name: tududi
-          monorepo_deploy_path: platform/services/tududi/deployment
-          container_engine: podman
-          tududi_bind: 127.0.0.1
-          tududi_port: 3402   # host debug port; Caddy reaches the container :3002 by name
     # console — the Dispatch Console (Rust/Dioxus app; SQLite preferences on a named volume). Native
     # OIDC to Authentik (client `console`), behind Caddy at console.agent-cloud.test. The image is
     # built on this host from platform/services/console (no registry). Deploy: make local-deploy-console.
@@ -543,7 +528,7 @@ all:
           # here. They are consumed when deploy-authentik renders the blueprint,
           # so they belong on the AUTHENTIK host — and locally the blueprint's own
           # defaults already match these URLs. Prod sets them in site-config on
-          # authentik_svc (same convention tududi follows).
+          # authentik_svc.
           # Open for the FIRST sign-in, then flip to true and redeploy. Upstream
           # allows a single signup then closes; encoding the flip here keeps it
           # reproducible instead of a manual step on the host.
