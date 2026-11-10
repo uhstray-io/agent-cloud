@@ -195,6 +195,7 @@ flowchart LR
             M3["ERPNext"]
             M4["Postiz"]
             M5["Dispatch Console"]
+            M6["tududi (retiring, teardown unverified)"]
         end
         subgraph FA_M["forward_auth (Caddy outpost gate)"]
             F1["n8n"]
@@ -388,8 +389,12 @@ sequenceDiagram
 The five agent roles that may act are infrastructure, security, observability, service and network, each an
 OPA identity; destructive actions also need `human_approved` [40]. In production this path is not
 connected yet: skynet has no production route and the WisAI-to-skynet migration is PLANNED [20][41].
-The OPA decision in the diagram is the one skynet's own client makes; Semaphore does not ask OPA. skynet's
-launch step is refused while svc-skynet is `guest` (since 2026-10-31). The server-side gate that asks OPA
+The OPA decision in the diagram is the one skynet's own client makes; Semaphore does not ask OPA. Direct
+launches by svc-skynet are refused while it is `guest` (since 2026-10-31) [51]: a guest has no run permission,
+and the launch probe expects HTTP 403 (`platform/playbooks/provision-skynet-semaphore-access.yml`). Launches
+through the launch gate use a different identity, svc-launch-gate, which holds `task_runner` [48], so that refusal
+does not apply to them. The gate's allow path was probed by `Probe launch-gate (Dev)` task 14117 [48]. The
+server-side gate that asks OPA
 before each agent launch has been live in production since 2026-11-09; no skynet-initiated launch through it
 is recorded yet (OpenSpec change `skynet-launch-containment`, task 4.4 open) [48].
 
@@ -482,10 +487,7 @@ stateDiagram-v2
         Plane deploy recorded; live state UNVERIFIED
     end note
     note right of Retiring
-        NocoDB (since 2026-09-01)
-    end note
-    note right of Removed
-        tududi (retired 2026-10-23; teardown unverified)
+        NocoDB (since 2026-09-01), tududi (retired 2026-10-23; teardown unverified)
     end note
 ```
 

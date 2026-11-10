@@ -23,7 +23,8 @@ Real IPs, production inventory, and credential backups live in a **separate priv
 
 ```
 AI Layer          NemoClaw, NetClaw, Claude Cowork, WisBot
-                  Orchestrated by skynet (deployed 2026-10-30); models via the agentgateway edge (/v1, vLLM on DGX Spark)
+                  skynet API deployed 2026-10-30; models via the agentgateway edge (/v1, vLLM on DGX Spark)
+                  Agents not yet orchestrated by skynet; the agent runtime reframe is not yet shipped (plan/development/06-inference-skynet.md)
 
 Guardrail Layer   OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                   AI proposes -> guardrails validate -> automation runs
@@ -69,7 +70,7 @@ cd agent-cloud
 make git-setup   # repo-local git config: core.hooksPath=.githooks and the merge.ours.driver used by the graph artifact
 ```
 
-`platform/scripts/setup-project.sh` is a separate step that runs once Semaphore is up. It creates the Semaphore project, inventory, repositories and task templates through Semaphore's API. It installs no Ansible collections and sets up no pre-commit hooks.
+Local bring-up runs through `make local-init`, which creates the gitignored working inventory, and `make local-bootstrap`, which brings up the secure foundation and the local Semaphore. Semaphore templates are declared in `platform/semaphore/templates.yml` and published with `platform/semaphore/setup-templates.yml`. Do not create or change templates through the Semaphore API. `make local-templates` re-publishes the shared and local-only templates to the local Semaphore.
 
 ---
 

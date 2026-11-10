@@ -29,10 +29,15 @@ Authentik as the platform's central **IdP / SSO**. Read with the root
 
 ## Config-as-code (blueprints)
 
-`deployment/blueprints/*.yaml` are committed and mounted read-only at `/blueprints/custom`;
-the worker applies them idempotently on boot. The seed creates an `agent-cloud`
-group. Flows, OIDC providers, and per-app gating are added here as services are
-onboarded — never click-configured in the UI (that would drift from code).
+`deployment/blueprints/*.yaml` is the committed library, and it is not mounted directly.
+`deploy-authentik.yml` renders the shared blueprints and each enabled app's blueprint
+(from `app-catalog.yml`) into `blueprints-active/`, next to `compose.yml`. The server and
+the worker mount that directory read-only at `/blueprints/custom` (`compose.yml`), and the
+worker applies the mounted files on boot. `blueprints-active/` is gitignored
+(`deployment/.gitignore`) and assembled on each deploy. The seed creates an `agent-cloud`
+group. Flows, OIDC providers, and per-app gating are added to the library and listed in
+`app-catalog.yml` as services are onboarded — never click-configured in the UI (that would
+drift from code).
 
 ## Platform administrators — one declared list
 

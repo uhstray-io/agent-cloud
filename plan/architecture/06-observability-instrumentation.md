@@ -22,7 +22,15 @@
 > inventory-rendered `scrape.d/*.yml` targets, and the Alloy template has an OTLP
 > traces receiver that forwards to Tempo (see the 2026-10-04 correction and
 > Phase 4). The generic Service Overview JSON
-> includes a `service` selector; alert rules remain absent. A read-only local check on
+> includes a `service` selector. Alert rules are rendered from
+> `platform/services/o11y/deployment/templates/alerts.yml.j2` in the `o11y_` and `inference_`
+> families (`platform/services/o11y/deployment/CLAUDE.md`). Setting `o11y_alerts_enabled` unpauses
+> them and routes them to the Discord contact point, except the `benchmark-gate` placeholder. The switch
+> defaults off (`alerts.yml.j2:16,65`), and local mode or a set canary keeps the rule at
+> `alerts.yml.j2:184` paused. The `inference-failing`, `telemetry-missing`, `memory-thermal` and
+> `benchmark-gate` groups follow `dgx_spark_scrape_enabled` (`platform/services/o11y/deployment/CLAUDE.md:169`).
+> Production rule state is recorded in the 2026-10-04 correction below and is not re-verified here. A read-only
+> local check on
 > 2026-09-22 found all four containers healthy and their health/ready endpoints
 > returning HTTP 200. Grafana's chain-verified TLS route completed an Authentik
 > OIDC login and returned to the provisioned overview dashboard. The dashboard

@@ -455,7 +455,7 @@ platform/semaphore/templates.yml         + Deploy UhhCraft
 
 1. Add template definitions to `templates.yml` mirroring NetBox entries.
 2. Run `setup-templates.yml` to push the new templates into Semaphore.
-3. Confirm Semaphore's AppRole policy covers the new secret paths (`secret/services/uhhcraft/*` etc.); if not, extend `platform/services/openbao/deployment/config/policies/semaphore-write.hcl` (`semaphore-read.hcl` sits beside it) and re-apply.
+3. Confirm the Semaphore read policy covers the new secret paths. `platform/services/openbao/deployment/config/policies/semaphore-read.hcl` already grants `secret/data/services/*`, so `secret/services/uhhcraft/*` and the sidecar paths need no policy edit. Do not extend `semaphore-write.hcl` (same directory) for this: it grants access only to `secret/services/semaphore` and self token renewal. If a deploy is denied on those paths, republish the read policy with the `Apply Policy - Semaphore` template (`platform/playbooks/apply-policy-semaphore.yml`). That template rewrites the policy body only (`platform/playbooks/tasks/apply-openbao-policy.yml`); it does not change which policies any AppRole is bound to.
 
 **Acceptance:**
 
@@ -532,7 +532,7 @@ kickstart.md                                  + WebSmith + UhhCraft in "Where to
 
 ### Phase 10 — Validation + branch testing + rollback
 
-> **Execution runbook:** [`UHHCRAFT-GO-LIVE-PLAN.md`](../archive/development/UHHCRAFT-GO-LIVE-PLAN.md) — the comprehensive, hand-off-ready checklist for this phase (open decisions, full provisioning chain, deploy sequence, smoke + rollback, Definition of Done, and open gaps). Phase 10 is hardware-gated; the runbook is what an operator/agent follows against the live cluster. The summary below is retained for context.
+> **Execution runbook:** [UhhCraft Go-Live — Phase 10 Production Validation Plan](#uhhcraft-go-live--phase-10-production-validation-plan), embedded below in this document — the comprehensive, hand-off-ready checklist for this phase (open decisions, full provisioning chain, deploy sequence, smoke + rollback, Definition of Done, and open gaps). Phase 10 is hardware-gated; the runbook is what an operator/agent follows against the live cluster. The summary below is retained for context.
 
 **Goal:** End-to-end smoke before merging anything to main.
 
@@ -905,7 +905,7 @@ Run each as its Semaphore template. Order matters (sidecars before the app, so t
 - [`WEBSMITH-INTEGRATION-PLAN.md`](../archive/development/WEBSMITH-INTEGRATION-PLAN.md) — Phase 10 is §Phase 10 + the §6 Definition of Done this plan operationalizes.
 - [`UHHCRAFT-GPU-PASSTHROUGH.md`](../archive/development/UHHCRAFT-GPU-PASSTHROUGH.md) — GPU host prep + the pending §1 decision (A4).
 - [`nocodb-n8n-composable-migration.md`](../archive/development/nocodb-n8n-composable-migration.md) — explicitly **out of scope** here (held).
-- [`../architecture/BRANCH-TESTING-WORKFLOW.md`](../archive/architecture/BRANCH-TESTING-WORKFLOW.md) — deploying a feature branch to the VMs for pre-merge validation.
+- [Declared production repository records: `main` and `dev`](../../platform/semaphore/README.md#declared-production-repository-records-main-and-dev) — how production templates are bound to the `main` and `dev` repository records, and why a production template cannot run a feature branch.
 - [`../architecture/CADDY-REVERSE-PROXY.md`](../archive/architecture/CADDY-REVERSE-PROXY.md) — per-site fragment pattern + DNS-01.
 - [`../architecture/PODMAN-VS-DOCKER-COMPOSE.md`](../archive/architecture/PODMAN-VS-DOCKER-COMPOSE.md) — runtime gotchas (§4 readiness).
 - [`../../platform/services/uhhcraft/deployment/README.md`](../../platform/services/uhhcraft/deployment/README.md) — service deploy story + rollback commands.

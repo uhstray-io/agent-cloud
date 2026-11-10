@@ -25,7 +25,8 @@ EXCLUDED_PREFIXES = (
 # entry as soon as its link is fixed (test_known_broken_links_still_exist enforces that).
 KNOWN_BROKEN_LINKS: Mapping[str, tuple[str, ...]] = {}
 
-LINK = re.compile(r"\[[^\]\n]*\]\(([^()\s]+)\)")
+# An optional CommonMark link title ("t", 't' or (t)) follows the destination after whitespace.
+LINK = re.compile(r"""\[[^\]\n]*\]\(([^()\s]+)(?:\s+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?\s*\)""")
 SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 
 
@@ -144,6 +145,22 @@ def test_missing_link_is_reported_with_file_line_and_target(tmp_path):
     broken = find_broken_links(tmp_path, ["index.md"])
 
     assert [str(link) for link in broken] == ["index.md:3: [docs/removed.md#section] target does not exist"]
+
+
+def test_link_with_a_title_is_still_checked(tmp_path):
+    (tmp_path / "here.md").write_text("# here\n", encoding="utf-8")
+    (tmp_path / "page.md").write_text(
+        '[ok](here.md "Here")\n[a](missing-a.md "Guide") [b](missing-b.md \'Guide\') [c](missing-c.md (Guide))\n',
+        encoding="utf-8",
+    )
+
+    broken = find_broken_links(tmp_path, ["page.md"])
+
+    assert [(link.line, link.target) for link in broken] == [
+        (2, "missing-a.md"),
+        (2, "missing-b.md"),
+        (2, "missing-c.md"),
+    ]
 
 
 def test_urls_anchors_and_fenced_examples_are_not_checked(tmp_path):
