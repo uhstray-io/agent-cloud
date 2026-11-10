@@ -9,6 +9,7 @@ are checked as playbook structure, and the report is also run under ansible-play
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -1176,3 +1177,45 @@ def test_producer_source_gate_folds_each_candidate_word_to_the_generic_reason(mo
         "status": "unavailable", "reason": "namespace_unverified",
         "source": "unknown", "intended_source": "unknown", "matches_intended": False,
     }
+
+
+
+def test_every_native_word_the_helper_raises_reaches_the_gate_diagnostic():
+    """A word the helper raises but the filter drops would be reported as producer_evidence_invalid."""
+    source = (ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py").read_text(encoding="utf-8")
+    raised = set(re.findall(r'Refusal\("(native_[a-z_]+)"\)', source))
+    raised |= set(re.findall(r'_run_api\([^)]*?"(native_[a-z_]+)"', source))
+    raised |= set(re.findall(r'"status": "unavailable", "reason": "(native_[a-z_]+)"', source))
+    assert raised, "no native refusal words found"
+    missing = raised - BUDGET.SOURCE_GATE_REFUSAL_REASONS
+    assert not missing, f"raised but dropped by the diagnostic filter: {sorted(missing)}"
+    for word in raised:
+        readback = {"status": "unavailable", "reason": word, "source": "unknown",
+                    "intended_source": "unknown", "matches_intended": False}
+        assert BUDGET.o11y_availability_source_gate_diagnostic(
+            {"rc": 2, "stdout": json.dumps(readback), "stderr": ""}
+        ) == word
+
+
+def test_an_unusable_podman_path_names_the_podman_identity_decision(monkeypatch):
+    monkeypatch.setattr(GATE, "_availability_provider_context", lambda: (
+        ["podman-compose"], [], "1.3.0", "4.9.3", [], {"podman": {"path": "podman"}},
+    ))
+    with pytest.raises(GATE.Refusal, match="native_identity_podman_unavailable"):
+        GATE._current_alloy_identity()
+
+
+def test_the_survey_source_read_turns_an_unexpected_exception_into_its_own_word(monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("detail that must never be printed")
+
+    monkeypatch.setattr(GATE, "_validate_availability_source_payload", lambda _payload: {
+        "availability": {}, "shared_limits": {}, "environment": "prod", "cluster": "prod-west",
+        "intended_source": "alloy", "lower_bound": None, "freshness_seconds": 300,
+        "require_health_targets": True, "candidate_config_sha256": None,
+        "previous_source": None, "previous_container_sha256": None,
+    })
+    monkeypatch.setattr(GATE, "collect_current_availability_source", explode)
+    _context, result = GATE._survey_source_result(b"{}", {}, json.dumps({"reviewed": True}))
+    assert result["reason"] == "native_source_internal_error"
+    assert "detail" not in json.dumps(result)

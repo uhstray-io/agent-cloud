@@ -4646,28 +4646,12 @@ def _require_curl_version() -> None:
         raise Refusal("curl_unsupported")
 
 
-def collect() -> dict[str, Any]:
-    _require_curl_version()
-    targets_raw = _run_api("/api/v1/targets?state=active")
-    samples_raw = _run_api("/api/v1/query?query=max_over_time%28scrape_samples_scraped%5B24h%5D%29")
-    series_end = int(time.time())
-    baseline = summarize(
-        targets_raw,
-        samples_raw,
-        _run_probe,
-        _run_series_query,
-        series_end - 86400,
-        series_end,
-    )
-    try:
-        loaded_limits = _loaded_limit_readback(targets_raw)
-    except Refusal as error:
-        loaded_limits = {"status": "unavailable", "reason": error.category}
-    except Exception:
-        loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
+def _survey_source_result(
+    targets_raw: bytes | str, loaded_limits: Any, source_text: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The survey's current-producer read: a fixed result, never an exception or its text."""
     source_context = None
     source_result = None
-    source_text = os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON", "")
     if source_text:
         try:
             source_context = _validate_availability_source_payload(_json_input_bytes(source_text))
@@ -4694,6 +4678,31 @@ def collect() -> dict[str, Any]:
                 "status": "unavailable", "reason": "native_source_internal_error",
                 "source": "unknown", "intended_source": "unknown", "matches_intended": False,
             }
+    return source_context, source_result
+
+
+def collect() -> dict[str, Any]:
+    _require_curl_version()
+    targets_raw = _run_api("/api/v1/targets?state=active")
+    samples_raw = _run_api("/api/v1/query?query=max_over_time%28scrape_samples_scraped%5B24h%5D%29")
+    series_end = int(time.time())
+    baseline = summarize(
+        targets_raw,
+        samples_raw,
+        _run_probe,
+        _run_series_query,
+        series_end - 86400,
+        series_end,
+    )
+    try:
+        loaded_limits = _loaded_limit_readback(targets_raw)
+    except Refusal as error:
+        loaded_limits = {"status": "unavailable", "reason": error.category}
+    except Exception:
+        loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
+    source_context, source_result = _survey_source_result(
+        targets_raw, loaded_limits, os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON", ""),
+    )
     try:
         alert_inputs = _alert_input_availability(
             targets_raw,

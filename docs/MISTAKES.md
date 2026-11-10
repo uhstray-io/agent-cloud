@@ -1477,8 +1477,8 @@ to every fixed-category helper.
 **Occurrence 2 — 2026-11-10.** The real enabled `Deploy o11y (Dev)` (Semaphore task 14536) failed its post-apply
 readback with `native_source_unavailable`. The read-only `Survey o11y Scrape Baseline (Dev)` (task 14552)
 printed the same word, and I reported to the operator, wrote into PR #1005 and recorded under 2.22 that the
-survey reproduced the deploy refusal. It did not: the survey failed at "Require the bounded availability
-source projection", its pre-placement source read, not at the post-apply binding. The next survey (task 14570)
+survey reproduced the deploy refusal. It did not: the survey failed at "Require one fresh and unambiguous
+current self-metrics producer", its pre-placement source read, not at the post-apply binding. The next survey (task 14570)
 failed at the same step after #1005 merged, which is how the mismatch surfaced. Why the rule did not fire:
 the shared word was read as the same branch, and the task that printed it was not checked. The rule above
 already covers this; the matching category was the whole of the evidence. The remaining shared-word sites in

@@ -280,7 +280,8 @@ the running Alloy to the reviewed candidate config, and each binding check has i
 and `native_source_internal_error` that the helper raised an unexpected error. Reading the current producer
 itself reports `native_identity_alloy_count` (not exactly one `alloy` service container),
 `native_identity_alloy_not_running`, `native_identity_podman_unavailable`, `native_targets_unavailable`
-(the Prometheus targets API did not answer) or `native_targets_invalid` (its response was malformed). The read-only
+(the Prometheus targets API did not answer) or `native_targets_invalid` (its response was
+malformed, over the bounded target count, or carried warnings). The read-only
 `Survey o11y Scrape Baseline (Dev)` runs the same binding without applying anything.
 
 The Dev-bound survey can also emit an optional **source-only candidate
