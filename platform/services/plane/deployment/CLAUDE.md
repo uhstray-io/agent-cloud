@@ -87,6 +87,29 @@ and only when it is not `plane_license_plan` (default `PRO`) posts the key to
 no other — and reads the plan back. No key stored: the phase reports that and skips. A refusal
 reports the HTTP status only, because Plane's error body can echo the key.
 
+### GitHub integration
+
+On when the inventory declares `plane_github_app_id` (with `plane_github_app_name`, the App's
+slug, and `plane_github_client_id`; none of the three is secret). Removing `plane_github_app_id`
+switches it off on the next deploy. The App's OAuth client secret (`plane_github_client_secret`)
+and private key (`plane_github_private_key`, the base64 of the PEM on one line, which is what
+Plane reads in `GITHUB_PRIVATE_KEY` and what the seed CLI accepts) are the operator's: seed each
+with Seed OpenBao Key as above, and the deploy refuses to run without them while the App is
+declared. `plane_github_webhook_secret` is generated once.
+
+`env.j2` renders the six `GITHUB_*` values together or fails. Phase 3d then sets the App's own
+webhook (URL `<plane_public_url>/silo/api/github/github-webhook`, JSON, and the same secret)
+through `github_app_token.py set-hook-secret` on the controller; GitHub never returns the secret,
+so it is set on every deploy. Verify sends an unsigned delivery through the proxy and requires
+401: spike 0.16 showed silo answers 403 when it has no App configured and 401 to an unsigned
+delivery once it has the App and the secret. The Cloudflare challenge skip for that one path
+(`plane-github-webhook-bypass-challenge` in `platform/infra/cloudflare/waf.tf`) depends on that
+check. It is safe to apply at any time: with no App configured silo answers every delivery 403, so
+it is not gated on the deploy; after both are live, redeliver one App delivery and expect 202.
+
+Connecting the workspace (Workspace settings, Integrations, GitHub) and each project's repository
+is done in Plane after the deploy (change tasks 0.6 and 3.5).
+
 Plane ships **working default credentials** in `variables.env` and in its Compose fallbacks,
 identical on every install. `env.j2` refuses to render if any of them comes out empty or
 equal to the shipped value. Note the RabbitMQ trap: Plane's Compose reads `RABBITMQ_PASSWORD`,
@@ -130,6 +153,8 @@ address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automatio
 through Authentik on, and leaving it unset switches it OFF on the next deploy. `plane_admin_role`
 (default `admin`) is the role `platform-admins` get from the member reconcile; local-dev sets
 `member`, because the Admin role is a plan feature (`WORKSPACE_ADMIN_ROLE`) the Free plan lacks.
+`plane_github_app_id`, `plane_github_app_name` and `plane_github_client_id` turn the GitHub
+integration on (see Credentials).
 
 ## Operate
 

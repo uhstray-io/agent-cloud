@@ -607,6 +607,7 @@ STUB
   chmod +x "$F/bin/systemctl"
   run env PATH="$F/bin:$PATH" RUNNER_ENV_FILE="$F/runner.env" RUNNER_PROC_ROOT="$P" \
     RUNNER_CGROUP_ROOT="$F/cgroup" RUNNER_DRAIN_SECONDS=0 RUNNER_STOP_GRACE_SECONDS=0 \
+    RUNNER_KILL_WAIT_SECONDS=1 \
     "$SH" "$@"
 }
 

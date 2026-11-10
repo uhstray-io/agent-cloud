@@ -29,6 +29,13 @@
 #   assert_contains "$haystack" 'needle'    # fails if absent
 #   refute_contains "$haystack" 'needle'    # fails if present
 
+# Git exports its repository variables to hooks. Left set, a test's scratch `git init`
+# or `git config` writes the REAL repository (docs/MISTAKES.md 3.7). Every bats file that
+# loads this helper runs with them cleared. The list mirrors .githooks/pre-push:70-71;
+# keep both in step.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
+
 # Fails when grep FINDS something. Takes the same arguments as grep.
 #
 # Only exit status 1 — "matched nothing" — counts as the pattern being absent.
