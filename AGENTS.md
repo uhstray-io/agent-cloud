@@ -55,10 +55,10 @@ must never masquerade as the real fix.
 
 Private configuration (real IPs, credentials, production inventory) lives in the separate **site-config** repository. This repo contains only templates, placeholders, and code.
 
-**Standing convention: agent-cloud is the template, site-config configures Uhstray.io's instance**
+**Standing convention: agent-cloud is the template, site-config configures the instance for Uhstray.io**
 (operator's rule, 2026-11-09). agent-cloud holds whatever any agent-cloud instance needs:
 playbooks, templates, skills, onboarding guides, runbooks. It is written so another operator could
-run their own instance from it. Everything that only makes sense for Uhstray.io's instance goes to
+run their own instance from it. Everything that only makes sense for the Uhstray.io instance goes to
 site-config: hostnames, workspace and organisation names, people and contacts, the filled-in values
 a template asks for, and hand-off pages for teammates. When a guide or skill needs instance values,
 write it here with placeholders and a table naming each one, and put the values in site-config. The
