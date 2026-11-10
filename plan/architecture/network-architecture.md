@@ -451,7 +451,7 @@ Where the firewall is recorded as applied:
 | DNS host | Port 53 per declared client | LIVE 2026-09-29 | [34] |
 | o11y receiver | Grafana from the Caddy host; Loki push from the GPU node addresses | LIVE 2026-10-02 | [36] |
 | Internal CA host | Default deny; CA API on loopback only | LIVE (group 3.1 done) | [9] |
-| Services probed from their own host (tududi, honcho, n8n, o11y) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
+| Services probed from their own host (honcho, n8n, o11y; tududi until its retirement on 2026-11-09) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
 | CI runner hosts | **Egress deny** to the secret store, orchestrator and hypervisors (inbound shape not recorded) | LIVE, verified from inside a job | [11] |
 | Caddy host | No firewall declaration found in this repository | UNVERIFIED | — |
 | Every other service host | Per-host declaration in site-config | UNVERIFIED | — |

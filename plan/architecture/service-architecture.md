@@ -100,7 +100,6 @@ flowchart TD
     subgraph APPS["Business and operator applications"]
         CONSOLE["Dispatch Console (BUILT)"]
         HONCHO["honcho memory API (LIVE)"]
-        TUDUDI["tududi (RETIRING)"]
         PLANE["Plane (PLANNED)"]
         POSTIZ["Postiz (LIVE-LOCAL)"]
         ERP["ERPNext (BUILT)"]
@@ -121,7 +120,6 @@ flowchart TD
     AGENTS ~~~ SIDE
     CONSOLE ~~~ PLANE
     HONCHO ~~~ POSTIZ
-    TUDUDI ~~~ ERP
     UHH ~~~ OH
     CADDY ~~~ NB
     CA ~~~ O11Y
@@ -155,8 +153,8 @@ the service; the network path itself is in the companion document. The runtime c
 | skynet | Orchestration API: runs the onboarding workflow, asks OPA, calls the model through agentgateway. Its launches through Semaphore are refused since svc-skynet became `guest` on 2026-10-31; the planned launch gate will carry them | AI | Podman, API + its own Postgres | agentgateway key + skynet bearer | BUILT; no production route; launches refused [20] | `skynet/deployment/CLAUDE.md` |
 | Dispatch Console | Operator administration UI (Rust) | Operator app | Podman, image built on the host | Native OIDC | BUILT; no production run recorded [21] | `console/deployment/CLAUDE.md` |
 | honcho | Memory API for team memory | Auxiliary | Rootless podman, 4 containers | JWT on `/v3`; Authentik forward_auth on `/docs` | LIVE [22] | `honcho/deployment/CLAUDE.md` |
-| tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | RETIRING: retired 2026-10-23, replaced by Plane [23] | `tududi/deployment/CLAUDE.md` |
-| Plane | Work tracker replacing tududi | Auxiliary | Own VM (planned) | Authentik OIDC (planned) | PLANNED, 0 of 85 tasks [23] | `plan/development/16-plane-work-management.md` |
+| tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | RETIRED 2026-11-09: torn down; replaced by Plane [23] | `tududi/deployment/CLAUDE.md` |
+| Plane | Work tracker replacing tududi | Auxiliary | Own VM (planned) | Authentik OIDC (planned) | PLANNED, 35 of 87 tasks [23] | `plan/development/16-plane-work-management.md` |
 | Postiz | Social publishing | Auxiliary | Rootless podman, 5 containers + search node | Native OIDC; public API path keyed by the app | LIVE-LOCAL; production host hardened, app pending [24] | `postiz/deployment/CLAUDE.md` |
 | OpenHands | Agent canvas | Auxiliary | Docker (host socket for session containers) | Authentik forward_auth | LIVE [25] | `openhands/context/architecture.md` |
 | ERPNext | ERP, system of record for storefront revenue | Business | Podman, 9 containers | Native OIDC | BUILT; local deploy pending image pull [26] | `erpnext/deployment/context/architecture.md` |
@@ -189,7 +187,6 @@ flowchart LR
             M2["Semaphore"]
             M3["ERPNext"]
             M4["Postiz"]
-            M5["tududi"]
             M6["Dispatch Console"]
         end
         subgraph FA_M["forward_auth (Caddy outpost gate)"]
@@ -250,7 +247,6 @@ flowchart LR
     AK -->|"client secret"| CON["console"]
     AK -->|"client secret"| ERP["erpnext"]
     AK -->|"client secret"| PZR["postiz"]
-    AK -->|"client secret"| TD["tududi"]
     AK -->|"client secret"| AGWR["agentgateway"]
     AGWS -->|"probe identity key"| O11Y
     AGWS -->|"six role keys"| SKYR["skynet"]
@@ -276,7 +272,7 @@ grant wildcard access over `secret/data/services/*`, against the "enumerated pat
 Composable services are deployed the same way, by a Semaphore template that runs their
 `deploy-<name>.yml`. Legacy wrappers (OpenBao, Semaphore, NocoDB, NemoClaw), host services (the CI
 runners) and external systems follow the paths their own records describe, and planned services
-have none yet. The sequence shows one composable deploy, using tududi as the example [38].
+have none yet. The sequence shows one composable deploy, using honcho as the example [38].
 
 ```mermaid
 sequenceDiagram
@@ -431,7 +427,7 @@ flowchart TD
     Q2{"Is it the secret store or orchestrator,<br/>running from a legacy directory?"}
     DOCKER["Docker<br/>NetBox (discovery), OpenHands (host socket),<br/>NemoClaw (OpenShell)"]
     ROOTFUL["Rootful podman<br/>OpenBao, Semaphore"]
-    ROOTLESS["Rootless podman (default)<br/>Caddy, step-ca, o11y, n8n, honcho,<br/>tududi, Postiz, ..."]
+    ROOTLESS["Rootless podman (default)<br/>Caddy, step-ca, o11y, n8n, honcho,<br/>Postiz, ..."]
     Q1 -->|"yes"| DOCKER
     Q1 -->|"no"| Q2
     Q2 -->|"yes"| ROOTFUL
@@ -462,7 +458,7 @@ stateDiagram-v2
         Plane, the agent runtime reframe
     end note
     note right of Retiring
-        NocoDB (since 2026-09-01), tududi (since 2026-10-23)
+        NocoDB (since 2026-09-01), tududi (retired 2026-11-09)
     end note
 ```
 
@@ -513,7 +509,7 @@ above. Each has an owner and the acceptance criterion that moves its status.
 
 **Owner:** plan 16 and OpenSpec `deploy-plane-work-management` [23].
 **Acceptance:** Plane LIVE with Authentik OIDC and native GitHub sync; tududi and its n8n sync torn
-down; tududi's row removed.
+down (tududi: done 2026-11-09); tududi's row marked retired.
 
 ### Phase B: the console in production
 
@@ -661,7 +657,7 @@ document; for long, frequently edited documents the section name is given as wel
 35. `plan/development/openspec/changes/inference-gateway-agentgateway/design.md:183-191` (the forward-auth gate corrected to native OIDC)
 36. `plan/architecture/05-platform-infra.md:352-394` (MCP endpoint and the one admin list)
 37. `platform/services/openbao/deployment/config/policies/nemoclaw-read.hcl:3-6`; `platform/services/openbao/deployment/config/policies/semaphore-read.hcl:8-10`
-38. `platform/playbooks/deploy-tududi.yml:1-157`
+38. `platform/playbooks/deploy-honcho.yml:1-198`
 39. Retired 2026-11-07: the tududi GitHub sync contract (file deleted with the sync).
 40. `plan/development/15-service-deployment-workflow-agents.md:40-180` (Decisions, Design principles, Architecture, Workflow table)
 41. `plan/development/06-inference-skynet.md:1-30` and `:236-300`
@@ -669,7 +665,7 @@ document; for long, frequently edited documents the section name is given as wel
 43. `AGENTS.md`, Deployment Status, "Service boot persistence and health (prod, 2026-09-26)"
 44. `plan/architecture/05-platform-infra.md:292-351` (Inference gateway: agentgateway alongside skynet; accepted 2026-10-12)
 45. `plan/development/17-dispatch-console.md:30-60` (Decisions D1 to D21)
-46. `platform/playbooks/deploy-{honcho,o11y,skynet,agentgateway,console,postiz,tududi,erpnext}.yml`, each playbook's `_shared_reads`; `platform/playbooks/provision-n8n-postiz-credential.yml`
+46. `platform/playbooks/deploy-{honcho,o11y,skynet,agentgateway,console,postiz,erpnext}.yml`, each playbook's `_shared_reads` (`deploy-tududi.yml` retired 2026-11-09); `platform/playbooks/provision-n8n-postiz-credential.yml`
 
 ## Revision History
 

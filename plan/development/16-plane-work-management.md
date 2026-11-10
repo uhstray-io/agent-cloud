@@ -25,6 +25,8 @@ The team has no single place where GitHub issues, the per-repository plans and t
 
 2026-11-07: tududi is retired after the Phase 1 gate, ahead of phases 3–6; its data is archived, not migrated, and its GitHub sync is removed outright.
 
+2026-11-09: tududi is torn down. Its production VM is destroyed, its data is archived to site-config, and the Semaphore templates and schedules that ran its GitHub sync are deleted.
+
 **Base ref:** `origin/dev` at commit `391a4f7c`. All implementation work starts from that ref in a fresh worktree, not from the local `local-dev-run` checkout.
 
 ## Decisions
