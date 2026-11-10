@@ -249,7 +249,7 @@ or not a mapping, or its entrypoint, command, network mode, image or config moun
 declared one), `namespace_candidate_ports` (a port list or entry is malformed, a port uses 12345, or
 an Alloy port is outside the declared target, protocol or loopback and private address rules),
 `namespace_candidate_project` (the running Alloy belongs to a different project than the candidate),
-and `namespace_network_mode` (a service declares a network mode). `deploy.sh` prints one line,
+and `namespace_network_mode` (a service other than `alloy` declares a network mode; Alloy's own network mode is part of `namespace_candidate_alloy_spec`). `deploy.sh` prints one line,
 `Availability gate category: <category>`, before its error message, so the failing decision is in the
 deploy output. It never prints the helper's raw output. The producer source gate folds all of these
 to `namespace_unverified`.

@@ -3917,6 +3917,13 @@ PY
   o11y_gate_run pre namespace_candidate_pod 2
   [ "$status" -eq 1 ]
   assert_contains "$output" "Availability gate category: namespace_candidate_pod"
+  # The category line comes before the error it explains.
+  local category_line error_line
+  category_line=$(printf '%s\n' "$output" | grep -n "Availability gate category:" | head -1 | cut -d: -f1)
+  error_line=$(printf '%s\n' "$output" | grep -n "Availability refused because" | head -1 | cut -d: -f1)
+  [ -n "$category_line" ]
+  [ -n "$error_line" ]
+  [ "$category_line" -lt "$error_line" ]
 }
 
 @test "o11y deploy gate: a helper that exits 1 is namespace_helper_failed even when its JSON names a category" {
