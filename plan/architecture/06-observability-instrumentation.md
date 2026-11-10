@@ -23,11 +23,15 @@
 > traces receiver that forwards to Tempo (see the 2026-10-04 correction and
 > Phase 4). The generic Service Overview JSON
 > includes a `service` selector. Alert rules are rendered from
-> `platform/services/o11y/deployment/templates/alerts.yml.j2` in the `o11y_` and `inference_`
-> families (`platform/services/o11y/deployment/CLAUDE.md`). Setting `o11y_alerts_enabled` unpauses
-> them and routes them to the Discord contact point, except the `benchmark-gate` placeholder. The switch
-> defaults off (`alerts.yml.j2:16,65`), and local mode or a set canary keeps the rule at
-> `alerts.yml.j2:184` paused. The `inference-failing`, `telemetry-missing`, `memory-thermal` and
+> `platform/services/o11y/deployment/templates/alerts.yml.j2` (`platform/services/o11y/deployment/CLAUDE.md`).
+> `o11y_alerts_enabled` is required for a rule to be unpaused and routed to the Discord contact point, but it is
+> not sufficient: the switch defaults off (`alerts.yml.j2:16,65`), a set `o11y_alert_canary_service` pauses most
+> rule sets, and several carry further gates — the per-target missing-telemetry rules need
+> `o11y_expected_metrics_targets_reviewed` (`:305`; `:249` also accepts local mode), the receiver-loss and backend-drop rules need their
+> review flags and production (`:370-374,439-443`), `agentgateway_trace_silent` needs production, one gateway
+> host with OTLP traces and `o11y_tempo_gateway_exclusive_sender_reviewed` (`:513-519`), the alerting-health
+> rules need non-local mode (`:528`), and availability rules need declared targets (`:14-17`). The
+> `benchmark-gate` placeholder stays paused. The `inference-failing`, `telemetry-missing`, `memory-thermal` and
 > `benchmark-gate` groups follow `dgx_spark_scrape_enabled` (`platform/services/o11y/deployment/CLAUDE.md:169`).
 > Production rule state is recorded in the 2026-10-04 correction below and is not re-verified here. A read-only
 > local check on
