@@ -2100,7 +2100,8 @@ templates:
 
   - name: Reconcile Plane Members
     playbook: platform/playbooks/reconcile-plane-members.yml
-    # Plane workspace membership follows the Authentik groups: platform-admins -> Admin,
+    # Plane workspace membership follows the Authentik groups: platform-admins -> plane_admin_role
+    # (Owner in production; Plane's Admin role is Business and Enterprise only),
     # developers and business users -> Member, everyone else removed. READ-ONLY unless apply is
     # true (the survey default is false, so a UI launch only reports the plan).
     dev_variant: true
