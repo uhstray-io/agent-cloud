@@ -39,7 +39,7 @@ FILTER_SPEC.loader.exec_module(BUDGET)
 CATEGORIES = [
     "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
     "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
-    "namespace_runtime_unreadable", "namespace_unverified",
+    "namespace_runtime_unreadable", "namespace_unverified", "namespace_internal_error",
 ]
 ALLOY = "a" * 64
 SIBLING = "b" * 64
@@ -85,6 +85,8 @@ def test_synthetic_baseline_is_isolated():
 
 def test_the_helper_and_the_filter_name_the_same_categories():
     assert GATE.AVAILABILITY_NAMESPACE_REASONS == BUDGET.AVAILABILITY_NAMESPACE_REASONS == frozenset(CATEGORIES)
+    # The filter-only word is computed from a helper exit code; the helper never prints it.
+    assert "namespace_helper_failed" not in GATE.AVAILABILITY_NAMESPACE_REASONS
 
 
 # Each row mutates the synthetic baseline so that exactly one decision point refuses.
@@ -271,15 +273,53 @@ def test_a_runtime_context_that_does_not_match_the_expected_fingerprint_is_provi
     assert _refusal_category(GATE.verify_availability_namespace) == "namespace_provider_unverified"
 
 
+def _stub_namespace_reads(monkeypatch, *, self_error=None):
+    """The host reference is the helper's own netns. /proc/1 is EACCES for the unprivileged deploy user.
+
+    Returns the list of paths the runtime pass stat'd, in order.
+    """
+    reads = []
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if path in ("/proc/1/ns/net", "/proc/self/ns/net"):
+            reads.append(path)
+        if path == "/proc/1/ns/net":
+            raise PermissionError(13, "Permission denied", path)
+        if path == "/proc/self/ns/net":
+            if self_error is not None:
+                raise self_error
+            return SimpleNamespace(st_dev=HOST_NAMESPACE[0], st_ino=HOST_NAMESPACE[1])
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(GATE.os, "stat", stat)
+    return reads
+
+
+def test_the_runtime_pass_reads_the_helper_netns_and_never_pid_one(monkeypatch):
+    containers, _processes = _fixture()
+    monkeypatch.setattr(GATE, "_availability_inspect_all", lambda _deadline, _path: containers)
+    monkeypatch.setattr(GATE, "_availability_process_identity", lambda pid: {"pid": pid})
+    reads = _stub_namespace_reads(monkeypatch)
+    _related, _process_identities, host_namespace = GATE._availability_runtime_pass("/usr/bin/podman")
+    assert host_namespace == HOST_NAMESPACE
+    assert "/proc/self/ns/net" in reads and "/proc/1/ns/net" not in reads
+
+
+def test_an_unreadable_helper_namespace_is_an_unreadable_runtime(monkeypatch):
+    containers, _processes = _fixture()
+    monkeypatch.setattr(GATE, "_availability_inspect_all", lambda _deadline, _path: containers)
+    _stub_namespace_reads(monkeypatch, self_error=PermissionError(13, "Permission denied"))
+    assert _refusal_category(
+        lambda: GATE._availability_runtime_pass("/usr/bin/podman")
+    ) == "namespace_runtime_unreadable"
+
+
 def test_a_publisher_of_host_port_12345_is_refused_by_the_runtime_pass(monkeypatch):
     containers, _processes = _fixture()
     containers[1]["ports"] = {"12345/tcp": [{"HostIp": "0.0.0.0", "HostPort": "12345"}]}
     monkeypatch.setattr(GATE, "_availability_inspect_all", lambda _deadline, _path: containers)
-    real_stat = os.stat
-    monkeypatch.setattr(GATE.os, "stat", lambda path, *a, **k: (
-        SimpleNamespace(st_dev=HOST_NAMESPACE[0], st_ino=HOST_NAMESPACE[1]) if path == "/proc/1/ns/net"
-        else real_stat(path, *a, **k)
-    ))
+    _stub_namespace_reads(monkeypatch)
     assert _refusal_category(
         lambda: GATE._availability_runtime_pass("/usr/bin/podman")
     ) == "namespace_alloy_host_port"
@@ -311,14 +351,15 @@ def test_cli_prints_the_category_of_a_namespace_refusal(monkeypatch, capsys, cat
     assert json.loads(capsys.readouterr().out) == {"status": "unverified", "reason": category}
 
 
-def test_cli_prints_the_generic_reason_for_an_unexpected_exception(monkeypatch, capsys):
+def test_cli_prints_the_internal_error_category_for_an_unexpected_exception(monkeypatch, capsys):
     def explode(**_kwargs):
         raise RuntimeError("private detail SENTINEL-PRIVATE-TEXT /srv/example")
 
     assert _cli(monkeypatch, explode) == 2
     output = capsys.readouterr().out
-    assert json.loads(output) == {"status": "unverified", "reason": "namespace_unverified"}
+    assert json.loads(output) == {"status": "unverified", "reason": "namespace_internal_error"}
     assert "SENTINEL-PRIVATE-TEXT" not in output and "/srv/example" not in output
+    assert BUDGET.o11y_availability_namespace_diagnostic({"rc": 2, "stdout": output}) == "namespace_internal_error"
 
 
 def test_cli_does_not_print_a_refusal_that_is_not_a_namespace_category(monkeypatch, capsys):
@@ -359,9 +400,13 @@ def test_filter_returns_isolated_only_for_a_complete_isolated_result():
     "result",
     [
         "not a mapping",
-        {"rc": 1, "stdout": ISOLATED},
         {"rc": "0", "stdout": ISOLATED},
+        {"rc": "1", "stdout": ""},
+        {"rc": 1.0, "stdout": ""},
+        {"rc": None, "stdout": ""},
         {"rc": True, "stdout": ISOLATED},
+        {"rc": True, "stdout": ""},
+        {"rc": 2, "stdout": "{not json"},
         {"rc": 0, "stdout": None},
         {"rc": 0, "stdout": "{not json"},
         {"rc": 0, "stdout": ISOLATED.replace('"provider":', '"provider": "x", "provider":')},
@@ -379,6 +424,13 @@ def test_filter_returns_isolated_only_for_a_complete_isolated_result():
 )
 def test_filter_collapses_anything_else_to_the_generic_category(result):
     assert BUDGET.o11y_availability_namespace_diagnostic(result) == "namespace_unverified"
+
+
+@pytest.mark.parametrize("rc", [1, 3, 127, -9])
+def test_filter_names_a_helper_that_exited_before_printing(rc):
+    # An int exit code outside {0, 2} means the helper died before its own refusal handling ran.
+    assert BUDGET.o11y_availability_namespace_diagnostic({"rc": rc, "stdout": ""}) == "namespace_helper_failed"
+    assert BUDGET.o11y_availability_namespace_diagnostic({"rc": rc, "stdout": ISOLATED}) == "namespace_helper_failed"
 
 
 def test_filter_never_returns_protected_text():
@@ -511,7 +563,7 @@ def test_readmes_document_the_survey_and_the_fixed_categories():
     assert "survey-o11y-availability-gate.yml" in playbook_readme
     o11y = O11Y_README.read_text(encoding="utf-8")
     assert "Survey o11y Availability Gate (Dev)" in o11y
-    for category in CATEGORIES:
+    for category in CATEGORIES + ["namespace_helper_failed"]:
         assert category in o11y, category
 
 

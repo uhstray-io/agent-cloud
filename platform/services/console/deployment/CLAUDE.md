@@ -4,7 +4,7 @@ The Dispatch Console: a Rust/Dioxus app (source in `../app` in the agent-cloud r
 
 ## What this deploy does
 
-Composable pattern, copied from `deploy-tududi.yml`:
+Composable pattern, first copied from the since-retired `deploy-tududi.yml`; `deploy-honcho.yml` follows the same shape:
 
 ```text
 Semaphore "Deploy console" (or "Deploy console (Local)")
@@ -372,7 +372,7 @@ The `Containerfile` is part of this change. It sits next to this file and builds
 
 ## Related
 
-- Model: [`../../../playbooks/deploy-tududi.yml`](../../../playbooks/deploy-tududi.yml). Playbook: [`../../../playbooks/deploy-console.yml`](../../../playbooks/deploy-console.yml), [`../../../playbooks/clean-deploy-console.yml`](../../../playbooks/clean-deploy-console.yml)
+- Model: [`../../../playbooks/deploy-honcho.yml`](../../../playbooks/deploy-honcho.yml) (the original model, `deploy-tududi.yml`, was retired 2026-11-09). Playbook: [`../../../playbooks/deploy-console.yml`](../../../playbooks/deploy-console.yml), [`../../../playbooks/clean-deploy-console.yml`](../../../playbooks/clean-deploy-console.yml)
 - Plan: [`../../../../plan/development/17-dispatch-console.md`](../../../../plan/development/17-dispatch-console.md)
 - Onboarding checklist: [`../../../../plan/architecture/02-service-onboarding.md`](../../../../plan/architecture/02-service-onboarding.md)
 - Root conventions: [`../../../../AGENTS.md`](../../../../AGENTS.md)

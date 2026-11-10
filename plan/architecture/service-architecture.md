@@ -100,7 +100,6 @@ flowchart TD
     subgraph APPS["Business and operator applications"]
         CONSOLE["Dispatch Console (production build and start recorded;<br/>deploy failed its health check)"]
         HONCHO["honcho memory API (LIVE)"]
-        TUDUDI["tududi (retired 2026-10-23)"]
         PLANE["Plane (production deploy run recorded, task 11139;<br/>live state UNVERIFIED)"]
         POSTIZ["Postiz (LIVE-LOCAL)"]
         ERP["ERPNext (BUILT)"]
@@ -121,7 +120,6 @@ flowchart TD
     AGENTS ~~~ SIDE
     CONSOLE ~~~ PLANE
     HONCHO ~~~ POSTIZ
-    TUDUDI ~~~ ERP
     UHH ~~~ OH
     CADDY ~~~ NB
     CA ~~~ O11Y
@@ -159,7 +157,7 @@ the service; the network path itself is in the companion document. The runtime c
 | Launch gate | Only identity that asks Semaphore to launch an agent's task: authenticates the caller, checks the agent and template allowlist, asks OPA, then launches | Guardrail | Podman (deploy playbooks and templates) | Caller bearer token; agent and template checks | LIVE in production since 2026-11-09; no skynet-initiated launch recorded [48] | `launch-gate/deployment/CLAUDE.md` |
 | plane-mcp | Plane's MCP server for harnesses | Auxiliary | Podman, own compose project beside Plane | API-key endpoint for service identities; OAuth endpoint for people | BUILT; production edge not in place [49] | `plane-mcp/deployment/CLAUDE.md` |
 | honcho | Memory API for team memory | Auxiliary | Rootless podman, 4 containers | JWT on `/v3`; Authentik forward_auth on `/docs` | LIVE [22] | `honcho/deployment/CLAUDE.md` |
-| tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | Retired 2026-10-23; replaced by Plane [23] | `tududi/deployment/CLAUDE.md` |
+| tududi | To-do tracker | Auxiliary | Rootless podman | Native OIDC | RETIRED 2026-11-09: torn down; replaced by Plane [23] | `plan/development/16-plane-work-management.md` |
 | Plane | Work tracker replacing tududi | Auxiliary | Podman (production placement unverified) | Authentik OIDC (blueprint and catalog entry in repo) | Production deploy run recorded (task 11139); live state UNVERIFIED [23][52] | `plan/development/16-plane-work-management.md` |
 | Postiz | Social publishing | Auxiliary | Rootless podman, 5 containers + search node | Native OIDC; public API path keyed by the app | LIVE-LOCAL; production host hardened, app pending [24] | `postiz/deployment/CLAUDE.md` |
 | OpenHands | Agent canvas | Auxiliary | Docker (host socket for session containers) | Authentik forward_auth | LIVE [25] | `openhands/context/architecture.md` |
@@ -195,7 +193,6 @@ flowchart LR
             M3["ERPNext"]
             M4["Postiz"]
             M5["Dispatch Console"]
-            M6["tududi (retiring, teardown unverified)"]
         end
         subgraph FA_M["forward_auth (Caddy outpost gate)"]
             F1["n8n"]
@@ -257,7 +254,6 @@ flowchart LR
     AK -->|"client secret"| CON["console"]
     AK -->|"client secret"| ERP["erpnext"]
     AK -->|"client secret"| PZR["postiz"]
-    AK -.->|"retired app client; current use unverified"| TD["tududi"]
     AK -->|"client secret"| AGWR["agentgateway"]
     AGWS -->|"probe identity key"| O11Y
     AGWS -->|"six role keys"| SKYR["skynet"]
@@ -487,7 +483,7 @@ stateDiagram-v2
         Plane deploy recorded; live state UNVERIFIED
     end note
     note right of Retiring
-        NocoDB (since 2026-09-01), tududi (retired 2026-10-23; teardown unverified)
+        NocoDB (since 2026-09-01), tududi (retired 2026-11-09)
     end note
 ```
 
@@ -538,7 +534,7 @@ above. Each has an owner and the acceptance criterion that moves its status.
 
 **Owner:** plan 16 and OpenSpec `deploy-plane-work-management` [23].
 **Acceptance:** Plane LIVE with Authentik OIDC and native GitHub sync; tududi and its n8n sync torn
-down; tududi's row removed.
+down (tududi: done 2026-11-09); tududi's row marked retired.
 
 ### Phase B: the console in production
 
@@ -631,7 +627,7 @@ the newer fact and its date.
 
 | Older statement | Newer fact | Date and source |
 |---|---|---|
-| tududi listed as a deployed production service (AGENTS.md, Completed) | Retired by decision on 2026-10-23; teardown and current runtime unverified; Plane replaces it [23] | 2026-10-23 |
+| tududi listed as a deployed production service (AGENTS.md, Completed) | Retired by decision on 2026-10-23 and torn down on 2026-11-09 (AGENTS.md, Deployment Status); Plane replaces it [23] | 2026-10-23 |
 | Plane listed as PLANNED with a planned VM | A production deploy run is recorded (task 11139); live state remains UNVERIFIED | [23][52] |
 | Dispatch Console plan "PROPOSED" (plan 17) | Code and deploy templates merged; production build and start recorded, and the first deploy failed its health check | 2026-10-26 [21] |
 | WisBot's `/wisllm` depends on the WisAI endpoint | The WisAI plane was never built; skynet supersedes it | 2026-06-23 [29][41] |
@@ -692,7 +688,7 @@ document; for long, frequently edited documents the section name is given as wel
 35. `plan/development/openspec/changes/inference-gateway-agentgateway/design.md:183-191` (the forward-auth gate corrected to native OIDC)
 36. `plan/architecture/05-platform-infra.md:352-394` (MCP endpoint and the one admin list)
 37. `platform/services/openbao/deployment/config/policies/nemoclaw-read.hcl:3-6`; `platform/services/openbao/deployment/config/policies/semaphore-read.hcl:8-10`
-38. `platform/playbooks/deploy-tududi.yml:1-157`
+38. `platform/playbooks/deploy-honcho.yml:1-198`
 39. Retired 2026-11-07: the tududi GitHub sync contract (file deleted with the sync).
 40. `plan/development/15-service-deployment-workflow-agents.md:40-180` (Decisions, Design principles, Architecture, Workflow table)
 41. `plan/development/06-inference-skynet.md:1-30` and `:236-300`
@@ -700,7 +696,7 @@ document; for long, frequently edited documents the section name is given as wel
 43. `AGENTS.md`, Deployment Status, "Service boot persistence and health (prod, 2026-09-26)"
 44. `plan/architecture/05-platform-infra.md:292-351` (Inference gateway: agentgateway alongside skynet; accepted 2026-10-12)
 45. `plan/development/17-dispatch-console.md:30-60` (Decisions D1 to D21)
-46. `platform/playbooks/deploy-{honcho,o11y,skynet,agentgateway,console,postiz,tududi,erpnext}.yml`, each playbook's `_shared_reads`; `platform/playbooks/provision-n8n-postiz-credential.yml`
+46. `platform/playbooks/deploy-{honcho,o11y,skynet,agentgateway,console,postiz,erpnext}.yml`, each playbook's `_shared_reads` (`deploy-tududi.yml` retired 2026-11-09); `platform/playbooks/provision-n8n-postiz-credential.yml`
 47. `platform/services/opa/deployment/policies/agentcloud/data.json:71-160` (infra-, security-, o11y-, service- and network-agent identities)
 48. `platform/services/launch-gate/deployment/CLAUDE.md:1-12` (status and the gate's request path); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
 49. `platform/services/plane-mcp/deployment/CLAUDE.md:104` ("Production edge (not yet in place)"); `AGENTS.md`, Sub-directory Documentation (plane-mcp row)

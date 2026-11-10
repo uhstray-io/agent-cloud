@@ -116,7 +116,7 @@ agent-cloud/
   platform/
     services/             Per-service: deployment/ + context/ + templates/
       openbao/            Secrets backbone (AppRole, KV v2, policies)
-      nocodb/             Retired; pending decommission
+      nocodb/             Retired (replaced by tududi, itself retired 2026-11-09); kept until its decommission
       n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
@@ -128,7 +128,7 @@ agent-cloud/
       inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
       inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
       uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
-      tududi/             Retired to-do app (replaced by Plane)
+      tududi/             Retired 2026-11-09 (was the to-do app; Plane replaces it)
       honcho/             Memory API (api + deriver + pgvector + redis)
       o11y/               Live production observability: Grafana + Prometheus + Loki + Alloy
       postiz/             Social publishing (app + Temporal workflow engine)
@@ -226,7 +226,7 @@ Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIP
 | `plan/architecture/05-platform-infra.md` | Caddy reverse proxy (TLS/DNS-01, routing), container runtime, platform infra |
 | `plan/architecture/06-observability-instrumentation.md` | Observability-by-declaration model (metrics/logs/traces) |
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
-| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi/honcho, RBAC, Cloudflare IaC, Postiz |
+| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi (retired 2026-11-09) and honcho, RBAC, Cloudflare IaC, Postiz |
 | `plan/archive/development/IMPLEMENTATION_PLAN.md` | Original full implementation plan (archived; phases, architecture, decisions) |
 
 For new services, start with `plan/architecture/02-service-onboarding.md`. For new features, create an implementation plan in `plan/development/` before coding begins.

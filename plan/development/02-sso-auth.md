@@ -453,7 +453,7 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
    Semaphore prod OIDC with `semaphore-upgrade.sh apply` (operator-side;
    snapshot+validate → env-override → restart → verify → auto-rollback);
    verify SSO login (local admin fallback intact). Gate. **DONE.**
-3. **tududi (native OIDC)** (retired as work tracker 2026-10-23) **+ honcho (`/docs` forward_auth)** promoted to prod
+3. **tududi (native OIDC)** (retired as work tracker 2026-10-23; torn down 2026-11-09) **+ honcho (`/docs` forward_auth)** promoted to prod
    (`todo.uhstray.io` / `memory.uhstray.io`), guarded by the assert+verify.
    Named platform users (`wisward` admin, `andrew.godlewsky` developer+business).
    **DONE.**

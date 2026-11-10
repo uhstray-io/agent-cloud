@@ -96,6 +96,7 @@ and why.
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
+| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) | Wrong-reason pass | 1 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category); class Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -182,7 +183,7 @@ and why.
 | 10.14 | A source-address allowlist was proven only where it could not fail, then failed closed in prod | Test that cannot fail | 1 | Convention |
 | 10.15 | Reboot survival was asserted for podman containers and never exercised; the boot unit starts only `restart: always`, and its rootless half was never enabled — OpenBao sat down three days | Mechanism never exercised | 1 | Test (restart policy + boot unit, mutation-proven) |
 | 10.16 | The agentgateway deploy was proven only on ansible-core 2.16, which hid a list-concatenation failure on 2.19+ | Test that cannot fail | 1 | Test (real evaluation, current ansible-core) |
-| 10.17 | A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) (widened by 10.32) — **x2** — **x3** (2026-11-09: deploy-console.yml's verify play read a flag defined only in Phase 1's `vars:`, so console deploys after #934 would fail; found by check-mode task 14234) | Mechanism never exercised | 3 | Test (`test_manage_secrets_scope.py`, `test_play_vars_scope.py`) |
+| 10.17 | A task read `secrets`, which exists only inside manage-secrets' template task: the agentgateway key guard (task 1177) and the step-ca issuer add (task 1971) (widened by 10.32) — **x2** — **x3** (2026-11-09: deploy-console.yml's verify play read a flag defined only in Phase 1's `vars:`, so console deploys after #934 would fail; found by check-mode task 14234) — **x4** (2026-11-09: the console deploy's launch-gate probe sent a bodiless POST, which the gate answers 400 before authenticating, so it could never get its 401; production task 14248) | Mechanism never exercised | 4 | Test (`test_manage_secrets_scope.py`, `test_play_vars_scope.py`, `test_console_gate_probe.py`) |
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
@@ -2521,6 +2522,40 @@ it spans the alphabet), next to where it is built. Seed a generator once and dra
 
 **Enforced by.** Test: the module asserts `set(_RANDOM_BASE64) == set(_BASE64)` at import, and restoring the
 per-character seed fails collection (mutation-checked). The class rule stays `Convention`.
+
+### 2.36 A test stubbed the one OS read whose permission decided the outcome (widens 2.22)
+
+**What happened.** The o11y availability namespace gate compares the Alloy container's network namespace with
+the host's. It read the host's from `os.stat("/proc/1/ns/net")` (`summarize-o11y-scrape-baseline.py`,
+`_availability_runtime_pass`). The namespace tests replaced `os.stat` with a stub that answered that exact path
+(`test_o11y_availability_namespace_survey.py`), so every test passed. In production the helper runs as the
+unprivileged deploy user of a rootless podman receiver (`become: false`). For that user the stat raises
+`PermissionError` (errno 13), because reading another user's `/proc/<pid>/ns/*` needs ptrace access to that
+process, here init. The error was not a refusal, so the command line's catch-all printed the generic
+`namespace_unverified`. The read-only survey on 2026-11-09 (Semaphore task 14237) printed exactly that. The
+enabled-mode deploy dry runs of 2026-11-08 had also stopped at this gate with the same word, which had been put
+down to a suspected first-enable deadlock (recorded as unverified); that they hit this same read is inferred,
+not established. Reproduced on 2026-11-09 on a local Linux VM: as `nobody`,
+`/proc/self/ns/net` stats and `/proc/1/ns/net` raises errno 13. Production confirmation is the next survey run
+after the fix.
+
+**Root cause.** The stub replaced the first call whose result depended on who runs the helper, and it failed
+before any other such call ran. With the read stubbed, the tests checked the comparison logic while the
+production identity's access was never exercised. The per-container `/proc/<pid>` reads that follow it also
+depend on the caller's identity and are still stubbed in these tests; a local rootless run read them for the
+user's own containers, and the production survey after this fix is their first production run.
+Separately, the catch-all printed the same word as a real refusal, so a crash and a refusal looked identical
+from outside.
+
+**The rule.** When a test stubs an OS read (a `/proc` or `/sys` path, a file mode, a syscall), the stub must
+also refuse the paths that the production identity cannot read. Prefer reading only what that identity can
+read: here the helper's own namespace, `/proc/self/ns/net`, which under rootless podman is the namespace that
+`network_mode: host` would join. An unexpected exception gets its own fixed category, never the word a real
+refusal uses.
+
+**Enforced by.** Test (`test_o11y_availability_namespace_survey.py`: the stub refuses `/proc/1/ns/net` with
+errno 13 and the runtime pass must stat `/proc/self/ns/net`; the catch-all must print
+`namespace_internal_error`). Mutation-checked. The class-wide rule for other stubbed OS reads: Convention.
 
 ## 3. Acting on live state
 
@@ -5421,7 +5456,7 @@ general case.
 
 ### 10.17 A guard that could never pass in production, tested only where it is switched off
 
-**Occurrences: 3** — 2026-09-23, 2026-09-29, 2026-11-09
+**Occurrences: 4** — 2026-09-23, 2026-09-29, 2026-11-09, 2026-11-09
 
 **What happened.** `deploy-agentgateway.yml` refuses to deploy when the upstream key is empty,
 unless `agw_upstream_requires_key: false`. It read `secrets.vllm_api_key`. `manage-secrets.yml`
@@ -5475,6 +5510,8 @@ already names it.
 execution environment production's templates do not run in.
 
 **Occurrence 3 — 2026-11-09.** Agent-cloud PR #934 (Dispatch Console Phase 4) gave `deploy-console.yml` an optional launch-gate wiring. The flag `_console_launch_gate_declared` was defined in Phase 1's play `vars:`, and the verify play (Phase 3) read it in three `when:` conditions. A play's `vars:` do not reach the next play, so Phase 3 failed with "'_console_launch_gate_declared' is undefined" whether or not the gate was declared: every console deploy after #934 would fail at its verify. The first production run found it in check mode (Semaphore task 14234), before any real change. The PR's tests checked the playbook's structure and rendered its templates, and none evaluated Phase 3's conditions; its review and the two reviews of its fixes read the code and did not catch the scope either. Why the rule did not fire: the existing guard only covers `secrets`, the one name it was written for, so a fact read across plays under any other name was still carried by memory. **Enforced by** now includes `platform/tests/test_play_vars_scope.py`: in every playbook, an internal name one play defines in its `vars:` may be read by another play only when that play defines it too, or when the file sets it as a host fact (`set_fact`, `register`, `add_host`). It found this case and none other; `configure-host-network.yml` passes its value through `add_host`, which carries.
+
+**Occurrence 4 — 2026-11-09.** The same PR (#934) gave the console deploy a verify probe meant to prove the console reaches the launch gate: `curl --request POST` to `/v1/launch` with no token, expecting 401. It sent no body, and the gate answers a POST without `Content-Length` with 400 before it authenticates (`platform/services/launch-gate/deployment/app/launch_gate.py:1111-1114`), so the probe could never pass. Its tests rendered the probe's argv and checked its shape; none sent it to a gate. My brief said to mirror skynet's probe, which runs a Python request that carries a body; the worker moved it to curl from the host, because the console image is distroless, and the shape-only tests could not see the difference. Found by the first production run with the gate declared, Semaphore task 14248, after the container had already been redeployed; the console itself worked, and the Phase 4 production proof (task 14252) passed through the same gate. Why the rule did not fire: the guard added at occurrence 3 checks variable scope, and nothing ran the probe's request against the service it probes. **Enforced by** now includes `platform/tests/test_console_gate_probe.py`, which renders the probe's argv from the playbook and runs it with curl against a live gate server over TLS: 401 with the body, 400 without it.
 
 ### 10.18 Dry runs of five production playbooks could never pass; nothing had ever run them
 

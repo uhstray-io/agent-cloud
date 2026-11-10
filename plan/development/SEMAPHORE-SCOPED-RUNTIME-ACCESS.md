@@ -63,7 +63,7 @@ visibility proof, validate dev-test and then agent-cloud with actual provider
 records before enabling any remaining intended pair. Persist separate dev-test
 and agent-cloud results with retained Semaphore task IDs, provider comparisons,
 instance/pair identity and exact relevant revisions, as specified in the
-[release gate prerequisite](openspec/changes/integrate-tududi-github-issue-sync/release-preparation.md#persisted-canary-gate-prerequisite-not-yet-implemented).
+[release gate prerequisite](openspec/changes/archive/2026-11-09-integrate-tududi-github-issue-sync/release-preparation.md#persisted-canary-gate-prerequisite-not-yet-implemented).
 Before expanding beyond dev-test, implement and review provisioning refusal:
 agent-cloud requires a valid dev-test pass; every later pair requires both passes.
 Missing, failed or stale evidence must reject activation before engine writes,
@@ -108,4 +108,4 @@ entry point is separate from runtime authentication health.
 
 - [Engineering standards](../../AGENTS.md)
 - [Credentials and access](../architecture/04-credentials-access.md)
-- [Tududi release gates](openspec/changes/integrate-tududi-github-issue-sync/release-preparation.md)
+- [Tududi release gates](openspec/changes/archive/2026-11-09-integrate-tududi-github-issue-sync/release-preparation.md)

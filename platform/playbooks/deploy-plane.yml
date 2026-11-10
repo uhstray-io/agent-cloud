@@ -13,6 +13,8 @@
 #          because until the first admin signs up anyone who reaches /god-mode/ claims it.
 # Phase 3b: Get or create the workspace service token (service_token.py) and store it in
 #          OpenBao, so sync-plane-projects.yml only ever reads it.
+# Phase 3c: Activate the Pro licence from OpenBao (activate_license.py), as the workspace owner;
+#          skipped when no key is stored, and a no-op once the plan reads as licensed.
 # Phase 4: Verify through the proxy, then record the service-deploy step result.
 #
 # Plan: plan/development/16-plane-work-management.md
@@ -103,6 +105,9 @@
       - { name: plane_machine_signature, type: random, length: 32 }
       # The first instance admin, used only by this playbook's configuration phase.
       - { name: plane_automation_password, type: random, length: 32 }
+      # Operator-owned: the Pro licence, seeded by Seed OpenBao Key and never generated here.
+      # Phase 3c activates it; absent, the workspace stays on its current plan.
+      - { name: plane_license_key, type: existing }
     # The OIDC client secret is owned by authentik (blueprints/plane-oidc.yaml injects it from
     # the worker's env). Read it read-only, and only when sign-in through Authentik is configured
     # (plane_authentik_base), so a host without OIDC never depends on Deploy Authentik having
@@ -366,6 +371,85 @@
         - name: "Report"
           ansible.builtin.debug:
             msg: "workspace service token {{ 'minted' if _plane_token_summary.created else 'already present in Plane' }}; stored in OpenBao (value never shown)"
+
+# ── Phase 3c: Licence ───────────────────────────────────────────────────────
+# Plane gates the Admin role, IdP group sync and the GitHub integration behind the licence. The
+# key is the operator's (Seed OpenBao Key -> secret/services/plane:plane_license_key); activating
+# it needs billing-manage (owner or Admin, and Admin needs the licence), so the automation account,
+# the workspace's owner, activates it and no person needs Admin first.
+- name: "Phase 3c: Licence"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _plane_license_key: "{{ _resolved.plane_license_key | default('') }}"
+
+  tasks:
+    - name: "No licence key stored: report"
+      ansible.builtin.debug:
+        msg: "no licence key at secret/services/plane:plane_license_key; the workspace stays on its current plan"
+      when: _plane_license_key | length == 0
+
+    # Even the plan read writes (Plane resyncs its licence row), so check mode only reports.
+    - name: "Dry run: report what would be checked"
+      ansible.builtin.debug:
+        msg: "would activate the stored licence unless the workspace plan reads {{ plane_license_plan | default('PRO') }}"
+      when:
+        - ansible_check_mode
+        - _plane_license_key | length > 0
+
+    - name: "Activate the licence (skipped in check mode: it writes)"
+      when:
+        - not ansible_check_mode
+        - _plane_license_key | length > 0
+      block:
+        # Credential task: the key and the admin password go to the script on stdin.
+        - name: "Activate the licence unless the plan already reads as licensed (inside plane-api)"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - -i
+              - plane-api
+              - python
+              - -c
+              - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/plane_session.py') ~ '\n' ~ lookup('file', playbook_dir ~ '/../services/plane/deployment/activate_license.py') }}"
+            stdin: >-
+              {{ {'base': 'http://localhost:8000',
+                  'host': plane_public_url | urlsplit('hostname'),
+                  'origin': plane_public_url,
+                  'email': plane_automation_email,
+                  'password': _resolved.plane_automation_password,
+                  'workspace_slug': plane_workspace_slug,
+                  'license_key': _plane_license_key,
+                  'plan': plane_license_plan | default('PRO')} | to_json }}
+          register: _plane_license_run
+          changed_when: false  # reported from the summary below
+          failed_when: false
+          no_log: true
+
+        # The script prints one JSON line, {"changed", "product"} or {"error"}, never a credential.
+        - name: "Keep only the licence summary"
+          ansible.builtin.set_fact:
+            _plane_license_summary: >-
+              {%- set last = _plane_license_run.stdout_lines | default([''], true) | last -%}
+              {%- set d = (last | from_json) if last.startswith('{') else {'error': 'the licence script printed no summary (exit ' ~ _plane_license_run.rc ~ ')'} -%}
+              {{ {'error': d.error} if d.error is defined else {'changed': d.changed | default(false), 'product': d.product | default('')} }}
+          no_log: true
+
+        - name: "Licence active"
+          ansible.builtin.assert:
+            that:
+              - _plane_license_run.rc == 0
+              - _plane_license_summary.error is not defined
+            fail_msg: "plane licence: {{ _plane_license_summary.error | default('exit ' ~ _plane_license_run.rc) }}"
+            quiet: true
+
+        - name: "Report"
+          ansible.builtin.debug:
+            msg: "workspace plan {{ _plane_license_summary.product }} ({{ 'activated now' if _plane_license_summary.changed else 'already active' }})"
+          changed_when: _plane_license_summary.changed
 
 # ── Phase 4: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 4: Verify plane"
