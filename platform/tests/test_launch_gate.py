@@ -432,14 +432,14 @@ def test_parse_minimal_request_fills_defaults(cfg):
 def test_parse_full_request():
     body = _raw(
         _doc(
-            survey={"service_name": "tududi", "branch": "dev"},
+            survey={"service_name": "honcho", "branch": "dev"},
             dry_run=True,
             proposal={"hosts": 1},
             context={"groups": ["platform-admins"]},
         )
     )
     req = lg.parse_request(body)
-    assert req.survey == {"service_name": "tududi", "branch": "dev"}
+    assert req.survey == {"service_name": "honcho", "branch": "dev"}
     assert req.dry_run is True
     assert req.proposal == {"hosts": 1}
     assert req.context == {"groups": ["platform-admins"]}

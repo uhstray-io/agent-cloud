@@ -14,7 +14,7 @@ change `skynet-launch-containment`):
 
 ```text
 POST http://opa:8181/v1/data/agentcloud/decision
-{ "input": { "agent": "nemoclaw", "action": "read", "service": "nocodb",
+{ "input": { "agent": "infra-agent", "action": "read", "service": "netbox",
              "template_name": "...", "human_approved": false } }
 ->
 { "result": { "allowed": true, "agent": "...", "service": "...",
@@ -63,7 +63,7 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
 
 - Reached by agents + the control plane as `opa:8181` on the `local-dev`
   network; published to `127.0.0.1:8281` for host diagnostics + smoke checks
-  (8181 is NocoDB's local bind, so the host port defaults to `OPA_PORT=8281`).
+  (the host port defaults to `OPA_PORT=8281`).
 - **No OPA credentials.** The listener has no login: it is internal-only, returns decisions
   not secrets, and the authorization policy limits every caller to the decision POST and
   `/health` (the same as production). Phase 2 adds per-agent bearer tokens (OpenBao). Phase 3
@@ -78,7 +78,7 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
   network still reach `opa:8181` directly.
 - **Intentionally excluded from Authentik SSO.** OPA is a machine API, not a
   human-login surface — there is no forward_auth/OIDC gate (unlike NetBox/
-  OpenBao/n8n which are browser-facing). Authorization for OPA is per-agent
+  OpenBao, which are browser-facing). Authorization for OPA is per-agent
   bearer tokens from OpenBao (Phase 2), not an IdP login. Documented here so the
   "no SSO" state reads as a decision, not an oversight (AUTH-SSO-DEPLOYMENT.md).
 
@@ -107,8 +107,7 @@ agent, `run_task` is denied when the template is not its own, when the branch is
 reasoning-step `proposal` fails a content rule: a firewall proposal must keep SSH from
 `context.controller_cidr` and allow SSH only from `context.ssh_cidrs`; a service proposal may
 not name a destructive template and must fit `context.tier_bounds`. Missing context fails
-closed. `reason` lists every denial, joined with `; `. `netclaw` and `nemoclaw` are frozen:
-kept, unchanged, not workflow agents.
+closed. `reason` lists every denial, joined with `; `.
 
 ### Ledger rules (`docs/MISTAKES.md` §7)
 
