@@ -882,6 +882,9 @@ ALLOWLIST = "contains a character outside the allowed set"
         ("see other-org/repo#1 too", ALLOWLIST),  # a cross-repository reference
         ("see GH-9999 now", "contains a GH- reference"),  # GH-N links to a pull request even without a hash sign
         ("gh-1 fixed", "contains a GH- reference"),  # in any letter case
+        ("Fixes _GH-12_ today.", "contains a GH- reference"),  # \b misses it: _ is a word character
+        ("Fixes __GH-15__ today.", "contains a GH- reference"),
+        ("Fixes \u00e9GH-19 today.", "contains a GH- reference"),  # a non-ASCII letter before GH
     ],
 )
 def test_model_text_outside_the_allowlist_is_dropped_under_the_rule_it_breaks(tmp_path, bad, rule):
@@ -1229,6 +1232,8 @@ def test_a_highlight_whose_text_breaks_a_rule_is_dropped_and_the_rest_kept(tmp_p
         ("Closes #9999.", ALLOWLIST),
         ("gh-1 fixed", "contains a GH- reference"),
         ("Closes GH-9999.", "contains a GH- reference"),
+        ("Fixes _GH-12_.", "contains a GH- reference"),
+        ("Fixes \u00e9GH-19.", "contains a GH- reference"),
     ],
 )
 def test_a_highlight_outside_the_allowlist_is_dropped_and_the_rest_kept(tmp_path, text, rule):

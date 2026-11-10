@@ -373,7 +373,9 @@ def _unsafe_text_problem(text):
     """The rule model text breaks: www. in any case, a GH- reference, or a character outside SAFE_TEXT. None if none."""
     if "www." in text.casefold():
         return "contains 'www.'"
-    if re.search(r"(?i)\bgh-\d", text):  # \b: High-5 is not a reference, GH-9999 and gh-1 are
+    # An ASCII lookbehind, not \b: Python counts _, é and Α as word characters, so \b misses _GH-1_ and éGH-1, which
+    # GitHub still links. High-5 is not a reference; x_GH-13 is refused too, which only drops a summary.
+    if re.search(r"(?i)(?<![a-z0-9])gh-\d", text):
         return "contains a GH- reference"
     if SAFE_TEXT.fullmatch(text) is None:
         return "contains a character outside the allowed set"
