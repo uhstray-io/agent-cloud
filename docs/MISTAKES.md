@@ -187,7 +187,7 @@ and why.
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
-| 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
+| 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | CI (`ruleset-drift.yml`, daily live-vs-JSON check; `bypass_actors` not compared without a read token) |
 | 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
@@ -5662,6 +5662,13 @@ back and matches it. A claim of enforcement cites that read, not the file.
 
 **Enforced by.** Convention. Proposed: a scheduled CI job that reads the live ruleset with a
 read-only token (`gh api`) and fails when it differs from `protect-main.json`.
+
+**Status 2026-11-09.** The proposed job exists: `.github/workflows/ruleset-drift.yml` (commits
+`b20b5746c` and `088405c8c`, 2026-10-03) runs `.github/rulesets/check-drift.sh` daily and
+fails when any live ruleset differs from its JSON in `.github/rulesets/`. Run 42574182015
+(2026-11-09, `main`) passed: `protect-main` and `protect-dev` both match. Limit: the repository
+has no `RULESET_READ_TOKEN` secret, so the job uses `GITHUB_TOKEN`, which is not shown
+`bypass_actors`; that field is reported as not compared, not checked. The Index now reads CI.
 
 ### 10.22 A renamed dashboard panel reached production with the verify still naming the old title
 
