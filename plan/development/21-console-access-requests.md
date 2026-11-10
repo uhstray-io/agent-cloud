@@ -14,7 +14,7 @@ call. No code has been written. Before coding starts, the plan becomes an OpenSp
 ## Goal
 
 Platform admins add and remove people from Plane, and from the platform services generally, through
-`console.uhstray.io`. Any signed-in user can ask for access there. A new skynet role, `iam-agent`,
+the Dispatch Console. Any signed-in user can ask for access there. A new skynet role, `iam-agent`,
 turns a request into a reviewed change. A human approves every change, and automation applies it.
 
 ## Where things stand (verified 2026-11-09)
