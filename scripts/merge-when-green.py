@@ -23,6 +23,7 @@ RUNS_PARTITIONED_WORKFLOW_BLOB_SHA = "466828e11b7bf29958d7de7a505dad908ae8b3cd"
 PI_MOVED_WORKFLOW_BLOB_SHA = "15a15a96bad6b35ee53d36ac7a37deea9cf298d0"
 RUFF_PINNED_WORKFLOW_BLOB_SHA = "98e7aca96851979464f36bffc48444eba93d39f0"
 VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
+UV_WORKFLOW_BLOB_SHA = "ca6330b3a2f12f3a3c08c45f901df406021045de"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
     "Python Playbook Safety", "Python Agentgateway",
@@ -448,11 +449,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Ruff-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == VERSIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == UV_WORKFLOW_BLOB_SHA:
+            # Same job set as versioned: the Python jobs install the uv lock instead of pip.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, versioned=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != VERSIONED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed versioned workflow")
         check_workflow_policy(base, versioned=True)
         if base != candidate or workflow_records:
             raise Refusal("Versioned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == UV_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != UV_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed uv workflow")
+        check_workflow_policy(base, versioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("uv workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 

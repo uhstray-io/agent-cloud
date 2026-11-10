@@ -108,20 +108,17 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 
 ```bash
 # macOS
-pip install ruff ansible-lint yamllint bandit
+brew install uv              # Python dependencies and tools are managed with uv
+uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
 brew install shellcheck bats-core hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
 
-# Python 3.12 (required for tests)
-brew install python@3.12
-# The test suites' dependencies, declared once and installed by CI from the same file.
-# It includes pytest-xdist, which the pre-push hook uses to run the suite in parallel.
-pip3.12 install -r platform/requirements-test.txt
-
-# Controller packages — cryptography is needed by the BATS suite, which signs a real
-# GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
-# with a reason rather than failing, but they are then not verifying anything.
-pip3.12 install -r platform/requirements-controller.txt
+# The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
+# `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,
+# exactly as CI does; the pre-push hook runs the same command itself. The `controller`
+# group's cryptography is needed by the BATS suite, which signs a real GitHub App
+# assertion with a throwaway key; without it those tests SKIP rather than verify.
+uv sync --locked
 
 # The complete BATS suite also requires a usable existing Podman or Docker engine
 # for its native PromQL test; do not start a daemon or VM just for the test.

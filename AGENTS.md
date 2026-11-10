@@ -753,7 +753,13 @@ Ansible collections (auto-installed from `collections/requirements.yml`):
 - `community.hashi_vault` — OpenBao/Vault lookups
 - `ansible.posix` — `authorized_key` module
 
-Controller Python packages (`platform/requirements-controller.txt`) — used only by
+Python dependencies are managed with **uv**: declared as dependency groups in
+`pyproject.toml` (`test`, `controller`), resolved into the committed `uv.lock`, and
+installed with `uv sync --locked` by CI and the pre-push hook (`.python-version` pins 3.12).
+Change a group, then run `uv lock` and commit both files. Never `pip install` into a system
+interpreter for this repo.
+
+Controller Python packages (the `controller` group in `pyproject.toml`) — used only by
 playbooks running on localhost, never installed on a service VM:
 - `cryptography` — RS256 signing for the GitHub App credential chain
   (`platform/lib/github_app_token.py`). Declared because it was previously assumed to

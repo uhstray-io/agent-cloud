@@ -31,17 +31,18 @@
 # deliberate — a hook that tests something subtly different from CI teaches people to
 # distrust it.
 #
-# WHAT DOES NOT: local execution, and therefore the result. CI pins Python 3.12 via
-# actions/setup-python and installs the test dependencies; this hook uses whatever
-# `python3` is on the developer's PATH, with whatever is installed there. The pytest
-# command also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing
-# test names on every push is noise people learn to scroll past, and `python3 -m pytest`
-# rather than bare `pytest` so it uses this interpreter's pytest instead of whatever is
+# WHAT DOES NOT: local execution, and therefore the result. CI installs uv.lock with
+# `uv sync --locked` (Python 3.12, from .python-version). When `uv` is on PATH this hook
+# does the same into the checkout's .venv and runs that interpreter, so the versions
+# match CI. Without uv, or when the sync fails, it falls back to whatever `python3` is on
+# the developer's PATH, with a warning that its packages may differ. The pytest command
+# also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing test
+# names on every push is noise people learn to scroll past, and `<python> -m pytest`
+# rather than bare `pytest` so it uses that interpreter's pytest instead of whatever is
 # first on PATH. And pytest may be skipped here entirely when collection fails.
 # Parallelism follows CI (`-n auto --dist worksteal`) only when pytest-xdist is
-# importable; without it the suite runs serially rather than refusing the push, and the
-# hook names platform/requirements-test.txt to install. An installed version other than
-# that file's pin is run anyway, with a warning. Neither way changes which tests run.
+# importable; without it the suite runs serially rather than refusing the push. Neither
+# way changes which tests run.
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
 # evidence they pass in CI, and CI remains the authority. `bats platform/tests/` is the
@@ -235,7 +236,7 @@ fi
 # CI does. Passing an explicit path overrides testpaths, so a suite added to that
 # list ran nowhere — and running nowhere is indistinguishable from passing.
 #
-# Its dependencies (declared once, in platform/requirements-test.txt) are
+# Its dependencies (declared once, in pyproject.toml's dependency groups and uv.lock) are
 # frequently absent locally, so a MISSING DEPENDENCY is a warning rather than a
 # failure: refusing the push because a library is not installed would contradict
 # the fail-open contract above, and the import error would read as a broken test.
@@ -254,53 +255,58 @@ fi
 # to declare it. Syntax errors and invalid config, which are unambiguous defects,
 # now fail. Verified all four cases: clean+deps runs, missing dep skips, a syntax
 # error fails, a bogus import skips with the module named.
+#
+# uv closes that limit. When the hook runs on the locked environment (`uv sync --locked`),
+# every declared package is installed, so a missing module is an undeclared or misspelt
+# import — a defect, and the push FAILS. Only the python3 fallback still skips it.
 py_pp=platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
 if [ -f pyproject.toml ]; then
+  py=python3
+  py_locked=0
+  if command -v uv >/dev/null 2>&1 && [ -f uv.lock ]; then
+    # Installs into this checkout's .venv; quiet because an unchanged lock is a no-op.
+    if uv sync --locked --quiet; then
+      py=.venv/bin/python
+      py_locked=1
+    else
+      printf 'pre-push WARNING: `uv sync --locked` failed (stale uv.lock, or no network). Falling back\n' >&2
+      printf '  to python3 on PATH, whose packages may differ from the lock. CI runs `--locked` and\n' >&2
+      printf '  fails on a stale lock: after editing pyproject.toml, run `uv lock` and commit uv.lock.\n' >&2
+    fi
+  else
+    printf 'pre-push WARNING: uv not found, so the Python suite runs on python3 from PATH, whose\n' >&2
+    printf '  packages may differ from uv.lock. Install uv to run the same versions as CI.\n' >&2
+  fi
   # COLLECTION decides whether to run, not `import pytest` — and its OUTPUT decides
   # whether a failure is forgivable. Keeping the output means no dependency list has
   # to be maintained here to drift out of step with what the tests actually import.
-  collect_out=$(PYTHONPATH="$py_pp" python3 -m pytest -q --collect-only 2>&1)
+  collect_out=$(PYTHONPATH="$py_pp" "$py" -m pytest -q --collect-only 2>&1)
   collect_rc=$?
   if [ "$collect_rc" -eq 0 ]; then
     # Parallel when available, as CI runs it (.github/workflows/lint-and-test.yml).
-    # Optional, so a missing pytest-xdist is not a new reason to block a push. The pin
-    # comes from the manifest CI installs, so the two cannot name different versions.
+    # Optional, so a missing pytest-xdist is not a new reason to block a push.
     py_par=""
-    xdist_pin=$(sed -n 's/^pytest-xdist==\([^[:space:]#]*\).*/\1/p' platform/requirements-test.txt 2>/dev/null)
-    xdist_have=$(python3 -c 'import importlib.metadata as m; print(m.version("pytest-xdist"))' 2>/dev/null)
-    # Same warn-only check for ansible-core: the playbook suites behave differently across
-    # cores, and CI pins the version the production runner executes.
-    ansible_pin=$(sed -n 's/^ansible-core==\([^[:space:]#]*\).*/\1/p' platform/requirements-test.txt 2>/dev/null)
-    ansible_have=$(python3 -c 'import importlib.metadata as m; print(m.version("ansible-core"))' 2>/dev/null)
-    if [ -n "$ansible_pin" ] && [ -n "$ansible_have" ] && [ "$ansible_have" != "$ansible_pin" ]; then
-      printf 'pre-push WARNING: ansible-core %s is installed; CI pins %s.\n' "$ansible_have" "$ansible_pin" >&2
-      printf '  Running anyway. To match CI:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
-    fi
-    if [ -n "$xdist_have" ] && python3 -c 'import xdist' >/dev/null 2>&1; then
+    if "$py" -c 'import xdist' >/dev/null 2>&1; then
       py_par="-n auto --dist worksteal"
-      if [ -n "$xdist_pin" ] && [ "$xdist_have" != "$xdist_pin" ]; then
-        printf 'pre-push WARNING: pytest-xdist %s is installed; CI pins %s.\n' "$xdist_have" "$xdist_pin" >&2
-        printf '  Running anyway. To match CI:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
-      fi
     else
       printf 'pre-push: pytest-xdist is not installed, so the Python suite runs serially (slower).\n' >&2
-      printf '  To run it in parallel as CI does:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
     fi
     printf 'pre-push: running Python suite%s...\n' "${py_par:+ in parallel}" >&2
     # shellcheck disable=SC2086 # py_par is deliberately word-split into flags.
-    if ! ( PYTHONPATH="$py_pp" python3 -m pytest -q $py_par ); then
+    if ! ( PYTHONPATH="$py_pp" "$py" -m pytest -q $py_par ); then
       failed=1
     fi
-  elif printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
+  elif [ "$py_locked" = "0" ] && printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
     printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
     printf '%s\n' "$collect_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
     printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
-    printf '          Install the declared set:  python3 -m pip install -r platform/requirements-test.txt\n' >&2
+    printf '          Install uv; the hook then installs the locked set itself.\n' >&2
     printf '          If this names a module the tests legitimately need and it is not\n' >&2
-    printf '          there, DECLARE it in platform/requirements-test.txt before pushing.\n' >&2
+    printf '          there, DECLARE it in a pyproject.toml dependency group and run `uv lock`.\n' >&2
   else
     printf 'pre-push: Python collection FAILED for a reason that is not a missing\n' >&2
-    printf '          dependency — a syntax error, a bad import, or invalid config.\n' >&2
+    printf '          dependency — a syntax error, a bad import, invalid config, or (on the\n' >&2
+    printf '          locked uv environment) an import no dependency group declares.\n' >&2
     printf '          That is a defect, not an environment gap, so this does not skip:\n' >&2
     printf '%s\n' "$collect_out" | tail -15 | sed 's/^/          /' >&2
     failed=1
