@@ -18,7 +18,9 @@ TEMPLATES = REPO / "platform/semaphore/templates.yml"
 PLAYBOOK_PATH = "platform/playbooks/release-version.yml"
 GIT_ENV = {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0"}
 # Names that hold the token, the App credentials, an OpenBao client token, or a response that carries one.
-SECRET_NAME = re.compile(r"\b_rv_(token|app_fields|auth|github_secret|mint|release_get|release_post)\b")
+SECRET_NAME = re.compile(
+    r"\b(_rv_(token|app_fields|auth|github_secret|mint|release_get|release_post)|_bao_(role|secret)_id)\b"
+)
 KEYWORDS = {
     "name",
     "register",
@@ -211,7 +213,7 @@ def test_the_openbao_login_and_secret_read_are_hidden_and_pin_check_mode():
 
 
 def test_the_app_fields_the_exit_code_and_the_token_are_taken_by_hidden_set_facts():
-    for fact in ("_rv_app_fields", "_rv_mint_rc", "_rv_token"):
+    for fact in ("_bao_role_id", "_bao_secret_id", "_rv_app_fields", "_rv_mint_rc", "_rv_token"):
         leaf = _one(lambda lf, f=fact: _sets(lf, f), fact)
         assert leaf["no_log"] is True, fact
     assert "release_app_key" in str(_play()["tasks"]) and "release_app_client_id" in str(_play()["tasks"])
@@ -300,8 +302,9 @@ def test_the_planner_command_is_the_contract_and_the_major_flag_is_added_only_wh
 
 
 def test_the_major_must_be_empty_or_vN_0_0_by_the_assert_that_runs_first():
-    # Task 0 sets the play's values (no network, no write); the major check is the first one that can refuse.
-    first = _play()["tasks"][1]
+    # Tasks 0 and 1 set the play's values and the hidden AppRole credential (no network, no write); the major
+    # check is the first task that can refuse.
+    first = _play()["tasks"][2]
     assert first["ansible.builtin.assert"]["that"] == [
         "_rv_major | length == 0 or _rv_major is match('^v[0-9]+[.]0[.]0$')"
     ]

@@ -214,8 +214,12 @@ def dev_tags(repo, ref):
     """(tag, sha) for each untagged pull request on ref's first-parent chain, oldest first.
 
     Catch-up runs after the newest dev-tagged pull request. When no pull request on the chain
-    carries a dev tag, only ref itself is offered, and only when it is a pull request. Each
-    version is cumulative over the whole chain since the last release. Computes only.
+    carries a dev tag, the answer depends on whether the repository has any dev tag at all.
+    With none (the first run ever), only ref itself is offered, and only when it is a pull
+    request, so the first run does not tag every merge since the last release. With some, the
+    chain simply starts after a release that has no dev tag beyond it yet, so every pull request
+    on it is offered: a run that cuts a main release must not strand the dev merges that landed
+    since. Each version is cumulative over the whole chain since the last release. Computes only.
     """
     base, tag = last_release(repo)
     rev_range = f"{tag}..{ref}" if tag else ref
@@ -226,6 +230,8 @@ def dev_tags(repo, ref):
     newest = next((i for i in reversed(range(len(chain))) if _dev_tagged(repo, chain[i][0])), None)
     if newest is not None:
         pending = list(range(newest + 1, len(chain)))
+    elif any(DEV_RE.match(name) for name in _git(repo, "tag", "--list", "v*-dev.*").stdout.split()):
+        pending = list(range(len(chain)))
     else:
         head = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").stdout.strip()
         pending = [len(chain) - 1] if chain and chain[-1][0] == head else []

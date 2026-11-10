@@ -59,8 +59,6 @@
       ansible.builtin.set_fact:
         # The controller's own OpenBao address, from the inventory or the environment.
         _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
-        _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-        _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
         # The installation this run is for. Fixed, not overridable: an extra var cannot retarget the
         # token or the push. Internal names, so the import above refuses any extra var that sets one.
         _rv_org: uhstray-io
@@ -82,6 +80,14 @@
         # A name outside this form could carry a refspec (`x:refs/heads/dev`) or an option; both are refused.
         _rv_tag_re: '^v[0-9]+[.][0-9]+[.][0-9]+(-dev[.][0-9]+)?$'
         _rv_sha_re: '^[0-9a-f]{40}$'
+
+    # Both AppRole halves are credentials (role_id is half of one), so they are taken by a hidden set_fact:
+    # a visible set_fact prints its facts at -v (AGENTS.md, "A task that receives a secret is itself no_log").
+    - name: "Take the controller AppRole credential (hidden)"
+      ansible.builtin.set_fact:
+        _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+        _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+      no_log: true
 
     - name: "Require a major version of the form vN.0.0 (empty on the schedule)"
       ansible.builtin.assert:

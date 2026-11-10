@@ -501,6 +501,34 @@ def test_release_tags_tags_main_then_dev_and_dev_counts_from_the_new_release(tmp
     assert payload["release"] == {"tag": "v0.2.0", "previous": "v0.1.0", "notes": "- #80 feat: a\n"}
 
 
+def test_release_tags_after_a_promotion_tags_every_dev_merge_since_even_when_the_head_is_the_sync(tmp_path):
+    # PR #996 review: the run that cuts a main release moves the base past every existing dev tag. Two
+    # pull requests merged on dev in one schedule window, then the main-to-dev sync made dev's head a
+    # non-pull-request merge. Offering only the head (the first-run rule) would tag neither, for good.
+    repo = _dev_repo(tmp_path)
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 70, "feat: a")
+    first = _release_run(repo)
+    assert [t["tag"] for t in json.loads(first.stdout)["tags"]] == ["v0.2.0-dev.1"]
+    repo.checkout("main")
+    repo.merge_raw("Merge pull request #71 from uhstray-io/dev", "feat: promoted", "dev")
+    repo.checkout("dev")
+    repo.feature("fix-b", "fix: b")
+    repo.merge_pr("fix-b", 72, "fix: b")
+    b = repo.head()
+    repo.feature("fix-c", "fix: c")
+    repo.merge_pr("fix-c", 73, "fix: c")
+    c = repo.head()
+    repo.merge_raw("Merge remote-tracking branch 'origin/main' into dev", "feat: sync title", "main")
+    result = _release_run(repo)
+    assert (result.returncode, result.stderr) == (0, "")
+    assert json.loads(result.stdout)["tags"] == [
+        {"tag": "v0.2.0", "commit": repo.head("main")},
+        {"tag": "v0.2.1-dev.1", "commit": b},
+        {"tag": "v0.2.1-dev.2", "commit": c},
+    ]
+
+
 def test_release_tags_rerun_creates_nothing_and_still_reports_the_newest_release(tmp_path):
     repo = _promotion_with_dev_merge(tmp_path)
     assert _release_run(repo).returncode == 0
