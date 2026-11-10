@@ -47,7 +47,7 @@ and why.
 | 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
 | 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
-| 1.18 | **x2** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer) | Unverified claim | 2 | Convention (disk alert proposed) |
+| 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | **x4** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 4 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed |
@@ -61,6 +61,7 @@ and why.
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) | Unverified claim | 8 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
+| 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) | Unverified claim | 1 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -896,7 +897,7 @@ scoping exists. Otherwise report the status code and the endpoint, not a cause.
 
 ### 1.18 Listed an auth failure's causes from the code, missed the database error, and chased credentials for two hours
 
-**Occurrences: 2** — 2026-09-26, 2026-11-07
+**Occurrences: 3** — 2026-09-26, 2026-11-07, 2026-11-09
 
 **What happened.** Production Semaphore began answering every API call with an empty-body 401
 and the operator could not log in ("Failed to create session"). I read `api/auth.go` at
@@ -933,6 +934,28 @@ waited only about 150 ms. Two review rounds (CodeRabbit, then an independent rev
 both before merge; the fix moved to 10 attempts and dropped the cause claim. The rule did not
 fire because it is worded for auth paths and 401s; the habit it names, listing every branch
 that produces a status before ruling causes out, applies to any status read from source.
+
+**Occurrence 3 — 2026-11-09.** Issue #949, filed 2026-11-10 02:19 UTC, reported that the o11y
+availability namespace survey (task 14237) refused with the catch-all `namespace_unverified`, and
+blamed the 30 places `summarize-o11y-scrape-baseline.py` raises that category, 18 of them in its
+effective-compose check. The survey reaches none of them: 29 are candidate-mode checks and one is
+on the producer path. The real path was the helper's `os.stat("/proc/1/ns/net")`, which the
+rootless deploy user may not read, and `main()`'s `except Exception`, which turned that crash into
+the same catch-all. The occurrences were counted by grep, never traced from the survey's entry
+point, and the exception handler was missed: the error branch this rule names. Worse, the correct
+diagnosis was already on `dev`: #948 had merged at 2026-11-09 22:32 UTC, nearly four hours
+before the issue, reading the helper's own namespace and giving a crash its own category. The
+survey at that commit (task 14306) reports `isolated`. The issue carries a correction comment.
+The rule did not fire for two reasons. Its wording covers auth paths and 401s, so it was not
+recalled for a diagnostic category (occurrence 2 had the same gap). It also says nothing about
+reading the code's recent history before filing a diagnosis, which is how a fix already merged
+went unseen. Both are widened in 1.32.
+
+Count 3 retires Convention. The instance is now guarded: `platform/tests/test_o11y_availability_namespace_survey.py`
+requires a helper crash to report `namespace_internal_error`, never a decision category. Proposed
+class guard: a repository test that scans the fixed-category helpers under `platform/playbooks/files/`
+and fails when a top-level `except Exception` returns one of that helper's decision categories,
+so an unexpected error can never read as a policy answer.
 
 ### 1.19 A negative claim about a host's state, made from evidence that cannot establish it (widens 1.6)
 
@@ -1393,6 +1416,27 @@ never supports "merged".
 
 **Enforced by.** Convention. Related: 1.19 (a negative claim from evidence that cannot establish
 it).
+
+### 1.32 Diagnosed a refusal from code its path never reaches, after the fix had merged (widens 1.18)
+
+**What happened.** See 1.18, occurrence 3. Issue #949 explained an o11y survey refusal by
+counting the places a helper raises the refusal's category, without tracing which of them the
+survey's call path runs and without reading the exception handler that produced it. The correct
+diagnosis and its fix (#948) had merged to `dev` nearly four hours earlier.
+
+**Root cause.** 1.18's rule is worded for auth paths and 401s, so it was not recalled for a
+diagnostic category, and it does not ask for the code's recent history. A grep of where a value is
+produced reads like a trace and is not one: it lists every producer, reachable or not, and misses
+the handler that maps an unexpected exception onto the same value.
+
+**The rule.** Before stating why a status or category was produced, trace it from the caller's
+entry point to the statement that produced it, exception handlers included, and say which branch
+fired. Before filing a diagnosis, read that code at the current `dev` head and its recent merged
+history (`git log origin/dev -- <file>`, linked PRs): a fix may already be there.
+
+**Enforced by.** Convention. For one helper, `platform/tests/test_o11y_availability_namespace_survey.py`
+keeps a crash out of the decision categories; the class guard proposed under 1.18 would extend that
+to every fixed-category helper.
 
 ## 2. Tests that would have passed for the wrong reason
 
