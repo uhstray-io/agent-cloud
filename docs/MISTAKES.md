@@ -44,7 +44,7 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard reads three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
+| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
 | 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
@@ -897,10 +897,10 @@ and neither was re-run before writing. The post-merge grounding review counted 4
 calling it (`grep -l 'harness_sandbox.run(' platform/tests/*.py | wc -l`, 40 of them also start
 `ansible-playbook`) and seven collections (`_node_ids` called for the root and six shards,
 `test_ci_python_partition.py:134`, `:136`). The low count steered phase 3 toward a new runner module
-instead of extending the existing one. Corrected in PR #1023. Why the rule did not fire: the number
+instead of extending the existing one. Corrected in PR #1023 (open when this was recorded). Why the rule did not fire: the number
 arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
 the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
-covers it: a relayed count is re-run before it is written.
+covers it: a relayed count is re-run before it is written. The proposed mechanical check above would not have caught it: it reads a pull request's Evidence section, and this count sat in a plan bullet that carried a `file:line` citation.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
