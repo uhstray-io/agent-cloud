@@ -44,8 +44,9 @@ Invitations follow your identity-provider group, so the fix is on the platform s
 # 0. Already set up? `add` refuses an existing name and keeps its old URL.
 claude mcp get plane
 #    "Scope: User config" AND URL https://<plane-mcp-host>/http/mcp: skip step 1.
-#    Anything else: remove it from the scope `get` shows, then do step 1.
-#    A local entry also hides the user one in that project, so remove it there too.
+#    Anything else: remove it from the scope `get` shows, then run step 0 again: a local
+#    entry hides a user one in its project, so a remove can expose another `plane`.
+#    Do step 1 only once `get` prints: No MCP server named "plane".
 claude mcp remove plane -s user     # "Scope: User config"
 claude mcp remove plane -s local    # "Scope: Local config"; run in the project it names
 
