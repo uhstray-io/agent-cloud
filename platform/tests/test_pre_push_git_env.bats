@@ -10,9 +10,6 @@
 load assert_helpers
 
 setup() {
-  # This file itself runs under the hook: clear the same variables first.
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX GIT_NAMESPACE
   REPO_ROOT=$(git rev-parse --show-toplevel)
   HOOK="$REPO_ROOT/.githooks/pre-push"
   cd "$BATS_TEST_TMPDIR"
