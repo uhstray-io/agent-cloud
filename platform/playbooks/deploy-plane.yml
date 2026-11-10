@@ -15,6 +15,8 @@
 #          OpenBao, so sync-plane-projects.yml only ever reads it.
 # Phase 3c: Activate the Pro licence from OpenBao (activate_license.py), as the workspace owner;
 #          skipped when no key is stored, and a no-op once the plan reads as licensed.
+# Phase 3d: With plane_github_app_id declared, set the GitHub App's webhook URL and signing secret
+#          (github_app_token.py set-hook-secret, on the controller) to the one Plane holds.
 # Phase 4: Verify through the proxy, then record the service-deploy step result.
 #
 # Plan: plan/development/16-plane-work-management.md
@@ -108,6 +110,16 @@
       # Operator-owned: the Pro licence, seeded by Seed OpenBao Key and never generated here.
       # Phase 3c activates it; absent, the workspace stays on its current plan.
       - { name: plane_license_key, type: existing }
+      # GitHub integration (change tasks 3.3/3.4), on when the inventory declares
+      # plane_github_app_id. The App's OAuth client secret and its private key (base64 of the PEM,
+      # one line, as Plane reads GITHUB_PRIVATE_KEY) are the operator's, seeded by Seed OpenBao
+      # Key. The webhook secret is generated here once; Phase 3d sets it on the App.
+      - { name: plane_github_client_secret, type: existing }
+      - { name: plane_github_private_key, type: existing }
+      - { name: plane_github_webhook_secret, type: random, length: 40 }
+    _required_existing_secrets: >-
+      {{ ['plane_github_client_secret', 'plane_github_private_key']
+         if plane_github_app_id is defined else [] }}
     # The OIDC client secret is owned by authentik (blueprints/plane-oidc.yaml injects it from
     # the worker's env). Read it read-only, and only when sign-in through Authentik is configured
     # (plane_authentik_base), so a host without OIDC never depends on Deploy Authentik having
@@ -451,6 +463,63 @@
             msg: "workspace plan {{ _plane_license_summary.product }} ({{ 'activated now' if _plane_license_summary.changed else 'already active' }})"
           changed_when: _plane_license_summary.changed
 
+# ── Phase 3d: GitHub App webhook ────────────────────────────────────────────
+# Plane (silo) now holds GITHUB_WEBHOOK_SECRET; give the App the same one, with its webhook URL,
+# so GitHub signs every delivery with it (change task 3.3). Runs on the controller: the App's
+# private key never goes to the Plane VM except inside .env, which Plane itself must read. GitHub
+# never returns the secret, so it is set on every run; Phase 4 proves silo refuses an unsigned
+# delivery, and the edge's challenge skip for the webhook path rests on that.
+- name: "Phase 3d: GitHub App webhook"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Set the App's webhook URL and secret (skipped in check mode: it writes)"
+      when:
+        - plane_github_app_id is defined
+        - not ansible_check_mode
+      block:
+        # Credential task: the key and the webhook secret go to the script on stdin.
+        - name: "PATCH /app/hook/config with the stored webhook secret"  # noqa: run-once[task] — one App, one PATCH
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/../lib/github_app_token.py"
+              - set-hook-secret
+              - --issuer
+              - "{{ plane_github_client_id }}"
+              - --org
+              - "{{ plane_github_org | default('uhstray-io') }}"
+              - --hook-url
+              - "{{ plane_public_url }}/silo/api/github/github-webhook"
+            stdin: "{{ {'key_b64': _resolved.plane_github_private_key, 'secret': _resolved.plane_github_webhook_secret} | to_json }}"
+          register: _plane_hook_run
+          delegate_to: localhost
+          run_once: true
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        # The script prints {"url", "content_type", "secret_set"} or an ERROR line, never a credential.
+        - name: "Keep only the webhook summary"
+          ansible.builtin.set_fact:
+            _plane_hook_summary: >-
+              {{ (_plane_hook_run.stdout | from_json) if (_plane_hook_run.rc == 0 and _plane_hook_run.stdout.startswith('{'))
+                 else {'error': (_plane_hook_run.stderr | default('') | regex_search('ERROR: [^\n]*') or 'exit ' ~ _plane_hook_run.rc)} }}
+          no_log: true
+
+        - name: "App webhook converged"
+          ansible.builtin.assert:
+            that:
+              - _plane_hook_summary.error is not defined
+              - _plane_hook_summary.secret_set
+            fail_msg: "plane GitHub App webhook: {{ _plane_hook_summary.error | default('GitHub reports no secret set') }}"
+            quiet: true
+
+        - name: "Report"
+          ansible.builtin.debug:
+            msg: "GitHub App webhook → {{ _plane_hook_summary.url }} ({{ _plane_hook_summary.content_type }}), signing secret set (value never shown)"
+
 # ── Phase 4: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 4: Verify plane"
   hosts: plane_svc
@@ -508,6 +577,35 @@
       delay: 10
       until: _plane_verify.rc == 0
       check_mode: false
+
+    # Spike 0.16: silo answers 403 to every delivery with no App configured, 401 to an unsigned one
+    # once the App and GITHUB_WEBHOOK_SECRET are set. Anything but 401 means silo did not get the
+    # GitHub settings, and the webhook path the edge leaves unchallenged would not be verifying.
+    - name: "GitHub webhook refuses an unsigned delivery (401)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - plane-api
+          - python
+          - -c
+          - |
+            import urllib.error, urllib.request
+            r = urllib.request.Request('http://proxy:80/silo/api/github/github-webhook', data=b'{}', method='POST',
+                headers={'Host': '{{ plane_public_url | urlsplit('hostname') }}', 'Content-Type': 'application/json'})
+            try:
+                c = urllib.request.urlopen(r, timeout=10).status
+            except urllib.error.HTTPError as e:
+                c = e.code
+            print(c)
+            assert c == 401, f'unsigned delivery answered {c}, not 401'
+      register: _plane_webhook_probe
+      changed_when: false
+      retries: 6
+      delay: 10
+      until: _plane_webhook_probe.rc == 0
+      check_mode: false
+      when: plane_github_app_id is defined
 
     # MISTAKES 2.34: the probe above reaches one path. This proves every container the plane's compose
     # project created is running (a declared one-shot may have exited 0) and none is restarting under

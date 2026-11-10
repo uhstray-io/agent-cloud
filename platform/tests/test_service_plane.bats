@@ -243,3 +243,20 @@ PY
   run grep -c "PLANE_API_HEALTH_TIMEOUT: \"{{ plane_api_health_timeout | default('') }}\"" "$PLAYBOOK"
   [ "$output" = "2" ]
 }
+
+@test "plane: the GitHub integration is gated, its App secrets operator-owned, and the webhook proven signed" {
+  # Operator-owned values are never generated; the webhook secret is, once.
+  grep -qF 'name: plane_github_client_secret, type: existing' "$PLAYBOOK"
+  grep -qF 'name: plane_github_private_key, type: existing' "$PLAYBOOK"
+  grep -qE 'name: plane_github_webhook_secret, type: random' "$PLAYBOOK"
+  # Required only when the inventory turns the integration on, so local-dev (no App) still deploys.
+  grep -qF "if plane_github_app_id is defined else []" "$PLAYBOOK"
+  # env.j2 renders all six or fails (test_plane_env_github.py renders it); the App gets the same secret.
+  grep -qF "the GitHub integration needs all six values" "$ENV_TPL"
+  grep -qF 'set-hook-secret' "$PLAYBOOK"
+  # Spike 0.16: 401 to an unsigned delivery is silo verifying; the edge skip depends on it.
+  grep -qF "assert c == 401" "$PLAYBOOK"
+  # The edge skip is the exact webhook path on Plane's host, nothing wider.
+  grep -qF 'http.request.uri.path eq \"/silo/api/github/github-webhook\"' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
+  refute_grep -qF 'starts_with(http.request.uri.path, \"/silo' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
+}

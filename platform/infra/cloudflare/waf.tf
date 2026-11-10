@@ -230,5 +230,26 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Plane's GitHub App webhook — bypass the challenge for the one delivery path (plane change
+    # task 3.3). GitHub posts deliveries server-side, and the zone answered this path with
+    # `cf-mitigated: challenge` (HTTP 403, probed 2026-11-10), so no delivery could reach Plane.
+    # Authentication stays at the origin: spike 0.16 showed silo refuses an unsigned or wrongly
+    # signed delivery (401) once GITHUB_WEBHOOK_SECRET is set, env.j2 refuses to render the GitHub
+    # settings without it, and Deploy Plane's verify asserts the 401. Exact path only; the OAuth
+    # callbacks run in the user's browser, which passes a challenge.
+    {
+      ref         = "plane-github-webhook-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Plane GitHub App webhook - bypass challenge for GitHub's deliveries"
+      expression  = "(http.host eq \"plane.uhstray.io\" and http.request.uri.path eq \"/silo/api/github/github-webhook\")"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }
