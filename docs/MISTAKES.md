@@ -834,6 +834,16 @@ and requires a counter assertion and a negative meta-test fixture. Why the rule 
 change those tests; the one experiment felt like proof of the class. The rule covers it: the
 guarantee was stated for inputs the experiment did not exercise.
 
+**Enforcement note — 2026-11-10.** A refusal test whose refusal comes from the run-start guard,
+which refuses an underscore name by its presence and never renders its value, may use
+`forgeries.by_name` (the plain spelling only; plan 21 D1). Three checks hold that boundary:
+`test_executor_internal_overrides.py::test_the_guard_ends_the_run_before_any_other_play` still sends all three spellings to the guard
+and asserts the stateful forgery is never rendered; `by_name` refuses a name without the
+underscore prefix and any name the guard file itself references (`_extra_var_guard_nested` is
+read by its own `when:`); and `test_extra_var_refusal_tests.py` accepts `by_name` only beside the
+guard's own message. A value-reading refusal, a gate run without the guard, and a connection
+variable keep all three spellings.
+
 ### 1.16 A count written into a committed plan without running the count
 
 **Occurrences: 4** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10

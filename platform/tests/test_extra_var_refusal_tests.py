@@ -68,9 +68,20 @@ def _refusal_tests() -> dict[str, bool]:
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_") and REFUSAL.search(node.name):
                 text = " ".join(ast.get_source_segment(src, d) for d in node.decorator_list)
                 text += ast.get_source_segment(src, node)
-                used = "templated_forgeries" in text or any(re.search(rf"\b{n}\b", text) for n in built)
-                found[f"{path.name}::{node.name}"] = used
+                found[f"{path.name}::{node.name}"] = _uses_forgeries(text, built)
     return found
+
+
+# The guard's own refusal message, or the helper a test file wraps it in.
+GUARD_MESSAGE = re.compile(r"set from outside the playbook|_refused_first")
+
+
+def _uses_forgeries(text: str, built: set[str]) -> bool:
+    """All three spellings, or `by_name` (plain only) beside the run-start guard's message: that
+    guard refuses by name and never renders the value (plan 21 D1; forgeries.by_name)."""
+    if "templated_forgeries" in text or any(re.search(rf"\b{n}\b", text) for n in built):
+        return True
+    return bool(re.search(r"\bby_name\(", text)) and bool(GUARD_MESSAGE.search(text))
 
 
 def test_every_refusal_test_tries_a_templated_forgery():
@@ -87,6 +98,21 @@ def test_the_scan_finds_a_refusal_test_by_its_name():
     assert REFUSAL.search("test_refuses_an_extra_var_forging_a_verdict")
     assert REFUSAL.search("test_extra_vars_cannot_widen_the_wipe")
     assert not REFUSAL.search("test_extra_vars_the_task_does_not_own_are_still_accepted")
+
+
+def test_by_name_is_accepted_only_beside_the_guard_message():
+    guarded = 'forgeries.by_name("_x", 1, 2)\nassert "Refusing to run: _x set from outside the playbook" in out'
+    assert _uses_forgeries(guarded, set())
+    assert _uses_forgeries('forgeries.by_name("_x", 1, 2)\nassert _refused_first(out, "_x")', set())
+    assert not _uses_forgeries('forgeries.by_name("_x", 1, 2)\nassert "refused" in out', set())
+
+
+def test_by_name_refuses_a_name_the_guard_references():
+    assert {"_extra_var_guard_nested", "_conn_names", "_conn_forged"} <= forgeries.GUARD_REFERENCED
+    for name in ("_extra_var_guard_nested", "_conn_forged", "no_prefix"):
+        with pytest.raises(AssertionError):
+            forgeries.by_name(name, None, True)
+    assert [p.id for p in forgeries.by_name("_forged_by_launch", None, True)] == ["plain"]
 
 
 VALUE_PROBE = "refuse-var-overrides.yml"
