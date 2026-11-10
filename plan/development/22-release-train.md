@@ -15,8 +15,8 @@ claims this plan depends on were re-checked at their cited lines.
 
 ## Problem
 
-- **The work is not cut to release size.** 24 OpenSpec changes are active, with about
-  1,060 checkbox tasks, roughly half of them open (direct `tasks.md` counts on `origin/dev`).
+- **The work is not cut to release size.** 24 OpenSpec changes are active, with 1,124
+  checkbox tasks: 521 done, 603 open (direct `tasks.md` counts on `origin/dev`).
   The `openspec` CLI on this machine resolves the store to another, stale checkout and still
   lists an archived change, so the counts here come from the files.
 - **The next release is already nearly full.** `dev` is 5 pull requests and 25 files ahead of
@@ -39,8 +39,8 @@ claims this plan depends on were re-checked at their cited lines.
 ## Design Principles
 
 - **A release is the planning unit** (policy R7). Each release has a declared scope with a
-  file budget of at most 100, ordered so that nothing waits on a later release.
-- **Plan about 60 files, not 100.** Recent work produces fixes during live runs, and
+  file budget of at most 90, ordered so that nothing waits on a later release.
+- **Plan about 60 files, not 90.** Recent work produces fixes during live runs, and
   documentation and ledger pull requests arrive without being planned. A planned scope of 40–70
   files leaves room for them, so the release is cut when its scope lands (R6), not when it fills.
 - **Hot files are cheap.** `AGENTS.md`, `platform/semaphore/templates.yml`,
@@ -60,7 +60,7 @@ The enforcement path (built in phases 1–4) and the loop each release follows:
 ```mermaid
 flowchart LR
     subgraph Loop["Per release (days, not weeks)"]
-        P["Plan: pick scope from the roadmap head,<br/>gates cleared, ≤ 100 files"] --> B["Build: PRs into dev<br/>guard prints the budget"]
+        P["Plan: pick scope from the roadmap head,<br/>gates cleared, ≤ 90 files"] --> B["Build: PRs into dev<br/>guard prints the budget"]
         B --> R["Run: live and Dev runs, 0 files"]
         R --> C{"R6 trigger:<br/>scope landed or 80%"}
         C -->|no| B
