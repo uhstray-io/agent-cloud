@@ -1777,7 +1777,10 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
     process = {
         "pid": 4101, "cmdline_sha256": hashlib.sha256(command_line).hexdigest(),
     }
-    state = {"argv": command_line, "root_bytes": config_bytes, "mount_rw": False}
+    state = {
+        "argv": command_line, "root_bytes": config_bytes, "mount_rw": False,
+        "mount_source": str(config_path), "mount_fail": False,
+    }
     provider_state = {"version": "1.3.0", "digest": "b" * 64}
     original_open = open
     original_read = SURVEY._read_bounded_regular_file
@@ -1796,8 +1799,11 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         if "{{.ImageName}}" in argv:
             return b"docker.io/grafana/alloy:v1.5.1\n"
         if "{{json .Mounts}}" in argv:
+            if state["mount_fail"]:
+                # The real helper raises the caller's refusal word for a failed inspect.
+                raise SURVEY.Refusal(_kwargs.get("refusal", "namespace_unverified"))
             return json.dumps([{
-                "Type": "bind", "Source": str(config_path),
+                "Type": "bind", "Source": state["mount_source"],
                 "Destination": "/etc/alloy/config.alloy", "RW": state["mount_rw"],
             }]).encode()
         raise AssertionError("unexpected runtime metadata query")
@@ -1827,6 +1833,25 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         record, process, digest, availability_enabled=True, lower_bound=900,
     )
     monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(tmp_path))
+    # A different host file with identical bytes, and a symlink that resolves outside the
+    # deployment directory, are not the placed config: the mount source must be that file.
+    twin = tmp_path / "twin.alloy"
+    twin.write_bytes(config_bytes)
+    outside = tmp_path / "outside-link.alloy"
+    outside.symlink_to(twin)
+    for source in (str(twin), str(outside)):
+        state["mount_source"] = source
+        with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+            SURVEY._verify_loaded_candidate_config(
+                record, process, digest, availability_enabled=True, lower_bound=900,
+            )
+    state["mount_source"] = str(config_path)
+    state["mount_fail"] = True
+    with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+        SURVEY._verify_loaded_candidate_config(
+            record, process, digest, availability_enabled=True, lower_bound=900,
+        )
+    state["mount_fail"] = False
     provider_state.update(version="1.6.0", digest="d" * 64)
     assert SURVEY._verify_loaded_candidate_config(
         record, process, digest, availability_enabled=True, lower_bound=900,
@@ -3957,6 +3982,8 @@ def test_the_rendered_enabled_alloy_config_passes_the_component_binding():
     'module.file "extra" {\n  filename = "/tmp/x.alloy"\n}\n',
     'remotecfg {\n  url = "https://example.test"\n}\n',
     'import.git "extra" {\n  repository = "https://example.test/x.git"\n}\n',
+    # A label the component regex cannot match, so only the config-loading keyword check refuses it.
+    'import.file "a/b" {\n  filename = "/tmp/x.alloy"\n}\n',
 ])
 def test_config_loading_blocks_still_refuse_the_component_binding(block):
     rendered = _rendered_enabled_alloy_config() + block

@@ -83,7 +83,7 @@ and why.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
-| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x4** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back; 2026-11-10: the availability candidate fixture used Docker Compose's long volume form, `podman-compose config` keeps the short form, and the first real enabled o11y deploy refused) | False-green fixture | 4 | Shared filter test + playbook fixture + real `podman-compose` output fixture + rendered Alloy config in the binding test; class guard proposed (CI runs pinned `podman-compose config`) |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x4** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back; 2026-11-10: the availability candidate fixture used Docker Compose's long volume form, `podman-compose config` keeps the short form, and the first real enabled o11y deploy refused; 2026-11-10: the post-apply Alloy binding was tested on a hand-written config, and the rendered enabled config's `module = ...` attribute refused every enabled deploy) | False-green fixture | 4 | Shared filter test + playbook fixture + real `podman-compose` output fixture + rendered Alloy config in the binding test; class guard proposed (CI runs pinned `podman-compose config`) |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x3** (widened by 2.31) | Wrong-reason pass | 3 | Image references: `test_compose_image_qualified.py`; class: proposal in 2.31 |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
@@ -97,7 +97,7 @@ and why.
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
-| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category); class Convention |
+| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
@@ -2653,7 +2653,6 @@ refusal uses.
 errno 13 and the runtime pass must stat `/proc/self/ns/net`; the catch-all must print
 `namespace_internal_error`). Mutation-checked. The class-wide rule for other stubbed OS reads: Convention.
 
-
 **Occurrence 2 — 2026-11-10.** The rule's second half, "an unexpected exception gets its own fixed category,
 never the word a real refusal uses", was applied to the namespace command only. The source command
 (`--verify-availability-source`) still printed `native_source_unavailable` for any exception, and about twenty
@@ -2662,6 +2661,7 @@ there (Semaphore tasks 14414, 14536), the category could not say which check fai
 it was written against the one command that had just failed, and the sibling command was not audited. The
 binding checks and the source catch-all now have their own fixed words, which the deploy's diagnostic filter
 passes through.
+
 ### 2.37 A credential probe passed on the operator's own git login
 
 **What happened.** On 2026-11-09, to prove that the new release GitHub App could push a tag the
