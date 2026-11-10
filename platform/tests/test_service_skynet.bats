@@ -140,14 +140,15 @@ skip_unless_service_file() {
   refute_grep -qF 'community.hashi_vault.hashi_vault' "$PLAYBOOK"
   # Before the monorepo is placed, local_mode gates the four production refusals (the three long-standing
   # ones and the launch-gate IP, which is also gated on the gate being declared). Through _skynet_local it
-  # also gates the production TLS bind refusal and the podman check, which is production only. Every other
+  # also gates the production TLS bind refusal, which is production only. The podman check is not in this
+  # block: it runs after placement installs podman, gated on local mode and skynet_tls. Every other
   # refusal runs in every environment.
   local refusals_block
   refusals_block=$(sed -n '/^    - name: "Refuse skynet_image/,/^    - name: "Place the monorepo/p' "$PLAYBOOK")
   assert_contains "$refusals_block" 'Refuse skynet_publish_port'
   [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 4 ]
   [ "$(grep -c 'when: not (local_mode | default(false) | bool)' <<<"$refusals_block")" -eq 3 ]
-  [ "$(grep -c 'not _skynet_local' <<<"$refusals_block")" -eq 3 ]
+  [ "$(grep -c 'not _skynet_local' <<<"$refusals_block")" -eq 1 ]
   if [ -f "$DEPLOY_DIR/templates/env.j2" ]; then
     refute_grep -qF '_skynet_semaphore_token' "$DEPLOY_DIR/templates/env.j2"
   fi
@@ -244,7 +245,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the eighteen refusals are present as named assert tasks, all before the repo is placed" {
+@test "skynet: the eighteen refusals are present as named assert tasks; seventeen sit before the repo is placed, and the podman refusal follows placement" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -274,8 +275,8 @@ PY
   assert_precedes "$PLAYBOOK" 'Refuse skynet_publish_bind unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_publish_port unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_semaphore_project unless' 'tasks/manage-secrets\.yml'
-  # The HTTPS listener's refusals (skynet_tls): the leaf declaration, the production bind, the port, and the podman
-  # version that keep-id needs. Each sits before the monorepo is placed.
+  # The HTTPS listener's refusals (skynet_tls): the leaf declaration, the production bind and the port sit before the
+  # monorepo is placed. The podman version that keep-id needs is refused after placement, which installs podman.
   assert_grep -qx 'Refuse a TLS deploy whose internal_leaves does not declare the skynet server leaf for this host' <<<"$refusals"
   assert_grep -qx 'Refuse a TLS production skynet_bind unless it is declared as one non-wildcard, non-loopback IPv4 address' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_port unless it is a whole port number from 1024 to 65535 and not skynet_publish_port' <<<"$refusals"
@@ -283,8 +284,8 @@ PY
   assert_precedes "$PLAYBOOK" 'Refuse a TLS deploy whose internal_leaves' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse a TLS production skynet_bind unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_port unless it is a whole port' 'tasks/place-monorepo\.yml'
-  assert_precedes "$PLAYBOOK" 'Read the podman version for keep-id' 'tasks/place-monorepo\.yml'
-  assert_precedes "$PLAYBOOK" 'Refuse a production run on a podman older' 'tasks/place-monorepo\.yml'
+  assert_precedes "$PLAYBOOK" 'Place the monorepo \+ ensure podman/compose' 'Read the podman version for keep-id'
+  assert_precedes "$PLAYBOOK" 'Refuse a production run on a podman older' 'tasks/manage-secrets\.yml'
   # The svc-skynet token has no refusal here: it is an existing secret, and manage-secrets refuses
   # the run by name after the placement and before any OpenBao write (the Deploy console precedent).
   refute_grep -qiE 'semaphore (api )?token' <<<"$refusals"
@@ -691,16 +692,20 @@ prod_loud() {
     -e skynet_publish_bind=203.0.113.10 -e "@$BATS_TEST_TMPDIR/prod-loud.json"
 }
 
-@test "skynet: production refuses a podman older than 4.3 for keep-id, and a read that failed; local mode does not read the version" {
+@test "skynet: with skynet_tls in production, a podman older than 4.3 or a failed read is refused; without TLS or in local mode the version is not checked" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
+  write_tls_leaf_cases
+  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
+  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 1, "stdout": ""}}'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
+  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.3.0"}}'
+  [ "$status" -eq 0 ]
+  # Without the listener the version is not checked, so a plain-API production deploy on 4.2.1 is accepted as before.
   run prod_loud '{"_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
-  [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
-  run prod_loud '{"_skynet_podman_version": {"rc": 1, "stdout": ""}}'
-  [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
-  run prod_loud '{"_skynet_podman_version": {"rc": 0, "stdout": "4.3.0"}}'
   [ "$status" -eq 0 ]
   run accepted _skynet_podman_version '{"rc": 0, "stdout": "4.2.1"}'
   [ "$status" -eq 0 ]
@@ -741,7 +746,7 @@ assert fresh_task["when"] == ["_skynet_tls", "_skynet_local"], fresh_task.get("w
 PY
 }
 
-@test "skynet: the production podman check reads the version before the monorepo is placed, gated on local mode and not on skynet_tls" {
+@test "skynet: the production podman check reads the version after the monorepo is placed, gated on local mode and on skynet_tls" {
   python3 - "$PLAYBOOK" <<'PY'
 import json
 import sys
@@ -757,10 +762,9 @@ check = tasks[names.index("Refuse a production run on a podman older than 4.3 (u
 assert read["register"] == "_skynet_podman_version", read
 assert read["ansible.builtin.command"]["argv"][0] == "{{ container_engine | default('podman') }}", read
 assert read["failed_when"] is False and read["check_mode"] is False, read
-assert read["when"] == "not _skynet_local", read.get("when")
-assert check["when"] == "not _skynet_local", check.get("when")
-assert "skynet_tls" not in json.dumps([read.get("when"), check.get("when")]), "the podman check must not depend on skynet_tls"
-assert names.index("Read the podman version for keep-id (production)") < names.index(check["name"]) < names.index("Place the monorepo + ensure podman/compose")
+assert read["when"] == ["not _skynet_local", "_skynet_tls"], read.get("when")
+assert check["when"] == ["not _skynet_local", "_skynet_tls"], check.get("when")
+assert names.index("Place the monorepo + ensure podman/compose") < names.index("Read the podman version for keep-id (production)") < names.index(check["name"]) < names.index("Manage secrets and template env file"), names
 PY
 }
 
@@ -1209,20 +1213,21 @@ import yaml
 
 doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 assert list(doc["services"]) == ["skynet"], doc["services"]
-assert set(doc["services"]["skynet"]) == {"user", "userns_mode", "volumes", "environment", "extra_hosts"}, doc["services"]["skynet"]
+assert set(doc["services"]["skynet"]) == {"volumes", "environment", "extra_hosts"}, doc["services"]["skynet"]
 PY
 }
 
-@test "skynet: the production overlay runs skynet as uid 10001 under keep-id, the uid the image runs as" {
-  local overlay="$DEPLOY_DIR/compose.prod.yml"
+@test "skynet: the production TLS overlay runs skynet as uid 10001 under keep-id, the uid the image runs as, and sets nothing else" {
+  local overlay="$DEPLOY_DIR/compose.prod-tls.yml"
   skip_unless_service_file "$overlay"
   python3 - "$overlay" <<'PY'
 import sys
 import yaml
 
-svc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["services"]["skynet"]
-assert svc["user"] == "10001:10001", svc.get("user")
-assert svc["userns_mode"] == "keep-id:uid=10001,gid=10001", svc.get("userns_mode")
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert set(doc) == {"services"}, doc.keys()
+assert list(doc["services"]) == ["skynet"], doc["services"]
+assert doc["services"]["skynet"] == {"user": "10001:10001", "userns_mode": "keep-id:uid=10001,gid=10001"}, doc["services"]["skynet"]
 PY
 }
 
@@ -1267,6 +1272,33 @@ PY
     refute_contains "$(overlays_for "$blank" "$mode")" 'compose.tls.yml'
     refute_contains "$(overlays_for "$absent" "$mode")" 'compose.tls.yml'
   done
+}
+
+@test "skynet: deploy.sh adds the production TLS overlay only outside LOCAL_MODE and only with SKYNET_TLS_CERT_FILE in .env" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  # Run the real block, extracted from the file, against a .env with and without the marker under each LOCAL_MODE value.
+  local gate="$BATS_TEST_TMPDIR/prod-tls-overlay.sh"
+  sed -n '/^if \[ "\${LOCAL_MODE:-}" != "true" \] && grep -qE .*SKYNET_TLS_CERT_FILE=/,/^fi$/p' "$deploy" > "$gate"
+  [ -s "$gate" ]
+  local marked="$BATS_TEST_TMPDIR/marked" blank="$BATS_TEST_TMPDIR/blank" absent="$BATS_TEST_TMPDIR/absent"
+  mkdir -p "$marked" "$blank" "$absent"
+  printf 'SKYNET_TLS_CERT_FILE=/certs/skynet-server/current/cert.pem\n' > "$marked/.env"
+  printf 'SKYNET_TLS_CERT_FILE=\n' > "$blank/.env"
+  # overlays_for <directory holding .env> <LOCAL_MODE value, or empty for unset>
+  overlays_for() {
+    if [ -n "$2" ]; then
+      (cd "$1" && env -u COMPOSE_OVERLAYS LOCAL_MODE="$2" bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+    else
+      (cd "$1" && env -u COMPOSE_OVERLAYS -u LOCAL_MODE bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+    fi
+  }
+  assert_contains "$(overlays_for "$marked" "")" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$blank" "")" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$absent" "")" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$marked" true)" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$blank" true)" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$absent" true)" 'compose.prod-tls.yml'
 }
 
 @test "skynet: deploy.sh hashes the trust bundles under certs/, never the directory, so a renewed leaf is not a change" {

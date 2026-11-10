@@ -15,17 +15,11 @@
 # Both variables are required (:?), so compose refuses to start without them rather than starting
 # with no mapping and failing later at the OPA call.
 #
-# user and userns keep-id: the image runs as uid 10001, and under rootless podman that uid cannot read
-# the deploy account's 0600 TLS key once the HTTPS listener is on (compose.tls.yml; the key is read from
-# ./certs). keep-id maps the deploy account to uid 10001 inside the container, so the process stays
-# non-root and owns the key it reads. keep-id needs podman 4.3 or later, which deploy-skynet.yml
-# refuses to run without in production. The mapping applies to every production deploy, not only
-# one that declares the listener.
+# user and userns keep-id are not set here. They are in compose.prod-tls.yml, which deploy.sh loads
+# only with the HTTPS listener, because the mapping is needed only to read the listener's key.
 
 services:
   skynet:
-    user: "10001:10001"
-    userns_mode: "keep-id:uid=10001,gid=10001"
     volumes:
       - ./certs:/certs:ro
     environment:

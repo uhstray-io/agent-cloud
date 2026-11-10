@@ -1,7 +1,8 @@
 ---
 # deploy-skynet.yml — skynet orchestration API deploy (composable).
 #
-# Phase 1: Refuse invalid inputs before anything changes; place repo + manage-secrets
+# Phase 1: Refuse invalid inputs before anything changes (the production podman check follows placement,
+#          which installs podman); place repo + manage-secrets
 #          (api_token, db_password and read_token generated once into OpenBao, reused
 #          thereafter; semaphore_api_token is the svc-skynet account's token, read and
 #          never generated; the agentgateway role keys shared-read, because the gateway
@@ -10,8 +11,8 @@
 #          roots, because SSL_CERT_FILE replaces the whole trust store). With skynet_tls, the HTTPS
 #          listener's server leaf is declared in internal_leaves and issued from step-ca before
 #          deploy.sh (local-dev re-issues a leaf with under 7 days left; production keeps an issued one,
-#          which Renew Internal Certs renews). The production podman version is checked here too: keep-id
-#          (compose.prod.yml) needs podman 4.3 or later.
+#          which Renew Internal Certs renews). With skynet_tls in production, the podman version is checked after
+#          placement installs podman: keep-id (compose.prod-tls.yml) needs podman 4.3 or later.
 # Phase 2: registry login (GHCR package is private) + image pre-flight + deploy.sh
 #          (container lifecycle only).
 # Phase 3: Verify inside the skynet container: /skynet/healthz answers 200, an
@@ -310,8 +311,12 @@
           default). Set it in the inventory and re-run.
       when: _skynet_tls
 
-    # Production runs every deploy with the userns keep-id mapping (compose.prod.yml), and podman before 4.3 refuses that
-    # flag. Read here, before the monorepo is placed, so a refused host changes nothing. Read-only.
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    # Production with the HTTPS listener: keep-id (compose.prod-tls.yml) needs podman 4.3 or later. This read runs
+    # after placement, because placement installs podman (tasks/place-monorepo.yml), so a fresh VM has one to read.
+    # Read-only. Undeclared, and in local mode, neither task runs.
     - name: "Read the podman version for keep-id (production)"
       ansible.builtin.command:
         argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
@@ -319,7 +324,9 @@
       changed_when: false
       failed_when: false
       check_mode: false
-      when: not _skynet_local
+      when:
+        - not _skynet_local
+        - _skynet_tls
 
     - name: "Refuse a production run on a podman older than 4.3 (userns keep-id)"
       ansible.builtin.assert:
@@ -330,14 +337,14 @@
           - (container_engine | default('podman')) == 'podman'
           - _skynet_podman_version.stdout is version('4.3', '>=')
         fail_msg: >-
-          Production skynet needs podman 4.3 or later for the userns keep-id mapping (compose.prod.yml). This host runs
+          Production skynet needs podman 4.3 or later for the userns keep-id mapping (compose.prod-tls.yml), which the
+          HTTPS listener requires. This host runs
           {{ container_engine | default('podman') }} {{ _skynet_podman_version.stdout | default('(no version read)') | trim }}
           (read rc {{ _skynet_podman_version.rc | default('unset') }}). Run Install Podman on this host, then re-run this deploy.
         quiet: true
-      when: not _skynet_local
-
-    - name: "Place the monorepo + ensure podman/compose"
-      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+      when:
+        - not _skynet_local
+        - _skynet_tls
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml

@@ -40,6 +40,12 @@ if grep -qE '^SKYNET_TLS_CERT_FILE=.' .env 2>/dev/null; then
   COMPOSE_OVERLAYS="compose.tls.yml ${COMPOSE_OVERLAYS:-}"
 fi
 
+# Production with the HTTPS listener: compose.prod-tls.yml maps uid 10001 with keep-id, so the 0600 key under
+# ./certs is readable. Outside LOCAL_MODE only, and only when .env carries SKYNET_TLS_CERT_FILE.
+if [ "${LOCAL_MODE:-}" != "true" ] && grep -qE '^SKYNET_TLS_CERT_FILE=.' .env 2>/dev/null; then
+  COMPOSE_OVERLAYS="compose.prod-tls.yml ${COMPOSE_OVERLAYS:-}"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     --no-pull) SKIP_PULL=true ;;
