@@ -459,9 +459,10 @@ NetBox itself uses Docker. The separate `netbox-orb-agent` discovery container i
 Containers must survive a reboot without a person. Every compose service declares `restart: always`
 (or `"no"` for a labelled one-shot); rootless services need linger plus podman's user boot unit,
 rootful ones the system restart unit, and a legacy rootful container off `always` gets its own
-`agent-cloud-boot-<service>` unit [3]. On 2026-09-26 eight production services passed the
-persistence check and seven passed the health check (Caddy declares no health path); no boot path
-has yet been exercised by a real reboot [43].
+`agent-cloud-boot-<service>` unit [3]. On 2026-09-26 the seven production services the record
+still lists passed the persistence check and six passed the health check (Caddy declares no health
+path); tududi also passed both before its 2026-11-09 teardown. No boot path has yet been exercised by
+a real reboot [43].
 
 ### 10. Service lifecycle
 
@@ -483,7 +484,10 @@ stateDiagram-v2
         Plane deploy recorded; live state UNVERIFIED
     end note
     note right of Retiring
-        NocoDB (since 2026-09-01), tududi (retired 2026-11-09)
+        NocoDB (since 2026-09-01)
+    end note
+    note right of Removed
+        tududi (torn down 2026-11-09)
     end note
 ```
 
@@ -503,7 +507,7 @@ visible so they are not reopened without new evidence.
 | Inference gateway versus orchestrator | agentgateway replaces skynet; skynet fronts vLLM directly; both, with distinct jobs | Per-client keys and limits for SDK clients; placement and policy across the estate | **Both.** agentgateway owns transport, keys and budgets; skynet owns placement, policy and orchestration, and reaches models through the gateway. | [44] |
 | Container runtime | Docker everywhere; rootless podman everywhere; rootless by default with named exceptions | Least privilege; the capabilities a few services require | **Rootless podman by default**; Docker only where privileged mode or the host socket is required. | [6][7] |
 | How the console reads the platform | Its own database; the controller token; read models from each authority with a read-only identity | Never a second source of truth; least privilege | **Read models from the authorities**, through a `guest` Semaphore identity that cannot launch. | [21][45] |
-| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; tududi's teardown runs after Plane's Phase 1 gate, ahead of its GitHub integration (changed 2026-11-07). | [23] |
+| Work tracking | Keep tududi with a GitHub sync; Plane with native GitHub sync and OIDC | Native integration over a maintained sync | **Plane**, decided 2026-10-23; tududi's teardown was moved ahead of Plane's GitHub integration on 2026-11-07 and done on 2026-11-09. | [23] |
 
 ## Source Context
 
