@@ -122,7 +122,7 @@ direct baseline can never be re-run (design decision 5).
 - dgx-spark: the API allow rule keeps the benchmark VM admitted after the narrowing
   (a dgx-spark change that accepts more than one source); no change to serving.
 - Live: one new VM; GPU time in declared windows; one gateway redeploy to enrol `bench`.
-- Out of scope, recorded: benchmarking skynet, ComfyUI or Hunyuan3D; multi-replica or
+- Out of scope, recorded: benchmarking skynet; multi-replica or
   placement cells (dgx-spark's companion change owns those); quality or accuracy
   evaluation; continuous scheduled benchmarks (a later change once windows are stable).
 

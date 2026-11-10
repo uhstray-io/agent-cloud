@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (inline) to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. **Design rationale, rejected alternatives, and the probe findings live in `LOCAL-DEV-DEPLOYMENT.md` §12A — this doc is the execution decomposition only.**
 
-**Goal:** Re-sequence the local-dev genesis so `make local-bootstrap` brings up the secure foundation (OpenBao → dns → step-ca → caddy → authentik) **directly** (Mac-direct, not through Semaphore), and Semaphore comes up **last, already OIDC-secured at boot**; `make local-up` then deploys only Tier-3 (o11y, opa, erpnext, netbox, n8n) through Semaphore.
+**Goal:** Re-sequence the local-dev genesis so `make local-bootstrap` brings up the secure foundation (OpenBao → dns → step-ca → caddy → authentik) **directly** (Mac-direct, not through Semaphore), and Semaphore comes up **last, already OIDC-secured at boot**; `make local-up` then deploys only Tier-3 (o11y, opa, erpnext, netbox) through Semaphore.
 
 **Architecture:** `bootstrap-local-dev.yml` gains a foundation-deploy stage (between OpenBao and Semaphore) that shells out to each existing `deploy-<svc>.yml` un-forked — Mac-direct (`connection: local`), with the bootstrap's own BAO AppRole creds in the environment, `COMPOSE_CMD` forced to podman-compose, and a genesis monorepo dir under `$HOME` (auto-mounted into the podman VM at the same path so compose bind-mounts resolve). Semaphore's start moves after the foundation and gains fail-safe OIDC env (jq-validated `SEMAPHORE_OIDC_PROVIDERS`, `SEMAPHORE_WEB_ROOT`, step-ca trust bundle via `SSL_CERT_FILE`).
 
@@ -13,7 +13,7 @@
 ## Pre-flight context (read once)
 
 - **Branch:** continue on `feat/local-dev-phase0` (no new branch).
-- **Live stack is up** (OpenBao, Semaphore, dns, step-ca, caddy, authentik, o11y, opa, erpnext, n8n, netbox all running). This means **idempotent re-run validation is non-destructive** and is the primary in-loop test (§12A requirement #1). A cold `make local-clean && make local-bootstrap` wipes the live vault and forces re-deploy of stateful services — treat as an explicit, user-opted heavier test, NOT the default loop.
+- **Live stack is up** (OpenBao, Semaphore, dns, step-ca, caddy, authentik, o11y, opa, erpnext, netbox all running). This means **idempotent re-run validation is non-destructive** and is the primary in-loop test (§12A requirement #1). A cold `make local-clean && make local-bootstrap` wipes the live vault and forces re-deploy of stateful services — treat as an explicit, user-opted heavier test, NOT the default loop.
 - **Two inventories exist and that is intentional, not a fork:**
   - `platform/inventory/local-dev.yml` (Mac-side; `connection: local`) — used by the wrapper guard, host lookups (resolver/https/tls), and **now the genesis Mac-direct foundation deploys**.
   - The static INI baked into `bootstrap-local-dev.yml` `_inv_ini` and stored *inside* Semaphore — used by **Tier-3 deploys through Semaphore** (paths under `/var/lib/agent-cloud-deploy`). Service-specific vars (zone, ports, routes, stepca_*, authentik_*) are duplicated between the two; keeping them in sync is a pre-existing hazard noted in the example inventory — do **not** attempt to de-dupe it in this plan.
@@ -432,7 +432,6 @@ local-up: ## Full stack: genesis (bootstrap) then Tier-3 services through Semaph
 	@$(MAKE) --no-print-directory local-deploy-opa
 	@$(MAKE) --no-print-directory local-deploy-erpnext
 	@$(MAKE) --no-print-directory local-netbox
-	-@$(MAKE) --no-print-directory local-deploy-n8n
 	@echo "[local-up] full stack up: foundation via genesis, Tier-3 via Semaphore."
 ```
 

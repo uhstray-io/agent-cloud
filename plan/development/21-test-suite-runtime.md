@@ -9,7 +9,7 @@
 
 ### Baseline (measured 2026-11-10)
 
-Source: run 42768444354 (PR #1001, green), job step timings from `gh run view --json jobs`, per-test worker time computed from the `-v` log timestamps of each xdist worker. Runners are GitHub-hosted `ubuntu-latest`; every Python job except NetBox runs `-n auto`, which started 4 workers in core. Static counts below are at `dev` after the tududi removal (`e6214688b`); timings are from the run above.
+Source: run 42768444354 (PR #1001, green), job step timings from `gh run view --json jobs`, per-test worker time computed from the `-v` log timestamps of each xdist worker. Runners are GitHub-hosted `ubuntu-latest`; every Python job except NetBox runs `-n auto`, which started 4 workers in core. Static counts below are at `dev` as of `e6214688b`; timings are from the run above.
 
 | Job | Wall | Tests | Worker-seconds | Note |
 |---|---|---|---|---|
@@ -97,8 +97,6 @@ Few tests are dead. The sweep found **no** test referencing a path that no longe
 | `test_mistakes_doc.bats:120-143` (four named tests exist; non-exhaustive by its own comment) | `test_ledger_test_citations.py:169-174` (every cited test exists) |
 | `test_a_forged_internal_name_is_refused_by_the_real_executor` | `test_every_launchable_playbook_refuses_a_forged_internal_name` (same playbooks, same guard), except its `CUSTOM STATS` assertion (`:285`) |
 
-Retired services: tududi's code and tests were removed together (`e6214688b`). NocoDB is retired by decision but its code is still present (`platform/services/nocodb/`, `deploy-nocodb.yml`); no test is specific to it (`test_service_opa.bats:170`, `:226` and `test_caddyfile_sites.py:38`, `:90` use the name as sample data). The generic catalog tests include its templates, `Deploy NocoDB` and `Update NocoDB`, as cases, and drop them when the templates go.
-
 Six of the eight ratchet allowlists (`platform/tests/known_*.txt`, `check_mode_allowlist.txt`) are empty: those migrations finished. The tests that read them still prevent regressions and cost nothing; they stay.
 
 13 test functions assert rows in `AGENTS.md`, service `CLAUDE.md` files or openspec task lists. They spawn nothing and enforce the repository's own documentation rule; they stay.
@@ -125,7 +123,6 @@ Six of the eight ratchet allowlists (`platform/tests/known_*.txt`, `check_mode_a
 | D4 | How BATS runs in parallel | **GNU `parallel` and `bats --jobs`** (Joseph, 2026-11-10): installed by apt in CI and by `brew install parallel` locally, with `--no-parallelize-within-files`, so files run concurrently and tests within a file keep their order. Pre-push falls back to serial BATS when `parallel` is absent, with a warning, under its fail-open contract | One flag instead of hand-rolled sharding; the cross-file audit in F6 is the safety precondition. It is a new dependency, approved |
 | D5 | Fixed waits in playbooks | Every retry count and delay a test must shorten becomes a public, non-underscore variable with the production default, as `renew_proof_retries` already is | A shorter wait can only make a run fail sooner, never pass falsely, so exposing it to a launcher adds no forgery risk. Underscore names stay refused |
 | D6 | What pre-push runs | **A fast lane** (Joseph, 2026-11-10): pytest runs every test whose recorded duration is under 1 s, every test missing from the durations file, and every test in a test file the push changes; BATS runs in full with `--jobs`. CI keeps the full suite | It finishes on the shared workstation, so it gets run. It is a narrower gate than 5.2 asked for, and the hook says so in its output |
-| D7 | NocoDB | Out of scope: it has no service-specific tests; its code and templates go in its own decommission change | The generic catalog tests drop its cases with its templates |
 | D8 | Order | **Phases 1 and 2 run in parallel** (Joseph, 2026-11-10), each in its own worktree and pull requests; phase 4 waits on phase 2's durations file | They touch different files: phase 1 tests and playbooks, phase 2 the workflow, `conftest.py` and the partition test |
 
 ## Architecture

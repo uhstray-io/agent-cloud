@@ -51,7 +51,7 @@ make local-creds
 #   https://semaphore.agent-cloud.test:8443
 
 # deploy a single service through local Semaphore, exactly like prod:
-make local-deploy-<name>             # e.g. make local-deploy-uhhcraft
+make local-deploy-<name>             # e.g. make local-deploy-erpnext
 make local-validate                  # health-check everything deployed
 ```
 
@@ -74,7 +74,7 @@ make local-validate                  # health-check everything deployed
 **Every service deploys the same way — through Semaphore:**
 
 1. Push changes to this repo
-2. Run the corresponding task template in Semaphore (e.g., "Deploy UhhCraft")
+2. Run the corresponding task template in Semaphore (e.g., "Deploy Authentik")
 3. Semaphore injects OpenBao credentials, SSHes to the target VM, and runs the composable playbook (`manage-secrets` → `deploy.sh` → verify)
 
 Production deploys always go through Semaphore so OpenBao credentials are injected and the run is auditable — never SSH into a VM and run `deploy.sh` directly.
@@ -93,13 +93,7 @@ deploy.sh does NOT generate secrets or interact with OpenBao. All credential man
 
 ## AI Agents
 
-| Agent | Type | Role |
-|-------|------|------|
-| **NemoClaw** | Headless engineer | Background automation, API integrations, CI/CD, health monitoring |
-| **NetClaw** | Network engineer | Network monitoring, topology discovery, config backup, security auditing |
-| **Claude Cowork** | Interactive architect | Research, architecture decisions, document generation |
-| **WebSmith** | Website builder | Prompt-only agent — walks users through a 5-phase workflow to produce a signed `SPEC.md` for a new website service |
-| **WisBot** | Community interface | Discord voice/chat bot with LLM-powered interactions |
+The AI layer is skynet, the orchestration API ([`platform/services/skynet/deployment/CLAUDE.md`](platform/services/skynet/deployment/CLAUDE.md)). Its agent roles are `infra-agent`, `security-agent`, `o11y-agent`, `service-agent`, `network-agent` and `skynet-eval`. Models are reached through the agentgateway inference edge.
 
 ## Platform Services
 
@@ -116,8 +110,6 @@ agent-cloud/
   platform/
     services/             Per-service: deployment/ + context/ + templates/
       openbao/            Secrets backbone (AppRole, KV v2, policies)
-      nocodb/             Retired (replaced by tududi, itself retired 2026-11-09); kept until its decommission
-      n8n/                Workflow automation
       semaphore/          Deployment orchestration
       netbox/             Infrastructure modeling + Diode discovery + Orb Agent
       dns/                hickory-dns internal resolution (zones-as-code; production VM provisioned, deploy pending)
@@ -125,19 +117,14 @@ agent-cloud/
       caddy/              Reverse proxy
       authentik/          Central IdP / SSO (server+worker+Postgres+Redis)
       inference/          README only, no deployment
-      inference-comfyui/  UhhCraft image-gen sidecar (Flux.1, GPU)
-      inference-hunyuan3d/ UhhCraft 3D-gen sidecar (Hunyuan3D, GPU)
-      uhhcraft/           First WebSmith-built site (Go + templ + HTMX)
-      tududi/             Retired 2026-11-09 (was the to-do app; Plane replaces it)
       honcho/             Memory API (api + deriver + pgvector + redis)
       o11y/               Live production observability: Grafana + Prometheus + Loki + Alloy
       postiz/             Social publishing (app + Temporal workflow engine)
       agentgateway/       Inference edge gateway (per-client keys, token budgets)
       github-runner/      Self-hosted GitHub Actions runners
       opa/                Policy engine (Rego policy-as-code)
-      openhands/          Agent Canvas
       erpnext/            ERP (composable slim local tier)
-      wikijs/ nextcloud/ a2a-registry/   Further service directories (see each one's docs)
+      a2a-registry/       Placeholder, no deployment
     playbooks/            Ansible playbooks (see playbooks/README.md)
       tasks/              Composable tasks (manage-secrets, deploy-orb-agent, etc.)
     semaphore/            Semaphore template definitions + setup playbook
@@ -149,10 +136,7 @@ agent-cloud/
     hypervisor/proxmox/   VM provisioning and cloud-init
     k8s/                  Kubernetes manifests (Kustomize overlays)
   agents/
-    nemoclaw/             Headless workflow agent
-    netclaw/              Network engineering agent
-    cowork/               Interactive architect agent
-    websmith/             Website-building agent (prompt-only; produces SPEC.md)
+    workflows/            Cross-agent workflows (reserved)
   plan/
     architecture/         Architecture plans (automation, testing, service integration)
     development/          Development plans (discovery, deployment, migration)
@@ -214,7 +198,7 @@ See `platform/playbooks/README.md` and `plan/architecture/01-automation-model.md
 
 Detailed architecture and planning documents live in `plan/`:
 
-Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIPLES.md`](PRINCIPLES.md) (the durable constitution). The per-area depth lives under `plan/architecture/` (the numbered `00–07` HOW) and `plan/development/` (the service-by-service roadmap):
+Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIPLES.md`](PRINCIPLES.md) (the durable constitution). The per-area depth lives under `plan/architecture/` (the numbered `00–06` and `08–09` HOW) and `plan/development/` (the service-by-service roadmap):
 
 | Document | Purpose |
 |----------|---------|
@@ -226,15 +210,14 @@ Start with [`ARCHITECTURE.md`](ARCHITECTURE.md) (the 5-minute map) and [`PRINCIP
 | `plan/architecture/05-platform-infra.md` | Caddy reverse proxy (TLS/DNS-01, routing), container runtime, platform infra |
 | `plan/architecture/06-observability-instrumentation.md` | Observability-by-declaration model (metrics/logs/traces) |
 | `plan/architecture/skills-recommendation.md` | Claude Code skills for development workflows |
-| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, websmith, ERPNext, migrations, resilience, tududi (retired 2026-11-09) and honcho, RBAC, Cloudflare IaC, Postiz |
-| `plan/archive/development/IMPLEMENTATION_PLAN.md` | Original full implementation plan (archived; phases, architecture, decisions) |
+| `plan/development/` | Numbered roadmap: local-dev, secrets, SSO, guardrails, NetBox discovery, observability, skynet, ERPNext, migrations, resilience, honcho, RBAC, Cloudflare IaC, Postiz |
 
 For new services, start with `plan/architecture/02-service-onboarding.md`. For new features, create an implementation plan in `plan/development/` before coding begins.
 
 ## CI/CD and Testing
 
 Every pull request runs these automated checks. The three below are the gates; a PR also
-runs change detection, conditional Go jobs for uhhcraft, a
+runs change detection, a
 CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | What it catches |
@@ -286,7 +269,7 @@ INFRASTRUCTURE        Docker, Podman, Proxmox; Kubernetes (k0s) planned
 SECRETS & IDENTITY    OpenBao, AppRole auth, per-service SSH keys
 DEPLOYMENT & GITOPS   Semaphore, Ansible, OpenTofu (Cloudflare edge as code), ArgoCD (planned)
 DATA                  PostgreSQL, SQLite, MinIO, DuckDB
-AI AGENTS             NemoClaw, NetClaw, Claude Cowork, WisBot
+AI AGENTS             skynet agent roles (infra-agent, security-agent, o11y-agent, service-agent, network-agent, skynet-eval)
 INFERENCE             agentgateway inference edge (/v1); skynet orchestration API calls through it (deployed in production; Semaphore launch rights are guest-only since 2026-10-31)
 AGENT PROTOCOLS       A2A (agent-to-agent), MCP (agent-to-tool)
 OBSERVABILITY         Grafana, Prometheus, Loki, Tempo (planned)
@@ -301,9 +284,7 @@ Production DGX Spark scrape targets are rendered from private inventory by
 | Repo | Visibility | Purpose |
 |------|-----------|---------|
 | [uhstray-io/agent-cloud](https://github.com/uhstray-io/agent-cloud) | Public | This repo -- platform monorepo |
-| [uhstray-io/WisBot](https://github.com/uhstray-io/WisBot) | Public | Discord bot (C#/.NET) |
-| [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Orchestration API (deployed in production 2026-10-30), which asks OPA for each decision and calls models through the agentgateway inference edge; its Semaphore launch rights are guest-only since 2026-10-31; supersedes WisAI's LLM plane and the NemoClaw/OpenClaw framework |
-| [uhstray-io/WisAI](https://github.com/uhstray-io/WisAI) | Public | **Legacy** — Ollama + Open WebUI LLM plane (its compose stack is in that repo's `infrastructure/`), superseded by skynet (production `/v1` is the agentgateway inference edge, in front of vLLM); non-LLM inference sidecars (ComfyUI, Hunyuan3D) are unaffected |
+| [uhstray-io/skynet](https://github.com/uhstray-io/skynet) | Private | Orchestration API (deployed in production 2026-10-30), which asks OPA for each decision and calls models through the agentgateway inference edge; its Semaphore launch rights are guest-only since 2026-10-31 |
 
 ## Contributing
 

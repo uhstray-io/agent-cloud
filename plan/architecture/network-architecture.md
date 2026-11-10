@@ -99,7 +99,7 @@ flowchart TB
             CADDY["Caddy<br/>TLS termination + routing"]
         end
         subgraph SVC["Service VMs (Proxmox), one service each"]
-            APPS["Platform services<br/>Authentik, n8n, Grafana, NetBox, ..."]
+            APPS["Platform services<br/>Authentik, Grafana, NetBox, ..."]
             AGW["agentgateway<br/>inference edge gateway"]
         end
         subgraph CTRL["Control plane"]
@@ -254,8 +254,8 @@ sequenceDiagram
     participant B as Browser
     participant C as Caddy
     participant O as Authentik outpost
-    participant S as Service (e.g. n8n)
-    B->>C: GET / on the n8n hostname
+    participant S as Service (e.g. NetBox)
+    B->>C: GET / on the NetBox hostname
     C->>C: delete client-sent X-authentik-* headers
     C->>O: forward_auth subrequest
     alt no session
@@ -465,7 +465,7 @@ Where the firewall is recorded as applied:
 | OPA host | Port 8281 from the callers' inventory groups only (`firewall_allow_groups`) | LIVE 2026-10-29 | [52][53] |
 | o11y receiver | Grafana from the Caddy host; Loki push from the GPU node addresses | LIVE 2026-10-02 | [36] |
 | Internal CA host | Default deny; CA API on loopback only | LIVE (group 3.1 done) | [9] |
-| Services probed from their own host (honcho, n8n, o11y; tududi until its retirement on 2026-11-09) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
+| Services probed from their own host (honcho, o11y) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
 | CI runner hosts | **Egress deny** to the secret store, orchestrator and hypervisors (inbound shape not recorded) | LIVE, verified from inside a job | [11] |
 | Caddy host | No firewall declaration found in this repository | UNVERIFIED | — |
 | Every other service host | Per-host declaration in site-config | UNVERIFIED | — |

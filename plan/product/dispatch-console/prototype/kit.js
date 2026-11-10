@@ -222,7 +222,7 @@ window.K = (() => {
 
   // ---------- topology (rows = the four-layer guardrails model) ----------
   const LANES = [["ai", "AI"], ["guard", "Guardrails"], ["auto", "Automation"], ["plat", "Platform"]];
-  const ORDER = { ai: ["honcho", "skynet", "agentgateway", "vllm"], guard: ["authentik", "opa", "openbao"], auto: ["gha", "semaphore", "n8n"], plat: ["netbox", "proxmox", "o11y", "caddy", "tududi", "postiz"] };
+  const ORDER = { ai: ["honcho", "skynet", "agentgateway", "vllm"], guard: ["authentik", "opa", "openbao"], auto: ["gha", "semaphore", "launch-gate"], plat: ["netbox", "proxmox", "o11y", "caddy", "plane", "postiz"] };
   const EDGE_LABEL = { api: "API", oidc: "OIDC / SSO", mcp: "MCP", logs: "Logs", metrics: "Metrics", traces: "Traces (planned)" };
   const DATA_FLOW = new Set(["logs", "metrics", "traces"]);
   function layout(W = 1000) {
