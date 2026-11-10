@@ -950,6 +950,42 @@ def _availability_compose_port(port: Any) -> tuple[int, int, str | None, str]:
     return target_number, published_number, host_ip, protocol
 
 
+def _availability_compose_mount(entry: Any, deployment_dir: str) -> dict[str, Any]:
+    """Normalize one effective-compose volume entry, long or short form, or refuse.
+
+    `podman-compose config` keeps the short form a compose file declares
+    ("./config/config.alloy:/etc/alloy/config.alloy:ro") where Docker Compose expands it,
+    so both forms reach this check. A relative source resolves against the deployment
+    directory, never the helper's working directory.
+    """
+    if isinstance(entry, dict):
+        mount_type, source, target = entry.get("type"), entry.get("source"), entry.get("target")
+        read_only = entry.get("read_only") is True
+    elif isinstance(entry, str) and "\x00" not in entry:
+        parts = entry.split(":")
+        if len(parts) == 1:
+            mount_type, source, target, mode = "volume", None, parts[0], ""
+        elif len(parts) in {2, 3}:
+            source, target = parts[0], parts[1]
+            mode = parts[2] if len(parts) == 3 else ""
+            mount_type = "bind" if source.startswith((".", "/", "~")) else "volume"
+        else:
+            raise Refusal("namespace_candidate_alloy_spec")
+        options = {option for option in mode.split(",") if option}
+        if {"ro", "rw"} <= options:
+            raise Refusal("namespace_candidate_alloy_spec")
+        read_only = "ro" in options
+    else:
+        raise Refusal("namespace_candidate_alloy_spec")
+    if not isinstance(target, str) or not target or (source is not None and not isinstance(source, str)):
+        raise Refusal("namespace_candidate_alloy_spec")
+    if mount_type == "bind" and isinstance(source, str):
+        source = os.path.expanduser(source)
+        if not os.path.isabs(source):
+            source = os.path.join(deployment_dir, source)
+    return {"type": mount_type, "source": source, "target": target, "read_only": read_only}
+
+
 def _verify_availability_effective_compose(
     deployment_dir: str, compose_cmd: list[str], overlays: list[str],
 ) -> str:
@@ -1026,21 +1062,17 @@ def _verify_availability_effective_compose(
         or not isinstance(volumes, list)
     ):
         raise Refusal("namespace_candidate_alloy_spec")
-    config_mounts = [
-        mount for mount in volumes
-        if isinstance(mount, dict) and mount.get("target") == "/etc/alloy/config.alloy"
-    ]
+    mounts = [_availability_compose_mount(mount, deployment_dir) for mount in volumes]
+    config_mounts = [mount for mount in mounts if mount["target"] == "/etc/alloy/config.alloy"]
     if (
         len(config_mounts) != 1
-        or config_mounts[0].get("type") != "bind"
-        or not isinstance(config_mounts[0].get("source"), str)
+        or config_mounts[0]["type"] != "bind"
+        or not isinstance(config_mounts[0]["source"], str)
         or os.path.realpath(config_mounts[0]["source"]) != expected_mount_source
-        or config_mounts[0].get("read_only") is not True
+        or config_mounts[0]["read_only"] is not True
         or any(
-            isinstance(mount, dict) and isinstance(mount.get("target"), str)
-            and mount.get("target") != "/etc/alloy/config.alloy"
-            and mount.get("target").startswith("/etc/alloy/")
-            for mount in volumes
+            mount["target"] != "/etc/alloy/config.alloy" and mount["target"].startswith("/etc/alloy/")
+            for mount in mounts
         )
     ):
         raise Refusal("namespace_candidate_alloy_spec")

@@ -922,6 +922,59 @@ def test_candidate_alloy_spec_refusals_name_the_alloy_spec_decision(monkeypatch,
     assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_candidate_alloy_spec"
 
 
+# ---- the shape `podman-compose config` actually emits --------------------------------------
+# Captured from `podman-compose` 1.6.0 `config` over compose.yml + compose.prod.yml +
+# compose.availability.yml on 2026-11-10. Unlike Docker Compose it keeps the short volume and
+# port forms the compose file declares. The long-form fixture above alone hid this: the first
+# real enabled deploy (Semaphore task 14401) refused with namespace_candidate_alloy_spec.
+PODMAN_COMPOSE_ALLOY_VOLUMES = ["./config/config.alloy:/etc/alloy/config.alloy:ro"]
+PODMAN_COMPOSE_ALLOY_PORTS = ["127.0.0.1:4317:4317", "127.0.0.1:4318:4318"]
+
+
+def _podman_compose_config(deployment_dir):
+    config = _candidate_config(deployment_dir)
+    _alloy(config)["volumes"] = list(PODMAN_COMPOSE_ALLOY_VOLUMES)
+    _alloy(config)["ports"] = list(PODMAN_COMPOSE_ALLOY_PORTS)
+    return config
+
+
+def test_candidate_accepts_the_short_forms_podman_compose_emits(monkeypatch, tmp_path):
+    assert _candidate(monkeypatch, tmp_path, _podman_compose_config(str(tmp_path))) == "o11y"
+
+
+def test_candidate_resolves_a_relative_source_against_the_deployment_dir(monkeypatch, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert _candidate(monkeypatch, tmp_path, _podman_compose_config(str(tmp_path))) == "o11y"
+    config = _candidate_config(str(tmp_path))
+    _alloy(config)["volumes"][0]["source"] = "./config/config.alloy"
+    assert _candidate(monkeypatch, tmp_path, config) == "o11y"
+
+
+SHORT_FORM_ALLOY_SPEC_DECISIONS = [
+    ["./config/config.alloy:/etc/alloy/config.alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:rw"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro,rw"],
+    ["/etc/passwd:/etc/alloy/config.alloy:ro"],
+    ["alloy-config:/etc/alloy/config.alloy:ro"],
+    ["/etc/alloy/config.alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro:extra"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "./config/config.alloy:/etc/alloy/config.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/extra.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/conf.d"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", 7],
+    ["./config/config.alloy::ro"],
+]
+
+
+@pytest.mark.parametrize("volumes", SHORT_FORM_ALLOY_SPEC_DECISIONS)
+def test_candidate_short_form_mount_refusals_name_the_alloy_spec_decision(monkeypatch, tmp_path, volumes):
+    config = _podman_compose_config(str(tmp_path))
+    _alloy(config)["volumes"] = volumes
+    assert _refusal_category(lambda: _candidate(monkeypatch, tmp_path, config)) == "namespace_candidate_alloy_spec"
+
+
 @pytest.mark.parametrize("mutate", PORT_DECISIONS)
 def test_candidate_port_refusals_name_the_ports_decision(monkeypatch, tmp_path, mutate):
     assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_candidate_ports"
