@@ -33,7 +33,6 @@ locals {
     "postiz",
     "pve", # Proxmox
     "semaphore",
-    "todo", # tududi
     "wisbot",
   ]
 }

@@ -115,24 +115,6 @@
       ansible.builtin.debug:
         msg: "WisBot: {{ 'HEALTHY' if _wisbot_health is succeeded else 'UNHEALTHY' }}"
 
-- name: "Validate tududi"
-  hosts: tududi_svc
-  gather_facts: false
-  tasks:
-    - name: Check tududi health
-      ansible.builtin.uri:
-        url: "{{ service_url }}/api/health"
-        method: GET
-        status_code: [200]
-        timeout: 10
-      register: _tududi_health
-      ignore_errors: true
-      check_mode: false
-
-    - name: Report tududi status
-      ansible.builtin.debug:
-        msg: "tududi: {{ 'HEALTHY' if _tududi_health is succeeded else 'UNHEALTHY' }}"
-
 - name: "Validate console"
   hosts: console_svc
   gather_facts: false
