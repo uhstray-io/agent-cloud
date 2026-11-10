@@ -90,15 +90,6 @@ bats platform/tests/
 # The native Podman-template regression in the Python suite executes Go's text/template.
 # `brew bundle` from the repository root installs the Go toolchain from Brewfile.
 
-# UhhCraft-only generators and static analysis
-cd platform/services/uhhcraft/deployment
-templ generate              # regenerate *_templ.go from .templ source
-sqlc generate               # regenerate internal/db/sqlcdb/ from db/queries/*.sql
-golangci-lint run ./...     # config in .golangci.yml
-gosec -exclude=G104,G304,G704,G710 -exclude-dir=web/templates -exclude-dir=internal/db/sqlcdb ./...
-go test -race -count=1 ./...
-cd -
-
 # Secret scan
 git diff --staged | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
 git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_id[:=]\s*[a-f0-9-]{30}'
@@ -130,13 +121,8 @@ uv sync --locked
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
 
-# Go toolchain (required for UhhCraft changes)
+# Go toolchain (required for the Python test suite)
 brew install go@1.26
-go install github.com/a-h/templ/cmd/templ@v0.3.1020
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
-go install github.com/pressly/goose/v3/cmd/goose@v3.27.1
-brew install golangci-lint   # v2.x — config is .golangci.yml `version: "2"`
-brew install gosec
 ```
 
 ---
@@ -144,9 +130,8 @@ brew install gosec
 ## CI Pipeline
 
 Every PR triggers these GitHub Actions jobs automatically. The three below are the gates
-that must pass; a PR also runs change detection, CodeQL analysis per language, the
-conditional Go jobs for uhhcraft, a CodeRabbit review, and — on a `dev` → `main` PR — a
-promotion-source check:
+that must pass; a PR also runs change detection, CodeQL analysis per language, a
+CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | Fails on |
 | --- | ----- | -------- |
