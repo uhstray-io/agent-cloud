@@ -55,6 +55,17 @@ must never masquerade as the real fix.
 
 Private configuration (real IPs, credentials, production inventory) lives in the separate **site-config** repository. This repo contains only templates, placeholders, and code.
 
+**Standing convention: agent-cloud is the template, site-config configures Uhstray.io's instance**
+(operator's rule, 2026-11-09). agent-cloud holds whatever any agent-cloud instance needs:
+playbooks, templates, skills, onboarding guides, runbooks. It is written so another operator could
+run their own instance from it. Everything that only makes sense for Uhstray.io's instance goes to
+site-config: hostnames, workspace and organisation names, people and contacts, the filled-in values
+a template asks for, and hand-off pages for teammates. When a guide or skill needs instance values,
+write it here with placeholders and a table naming each one, and put the values in site-config. The
+first instance is `connecting-to-plane` here, with its values in site-config's `docs/PLANE-SETUP.md`.
+Some docs in this repo still name Uhstray.io hosts; that is existing debt. Move it when you touch it,
+and never add more.
+
 ## Architecture
 
 ### Four-Layer Guardrails Model
@@ -574,6 +585,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 - **No AI attribution** in commits, PR titles and bodies, or issues. Commits: enforced by `.githooks/commit-msg` (`docs/MISTAKES.md` 5.9). GitHub text: convention, since no repository hook sees `gh` (5.15, a wrapper hook proposed)
 - **Pull request titles set the version.** Write them as Conventional Commits (`type(scope)!: description`), because `scripts/semver.py` reads them from the merge commits to tag `dev` and `main` (plan 20). The required `Version` job fails any other form. Mark a breaking change with `!`: removing or renaming a Semaphore template, a survey or playbook input, an inventory variable, an OpenBao path or field, or a published route. Automation never cuts a major version; 1.0.0 and later majors go through the approved `release-major` dispatch
 - **No credentials, IPs, or usernames** in committed files — use `{{ }}` template variables
+- **No instance details** in new docs, skills or guides: Uhstray.io's hostnames, workspace names and contacts go to site-config, with placeholders here (see "Standing convention" under Repository Overview)
 - IPs and real credentials belong exclusively in site-config (private)
 
 ### Branch Workflow
