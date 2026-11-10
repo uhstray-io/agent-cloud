@@ -74,6 +74,40 @@ def _internal_fact_cases(forge_hosts, forge_confirm):
                     )
 
 
+
+def _gate_path_is_the_shared_one(path: Path) -> list[str]:
+    """Why the plain-only includers can share one gate proof: each is one hosts play whose only task
+    includes tasks/clean-service.yml, with no play named for a refusal (the context forgery keys on
+    that name) and no direct include of the gate. Returns what breaks that shape."""
+    problems = []
+    plays = [p for p in playbook_yaml.load(path) if "hosts" in p]
+    if len(plays) != 1:
+        problems.append(f"{len(plays)} hosts plays")
+    for play in plays:
+        tasks = play.get("tasks", []) or []
+        includes = [str(t.get("ansible.builtin.include_tasks", "")) for t in tasks]
+        if len(tasks) != 1 or not includes[0].endswith("clean-service.yml"):
+            problems.append("tasks other than the one clean-service include")
+        for key in ("pre_tasks", "roles", "post_tasks", "handlers"):
+            if play.get(key):
+                problems.append(f"play has {key}")
+    names = [str(p.get("name", "")) for p in playbook_yaml.load(path)]
+    if any(re.search(r"(?i)refuse", n) for n in names if n != "Refuse extra vars that set internal names"):
+        problems.append("a play other than the run-start guard is named for a refusal")
+    if "assert-reset-confirmed.yml" in path.read_text():
+        problems.append("includes the gate directly")
+    return problems
+
+
+def test_every_plain_only_includer_reaches_the_gate_the_same_way():
+    # The cut matrix rests on this: a clean-deploy that gains its own gate path must join FULL_GATE_IDS.
+    shaped = {service: _gate_path_is_the_shared_one(path) for path, service in zip(INCLUDERS, IDS, strict=True)
+              if service not in FULL_GATE_IDS}
+    assert shaped and {s: p for s, p in shaped.items() if p} == {}, shaped
+    # The two direct includers really do differ, which is why they keep the full matrix.
+    for service in DIRECT_GATE_IDS:
+        assert _gate_path_is_the_shared_one(PLAYBOOKS / f"clean-deploy-{service}.yml"), service
+
 def test_every_clean_deploy_playbook_composes_clean_service():
     assert len(INCLUDERS) == len(list(PLAYBOOKS.glob("clean-deploy-*.yml"))) >= 16, INCLUDERS
 
