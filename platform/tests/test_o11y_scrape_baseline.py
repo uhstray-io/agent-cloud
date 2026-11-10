@@ -2107,7 +2107,7 @@ def test_effective_compose_accepts_only_narrow_otlp_short_port_forms(monkeypatch
 def test_effective_compose_refuses_admin_remaps_and_malformed_port_shapes(monkeypatch, port, enabled):
     if isinstance(port, dict):
         port = {"host_ip": "127.0.0.1", **port}
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
         _check_effective_compose_ports(monkeypatch, _effective_compose_fixture([port]), enabled=enabled)
 
 
@@ -2115,7 +2115,7 @@ def test_effective_compose_refuses_admin_remaps_and_malformed_port_shapes(monkey
 def test_effective_compose_refuses_malformed_ports_collection(monkeypatch, ports):
     config = _effective_compose_fixture()
     config["services"]["alloy"]["ports"] = ports
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
         _check_effective_compose_ports(monkeypatch, config, enabled=False)
 
 
@@ -2137,7 +2137,7 @@ def test_effective_compose_refuses_admin_publication_on_other_services(monkeypat
     config = _effective_compose_fixture([valid_alloy_otlp])
     config["services"]["synthetic"] = {"ports": [other_service_admin_port]}
 
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
         _check_effective_compose_ports(monkeypatch, config, enabled=enabled)
 
 
@@ -2378,7 +2378,8 @@ services:
         SURVEY, "_availability_command",
         lambda argv, **_kwargs: unsafe_config if argv[-1] == "config" else command(argv, **_kwargs),
     )
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    # The pod check runs before the alloy-spec check, so the in_pod change is named first.
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_pod"):
         SURVEY.verify_availability_namespace(validate_candidate=True)
 
 

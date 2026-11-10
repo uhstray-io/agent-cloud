@@ -233,8 +233,26 @@ its fixed reason set does not change.
 The survey reads no activation switch, places nothing, and prints no container, process or namespace
 identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
 an `isolated` result does not accept availability: the source, placement and post-apply gates still
-apply. Candidate-mode checks of the effective compose file (`deploy.sh --candidate`) keep the generic
-`namespace_unverified` category; the survey covers only the pre-placement runtime proof.
+apply. The survey covers only the pre-placement runtime proof.
+
+**Candidate-mode refusals.** The effective compose file checks run in candidate mode (`deploy.sh`,
+on the real enabled deploy, at three points: before the first start, before the final start, and
+after apply). Each refusal names the decision point that raised it:
+`namespace_candidate_compose_unreadable` (an overlay file is missing, `compose config` failed, its
+output is not UTF-8 or YAML, `services` is not a mapping of 1 to 32 entries, a service entry is not a
+mapping, or the project `name` is missing or empty),
+`namespace_candidate_inputs_label` (more than one final label overlay, an overlay path or file that
+does not validate, a label service set that differs from the services, or an
+`io.agent-cloud.inputs-sha256` label that does not match), `namespace_candidate_pod` (enabled mode
+without `x-podman: {in_pod: false}`), `namespace_candidate_alloy_spec` (the `alloy` service is missing
+or not a mapping, or its entrypoint, command, network mode, image or config mount differs from the
+declared one), `namespace_candidate_ports` (a port list or entry is malformed, a port uses 12345, or
+an Alloy port is outside the declared target, protocol or loopback and private address rules),
+`namespace_candidate_project` (the running Alloy belongs to a different project than the candidate),
+and `namespace_network_mode` (a service declares a network mode). `deploy.sh` prints one line,
+`Availability gate category: <category>`, before its error message, so the failing decision is in the
+deploy output. It never prints the helper's raw output. The producer source gate folds all of these
+to `namespace_unverified`.
 
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
