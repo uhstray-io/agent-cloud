@@ -3243,6 +3243,14 @@ templates:
     playbook: platform/playbooks/retire-semaphore-templates.yml
     dev_variant: true
 
+  # Removes the OpenBao KV-v2 fields that platform/playbooks/vars/retired-secret-fields.yml declares
+  # retired, one merge-patch null per field. It refuses while a file in the path's own scope still
+  # declares a field. Run the Dev variant in Semaphore's Dry run first: it lists the fields a live run
+  # would remove, by name, and writes nothing. No survey: the declaration is the input.
+  - name: Retire OpenBao Fields
+    playbook: platform/playbooks/retire-openbao-fields.yml
+    dev_variant: true
+
   - name: Apply All OpenBao Policies
     playbook: platform/playbooks/apply-openbao-policies.yml
 
