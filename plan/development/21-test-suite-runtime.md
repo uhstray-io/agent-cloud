@@ -41,7 +41,7 @@ Most of these tests do not reach such a refusal. They reach `refuse-internal-ext
 | `test_agw_conformance.py` forgery tests (`:1328`, `:1468`, `:1482`) | 63 | 108 | 21 names × 3, each asserting the guard's message (`_refused_first`, `:1324-1325`) |
 | `test_a_forged_internal_name_is_refused_by_the_real_executor` | 60 | 44 | 20 executors × 3; the 20 are a subset of the 244 above (`:274-285`) |
 
-The guard renders the forged value of an ordinary internal name in none of its tasks, and that is checkable: a stateful forgery of `_forged_by_launch` sent to `deploy-opa.yml` was refused by the guard, and its render counter file was never created (run 2026-11-10 on ansible-core 2.20.8). **One name is the exception.** The guard's own `when:` reads `_extra_var_guard_nested is defined` (`refuse-internal-extra-vars.yml:110`, `:159`), and a stateful forgery of that name writes the counter (reproduced in review of this plan). The outcome does not depend on the rendering today, because the same condition's second clause reads the key; the tests of that flag keep all three spellings anyway (D1).
+For an underscore name the guard does not itself reference, its refusal happens before anything renders that name's value, and that is checkable: a stateful forgery of `_forged_by_launch` sent to `deploy-opa.yml` was refused by the guard, and its render counter file was never created (run 2026-11-10 on ansible-core 2.20.8). **The names the guard references are the exception.** Its `when:` reads `_extra_var_guard_nested is defined` (`refuse-internal-extra-vars.yml:110`, `:159`), and a stateful forgery of that name writes the counter (reproduced in review of this plan); its second task computes `_conn_names` and `_conn_forged` (`:126-160`), reached only after the first task has passed. The outcome does not depend on the rendering today, because the nested condition's second clause reads the key; tests of any name the guard references keep all three spellings anyway (D1).
 
 Two more forgery families are **not** in the by-name class and keep all three spellings:
 
@@ -97,7 +97,7 @@ Few tests are dead. The sweep found **no** test referencing a path that no longe
 | `test_mistakes_doc.bats:120-143` (four named tests exist; non-exhaustive by its own comment) | `test_ledger_test_citations.py:169-174` (every cited test exists) |
 | `test_a_forged_internal_name_is_refused_by_the_real_executor` | `test_every_launchable_playbook_refuses_a_forged_internal_name` (same playbooks, same guard), except its `CUSTOM STATS` assertion (`:285`) |
 
-Retired services: tududi's code and tests were removed together (`e6214688b`). NocoDB is retired by decision but its code is still present (`platform/services/nocodb/`, `deploy-nocodb.yml`), with no pytest coverage; its tests go when its code goes, in the decommission change, not here.
+Retired services: tududi's code and tests were removed together (`e6214688b`). NocoDB is retired by decision but its code is still present (`platform/services/nocodb/`, `deploy-nocodb.yml`); no test covers it (the only BATS mentions, `test_service_opa.bats:170`, `:226`, use the name as policy sample data), so there is nothing to remove here.
 
 Six of the eight ratchet allowlists (`platform/tests/known_*.txt`, `check_mode_allowlist.txt`) are empty: those migrations finished. The tests that read them still prevent regressions and cost nothing; they stay.
 
@@ -119,29 +119,29 @@ Six of the eight ratchet allowlists (`platform/tests/known_*.txt`, `check_mode_a
 
 | # | Question | Decision | Why |
 |---|---|---|---|
-| D1 | How a refusal test proves the by-name guard | Run all three spellings **against the guard** (already done: `test_the_guard_ends_the_run_before_any_other_play`, `test_executor_internal_overrides.py:230-249`), and make that test also assert the stateful forgery's render counter (`forgery-renders-<name>` in `tmp_path`) was never written. Per playbook, run the **plain** spelling only. Add `forgeries.by_name(name)`; `test_extra_var_refusal_tests.py` accepts it only in a test that asserts the guard's own message (`Refusing to run: <name> set from outside the playbook`) for an underscore name **other than `_extra_var_guard_nested`**, which the guard's `when:` reads and which therefore keeps all three spellings by name | "The guard renders nothing" becomes a tested fact for the names it covers, and the one name it renders is excluded by rule, not by memory. A refusal that reads values, a gate run without the guard, and a connection variable still require all three |
+| D1 | How a refusal test proves the by-name guard | Run all three spellings **against the guard** (already done: `test_the_guard_ends_the_run_before_any_other_play`, `test_executor_internal_overrides.py:230-249`), and make that test also assert the stateful forgery's render counter (`forgery-renders-<name>` in `tmp_path`) was never written. Per playbook, run the **plain** spelling only. Add `forgeries.by_name(name)`; `test_extra_var_refusal_tests.py` accepts it only in a test that asserts the guard's own message (`Refusing to run: <name> set from outside the playbook`) for an underscore name **the guard does not reference**. The meta-test derives the excluded set itself by parsing `refuse-internal-extra-vars.yml` for underscore variable names outside comments (today `_extra_var_guard_nested`, `_conn_names`, `_conn_forged`; the `_pass` and `_password` fragments of the refusal pattern at `:101` are regex text, not variables), so a later guard edit that reads another name's value excludes it automatically | "The guard renders nothing" becomes a tested fact for the names it covers, and the names it does read are excluded by a rule computed from the guard, not by memory. A refusal that reads values, a gate run without the guard, and a connection variable still require all three |
 | D2 | Per-playbook guard runs | Keep one plain run per launchable playbook (244 runs) | The static check proves the guard is listed first; one real run proves Ansible resolves and executes it first. Dropping to a sample saves another ~190 s but loses that proof per playbook |
 | D3 | How CI partitions pytest | One matrix job, shard chosen by a stdlib hook in a root `conftest.py` from `PYTEST_SHARD=k/N`, files assigned by greedy bin-packing over a committed durations file | Complete and disjoint by construction. Rebalancing is a data change, not a workflow edit. A third-party sharding plugin is the alternative and is a new dependency |
 | D4 | How BATS runs in parallel | **GNU `parallel` and `bats --jobs`** (Joseph, 2026-11-10): installed by apt in CI and by `brew install parallel` locally, with `--no-parallelize-within-files`, so files run concurrently and tests within a file keep their order. Pre-push falls back to serial BATS when `parallel` is absent, with a warning, under its fail-open contract | One flag instead of hand-rolled sharding; the cross-file audit in F6 is the safety precondition. It is a new dependency, approved |
 | D5 | Fixed waits in playbooks | Every retry count and delay a test must shorten becomes a public, non-underscore variable with the production default, as `renew_proof_retries` already is | A shorter wait can only make a run fail sooner, never pass falsely, so exposing it to a launcher adds no forgery risk. Underscore names stay refused |
 | D6 | What pre-push runs | **A fast lane** (Joseph, 2026-11-10): pytest runs every test whose recorded duration is under 1 s plus every test in a test file the push changes; BATS runs in full with `--jobs`. CI keeps the full suite | It finishes on the shared workstation, so it gets run. It is a narrower gate than 5.2 asked for, and the hook says so in its output |
-| D7 | NocoDB tests | Out of scope; removed with its service code | A test of shipped code is not dead |
+| D7 | NocoDB | Out of scope: it has no tests to remove; its code goes in its own decommission change | Nothing in the suites tests it |
 | D8 | Order | **Phases 1 and 2 run in parallel** (Joseph, 2026-11-10), each in its own worktree and pull requests; phase 4 waits on phase 2's durations file | They touch different files: phase 1 tests and playbooks, phase 2 the workflow, `conftest.py` and the partition test |
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-  D[test_durations.json, per test node, committed] --> H[root conftest.py: assign files to shards]
-  H -->|PYTEST_SHARD=k/N| M[CI matrix: Python shard 1..N]
-  H -->|PYTEST_FAST=1| P[pre-push fast lane]
-  M --> U[Unit Tests aggregate]
-  B[bats --jobs, no parallel within files] --> U
-  R[Rego, Rust console] --> U
-  M -->|each shard reports duration vs timeout| W[non-blocking warning above 50%]
+  durations[test_durations.json, per test node, committed] --> hook[root conftest.py: assign files to shards]
+  hook -->|PYTEST_SHARD=k/N| shards[CI matrix: Python shard 1..N]
+  hook -->|PYTEST_FAST=1| fastlane[pre-push fast lane]
+  shards --> unittests[Unit Tests aggregate]
+  batsjobs[bats --jobs, no parallel within files] --> unittests
+  otherjobs[Rego, Rust console] --> unittests
+  shards -->|each shard reports duration vs timeout| warning[non-blocking warning above 50%]
 ```
 
-The durations file is per test node: the shard hook sums it per file (a file's module fixtures stay on one shard), and the fast lane reads it per test. A file missing from it is weighted by its test count × the median per-test time; a test missing from it is not in the fast lane. The file is regenerated from a CI run's `--durations=0` output by a small script, and refreshed when a shard drifts above its target; refreshing it is a data commit, never a workflow edit.
+The durations file is per test node: the shard hook sums it per file (a file's module fixtures stay on one shard), and the fast lane reads it per test. It is built from a CI run's `--junitxml` report, whose `time` per testcase covers every test (setup, call and teardown together), not from `--durations` output, which hides entries under 5 ms at the verbosity CI uses. A file missing from it is weighted by its test count × the median per-test time; a test missing from it **is** in the fast lane, so a gap runs more, never less. The file is regenerated by a small script and refreshed when a shard drifts above its target; refreshing it is a data commit, never a workflow edit.
 
 ## Implementation Phases
 
@@ -171,7 +171,7 @@ Phase 1 total: Python about **11,300 to 9,800 worker-seconds** (-13%), serial BA
 
 The critical path barely moves: core keeps almost all of its work. Phase 2 is what shortens it.
 
-**Acceptance.** For each pull request: the collected node IDs before and after, diffed, with every removed ID listed in the pull request beside the test that still covers it; the mutation checks below fail the reduced tests; CI timings reported per job. Mutation checks for 1.1: remove the guard import from one playbook; make `refuse-internal-extra-vars.yml:101` read one value; drop the nested-flag exclusion from the meta-test. For 1.1b: remove the gate include from one direct includer.
+**Acceptance.** For each pull request: the collected node IDs before and after, diffed, with every removed ID listed in the pull request beside the test that still covers it; the mutation checks below fail the reduced tests; CI timings reported per job. Mutation checks for 1.1: remove the guard import from one playbook; make `refuse-internal-extra-vars.yml:101` read one value; and a negative fixture in the meta-test (in the style of `test_the_scan_finds_a_refusal_test_by_its_name`, `test_extra_var_refusal_tests.py:85`) where a test uses `by_name` for a name the guard references, which the meta-test must refuse. For 1.1b: make `assert-reset-confirmed.yml` read `_reset_hosts | default(...)` or re-add the old `set_fact`; every kept includer must then fail on every spelling and both limits.
 
 ### Phase 2 — Self-balancing shards and parallel BATS (one workflow transition)
 
@@ -181,9 +181,9 @@ The critical path barely moves: core keeps almost all of its work. Phase 2 is wh
 4. `test_ci_python_partition.py`: one `pytest --collect-only` of the root, then the hook's own assignment function applied to those real node IDs for k = 1..N, asserting the shards are pairwise disjoint and their union equals root by node ID; one subprocess run of the hook on a small temporary test tree with `PYTEST_SHARD` set, proving the hook wiring; and a check that the matrix and `Unit Tests` `needs` agree. One collection instead of four.
 5. `scripts/merge-when-green.py`: the ninth transition (pinned blob, predecessor kept as a fixture, `EXPECTED` updated to the matrix job names), per `dev-merge-guard.md`. `Unit Tests` keeps its name, so the `protect-main` ruleset needs no change (`.github/rulesets/protect-main.json` requires `Static Analysis`, `Security Scan`, `Unit Tests`, `Promotion source (dev -> main)`).
 
-Projection: today's 11,318 worker-seconds over 8 shards × 4 workers is ~355 s per shard, plus ~30 s collection and ~20 s install: **about 7 minutes per Python shard**, against today's 20 to 24 minutes; after phase 1 (~9,800), about 6 minutes. BATS with `--jobs 4`: about 2 to 2.5 minutes, its floor the slowest file (`test_service_skynet.bats`, ~56 s). Rust (3m19s) and Static Analysis (2m58s) then become the next-longest jobs. Whole-PR CI wall time: about 6 to 7 minutes. agent-cloud is public; confirm how Actions minutes are billed for this repository before choosing N above 8.
+Projection: today's 11,318 worker-seconds over 8 shards × 4 workers is ~355 s per shard, plus ~30 s collection and ~20 s install: **about 7 minutes per Python shard**, against today's 20 to 24 minutes; after phase 1 (~9,800), about 6 minutes. BATS with `--jobs 4`: about 2 to 2.5 minutes, its floor the slowest file: `test_service_github_runner.bats` (~65 s) until 1.2 removes its 30 s waits, then `test_service_skynet.bats` (~56 s). Rust (3m19s) and Static Analysis (2m58s) then become the next-longest jobs. Whole-PR CI wall time: about 6 to 7 minutes. agent-cloud is public; confirm how Actions minutes are billed for this repository before choosing N above 8.
 
-Verify before relying on it: how GNU `parallel` behaves non-interactively on first use in CI (its citation notice), and whether any BATS file shares state across its own tests that `--no-parallelize-within-files` would not already cover.
+Verify before relying on it: that the apt `bats` CI installs supports `--jobs` and `--no-parallelize-within-files` (confirmed only on Homebrew bats 1.13.0 so far; the install step discards its output, `lint-and-test.yml:471`); how GNU `parallel` behaves non-interactively on first use in CI (its citation notice); and whether any BATS file shares state across its own tests that `--no-parallelize-within-files` would not already cover.
 
 **Acceptance.** The partition test passes; every shard and the BATS job green on the transition's pull request; the merge guard passes when run from that pull request's head; per-shard durations reported against the projection.
 
@@ -199,9 +199,9 @@ Verify before relying on it: how GNU `parallel` behaves non-interactively on fir
 ### Phase 4 — Pre-push fast lane (after phase 2)
 
 1. The conftest hook gains `PYTEST_FAST=1`: keep tests recorded under 1 s, plus every test in a test file changed between the pushed ref and its merge base with `dev`.
-2. `.githooks/pre-push`: BATS with `--jobs` (serial fallback without `parallel`), started together with the fast pytest lane; the separate `--collect-only` pass folded into the pytest run's own collection. The hook prints which lane ran and that CI runs the full suite. It keeps its fail-open contract and its branch lock.
+2. `.githooks/pre-push`: BATS with `--jobs` (serial fallback without `parallel`), started together with the fast pytest lane. The separate `--collect-only` pass may be folded into the run's own collection only if its classifier keeps all three outcomes (`.githooks/pre-push:259-306`): clean collection runs the suite; a missing dependency warns, names the module and skips; a syntax error or bad configuration blocks the push. The hook prints which lane ran and that CI runs the full suite. It keeps its fail-open contract and its branch lock.
 
-**Acceptance.** On the shared workstation the hook finishes in under 10 minutes on a typical branch, measured and recorded; `test_pre_push_branch_lock.bats` and `test_pre_push_git_env.bats` still pass.
+**Acceptance.** On the shared workstation the hook finishes in under 10 minutes on a typical branch, measured and recorded; `test_pre_push_branch_lock.bats` and `test_pre_push_git_env.bats` still pass; a new test covers each of the three collection outcomes, which no test covers today.
 
 ## Validation Criteria
 
@@ -224,7 +224,7 @@ Verify before relying on it: how GNU `parallel` behaves non-interactively on fir
 
 ## Security considerations
 
-Nothing here touches a credential path. The guard reductions are the only coverage change on a security control, and D1 confines them to refusals that read names, with a meta-test enforcing the condition, the nested flag excluded by rule, and a mutation check per change. The matrix shards run with the same `persist-credentials: false` checkout and `contents: read` permission as today's jobs. GNU `parallel` comes from the runner's distribution packages, as `bats` already does.
+Nothing here touches a credential path. The guard reductions are the only coverage change on a security control, and D1 confines them to refusals that read names, with a meta-test enforcing the condition, the names the guard itself references excluded by a rule computed from the guard, and a mutation check per change. Every matrix shard checks out with `persist-credentials: false`, which today only the Safety, Agentgateway and Playbook Runs jobs set, and runs under the workflow's `contents: read` permission. GNU `parallel` comes from the runner's distribution packages, as `bats` already does.
 
 ## Cross-references
 
