@@ -162,9 +162,10 @@ it is collectable, with the same test paths, working directory and `PYTHONPATH` 
 via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
 so you do not need to remember them.
 
-`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
-3.12 and installs the test dependencies, while the hook uses whatever `python3` is on your
-`PATH`.
+`bats platform/tests/` is byte-identical to CI's. Both suites run on the locked environment
+when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
+`PATH`, as CI does. Without uv it falls back, with a warning, to whatever `python3` and
+tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push

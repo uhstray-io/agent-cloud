@@ -223,13 +223,22 @@ failed=0
 # system install would otherwise answer with other versions, or with none (tests skip).
 # PATH is what CI sets too (`.venv/bin` into $GITHUB_PATH).
 #
-# Fail-open, like everything else here: no uv, a failed sync (stale lock, no network), or a
-# sync that did not produce .venv/bin/python (UV_PROJECT_ENVIRONMENT pointing elsewhere)
-# leaves PATH alone, with a warning.
+# Fail-open, like everything else here: no uv, UV_PROJECT_ENVIRONMENT pointing anywhere but
+# this checkout's .venv (a sync would land elsewhere, and an old .venv left here would be
+# stale), a failed sync (stale lock, no network), or a sync that did not produce
+# .venv/bin/python leaves PATH alone, with a warning.
 py_locked=0
 if [ -f pyproject.toml ]; then
   if command -v uv >/dev/null 2>&1 && [ -f uv.lock ]; then
-    if uv sync --locked --quiet && [ -x "$root/.venv/bin/python" ]; then
+    case "${UV_PROJECT_ENVIRONMENT:-}" in
+      ""|.venv|"$root/.venv") uv_env_here=1 ;;
+      *) uv_env_here=0 ;;
+    esac
+    if [ "$uv_env_here" = "0" ]; then
+      printf 'pre-push WARNING: UV_PROJECT_ENVIRONMENT points outside this checkout'"'"'s .venv, so the\n' >&2
+      printf '  suites run on the tools already on PATH, not the locked environment. Unset it to\n' >&2
+      printf '  run the same versions as CI.\n' >&2
+    elif uv sync --locked --quiet && [ -x "$root/.venv/bin/python" ]; then
       PATH="$root/.venv/bin:$PATH"
       export PATH
       py_locked=1

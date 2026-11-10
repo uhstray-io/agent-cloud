@@ -98,6 +98,17 @@ push() {
   assert_grep 'did not create .venv' <(printf '%s' "$output")
 }
 
+@test "pre-push uv: UV_PROJECT_ENVIRONMENT elsewhere ignores a stale .venv and falls back" {
+  mkdir -p "$REPO/.venv/bin"
+  cp "$T/fakepython" "$REPO/.venv/bin/python"
+  cp "$T/fakepython" "$REPO/.venv/bin/python3"
+  run push "$T/fakebin" UV_PROJECT_ENVIRONMENT="$T/elsewhere"
+  [ "$status" -eq 0 ]
+  assert_grep 'fakebin/python3 ' "$LOG"
+  refute_grep '\.venv/bin' "$LOG"
+  assert_grep 'UV_PROJECT_ENVIRONMENT points outside' <(printf '%s' "$output")
+}
+
 @test "pre-push uv: a failed sync falls back to python3 with a warning" {
   run push "$T/fakebin" FAKE_UV_RC=1
   [ "$status" -eq 0 ]
