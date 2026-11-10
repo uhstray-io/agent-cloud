@@ -34,11 +34,11 @@ There are two deployment patterns in use:
 **Legacy (thin wrapper):** Services that have not yet migrated to the composable pattern use a thin wrapper that imports `deploy-service.yml` with `target_service` set. This is required because the Semaphore version in use does not support `extra_cli_arguments`.
 
 ```yaml
-# deploy-nocodb.yml (legacy pattern)
-- name: "Deploy NocoDB"
+# deploy-openbao.yml (legacy pattern)
+- name: "Deploy OpenBao"
   import_playbook: deploy-service.yml
   vars:
-    target_service: nocodb_svc
+    target_service: openbao_svc
 ```
 
 **Composable (multi-phase):** Services migrated to the composable pattern have their own multi-phase playbook that uses the composable task library directly. NetBox is the reference implementation.
@@ -59,7 +59,7 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 | Variable | Source | Notes |
 |----------|--------|-------|
 | `ansible_user` | Inventory (private) | Declare explicitly; individual playbooks may supply fallback values |
-| `service_name` | Inventory per-host | e.g., `nocodb`, `openbao` |
+| `service_name` | Inventory per-host | e.g., `openbao` |
 | `monorepo_deploy_path` | Inventory per-host | Path within monorepo to deploy.sh |
 | `monorepo_repo` | Inventory global | Git SSH URL |
 | `openbao_addr` | Inventory `all.vars` | OpenBao API URL. Declared for every host, `localhost` included (production since 2026-09-25); an environment extra var of the same name overrides it, which the seed playbooks refuse as drift (`tasks/assert-bao-addr-declared.yml`). Isolated seed environments carry no extra vars |
@@ -150,18 +150,11 @@ and launches each with a forged internal name.
 | Playbook | Pattern | Purpose |
 |----------|---------|---------|
 | `deploy-service.yml` | Legacy | Generic deploy: clone monorepo, run deploy.sh, health check |
-| `deploy-all.yml` | Legacy aggregate | Covers OpenBao, NocoDB, n8n, NetBox and NemoClaw through the legacy clone task; not a complete current-platform deployment or recovery path |
 | `deploy-openbao.yml` | Legacy | Deploy OpenBao (self-bootstrapping, special case) |
-| `deploy-nocodb.yml` | Legacy | Retained for retired NocoDB; decommissioning is separate, not a new composable migration |
-| `deploy-n8n.yml` | Composable | Stateful-secret cutover guard, readiness-gated app/worker, verification and owner setup; use the service README for upgrades |
 | `deploy-semaphore.yml` | Legacy | Deploy Semaphore (new VM only) |
 | `deploy-netbox.yml` | Composable | Deploy NetBox (5-phase: secrets, containers, bootstrap, Diode creds, verify) |
 | `recover-netbox-runtime.yml` | Dev-bound recovery | Default preflight reports each core service's start/recreate/noop action; explicit apply converges only existing NetBox core containers through Compose and verifies health |
-| `deploy-nemoclaw.yml` | Legacy | Deploy NemoClaw |
 | `deploy-orb-agent.yml` | Composable | Deploy Orb Agent (standalone: Diode creds + agent.yaml + start) |
-| `deploy-uhhcraft.yml` | Composable | Deploy UhhCraft (5-phase: secrets, containers, post-deploy migrations, caddy fragment, verify) |
-| `deploy-inference-comfyui.yml` | Composable | Deploy ComfyUI sidecar (GPU prereqs + secrets + containers + verify) |
-| `deploy-inference-hunyuan3d.yml` | Composable | Deploy Hunyuan3D sidecar (GPU prereqs + weights check + secrets + containers + verify) |
 | `store-postiz-api-key.yml` | Composable | Read the org's API key from postiz's own Postgres (minted by the app on the first authenticated request; the stored value IS the bearer token) and place it at `secret/services/postiz:postiz_api_key`, no_log throughout |
 | `deploy-authentik.yml` | Composable | Deploy Authentik IdP (secrets → containers → blueprints assembled from inventory → live-state verify: every placed blueprint applied, declared accounts present/active/in-group, retired accounts gone → Caddy fragment) |
 | `audit-authentik-retirements.yml` | Read-only | Count the live Authentik accounts named by private `*_legacy_username` declarations before a Dev blueprint deploy; prints counts, not usernames or credentials |
@@ -169,7 +162,6 @@ and launches each with a forged internal name.
 | `recover-authentik-audit-runtime.yml` | Dev-bound recovery | Default read-only preflight checks existing container identity, restart policy, and exact Postgres/Redis data volumes; explicit apply starts only the existing database, cache, and server, leaving the blueprint worker stopped for the retirement audit |
 | `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy. Every `clean-deploy-*.yml` requires `-e confirm_reset=<host name>` (required, no-default survey field on its template); the gate also refuses under `--check`, so a dry run names its host too. Locally: `make local-clean-deploy-<svc> CONFIRM_RESET=<svc>-local` |
 | `stop-local-service.yml` | Local-dev only | `Stop Local Service`: `<engine> stop` over ONE idle `*_svc` group's running containers (compose working-dir label, as `verify-service-persistence.yml`) plus the host var `stop_extra_containers` for unlabelled ones (NetBox's `netbox-orb-agent`). Keeps containers, images and volumes; no `down`, no `rm`, no restart-policy change. Refuses any host not named `<name>-local` and an empty or non-`_svc` group before an engine call; idempotent, check mode stops nothing. Fails when the engine does not answer, and refuses a non-`local` connection. Reverse it with the service's Deploy (how a stopped container restarts varies by `deploy.sh`: see `docs/LOCAL-DEV.md`); extras are restarted only by their own workflow (`Deploy Orb Agent (Local)`); `restart: always` containers can come back at the next machine boot. Locally: `make local-service-down SERVICE=<group>` |
-| `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
 | `deploy-launch-gate.yml` | Composable | The launch gate (skynet-launch-containment, Phase 3): refuses bad inputs before any change, renders the allowlist from OPA's catalog through `templates.yml`, manages the caller and Semaphore tokens, issues the TLS server leaf from the internal CA, runs `deploy.sh`, and verifies over TLS and inside the container. Run after `provision-launch-gate-semaphore-access.yml` |
 | `clean-deploy-launch-gate.yml` | Composable | Destructive: removes the gate's containers and, outside local-dev, its placed clone, then runs `deploy-launch-gate.yml`. Requires `-e confirm_reset=<host name>` |
 | `rollback-inference-route.yml` | Composable | Take the inference gateway out of the public path or put it back, as code (`-e mode=gateway-config\|direct\|restore`): the previous gateway config (validated with the pinned image first, also under `--check`; the config it replaces is kept for the run and put back, with the run still failing, if the gateway is not ready on the previous one), or `direct_<name>` copies of the current vLLM key published before Caddy is pointed at vLLM, then withdrawn on restore |
@@ -178,13 +170,8 @@ and launches each with a forged internal name.
 | Playbook | Purpose |
 |----------|---------|
 | `update-service.yml` | Generic update: pull images, restart compose, health check |
-| `update-nocodb.yml` | Update NocoDB |
-| `update-n8n.yml` | Legacy generic update wrapper; use the composable `deploy-n8n.yml` and backup/restore runbook for current n8n |
 | `update-semaphore.yml` | Update Semaphore |
 | `update-netbox.yml` | Legacy generic update wrapper; current full service configuration uses `deploy-netbox.yml`, with Orb Agent deployed separately |
-| `update-uhhcraft.yml` | Update UhhCraft |
-| `update-inference-comfyui.yml` | Update ComfyUI sidecar |
-| `update-inference-hunyuan3d.yml` | Update Hunyuan3D sidecar |
 
 ### SSH & Security
 | Playbook | Purpose |
@@ -229,10 +216,6 @@ and launches each with a forged internal name.
 | `apply-policy-orb-agent.yml` | Apply orb-agent policy |
 | `provision-orb-agent-approle.yml` | Provision the dedicated orb-agent AppRole + policy (from `orb-agent.hcl`) and store creds at `secret/services/approles/orb-agent` |
 | `apply-policy-semaphore.yml` | Apply Semaphore policy |
-| `apply-policy-nemoclaw.yml` | Apply NemoClaw policy |
-| `apply-policy-uhhcraft.yml` | Apply UhhCraft policy (reserved) |
-| `apply-policy-inference-comfyui.yml` | Apply ComfyUI sidecar policy (reserved) |
-| `apply-policy-inference-hunyuan3d.yml` | Apply Hunyuan3D sidecar policy (reserved) |
 
 For the one-time Grafana token handoff, create the service-account token in Grafana's
 UI and copy it to the clipboard. Save it locally without printing it:
