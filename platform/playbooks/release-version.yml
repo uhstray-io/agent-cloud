@@ -1,0 +1,441 @@
+---
+# release-version.yml — cut the version tags the planner owes, then the GitHub Release for main
+# (plan 20, plan/development/20-semantic-versioning.md). Semaphore runs it. It replaces the GitHub
+# Actions job that tagged main and dev on every push.
+#
+# Why not GITHUB_TOKEN: the tag push was refused in Actions run 42693944852 with
+#   ! [remote rejected] v0.1.0 (refusing to allow a GitHub App to create or update workflow
+#   .github/workflows/lint-and-test.yml without workflows permission)
+# GITHUB_TOKEN has no `workflows` permission. The release App (uhstray-io-release-automation,
+# installed on agent-cloud only) holds contents:write and workflows:write, and a downscoped
+# installation token from it pushed such a tag (proven 2026-11-09).
+#
+# Division of labour. scripts/semver.py release-tags decides WHAT is owed and creates those tags in
+# a throwaway clone. It never sees the token and never pushes. This playbook reads the planner's
+# JSON plan, checks every tag name and commit against the release form, and pushes the tags with one
+# atomic `git push`. Never --force: a tag that already exists remotely is refused, never moved.
+#
+# Credential path:
+#   1. OpenBao AppRole login. The App key and client id are read from secret/services/github
+#      (release_app_key, release_app_client_id). A missing field fails with a named message.
+#   2. platform/lib/github_app_token.py mints an installation token for agent-cloud alone, with the
+#      grant in _rv_permissions. The key arrives on stdin. A grant wider than requested exits 6 and
+#      stops the run before anything is pushed.
+#   3. The clone is anonymous (public repository). The token is written to a 0600 credential file
+#      AFTER the planner has run, and git reads it through a store helper set on this clone only.
+#   4. `always:` revokes the token and removes the scratch directory, whatever happened.
+#
+# Environment. Every git command runs with GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1 and
+# GIT_TERMINAL_PROMPT=0, so no system or global credential helper can answer. Observed 2026-11-09 on
+# a workstation (docs/MISTAKES.md 2.37): without these variables a configured global or system helper
+# answered for a personal login, so a push went out under that identity instead of failing.
+#
+# Schedule and catch-up. Release Version (Dev) runs every 15 minutes (templates.yml). The planner
+# owes every merge that has no tag yet, so a missed run is caught up by the next one. The release
+# self-heal creates the GitHub Release for the planned release tag when it is missing.
+# Release Major Version (Dev) is an operator launch with release_major typed. The planner refuses
+# unless the computed next major is exactly that version.
+#
+# Check mode runs everything local: the mint (so a dry run proves the credentials), the clone, the
+# planner, the validation and the report. It pushes nothing and creates no Release.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an internal
+# (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Release version tags and the GitHub Release"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+
+  # No play-level vars: block. A vars: block on the play would put vars: on every task here, and the
+  # check-mode contract refuses a forced file write under vars: (test_check_mode_contract.py CARRIES_VARS),
+  # because a variable could redirect it. The play's values are facts, set first; every scratch path is
+  # written in full from the pinned _rv_tmp register.
+  tasks:
+    - name: "Set the play's values"
+      ansible.builtin.set_fact:
+        # The controller's own OpenBao address, from the inventory or the environment.
+        _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+        # The installation this run is for. Fixed, not overridable: an extra var cannot retarget the
+        # token or the push. Internal names, so the import above refuses any extra var that sets one.
+        _rv_org: uhstray-io
+        _rv_repository: agent-cloud
+        _rv_clone_url: https://github.com/uhstray-io/agent-cloud.git
+        # The grant the token is requested with. contents: push tags and create the Release. workflows:
+        # a tagged commit may change a workflow file (see the header). metadata: read the repository.
+        _rv_permissions:
+          contents: write
+          workflows: write
+          metadata: read
+        _rv_github_path: services/github
+        # The planned annotated tags need a tagger identity in the clone. This is the bot, not a person.
+        _rv_bot_name: "uhstray-io-release-automation[bot]"
+        _rv_bot_email: "354639920+uhstray-io-release-automation[bot]@users.noreply.github.com"
+        # The manual major: empty on the schedule, vN.0.0 from the Major template's survey.
+        _rv_major: "{{ release_major | default('') | trim }}"
+        # The only tag names this playbook will push: vX.Y.Z on main, vX.Y.Z-dev.N on dev (plan 20).
+        # A name outside this form could carry a refspec (`x:refs/heads/dev`) or an option; both are refused.
+        _rv_tag_re: '^v[0-9]+[.][0-9]+[.][0-9]+(-dev[.][0-9]+)?$'
+        _rv_sha_re: '^[0-9a-f]{40}$'
+
+    # Both AppRole halves are credentials (role_id is half of one), so they are taken by a hidden set_fact:
+    # a visible set_fact prints its facts at -v (AGENTS.md, "A task that receives a secret is itself no_log").
+    - name: "Take the controller AppRole credential (hidden)"
+      ansible.builtin.set_fact:
+        _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+        _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+      no_log: true
+
+    - name: "Require a major version of the form vN.0.0 (empty on the schedule)"
+      ansible.builtin.assert:
+        that:
+          - _rv_major | length == 0 or _rv_major is match('^v[0-9]+[.]0[.]0$')
+        fail_msg: "release_major must be empty or of the form vN.0.0, for example v1.0.0."
+
+    - name: "Refuse a cleartext secret-store endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao (AppRole)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        follow_redirects: none
+        body_format: json
+        body:
+          role_id: "{{ _bao_role_id }}"
+          secret_id: "{{ _bao_secret_id }}"
+        status_code: [200]
+      register: _rv_auth
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Read the App credentials (a 404 is named by the assert below, not failed here)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ _rv_github_path }}"
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        headers:
+          X-Vault-Token: "{{ _rv_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      register: _rv_github_secret
+      no_log: true
+      changed_when: false
+      check_mode: false
+
+    - name: "Take the App fields (empty when the path is absent)"
+      ansible.builtin.set_fact:
+        _rv_app_fields: "{{ _rv_github_secret.json.data.data if _rv_github_secret.status == 200 else {} }}"
+      no_log: true
+
+    - name: "Require the release App key and client id (seeded once, after App creation)"
+      ansible.builtin.assert:
+        that:
+          - (_rv_app_fields.release_app_key | default('')) | length > 0
+          - (_rv_app_fields.release_app_client_id | default('')) | length > 0
+        fail_msg: >-
+          secret/services/github is missing release_app_key and/or release_app_client_id.
+          Seed both from the uhstray-io-release-automation App via Seed OpenBao Key, then re-run.
+
+    - name: "Mint, plan, push and release (always: revoke the token and remove the scratch directory)"
+      # Every git command in this block runs with these three variables. See the header: a system or
+      # global credential helper must not be able to answer a push that the App credential failed.
+      environment:
+        GIT_CONFIG_GLOBAL: /dev/null
+        GIT_CONFIG_NOSYSTEM: "1"
+        GIT_TERMINAL_PROMPT: "0"
+      block:
+        # The scratch directory is created inside the block so the always: below removes it whatever
+        # fails after. Check mode creates it too: the clone and the planner need it. Its target is pinned
+        # in test_check_mode_contract.py (prefix and temp root here, the two paths written below).
+        - name: "Create the per-run release scratch directory"
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: .release-version-
+            path: "{{ lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath }}"
+          register: _rv_tmp
+          delegate_to: localhost
+          check_mode: false
+          changed_when: false
+
+        - name: "Assert the per-run scratch directory sits directly under the temp root"
+          ansible.builtin.assert:
+            that:
+              - (_rv_tmp.path | realpath | dirname) == (lookup('ansible.builtin.env', 'TMPDIR') | default('/tmp', true) | realpath)
+              - (_rv_tmp.path | basename) is match('^[.]release-version-')
+            fail_msg: "The per-run scratch directory is not a .release-version- directory directly under the temp root; refusing to write into it."
+            quiet: true
+
+        - name: "Keep the scratch directory 0700"
+          ansible.builtin.file:
+            path: "{{ _rv_tmp.path }}"
+            state: directory
+            mode: "0700"
+          delegate_to: localhost
+          check_mode: false
+
+        - name: "Mint the installation token (key via stdin; the grant is the declared map)"
+          ansible.builtin.command:
+            # -I: isolated mode, so the script's own directory (platform/lib/) is not first on sys.path.
+            # The merge guard protects this playbook, not every file in platform/lib/; without -I a merged
+            # module beside the signer could shadow an import while the App key is on its stdin.
+            argv:
+              - python3
+              - "-I"
+              - "{{ playbook_dir }}/../lib/github_app_token.py"
+              - installation-token
+              - "--issuer"
+              - "{{ _rv_app_fields.release_app_client_id }}"
+              - "--org"
+              - "{{ _rv_org }}"
+              - "--key"
+              - "-"
+              - "--permissions"
+              - "{{ _rv_permissions | to_json }}"
+              - "--repository"
+              - "{{ _rv_repository }}"
+            stdin: "{{ _rv_app_fields.release_app_key }}"
+          register: _rv_mint
+          # Not failing here: the failure reason is the exit code, and the visible assert below turns
+          # it into a named message. stdout is the token, so this task stays no_log.
+          failed_when: false
+          changed_when: false
+          no_log: true
+          check_mode: false
+
+        - name: "Take the signer's exit code (no output leaves this task)"
+          ansible.builtin.set_fact:
+            _rv_mint_rc: "{{ _rv_mint.rc | int }}"
+          no_log: true
+
+        - name: "Require a clean mint (exit 0); name the over-grant refusal (exit 6) without its output"
+          ansible.builtin.assert:
+            that:
+              - _rv_mint_rc == 0
+            fail_msg: >-
+              {{ "GitHub granted a wider scope than requested (extra permission, different level, or other repository) — fix the release App's permissions"
+                 if _rv_mint_rc == 6 else "mint failed (exit " ~ _rv_mint_rc ~ ")" }}
+            quiet: true
+
+        - name: "Take the token"
+          ansible.builtin.set_fact:
+            _rv_token: "{{ _rv_mint.stdout | trim }}"
+          no_log: true
+
+        - name: "Require a token to use (the signer refuses a wider grant before printing one)"
+          ansible.builtin.assert:
+            that:
+              - _rv_token | length > 0
+            fail_msg: "The installation-token step returned no token; nothing was pushed or written."
+
+        - name: "Clone the public repository anonymously (no credential reaches the clone)"
+          ansible.builtin.command:
+            argv:
+              - git
+              - clone
+              - "--no-checkout"
+              - "--quiet"
+              - "{{ _rv_clone_url }}"
+              - "{{ _rv_tmp.path }}/repo"
+          changed_when: false
+          check_mode: false
+
+        - name: "Set the tagger name in the clone (the planner's annotated tags need one)"
+          ansible.builtin.command:
+            argv:
+              - git
+              - "-C"
+              - "{{ _rv_tmp.path }}/repo"
+              - config
+              - user.name
+              - "{{ _rv_bot_name }}"
+          changed_when: false
+          check_mode: false
+
+        - name: "Set the tagger email in the clone"
+          ansible.builtin.command:
+            argv:
+              - git
+              - "-C"
+              - "{{ _rv_tmp.path }}/repo"
+              - config
+              - user.email
+              - "{{ _rv_bot_email }}"
+          changed_when: false
+          check_mode: false
+
+        - name: "Build the planner command (the fixed part)"
+          ansible.builtin.set_fact:
+            _rv_planner_base:
+              - python3
+              - "-I"
+              - "{{ playbook_dir }}/../../scripts/semver.py"
+              - "--repo"
+              - "{{ _rv_tmp.path }}/repo"
+              - release-tags
+              - "--main-ref"
+              - origin/main
+              - "--dev-ref"
+              - origin/dev
+
+        - name: "Add --major only for a manual major run (one list, one register)"
+          ansible.builtin.set_fact:
+            _rv_planner_argv: "{{ _rv_planner_base + (['--major', _rv_major] if _rv_major | length > 0 else []) }}"
+
+        - name: "Plan the tags this release owes (semver.py creates them in the clone; it never pushes)"
+          ansible.builtin.command:
+            argv: "{{ _rv_planner_argv }}"
+          register: _rv_planner
+          failed_when: false
+          changed_when: false
+          check_mode: false
+
+        - name: "Require a clean plan (exit 0); name the breaking-change refusal (exit 3) and say what to run"
+          ansible.builtin.assert:
+            that:
+              - _rv_planner.rc == 0
+            fail_msg: >-
+              {{ ("A breaking change after 1.0.0 needs the manual major release: promote the breaking pull request "
+                  ~ "to main first, then run Release Major Version (Dev) with release_major=vN.0.0. Cut before the "
+                  ~ "promotion, the major leaves the change behind and this run stays red.")
+                 if _rv_planner.rc == 3 else "semver.py release-tags exited " ~ (_rv_planner.rc | string) ~ ": " ~ _rv_planner.stderr }}
+
+        - name: "Parse the plan"
+          ansible.builtin.set_fact:
+            _rv_plan: "{{ _rv_planner.stdout | from_json }}"
+
+        - name: "Refuse a plan whose tag, release or commit is not in the release form (nothing is pushed)"
+          ansible.builtin.assert:
+            that:
+              - _rv_plan.tags | map(attribute='tag') | select('match', _rv_tag_re) | list | length == _rv_plan.tags | length
+              - _rv_plan.tags | map(attribute='commit') | select('match', _rv_sha_re) | list | length == _rv_plan.tags | length
+              - _rv_plan.release is none or _rv_plan.release.tag is match(_rv_tag_re)
+            fail_msg: "semver.py returned a tag, release or commit that is not vX.Y.Z, vX.Y.Z-dev.N and a full SHA; nothing was pushed."
+
+        - name: "Write the push credential to a 0600 file git reads (no argv, no output)"
+          ansible.builtin.copy:
+            dest: "{{ _rv_tmp.path }}/cred"
+            content: "https://x-access-token:{{ _rv_token }}@github.com\n"
+            mode: "0600"
+          delegate_to: localhost
+          no_log: true
+          check_mode: false
+
+        - name: "Point the clone's credential helper at that file only (store helper, no prompt)"
+          ansible.builtin.command:
+            argv:
+              - git
+              - "-C"
+              - "{{ _rv_tmp.path }}/repo"
+              - config
+              - credential.helper
+              - "store --file={{ _rv_tmp.path }}/cred"
+          changed_when: false
+          check_mode: false
+
+        - name: "Build the push argv from the validated tags (one atomic push, never forced)"
+          ansible.builtin.set_fact:
+            _rv_push_argv: "{{ ['git', '-C', _rv_tmp.path ~ '/repo', 'push', '--atomic', 'origin'] + (_rv_plan.tags | map(attribute='tag') | map('regex_replace', '^', 'refs/tags/') | list) }}"
+          when: _rv_plan.tags | length > 0
+
+        - name: "Push the planned tags (visible: the token is only in the credential file)"
+          ansible.builtin.command:
+            argv: "{{ _rv_push_argv }}"
+          register: _rv_push
+          failed_when: false
+          when: _rv_plan.tags | length > 0 and not ansible_check_mode
+
+        - name: "Require a clean push (exit 0); the remote's reason is in the message"
+          ansible.builtin.assert:
+            that:
+              - _rv_push.rc == 0
+            fail_msg: "git push of the planned tags failed (exit {{ _rv_push.rc }}): {{ _rv_push.stderr }}"
+          when: _rv_plan.tags | length > 0 and not ansible_check_mode
+
+        - name: "Report the tags (names and commits only)"
+          ansible.builtin.debug:
+            msg: >-
+              {% if _rv_plan.tags | length == 0 %}No tags owed.{%- else %}{{ 'Would push' if ansible_check_mode else 'Pushed' }}
+              {{ _rv_plan.tags | length }} tag(s): {% for t in _rv_plan.tags %}{{ t.tag }} at {{ t.commit[:12] }}{{ ', ' if not loop.last else '' }}{% endfor %}.{%- endif %}
+              Release: {{ _rv_plan.release.tag if _rv_plan.release is not none else 'none' }}.
+
+        - name: "Look up the GitHub Release for the planned release tag (404 means none yet)"
+          ansible.builtin.uri:
+            url: "https://api.github.com/repos/{{ _rv_org }}/{{ _rv_repository }}/releases/tags/{{ _rv_plan.release.tag }}"
+            method: GET
+            follow_redirects: none
+            headers:
+              Authorization: "Bearer {{ _rv_token }}"
+              Accept: application/vnd.github+json
+              X-GitHub-Api-Version: "2022-11-28"
+            status_code: [200, 404]
+          register: _rv_release_get
+          when: _rv_plan.release is not none
+          no_log: true
+          changed_when: false
+          check_mode: false
+
+        - name: "Record whether the Release exists (a status word, no response)"
+          ansible.builtin.set_fact:
+            _rv_release_state: "{{ 'exists' if _rv_release_get.status == 200 else 'missing' }}"
+          when: _rv_plan.release is not none
+          no_log: true
+
+        - name: "Create the GitHub Release for the planned tag (only when missing, never in check mode)"
+          ansible.builtin.uri:
+            url: "https://api.github.com/repos/{{ _rv_org }}/{{ _rv_repository }}/releases"
+            method: POST
+            follow_redirects: none
+            headers:
+              Authorization: "Bearer {{ _rv_token }}"
+              Accept: application/vnd.github+json
+              X-GitHub-Api-Version: "2022-11-28"
+            body_format: json
+            body:
+              tag_name: "{{ _rv_plan.release.tag }}"
+              name: "agent-cloud {{ _rv_plan.release.tag }}"
+              body: "{{ _rv_plan.release.notes }}"
+            status_code: [201]
+          when: _rv_plan.release is not none and _rv_release_state == 'missing' and not ansible_check_mode
+          no_log: true
+
+        - name: "Record the Release as created"
+          ansible.builtin.set_fact:
+            _rv_release_state: created
+          when: _rv_plan.release is not none and _rv_release_state == 'missing' and not ansible_check_mode
+          no_log: true
+
+        - name: "Report the Release (a word and the tag)"
+          ansible.builtin.debug:
+            msg: "Release {{ _rv_plan.release.tag }}: {{ 'would create' if _rv_release_state == 'missing' else _rv_release_state }}."
+          when: _rv_plan.release is not none
+
+      always:
+        - name: "Revoke the installation token (no_log: the request carries it; a failure is not the run's result)"
+          ansible.builtin.uri:
+            url: "https://api.github.com/installation/token"
+            method: DELETE
+            follow_redirects: none
+            headers:
+              Authorization: "Bearer {{ _rv_token }}"
+              Accept: application/vnd.github+json
+              X-GitHub-Api-Version: "2022-11-28"
+            status_code: [204]
+          when: _rv_token is defined and _rv_token | length > 0
+          no_log: true
+          failed_when: false
+          changed_when: false
+          check_mode: false
+
+        - name: "Remove the scratch directory (the credential file and the clone)"
+          ansible.builtin.file:
+            path: "{{ _rv_tmp.path }}"
+            state: absent
+          when: _rv_tmp is defined and _rv_tmp.path is defined
+          delegate_to: localhost
+          check_mode: false

@@ -146,6 +146,7 @@ Each row is a rule from the linked page, read 2026-09-22.
    > launch-level extra vars or control of `TMPDIR`; the worst case is disturbing a concurrent
    > run's scratch, not escaping it. (c) `TMPDIR` itself moves the root.
    > **Extension, 2026-10-29 (Dispatch Console D22):** a TLS trust file for verified Proxmox reads under `--check` is also a pinned runner-scratch target: `platform/playbooks/provision-console-proxmox-token.yml` may create one per-run directory under the temp root, with a pinned prefix, and write the CA file inside it, both removed in the same run.
+   > **Extension, 2026-11-09 (plan 20, release run):** `platform/playbooks/release-version.yml` may create one per-run `.release-version-` directory under the temp root and write the 0600 git credential file for the release App token inside it, both removed in the same run's `always:`. Check mode creates them too: the dry run clones and plans the tags in that directory. The play carries no `vars:` block, so no variable can redirect either write.
 3. **Verify is a tag.** Each state-changing playbook tags its verification tasks `verify`,
    and also tags `verify` on anything verification needs: OpenBao authentication, the
    transport guard, and every `rescue` and `always` section of a block that contains verify
