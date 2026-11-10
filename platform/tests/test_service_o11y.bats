@@ -3863,3 +3863,101 @@ for values in (dict(local_mode=True), dict(local_mode=True, o11y_alerts_enabled=
 assert seen > 10, seen
 PY
 }
+
+# ---- deploy.sh candidate-gate category line ------------------------------------------------
+# Runs the real deploy.sh from a copy of its tree. The copy has a stub common.sh and a fake
+# namespace helper that refuses at one call site: pre (before the first start), start (the
+# final pre-start check) or post (after apply). The refusal prints valid category JSON plus a
+# SENTINEL_DETAIL field, and exits with the given status. The category line must be the only
+# helper-derived text the deploy prints.
+o11y_gate_run() {
+  local site="$1" reason="$2" rc="$3"
+  local tree="$BATS_TEST_TMPDIR/gate"
+  local dep="$tree/platform/services/o11y/deployment"
+  mkdir -p "$dep" "$tree/platform/lib" "$tree/platform/playbooks/files"
+  cp "$DEPLOY_DIR/deploy.sh" "$dep/deploy.sh"
+  : > "$dep/.env"
+  : > "$tree/source.json"
+  cat > "$tree/platform/lib/common.sh" <<'SH'
+info() { printf '%s\n' "$*"; }
+error() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+detect_runtime() { CONTAINER_ENGINE=podman; }
+compose() { :; }
+compose_up_if_changed() { if declare -F compose_staged_up >/dev/null; then compose_staged_up; fi; }
+wait_for_healthy() { :; }
+SH
+  cat > "$tree/platform/playbooks/files/summarize-o11y-scrape-baseline.py" <<'PY'
+import json
+import os
+import sys
+
+if sys.argv[1:2] == ["--verify-availability-source"]:
+    print(json.dumps({"status": "observed", "source": "alloy", "container_identity_sha256": "a" * 64}))
+    sys.exit(0)
+if os.environ.get("O11Y_AVAILABILITY_FINAL_START") == "true":
+    site = "start"
+elif "O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256" in os.environ:
+    site = "post"
+else:
+    site = "pre"
+if site == os.environ.get("FAKE_FAIL"):
+    print(json.dumps({"status": "unverified", "reason": os.environ["FAKE_REASON"],
+                      "detail": "SENTINEL_DETAIL_456"}))
+    sys.exit(int(os.environ["FAKE_RC"]))
+print(json.dumps({"status": "isolated", "reason": "distinct_kernel_namespaces"}))
+sys.exit(0)
+PY
+  run env -i PATH="$PATH" HOME="$HOME" \
+    FAKE_FAIL="$site" FAKE_REASON="$reason" FAKE_RC="$rc" \
+    O11Y_AVAILABILITY_ENABLED=true O11Y_AVAILABILITY_SOURCE_FILE="$tree/source.json" \
+    bash "$dep/deploy.sh" --no-pull
+}
+
+@test "o11y deploy gate: a pre-start candidate refusal prints its fixed category line" {
+  o11y_gate_run pre namespace_candidate_pod 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_candidate_pod"
+  # The category line comes before the error it explains.
+  local category_line error_line
+  category_line=$(printf '%s\n' "$output" | grep -n "Availability gate category:" | head -1 | cut -d: -f1)
+  error_line=$(printf '%s\n' "$output" | grep -n "Availability refused because" | head -1 | cut -d: -f1)
+  [ -n "$category_line" ]
+  [ -n "$error_line" ]
+  [ "$category_line" -lt "$error_line" ]
+}
+
+@test "o11y deploy gate: a helper that exits 1 is namespace_helper_failed even when its JSON names a category" {
+  o11y_gate_run pre namespace_candidate_pod 1
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_helper_failed"
+  refute_contains "$output" "namespace_candidate_pod"
+}
+
+@test "o11y deploy gate: an unusable reason prints namespace_unverified and no raw helper text" {
+  o11y_gate_run pre SENTINEL_ID_123 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_unverified"
+  refute_contains "$output" "SENTINEL_ID_123"
+  refute_contains "$output" "SENTINEL_DETAIL_456"
+}
+
+@test "o11y deploy gate: the final pre-start check prints its category before the lifecycle apply" {
+  o11y_gate_run start namespace_candidate_alloy_spec 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_candidate_alloy_spec"
+  refute_contains "$output" "lifecycle complete"
+}
+
+@test "o11y deploy gate: the post-apply check prints its category and keeps the running stack" {
+  o11y_gate_run post namespace_candidate_project 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_candidate_project"
+  assert_contains "$output" "running stack is preserved"
+}
+
+@test "o11y deploy gate: a clean enabled run prints no category line" {
+  o11y_gate_run none none 0
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "Availability gate category"
+  assert_contains "$output" "o11y container lifecycle complete"
+}

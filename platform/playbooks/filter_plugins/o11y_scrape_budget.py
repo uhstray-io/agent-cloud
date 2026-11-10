@@ -816,6 +816,9 @@ AVAILABILITY_NAMESPACE_REASONS = frozenset({
     "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
     "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
     "namespace_runtime_unreadable", "namespace_unverified", "namespace_internal_error",
+    "namespace_candidate_compose_unreadable", "namespace_candidate_inputs_label",
+    "namespace_candidate_pod", "namespace_candidate_alloy_spec", "namespace_candidate_ports",
+    "namespace_candidate_project",
 })
 _NAMESPACE_SHA256 = re.compile(r"[0-9a-f]{64}")
 
