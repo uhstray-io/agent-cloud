@@ -28,8 +28,8 @@
 # Removing an app's entry from this catalog does NOT remove its objects from the live
 # Authentik: blueprints create objects and never delete them. So also:
 # 1. Delete the app's entry here, and its blueprint file under blueprints/.
-# 2. Add a `state: absent` entry for each object it created (its provider, then its
-#    application, by the identifiers that blueprint used) to blueprints/retired-apps.yaml.
+# 2. Add a `state: absent` entry for each object it created (its application, then its
+#    provider, by the identifiers that blueprint used) to blueprints/retired-apps.yaml.
 #    That file is always applied, so the deletion runs on the next deploy.
 # 3. Remove the slug from the site-config `authentik_apps` list. A slug that is not in
 #    this catalog fails the deploy ("Validate every enabled app exists in the catalog").

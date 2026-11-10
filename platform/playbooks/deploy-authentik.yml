@@ -278,8 +278,8 @@
     # additive — dropping a file does NOT delete the app/provider already created in
     # the DB, so de-selected apps remain as harmless ORPHANS (no outpost binding /
     # access policy, so they grant nothing). This is intentional for the prod prune
-    # (see PROD-SSO-ROLLOUT-PLAN.md). Full deprovisioning (state: absent tombstones
-    # per removed slug, like openbao-oidc's tombstone) is a tracked future enhancement.
+    # (see PROD-SSO-ROLLOUT-PLAN.md). Retiring an app for good is a `state: absent` tombstone in
+    # blueprints/retired-apps.yaml, which is always applied (app-catalog.yml, retirement runbook).
     # Converged IN PLACE, never reset: a wholesale delete+recreate re-rendered every
     # file and reported changed on every run even with identical content, so a
     # second deploy could never report "no change". template/copy are idempotent;
