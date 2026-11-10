@@ -863,6 +863,9 @@ ALLOY_SPEC_DECISIONS = [
     lambda c: _alloy(c)["volumes"].append(
         {"type": "bind", "source": "/tmp", "target": "/etc/alloy/extra.alloy", "read_only": True}
     ),
+    lambda c: _alloy(c)["volumes"].append({"type": "volume", "target": "/etc/alloy", "read_only": True}),
+    lambda c: _alloy(c)["volumes"].append({"type": "bind", "source": "/tmp", "target": "/etc", "read_only": True}),
+    lambda c: _alloy(c)["volumes"].append({"type": "bind", "source": "/tmp", "target": "/etc/alloy/", "read_only": True}),
 ]
 PORT_DECISIONS = [
     lambda c: _alloy(c).update(ports="4317:4317"),
@@ -965,6 +968,17 @@ SHORT_FORM_ALLOY_SPEC_DECISIONS = [
     ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/conf.d"],
     ["./config/config.alloy:/etc/alloy/config.alloy:ro", 7],
     ["./config/config.alloy::ro"],
+    # Shadowing or ambiguous targets: a mount at /etc/alloy or an ancestor, or a relative target.
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/etc/alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/etc/alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/../alloy/x:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc//alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/./alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:etc/alloy:ro"],
+    ["./config/config.alloy:etc/alloy/config.alloy:ro"],
 ]
 
 

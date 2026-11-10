@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import platform
+import posixpath
 import re
 import selectors
 import shlex
@@ -977,8 +978,14 @@ def _availability_compose_mount(entry: Any, deployment_dir: str) -> dict[str, An
         read_only = "ro" in options
     else:
         raise Refusal("namespace_candidate_alloy_spec")
-    if not isinstance(target, str) or not target or (source is not None and not isinstance(source, str)):
+    if (
+        not isinstance(target, str) or not target.startswith("/")
+        or (source is not None and not isinstance(source, str))
+    ):
+        # A container target is always absolute. Refusing anything else also refuses the
+        # ambiguous two-field "target:mode" form ("/etc/alloy:ro") instead of guessing.
         raise Refusal("namespace_candidate_alloy_spec")
+    target = posixpath.normpath(target)
     if mount_type == "bind" and isinstance(source, str):
         source = os.path.expanduser(source)
         if not os.path.isabs(source):
@@ -1071,7 +1078,8 @@ def _verify_availability_effective_compose(
         or os.path.realpath(config_mounts[0]["source"]) != expected_mount_source
         or config_mounts[0]["read_only"] is not True
         or any(
-            mount["target"] != "/etc/alloy/config.alloy" and mount["target"].startswith("/etc/alloy/")
+            mount is not config_mounts[0]
+            and (mount["target"] in {"/", "/etc", "/etc/alloy"} or mount["target"].startswith("/etc/alloy/"))
             for mount in mounts
         )
     ):
