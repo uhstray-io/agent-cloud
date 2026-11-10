@@ -140,12 +140,12 @@ Interactive users SHALL sign in to Plane through the Authentik OIDC client. Self
 
 ### Requirement: Plane roles follow identity-provider groups
 
-Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Admin role, Plane's top workspace role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
+Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the workspace's top role the licensed plan offers: Owner on the Pro plan, where Plane's Admin role is not available (amended 2026-11-09). Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
 
-#### Scenario: Administrator receives Admin
+#### Scenario: Administrator receives the top role
 
 - **WHEN** the reconcile playbook applies with `apply=true` for a member of `platform-admins`
-- **THEN** that member holds the Admin role in Plane
+- **THEN** that member holds the Owner role in Plane, the top role on the Pro plan
 
 #### Scenario: Developer and business user receive Member
 

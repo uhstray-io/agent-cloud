@@ -61,6 +61,7 @@ and why.
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) | Unverified claim | 8 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
+| 1.32 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1393,6 +1394,37 @@ never supports "merged".
 
 **Enforced by.** Convention. Related: 1.19 (a negative claim from evidence that cannot establish
 it).
+
+### 1.32 Promised a role from a licence tier without reading the vendor's plan matrix
+
+**Occurrences: 1** — 2026-11-09
+
+**What happened.** Plane refused the Admin workspace role with "Admin role is not available on
+this plan", and the read-only flag check showed `WORKSPACE_ADMIN_ROLE` off. From the flag's name
+and that refusal I told the operator, more than once, that activating the purchased Pro licence
+would make Admin available, and set up the change for it: site-config #169 switched
+`plane_admin_role` to `admin`, to be merged once the licence was active. The licence activated
+(Semaphore task 14291, "workspace plan PRO (activated now)"), and the reconcile still got the same
+403 for the one active member (task 14293). Plane's own documentation
+(docs.plane.so/roles-and-permissions/overview, plan table) offers the Workspace Admin role on
+Business and Enterprise only. The two other "successful" promotions in that run were pending
+invitations, whose update route never checks the flag (`invite.py:228` in the v3.3.3 image), so
+they briefly made it look like a per-person problem. The hourly reconcile failed every run until
+site-config #174 mapped `platform-admins` to Owner.
+
+**Root cause.** A plan gate's name says that something is gated, not which plan opens it. I
+treated "not on this plan" as "not on Free" and never read the vendor's plan matrix, which was one
+fetch away. The earlier spike note "Plane has no Owner role" also went unchallenged for the
+v3.3.3 image, where Owner is a role above Admin.
+
+**The rule.** Before saying a purchase, licence or tier will unlock a feature, read the vendor's
+own plan matrix for that feature by name, and quote it. A gate in the code establishes only that a
+gate exists. When a change is staged on that assumption, label it unverified until the first run
+proves it, and run it read-only first against a row the gate actually applies to (an active
+member, not a pending invitation).
+
+**Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
+by measurement); this is the reverse, a capability assumed without the documentation.
 
 ## 2. Tests that would have passed for the wrong reason
 

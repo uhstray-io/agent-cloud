@@ -115,7 +115,8 @@ def test_without_apply_it_plans_and_changes_nothing(plane):
     assert state["calls"] == []
     assert out == {"changed": False, "applied": False, "actions": [],
                    "plan": {"invite": ["new@example.test (admin)"], "set_role": [],
-                            "remove": ["gone@example.test"]}}
+                            "remove": ["gone@example.test"]},
+                   "owners_unmanaged": []}
 
 
 def test_apply_invites_sets_roles_and_removes(plane):
@@ -186,11 +187,28 @@ def test_the_automation_account_is_skipped_by_email_not_by_role(plane):
     assert state["calls"] == [] and out["plan"]["set_role"] == []
 
 
-def test_an_owner_who_left_every_group_is_not_removed(plane):
+def test_an_owner_who_left_every_group_is_not_removed_but_is_named_for_manual_offboarding(plane):
     state, base = plane
     state["members"] = [member("m1", "owner@example.test", "owner"), member("m2", "dev@example.test", "member")]
     out = summary(run(base, {"dev@example.test": "member"}, apply=True))
     assert state["calls"] == [] and out["plan"]["remove"] == []
+    assert out["owners_unmanaged"] == ["owner@example.test (in no member group)"]
+
+
+def test_an_owner_desired_with_a_lesser_role_is_named_not_demoted(plane):
+    state, base = plane
+    state["members"] = [member("m1", "owner@example.test", "owner")]
+    out = summary(run(base, {"owner@example.test": "member"}, apply=True))
+    assert state["calls"] == [] and out["plan"]["set_role"] == []
+    assert out["owners_unmanaged"] == ["owner@example.test (desired member)"]
+
+
+def test_owners_the_groups_still_make_owners_and_the_automation_account_are_not_named(plane):
+    state, base = plane
+    state["members"] = [member("m1", ME, "owner"), member("m2", "admin@example.test", "owner")]
+    out = summary(run(base, {"admin@example.test": "owner"}, apply=False))
+    assert state["calls"] == []
+    assert out["owners_unmanaged"] == []
 
 
 def roster_of(n):

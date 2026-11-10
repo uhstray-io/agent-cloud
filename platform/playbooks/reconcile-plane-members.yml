@@ -1,13 +1,15 @@
 ---
 # reconcile-plane-members.yml — Plane workspace membership follows Authentik groups (decision D3).
 #
-#   platform-admins                         -> admin (plane_admin_role; default admin)
+#   platform-admins                         -> plane_admin_role (default admin)
 #   platform-developers, platform-business  -> member
 #   platform-user, or no group              -> no access: not invited, removed if present
 #
-# Plane gates the Admin role behind a plan feature flag (WORKSPACE_ADMIN_ROLE). Local-dev runs the
-# Free plan, which lacks it, so its inventory sets plane_admin_role: member; production keeps the
-# default and a refusal names the plan.
+# Plane's Admin role is Business and Enterprise only (feature flag WORKSPACE_ADMIN_ROLE; with the
+# Pro licence active it was still refused, Semaphore task 14293). Production therefore sets
+# plane_admin_role: owner (Joseph, 2026-11-09), and local-dev, on the Free plan, sets member.
+# Owners are never demoted or removed by this playbook: an owner the groups no longer make one is
+# reported under "owners left alone" for an operator to offboard by hand.
 #
 # Play 1 reads each group's ACTIVE members that have an email, inside authentik-server with its
 # own bootstrap token (the token never leaves that container; inspect-authentik-blueprints.yml
@@ -218,4 +220,6 @@
         msg: >-
           {{ 'APPLIED' if _apply else 'PLAN ONLY (re-run with -e apply=true to apply)' }}:
           invite {{ _reconcile_summary.plan.invite }}; set role {{ _reconcile_summary.plan.set_role }};
-          remove {{ _reconcile_summary.plan.remove }}{{ (' — done: ' ~ _reconcile_summary.actions) if _apply else '' }}
+          remove {{ _reconcile_summary.plan.remove }}{{ (' — done: ' ~ _reconcile_summary.actions) if _apply else '' }}{{
+          ('; owners left alone, offboard by hand: ' ~ _reconcile_summary.owners_unmanaged)
+          if _reconcile_summary.owners_unmanaged | default([]) else '' }}
