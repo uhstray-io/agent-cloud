@@ -4,12 +4,17 @@ The playbook pushes version tags with a GitHub App token that holds contents and
 goes wrong quietly is: a grant that widens, the token reaching argv or a visible task, a push that can
 move or delete a ref, a planned name reaching a refspec before it is validated, a credential that a
 system helper can answer for, a scratch directory or token left behind, and a template that schedules
-the major release. The playbook is read as data; no OpenBao, GitHub, git or Ansible run is started.
+the major release. The playbook is read as data; no OpenBao, GitHub, git or Ansible run is started
+(the notes task's small decoding program is run on fixed input).
 """
 
+import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
@@ -526,6 +531,8 @@ PROTECTED_NOTES_NAMES = (
     "_rn_overview",
     "_rn_overview_check",
     "_rn_overview_parsed",
+    "_rn_category_check",
+    "_rn_category_parsed",
 )
 NOTES_LEAVES = _walk(yaml.safe_load(NOTES.read_text()), "tasks", False, {}, [])
 
@@ -800,6 +807,8 @@ def test_the_key_is_read_hidden_and_every_fact_that_holds_the_key_or_a_reply_is_
         "_rn_overview_parsed",
         "_rn_overview_summary",
         "_rn_overview_highlights",
+        "_rn_category_check",
+        "_rn_category_parsed",
     ):
         leaf = _notes(lambda lf, f=fact: _holds(lf, f), fact)
         assert leaf["no_log"] is True, fact
@@ -814,17 +823,69 @@ def test_no_visible_task_names_a_protected_key_or_reply_result():
             assert not re.search(rf"\b{name}\b", text), f"{leaf['name']} names {name}"
 
 
-def test_the_summary_is_read_by_regex_so_a_truncated_reply_cannot_fail_the_run():
-    summaries = _notes(lambda lf: _sets(lf, "_rn_summaries"), "summaries")["task"]["ansible.builtin.set_fact"]
-    text = summaries["_rn_summaries"]
-    # Single backslashes in the file: Jinja keeps them, so a doubled one would never match the reply.
-    assert r'''regex_findall('"summary"\s*:\s*"((?:[^"\\]|\\.)*)"')''' in text
-    assert "\\\\s" not in text
-    assert "regex_search" not in text
-    assert "from_json" not in text
+def _category_program():
+    check = _notes(lambda lf: lf["task"].get("register") == "_rn_category_check", "category check")
+    return check, check["task"]["ansible.builtin.command"]
+
+
+def test_the_category_summaries_are_decoded_by_a_hidden_program_not_a_regex():
+    check, command = _category_program()
+    assert check["no_log"] is True
+    argv = command["argv"]
+    assert argv[:3] == ["python3", "-I", "-c"]
+    # Argv is templated by Ansible: the program must carry no Jinja markers.
+    assert "{{" not in argv[3] and "{%" not in argv[3] and "{#" not in argv[3]
+    for index in range(3):
+        assert f"_rn_calls.results[{index}].json" in command["stdin"], index
+    assert command["stdin"].rstrip().endswith("| to_json }}")
+    assert check["task"].get("check_mode") is False and check["task"].get("changed_when") is False
+    assert check["task"].get("failed_when") is False
+    parsed = _notes(lambda lf: _sets(lf, "_rn_category_parsed"), "category parsed")
+    assert parsed["no_log"] is True
+    assert parsed["task"]["ansible.builtin.set_fact"]["_rn_category_parsed"] == (
+        "{{ (_rn_category_check.stdout | default('{}', true)) | from_json }}"
+    )
+    summaries = _notes(lambda lf: _sets(lf, "_rn_summaries"), "summaries")
+    text = summaries["task"]["ansible.builtin.set_fact"]["_rn_summaries"]
+    assert "regex_findall" not in text and "regex_search" not in text and "from_json" not in text
+    for key in ("features", "fixes", "documentation"):
+        assert f"'{key}': _rn_category_parsed.{key} | default('', true)" in text, key
     assert "dict2items" in text and "items2dict" in text
-    for key in ("'features'", "'fixes'", "'documentation'"):
-        assert key in text, key
+
+
+@pytest.mark.parametrize(
+    ("contents", "expected"),
+    [
+        # An escaped quote is decoded, so the renderer sees the quote and not a backslash.
+        (['{"summary": "Adds a \\"quoted\\" change."}', "", ""], {"features": 'Adds a "quoted" change.'}),
+        (
+            ['{"summary": "A."}', '{"summary": "B."}', '{"summary": "C."}'],
+            {"features": "A.", "fixes": "B.", "documentation": "C."},
+        ),
+        (['{"summary": "trunc', "not json", '{"summary": ""}'], {}),  # truncated, malformed, empty: all left out
+        (['{"summary": 7}', '["summary"]', '{"other": "x"}'], {}),  # wrong types and shapes: left out
+        (["", '{"summary": "Fix."}', ""], {"fixes": "Fix."}),  # a skipped call leaves only its category out
+    ],
+)
+def test_the_category_program_decodes_valid_summaries_and_leaves_the_rest_out(contents, expected):
+    _check, command = _category_program()
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", command["argv"][3]],
+        input=json.dumps(contents),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == expected
+
+
+@pytest.mark.parametrize("stdin", ["", "not json", '{"features": "x"}'])
+def test_the_category_program_prints_an_empty_object_for_input_that_is_not_a_list(stdin):
+    _check, command = _category_program()
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", command["argv"][3]], input=stdin, capture_output=True, text=True, check=True
+    )
+    assert json.loads(result.stdout) == {}
 
 
 def test_the_summary_state_names_each_outcome_and_is_visible():
@@ -884,7 +945,7 @@ def test_the_body_and_the_state_are_printed_visibly_in_every_mode():
 
 def test_every_command_in_the_notes_file_is_argv_read_only_and_every_semver_call_carries_the_git_variables():
     commands = [lf for lf in NOTES_LEAVES if _module(lf["task"])[0] == "command"]
-    assert len(commands) == 3, "the sections read, the overview check and the render"
+    assert len(commands) == 4, "the sections read, the category decode, the overview check and the render"
     for lf in commands:
         assert isinstance(_argv(lf["task"]), list), lf["name"]
         assert lf["task"].get("check_mode") is False and lf["task"].get("changed_when") is False, lf["name"]
@@ -894,6 +955,8 @@ def test_every_command_in_the_notes_file_is_argv_read_only_and_every_semver_call
     # The overview check runs no git and reads no repository: it is python3 -I -c with the reply on stdin.
     check = _notes(lambda lf: lf["task"].get("register") == "_rn_overview_check", "overview check")
     assert _argv(check["task"])[:3] == ["python3", "-I", "-c"]
+    decode, _ = _category_program()
+    assert _argv(decode["task"])[:3] == ["python3", "-I", "-c"]
 
 
 def test_the_notes_file_holds_no_forced_write_and_no_shell_and_refuses_a_bad_tag_first():

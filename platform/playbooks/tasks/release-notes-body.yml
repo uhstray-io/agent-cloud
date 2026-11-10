@@ -20,12 +20,11 @@
 # and the body is printed, so a dry run shows the notes a real run would publish. The gateway is called in check
 # mode as well: a completion is a read, and the text it returns is what the printed body carries.
 #
-# Reading the replies. The category summaries are read by regex: a truncated reply must not fail a release, and a
-# regex finds the summary in a truncated reply as "no summary". The overview is parsed with from_json, and a parse
-# that fails (ignore_errors) leaves it empty, so a reply that does not parse is an omission, not a failure. The
-# renderer checks every part again before it reaches the body.
-#
-# Known limit: a summary's JSON escapes are kept as written (the model is told to write plain sentences).
+# Reading the replies. The category replies and the overview reply are each decoded by a small hidden python3 -I
+# program, not by Jinja: a reply that does not parse would fail inside Jinja before the task runs, and that failure
+# cannot be ignored. Each program prints only the valid parts as JSON, so a truncated or malformed reply is an
+# omission, never a failure, and a JSON escape such as an escaped quote is decoded. The renderer checks every part
+# again before it reaches the body.
 
 - name: "Require a release tag of the form vX.Y.Z"
   ansible.builtin.assert:
@@ -251,14 +250,51 @@
     _rn_overview_highlights: "{{ _rn_overview_parsed.highlights | default('', true) }}"
   no_log: true
 
-# The summary of each category reply: the content string's "summary" value, read by regex. A reply with no closed
-# summary (truncated, or not the schema) gives an empty string and the category falls back to the grouped list.
-- name: "Take each category's summary, and the overview, from their replies (hidden; a part without one is left out)"
+# The category replies are decoded by the same kind of hidden program as the overview, never by a regex: a reply's
+# summary is a JSON string, so an escaped quote (\") must be decoded before the renderer checks it. The program reads
+# the three reply contents as one JSON list on stdin, in the category order of the calls, and prints a JSON object
+# holding only the categories whose reply parses to an object with a non-empty string summary. A missing, truncated or
+# malformed reply leaves its category out, and that category falls back to the grouped list. The output is always JSON.
+- name: "Decode each category's summary from its reply (hidden: the replies are protected results; only valid summaries are printed)"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-I"
+      - "-c"
+      - |-
+        import json, sys
+        out = {}
+        try:
+            contents = json.loads(sys.stdin.read())
+        except ValueError:
+            contents = []
+        for name, content in zip(("features", "fixes", "documentation"), contents if isinstance(contents, list) else []):
+            try:
+                reply = json.loads(content) if isinstance(content, str) else None
+            except ValueError:
+                continue
+            summary = reply.get("summary") if isinstance(reply, dict) else None
+            if isinstance(summary, str) and summary:
+                out[name] = summary
+        print(json.dumps(out))
+    stdin: "{{ [((((_rn_calls.results[0].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true), ((((_rn_calls.results[1].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true), ((((_rn_calls.results[2].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true)] | to_json }}"
+  register: _rn_category_check
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Take the category summaries from the program (hidden; always a JSON object, empty when none is valid)"
+  ansible.builtin.set_fact:
+    _rn_category_parsed: "{{ (_rn_category_check.stdout | default('{}', true)) | from_json }}"
+  no_log: true
+
+- name: "Take each category's summary, and the overview, from the decoded parts (hidden; a part without one is left out)"
   ansible.builtin.set_fact:
     _rn_summaries: >-
-      {{ {'features': ((((_rn_calls.results[0].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true) | regex_findall('"summary"\s*:\s*"((?:[^"\\]|\\.)*)"') | first | default('', true),
-      'fixes': ((((_rn_calls.results[1].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true) | regex_findall('"summary"\s*:\s*"((?:[^"\\]|\\.)*)"') | first | default('', true),
-      'documentation': ((((_rn_calls.results[2].json | default({}, true)).choices | default([], true)) | first | default({}, true)).message | default({}, true)).content | default('', true) | regex_findall('"summary"\s*:\s*"((?:[^"\\]|\\.)*)"') | first | default('', true),
+      {{ {'features': _rn_category_parsed.features | default('', true),
+      'fixes': _rn_category_parsed.fixes | default('', true),
+      'documentation': _rn_category_parsed.documentation | default('', true),
       'overview': _rn_overview_summary,
       'highlights': _rn_overview_highlights}
       | dict2items | rejectattr('value', 'equalto', '') | items2dict }}
