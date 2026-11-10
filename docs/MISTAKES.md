@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) | Unverified claim | 8 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that three overlay tests fail if an overlay is deleted, from what they assert; each starts with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) | Unverified claim | 10 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) | Unverified claim | 1 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
@@ -1266,7 +1266,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 8** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09
+**Occurrences: 10** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1361,6 +1361,35 @@ not read as a value the policy checks. The brief had read the gate's request par
 not the policy that consumes the same field.
 
 **Occurrence 8 — 2026-11-09.** Briefing the Dispatch Console's proposal store and its JSON contract, I fixed a proposal's survey value as `target_service: "<service>_svc"`, the service's NetBox VM name with `_svc` appended, from the naming of groups such as `honcho_svc`. I did not read how the repository maps a service to its group. The service workflow names a service from its group and never the reverse "by string surgery" (`platform/workflows/service-onboarding/lib/step_results.py:52-54`); where it must go from a name to a group it replaces `-` with `_` (`:315`). OPA requires `^[a-z][a-z0-9_]*_svc$` (`agent_actions.rego`, the target_service bound). So `step-ca` became `step-ca_svc`, every hyphenated service's preview would have been an OPA deny, and the proposal could never be approved. The independent review of PR #934 caught it before merge. Why the rule did not fire: the value looked like a format, not a rule, and the earlier occurrence 2 was the same class (a `target_service` rule from a naming convention), which shows the convention-only rule is not being recalled at brief-writing time. The guard proposed at occurrence 4 (a dispatch hook requiring a read of each referenced path) would not catch it either, because the brief cited no path for the mapping; a stronger proposal: a brief that states an identifier's format must cite the `file:line` that defines it.
+
+**Occurrence 9 — 2026-11-10.** Answering the third review round on PR #993 (skynet's HTTPS listener), I
+posted a comment declining a low finding: a missing `compose.tls.yml` makes the new teardown test skip before it
+checks `compose.prod-tls.yml`. My reason was that "other tests in the file fail outright if either overlay
+disappears (the TLS overlay shape test and the keep-id overlay test assert their contents)". I had read what those
+two tests assert, not how they start. Both begin with `skip_unless_service_file`
+(`platform/tests/test_service_skynet.bats:40-42`), which skips when the file is absent, so deleting an overlay
+skips all three tests and fails none. I checked a minute after posting, corrected the comment in place
+(issuecomment 6759971706) and said in it that the earlier version was wrong. Why the rule did not fire: the claim
+was a reason for not changing code, written in a reply to a reviewer, and it read as a summary of tests I had
+already seen in the session rather than as a claim about their behaviour.
+
+**Occurrence 10 — 2026-11-10.** Minutes later, opening #1002 (the shared Clean Deploy teardown loads overlays the
+deploy never loaded), I wrote that `compose_files` in `platform/lib/common.sh` builds the deploy's file set "from
+the service's `deploy.sh` overlay choices and `.env`", without reading it. It reads neither: it prints
+`compose.yml`, `compose.local.yml` in local mode, and whatever `COMPOSE_OVERLAYS` holds (`:146-151`); each
+`deploy.sh` fills that variable from its own `.env` checks. I read the function before anyone acted on the issue
+and corrected the paragraph. Why the rule did not fire: the description came from a reviewer's summary of the
+function relayed earlier in the session (1.28's class), and outward text such as issues and PR comments passes
+through neither check that caught earlier occurrences: no worker reads it against the code under a DEVIATION
+RULE (occurrences 1 and 7), and no reviewer reads it before it is public (occurrences 2 and 8).
+
+**Guard status after occurrence 10.** Neither occurrence cited a path for the claim, so the dispatch hook
+proposed at occurrence 4 (a read of each referenced path) and the `file:line` rule proposed at occurrence 8 would
+both have passed them. A guard for outward text would have to sit on `gh pr comment`, `gh issue create`,
+`gh issue edit` and `gh api .../comments`: refuse a body that states what code does without a `file:line` for it,
+then check each cited path was read in the session. Recognising "states what code does" is not mechanical, so this
+stays a proposal; the occurrences show the cost falls on review comments and issues, where nothing downstream
+reads the code before the text is public.
 
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
