@@ -33,7 +33,7 @@ and why.
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
 | 1.2 | Asserted a config gap that did not exist, without reading the file — **x7** | Unverified claim | 7 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
-| 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
+| 1.4 | **x3** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped; x3: a survey value inferred from another template, `opa_svc` where the template wants `opa`) | Unverified claim | 3 | Convention; launcher survey-pattern check proposed |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
 | 1.6 | Called a host addressless from one ARP sweep; it was up and answering, the sweep lost the race — **x2** (widened by 1.19) | Unverified claim | 2 | Convention |
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
@@ -119,8 +119,9 @@ and why.
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
 | 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
-| 3.20 | Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) | Live state | 1 | Convention (launch away from schedule slots); per-task inventory proposed |
+| 3.20 | **x2** — Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) (x2: two more launches in forbidden minutes, no failure) | Live state | 2 | Convention (launch away from schedule slots); per-task inventory proposed; widened by 3.22 |
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
+| 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check failed on the removed shared inventory (supersedes 3.20's rule for longer tasks) | Live state | 1 | Convention (finish before the next slot); launcher duration check proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -406,7 +407,7 @@ command list; until then, `ruff check .; echo rc=$?` is the form.
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
 
-**Occurrences: 2** — (first occurrence undated), 2026-10-30
+**Occurrences: 3** — (first occurrence undated), 2026-10-30, 2026-11-10
 
 **What happened.** Immediately after creating a runner group, its access list was checked
 at `.../runner-groups/5/repositories`. The group's real id was 6. The check silently
@@ -430,6 +431,21 @@ rule did not fire because these were status summaries, not verification steps, a
 wording emphasises verification; an id in a report to the operator is a claim just the same.
 The ids were corrected from the launcher logs (`Task <id> launched`) before the final report.
 
+
+**Occurrence 3 — 2026-11-10.** Launching check-mode runs of the `main`-bound `Provision VM` and `Resize VM`
+templates for the OPA host, I passed `target_service=opa_svc`. The value was inferred from adjacent state (other
+templates take the group name, for example `Probe launch-gate (Dev)`'s `probe_target_service` defaults to `opa_svc`),
+not read from these templates' own survey descriptions, which say "Service whose <name>_svc group holds the declaration
+(e.g. github_runner)" and "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)". Both playbooks append `_svc`
+(`provision-vm.yml` builds `groups[target_service ~ '_svc']`), so Semaphore tasks 14728 and 14729 refused before
+touching Proxmox, naming the group `opa_svc_svc`. The relaunch with `target_service=opa` passed (14731, 14734). Nothing
+was changed, but it cost two runs, and the two failed launches overlapped a schedule slot (3.22). The rule did not
+fire because it is worded for ids returned by a create call; a launch input is the same kind of identifier. The
+corrected form: read the template's survey description before setting a survey value.
+
+**Proposed guard (count 3).** Survey fields in `platform/semaphore/templates.yml` gain an optional `pattern`, which
+`scripts/semaphore-launch.py` checks before the POST; `target_service` on the VM writers gets one refusing a value
+ending in `_svc`.
 
 ### 1.5 A security control asserted from documentation, disproved by the first measurement
 
@@ -3417,6 +3433,8 @@ every remote command in a recovery with `timeout`.
 
 ### 3.20 Launched production tasks into the scheduled burst and broke the shared inventory
 
+**Occurrences: 2** — 2026-11-07, 2026-11-10
+
 **What happened.** On 2026-11-07, running the journal collector rollout (2.3b.5), I launched
 `Deploy o11y Journal Collector (Dev)` at 21:00:10 UTC (task 13410) and its dry-run apply at 22:00:36
 UTC (task 13433). Both failed at the pre-flight with "The inventory could not be parsed or contained
@@ -3448,6 +3466,13 @@ inventory, re-run it alone, and check whether scheduled tasks started in the sam
 minute of a schedule declared in `templates.yml`, and the foundational fix is a per-task copy of
 the inventory so no task can remove another's.
 
+**Occurrence 2 — 2026-11-10.** Running the check-mode VM-writer runs on `main` (Create VM Template, Provision VM,
+Resize VM), I launched at 23:03:54 UTC (task 14727, under five minutes after the :00 slot) and at 23:15:26 UTC (task
+14734, 26 seconds after the :15 slot), both in minutes the rule forbids. Neither failed, and the scheduled tasks at
+23:15 (14732, 14733) did not fail either. The rule did not fire because it was not recalled: the launches were
+sequenced by when the previous one finished, not by the clock. Two other launches, in minutes the rule allows, did
+break a scheduled task; that case the rule does not cover, and 3.22 widens it.
+
 ### 3.21 Shared-inventory switches merged and synced before any run had read them
 
 **What happened.** For observability task 2.3c (endpoint availability probes), site-config PR 157
@@ -3477,6 +3502,33 @@ a disabled-mode dry run ready to confirm the revert path.
 **Enforced by.** Convention. Proposed: a read-only template that runs the enabled-mode pre-placement
 gates against the declared cohort without the switch, with fixed-category refusal reasons, so the
 switch can be proven before it is merged. Related: 3.15 (unproven `dev` changes reaching a real run).
+
+### 3.22 A launch in an allowed minute ran into the next schedule slot and broke the liveness check
+
+**Occurrences: 1** — 2026-11-10
+
+**What happened.** On 2026-11-10 I launched `Provision VM` at 23:08:00 UTC (task 14728) and `Resize VM` at
+23:09:41 UTC (task 14729), both in check mode, both in minutes 3.20's rule allows (:05 to :09). Each ran past
+23:10:00, when the scheduled `Check o11y Liveness (Dev)` started (task 14730). 14730 failed in its pre-flight:
+"The inventory could not be parsed or contained no hosts ... A known cause on Semaphore is concurrent tasks sharing
+one inventory file, which the first task to finish removes before another has parsed it". The watcher reported
+nothing about o11y for that slot.
+
+**Root cause.** 3.20's rule constrains when a manual task starts, but the race happens when a task finishes: the
+task that finishes first removes the shared inventory file (`platform/playbooks/tasks/require-parsed-inventory.yml`).
+A manual task that starts in an allowed minute and is still running at the next slot can finish while a scheduled
+task is parsing. That the failure came from 14729 finishing is inferred from the timing; it was not proven.
+
+**The rule.** Supersedes 3.20's rule for any task that runs longer than a minute or two. Launch a manual production
+task only when it will also finish before the next declared schedule slot (`platform/semaphore/templates.yml`),
+leaving at least one minute of margin. For a task of unknown duration, launch it right after a slot has finished,
+never in the minutes just before one. Run manual launches one after another, each checked against the clock. If a
+scheduled task fails on an empty inventory near a manual run, re-run nothing by hand: let its next slot run, and
+check that it passes.
+
+**Enforced by.** Convention. Proposed, extending 3.20's proposal: `scripts/semaphore-launch.py` refuses a launch
+within a template's recorded typical duration of the next declared slot. The foundational fix is unchanged: a
+per-task copy of the inventory, so no task can remove another's.
 
 ## 4. Data handling
 
