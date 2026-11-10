@@ -41,6 +41,10 @@ CANDIDATE_FIELDS = {
     "label_value_length_limit": 20_480,
 }
 
+# Jobs whose sample limit is held to the stricter o11y_scrape_sample_limit ceiling. Must match the
+# jobs prometheus.yml.j2 and scrape-host-node.yml.j2 cap (and Alloy's own self-scrape in env.j2,
+# job "alloy"); test_o11y_scrape_budgets.py renders the templates and compares.
+CEILED_SAMPLE_JOBS = frozenset({"receiver-host", "host-node", "alloy"})
 MAX_ACTIVE_TARGETS = 10_000
 MAX_HOST_SAMPLE_LIMIT = 20_000
 MAX_CONFIG_BYTES = 16 * 1024 * 1024
@@ -244,7 +248,7 @@ def o11y_scrape_budget_preview(
     results = []
     for item in receipt["jobs"]:
         sample_limit = limits["sample_limit"]
-        if item["job"] in {"receiver-host", "host-node"}:
+        if item["job"] in CEILED_SAMPLE_JOBS:
             sample_limit = min(sample_limit, sample_cap)
 
         comparisons = (
@@ -419,7 +423,7 @@ def _o11y_loaded_scrape_limit_coverage(
                 if loaded is None or loaded > maximum:
                     return _loaded_unavailable("invalid_loaded_limit")
                 expected = limits[candidate_key]
-                if category == "receiver-host" and config_key == "sample_limit":
+                if category in CEILED_SAMPLE_JOBS and config_key == "sample_limit":
                     expected = min(expected, sample_cap)
                 if loaded != expected:
                     category_results.setdefault(category, []).append("mismatch")
