@@ -99,6 +99,7 @@ and why.
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
 | 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
+| 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (run mutation checks with `PYTHONDONTWRITEBYTECODE=1`) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -2719,6 +2720,33 @@ deleted the probe tag, and the token was revoked (204).
 
 **Enforced by.** Test (`platform/tests/test_release_version_playbook.py`): every git command in
 the release playbook carries the three variables. Workstation probes: Convention.
+
+### 2.38 A restored mutation left the mutant's bytecode in place (widens 2.28)
+
+**What happened.** On 2026-11-10, while fixing two backtracking regexes in
+`platform/services/plane/lib/openspec_to_plane.py` (PR #1009), a mutation check changed one character
+of the new pattern (`+` to `?`), ran the equivalence test (it failed, as intended), and restored the
+file with `cp` from a saved copy. The sha256 matched the original, so the restore was reported as
+byte-exact. But the test run had written `__pycache__/openspec_to_plane.cpython-312.pyc` for the
+mutant. The swap kept the file the same size, and the restore landed in the same second, so the source
+kept the size and modification time that pyc header records. Python 3.12 therefore kept loading the
+mutant's bytecode. The reviewer's first test run in that worktree failed two tests, including the new
+equivalence test, against code that was correct on disk. The reviewer traced it to the stale pyc,
+showing that the system Python 3.9 (with no 3.12 bytecode to load) compiled the correct pattern. The
+author's own passing run had come before the mutation, so no wrong result was reported. The stale file
+was deleted and the suite passed (25).
+
+**Root cause.** Python decides whether a cached `.pyc` is current by the source's modification time
+(whole seconds) and size recorded in its header, not by content. A same-length edit and its restore in
+the same second leave both unchanged, so a byte-exact restore does not invalidate the cache. Checking
+the source's hash proves the file, not what the interpreter will load.
+
+**The rule.** Run every mutation check with `PYTHONDONTWRITEBYTECODE=1`, so the mutant never reaches
+the cache, or delete the module's `__pycache__` entry after restoring. Never trust a byte-exact source
+restore to reset what Python imports. This widens 2.28 ("disable bytecode writes") from clean-copy
+tests to mutation checks.
+
+**Enforced by.** Convention.
 
 ## 3. Acting on live state
 
