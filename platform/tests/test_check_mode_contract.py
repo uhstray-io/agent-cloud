@@ -80,11 +80,18 @@ PROVISION = "platform/playbooks/provision-console-proxmox-token.yml"
 # playbook alone; recorded in plan/architecture/08-ansible-automation-standards.md.
 CONSOLE_CA_DIR = "{{ _ca_dir.path }}"
 CONSOLE_CA_FILE = "{{ _ca_dir.path }}/ca.pem"
+# The release run's per-run directory (plan 20, 2026-11-09): created by tempfile under the temp root with its own
+# prefix, holding the anonymous clone and the 0600 git credential file, removed in the same run's always:.
+RELEASE = "platform/playbooks/release-version.yml"
+RELEASE_DIR = "{{ _rv_tmp.path }}"
+RELEASE_CRED = "{{ _rv_tmp.path }}/cred"
+RELEASE_PREFIX = ".release-version-"
 SCRATCH_TARGETS = {
     MATERIALISE: {"{{ _msk_dir.path }}/id"},
     REMOVE: {"{{ _rsk_dir }}"},
     PIN: {"{{ _pshk_kh }}"},
     PROVISION: {CONSOLE_CA_FILE, CONSOLE_CA_DIR},
+    RELEASE: {RELEASE_DIR, RELEASE_CRED},
 }
 # The per-run directory the TLS trust file lives in: created by tempfile(state=directory) under the temp root,
 # with this one prefix. Its name is pinned like _msk_dir's: one definition, in its own file.
@@ -98,6 +105,7 @@ PINNED_DEFINITIONS = {
                  " | default('') }}"),
     "_pshk_kh": (PIN, "set_fact", "{{ lookup('ansible.builtin.vars', ssh_key_result_var).known_hosts }}"),
     "_ca_dir": (PROVISION, "register", "Create the per-run CA scratch directory"),
+    "_rv_tmp": (RELEASE, "register", "Create the per-run release scratch directory"),
 }
 
 
@@ -168,6 +176,9 @@ def _in_runner_scratch(module: str, args, rel: str | None) -> bool:
         # Console's token playbook may create one directory of its own prefix under the same root.
         if rel == PROVISION:
             return (args.get("state") == "directory" and args.get("prefix") == CONSOLE_CA_PREFIX
+                    and str(args.get("path", "")).strip() == SCRATCH_ROOT)
+        if rel == RELEASE:
+            return (args.get("state") == "directory" and args.get("prefix") == RELEASE_PREFIX
                     and str(args.get("path", "")).strip() == SCRATCH_ROOT)
         return (rel == MATERIALISE and args.get("state") == "directory" and args.get("prefix") == ".sshkey_"
                 and str(args.get("path", "")).strip() == SCRATCH_ROOT)
@@ -700,7 +711,8 @@ def test_every_runtime_root_check_computes_the_root_inline():
     for rel, marker in ((MATERIALISE, "_msk_dir.path | realpath | dirname"),
                         (REMOVE, "_rsk_dir | realpath | dirname"),
                         (PIN, "_pshk_kh | realpath | dirname | dirname"),
-                        (PROVISION, "_ca_dir.path | realpath | dirname")):
+                        (PROVISION, "_ca_dir.path | realpath | dirname"),
+                        (RELEASE, "_rv_tmp.path | realpath | dirname")):
         text = (REPO / rel).read_text()
         (line,) = [ln for ln in text.splitlines() if marker in ln]
         assert line.strip().endswith("== " + SCRATCH_ROOT_INLINE), (rel, line)

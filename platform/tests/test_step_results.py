@@ -21,13 +21,13 @@ REGISTRY = yaml.safe_load((REPO / "platform/workflows/service-onboarding/registr
 TEMPLATES = [
     {"id": 1, "name": "Check Secrets"},
     {"id": 2, "name": "Apply Firewall (Dev)"},
-    {"id": 3, "name": "Deploy tududi (Local)", "playbook": "platform/playbooks/deploy-tududi.yml"},
+    {"id": 3, "name": "Deploy honcho (Local)", "playbook": "platform/playbooks/deploy-honcho.yml"},
     {"id": 4, "name": "Snapshot Access"},
     {"id": 5, "name": "Some Unregistered Template"},
     {"id": 6, "name": "Deploy step-ca", "playbook": "platform/playbooks/deploy-step-ca.yml"},
     {"id": 7, "name": "Deploy postiz", "playbook": "platform/playbooks/deploy-postiz.yml"},
 ]
-GROUPS = {"tududi_svc": "tududi", "step_ca_svc": "step-ca"}  # postiz is not in this inventory
+GROUPS = {"tududi_svc": "tududi", "honcho_svc": "honcho", "step_ca_svc": "step-ca"}  # postiz is not in this inventory
 # The closed per-service deploy list the collector reads from OPA's data (not a "Deploy " prefix).
 DEPLOYS = frozenset(json.loads((REPO / "platform/services/opa/deployment/policies/agentcloud/data.json").read_text())
                     ["catalog"]["service-agent"]["service_deploy_templates"])
@@ -91,7 +91,7 @@ def test_unmapped_failures_are_ignored():
 
 
 def test_per_service_deploy_template_maps_to_service_deploy():
-    assert "service-deploy" in _agg(_task(7, "error", 3, "x"))["services"]["tududi"]
+    assert "service-deploy" in _agg(_task(7, "error", 3, "x", service="honcho"))["services"]["honcho"]
 
 
 def test_pick_keeps_the_newest_finished_task_per_template_and_service():
@@ -527,13 +527,14 @@ def test_a_group_takes_its_service_from_its_first_tracked_host():
 
 
 def test_main_runs_the_three_modes_as_the_collector_calls_them():
-    inv = {"groups": {"tududi_svc": ["h"], "step_ca_svc": ["s"]}, "host_services": {"h": "tududi", "s": "step-ca"}}
+    inv = {"groups": {"tududi_svc": ["h"], "honcho_svc": ["d"], "step_ca_svc": ["s"]},
+           "host_services": {"h": "tududi", "d": "honcho", "s": "step-ca"}}
     deploys = sorted(DEPLOYS)
     selected = _call({"mode": "select", "registry": REGISTRY, "templates": TEMPLATES,
                      "deploy_templates": deploys, **inv})
     assert selected["template_ids"] == [1, 2, 3, 4]
     # the service list the NetBox lookup loops, keyed as the aggregate keys them
-    assert selected["inventory_services"] == ["step-ca", "tududi"]
+    assert selected["inventory_services"] == ["honcho", "step-ca", "tududi"]
     row = {"id": 5, "status": "success", "template_id": 1, "end": "t",
            "environment": '{"target_service": "tududi_svc"}'}
     picked = _call({"mode": "pick", "groups": {"tududi_svc": ["h"]}, "host_services": {"h": "tududi"},
@@ -724,18 +725,18 @@ def test_a_full_window_marks_only_the_services_it_can_hide():
     # PR 258 Codex review: one full window marked every service incomplete and hid a new,
     # unrelated service from "Services not yet run". A per-service deploy template can hide
     # only its own service's runs; a shared template (Snapshot Access) any service's.
-    groups = {"tududi_svc": "tududi", "step_ca_svc": "step-ca"}
-    assert step_results.incomplete_services([3], TEMPLATES, REGISTRY, groups, DEPLOYS) == {"tududi"}
-    assert step_results.incomplete_services([4], TEMPLATES, REGISTRY, groups, DEPLOYS) == {"tududi", "step-ca"}
-    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca", "tududi"], DEPLOYS,
-                                 window_full=[3], incomplete={"tududi"})
-    assert agg["history_window_full"] == [3] and agg["history_incomplete"] == ["tududi"]
-    assert agg["report"]["tududi"]["no_history"] is False and agg["report"]["tududi"]["history_incomplete"] is True
+    groups = {"honcho_svc": "honcho", "step_ca_svc": "step-ca"}
+    assert step_results.incomplete_services([3], TEMPLATES, REGISTRY, groups, DEPLOYS) == {"honcho"}
+    assert step_results.incomplete_services([4], TEMPLATES, REGISTRY, groups, DEPLOYS) == {"honcho", "step-ca"}
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca", "honcho"], DEPLOYS,
+                                 window_full=[3], incomplete={"honcho"})
+    assert agg["history_window_full"] == [3] and agg["history_incomplete"] == ["honcho"]
+    assert agg["report"]["honcho"]["no_history"] is False and agg["report"]["honcho"]["history_incomplete"] is True
     row = agg["report"]["step-ca"]
     assert row["no_history"] is True and row["history_incomplete"] is False
     markers = {(st["stream"]["service"], st["stream"]["status"]) for st in step_results.loki_streams(agg, 1)
                if st["stream"]["step"] == "none"}
-    assert markers == {("tududi", "history_incomplete"), ("step-ca", "no_history")}
+    assert markers == {("honcho", "history_incomplete"), ("step-ca", "no_history")}
 
 
 def test_a_retained_step_the_registry_no_longer_holds_is_dropped():

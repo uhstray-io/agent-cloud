@@ -3,6 +3,11 @@
 Organisation-scoped CI execution on platform hardware, for workflows that must originate
 inside the network perimeter or from its stable address.
 
+**Upstream source paths:** references to `packages/` and `src/` in the runner-hook and
+runner lifecycle sections below are paths in the cited upstream GitHub Actions projects,
+not paths in this repository. The `pkg/` paths are from upstream Podman sources, and
+`debian/binfmt-install` is from Ubuntu's upstream QEMU packaging.
+
 **Two hosts, one interchangeable pool.** Verified serving work: a four-shard matrix landed
 shards 1 and 3 on `gh-runner-01`, shards 2 and 4 on `gh-runner-02`.
 

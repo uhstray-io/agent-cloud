@@ -14,7 +14,7 @@
 # A local-connection host (local-dev) has no per-service Linux host to inspect, the same
 # reason apply-firewall.yml ends there, so host facts are reported as not applicable.
 #
-# Usage (Semaphore): -e target_service=tududi_svc
+# Usage (Semaphore): -e target_service=honcho_svc
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).

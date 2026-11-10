@@ -2,6 +2,9 @@
 
 **Date:** 2026-10-10
 **Status:** IMPLEMENTED
+> **Parent plan:** [Guardrails and governance](03-guardrails-governance.md)
+> **Historical record:** This plan records the merge-guard implementation and CI policy. Check the current script and workflow before relying on these details.
+
 **Context:** PR #531 was merged while checks for its final head were still running. Dev intentionally has no required-check rule because the main-to-Dev reconciliation workflow pushes directly to `dev`.
 
 ## Problem
@@ -52,7 +55,7 @@ The gate requires the thirteen unconditional quality jobs (`EXPECTED` in `script
 
 The tool also requires an approval on the expected SHA from a non-author reviewer, or a structured operator-attested JSON receipt with `repository`, `pr`, `head_sha`, `reviewer`, `session`, `verdict: "APPROVED"`, and `evidence`. The receipt is not cryptographic proof of reviewer independence. All review pages are read in GitHub's chronological order, with the later item winning equal submission timestamps; any latest non-dismissed changes-requested verdict or unresolved review thread refuses. Thread pagination metadata and every `isResolved` value must be boolean, and a continuing page must provide a cursor. `--feedback-addressed` is a separate operator attestation for actionable feedback in reviews and ordinary PR comments; the CLI does not classify comment prose.
 
-Two more refusals sit beside the workflow rule. The changed-file classification refuses any pull request that changes `scripts/semver.py` or `scripts/semver-backfill.tsv` (`RELEASE_SCRIPTS` in `scripts/merge-when-green.py`), because `release-version.yml` runs them with `contents: write` on every push to `dev` and `main`; the operator merges those pull requests by hand (plan 20). Each validation also reads the live pull request title and refuses one that is not a Conventional Commits title, using the same `classify_title` as the `Version` check, because that job does not run again on a title edit.
+Two more refusals sit beside the workflow rule. The changed-file classification refuses any pull request that changes one of the three paths in `RELEASE_SCRIPTS` (`scripts/merge-when-green.py`): `scripts/semver.py`, `scripts/semver-backfill.tsv` and `platform/playbooks/release-version.yml`. The Semaphore release templates run those paths on a schedule with a GitHub App token that can write contents and workflows, so the operator merges those pull requests by hand (plan 20). Each validation also reads the live pull request title and refuses one that is not a Conventional Commits title, using the same `classify_title` as the `Version` check, because that job does not run again on a title edit.
 
 ## Implementation phases
 
@@ -116,3 +119,4 @@ The CLI does not change GitHub rulesets or the main-to-Dev sync. Direct use of `
 - 2026-11-08: Permit the pi-moved workflow to transition directly to the exact ruff-pinned workflow (`astral-sh/ruff-action` given `version: "0.17.4"`); the pi-moved blob stays a legal predecessor and the ruff-pinned blob is pinned from the final workflow bytes.
 - 2026-11-09: Permit the ruff-pinned workflow to transition directly to the exact versioned workflow (new required job `Version`, which reads the live pull request title and predicts the version; the ruff-pinned blob stays a legal predecessor and the versioned blob is pinned from the final workflow bytes).
 - 2026-11-09: Refuse a pull request that changes `scripts/semver.py` or `scripts/semver-backfill.tsv` (operator-merged, because the release workflow runs them with a write token), and re-read the live title at every validation.
+- 2026-11-09: Add `platform/playbooks/release-version.yml` to `RELEASE_SCRIPTS`, because the release now runs from the Semaphore `Release Version (Dev)` and `Release Major Version (Dev)` templates with a GitHub App token. The GitHub Actions release workflow is deleted (plan 20).

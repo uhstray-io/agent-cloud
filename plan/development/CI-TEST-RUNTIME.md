@@ -2,6 +2,8 @@
 
 **Date:** 2026-09-29  
 **Status:** ACTIVE  
+> **Parent plan:** [Guardrails and governance](03-guardrails-governance.md)
+
 **Context:** The agent-cloud `Unit Tests` job ran Python, BATS, and Rego sequentially. A measured run on 2026-09-29 spent 16m03s in Python and 11m18s in BATS before a BATS failure. Splitting the jobs shortened feedback without dropping any test gate.
 
 ## Problem

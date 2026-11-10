@@ -89,7 +89,7 @@ test_branch_feature_branch_denied_for_a_legacy_agent if {
 		"agent": "nemoclaw",
 		"service": "semaphore",
 		"action": "run_task",
-		"template_name": "Deploy tududi",
+		"template_name": "Deploy Postiz",
 		"git_branch": "feat/x",
 	})
 }

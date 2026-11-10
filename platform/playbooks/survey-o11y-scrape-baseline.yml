@@ -67,7 +67,9 @@
       {{ {'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
           'targets': o11y_expected_metrics_targets | default([]),
           'availability': _o11y_availability | default({}),
-          'shared_limits': o11y_scrape_limits | default({}),
+          'shared_limits': o11y_scrape_limits | default(none) | o11y_effective_scrape_limits(
+              o11y_scrape_sample_limit | default(2000) | int, local_mode | default(false) | bool,
+              o11y_scrape_limits_reviewed | default(false) | bool),
           'candidate_config_sha256': _survey_candidate_config_sha256 | default(''),
           'environment': o11y_environment | default('prod'),
           'cluster': o11y_cluster | default('agent-cloud-local'),

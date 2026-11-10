@@ -84,7 +84,6 @@
       - {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}
       - {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}
       - {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}
-      - {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}
       - {'host': 'console.{{ _dev_zone }}', 'upstream': 'console:8080'}
       - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
       - {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}
@@ -112,6 +111,16 @@
         profile: server
         dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/launch-gate/deployment/certs/launch-gate-server
         sans: ['launch-gate.local.{{ _dev_zone }}']
+        reload: none
+    # skynet's one internal leaf, the same shape and the same `| string` emission as _launch_gate_leaves above
+    # (skynet_svc:vars below). The SAN is <dns_site>.<dns_zone> with dns_site local; the dir is the path
+    # deploy-skynet.yml's leaf assert requires: <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>.
+    _skynet_leaves:
+      - name: skynet-server
+        host: skynet-local
+        profile: server
+        dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/skynet/deployment/certs/skynet-server
+        sans: ['skynet.local.{{ _dev_zone }}']
         reload: none
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
@@ -1489,24 +1498,6 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
-          [tududi_svc]
-          tududi-local ansible_host=127.0.0.1 ansible_connection=local
-
-          [tududi_svc:vars]
-          ansible_user=semaphore
-          service_name=tududi
-          monorepo_deploy_path=platform/services/tududi/deployment
-          container_engine=podman
-          openbao_addr={{ _bao_url_net }}
-          local_mode=true
-          tududi_bind=127.0.0.1
-          tududi_port=3402
-          tududi_base_url=https://todo.{{ _dev_zone }}:{{ _edge_https_port }}
-          tududi_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/tududi/
-          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
-          local_home_dir=/var/lib/agent-cloud-deploy
-          local_workspace_dir=/workspace/agent-cloud
-
           [console_svc]
           console-local ansible_host=127.0.0.1 ansible_connection=local
 
@@ -1654,7 +1645,7 @@
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
           local_mode=true
-          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:7bcd4153bb1c22462bfefad0bcaec740ea51c18249d0fc6f8a94f5d01884578a
+          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:7eb9fa7b114dc51784745a19ec2a7d03f5254ad7e3cf774694d99f925f62dbe6
           skynet_gateway_url=https://inference.agent-cloud.test
           skynet_model=qwen3.8-flash-next
           skynet_opa_url=https://opa.agent-cloud.test
@@ -1664,6 +1655,14 @@
           skynet_semaphore_catalog=local
           # The launch gate by its local-dev network alias (task 3.6); deploy the gate before skynet.
           skynet_launch_gate_url=https://launch-gate.local.{{ _dev_zone }}:8443
+          # HTTPS: skynet serves on container 8443, published on loopback 18444 (18443 is the launch gate's).
+          # Local probes reach it by its local-dev alias skynet.local.<dns_zone> on 8443.
+          skynet_tls=true
+          skynet_bind=127.0.0.1
+          skynet_port=18444
+          dns_site=local
+          dns_zone={{ _dev_zone }}
+          internal_leaves={{ _skynet_leaves | string }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

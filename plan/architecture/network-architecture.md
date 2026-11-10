@@ -1,6 +1,6 @@
 # Network Architecture
 
-**Date:** 2026-10-27
+**Date:** 2026-11-09
 **Status:** ACTIVE
 **Author:** Joseph A. Wisneski IV
 **Context:** agent-cloud's network design is spread across the Cloudflare edge code, the Caddy
@@ -105,10 +105,12 @@ flowchart TB
         subgraph CTRL["Control plane"]
             SEM["Semaphore<br/>orchestrator"]
             BAO["OpenBao<br/>secret store"]
+            LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
         end
         subgraph TRUST["Internal trust services"]
             CA["step-ca<br/>internal CA (LIVE)"]
             DNS["hickory-dns<br/>internal zone (VM up, service PLANNED)"]
+            OPA["OPA decisions<br/>LIVE, LAN bind, step-ca TLS"]
         end
         subgraph GPU["GPU nodes (owned by dgx-spark)"]
             VLLM["vLLM API on {gpu-head}<br/>Ray worker on {gpu-worker}"]
@@ -116,6 +118,7 @@ flowchart TB
         subgraph SEMI["Semi-trusted hosts"]
             RUN["GitHub Actions runners<br/>egress-denied to the interior"]
         end
+        SKY["skynet<br/>orchestration API (LIVE)"]
         PFS["pfSense router"]
     end
 
@@ -125,16 +128,20 @@ flowchart TB
     CF -->|"to origin (zone TLS mode UNVERIFIED)"| CADDY
     CADDY -->|"HTTP, firewalled to Caddy"| APPS
     CADDY -->|"mutual TLS"| AGW
-    AGW -->|"HTTP + upstream key"| VLLM
+    AGW -->|"plain HTTP, upstream key in clear"| VLLM
     AGW -. "TLS (DECIDED, not built)" .-> VLLM
     SEM -->|"SSH, per-service keys"| APPS
     SEM -->|"SSH"| CADDY
+    LG -->|"Semaphore task on allow, HTTPS"| SEM
+    LG -->|"asks OPA, HTTPS"| OPA
+    SKY -. "launch request via the gate, HTTPS (wired; no launch yet)" .-> LG
     SEM -->|"AppRole over HTTP, internal only"| BAO
     SEM -->|"SSH (issuance runs in the CA container)"| CA
     GH["GitHub"]
     RUN -->|"outbound to GitHub"| GH
     RUN -. "egress denied" .-> BAO
     PVE -. "console, bypasses guest firewall" .-> APPS
+    style LG stroke-dasharray: 5 5
 ```
 
 What each zone is, at a glance:
@@ -145,6 +152,7 @@ What each zone is, at a glance:
 | Front door | One Caddy container, the only HTTPS ingress | LIVE [8] | `05-platform-infra.md` |
 | Service VMs | One service per Proxmox VM | LIVE (per-service status in `service-architecture.md`) | `02-service-onboarding.md` |
 | Control plane | Semaphore and OpenBao | LIVE | `04-credentials-access.md` |
+| Policy and launch | OPA decision API (LIVE, production 2026-10-29); launch gate (HTTPS service, live in production since 2026-11-09) | mixed [52][53][54] | `platform/services/opa/deployment/context/architecture.md`, `platform/services/launch-gate/deployment/CLAUDE.md` |
 | Internal trust | step-ca (LIVE), hickory-dns (VM provisioned, service not deployed in production) | mixed [9][10] | `05-platform-infra.md` |
 | GPU nodes | vLLM, managed by the dgx-spark repository, not agent-cloud | LIVE (outside this repo) | `plan/development/06-inference-skynet.md` |
 | Semi-trusted | Self-hosted CI runners | LIVE [11] | `platform/services/github-runner/CLAUDE.md` |
@@ -153,7 +161,7 @@ What each zone is, at a glance:
 
 Every platform hostname is a proxied A record pointing at the Caddy origin, declared once as a list
 in OpenTofu and applied through the `Apply Cloudflare Tofu` Semaphore template; state lives in an
-R2 bucket [5][12]. Seventeen labels are declared today, from `auth` and `inference` to `mcp` and
+R2 bucket [5][12]. Nineteen labels are declared today, from `auth` and `inference` to `mcp` and
 `admin.inference` [12]. The origin address is a variable whose real value lives in site-config.
 
 A request then passes the zone's custom firewall ruleset, in order. The flowchart shows that order
@@ -188,7 +196,7 @@ checks (`bic`, security level); the country and AI-bot blocks still apply [13].
 | `auth.<zone>` (Authentik) | the OIDC machine endpoints only (token, userinfo, revoke, introspect, device, discovery, JWKS) | browser login pages stay challenged | [13] |
 | `mcp.<zone>` | exactly `/mcp` | none | [13] |
 
-The rate limit is one ruleset on the zone's Pro plan, which allows two rules [14]. The inference
+The rate limit is one ruleset on the zone's Pro plan, which allows two rules [14]. Its current modes are **inference: block; MCP: log only** [14]. The inference
 rule counts `/v1/*` on both the inference host and the gateway's operator-UI host per source
 address and data center, and blocks at 10 requests per 10 seconds for 10 seconds; it has enforced
 since 2026-09-15 [14]. The MCP rule has its own bucket of the same shape, in log-only mode until
@@ -295,12 +303,12 @@ Each layer has a single job:
 
 | Hop | Check | Status | Source |
 |---|---|---|---|
-| Cloudflare | Challenge skip on `/v1/*` and `/health`; 10 requests per 10 s per source | LIVE | [13][14] |
+| Cloudflare | Challenge skip on `/v1/*` and `/health`; 10 requests per 10 s per source (inference: block; MCP: log only) | LIVE | [13][14] |
 | Caddy | Bearer shape, path allowlist, body cap | LIVE | [19][21] |
 | Caddy to gateway | Mutual TLS: Caddy presents its step-ca client leaf; the gateway admits only client certificates whose SAN is on `agw_client_cert_allowlist` (default `caddy`), before any key check | BUILT; measured 2026-10-02 | [4][22] |
 | agentgateway | Per-identity API key, stored only as a sha256 hash; per-identity hourly token budget in its own Postgres | LIVE | [20][23] |
-| Gateway to vLLM | Plain HTTP with the upstream key | LIVE | [24] |
-| Gateway to vLLM, TLS | vLLM serving the internal CA's leaf, server-only first, then mutual | DECIDED 2026-10-16, waiting on the operator's go | [25] |
+| Gateway to vLLM | Plain HTTP; the vLLM API key travels in clear. Compensating control: the GPU host's firewall admits only the gateway host to the vLLM port (enforced outside this repository; not verified from this checkout) | LIVE, gap | [24] |
+| Gateway to vLLM, TLS | vLLM serving the internal CA's leaf, server-only first, then mutual | DECIDED 2026-10-16 (dgx-spark ADR-0017). On 2026-10-26 dgx-spark created the `vllm-tls` consumer account (PR 38), and agent-cloud generated and backed up its `vllm-tls` service SSH key the same day. The agent-cloud build is not started | [25] |
 
 The gateway exposes more than the client listener. The listener set is fixed in its rendered
 configuration [4]:
@@ -341,8 +349,9 @@ drops the identity and fails until dgx-spark rotates the vLLM key [24].
 
 **skynet's route.** agentgateway can carry a `/skynet/` route to the skynet orchestration API,
 admitting only enrolled identities and presenting skynet's own bearer token [29]. In production
-skynet has no published port and shares no network with the gateway, so nothing reaches it yet;
-the public Caddy allowlist carries no `/skynet/` path [29][19].
+skynet publishes its API on its VM's LAN address, port 8380, firewalled to the Dispatch Console
+VM only (AGENTS.md, "skynet deployed (prod, 2026-10-30)"); the gateway's `/skynet/` route is not
+enabled there, and the public Caddy allowlist carries no `/skynet/` path [29][19].
 
 ### 5. Internal trust: certificates and names
 
@@ -372,6 +381,8 @@ Renewal runs daily at 04:17 as `Renew Internal Certs (Dev)`: when any leaf on a 
 a third of its lifetime left, every leaf on that host is re-issued, the consumer reloaded once,
 and each renewed leaf proven in use; expiry lines go to Loki and alert rules are deployed [9][31].
 No real renewal has re-issued a leaf yet, and the CA backup is coded but has never run [9].
+
+**OPA's production path (LIVE since 2026-10-29).** OPA serves decisions on its own VM. It publishes port 8281 at the VM's LAN address only, and its server certificate is a step-ca leaf named by `opa_server_leaf` (default `opa-server`) that callers verify against the internal CA [52][53]. `deploy-opa.yml` refuses a production run unless `opa_bind` is a non-loopback address, `opa_tls` is set and `opa_internal_url` starts with `https://`. The playbook defaults `opa_tls` to `false`, and local-dev stays plain HTTP [53]. TLS alone does not admit a caller: the host firewall admits port 8281 only from declared caller groups (section 6), and the authorization policy limits what an admitted caller may ask [52].
 
 **The internal zone and naming.** hickory-dns is authoritative for one internal zone rendered from
 inventory and forwards everything else; its recursor is off [10]. The production VM is provisioned
@@ -419,6 +430,8 @@ flowchart LR
     OTHER -->|"public names only"| UP
 ```
 
+**Observability OTLP mutual TLS is built and off by default.** PR #756 (merged) added the TLS overlay `platform/services/o11y/deployment/compose.otlp-tls.yml` and the assertion task `platform/playbooks/tasks/assert-o11y-otlp-tls.yml`. The playbooks that read the switch `o11y_otlp_tls_enabled` (among them `deploy-o11y.yml`, `deploy-o11y-journal-collector.yml`, `renew-internal-certs.yml` and `clean-deploy-o11y.yml`) treat an unset value as `false`, so the overlay is applied only where a site sets the switch in its private inventory [55].
+
 ### 6. Host firewall and segmentation
 
 The host firewall is UFW, applied by `apply-firewall.yml` through Semaphore: default-deny inbound,
@@ -449,9 +462,10 @@ Where the firewall is recorded as applied:
 | Host class | Inbound shape | Status | Source |
 |---|---|---|---|
 | DNS host | Port 53 per declared client | LIVE 2026-09-29 | [34] |
+| OPA host | Port 8281 from the callers' inventory groups only (`firewall_allow_groups`) | LIVE 2026-10-29 | [52][53] |
 | o11y receiver | Grafana from the Caddy host; Loki push from the GPU node addresses | LIVE 2026-10-02 | [36] |
 | Internal CA host | Default deny; CA API on loopback only | LIVE (group 3.1 done) | [9] |
-| Services probed from their own host (tududi, honcho, n8n, o11y) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
+| Services probed from their own host (honcho, n8n, o11y; tududi until its retirement on 2026-11-09) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
 | CI runner hosts | **Egress deny** to the secret store, orchestrator and hypervisors (inbound shape not recorded) | LIVE, verified from inside a job | [11] |
 | Caddy host | No firewall declaration found in this repository | UNVERIFIED | — |
 | Every other service host | Per-host declaration in site-config | UNVERIFIED | — |
@@ -480,6 +494,9 @@ flowchart LR
     SEM -->|"public front door, every 10 min"| GRAF["Grafana liveness"]
     PROM["o11y Prometheus"] -->|"scrape node exporter<br/>on a private bind"| VMS
     SEM -->|"push-loki-lines"| LOKI["o11y Loki"]
+    SKY["skynet<br/>(launch caller, LIVE)"] -.->|"launch request, HTTPS (wired; no launch yet)"| LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
+    LG -->|"asks OPA, HTTPS"| OPA["OPA decisions<br/>(LIVE)"]
+    LG -->|"creates task only on allow"| SEM
 ```
 
 - **Every state-changing action goes through Semaphore.** Direct SSH is read-only break-glass
@@ -490,6 +507,8 @@ flowchart LR
   each host's declared private address, proves the receiver can reach it before declaring the
   scrape, and requires the series to arrive [41]. The liveness watcher probes Grafana through the
   public front door, so the firewall needs no exception for it [42].
+
+- **The launch gate is an HTTPS service, live in production since 2026-11-09.** It is the only identity that may ask Semaphore to launch a task for an agent. Its listener is HTTPS with an internal-CA server leaf, and its host admits connections on 8443 only from the skynet and console VMs. skynet's wiring to the gate is deployed, but no skynet-initiated launch through the gate is recorded yet [54].
 
 ### 8. Provisioning: how a VM gets its address
 
@@ -559,7 +578,7 @@ visible so a later reader does not reopen them without new evidence.
 | Whether the origin answers only Cloudflare | Per-route source allowlist; host firewall on 80/443; no lockdown | Failure mode; observability of the control; exposure it closes | **No lockdown.** The allowlist failed closed in production (Caddy does not see the peer address); the host-firewall variant would block other hostnames on the same host. A direct caller still meets two key checks. | [15][16] |
 | Where to rate-limit inference | Cloudflare per source; per Authorization header; at Caddy | Plan-tier limits; one shared key at the time; Caddy has no limiter without a third-party module | **Cloudflare, per source address**, with per-identity token budgets later moved into the gateway. Header keying would have been one bucket for the whole team. | [14][16][48] |
 | Where the inference gateway runs | Its own VM; on the Caddy host; on the GPU head node | Blast radius of a gateway fault; node memory; keeping non-vLLM software off the GPU nodes | **Its own VM behind Caddy.** A gateway upgrade must not touch the front door for every hostname, and GPU node memory is the binding constraint. | [20] |
-| How Caddy reaches the gateway | Plain HTTP on the LAN; mutual TLS with internal-CA leaves | The operator's 2026-09-27 requirement that every hop on the inference path be encrypted and that the gateway know its caller is Caddy | **Mutual TLS**, with a SAN allowlist checked before the API key, so only Caddy's leaf is admitted. The same requirement is why the platform runs a production internal CA at all. | [4][22][51] |
+| How Caddy reaches the gateway | Plain HTTP on the LAN; mutual TLS with internal-CA leaves | The operator's 2026-09-27 requirement that every hop on the inference path be encrypted and that the gateway know its caller is Caddy | **Mutual TLS**, with a SAN allowlist checked before the API key, so only Caddy's leaf is admitted. The same requirement is why the platform runs a production internal CA at all. **The gap:** the gateway-to-vLLM hop is still plain HTTP carrying the vLLM API key in clear, so the every-hop requirement is not met on that hop. It is recorded as a dated exception in [PRINCIPLES.md §6](../../PRINCIPLES.md#6-infrastructure--resilience), to be reviewed by 2027-02-05. The compensating control is host firewall admission of only the gateway host to the vLLM port, enforced on the GPU host outside this repository and not verified from this checkout. Internal-CA TLS for the hop is decided and pending [24][25]. | [4][22][51][24][25] |
 | Where MCP is served | Under the inference host; LAN-only; under the admin-UI host; its own hostname | Not widening an allowlist that exists because vLLM leaves control routes open; reachable by harnesses off the LAN; no browser challenge | **Its own hostname, `mcp.<zone>`**, exact path only, gateway key check. | [26] |
 | How internal names are shaped | No site label; flat names; always several A records; hardware in names; four families under a site label | Adding a second site without renaming; delegation; health handled by a load balancer, not DNS | **Four families under a site label**, service names resolve to a load balancer where one exists. | [33] |
 | Who may resolve internal names | pfSense domain-override forwarding; the whole LAN subnet; declared clients | Narrowest set that needs the names | **Declared clients only**, admitted per source. pfSense forwarding answers every LAN client; the subnet rule was the first declaration and was narrowed a day later. | [34] |
@@ -645,12 +664,13 @@ pieces not yet built.
 
 ```mermaid
 flowchart LR
-    CL["Clients"] --> CF["Cloudflare<br/>WAF, rate limits enforced on every API host"]
+    CL["Clients"] --> CF["Cloudflare<br/>WAF; inference rate limit block, MCP log only"]
     LAPTOP["Work laptops"] -.->|"Tailscale subnet router"| LANIN["Site LAN"]
     CF --> CADDY["Caddy"]
     LANIN -.-> CADDY
     CADDY -->|"mutual TLS"| AGW["agentgateway<br/>per-person keys only"]
-    AGW -.->|"mutual TLS"| VLLM["vLLM"]
+    AGW -->|"plain HTTP today, upstream key in clear"| VLLM["vLLM"]
+    AGW -.->|"TLS planned (dgx-spark ADR-0017), not built"| VLLM
     CADDY -->|"HTTP on firewalled hosts"| SVC["Services"]
     HOSTS["Every host"] -.->|"service names first"| DNS["hickory-dns<br/>production zone"]
     DNS -.->|"names follow NetBox"| NB["NetBox IPAM"]
@@ -769,9 +789,15 @@ document; for the long, frequently edited documents the section name is given as
 49. `platform/services/caddy/deployment/Caddyfile:9-16`
 50. site-config `inventory/production.yml`, `caddy_managed_sites` (private repository; TLS directives read 2026-10-27, no values reproduced)
 51. `plan/development/openspec/changes/production-internal-ca/proposal.md:1-25`
+52. `platform/services/opa/deployment/context/architecture.md:31-46` (production specifics, deployed 2026-10-29)
+53. `platform/playbooks/deploy-opa.yml` (production refusals; `opa_tls` defaults to false)
+54. `platform/playbooks/deploy-launch-gate.yml`; `platform/services/launch-gate/deployment/CLAUDE.md:1-12` (status: deployed in production since 2026-11-09); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
+55. `platform/services/o11y/deployment/compose.otlp-tls.yml`; `platform/playbooks/tasks/assert-o11y-otlp-tls.yml`; `platform/playbooks/deploy-o11y-journal-collector.yml` (switch `o11y_otlp_tls_enabled`, default false; merged as PR #756, commit `0bc41a8b`)
 
 ## Revision History
 
 | Date | Change |
 |---|---|
 | 2026-10-27 | Initial version: current-state network map with status per component, decision criteria, in-flight phases and target outcome |
+| 2026-11-04 | Corrected in place against the repository: OPA production path and the launch gate (HTTPS, not deployed) added; o11y OTLP mutual TLS (PR #756) recorded as built and off by default; label count corrected to nineteen; rate-limit modes stated (inference block, MCP log only); the every-hop row now records the plain-HTTP gateway-to-vLLM gap and its compensating control; vLLM TLS status brought up to the 2026-10-26 handoff |
+| 2026-11-09 | Corrected the launch gate to live in production since 2026-11-09 in the diagrams, the component table and the control-plane prose; the gate-to-OPA and gate-to-Semaphore edges are solid, and the skynet-to-gate edge stays dashed until a skynet-initiated launch is recorded; the recorded gateway-to-vLLM gap is cited as a dated exception in PRINCIPLES.md §6; ADR-0017 is named as dgx-spark's |

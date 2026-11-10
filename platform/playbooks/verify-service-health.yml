@@ -23,7 +23,7 @@
 # pinned to). The probe then runs curl with --cacert and --resolve, as deploy-opa.yml does for OPA,
 # and the certificate is still verified against the URL's own name. Neither var set keeps the uri probe.
 #
-# Usage (Semaphore): -e target_service=tududi_svc
+# Usage (Semaphore): -e target_service=honcho_svc
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).

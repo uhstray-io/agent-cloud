@@ -47,7 +47,7 @@ and why.
 | 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
 | 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
-| 1.18 | **x2** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer) | Unverified claim | 2 | Convention (disk alert proposed) |
+| 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | **x4** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 4 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed |
@@ -58,9 +58,10 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) | Unverified claim | 8 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) | Unverified claim | 10 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
+| 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) | Unverified claim | 1 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -74,7 +75,7 @@ and why.
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
-| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | 1 | Test + **repo-wide normalisation outstanding** |
+| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied — **x2** (2026-11-10: the o11y availability source gate expected the raw scrape sample limit while Alloy ran the stricter ceiling) | Correctness | 2 | Test + **repo-wide normalisation outstanding**; scrape limits: one filter (`o11y_effective_scrape_limits`) |
 | 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
@@ -82,7 +83,7 @@ and why.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
-| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x2** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back) | False-green fixture | 2 | Shared filter test + playbook fixture |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x4** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back; 2026-11-10: the availability candidate fixture used Docker Compose's long volume form, `podman-compose config` keeps the short form, and the first real enabled o11y deploy refused; 2026-11-10: the post-apply Alloy binding was tested on a hand-written config, and the rendered enabled config's `module = ...` attribute refused every enabled deploy) | False-green fixture | 4 | Shared filter test + playbook fixture + real `podman-compose` output fixture + rendered Alloy config in the binding test; class guard proposed (CI runs pinned `podman-compose config`) |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x3** (widened by 2.31) | Wrong-reason pass | 3 | Image references: `test_compose_image_qualified.py`; class: proposal in 2.31 |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
@@ -96,7 +97,8 @@ and why.
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
-| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) | Wrong-reason pass | 1 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category); class Convention |
+| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
+| 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -201,6 +203,7 @@ and why.
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
 | 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
+| 10.35 | Merged a tag-pushing workflow whose push path no run had exercised; GitHub refused its first tag because the job token lacked the `workflows` permission | Mechanism never exercised | 1 | Convention (pre-merge write probe with the real credential) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -896,7 +899,7 @@ scoping exists. Otherwise report the status code and the endpoint, not a cause.
 
 ### 1.18 Listed an auth failure's causes from the code, missed the database error, and chased credentials for two hours
 
-**Occurrences: 2** — 2026-09-26, 2026-11-07
+**Occurrences: 3** — 2026-09-26, 2026-11-07, 2026-11-09
 
 **What happened.** Production Semaphore began answering every API call with an empty-body 401
 and the operator could not log in ("Failed to create session"). I read `api/auth.go` at
@@ -933,6 +936,28 @@ waited only about 150 ms. Two review rounds (CodeRabbit, then an independent rev
 both before merge; the fix moved to 10 attempts and dropped the cause claim. The rule did not
 fire because it is worded for auth paths and 401s; the habit it names, listing every branch
 that produces a status before ruling causes out, applies to any status read from source.
+
+**Occurrence 3 — 2026-11-09.** Issue #949, filed 2026-11-10 02:19 UTC, reported that the o11y
+availability namespace survey (task 14237) refused with the catch-all `namespace_unverified`, and
+blamed the 30 places `summarize-o11y-scrape-baseline.py` raises that category, 18 of them in its
+effective-compose check. The survey reaches none of them: 29 are candidate-mode checks and one is
+on the producer path. The real path was the helper's `os.stat("/proc/1/ns/net")`, which the
+rootless deploy user may not read, and `main()`'s `except Exception`, which turned that crash into
+the same catch-all. The occurrences were counted by grep, never traced from the survey's entry
+point, and the exception handler was missed: the error branch this rule names. Worse, the correct
+diagnosis was already on `dev`: #948 had merged at 2026-11-09 22:32 UTC, nearly four hours
+before the issue, reading the helper's own namespace and giving a crash its own category. The
+survey at that commit (task 14306) reports `isolated`. The issue carries a correction comment.
+The rule did not fire for two reasons. Its wording covers auth paths and 401s, so it was not
+recalled for a diagnostic category (occurrence 2 had the same gap). It also says nothing about
+reading the code's recent history before filing a diagnosis, which is how a fix already merged
+went unseen. Both are widened in 1.32.
+
+Count 3 retires Convention. The instance is now guarded: `platform/tests/test_o11y_availability_namespace_survey.py`
+requires a helper crash to report `namespace_internal_error`, never a decision category. Proposed
+class guard: a repository test that scans the fixed-category helpers under `platform/playbooks/files/`
+and fails when a top-level `except Exception` returns one of that helper's decision categories,
+so an unexpected error can never read as a policy answer.
 
 ### 1.19 A negative claim about a host's state, made from evidence that cannot establish it (widens 1.6)
 
@@ -1241,7 +1266,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 8** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09
+**Occurrences: 10** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1337,6 +1362,38 @@ not the policy that consumes the same field.
 
 **Occurrence 8 — 2026-11-09.** Briefing the Dispatch Console's proposal store and its JSON contract, I fixed a proposal's survey value as `target_service: "<service>_svc"`, the service's NetBox VM name with `_svc` appended, from the naming of groups such as `honcho_svc`. I did not read how the repository maps a service to its group. The service workflow names a service from its group and never the reverse "by string surgery" (`platform/workflows/service-onboarding/lib/step_results.py:52-54`); where it must go from a name to a group it replaces `-` with `_` (`:315`). OPA requires `^[a-z][a-z0-9_]*_svc$` (`agent_actions.rego`, the target_service bound). So `step-ca` became `step-ca_svc`, every hyphenated service's preview would have been an OPA deny, and the proposal could never be approved. The independent review of PR #934 caught it before merge. Why the rule did not fire: the value looked like a format, not a rule, and the earlier occurrence 2 was the same class (a `target_service` rule from a naming convention), which shows the convention-only rule is not being recalled at brief-writing time. The guard proposed at occurrence 4 (a dispatch hook requiring a read of each referenced path) would not catch it either, because the brief cited no path for the mapping; a stronger proposal: a brief that states an identifier's format must cite the `file:line` that defines it.
 
+**Occurrence 9 — 2026-11-10.** Answering the third review round on PR #993 (skynet's HTTPS listener), I
+posted a comment declining a low finding: a missing `compose.tls.yml` makes the new teardown test skip before it
+checks `compose.prod-tls.yml`. My reason was that "other tests in the file fail outright if either overlay
+disappears (the TLS overlay shape test and the keep-id overlay test assert their contents)". I had read what those
+two tests assert, not how they start. Both begin with `skip_unless_service_file`
+(`platform/tests/test_service_skynet.bats:40-42`), which skips when the file is absent: deleting one overlay skips
+two of the three tests (its own shape test and the teardown test) and fails none. I checked within a minute of
+posting and corrected the comment in place (issuecomment 6759971706), saying in it that the earlier version was
+wrong. Why the rule did not fire: the claim was a reason for not changing code, written in a reply to a reviewer,
+and it read as a summary of tests already seen in the session rather than as a claim about their behaviour.
+
+**Occurrence 10 — 2026-11-10.** Later the same day, opening #1002 (the shared Clean Deploy teardown loads overlays the
+deploy never loaded), I wrote that `platform/lib/common.sh` "already computes that set (`compose_files`, `:147`),
+from the service's `deploy.sh` overlay choices and `.env`", without reading the function. It reads neither: it
+prints `compose.yml`, `compose.local.yml` in local mode, and whatever `COMPOSE_OVERLAYS` holds (`:146-151`); a
+service's `deploy.sh` sets that variable from its own conditions (skynet's from `LOCAL_MODE` and `.env` markers).
+I read the function before anyone acted on the issue and corrected the paragraph. Why the rule did not fire: the
+description extended a reviewer subagent's one-line summary of the function from #993's second review round (a report to the session, not posted), and
+outward text such as issues and PR comments passes through neither check that caught earlier occurrences: no
+worker reads it against the code under a DEVIATION RULE (occurrences 1, 6 and 7), and no reviewer reads it before
+it is public (occurrences 2, 4 and 8). Relaying a reviewer's claim is 1.28's class; it is recorded here because
+the broken rule is this entry's, a description of what a function does written without reading its body.
+
+**Guard status after occurrence 10.** Occurrence 10 cited the path and line it described (`common.sh`, `:147`).
+The dispatch hook proposed at occurrence 6 (each referenced path read before an Agent dispatch) would have
+targeted exactly that path, but it watches Agent dispatches, not `gh` commands, so it would not have run.
+Occurrence 9's false claim cited no path, so neither that hook nor occurrence 8's proposal (a brief stating an identifier's
+format cites the `file:line` that defines it) would have caught it. Proposed guard for outward text: the same
+read check, on `gh pr comment`, `gh issue create`, `gh issue edit` and `gh api .../comments`, refusing a body
+that cites a repository path not read in the session. It covers occurrence 10's shape. Occurrence 9's shape, a
+behavioural claim with no citation, has no mechanical detector; it stays Convention.
+
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -1393,6 +1450,27 @@ never supports "merged".
 
 **Enforced by.** Convention. Related: 1.19 (a negative claim from evidence that cannot establish
 it).
+
+### 1.32 Diagnosed a refusal from code its path never reaches, after the fix had merged (widens 1.18)
+
+**What happened.** See 1.18, occurrence 3. Issue #949 explained an o11y survey refusal by
+counting the places a helper raises the refusal's category, without tracing which of them the
+survey's call path runs and without reading the exception handler that produced it. The correct
+diagnosis and its fix (#948) had merged to `dev` nearly four hours earlier.
+
+**Root cause.** 1.18's rule is worded for auth paths and 401s, so it was not recalled for a
+diagnostic category, and it does not ask for the code's recent history. A grep of where a value is
+produced reads like a trace and is not one: it lists every producer, reachable or not, and misses
+the handler that maps an unexpected exception onto the same value.
+
+**The rule.** Before stating why a status or category was produced, trace it from the caller's
+entry point to the statement that produced it, exception handlers included, and say which branch
+fired. Before filing a diagnosis, read that code at the current `dev` head and its recent merged
+history (`git log origin/dev -- <file>`, linked PRs): a fix may already be there.
+
+**Enforced by.** Convention. For one helper, `platform/tests/test_o11y_availability_namespace_survey.py`
+keeps a crash out of the decision categories; the class guard proposed under 1.18 would extend that
+to every fixed-category helper.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1782,6 +1860,8 @@ here instead of being called done.
 
 ### 2.14 One value, five resolution rules, and a verdict that lied because of it
 
+**Occurrences: 2** — (first undated), 2026-11-10
+
 **What happened.** A review found that the access gate reported `NO-GO` while the
 secrets it needed were available. The gate resolved the secret-store address as
 `openbao_addr | default('')`; the shared resolver I had just added used
@@ -1813,6 +1893,23 @@ reverting the gate to the no-fallback form.
 reconciled. Normalising the address across every playbook — including retiring the
 localhost-defaulting variant, which is the dangerous one — is a separate change,
 recorded here so it is not mistaken for done.
+
+**Occurrence 2 — 2026-11-10.** The o11y Alloy self-scrape sample limit had two definitions. The receiver's
+`env.j2` gave Alloy `min(o11y_scrape_sample_limit, o11y_scrape_limits.sample_limit)`, 2000 in production, as the
+o11y README says the older ceiling should. The availability source gate's five callers handed it the raw
+`o11y_scrape_limits`, so it expected 8192. Before availability was enabled, Prometheus produced Alloy's
+self-metrics and the native-limits comparison never ran. The first real enabled `Deploy o11y (Dev)` (Semaphore
+task 14414) applied the stack, and its post-apply readback refused. The deploy step did not print the category; a
+read-only dry run (14417) named it, `native_limits_mismatch`. Why the rule did not fire: the source gate was
+written against the declared limits, not against what the template renders, and no test rendered the two with
+the ceiling below the declared limit. One filter, `o11y_effective_scrape_limits`, now defines the effective
+sample limit for both producers of Alloy's self-metrics: `env.j2` (Alloy's own scrape), Prometheus's `alloy`
+job in `prometheus.yml.j2`, and every source-review caller. The first version of this fix changed only the
+gate's input and Alloy's side, which moved the disagreement to the Prometheus producer; review caught it
+before merge. Tests render both templates with production-shaped limits, require each producer's sample
+limit to equal the gate's input, and run the real Prometheus-producer validator on the rendered config; another
+requires every caller to pass the filter (all mutation-checked). The post-apply readback now prints its fixed
+category.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
 **Occurrences: 4** — 2026-08-25, 2026-08-25, 2026-11-02, 2026-11-04
@@ -2133,7 +2230,7 @@ Widened in 2.25.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
-**Occurrences: 2** — (first undated), 2026-11-08
+**Occurrences: 4** — (first undated), 2026-11-08, 2026-11-10, 2026-11-10
 
 **What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
 provisioner from `dev`, then refused its newly created isolated environment as
@@ -2173,6 +2270,35 @@ not fire: the fixture was written against the shape the helper already parsed, a
 what the pinned provider writes before its first read. The helper now accepts exactly those
 bytes for any declared non-alloy component, as it already accepted an absent file (`o11y_alloy` stays strict), and the test fixture is
 the reproduced bytes, with both halves mutation-checked.
+
+**Occurrence 3 — 2026-11-10.** The o11y availability candidate check (`deploy.sh --candidate`, effective
+compose verification in `summarize-o11y-scrape-baseline.py`) was tested only against a crafted `compose config`
+result in Docker Compose's normalized long form: Alloy's config mount as a `{type, source, target, read_only}`
+mapping. `podman-compose config`, the provider the gate pins (1.0.6, 1.3.0 or 1.6.0), keeps the short form the
+compose file declares, `./config/config.alloy:/etc/alloy/config.alloy:ro`. The check counted only mapping
+entries, found no config mount, and the first real enabled `Deploy o11y (Dev)` (Semaphore task 14401) refused
+with `namespace_candidate_alloy_spec` before starting anything. The same filter also skipped short-form
+entries in the "no other mount under `/etc/alloy/`" rule, so it failed open for that form. Reproduced locally by
+running the real check over real `podman-compose` 1.6.0 output. Why the rule did not fire: the fixture was
+written from the compose specification's long form, and nobody ran the pinned provider to see what it emits.
+The check now normalizes both forms, resolving a relative source against the deployment directory, and the test
+fixture is the captured `podman-compose` output (mutation-checked three ways).
+
+**Count 3: proposed mechanical guard.** A CI job installs each `podman-compose` version the gate accepts and
+runs `config` over the repo's o11y compose files with the enabled overlays, then feeds the output through the
+real effective-compose check, so a fixture can no longer drift from the provider. It needs `podman-compose`
+added to CI, a new dependency awaiting the operator's decision.
+
+**Occurrence 4 — 2026-11-10.** The post-apply binding of the running Alloy to its reviewed config
+(`_verify_loaded_candidate_config`) refuses any config-loading block with a line-start keyword match on
+`import`, `module` or `remotecfg`. Its test fed it a hand-written one-line config. Every enabled-mode config
+rendered from `config.alloy.j2` carries the blackbox target attribute `module = "health_NN"`, so the check
+refused every real enabled deploy (Semaphore task 14536). The pre-placement reads never reach the binding
+(`require_health_targets: false`), so it first ran after a production apply. Found offline by rendering the
+template with production-shaped probe targets and running the check; the read-only `Survey o11y Scrape
+Baseline (Dev)` (task 14552) reproduced it. Why the rule did not fire: the input under test was our own
+template, and the test did not render it. The check now matches block syntax only, and its test renders
+`config.alloy.j2` with availability enabled (mutation-checked).
 
 ### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
 
@@ -2525,6 +2651,8 @@ per-character seed fails collection (mutation-checked). The class rule stays `Co
 
 ### 2.36 A test stubbed the one OS read whose permission decided the outcome (widens 2.22)
 
+**Occurrences: 2** — 2026-11-09, 2026-11-10
+
 **What happened.** The o11y availability namespace gate compares the Alloy container's network namespace with
 the host's. It read the host's from `os.stat("/proc/1/ns/net")` (`summarize-o11y-scrape-baseline.py`,
 `_availability_runtime_pass`). The namespace tests replaced `os.stat` with a stub that answered that exact path
@@ -2556,6 +2684,41 @@ refusal uses.
 **Enforced by.** Test (`test_o11y_availability_namespace_survey.py`: the stub refuses `/proc/1/ns/net` with
 errno 13 and the runtime pass must stat `/proc/self/ns/net`; the catch-all must print
 `namespace_internal_error`). Mutation-checked. The class-wide rule for other stubbed OS reads: Convention.
+
+**Occurrence 2 — 2026-11-10.** The rule's second half, "an unexpected exception gets its own fixed category,
+never the word a real refusal uses", was applied to the namespace command only. The source command
+(`--verify-availability-source`) still printed `native_source_unavailable` for any exception, and about twenty
+checks in the post-apply candidate binding raised that same word. When the first real enabled deploys refused
+there (Semaphore tasks 14414, 14536), the category could not say which check failed. Why the rule did not fire:
+it was written against the one command that had just failed, and the sibling command was not audited. The
+binding checks and the source catch-all now have their own fixed words, which the deploy's diagnostic filter
+passes through.
+
+### 2.37 A credential probe passed on the operator's own git login
+
+**What happened.** On 2026-11-09, to prove that the new release GitHub App could push a tag the
+job token had been refused, a probe minted an App installation token, wrote it into a git
+credential-store file in a throwaway clone, and pushed `probe/workflows-<timestamp>` at
+`v0.1.0`'s backfill commit. The mint had failed: `uv run` read the working directory's
+`pyproject.toml` and exited 2, so the stored password was empty. The push succeeded anyway.
+Git also consulted the helpers configured outside the clone: a github.com-scoped
+`gh auth git-credential` in the global config and Apple git's built-in `osxkeychain`. One of them
+answered with the operator's login; which one is not established. The probe tag was pushed under
+the operator's identity and deleted in the same command (no `probe/*` tag remained). The result
+read as "the App can push" until the mint's exit code was read.
+
+**Root cause.** The probe added one credential helper without removing the others, and did not
+stop on an empty token.
+
+**The rule.** A test of one credential first removes every other path to authentication, shows
+what is left, and refuses an empty credential. For git: `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, then
+`git config --show-origin --get-all credential.helper` must list only the helper under test. The
+rerun did all three: the helper list showed the clone's own file only, the App token pushed and
+deleted the probe tag, and the token was revoked (204).
+
+**Enforced by.** Test (`platform/tests/test_release_version_playbook.py`): every git command in
+the release playbook carries the three variables. Workstation probes: Convention.
 
 ## 3. Acting on live state
 
@@ -6083,6 +6246,33 @@ previous playbook. `compose.yml` sets `GF_DATABASE_WAL=true` and
 drop is a production measurement, recorded in the o11y README against this baseline. A drop
 would be consistent with the suspected cause, not proof of it; only Grafana's own error log
 would confirm it.
+
+### 10.35 Merged a tag-pushing workflow whose push path had never run
+
+**What happened.** PR #935 (plan 20) added `.github/workflows/release-version.yml`, which tagged
+merges into `dev` and `main` and pushed the tags with the job's `GITHUB_TOKEN` at
+`contents: write`. Its triggers were pushes to `dev` and `main` and a manual dispatch, so no pull
+request run could execute it. Three review rounds and CI exercised `scripts/semver.py`, never a
+push. The first two runs after the merge (Actions runs 42692977437 and 42693944852, 2026-11-09)
+both failed on the first backfill push:
+`! [remote rejected] v0.1.0 -> v0.1.0 (refusing to allow a GitHub App to create or update workflow .github/workflows/lint-and-test.yml without workflows permission)`.
+No `v*` tag reached the remote. The workflow was disabled the same day.
+
+**Root cause.** The design took `contents: write` to cover any tag push. GitHub refused a tag at
+a commit whose `.github/workflows/lint-and-test.yml` it counts as a workflow change, because the
+job token did not hold the `workflows` permission. Which comparison GitHub makes is not stated in
+the refusal; the refusal itself is the established fact. Nothing before the merge performed the
+write the workflow existed to perform.
+
+**The rule.** A mechanism whose only trigger is post-merge is proven before the merge by running
+its exact write with its real credential against the real remote: here, a disposable tag outside
+the `v*` namespace at one of the commits it must tag, pushed and then deleted. The pull request
+records that probe.
+
+**Enforced by.** Convention. The replacement, the Semaphore `Release Version (Dev)` template
+(`platform/playbooks/release-version.yml`), had that probe first (2.37 records the run that
+proved nothing and its valid rerun), and its check mode mints the real token and builds every tag
+in a throwaway clone before any push.
 
 ## 11. The largest one
 

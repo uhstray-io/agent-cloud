@@ -21,42 +21,119 @@ private **site-config** repo; this repo holds templates, placeholders, and code.
    (the MAP)           connect, and a pointer from each subsystem to the doc that owns it.
                        Connective tissue — it simplifies, it does not re-state.
 
-   plan/architecture/  The per-area HOW and why-in-depth (00..07, deep + dense).
+   plan/architecture/  The per-area HOW and why-in-depth (00..09, deep + dense).
    plan/development/   The execution ROADMAP — service-by-service implementation plans.
    CLAUDE.md           The turn-by-turn operational rules an agent follows while editing.
 ```
 
 If you only read one thing, read `PRINCIPLES.md`. If you only read two, add this file.
 
-## The 4-Layer Model
+For what is running now, read [service-architecture.md](plan/architecture/service-architecture.md) (services, layers, status) and [network-architecture.md](plan/architecture/network-architecture.md) (ingress, TLS, firewall, control paths). Both are current-state records; this file does not repeat their status.
 
-Every privileged change flows top-to-bottom and **never the inverse**:
+## Four-layer architecture
 
+Every privileged change flows top-to-bottom and **never the inverse**. The diagram shows the
+as-built state recorded in [service-architecture.md](plan/architecture/service-architecture.md)
+and [network-architecture.md](plan/architecture/network-architecture.md), which are the
+recorded as-built sources; this document did not re-verify live state. The inference route state is as recorded
+on 2026-10-14 and was not re-checked live for this document.
+
+```mermaid
+flowchart TB
+    classDef risk stroke:#b00020,stroke-width:2px
+
+    subgraph AI["AI layer: proposes"]
+        NC["NemoClaw"]
+        NT["NetClaw"]
+        CW["Cowork (planned)"]
+        WB["WisBot (unverified)"]
+        WS["WebSmith (prompt-only, no runtime)"]
+        SK["skynet orchestration API (deployed 2026-10-30)"]
+        AGW["agentgateway inference edge (live)"]
+        SIDE["ComfyUI and Hunyuan3D sidecars"]
+    end
+
+    subgraph GR["Guardrail layer: validates"]
+        BAO["OpenBao (secrets)"]
+        OPA["OPA (policy decisions)"]
+        AUTH["Authentik (identity)"]
+        KYV["Kyverno (planned)"]
+        LG["launch gate (live 2026-11-09)"]
+    end
+
+    subgraph AU["Automation layer: executes"]
+        SEM["Semaphore (orchestrator)"]
+        ANS["Ansible playbooks"]
+        N8N["n8n (workflows, queue mode)"]
+        RUN["GitHub runners (no enforced per-job isolation)"]:::risk
+    end
+
+    subgraph PL["Platform layer: hosts"]
+        PVE["Proxmox VMs, Podman and Docker"]
+        CADDY["Caddy (public HTTPS ingress, internal TLS exceptions)"]
+        STEP["step-ca (internal CA)"]
+        DNS["hickory-dns (internal zones)"]
+        NB["NetBox (IPAM)"]
+        O11Y["o11y (Prometheus, Loki, Grafana)"]
+        ORB["orb-agent (privileged, host network)"]:::risk
+        VLLM["vLLM on DGX Spark (external)"]
+    end
+
+    subgraph HOST["Hosted workloads (not a layer)"]
+        OH["OpenHands (host Docker socket, root-equivalent)"]:::risk
+        APPS["honcho, Postiz, ERPNext, Dispatch Console, tududi (retired), NocoDB (retiring)"]
+        UHH["UhhCraft"]
+        PLANE["Plane (deploy run recorded, live unverified)"]
+    end
+
+    NC -.->|"model call (wiring not verified)"| AGW
+    NT -.->|"model call (wiring not verified)"| AGW
+    SK -.->|"model call (production use not recorded)"| AGW
+    AGW -->|"model call (plain HTTP, TLS pending)"| VLLM
+    CADDY -->|"routing: production"| AGW
+    CADDY -.->|"routing: rollback to direct vLLM"| VLLM
+    SK -->|"policy decision"| OPA
+    LG -->|"asks OPA for a decision"| OPA
+    LG -->|"launch on allow"| SEM
+    ANS -->|"credential retrieval (manage-secrets)"| BAO
+    SEM -->|"deployment"| ANS
+    ANS -->|"deployment"| PVE
+    SK -.->|"launches refused since 2026-10-31"| SEM
+    SK -.->|"launch request (wired; no launch yet)"| LG
+    AUTH -->|"identity (OIDC, forward_auth)"| SEM
+    AUTH -->|"identity (OIDC, forward_auth)"| CADDY
+    STEP -->|"identity (mTLS leaves)"| AGW
+    STEP -->|"identity (mTLS leaves)"| CADDY
+    STEP -->|"identity (server TLS)"| OPA
+    CADDY -->|"routing"| APPS
+    CADDY -->|"routing"| OH
+    UHH -.->|"generation call (GPU readiness unproven)"| SIDE
+    PVE -.->|"telemetry (host scrape, enrollment pending)"| O11Y
+    ORB -.->|"discovery (freshness not verified)"| NB
 ```
-  +---------------------------------------------------------------+
-  |  AI LAYER          AI PROPOSES                                 |
-  |  NemoClaw, NetClaw, WisBot, Cowork, WebSmith                   |
-  |  (backed by skynet: local-first OpenAI-compatible /v1)         |
-  |  ...emits desired-state proposals only...                     |
-  +------------------------------|--------------------------------+
-                                 v
-  +---------------------------------------------------------------+
-  |  GUARDRAIL LAYER   GUARDRAILS VALIDATE                         |
-  |  OpenBao (secrets) + OPA/Kyverno (policy) + Authentik (identity)|
-  |  ...a proposal that fails validation never reaches automation...|
-  +------------------------------|--------------------------------+
-                                 v
-  +---------------------------------------------------------------+
-  |  AUTOMATION LAYER  AUTOMATION EXECUTES                         |
-  |  Semaphore (orchestration) + Ansible (idempotent playbooks)    |
-  |  ...deterministic, auditable, re-runnable...                  |
-  +------------------------------|--------------------------------+
-                                 v
-  +---------------------------------------------------------------+
-  |  INFRASTRUCTURE    Proxmox VMs / Podman (+Docker) / Caddy edge |
-  |  the dumb container hosts where workloads actually run         |
-  +---------------------------------------------------------------+
-```
+
+**Legend.** A solid arrow is live: it is in code or a deployment record. A dashed arrow is
+planned, unverified, refused, or a rollback path. Edge labels name the kind of edge: model call,
+policy decision, credential retrieval, deployment, identity, routing, telemetry, discovery, or
+generation call. A red border marks a risk: a privileged or host-networked process, a
+root-equivalent socket, or missing enforced isolation.
+
+**What the diagram does not show.**
+
+- Semaphore does not ask OPA. Agent-initiated decisions come only from skynet's client and the
+  launch gate. `deploy-opa.yml` calls OPA only in its own verify step (`/health` and a sample
+  decision), per the deploy table in AGENTS.md. Sources: `platform/playbooks/deploy-skynet.yml`,
+  `deploy-launch-gate.yml`, `deploy-opa.yml`.
+- Semaphore launches from skynet were refused after 2026-10-31, when the svc-skynet role was
+  demoted to read-only `guest`.
+- DNS names are served by hickory-dns, but no edge is drawn for name resolution.
+- WebSmith has no runtime by design, so it has no edges.
+- The Caddy-to-agentgateway hop uses the internal CA. The gateway-to-vLLM hop is plain HTTP;
+  its TLS is pending.
+- Agent-to-agentgateway edges are dashed because the agent deployment config that would wire
+  them was not found in the repository.
+- Plain-HTTP and the firewall: backends speak plain HTTP only where the default-deny host
+  firewall is applied, and that firewall is not declared on every host.
 
 ### Why four layers and not three (the AI Invariant)
 
@@ -81,7 +158,7 @@ jump to that doc.
 
 | Subsystem | What it is | Layer | Owning doc |
 |---|---|---|---|
-| **skynet** | Local-first, OpenAI-compatible `/v1` inference plane backing all agents (supersedes WisAI's Ollama/Open WebUI) | AI | [plan/development/06-inference-skynet.md](plan/development/06-inference-skynet.md) |
+| **skynet** | Orchestration API: runs the onboarding workflow, asks OPA for each decision, calls models through agentgateway. Deployed 2026-10-30; the gateway's `/skynet/` route is not yet in production | AI | [skynet/deployment/CLAUDE.md](platform/services/skynet/deployment/CLAUDE.md) |
 | **AI agents** (NemoClaw, NetClaw, WisBot, Cowork) | Headless / network / Discord / interactive agents that emit desired-state proposals | AI | [plan/development/06-inference-skynet.md](plan/development/06-inference-skynet.md) |
 | **WebSmith** | Website-building agent; produces a signed `SPEC.md` per site, handed to a service deploy | AI | [07-website-building-agent.md](plan/architecture/07-website-building-agent.md) |
 | **OpenBao** | Sole source of truth for every credential | Guardrail | [04-credentials-access.md](plan/architecture/04-credentials-access.md) |
@@ -90,12 +167,19 @@ jump to that doc.
 | **Semaphore** | Orchestrator; every privileged, state-changing action runs through it for audit + AppRole injection | Automation | [01-automation-model.md](plan/architecture/01-automation-model.md), [04-credentials-access.md](plan/architecture/04-credentials-access.md) |
 | **Ansible + composable task library** | Idempotent playbooks; the credential boundary lives here, not in `deploy.sh` | Automation | [01-automation-model.md](plan/architecture/01-automation-model.md) |
 | **Proxmox / Podman / Docker** | VM hosting + container runtimes (rootless Podman default; Docker is a named exception) | Infrastructure | [05-platform-infra.md](plan/architecture/05-platform-infra.md) |
-| **Caddy** | Sole HTTPS ingress + only TLS terminator (LE via CloudFlare DNS-01) | Infrastructure | [05-platform-infra.md](plan/architecture/05-platform-infra.md) |
+| **Caddy** | Public HTTPS ingress (LE via Cloudflare DNS-01), with internal TLS exceptions such as the Caddy-to-agentgateway hop | Infrastructure | [05-platform-infra.md](plan/architecture/05-platform-infra.md) |
 | **step-ca / hickory-dns** | Internal private CA (stable root) + internal DNS (zones-as-code) | Infrastructure | [05-platform-infra.md](plan/architecture/05-platform-infra.md) |
 | **NetBox** | Authority for network / IPAM, populated by the Diode discovery pipeline | Infrastructure | [plan/development/04-netbox-discovery.md](plan/development/04-netbox-discovery.md) |
 | **Observability** (Grafana, Prometheus, Loki, Alloy, Tempo) | Self-hosted telemetry; opt-in by declaration, `service.name` is the join key | cross-cut | [06-observability-instrumentation.md](plan/architecture/06-observability-instrumentation.md) |
 | **Service onboarding & tiers** | The one-shape-per-tier model + onboarding checklist for new services | cross-cut | [02-service-onboarding.md](plan/architecture/02-service-onboarding.md) |
 | **Testing / CI / quality gates** | The lint + test + leak-prevention gates every PR passes | cross-cut | [03-testing-ci-quality.md](plan/architecture/03-testing-ci-quality.md) |
+| **agentgateway** | Inference edge: per-client keys and token budgets in front of the external vLLM; route switched 2026-10-14 | AI | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **n8n** | Workflow automation, queue mode; production since 2026-09-02 | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **GitHub runners** | Self-hosted CI for private repos; no enforced per-job isolation | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **launch gate** | The only path from agents to Semaphore launches; live in production since 2026-11-09 | Guardrail | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **orb-agent** | NetBox discovery worker; runs privileged on the host network | Infrastructure | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **vLLM (DGX Spark)** | Model serving on the GPU pair; external, owned by the dgx-spark repository | Infrastructure (external) | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **Hosted workloads** | honcho, Postiz, ERPNext, UhhCraft, Dispatch Console, OpenHands, tududi (retired), NocoDB (retiring), Plane (deploy run recorded, live unverified); not a layer | Hosted | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **Doc standards & index** | How docs are structured, status values, the full doc index | cross-cut | [00-foundation-standards.md](plan/architecture/00-foundation-standards.md) |
 
 ## Load-Bearing Decisions (one line each)
@@ -116,7 +200,7 @@ Every line below is a *rule*; follow the link for the *why* and the as-built cav
 - **Everything through Semaphore** — every privileged, state-changing action flows through Semaphore for audit + AppRole injection; direct SSH is read-only break-glass, reconciled by a later redeploy. ([PRINCIPLES §5](PRINCIPLES.md#5-automation--promotion), [04](plan/architecture/04-credentials-access.md))
 - **Authored convergence + liveness** — the only always-on loop is liveness (a crashed/rebooted container self-heals); config convergence is always from a *human-authored* Git target, on a trigger or a timer, never free-running. ([PRINCIPLES §5](PRINCIPLES.md#5-automation--promotion))
 - **Reversibility tags [TARGET]** — each deploy carries `reversible: true|false`; an irreversible (migration) deploy off a non-main branch surfaces a confirmation gate + snapshot. ([PRINCIPLES §5](PRINCIPLES.md#5-automation--promotion))
-- **TLS at the edge** — Caddy terminates TLS exactly once; backends speak plain HTTP only on a firewall-enforced trusted network; consume public TLS, run a private CA, never become one. ([PRINCIPLES §6](PRINCIPLES.md#6-infrastructure--resilience), [05](plan/architecture/05-platform-infra.md))
+- **TLS at the edge** — Caddy is the public HTTPS ingress and terminates public TLS. Internal hops are exceptions that use the internal CA (the Caddy-to-agentgateway hop is the first). Backends speak plain HTTP only on a firewall-enforced trusted network, and the host firewall is not declared on every host yet, so that condition does not hold everywhere. Consume public TLS, run a private CA, never become one. ([PRINCIPLES §6](PRINCIPLES.md#6-infrastructure--resilience), [05](plan/architecture/05-platform-infra.md))
 - **Runtime-artifacts + tmpfs secrets** — target hosts get rendered runtime artifacts (no repo clone) and tmpfs-mounted secrets from OpenBao (no persistent `.env`), so leaks fail closed by construction. **[TARGET]** ([PRINCIPLES §6](PRINCIPLES.md#6-infrastructure--resilience), [01](plan/architecture/01-automation-model.md))
 - **SPOFs carry a recovery story** — any infra/edge SPOF (Caddy, OpenBao, step-ca, DNS) ships a documented, tested rebuild-from-OpenBao+site-config path before it carries traffic. ([PRINCIPLES §6](PRINCIPLES.md#6-infrastructure--resilience))
 - **Observability by declaration** — logs are free, metrics are two labels, traces are two env vars, `service.name` joins all three; no per-service `prometheus.yml` edits, dashboards/alerts as code. ([PRINCIPLES §7](PRINCIPLES.md#7-observability), [06](plan/architecture/06-observability-instrumentation.md))
@@ -134,16 +218,16 @@ The big ones, roughly in priority order:
   every "secrets never in the clone" claim depend on this landing first.
 - **RBAC role-based provisioning — designed, not built.** The Org>Dept>Team>Role + Access-Level
   schema and the (identity → per-service role) provisioning automation don't exist yet;
-  the operator's Semaphore user was hand-set to admin (a stopgap). See [04](plan/architecture/04-credentials-access.md).
+  the operator's Semaphore admin role was hand-set as a stopgap. `manage-semaphore-access.yml` now holds system admins to a declared roster and fails an undeclared admin by name; whether production matches that roster is not checked here. See [04](plan/architecture/04-credentials-access.md).
 - **AppRole rotation remains incomplete.** The shared task now defaults to `secret_id_ttl: 2160h`
   and reuses stored credentials. Expiry-aware rotation and finite SecretID login counts remain
   targets; `token_num_uses` limits issued tokens, not SecretID authentications.
-- **nocodb credential-boundary violation.** `nocodb` deploy.sh still sources `bao-client.sh`
+- **NocoDB credential-boundary violation.** NocoDB is retired (2026-09-01) but still runs through its legacy `deploy.sh`, which sources `bao-client.sh`
   (legitimate only for the genesis services OpenBao + Semaphore); retiring it is the concrete
   acceptance test that the deploy.sh boundary is real.
 - **Scheduled config reconciliation** is INVESTIGATE/[TARGET]; today convergence is
   trigger-only and only liveness self-heals.
-- **Alerting before tracing**, the host firewall rollout backing the "trusted network" claim,
+- **Alerting before tracing**, the host firewall rollout (partial: applied on some hosts, not all) backing the "trusted network" claim,
   and the `assert-orchestrated.yml` wiring are all in flight, not done.
 
 For the full caveats and open tensions (static DB passwords vs. dynamic leases, conformance

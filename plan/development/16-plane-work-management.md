@@ -8,7 +8,9 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 **Date:** 2026-10-23
 
-**Status:** ACTIVE. Decisions D1–D9 were settled on 2026-10-23. No phase has started.
+**Status:** ACTIVE. Decisions D1–D9 were settled on 2026-10-23.
+
+**Production deploy record (2026-11-04):** the first production run of `Deploy Plane` is Semaphore task 11139. Live state is **UNVERIFIED**: this repository does not establish that Plane is running in production. The run needed registry qualification. Ubuntu 24.04 podman has no search registry and refuses Docker Hub short names, so `makeplane/*` images are now qualified as `docker.io/makeplane/*` and `postgres:15` as `docker.io/library/postgres:15`. `platform/tests/test_plane_fetch_setup.py` guards this. The pinned release is `v3.3.3` (Joe, 2026-10-27; see `platform/services/plane/deployment/CLAUDE.md`). Verify the instance, the proxy and the first-run setup before recording any phase as complete.
 
 This document is the human-readable summary of the plan. The executable task list lives in the OpenSpec change [`deploy-plane-work-management`](openspec/changes/deploy-plane-work-management/). Read the change's `tasks.md` for what to do, and its `design.md` for the risks, the rejected alternatives and the dated Phase 0 findings. This file does not repeat the task list.
 
@@ -24,6 +26,8 @@ The team has no single place where GitHub issues, the per-repository plans and t
 - tududi is torn down at the end of the plan. *(Superseded in part 2026-11-07: see the paragraph after this list.)*
 
 2026-11-07: tududi is retired after the Phase 1 gate, ahead of phases 3–6; its data is archived, not migrated, and its GitHub sync is removed outright.
+
+2026-11-09: tududi is torn down. Its production VM is destroyed, its data is archived to site-config, and the Semaphore templates and schedules that ran its GitHub sync are deleted.
 
 **Base ref:** `origin/dev` at commit `391a4f7c`. All implementation work starts from that ref in a fresh worktree, not from the local `local-dev-run` checkout.
 

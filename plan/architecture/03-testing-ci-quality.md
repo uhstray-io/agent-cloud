@@ -1,10 +1,13 @@
 # 03 — Testing, CI & Quality Gates
-> **Consolidates:** TESTING-AND-LINTING-PLAN.md, CI-TESTING-SPECIFICATION.md, LINTING-AND-TESTING.md, SECURITY-TESTING-STANDARDS.md, BRANCH-TESTING-WORKFLOW.md, OPENSSF-SCORECARD-PLAN.md (originals archived in `plan/archive/`)
+> **Consolidates:** TESTING-AND-LINTING-PLAN.md, CI-TESTING-SPECIFICATION.md, LINTING-AND-TESTING.md, SECURITY-TESTING-STANDARDS.md, BRANCH-TESTING-WORKFLOW.md, OPENSSF-SCORECARD-PLAN.md (originals archived in `plan/archive/architecture/`; OPENSSF-SCORECARD-PLAN.md in `plan/archive/development/`)
 >
 > **Depends on:** 00, 01
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
+> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
+
+**Date:** 2026-11-04
+**Status:** ACTIVE
 
 
 <!-- ======================= source: TESTING-AND-LINTING-PLAN.md ======================= -->
@@ -18,11 +21,23 @@
 
 ---
 
-## Coverage Assessment (2026-05-06)
+## Current CI (verified 2026-11-09)
+
+Source: `.github/workflows/lint-and-test.yml`. It defines these jobs and runs on `pull_request` to `main` and `dev`, with `permissions: contents: read` at the top level.
+
+- Jobs: `changes`, `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python-core`, `python-playbook-safety`, `python-agentgateway`, `python-playbook-runs`, `python-semaphore`, `python-netbox`, `bats`, `rego`, `test` (Unit Tests), `go-lint`, `go-test`, `go-build`, `rust-console`.
+- `changes` gates the Go jobs: `go-lint` and `go-test` run only on Go changes, and `go-build` runs on Go or Dockerfile changes.
+- `test` (Unit Tests) runs `if: always()` and needs nine jobs: the six Python groups, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded.
+- Required on `main`: `.github/rulesets/protect-main.json` (`enforcement: active`) requires the contexts `Static Analysis`, `Security Scan`, `Unit Tests` and `Promotion source (dev -> main)`. `.github/rulesets/protect-dev.json` (`enforcement: active`) defines no required status check.
+- Remote ruleset state was not queried in this review; the checked-in files are the evidence.
+
+## Coverage Assessment (2026-05-06, historical)
+
+> **Historical snapshot.** The counts and CI layout in this section are as of 2026-05-06. The *Current CI* block above is the current job list.
 
 ### What Exists
 
-The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linters on every PR to main. Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provide functional coverage for NetBox workers and shared libraries.
+The CI pipeline (`.github/workflows/lint-and-test.yml`) runs the jobs listed in *Current CI* above on every pull request to `main` and `dev`. As of 2026-05-06, Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provided functional coverage for NetBox workers and shared libraries.
 
 | Component | Test Coverage | Notes |
 |-----------|---------------|-------|
@@ -1676,7 +1691,7 @@ After branch validation succeeds:
 
 **Never merge a PR before its checks have completed and passed.**
 
-On `main` these rules are codified in the `protect-main` repository ruleset (`.github/rulesets/`), not just procedurally — currently in `evaluate`/dry-run (logging would-be violations, not yet blocking) until flipped to `active`: required status checks (`Static Analysis` / `Security Scan` / `Unit Tests`) and conversation resolution block the merge button, and force-push and deletion are rejected. The rollback story above ("re-deploy from `main`") stays valid precisely because `main` history can never be rewritten.
+On `main` these rules are codified in the `protect-main` repository ruleset (`.github/rulesets/`), not just procedurally — the checked-in file declares `enforcement: active` (remote state not queried in this review): required status checks (`Static Analysis` / `Security Scan` / `Unit Tests`) and conversation resolution block the merge button, and force-push and deletion are rejected. The rollback story above ("re-deploy from `main`") stays valid precisely because `main` history can never be rewritten.
 
 <!-- ======================= source: OPENSSF-SCORECARD-PLAN.md (was in plan/development/) ======================= -->
 

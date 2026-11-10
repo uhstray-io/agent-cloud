@@ -48,7 +48,7 @@ _acc(mode, groups) := object.union(_run("security-agent", "Deploy Authentik", "o
 
 _ssh_from(src) := {"port": 22, "proto": "tcp", "source": src, "consumer": "semaphore", "justification": "orchestration"}
 
-_svc(spec, template) := object.union(_run("service-agent", "Deploy tududi", "service-deploy"), {
+_svc(spec, template) := object.union(_run("service-agent", "Deploy Postiz", "service-deploy"), {
 	"proposal": {"vm_spec": spec, "deploy_template": template, "verdict": {"decision": "converge", "findings": []}},
 	"context": _ctx,
 })
@@ -245,7 +245,7 @@ test_provision_vm_local_host_name_keeps_an_allow if {
 
 test_resize_vm_bare_service_name_keeps_an_allow if {
 	agentcloud.allow with input as object.union(_vm_run("Resize VM", "vm-rightsize", {"target_service": "postiz"}), {
-		"proposal": {"vm_spec": {"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "deploy_template": "Deploy tududi", "verdict": {"decision": "converge", "findings": []}},
+		"proposal": {"vm_spec": {"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "deploy_template": "Deploy Postiz", "verdict": {"decision": "converge", "findings": []}},
 		"context": _ctx,
 	})
 }
@@ -358,12 +358,12 @@ test_host_and_service_bounds_are_silent_outside_an_agent_run if {
 }
 
 test_service_deploy_list_covers_a_listed_service if {
-	agentcloud.allow with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi"), {"template_name": "Deploy tududi (Dev)"})
+	agentcloud.allow with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz"), {"template_name": "Deploy Postiz (Dev)"})
 }
 
 # An assessment of one service does not license launching another (PR 203 Codex review).
 test_service_deploy_must_launch_the_assessed_template if {
-	d := agentcloud.decision with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi"), {"template_name": "Deploy honcho"})
+	d := agentcloud.decision with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz"), {"template_name": "Deploy honcho"})
 	not d.allowed
 	contains(d.reason, "the launched template is not the proposal's deploy template")
 }
@@ -372,13 +372,13 @@ test_service_deploy_must_launch_the_assessed_template if {
 # not the proposal's deploy template.
 test_vm_rightsize_runs_resize_vm_on_the_service_assessment if {
 	agentcloud.allow with input as object.union(_run("infra-agent", "Resize VM", "vm-rightsize"), {
-		"proposal": {"vm_spec": {"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "deploy_template": "Deploy tududi", "verdict": {"decision": "converge", "findings": []}},
+		"proposal": {"vm_spec": {"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "deploy_template": "Deploy Postiz", "verdict": {"decision": "converge", "findings": []}},
 		"context": _ctx,
 	})
 }
 
 test_service_deploy_without_a_deploy_template_is_denied if {
-	svc := _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi")
+	svc := _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz")
 	d := agentcloud.decision with input as object.union(object.remove(svc, ["proposal"]), {"proposal": object.remove(svc.proposal, ["deploy_template"])})
 	not d.allowed
 	contains(d.reason, "the launched template is not the proposal's deploy template")
@@ -391,7 +391,7 @@ test_service_deploy_list_never_reaches_another_roles_template if {
 # The "Deploy " prefix this list replaced reached the platform's foundation.
 test_service_agent_cannot_deploy_the_foundation if {
 	every t in ["Deploy OpenBao", "Deploy Semaphore", "Deploy All Services", "Deploy GitHub Runner", "Deploy NetBox"] {
-		not agentcloud.allow with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi"), {"template_name": t})
+		not agentcloud.allow with input as object.union(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz"), {"template_name": t})
 	}
 }
 
@@ -524,23 +524,23 @@ test_firewall_proposal_without_context_fails_closed if {
 }
 
 test_service_proposal_with_destructive_template_denied if {
-	d := agentcloud.decision with input as _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Clean Deploy tududi")
+	d := agentcloud.decision with input as _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Clean Deploy Postiz")
 	not d.allowed
 	contains(d.reason, "service proposal names a destructive template")
 }
 
 test_service_proposal_over_tier_bounds_denied if {
-	d := agentcloud.decision with input as _svc({"cores": 16, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi")
+	d := agentcloud.decision with input as _svc({"cores": 16, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz")
 	not d.allowed
 	d.reason == "service proposal exceeds the tier's VM bounds"
 }
 
 test_service_proposal_within_bounds_allowed if {
-	agentcloud.allow with input as _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi")
+	agentcloud.allow with input as _svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz")
 }
 
 test_service_proposal_without_bounds_fails_closed if {
-	base := object.remove(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy tududi"), ["context"])
+	base := object.remove(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz"), ["context"])
 	inp := object.union(base, {"context": {}}) # union merges nested objects, so remove first
 	not agentcloud.allow with input as inp
 }
@@ -551,7 +551,7 @@ test_legacy_nemoclaw_unscoped_run_task_unchanged if {
 		"agent": "nemoclaw",
 		"service": "semaphore",
 		"action": "run_task",
-		"template_name": "Deploy tududi",
+		"template_name": "Deploy Postiz",
 	}
 }
 
