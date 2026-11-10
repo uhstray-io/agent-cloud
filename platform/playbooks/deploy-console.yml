@@ -483,8 +483,8 @@
       register: _console_gate_probe
       changed_when: false
       failed_when: false
-      retries: 5
-      delay: 3
+      retries: "{{ console_gate_probe_retries | default(5) | int }}"
+      delay: "{{ console_gate_probe_delay | default(3) | int }}"
       until: _console_gate_probe.stdout | trim == '401'
       when:
         - _console_launch_gate_declared | bool
