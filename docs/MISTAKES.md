@@ -896,7 +896,7 @@ from a scout's report, which counted runner helpers by name rather than files ca
 and neither was re-run before writing. The post-merge grounding review counted 41 test files
 calling it (`grep -l 'harness_sandbox.run(' platform/tests/*.py | wc -l`, 40 of them also start
 `ansible-playbook`) and seven collections (`_node_ids` called for the root and six shards,
-`test_ci_python_partition.py:134`, `:136`). Re-counting while fixing #1023's review findings turned up a third relayed figure: "48 of the 65" runners setting no timeout, which an AST scan of the test files (helpers named `_run`, `run`, `_play`, `_plays` or `_ansible` that start `ansible-playbook`) puts at 19 of 66. The low count steered phase 3 toward a new runner module
+`test_ci_python_partition.py:134`, `:136`). Re-counting while fixing #1023's review findings turned up a third relayed figure: "48 of the 65" runners setting no timeout, which an AST scan of the test files (helpers named `_run`, `run`, `_play`, `_plays` or `_ansible` that start `ansible-playbook`) puts at 19 of 66. The low runner count ("only 12") steered phase 3 toward a new runner module
 instead of extending the existing one. Corrected in PR #1023 (open when this was recorded). Why the rule did not fire: the number
 arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
 the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
