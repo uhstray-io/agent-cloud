@@ -158,6 +158,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/00-foundation-local-dev.md` — hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
 - `plan/development/16-plane-work-management.md` — Plane (Commercial Pro) work tracker replacing tududi: Authentik OIDC, native GitHub sync, OpenSpec→modules via Plane Compose, OAuth MCP for harnesses, Forge Discord app, tududi teardown
 - `plan/development/20-semantic-versioning.md` — Semantic versioning: PR titles set the bump, `Version` check on every PR, `-dev.N` tags on `dev`, `vX.Y.Z` tags and Releases on `main`, 0.x line with every major behind the `release-major` approval
+- `plan/development/21-console-access-requests.md` — Console access requests and the skynet iam-agent (DRAFT handoff plan): the site-config declaration stays the authority, a request becomes a reviewed site-config PR, Plane follows the Authentik groups
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
