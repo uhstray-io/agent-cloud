@@ -164,7 +164,8 @@ so you do not need to remember them.
 
 `bats platform/tests/` is byte-identical to CI's. Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
-`PATH`, as CI does. Without uv it falls back, with a warning, to whatever `python3` and
+`PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
+outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
 tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite

@@ -243,8 +243,8 @@ if [ -f pyproject.toml ]; then
       export PATH
       py_locked=1
     else
-      printf 'pre-push WARNING: `uv sync --locked` failed or did not create .venv (stale uv.lock,\n' >&2
-      printf '  no network, or UV_PROJECT_ENVIRONMENT set). The suites run on the tools already on\n' >&2
+      printf 'pre-push WARNING: `uv sync --locked` failed or did not create .venv/bin/python (stale\n' >&2
+      printf '  uv.lock, or no network). The suites run on the tools already on\n' >&2
       printf '  PATH, whose versions may differ from the lock. CI runs `--locked` and fails on a\n' >&2
       printf '  stale lock: after editing pyproject.toml, run `uv lock` and commit uv.lock.\n' >&2
     fi
