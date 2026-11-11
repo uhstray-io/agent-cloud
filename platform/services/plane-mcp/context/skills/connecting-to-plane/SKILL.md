@@ -50,8 +50,9 @@ claude mcp get plane
 ```
 
 Act on what it prints, then run `claude mcp get plane` again until a row says "go to" or "stop".
-A remove deletes a configuration: if the entry is one you set up on purpose (another Plane you
-use, a project that needs its own), stop and ask `<platform-admin>` instead of removing it.
+A remove deletes a configuration. Before each one, show the `get` output to the teammate and get a
+yes (Claude running this asks first, every time). An entry set up on purpose (another Plane you use,
+a project that needs its own) is not removed: stop and ask `<platform-admin>`.
 
 | `get` prints | Do |
 |---|---|
