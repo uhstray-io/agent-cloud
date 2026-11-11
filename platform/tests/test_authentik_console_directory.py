@@ -23,6 +23,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -170,7 +171,8 @@ def _render(tmp: Path, src: Path, variables: dict) -> str:
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(playbook)],
-                          cwd=tmp, env=env, text=True, capture_output=True, check=False)
+                          cwd=tmp, env=env, text=True, capture_output=True, check=False,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     assert done.returncode == 0, done.stdout + done.stderr
     return dest.read_text(encoding="utf-8")
 
