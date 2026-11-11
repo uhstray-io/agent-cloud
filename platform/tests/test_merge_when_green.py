@@ -1342,6 +1342,19 @@ class MergeGuardTests(unittest.TestCase):
             api.checks[-1] = dict(coderabbit, **override)
             run_refusal(self, api, "Unknown external check policy: CodeRabbit")
 
+    def test_successful_dependabot_config_check_passes_and_other_dependabot_runs_refuse(self):
+        api = FakeGitHub()
+        config_check = {"id": 3001, "name": ".github/dependabot.yml", "head_sha": HEAD,
+                        "status": "completed", "conclusion": "success", "app": {"slug": "dependabot"}}
+        api.checks = api.checks + [config_check]
+        self.assertTrue(guard.validate(api, PR, HEAD, None))
+        for override in ({"conclusion": "failure"}, {"conclusion": "neutral"},
+                         {"status": "in_progress", "conclusion": None},
+                         {"name": "Dependabot updates"}, {"app": {"slug": "dependabot-preview"}},
+                         {"app": None}, {"app": "dependabot"}):
+            api.checks[-1] = dict(config_check, **override)
+            run_refusal(self, api, "Unknown external check policy")
+
     def test_queued_rerun_supersedes_an_older_successful_workflow_run(self):
         api = FakeGitHub()
         api.runs.append({**api.runs[0], "id": 901, "run_number": 4, "run_attempt": 2,
