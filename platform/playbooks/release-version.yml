@@ -124,6 +124,13 @@
           - _rv_major | length == 0 or _rv_refresh | length == 0
         fail_msg: "release_major and release_refresh_tag cannot both be set: a major run cuts a version, a refresh rewrites an existing Release."
 
+    # The release notes find the inference route through the caddy_svc group. On Semaphore a run can lose its
+    # inventory to the shared-file race (tasks/require-parsed-inventory.yml); every group is then empty, the notes
+    # fall back to the grouped lists as if no route were declared, and that body would be published. Task 14770
+    # (2026-11-10) did exactly that in check mode. Refuse instead: the next scheduled run retries.
+    - name: "Require the inventory to have parsed (the notes read the inference route from it)"
+      ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
+
     - name: "Refuse a cleartext secret-store endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:

@@ -10,15 +10,29 @@ another, so the strongest member of the input class is a template (docs/MISTAKES
   stateful  the honest value on its first rendering only, then the forgery: no check that
             renders the name before the work reads it can tell the difference
 
-test_extra_var_refusal_tests.py requires every refusal test to parametrize over these.
+test_extra_var_refusal_tests.py requires every refusal test to parametrize over these, or to use
+`by_name` (plain only) for a refusal the run-start guard makes by name (plan 21, D1).
 
 Imported as `import forgeries`, like playbook_yaml: pytest puts this directory on sys.path.
 """
 
 import json
+import re
 from pathlib import Path
 
+import playbook_yaml
 import pytest
+
+# Every underscore name the run-start guard itself references, read from the guard file (strings
+# and keys, comments excluded by parsing). The guard reads the forged value of these names (its
+# own `when:` reads _extra_var_guard_nested), so a test forging one keeps all three spellings.
+# Over-inclusion only keeps more spellings: the refusal pattern's `_pass` fragments land here too.
+_GUARD = playbook_yaml.REPO / "platform/playbooks" / playbook_yaml.OVERRIDE_GUARD
+GUARD_REFERENCED = frozenset(
+    m.group(0)
+    for s in playbook_yaml.strings(playbook_yaml.load(_GUARD), keys=True)
+    for m in re.finditer(r"(?<![A-Za-z0-9])_[A-Za-z][A-Za-z0-9_]*", s)
+)
 
 
 def _string(text: str) -> str:
@@ -59,3 +73,17 @@ def templated_forgeries(name: str, honest, forged) -> list:
 
     return [pytest.param(plain, id="plain"), pytest.param(context, id="context"),
             pytest.param(stateful, id="stateful")]
+
+
+def by_name(name: str, honest, forged) -> list:
+    """The plain spelling only, for a refusal the run-start guard makes BY NAME.
+
+    refuse-internal-extra-vars.yml refuses an underscore name by its presence in hostvars and
+    never renders its value, so the templated spellings cannot change the outcome; the guard's
+    own test proves it (test_the_guard_ends_the_run_before_any_other_play asserts the stateful
+    forgery is never rendered). Plan 21 D1, docs/MISTAKES.md 1.15. A name the guard itself
+    references, or one without the underscore prefix, keeps all three spellings: refused here."""
+    assert name.startswith("_"), f"by_name is for underscore names the guard refuses by name: {name}"
+    assert name not in GUARD_REFERENCED, (
+        f"{name} is referenced by the guard itself, which may render it: use templated_forgeries")
+    return templated_forgeries(name, honest, forged)[:1]

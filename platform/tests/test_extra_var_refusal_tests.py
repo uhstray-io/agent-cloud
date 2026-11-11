@@ -64,13 +64,106 @@ def _refusal_tests() -> dict[str, bool]:
         built = {t.id for node in tree.body if isinstance(node, ast.Assign)
                  and "templated_forgeries" in ast.get_source_segment(src, node)
                  for t in node.targets if isinstance(t, ast.Name)}
+        helpers = _guard_helpers(tree)
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name.startswith("test_") and REFUSAL.search(node.name):
-                text = " ".join(ast.get_source_segment(src, d) for d in node.decorator_list)
-                text += ast.get_source_segment(src, node)
-                used = "templated_forgeries" in text or any(re.search(rf"\b{n}\b", text) for n in built)
-                found[f"{path.name}::{node.name}"] = used
+                found[f"{path.name}::{node.name}"] = _uses_forgeries(node, src, built, helpers)
     return found
+
+
+# The run-start guard's own refusal message (refuse-internal-extra-vars.yml).
+GUARD_TEXT = "set from outside the playbook"
+
+
+def _constant_text(expr) -> str | None:
+    """The literal text of a string constant or f-string (its constant parts), else None."""
+    if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+        return expr.value
+    if isinstance(expr, ast.JoinedStr):
+        return "".join(v.value for v in expr.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    return None
+
+
+def _positive_guard_compare(expr) -> bool:
+    """`"...set from outside the playbook" in <output>`: a positive membership test, never `not in`."""
+    return (isinstance(expr, ast.Compare) and len(expr.ops) == 1 and isinstance(expr.ops[0], ast.In)
+            and GUARD_TEXT in (_constant_text(expr.left) or ""))
+
+
+def _guard_helpers(tree) -> set[str]:
+    """Module-level functions that return a positive membership test of the guard's message
+    (test_agw_conformance.py's `_refused_first`); a same-named function checking anything else
+    does not count."""
+    def returns(f):
+        return [r for r in ast.walk(f) if isinstance(r, ast.Return)]
+    # Every return must be the compare: an early `return True` beside it would skip the check.
+    return {f.name for f in tree.body if isinstance(f, ast.FunctionDef) and returns(f)
+            and all(r.value is not None and _positive_guard_compare(r.value) for r in returns(f))}
+
+
+def _conjuncts(expr):
+    if isinstance(expr, ast.BoolOp) and isinstance(expr.op, ast.And):
+        for value in expr.values:
+            yield from _conjuncts(value)
+    else:
+        yield expr
+
+
+def _by_name_args(func) -> list:
+    """The first argument of every forgeries.by_name call in a test's decorators and body: the
+    literal name, or None when it is computed."""
+    names = []
+    for node in [*func.decorator_list, func]:
+        for call in ast.walk(node):
+            if isinstance(call, ast.Call) and getattr(call.func, "attr", getattr(call.func, "id", None)) == "by_name":
+                arg = call.args[0] if call.args else None
+                names.append(arg.value if isinstance(arg, ast.Constant) else None)
+    return names
+
+
+def _asserts_guard_message(func, helpers: set[str], names: list) -> bool:
+    """An `assert` (or a conjunct of one) that positively checks the guard's message for the forged
+    name: a literal message must name every literal by_name name; a helper's literal name argument
+    must equal it. A comment, a docstring or a `not in` never counts."""
+    literal = {n for n in names if n is not None}
+    for node in ast.walk(func):
+        if not isinstance(node, ast.Assert):
+            continue
+        for expr in _conjuncts(node.test):
+            if _positive_guard_compare(expr):
+                text = _constant_text(expr.left)
+                # A literal forged name needs a literal message naming it; an f-string cannot be checked.
+                if literal and (not isinstance(expr.left, ast.Constant) or any(
+                        f"Refusing to run: {n} {GUARD_TEXT}" not in text for n in literal)):
+                    continue
+                return True
+            if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id in helpers:
+                arg = expr.args[1] if len(expr.args) > 1 else None
+                # A literal forged name needs the same literal, positionally; a keyword or a variable
+                # cannot be checked.
+                if literal and (expr.keywords or not isinstance(arg, ast.Constant)
+                                or any(n != arg.value for n in literal)):
+                    continue
+                return True
+    return False
+
+
+def _uses_forgeries(func, src: str, built: set[str], helpers: set[str]) -> bool:
+    """All three spellings, or `by_name` (plain only) with an assertion of the run-start guard's
+    own message: that guard refuses by name and never renders the value (plan 21 D1)."""
+    text = " ".join(ast.get_source_segment(src, d) for d in func.decorator_list)
+    text += ast.get_source_segment(src, func)
+    if "templated_forgeries" in text or any(re.search(rf"\b{n}\b", text) for n in built):
+        return True
+    names = _by_name_args(func)
+    return bool(names) and _asserts_guard_message(func, helpers, names)
+
+
+def _classify(src: str) -> bool:
+    """_uses_forgeries for the one test function in a synthetic module."""
+    tree = ast.parse(src)
+    func = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_"))
+    return _uses_forgeries(func, src, set(), _guard_helpers(tree))
 
 
 def test_every_refusal_test_tries_a_templated_forgery():
@@ -87,6 +180,45 @@ def test_the_scan_finds_a_refusal_test_by_its_name():
     assert REFUSAL.search("test_refuses_an_extra_var_forging_a_verdict")
     assert REFUSAL.search("test_extra_vars_cannot_widen_the_wipe")
     assert not REFUSAL.search("test_extra_vars_the_task_does_not_own_are_still_accepted")
+
+
+HELPER = (
+    "def _refused_first(out, name):\n"
+    "    return f'Refusing to run: {name} set from outside the playbook' in out\n\n"
+)
+
+
+def _case(body: str, helper: str = "") -> str:
+    return helper + "def test_forged(out):\n    f = forgeries.by_name('_x', 1, 2)\n" + body
+
+
+def test_by_name_is_accepted_only_with_a_positive_assert_of_the_guard_message():
+    assert _classify(_case("    assert 'Refusing to run: _x set from outside the playbook' in out\n"))
+    computed = "def test_forged(out, n):\n    f = forgeries.by_name(n, 1, 2)\n"
+    assert _classify(computed + "    assert f'Refusing to run: {n} set from outside the playbook' in out\n")
+    assert _classify(_case("    assert out.rc != 0 and _refused_first(out, '_x'), out\n", HELPER))
+    # A comment, a negated check, another name, or a helper that checks nothing: refused.
+    comment_only = "    # Refusing to run: _x set from outside the playbook\n    assert 'refused' in out\n"
+    assert not _classify(_case(comment_only))
+    assert not _classify(_case("    assert 'Refusing to run: _x set from outside the playbook' not in out\n"))
+    assert not _classify(_case("    assert 'Refusing to run: _y set from outside the playbook' in out\n"))
+    assert not _classify(_case("    assert _refused_first(out, '_y')\n", HELPER))
+    fake = "def _refused_first(out, name):\n    return True\n\n"
+    assert not _classify(_case("    assert _refused_first(out, '_x')\n", fake))
+    # A literal forged name cannot be cross-checked through an f-string, a keyword or a variable.
+    assert not _classify(_case("    assert f'Refusing to run: _y set from outside the playbook{1}' in out\n"))
+    assert not _classify(_case("    assert _refused_first(out, name='_y')\n", HELPER))
+    assert not _classify(_case("    y = '_y'\n    assert _refused_first(out, y)\n", HELPER))
+    early = "def _refused_first(out, name):\n    if out:\n        return True\n" + HELPER.split("\n", 1)[1]
+    assert not _classify(_case("    assert _refused_first(out, '_x')\n", early))
+
+
+def test_by_name_refuses_a_name_the_guard_references():
+    assert {"_extra_var_guard_nested", "_conn_names", "_conn_forged"} <= forgeries.GUARD_REFERENCED
+    for name in ("_extra_var_guard_nested", "_conn_forged", "no_prefix"):
+        with pytest.raises(AssertionError):
+            forgeries.by_name(name, None, True)
+    assert [p.id for p in forgeries.by_name("_forged_by_launch", None, True)] == ["plain"]
 
 
 VALUE_PROBE = "refuse-var-overrides.yml"

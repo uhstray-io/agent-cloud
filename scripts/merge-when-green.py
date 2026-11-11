@@ -25,13 +25,14 @@ RUFF_PINNED_WORKFLOW_BLOB_SHA = "98e7aca96851979464f36bffc48444eba93d39f0"
 VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
 UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
-# The runner-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
-RETIRED_WORKFLOW_BLOB_SHA = "338ba8352d8c3aeba2a6c331363dac2930c31115"
+SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
+# The sharded workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
+RETIRED_WORKFLOW_BLOB_SHA = "1212589d3a85b02083ddb27191ee0cddccee1627"
+# The eight legs of the one `python` matrix job; each is its own check run under this name.
+PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
-    "Static Analysis", "Security Scan", "Python core",
-    "Python Playbook Safety", "Python Agentgateway",
-    "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
-    "Rust (console)", "Python Playbook Runs", "Version",
+    "Static Analysis", "Security Scan", *PYTHON_SHARDS,
+    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Version",
 }
 # Paths of the pinned historical workflow states only; the current workflow has no such job.
 GO_PATH = "platform/services/uhhcraft/deployment/"
@@ -217,7 +218,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False, versioned=False, retired=False):
+                          pi_moved=False, versioned=False, sharded=False, retired=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -235,12 +236,17 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         expected["python-agentgateway"] = "Python Agentgateway"
     if node or console or runs:
         expected["node-pi-provider"] = "Node pi provider"
-    if console or runs or pi_moved or versioned:
+    if console or runs or pi_moved or versioned or sharded:
         expected["rust-console"] = "Rust (console)"
     if runs or pi_moved or versioned:
         expected["python-playbook-runs"] = "Python Playbook Runs"
-    if versioned:
+    if versioned or sharded:
         expected["version"] = "Version"
+    if sharded:
+        # The six named Python jobs become one matrix job, its name templated per shard.
+        for job in ("python-core", "python-semaphore", "python-netbox"):
+            del expected[job]
+        expected["python"] = "Python (${{ matrix.shard }}/8)"
     if retired:
         # The current workflow: the change detector and the Go jobs it gated are gone.
         for job in ("changes", "go-lint", "go-test", "go-build"):
@@ -483,10 +489,11 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("uv workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
-        if candidate_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
-            # Same jobs as runner-pinned minus the change detector and the retired jobs.
+        if candidate_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
+            # The six Python jobs become one eight-shard matrix job (plan 21 phase 2); each side is
+            # checked against its own job set.
             check_workflow_policy(base, versioned=True)
-            check_workflow_policy(candidate, versioned=True, retired=True)
+            check_workflow_policy(candidate, sharded=True)
             if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
                     or workflow_records[0]["filename"] != WORKFLOW
                     or workflow_records[0].get("previous_filename") is not None):
@@ -498,10 +505,26 @@ def check_workflow_change(api, base_sha, head_sha, files):
         if base != candidate or workflow_records:
             raise Refusal("Runner-pinned workflow may only remain byte-identical on subsequent PRs")
         return
+    if base_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+            # Same jobs as sharded minus the change detector and the retired jobs.
+            check_workflow_policy(base, sharded=True)
+            check_workflow_policy(candidate, sharded=True, retired=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != SHARDED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed sharded workflow")
+        check_workflow_policy(base, sharded=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Sharded workflow may only remain byte-identical on subsequent PRs")
+        return
     if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
         if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed current workflow")
-        check_workflow_policy(base, versioned=True, retired=True)
+        check_workflow_policy(base, sharded=True, retired=True)
         if base != candidate or workflow_records:
             raise Refusal("Current workflow may only remain byte-identical on subsequent PRs")
         return
