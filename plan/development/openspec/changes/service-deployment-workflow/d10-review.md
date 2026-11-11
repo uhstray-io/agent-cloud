@@ -559,7 +559,7 @@ snapshot as the step's executor.
 
 | Check | Holds | Evidence |
 |-------|-------|----------|
-| Criteria written | yes | registry `criteria` (two) and `evidence_keys` `compose_found`, `running_count` |
+| Criteria written | yes, for the proposal | the registry's two criteria judge the proposal the step produces, not the snapshot. The snapshot's own pass condition is a populated target group (`:15-28`); it records `pass` whenever it runs (`:84`), with `compose_found` and `running_count` as evidence |
 | Idempotent re-run | read-only | `snapshot-service-assessment.yml` reads the committed compose file, the registry and the agent practices on the controller and lists containers through `tasks/list-service-containers.yml`, a read that runs in check mode too; nothing writes. A target group with no hosts is refused first (`:15-28`) |
 | Result recorded | yes | `:80-87`, step `service-assess`, status `pass` |
 | Undo | `none` | nothing to undo |
