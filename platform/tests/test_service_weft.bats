@@ -267,6 +267,36 @@ PY
   [ "$status" -eq 0 ] || { echo "no template for: $output"; false; }
 }
 
+@test "weft: the staging timer runs dev's code and places the branch it runs from until promotion" {
+  # A schedule on a main-bound base runs main, which has no weft code until promotion, so it would
+  # fail every five minutes. The timer is directly Dev-bound, with no survey: a scheduled task
+  # answers none. The rack's timer has no schedule until promotion.
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
+  run python3 - "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
+import sys, yaml
+t = {x['name']: x for x in yaml.safe_load(open(sys.argv[1]))['templates']}
+follow, rollout = t['Follow weft main (Dev)'], t['Roll Out weft Release']
+bad = []
+if follow.get('repository') != 'agent-cloud dev' or follow.get('dev_variant') or 'survey_vars' in follow:
+    bad.append('Follow weft main (Dev) is not directly Dev-bound without a survey')
+if not follow.get('schedule', {}).get('cron'):
+    bad.append('Follow weft main (Dev) has no schedule')
+if 'schedule' in rollout:
+    bad.append('Roll Out weft Release is scheduled before promotion')
+if 'Follow weft main' in t:
+    bad.append('a main-bound Follow weft main is still declared')
+print('\n'.join(bad))
+sys.exit(1 if bad else 0)
+PY
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  # With no survey, the playbook itself must name the branch, or the deploy plays place main from a
+  # Dev checkout and tasks/assert-placement-branch.yml refuses them.
+  local f="$PB/follow-weft-main.yml"
+  assert_grep -qF 'argv: [git, -C, "{{ playbook_dir }}", rev-parse, --abbrev-ref, HEAD]' "$f"
+  [ "$(grep -cF "service_branch: \"{{ hostvars['localhost']['_weft_follow_branch'] | default('main') }}\"" "$f")" -eq 2 ]
+}
+
 @test "weft: a workspace is addressed by its company name, and its id stays a claim audience" {
   # Jacob's decision: <company>.<domain>. The route, the front door's address template and every
   # health check must agree on the name; a route built from the id while the front door redirects

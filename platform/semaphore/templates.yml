@@ -1248,20 +1248,16 @@ templates:
         required: false
         default_value: "main"
 
-  - name: Follow weft main
+  # Staging only, by Jacob's decision (weft D533): the newest commit main published, verified,
+  # deployed to the staging front door and workspace, recorded as a GitHub deployment that
+  # weft's release.yml requires before it releases that commit. Does nothing until staging is
+  # declared, so the timer may exist first. Directly Dev-bound like Check o11y Liveness (Dev): a
+  # schedule on a main-bound base would run main, which has no weft code until promotion. No
+  # survey, because a scheduled task answers none: the playbook places the branch its own
+  # checkout is on.
+  - name: Follow weft main (Dev)
     playbook: platform/playbooks/follow-weft-main.yml
-    # Staging only, by Jacob's decision (weft D533): the newest commit main published, verified,
-    # deployed to the staging front door and workspace, recorded as a GitHub deployment that
-    # weft's release.yml requires before it releases that commit. Does nothing until staging is
-    # declared, so the timer may exist first.
-    dev_variant: true
-    survey_vars:
-      - name: service_branch
-        title: "Branch"
-        description: "Git branch to deploy (leave as 'main' for production)"
-        type: string
-        required: false
-        default_value: "main"
+    repository: agent-cloud dev
     schedule:
       cron: "*/5 * * * *"
 
@@ -1269,7 +1265,9 @@ templates:
     playbook: platform/playbooks/roll-out-weft-release.yml
     # The newest published release, only after checking through GitHub's API that the declared
     # approver approved its `rack` environment. Front door first, then each workspace one at a
-    # time; stops at the first failure and never retries a release a host rolled back.
+    # time; stops at the first failure and never retries a release a host rolled back. No
+    # schedule until promotion: the rack's timer runs main, which has no weft code until then
+    # (openspec add-weft-service, task 6.1). Launched by hand, its (Dev) copy runs dev.
     dev_variant: true
     survey_vars:
       - name: service_branch
@@ -1278,8 +1276,6 @@ templates:
         type: string
         required: false
         default_value: "main"
-    schedule:
-      cron: "*/5 * * * *"
 
   - name: Seed weft Secrets
     playbook: platform/playbooks/seed-weft-secrets.yml

@@ -22,12 +22,12 @@ workspace VM:  weft-board ─┐
 ```text
 weft merge to main ─> images.yml: every image + release.json, signed (keyless cosign)
                                      │
-Semaphore "Follow weft main" (every 5 min) ──> staging front door, then staging workspace
+Semaphore "Follow weft main (Dev)" (every 5 min) ──> staging front door, then staging workspace
    newest main commit whose images.yml succeeded; GitHub deployment `staging` = success|failure
                                      │
 weft release.yml: Jacob names vX, approves environment `rack` ─> release published
                                      │
-Semaphore "Roll Out weft Release" (every 5 min) ──> checks the approval was weft_release_approver's
+Semaphore "Roll Out weft Release" (every 5 min, after promotion) ──> checks the approval was weft_release_approver's
    front door, then each workspace in inventory order, one at a time, stop at the first failure
 ```
 
@@ -81,14 +81,17 @@ deployment/
 | Deploy weft Front Door | `deploy-weft-door.yml` | Signing key (generated once) and its public half; the Caddy fragment; one deploy |
 | Deploy weft Workspace | `deploy-weft-workspace.yml` | Directory, podman socket, the front door's public key; one deploy per workspace, one at a time |
 | Stand Up weft Workspace | `stand-up-weft-workspace.yml` | A new workspace VM: routes its hostname, deploys the release its front door runs; its admin then enters the model keys and forge token on Settings › Credentials |
-| Follow weft main | `follow-weft-main.yml` | Timer: staging follows `main`; records the GitHub deployment `staging` |
-| Roll Out weft Release | `roll-out-weft-release.yml` | Timer: an approved release, front door first, then each workspace |
+| Follow weft main (Dev) | `follow-weft-main.yml` | Timer: staging follows `main`; records the GitHub deployment `staging`. Bound to agent-cloud's `dev` until promotion, so it places `dev` on the staging hosts |
+| Roll Out weft Release | `roll-out-weft-release.yml` | An approved release, front door first, then each workspace. Launched by hand until promotion, then a main-bound timer |
 | Roll Back weft Workspace | `rollback-weft-workspace.yml` | A person's rollback to a named release from a named backup set |
 
 ## What site-config declares
 
 Groups: `weft_door` (one host), `weft_workspaces` (in rollout order; uhstray's own workspace first,
-as the canary), `weft_staging_door` (one host), `weft_staging_workspace` (one host). The VM specs
+as the canary), `weft_staging_door` (one host), `weft_staging_workspace` (one host), all four
+children of `weft_svc` (the shape is in `platform/inventory/production.yml`). An inventory change
+reaches Semaphore only through `platform/semaphore/sync-inventory.yml`, run from a workstation.
+The VM specs
 (`vm_cpu: x86-64-v3` or `host`: the workspace image needs AVX2) go in `proxmox/vm-specs.yml`.
 
 | Variable | Where | Example shape |

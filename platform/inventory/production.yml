@@ -136,6 +136,55 @@ all:
           # — a var defaulting to itself recurses.)
           hunyuan3d_weights_dir: "/srv/hunyuan3d/weights"
 
+    # weft — uhstray's agent harness (plan/development/23-weft-service.md). weft_svc holds every
+    # weft host, so tooling that walks *_svc groups finds them; the deploys and timers target the
+    # four groups under it, and the staging pair's names are exactly weft_staging_door and
+    # weft_staging_workspace (Follow weft main (Dev) reads those two and does nothing without
+    # them). One front door per environment; workspaces in rollout order, uhstray's own first.
+    # Every value is site-config's, and each shape is in platform/services/weft/deployment/README.md:
+    #   each group:       weft_environment (rack | staging), weft_domain,
+    #                     weft_secret_root (weft | weft-staging)
+    #   workspace groups: weft_public_address
+    #   each workspace:   weft_workspace_id, weft_workspace_name, weft_voice_udp, weft_providers,
+    #                     weft_default_provider, weft_daily_tokens, weft_tracker_bot_login, weft_clones
+    #   weft_door:        weft_discord_guild_id, weft_discord_channel_id
+    #   all:              weft_release_approver
+    weft_svc:
+      children:
+        weft_door:
+          hosts:
+            "{{ weft_door_host }}":
+              service_name: weft
+              service_url: "https://{{ weft_domain }}"
+              health_path: "/"
+              monorepo_deploy_path: platform/services/weft/deployment
+              container_engine: podman
+        weft_workspaces:
+          hosts:
+            "{{ weft_workspace_host }}":
+              service_name: weft
+              service_url: "https://{{ weft_workspace_name }}.{{ weft_domain }}"
+              # The board's one unauthenticated route; it names the workspace's id (known_as).
+              health_path: "/api/workspace"
+              monorepo_deploy_path: platform/services/weft/deployment
+              container_engine: podman
+        weft_staging_door:
+          hosts:
+            "{{ weft_staging_door_host }}":
+              service_name: weft
+              service_url: "https://{{ weft_domain }}"
+              health_path: "/"
+              monorepo_deploy_path: platform/services/weft/deployment
+              container_engine: podman
+        weft_staging_workspace:
+          hosts:
+            "{{ weft_staging_workspace_host }}":
+              service_name: weft
+              service_url: "https://{{ weft_workspace_name }}.{{ weft_domain }}"
+              health_path: "/api/workspace"
+              monorepo_deploy_path: platform/services/weft/deployment
+              container_engine: podman
+
   vars:
     ansible_user: "{{ ansible_user }}"
     # become is controlled per-playbook, not inventory

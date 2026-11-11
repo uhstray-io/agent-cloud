@@ -1,6 +1,7 @@
 ---
 # follow-weft-main.yml — staging follows weft's main. Runs on a Semaphore timer every five minutes
-# ("Follow weft main"), inside the rack: it reads GitHub and acts, and GitHub never reaches it.
+# ("Follow weft main (Dev)", bound to agent-cloud's dev until promotion), inside the rack: it reads
+# GitHub and acts, and GitHub never reaches it.
 #
 #   1. ask GitHub for the newest commit on main whose images.yml run succeeded (so its images
 #      and release.json are signed and published)
@@ -44,6 +45,29 @@
     - name: "End: no staging"
       ansible.builtin.meta: end_play
       when: (_door_hosts + _workspace_hosts) | length == 0
+
+    # The timer is a scheduled task, and Semaphore applies a survey's default only in its web form,
+    # so nothing passes service_branch. Without one the deploy plays would place main on staging
+    # from this Dev checkout, which tasks/assert-placement-branch.yml refuses (docs/MISTAKES.md
+    # 3.12). Staging takes the branch this playbook runs from; a launch's service_branch still wins.
+    - name: "Read the branch this playbook runs from"
+      ansible.builtin.command:
+        argv: [git, -C, "{{ playbook_dir }}", rev-parse, --abbrev-ref, HEAD]
+      register: _weft_checkout
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: "Place that branch on staging"
+      ansible.builtin.set_fact:
+        _weft_follow_branch: "{{ service_branch | default(_weft_checkout.stdout | default('') | trim) }}"
+
+    - name: "Require a branch to place"
+      ansible.builtin.assert:
+        that: _weft_follow_branch not in ['', 'HEAD']
+        fail_msg: >-
+          This playbook's checkout is on no branch (a detached HEAD), so which agent-cloud branch
+          to place on staging is unknown. Launch it with service_branch. Nothing was deployed.
 
     - name: "Refuse a cleartext OpenBao endpoint"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -170,12 +194,14 @@
     weft_release: "{{ hostvars['localhost']['_weft_newest'] | default('') }}"
     weft_door_hosts: weft_follow_door
     weft_edge_workspace_hosts: weft_staging_workspace
+    service_branch: "{{ hostvars['localhost']['_weft_follow_branch'] | default('main') }}"
 
 - name: "Follow weft main: the workspace"
   ansible.builtin.import_playbook: weft-workspace.yml
   vars:
     weft_release: "{{ hostvars['localhost']['_weft_newest'] | default('') }}"
     weft_workspace_hosts: weft_follow_workspace
+    service_branch: "{{ hostvars['localhost']['_weft_follow_branch'] | default('main') }}"
 
 - name: "Follow weft main: staging is healthy"
   hosts: localhost
