@@ -188,6 +188,14 @@ default). So the deploy itself checks it: in local-dev, `openssl x509 -checkend 
 leaf with under 7 days left, or none yet, is issued again (`_mint_reissue`). Re-run `Deploy launch-gate (Local)` at
 least weekly, or after a long break, to keep it current. Production keeps an issued leaf; Renew Internal Certs renews it.
 
+**The working-tree branch.** On both routes (`/v1/launch` and `/v1/decide`, through `Gate._judge`) the branch the
+gate pins and asks OPA about is the template's repository record's, read from Semaphore and never from the caller.
+Local-dev's working-tree record declares `HEAD` (whatever the developer has checked out), and OPA allows agent
+launches only from `main` or `dev`, so in local mode only the gate reads that `HEAD` as `dev` (`policy_branch`), as
+skynet's local catalog already does. Outside local mode `HEAD` reaches OPA unchanged and is refused. Found by the
+local skynet launch probe on 2026-11-09 (local task 14161): every agent launch through the local gate was denied "an
+agent task may run only from main or dev".
+
 ## Allowlist
 
 `launch_gate_allowlist(catalog_doc, templates_doc, agents, local_templates_doc=None)` renders the list at deploy
