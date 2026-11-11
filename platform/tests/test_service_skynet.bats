@@ -102,13 +102,13 @@ skip_unless_service_file() {
   local local_block prod_block
   local_block=$(task_block "$PLAYBOOK" 'Distribute the step-ca root for internal TLS trust (local)')
   assert_contains "$local_block" '_ca_root_dest_dir: "{{ _deploy_dir }}"'
-  assert_contains "$local_block" 'when: local_mode | default(false) | bool'
+  assert_contains "$local_block" 'when: _skynet_local'
   refute_contains "$local_block" '_ca_root_combined_dest'
   prod_block=$(task_block "$PLAYBOOK" 'Distribute the step-ca root and the public roots for internal TLS trust (production)')
   assert_contains "$prod_block" '_ca_root_dest_dir: "{{ _deploy_dir }}"'
   assert_contains "$prod_block" "_ca_host: \"{{ groups['step_ca_svc'] | first }}\""
   assert_contains "$prod_block" "_ca_root_combined_dest: \"{{ _deploy_dir ~ '/certs/ca-bundle-combined.crt' }}\""
-  assert_contains "$prod_block" 'when: not (local_mode | default(false) | bool)'
+  assert_contains "$prod_block" 'when: not _skynet_local'
   # The combined bundle is named exactly once in the playbook: the production include.
   [ "$(grep -c '_ca_root_combined_dest' "$PLAYBOOK")" -eq 1 ]
 }
@@ -138,17 +138,17 @@ skip_unless_service_file() {
   refute_grep -qF '_skynet_semaphore_token' "$PLAYBOOK"
   refute_grep -qF 'LOCAL-DEV STOPGAP' "$PLAYBOOK"
   refute_grep -qF 'community.hashi_vault.hashi_vault' "$PLAYBOOK"
-  # Before the monorepo is placed, local_mode gates the four production refusals (the three long-standing
-  # ones and the launch-gate IP, which is also gated on the gate being declared). Through _skynet_local it
-  # also gates the production TLS bind refusal, which is production only. The podman check is not in this
-  # block: it runs after placement installs podman, gated on local mode and skynet_tls. Every other
-  # refusal runs in every environment.
+  # Before the monorepo is placed, _skynet_local (local mode, which needs a -local host) gates the four production
+  # refusals (the three long-standing ones and the launch-gate IP, which is also gated on the gate being declared).
+  # It also gates the production TLS bind refusal, which is production only. The podman check is not in this block:
+  # it runs after placement installs podman, gated on _skynet_local and skynet_tls. Every other refusal runs in every
+  # environment.
   local refusals_block
   refusals_block=$(sed -n '/^    - name: "Refuse skynet_image/,/^    - name: "Place the monorepo/p' "$PLAYBOOK")
   assert_contains "$refusals_block" 'Refuse skynet_publish_port'
-  [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 4 ]
-  [ "$(grep -c 'when: not (local_mode | default(false) | bool)' <<<"$refusals_block")" -eq 3 ]
-  [ "$(grep -c 'not _skynet_local' <<<"$refusals_block")" -eq 1 ]
+  refute_grep -q 'local_mode' <<<"$refusals_block"
+  [ "$(grep -c 'when: not _skynet_local' <<<"$refusals_block")" -eq 3 ]
+  [ "$(grep -c 'not _skynet_local' <<<"$refusals_block")" -eq 5 ]
   if [ -f "$DEPLOY_DIR/templates/env.j2" ]; then
     refute_grep -qF '_skynet_semaphore_token' "$DEPLOY_DIR/templates/env.j2"
   fi
@@ -331,7 +331,8 @@ tasks = [
 if len(tasks) != 18:
     sys.exit(f"expected 18 refusal asserts in Phase 1, found {len(tasks)}")
 # The play's own vars come too: the TLS refusals read the _skynet_* names Phase 1 defines.
-play = [{"name": "extracted refusals", "hosts": "localhost", "connection": "local",
+# "all", not "localhost": the -i host is the one the run uses (skynet-local for local mode; MISTAKES 2.21).
+play = [{"name": "extracted refusals", "hosts": "all", "connection": "local",
          "gather_facts": False, "vars": play1.get("vars", {}), "tasks": tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
     yaml.safe_dump(play, fh, sort_keys=False)
@@ -355,14 +356,14 @@ PY
 
 # refused <var> <json-value>: exit 0 only when the playbook ACCEPTS the one changed value.
 accepted() {
-  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
+  ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e "{\"$1\": $2}" >/dev/null 2>&1
 }
 
 @test "skynet: the baseline values pass every refusal (the extraction is runnable)" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
-  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
   [ "$status" -eq 0 ]
 }
 
@@ -435,7 +436,7 @@ del base["skynet_model"]
 with open(path, "w", encoding="utf-8") as fh:
     json.dump(base, fh)
 PY
-  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
   [ "$status" -ne 0 ]
   assert_contains "$output" 'Declare skynet_model'
 }
@@ -544,7 +545,7 @@ prod_accepted() {
   [ "$status" -ne 0 ]
   run prod_accepted skynet_publish_bind '"203.0.113.10"'
   [ "$status" -eq 0 ]
-  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
   [ "$status" -eq 0 ]
 }
 
@@ -557,13 +558,51 @@ prod_accepted() {
   [ "$status" -ne 0 ]
   assert_contains "$output" 'skynet_opa_ip'
   # Local mode: the baseline carries no skynet_opa_ip and no step_ca_svc group, and must pass.
-  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
   [ "$status" -eq 0 ]
+}
+
+# Local mode is decided by the host, as the launch gate decides it: `-e local_mode=true` on a production host is not
+# local mode. The production refusals must still fire there, and the same variables on the -local host must pass.
+@test "skynet: a forged local_mode on a production host keeps the production refusals; on skynet-local it passes" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  printf 'skynet-prod ansible_connection=local\n' > "$BATS_TEST_TMPDIR/forged-prod.ini"
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a production run whose skynet_publish_bind is unset or loopback'
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_publish_bind=127.0.0.1
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a production run whose skynet_publish_bind is unset or loopback'
+  # The -local host passes. Its recap must name that host, so a run that matched no host cannot pass for this one.
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true
+  [ "$status" -eq 0 ]
+  assert_contains "$output" 'skynet-local'
+}
+
+@test "skynet: local mode is read only through the three _skynet_local definitions, each with the -local host check" {
+  # Phase 1 (refusals, secrets, env), Phase 2 (deploy.sh LOCAL_MODE) and Phase 3 (probe endpoints). Any other read of
+  # local_mode in this playbook would skip the host check.
+  [ "$(grep -c '^ *_skynet_local: ' "$PLAYBOOK")" -eq 3 ]
+  [ "$(grep -c 'local_mode | default(false) | bool' "$PLAYBOOK")" -eq 3 ]
+  [ "$(grep -cF "inventory_hostname is match('^[A-Za-z0-9._-]+-local\\\\Z')" "$PLAYBOOK")" -eq 3 ]
+  refute_grep -q 'when:.*local_mode' "$PLAYBOOK"
+  refute_grep -q 'LOCAL_MODE: .*local_mode' "$PLAYBOOK"
+}
+
+@test "skynet: env.j2 reads the resolved _skynet_local, never a bare local_mode" {
+  local env="$DEPLOY_DIR/templates/env.j2"
+  skip_unless_service_file "$env"
+  refute_grep -qF 'local_mode' "$env"
+  [ "$(grep -c 'not _skynet_local' "$env")" -eq 2 ]
 }
 
 # ── The HTTPS listener (skynet_tls): refusals, issuance and probes ──────────
 
-# Writes tls-base.json, a valid TLS declaration for local mode (the leaf on localhost, in the deploy dir under
+# Writes tls-base.json, a valid TLS declaration for local mode (the leaf on skynet-local, in the deploy dir under
 # local_monorepo_dir), and one tls-leaf-<case>.json per leaf-declaration case. Each case changes one property.
 write_tls_leaf_cases() {
   python3 - "$BATS_TEST_TMPDIR" <<'PY'
@@ -573,13 +612,17 @@ import sys
 
 out = sys.argv[1]
 deploy = "/work/repo/platform/services/skynet/deployment"
-leaf = {"name": "skynet-server", "host": "localhost", "profile": "server",
+leaf = {"name": "skynet-server", "host": "skynet-local", "profile": "server",
         "dir": deploy + "/certs/skynet-server", "reload": "none", "sans": ["skynet.dc1.example.test"]}
 base = {"skynet_tls": True, "dns_site": "dc1", "dns_zone": "example.test", "local_mode": True,
         "local_monorepo_dir": "/work/repo", "monorepo_deploy_path": "platform/services/skynet/deployment",
         "internal_leaves": [leaf]}
 with open(f"{out}/tls-base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
+# Production: the same declaration on the production inventory host (localhost, prod_inventory), whose leaf must name it.
+prod = dict(base, internal_leaves=[dict(leaf, host="localhost")])
+with open(f"{out}/tls-prod-base.json", "w", encoding="utf-8") as fh:
+    json.dump(prod, fh)
 
 
 def one_leaf(**edits):
@@ -608,7 +651,7 @@ PY
 
 # The refusal playbook in local mode: the TLS base, then one case file applied last (a later -e wins).
 tls_check() {
-  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
+  ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e "@$BATS_TEST_TMPDIR/tls-base.json" -e "@$BATS_TEST_TMPDIR/$1"
 }
 
@@ -623,7 +666,7 @@ tls_prod_value() {
   prod_inventory
   printf '%s' "$1" > "$BATS_TEST_TMPDIR/tls-prod-value.json"
   ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e "@$BATS_TEST_TMPDIR/tls-base.json" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e "@$BATS_TEST_TMPDIR/tls-prod-base.json" \
     -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10 \
     -e "@$BATS_TEST_TMPDIR/tls-prod-value.json"
 }
@@ -921,7 +964,7 @@ gate_prod_accepted() {
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10
   [ "$status" -eq 0 ]
   # Local mode, gate declared: the gate is reached by its local-dev alias, so no IP is required or checked.
-  run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json" \
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json" \
     -e skynet_launch_gate_url=https://launch-gate.example.test:8443 -e '{"skynet_launch_gate_ip": "0.0.0.0"}'
   [ "$status" -eq 0 ]
 }
@@ -961,9 +1004,9 @@ base = {
 }
 gate = {"skynet_launch_gate_url": "https://launch-gate.example.test:8443"}
 cases = {
-    "unset": {**base, "local_mode": False},
-    "local": {**base, **gate, "local_mode": True},
-    "prod": {**base, **gate, "skynet_launch_gate_ip": "203.0.113.30", "local_mode": False},
+    "unset": {**base, "_skynet_local": False},
+    "local": {**base, **gate, "_skynet_local": True},
+    "prod": {**base, **gate, "skynet_launch_gate_ip": "203.0.113.30", "_skynet_local": False},
 }
 for name, values in cases.items():
     values["env_dest"] = f"{tmp}/rendered-{name}.env"
@@ -1386,7 +1429,7 @@ base = {
     "skynet_semaphore_project": 1,
     "skynet_semaphore_catalog": "production",
     "skynet_publish_bind": "203.0.113.9",
-    "local_mode": False,
+    "_skynet_local": False,
 }
 cases = {
     "off": dict(base),
@@ -1446,7 +1489,7 @@ PY
         mode: "0600"
 YAML
   cat > "$BATS_TEST_TMPDIR/render-vars.json" <<JSON
-{"env_src": "$env", "env_dest": "$BATS_TEST_TMPDIR/rendered.env", "local_mode": false,
+{"env_src": "$env", "env_dest": "$BATS_TEST_TMPDIR/rendered.env", "_skynet_local": false,
  "secrets": {"api_token": "a", "db_password": "b", "read_token": "c", "semaphore_api_token": "d"},
  "skynet_image": "ghcr.io/uhstray-io/skynet-tier2@sha256:$(printf 'a%.0s' {1..64})",
  "skynet_gateway_url": "https://inference.example.test", "skynet_model": "test-model",
@@ -1459,7 +1502,7 @@ JSON
   assert_grep -qx 'SKYNET_OPA_HOSTNAME=opa.example.test' "$BATS_TEST_TMPDIR/rendered.env"
   assert_grep -qx 'SKYNET_OPA_IP=203.0.113.20' "$BATS_TEST_TMPDIR/rendered.env"
   # Same inputs in local mode: the OPA mapping is not rendered.
-  sed 's/"local_mode": false/"local_mode": true/' "$BATS_TEST_TMPDIR/render-vars.json" > "$BATS_TEST_TMPDIR/render-vars-local.json"
+  sed 's/"_skynet_local": false/"_skynet_local": true/' "$BATS_TEST_TMPDIR/render-vars.json" > "$BATS_TEST_TMPDIR/render-vars-local.json"
   run ansible-playbook "$BATS_TEST_TMPDIR/render.yml" -e "@$BATS_TEST_TMPDIR/render-vars-local.json"
   [ "$status" -eq 0 ]
   refute_grep -qE '^SKYNET_OPA_(HOSTNAME|IP)=' "$BATS_TEST_TMPDIR/rendered.env"
