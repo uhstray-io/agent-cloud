@@ -61,7 +61,7 @@ Two more forgery families are **not** in the by-name class and keep all three sp
 
 ### F3. Single tests that set a job's floor
 
-- `test_scoped_publication.py::test_all_generated_dev_branch_surveys_preserve_other_fields` (`platform/semaphore/tests/test_scoped_publication.py:468-492`) loops over the 22 Dev templates that carry a `service_branch` survey and runs `setup-templates.yml` once per template, in sequence, inside one test. xdist cannot spread a loop.
+- `test_scoped_publication.py::test_all_generated_dev_branch_surveys_preserve_other_fields` (`platform/semaphore/tests/test_scoped_publication.py:468-492`) loops over the 21 Dev templates (22 before tududi's removal) that carry a `service_branch` survey and runs `setup-templates.yml` once per template, in sequence, inside one test. xdist cannot spread a loop.
 - `test_authentik_audit_recovery.py` is one test with nine sequential playbook runs (`:100-162`).
 - `test_o11y_workflow_environment.py::test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template` runs the full wrapper twice per case (37 s each).
 
@@ -88,14 +88,14 @@ Two more forgery families are **not** in the by-name class and keep all three sp
 
 ### F7. Redundant and stale tests
 
-Few tests are dead. The sweep found **no** test referencing a path that no longer exists (66 missing literals, all fixtures or negative cases). Confirmed redundancies:
+Few tests are dead. The sweep found **no** test referencing a path that no longer exists (66 missing literals, all fixtures or negative cases). Candidates found by the sweep, and what implementation established (corrected 2026-11-10):
 
 | Test | Covered by |
 |---|---|
-| `test_netbox_business_domains.bats:3-21` (template entry, preflight order) | `test_ensure_netbox_business_domains.py:269-277` (exact dict equality) and `:115` |
-| `test_netbox_business_domains.bats:23-35` (no delete, no secret path) | `test_ensure_netbox_business_domains.py:122-126`, `:186` |
-| `test_mistakes_doc.bats:120-143` (four named tests exist; non-exhaustive by its own comment) | `test_ledger_test_citations.py:169-174` (every cited test exists) |
-| `test_a_forged_internal_name_is_refused_by_the_real_executor` | `test_every_launchable_playbook_refuses_a_forged_internal_name` (same playbooks, same guard), except its `CUSTOM STATS` assertion (`:285`) |
+| `test_netbox_business_domains.bats:3-21` (template entry, preflight order) | **Not redundant, kept.** `test_ensure_netbox_business_domains.py:269-277` and `:115` cover the entry and the preflight, but nothing else checks the template's position right after `Ensure NetBox Prefix` (`:14`) |
+| `test_netbox_business_domains.bats:23-35` (no delete, no secret path) | `test_ensure_netbox_business_domains.py:122-126`, `:186`; kept with the file, since the file stays and the check costs milliseconds |
+| `test_mistakes_doc.bats:120-143` (four named tests exist; non-exhaustive by its own comment) | **Not redundant, kept.** `test_ledger_test_citations.py:169-174` checks that cited names exist, not that each name appears in the ledger (`:139`) |
+| `test_a_forged_internal_name_is_refused_by_the_real_executor` | Overlaps `test_every_launchable_playbook_refuses_a_forged_internal_name` (same guard), but forges each executor's own internal name and checks `CUSTOM STATS` (`:285`); kept, to be reduced to the plain spelling by item 1.1 (#1041) |
 
 Retired services: tududi's code and tests were removed together (`e6214688b`). NocoDB is retired by decision but its code is still present (`platform/services/nocodb/`, `deploy-nocodb.yml`); no test is specific to it (`test_service_opa.bats:170`, `:226` and `test_caddyfile_sites.py:38`, `:90` use the name as sample data). The generic catalog tests include its templates, `Deploy NocoDB` and `Update NocoDB`, as cases, and drop them when the templates go.
 
@@ -143,6 +143,21 @@ flowchart TD
 
 The durations file has one entry per test file: its total time, its slowest test, its test count, whether any of its tests was skipped, and its test function names. The shard hook assigns whole files (a file's module fixtures stay on one shard) and the fast lane selects whole files (below), so neither needs more. A per-node file was tried first and measured 1.8 MB, over the repository's 500 KB large-file limit, and its parametrized node IDs carry the private addresses some tests take as input, which both private-IP gates refuse. It is built from a green CI run's `--junitxml` report (a run stopped by `-x` is partial), written with `-o junit_family=xunit1` so each testcase carries its `file` and maps back to a node ID; its `time` per testcase covers every test, setup, call and teardown summed (`junit_duration_report` defaults to `total`), not from `--durations` output, which hides entries under 5 ms at the verbosity CI uses. Skipped testcases are kept in it with a skip flag, never dropped, so a CI-skipped test is not mistaken for a missing one; a missing test is found statically, by comparing a file's `def test_` names with the file's recorded names, without importing it. A file missing from it is weighted by its count of `def test_` lines × the median over recorded files of the mean time per test, read without importing it (an undercount for parametrized tests, corrected at the next refresh); a file holding a test missing from it **is** in the fast lane, so a gap runs more, never less. The file is regenerated by a small script and refreshed when a shard drifts above its target; refreshing it is a data commit, never a workflow edit.
 
+## Status (2026-11-10)
+
+What has landed against the phases below. Counts and timings are from each pull request, except 1.3, which names its measurement; the baseline above stays as measured.
+
+| Item | Pull request | Outcome |
+|---|---|---|
+| 1.1 by-name forgeries | #1041 (open) | `forgeries.by_name` for guard-class refusals, with the counter proof and a meta-test rule. The real-executor test is reduced to the plain spelling rather than folded into the per-playbook test. About 700 fewer runs per CI pass |
+| 1.1b clean-deploy gate | #1040 (open) | Full matrix on `o11y`, `step-ca` and `agentgateway`; plain on the other 16. 399 → 111 runs |
+| 1.2 fixed waits | #1026, #1031 (merged) | `RUNNER_KILL_WAIT_SECONDS` in the runner's `deploy.sh`; `ih_wait_*` and `console_gate_probe_*` playbook knobs. The two runner quiesce tests went from about 30 s to 1.5 s each |
+| 1.3 stub delays | none (dropped) | Measured 2026-11-10 on the shared workstation: `pytest -n 12 platform/tests/test_agw_conformance.py --junitxml`, `time` summed over its 172 testcases, 910.5 s with the stub's defaults at 0.4/0.1 and 890.9 s at 0.04/0.01. The cost is process start-up, not the stub's sleeps, so the estimate above was wrong and the change was not worth carrying |
+| 1.4 single-test floors | #1030 (merged) | 21 generated per-template tests (22 before tududi's removal). `test_authentik_audit_recovery.py` is not split yet |
+| 1.5 parse caching | #1028 (merged) | `test_workflow_registry.py` only: 178 s to 44.5 s locally. The other `templates.yml` readers are not migrated |
+| 1.6 BATS | #1027, #1029 (merged) | Loud shellcheck skip; one shared git-environment unset in `assert_helpers.bash`, held equal to the pre-push hook's list by a test. The redundancy deletions were not made (F7). The `test_credential_leaks.bats` batching is not done |
+| Phase 2 steps 1-2 | #1032 (open) | The shard hook, `shards.py`, the durations builder and their tests, inert until `PYTEST_SHARD` is set |
+
 ## Implementation Phases
 
 Projections are derived from the measured worker-seconds above, not measured; each pull request reports its own CI numbers against the baseline table.
@@ -155,7 +170,7 @@ Projections are derived from the measured worker-seconds above, not measured; ea
 | 1.1b | Clean-deploy gate: the full 2 × 3 × 3 matrix (`:125-141`) and the `inventory_hostname` forgery (`:112-116`) against **one** clean-deploy that reaches the gate through `clean-service.yml`, and against each of the two that include it directly (`clean-deploy-o11y.yml`, `clean-deploy-step-ca.yml`); the other 16 keep one plain refusal each plus their acceptance test (`:144-150`). Cite the existing composition check (`:44-49`). New `NOT_TEMPLATED`-style entry naming the reason: one shared task | ~250 (Runs) |
 | 1.2 | D5: configurable kill deadline in `github-runner/deploy.sh:548` (default 30, tests 1); public wait knobs in `instrument-host-o11y.yml` and the gate probe in `deploy-console.yml`; tests pass short values | ~70 Python + ~59 BATS wall |
 | 1.3 | Conformance stub: default `first_delay`/`gap` to 0.04/0.01. The long-stream and keep-alive tests pass their own values (`:451`, `:535`, `:712`, `:858`); first list every test that compares timings under the defaults (time to first token, longest silence) and give those explicit delays, so a shorter default cannot turn a timing comparison into noise | ~300 to 400 (derived) |
-| 1.4 | Split F3's floors: the 22-template loop becomes 22 generated test methods (or one run selecting all 22, if `setup-templates.yml` takes a multi-name selection; verify first); `test_authentik_audit_recovery.py` becomes one test per scenario | 0 worker-s; lowers the floor |
+| 1.4 | Split F3's floors: the 21-template loop becomes 21 generated test methods (or one run selecting all 21, if `setup-templates.yml` takes a multi-name selection; verify first); `test_authentik_audit_recovery.py` becomes one test per scenario | 0 worker-s; lowers the floor |
 | 1.5 | Cache `_emitted_evidence()` per session (`functools.cache`), then move the hottest `templates.yml` readers onto the existing `playbook_yaml.load` (mtime cache, C loader, `platform/tests/playbook_yaml.py:38-46`; its result is shared, so a caller that mutates it deep-copies first). Measure before migrating the rest of the 92 sites | ~150 (test_workflow_registry alone ~100) |
 | 1.6 | BATS: one `grep` over the file list in `test_credential_leaks.bats:310-360`; one unset of the hook's full list of git repository variables (`.githooks/pre-push:70-71`: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY` and three more) in the shared `assert_helpers.bash`, which each file loads at file level, replacing the seven copies in `test_graph_artifact_guard.bats`, `test_local_dev_foundation_down.bats`, `test_netbox_change_aware.bats`, `test_pre_push_branch_lock.bats`, `test_pre_push_git_env.bats`, `test_pre_push_uv.bats` and `test_scripts_set_pipefail.bats` (each file loads the helper first; check, since a partial list reopens `docs/MISTAKES.md` 3.7); delete the three redundant tests in F7; `test_github_runner_ephemeral.bats:55` skips loudly without `shellcheck` | ~15 BATS wall |
 
@@ -167,7 +182,7 @@ Phase 1 total: Python about **11,300 to 9,800 worker-seconds** (-13%), serial BA
 | Python Playbook Runs | 9m47s | ~7 min | clean-deploy includer dimension, instrument-host forgeries and wait |
 | Python Agentgateway | 8m45s | ~6 to 7 min | conformance stub delays and forgeries |
 | Python Playbook Safety | 7m39s | ~5.5 min | per-playbook guard spellings |
-| Python Semaphore | 5m10s | ~3.5 to 4 min | the 22-template loop split; 807 worker-s over 4 workers is a ~200 s floor |
+| Python Semaphore | 5m10s | ~3.5 to 4 min | the 21-template loop split; 807 worker-s over 4 workers is a ~200 s floor |
 
 The critical path barely moves: core keeps almost all of its work. Phase 2 is what shortens it.
 

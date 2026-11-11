@@ -717,7 +717,7 @@ def test_the_run_opens_by_refusing_internal_extra_vars():
 @needs_ansible
 @pytest.mark.parametrize("name, forge", [
     pytest.param(n, f.values[0], id=f"{n}-{f.id}")
-    for n in sorted(_defined_names()) for f in forgeries.templated_forgeries(n, [], [])
+    for n in sorted(_defined_names()) for f in forgeries.by_name(n, [], [])
 ])
 def test_refuses_an_extra_var_forging_an_internal_name(estate, name, forge):
     # beta's declaration is unusable, so a forged verdict would turn a failing group into a pass.
