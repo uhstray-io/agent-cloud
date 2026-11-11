@@ -11,7 +11,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from fake_http import DrainingHandler, serve  # noqa: F401 (serve is re-exported for its callers)
+from fake_http import DrainingHandler
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = {"bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret"}

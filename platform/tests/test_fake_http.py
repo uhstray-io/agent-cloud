@@ -260,14 +260,10 @@ OWN_SERVERS = frozenset({
     "platform/tests/test_agw_client_tls_probe.py",
     "platform/tests/test_agw_isolation_probe.py",
     "platform/tests/test_agw_mcp_verify.py",
-    "platform/tests/test_agw_openrouter.py",
-    "platform/tests/test_agw_skynet_route.py",
-    "platform/tests/test_agw_stream_usage.py",
     "platform/tests/test_instrument_host_o11y.py",
     "platform/tests/test_probe_launch_gate.py",
     "platform/tests/test_probe_skynet_launch.py",
     "platform/tests/test_renew_internal_certs.py",
-    "platform/tests/test_verify_o11y_dashboard_data.py",
 })
 
 
