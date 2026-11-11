@@ -13,15 +13,20 @@
 #      chained copy, whose source is read before that write). A refusal names the entry and changes nothing.
 #   3. The transport guard, then the AppRole login. The login is a credential task (no_log).
 #   4. Each source path and each target path is read. The reads also run in check mode. Every entry is
-#      then planned into exactly one state, from the live values:
-#        source-missing  the source path is absent, the source field is absent, or its value is empty
-#        copied          the target field already holds the source value (no write)
-#        pending         the target path is absent, or the target field is absent (the copy writes it)
-#        conflict        the target field holds a different value, an empty one included
+#      then planned into exactly one state, from the live values and vars/retired-secret-fields.yml. A
+#      source listed there as retired is decided first, since it is meant to be gone from the store:
+#        source-retired                 the source (path, field) is listed as retired, and the target field holds a
+#                                       value other than '' (a no-op: the retired source's value is not compared)
+#        source-retired-target-missing  the source is listed as retired, and the target field is absent or ''
+#        source-missing                 the source path is absent, the source field is absent, or its value is empty
+#        copied                         the target field already holds the source value (no write)
+#        pending                        the target path is absent, or the target field is absent (the copy writes it)
+#        conflict                       the target field holds a different value, an empty one included
 #      Presence is key membership, not truthiness. The comparison runs in a no_log step, so only field
 #      NAMES and states reach the output.
-#   5. A source-missing or conflict entry refuses the whole run before any write. A conflict is never
-#      overwritten: the target may already own a value that differs from the declared source.
+#   5. A source-missing, source-retired-target-missing or conflict entry refuses the whole run before any
+#      write. A conflict is never overwritten: the target may already own a value that differs from the
+#      declared source.
 #   6. On a live run only, each pending entry is written through tasks/bao-merge-keys.yml. A target path
 #      that is absent is created (a compare-and-swap with cas 0). An existing one takes a version-checked
 #      update that keeps every sibling field, and _bm_guard_absent_keys makes the write refuse if the
@@ -50,6 +55,16 @@
   become: false
   vars:
     _copied: "{{ (lookup('file', playbook_dir ~ '/vars/copied-secret-fields.yml') | from_yaml).copied_secret_fields | default([], true) }}"
+    # The retired fields (vars/retired-secret-fields.yml). A missing file reads as nothing retired, as does an empty
+    # list. That fails closed: a copy whose source is then gone plans source-missing and refuses.
+    _retired_file: "{{ playbook_dir ~ '/vars/retired-secret-fields.yml' }}"
+    _retired: "{{ ((lookup('file', _retired_file) if _retired_file is exists else '') | from_yaml).retired_secret_fields | default([], true) }}"
+    # Each retired (path, field) as services/<svc>/<field>: the form a copy's source is compared in.
+    _retired_sources: "{{ _retired_sources_json | from_json }}"
+    _retired_sources_json: >-
+      {% set sources = [] %}
+      {% for r in _retired %}{% for f in r.fields %}{% set _ = sources.append(r.path ~ '/' ~ f) %}{% endfor %}{% endfor %}
+      {{ sources | to_json }}
     # openbao_addr first, as the shared-environment playbooks read it (see retire-openbao-fields.yml for why).
     # The inventory's single openbao_svc host stays the fallback for an environment without it.
     _bao_url: "{{ openbao_addr | default(hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '', true) }}"
@@ -123,7 +138,7 @@
         unredirected_headers: [X-Vault-Token]
         headers:
           X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
-        # 404: the source path does not exist, which plans the entry as source-missing.
+        # 404: the source path does not exist, which plans the entry as source-missing (source-retired when it is retired).
         status_code: [200, 404]
       loop: "{{ _copied }}"
       loop_control:
@@ -166,7 +181,15 @@
           {% set src_held = (src.json.data.data | default({}, true)) if src.status == 200 else {} %}
           {% set dst_held = (dst.json.data.data | default({}, true)) if dst.status == 200 else {} %}
           {% set src_value = src_held[entry.from_field] if entry.from_field in src_held else none %}
-          {% if src_value is none or src_value == '' %}
+          {% set dst_value = dst_held[entry.to_field] if entry.to_field in dst_held else none %}
+          {# A retired source is meant to be gone from the store: decided before source-missing, and its value is not compared. #}
+          {% if (entry.from_path ~ '/' ~ entry.from_field) in _retired_sources %}
+          {% if dst_value is none or dst_value == '' %}
+          {% set state = 'source-retired-target-missing' %}
+          {% else %}
+          {% set state = 'source-retired' %}
+          {% endif %}
+          {% elif src_value is none or src_value == '' %}
           {% set state = 'source-missing' %}
           {% elif entry.to_field not in dst_held %}
           {% set state = 'pending' %}
@@ -187,14 +210,15 @@
           - >-
             {% for p in _plan %}{{ p.to_path }}/{{ p.to_field }} from {{ p.from_path }}/{{ p.from_field }}: {{ p.state }}{{ '; ' if not loop.last }}{% endfor %}
 
-    - name: "Refuse a copy whose source is missing or whose target holds a different value (before any write)"
+    - name: "Refuse a copy whose source is missing or retired without its target held, or whose target holds a different value (before any write)"
       ansible.builtin.assert:
         that: _blocked | length == 0
         fail_msg: >-
-          Nothing was written. A copy is refused when its source is missing or its target holds a different
-          value (names and states only): {{ _blocked | to_json }}
+          Nothing was written. A copy is refused when its source is missing, when its source is retired and its
+          target holds no value, or when its target holds a different value (names and states only):
+          {{ _blocked | to_json }}
       vars:
-        _blocked: "{{ _plan | selectattr('state', 'in', ['source-missing', 'conflict']) | list }}"
+        _blocked: "{{ _plan | selectattr('state', 'in', ['source-missing', 'source-retired-target-missing', 'conflict']) | list }}"
 
     - name: "Write each pending target (live only: a version-checked merge per target, verified by the shared task)"
       # The shared task owns the write and its own verify. It runs only for a pending entry, so the target is
@@ -268,3 +292,5 @@
             {% for p in _plan if p.state == 'pending' %}{{ p.to_path }}/{{ p.to_field }}{{ ', ' if not loop.last }}{% else %}none{% endfor %}
           - >-
             Already copied (no-op): {% for p in _plan if p.state == 'copied' %}{{ p.to_path }}/{{ p.to_field }}{{ ', ' if not loop.last }}{% else %}none{% endfor %}
+          - >-
+            Source retired, target held (no-op): {% for p in _plan if p.state == 'source-retired' %}{{ p.to_path }}/{{ p.to_field }}{{ ', ' if not loop.last }}{% else %}none{% endfor %}
