@@ -1,0 +1,190 @@
+# release-notes-from-task.yml — publish the release-notes body one reviewed check-mode run recorded (plan 20,
+# "Release notes"). Included by release-version.yml inside its refresh block, only when release_notes_from_task is set,
+# with _rnt_tag (the release tag, vX.Y.Z) and _rnt_task_id (the Semaphore task id of that run). It leaves the body in
+# _rn_body for the PATCH that follows, as tasks/release-notes-body.yml does for generated notes.
+#
+# Why. The notes are model text, and two check-mode runs of the same refresh at temperature 0 still differed
+# (Semaphore tasks 14801 and 14806, 2026-11-10). A refresh that generates again can therefore publish a body nobody
+# reviewed. This task publishes exactly the body of a check-mode run a reviewer read. That run recorded the body with
+# set_stats (tasks/release-notes-body.yml: release_notes with tag, sha256 and body) and printed it in CUSTOM STATS.
+#
+# Steps. The Semaphore endpoint and API token are read from secret/services/semaphore with the controller's AppRole
+# login the play already holds. The run's task, its output rows and its template are read from Semaphore; every read
+# carries the token, so each is hidden. files/release_notes_from_task.py decides whether that task qualifies: the id
+# matches, the status is success, params.dry_run is exactly true, the template is the task's own and a refresh
+# template, exactly one RUN line carries release_notes for this tag, and the sha256 matches the body. A refusal names
+# one rule token and stops the run before any write. The body's sha256 is then checked against the record too.
+#
+# Check mode runs it too. Every read is hidden and check_mode: false, and nothing here writes. The PATCH in
+# release-version.yml is skipped in check mode, as it is for generated notes.
+#
+# Names. Every register and fact here starts with _rnt_ (or is _rn_body, the body fact release-version.yml PATCHes).
+# A visible task names none of the hidden results: the rule token, the rc and the digest are the only values it prints.
+
+- name: "Require a release tag of the form vX.Y.Z and a Semaphore task id above zero"
+  ansible.builtin.assert:
+    that:
+      - _rnt_tag is match('^v[0-9]+[.][0-9]+[.][0-9]+$')
+      - _rnt_task_id | int > 0
+    fail_msg: "The published notes need a release tag of the form vX.Y.Z and a Semaphore task id; nothing was read or written."
+    quiet: true
+
+- name: "Read the Semaphore endpoint and API token from OpenBao (hidden: the read carries the token)"
+  ansible.builtin.uri:
+    url: "{{ _bao_url }}/v1/secret/data/services/semaphore"
+    follow_redirects: none
+    unredirected_headers: [X-Vault-Token]
+    headers:
+      X-Vault-Token: "{{ _rv_auth.json.auth.client_token }}"
+    status_code: [200, 404]
+  register: _rnt_semaphore_read
+  no_log: true
+  changed_when: false
+  check_mode: false
+
+- name: "Take the Semaphore fields (hidden; empty when the path is absent)"
+  ansible.builtin.set_fact:
+    _rnt_semaphore: "{{ _rnt_semaphore_read.json.data.data if _rnt_semaphore_read.status == 200 else {} }}"
+  no_log: true
+
+- name: "Require secret/services/semaphore to hold an https url and an api_token (hidden: names the requirement only)"
+  ansible.builtin.assert:
+    that:
+      - (_rnt_semaphore.url | default('', true)) is match('^https://[^/]+$')
+      - (_rnt_semaphore.api_token | default('', true)) | length > 0
+    fail_msg: "secret/services/semaphore must hold an https url and an api_token before the reviewed notes can be read."
+    quiet: true
+  no_log: true
+
+- name: "Read the Semaphore task (hidden: the request carries the API token)"
+  ansible.builtin.uri:
+    url: "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _rnt_semaphore.api_token }}"
+    unredirected_headers: [Authorization]
+    status_code: [200]
+    follow_redirects: none
+    use_netrc: false
+    use_proxy: false
+  register: _rnt_task_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Read the task's output rows (hidden: the request carries the API token)"
+  ansible.builtin.uri:
+    url: "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}/output"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _rnt_semaphore.api_token }}"
+    unredirected_headers: [Authorization]
+    status_code: [200]
+    follow_redirects: none
+    use_netrc: false
+    use_proxy: false
+  register: _rnt_output_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Take the task's template id (hidden; 0 when the task was not read, so the template read finds nothing)"
+  ansible.builtin.set_fact:
+    _rnt_template_id: "{{ (_rnt_task_read.json | default({}, true)).template_id | default(0, true) if _rnt_task_read.status | default(0) == 200 else 0 }}"
+  no_log: true
+
+- name: "Read the task's template (hidden: the request carries the API token)"
+  ansible.builtin.uri:
+    url: "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/templates/{{ _rnt_template_id | int }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _rnt_semaphore.api_token }}"
+    unredirected_headers: [Authorization]
+    status_code: [200]
+    follow_redirects: none
+    use_netrc: false
+    use_proxy: false
+  register: _rnt_template_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  no_log: true
+
+# The helper reads the run's own history and refuses anything that is not exactly that run (see its docstring). Its
+# output is the body, so the task is hidden; a refusal prints one rule token on stderr, which the next facts take.
+- name: "Check the reviewed run and take its recorded notes (hidden: the output is the body)"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "-I"
+      - "{{ playbook_dir }}/files/release_notes_from_task.py"
+    stdin: >-
+      {{ {'task': _rnt_task_read.json | default({}, true),
+          'output_rows': _rnt_output_read.json | default([], true),
+          'template': _rnt_template_read.json | default({}, true),
+          'expected_tag': _rnt_tag,
+          'expected_task_id': _rnt_task_id | int} | to_json }}
+    stdin_add_newline: false
+  register: _rnt_check
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Take the helper's exit code and the one rule token it names (hidden; no body text is taken)"
+  ansible.builtin.set_fact:
+    _rnt_rc: "{{ _rnt_check.rc | int }}"
+    _rnt_rule: >-
+      {{ (_rnt_check.stderr_lines | default([])
+          | select('match', '^release-notes-from-task: [a-z0-9_]{1,80}$')
+          | map('regex_replace', '^release-notes-from-task: ', '') | list | first)
+         | default('no named rule', true) }}
+  no_log: true
+
+- name: "Require a clean check of the reviewed run (exit 0); the helper's rule token is named, nothing else"
+  ansible.builtin.assert:
+    that:
+      - _rnt_rc == 0
+    fail_msg: "Check-mode task {{ _rnt_task_id }} cannot be published for {{ _rnt_tag }}: {{ _rnt_rule }}. Nothing was written."
+    quiet: true
+
+- name: "Take the helper's record of the reviewed run (hidden: it holds the body)"
+  ansible.builtin.set_fact:
+    _rnt_result: "{{ _rnt_check.stdout | from_json }}"
+  no_log: true
+
+- name: "Take the body the reviewed run recorded (hidden: the body is never printed)"
+  ansible.builtin.set_fact:
+    _rn_body: "{{ _rnt_result.body }}"
+  no_log: true
+
+- name: "Take the record of that body (hidden: a task id, a tag, a digest and a size; never the body)"
+  ansible.builtin.set_fact:
+    _rnt_summary:
+      task_id: "{{ _rnt_result.task_id }}"
+      tag: "{{ _rnt_result.tag }}"
+      sha256: "{{ _rnt_result.sha256 }}"
+      bytes: "{{ _rnt_result.bytes }}"
+  no_log: true
+
+- name: "Take the sha256 of the body that will be published (hidden)"
+  ansible.builtin.set_fact:
+    _rnt_body_sha256: "{{ _rn_body | hash('sha256') }}"
+  no_log: true
+
+# A second check on the same record, here in the play: the body that is published must be the body the run recorded,
+# for this tag and this task. It also catches a body that templating changed between the helper and the PATCH.
+- name: "Require the published body to be the one the reviewed run recorded (sha256, tag and task id)"
+  ansible.builtin.assert:
+    that:
+      - _rnt_body_sha256 == _rnt_summary.sha256
+      - _rnt_summary.tag == _rnt_tag
+      - _rnt_summary.task_id | int == _rnt_task_id | int
+    fail_msg: "The reviewed notes do not match their own record (sha256, tag or task id): nothing was published."
+    quiet: true
+
+- name: "Report the published record (task, tag, sha256 and size; the body is not printed)"
+  ansible.builtin.debug:
+    msg: "Publishing the notes of check-mode task {{ _rnt_summary.task_id }} for {{ _rnt_summary.tag }} (sha256 {{ _rnt_summary.sha256 }}, {{ _rnt_summary.bytes }} bytes)."

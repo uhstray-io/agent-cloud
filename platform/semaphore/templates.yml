@@ -3441,7 +3441,9 @@ templates:
   # where the gateway answers. An operator launches it with an existing release tag typed. It tags, pushes and creates no
   # Release, and it refuses a tag with no Release. Check mode prints the new notes and rewrites nothing. No schedule: a
   # refresh is a one-off correction, and a schedule cannot answer the survey. Dev-bound for the reason the two templates
-  # above give.
+  # above give. The optional release_notes_from_task publishes a reviewed check run's printed notes exactly, instead of
+  # generating new ones (the run must be a successful check-mode run of this template for the same tag; the playbook
+  # checks the id's form, and tasks/release-notes-from-task.yml's helper checks the run itself).
   - name: Refresh Release Notes (Dev)
     playbook: platform/playbooks/release-version.yml
     repository: agent-cloud dev
@@ -3451,6 +3453,11 @@ templates:
         description: "An existing release tag, for example v0.14.0. Rewrites that GitHub Release's notes in the categorised format; check mode prints the new notes and changes nothing."
         type: string
         required: true
+      - name: release_notes_from_task
+        title: "Publish a reviewed check run (task id)"
+        description: "Optional. The id of a successful check-mode run of this template for the same tag; its printed notes are published exactly, instead of generating new ones."
+        type: integer
+        required: false
 
   # The Dispatch Console's monthly credential rotation (plan 17, D27): a new secret_id for the console AppRole (its
   # role_id is unchanged), the Grafana Viewer token renewed under its 30-day threshold, a redeploy that carries the new

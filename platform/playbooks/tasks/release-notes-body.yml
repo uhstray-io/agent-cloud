@@ -12,6 +12,8 @@
 #      or a reply without what it needs leaves that part to the grouped lists. Nothing here fails the run for it.
 #   3. The rendered markdown (scripts/semver.py release-notes --render), the model text on stdin. The renderer
 #      validates each part and drops an unsafe one, naming it on stderr.
+#   4. The body and its sha256 go to CUSTOM STATS (set_stats release_notes), so a reviewed check run can be published
+#      as-is later (tasks/release-notes-from-task.yml). Nothing else reads that record.
 #
 # Play facts it reads: _rv_tmp (the clone at {{ _rv_tmp.path }}/repo), _rv_auth (the controller AppRole login,
 # hidden), _bao_url and _rv_notes_model. It sets _rn_body and _rn_summary_state.
@@ -352,6 +354,23 @@
 - name: "Take the rendered body"
   ansible.builtin.set_fact:
     _rn_body: "{{ _rn_render.stdout }}"
+
+# The record a later Refresh run publishes as-is (release_notes_from_task, tasks/release-notes-from-task.yml): the tag,
+# the sha256 of the body and the body, in this run's CUSTOM STATS (ansible.cfg show_custom_stats). set_stats runs in check
+# mode too, so a reviewed dry run carries the record that is published. aggregate: false keeps this run's record alone.
+- name: "Record the notes for a later as-is publish (Refresh Release Notes, release_notes_from_task)"
+  ansible.builtin.set_stats:
+    data:
+      release_notes:
+        tag: "{{ _rn_tag }}"
+        sha256: "{{ _rn_body | hash('sha256') }}"
+        body: "{{ _rn_body }}"
+    per_host: false
+    aggregate: false
+
+- name: "Show the sha256 of the rendered body (a later as-is publish checks against it)"
+  ansible.builtin.debug:
+    msg: "Notes sha256 for {{ _rn_tag }}: {{ _rn_body | hash('sha256') }}."
 
 - name: "Show the summary state (one word per part)"
   ansible.builtin.debug:
