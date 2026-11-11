@@ -79,7 +79,9 @@ The bootstrap is idempotent (safe after a podman-machine reset) and provisions:
    Semaphore repository is a local path, so tasks run your *uncommitted*
    changes), and a **shared deploy dir** `/var/lib/agent-cloud-deploy` mounted
    at the *same absolute path* in the container and on the VM (see "host
-   bind-mounts" below)
+   bind-mounts" below). The last bootstrap's checkout wins: bootstrapping from
+   another worktree recreates Semaphore once (the data volume and its key are
+   kept), and a Semaphore task in flight is killed.
 
 State lands in `~/.agent-cloud-local/credentials.env` (0600, outside the repo).
 
@@ -115,8 +117,9 @@ Four facts that have each cost a session (`docs/MISTAKES.md` 4.10, 10.9):
   does not run a branch you are editing in another worktree. The local catalog also
   holds the shared templates (no suffix) and their `(Dev)` copies. Those stay bound
   to their GitHub records, `main` and `dev`, and so do their schedules: a scheduled
-  shared template (for example `Collect Service Conformance`, beside its `(Local)`
-  twin) validates `main`, not your working tree. `run` picks the worktree-bound
+  shared template (for example `Collect Service Conformance (Dev)`, which is bound to
+  the `dev` record and sits beside its `(Local)` twin) validates `dev`, not your
+  working tree. `run` picks the worktree-bound
   template. When a playbook has none, it falls back to a repository-bound one and
   prints a `WARN`, and that run executes the record's branch, not your working tree.
 - **Reading a task.** `run` prints the last 40 lines. `./scripts/local-dev.sh output
@@ -159,7 +162,7 @@ policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-loc
   service is an outage.
 - **Restarting.** Run the service's own Deploy (`make local-deploy-<service>`). What it
   does with a stopped container depends on that service's `deploy.sh`:
-  - authentik, honcho, o11y, openhands and tududi use `compose_up_if_changed`, where a
+  - authentik, honcho, o11y and openhands use `compose_up_if_changed`, where a
     not-running container is the reason "container not running" (`lib/common.sh`
     `_compose_recreate_reason`), so the project is recreated. agentgateway has its own
     copy of that comparison, and caddy runs `compose up -d --force-recreate` every time.
@@ -363,7 +366,7 @@ not establish production discovery readiness.
 | Bootstrap fails at "Assert podman machine" | `podman machine start` |
 | NetBox/Grafana login redirect points at `0.0.0.0:9000` | Embedded outpost `authentik_host` unset — re-run `make local-deploy-authentik` (blueprint sets it) |
 | NetBox SSO not gating (loads without login) | `make local-deploy-caddy` (renders the forward_auth route from inventory); confirm `caddy_routes` netbox entry has `forward_auth` |
-| Bootstrap fails at "Wait for Semaphore API" with a 404, or a port-in-use error | Another local app holds `127.0.0.1:3000` (Semaphore) or `:8088` (Caddy HTTP). Set `local_semaphore_port` (under `all.vars`) or `caddy_http_port` (on `caddy-local`) in the gitignored `platform/inventory/local-dev.yml` and re-run `make local-bootstrap`; an existing Semaphore container is recreated to pick up the new port. `./scripts/local-dev.sh` reads the resulting URL from the state file, so nothing else changes. Pick a port the stack does not already use: 3001 (UhhCraft with `UHHCRAFT_PORT=3001`), 3002 (Grafana), 3100 (Loki, and the collector's Loki URL), 3402 (tududi), 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca) |
+| Bootstrap fails at "Wait for Semaphore API" with a 404, or a port-in-use error | Another local app holds `127.0.0.1:3000` (Semaphore) or `:8088` (Caddy HTTP). Set `local_semaphore_port` (under `all.vars`) or `caddy_http_port` (on `caddy-local`) in your gitignored working inventory `platform/inventory/local-dev.yml` (create it with `make local-init` from the committed `platform/inventory/local-dev.yml.example`; an existing file is kept unless you run `REFRESH=1 make local-init`) and re-run `make local-bootstrap`; an existing Semaphore container is recreated to pick up the new port. `./scripts/local-dev.sh` reads the resulting URL from the state file, so nothing else changes. Pick a port the stack does not already use: 3001 (UhhCraft with `UHHCRAFT_PORT=3001`), 3002 (Grafana), 3100 (Loki, and the collector's Loki URL), 3402 (tududi, retired 2026-11-09), 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca) |
 | Semaphore container exits (2) | `podman logs local-semaphore` — dialect/image regression; keep the pinned tag |
 | Task fails at OpenBao auth | Re-run bootstrap (regenerates AppRole secret-id + environment) |
 | Task: "no hosts matched" | The static inventory in Semaphore is managed by bootstrap — re-run it; don't hand-edit |

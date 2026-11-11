@@ -61,6 +61,21 @@
     # value silently stayed a STRING, and deploy-caddy died on
     # "'str object' has no attribute 'host'" (verified on ansible-core 2.16.18 in
     # the Semaphore image and on the host). repr spells it `True` and parses.
+    # The example console scope (console_tenants) as a LIST, emitted below with `| string` — the same
+    # Python repr as _caddy_routes, for the same reason: the ini inventory plugin reads a value back
+    # with ast.literal_eval, and one 300-character INI line fails yamllint. Mirrors the console_tenants
+    # example in platform/inventory/local-dev.yml.example (fictional names, no addresses).
+    _console_example_tenants:
+      - id: uhstray
+        name: "Uhstray (example)"
+        groups: [platform-admins, platform-developers]
+        orgs:
+          - id: uhstray-io
+            name: uhstray-io
+            sites:
+              - { id: site-hq, name: HQ, envs: [prod, dev] }
+              - { id: do-nyc1, name: DigitalOcean NYC1, envs: [prod] }
+              - { id: cloudflare, name: Cloudflare, envs: [prod] }
     _caddy_routes:
       - {'host': 'semaphore.{{ _dev_zone }}', 'upstream': 'local-semaphore:3000'}
       - {'host': 'openbao.{{ _dev_zone }}', 'upstream': 'local-openbao:8200', 'forward_auth': 'authentik-server:9000'}
@@ -69,9 +84,11 @@
       - {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}
       - {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}
       - {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}
-      - {'host': 'todo.{{ _dev_zone }}', 'upstream': 'tududi:3002'}
+      - {'host': 'console.{{ _dev_zone }}', 'upstream': 'console:8080'}
       - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
       - {'host': 'postiz.{{ _dev_zone }}', 'upstream': 'postiz:5000'}
+      - {'host': 'plane.{{ _dev_zone }}', 'upstream': 'plane-proxy:80'}
+      - {'host': 'plane-mcp.{{ _dev_zone }}', 'upstream': 'plane-mcp:8211'}
       # agentgateway operator UI — the gateway runs its own OIDC login (plain proxy).
       - {'host': 'admin.inference.{{ _dev_zone }}', 'upstream': 'agentgateway:4001'}
       # inference — the edge shape (/v1 + /health allowlist, edge 401/404) in front of the
@@ -84,6 +101,27 @@
       # OPA decision API — HTTPS for callers (skynet) so they verify it via step-ca; a plain proxy
       # with no edge gate (OPA's Phase 1 stays unauthenticated). Mirrors local-dev.yml.example.
       - {'host': 'opa.{{ _dev_zone }}', 'upstream': 'opa:8181'}
+    # The launch gate's one internal leaf, as a LIST and emitted below with `| string` (the same reason as
+    # _caddy_routes: the ini plugin reads the value back with ast.literal_eval, and a long INI line fails yamllint).
+    # The SAN is <dns_site>.<dns_zone> with dns_site local (launch_gate_svc:vars below). `dir` is the deploy's
+    # certs path, the one deploy-launch-gate.yml's leaf assert requires: <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>.
+    _launch_gate_leaves:
+      - name: launch-gate-server
+        host: launch-gate-local
+        profile: server
+        dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/launch-gate/deployment/certs/launch-gate-server
+        sans: ['launch-gate.local.{{ _dev_zone }}']
+        reload: none
+    # skynet's one internal leaf, the same shape and the same `| string` emission as _launch_gate_leaves above
+    # (skynet_svc:vars below). The SAN is <dns_site>.<dns_zone> with dns_site local; the dir is the path
+    # deploy-skynet.yml's leaf assert requires: <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>.
+    _skynet_leaves:
+      - name: skynet-server
+        host: skynet-local
+        profile: server
+        dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/skynet/deployment/certs/skynet-server
+        sans: ['skynet.local.{{ _dev_zone }}']
+        reload: none
     # step-ca container name (matches tasks/distribute-ca-root.yml's _ca_name
     # default and scripts/local-dev.sh:_internal_root_pem) — single name for the
     # OIDC-deps probe + the trust-bundle read below, so the literal can't drift.
@@ -119,6 +157,9 @@
     # 3000, and the validation would never see the mistake.
     _sem_port: "{{ local_semaphore_port | default(3000) }}"
     _sem_url: "http://127.0.0.1:{{ _sem_port }}"
+    # The launch gate's image (launch-gate deployment compose.yml, LAUNCH_GATE_IMAGE): the official Python image,
+    # pinned by digest because deploy-launch-gate.yml refuses a tag. Overridable like local_semaphore_image.
+    _launch_gate_image: "{{ local_launch_gate_image | default('docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30') }}"
     _sem_admin: localadmin
     _sem_admin_password: LOCAL_FAKE_semaphore_admin
     # The Semaphore repository points at the WORKING TREE, not GitHub — local
@@ -721,22 +762,63 @@
     # input in its database. A container created before SEMAPHORE_CONFIG_PATH kept it in the
     # container layer, and the recreate below removes that layer. The copy onto the data volume
     # must therefore happen BEFORE the recreate. Output is a status word; the key is never printed.
+    #
+    # The data volume decides FIRST, and nothing before that decision starts the container. An older
+    # container's bind-mount source can be gone (its checkout was deleted): then `podman start` fails
+    # with "crun: cannot stat" before the key is read, and that failure stopped the bootstrap here
+    # (2026-11-02 live failure). The probe is a read-only throwaway container from the container's
+    # own image: already local, so --pull=never fetches nothing, and it never starts the Semaphore
+    # container. A probe error fails the task; it never falls through to a start. The container is
+    # started only when the volume has no key. If it cannot start, its key, if any, is in the stopped
+    # container's layer (podman cp reads a stopped container). That key is read into the shell's
+    # memory and written to the volume only once the whole stream has arrived, so nothing lands on the
+    # workstation disk and a failed read writes nothing. The write goes through a temp name and mv.
+    # No key anywhere is "none", which fails the task. See docs/MISTAKES.md 3.16.
     - name: "Carry an existing Semaphore encryption key onto the data volume"
       ansible.builtin.shell: |
-        if ! podman container exists {{ _sem_name }}; then
+        set -o pipefail
+        ctr={{ _sem_name }}
+        if ! podman container exists "$ctr"; then
           echo absent
           exit 0
         fi
-        if [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' {{ _sem_name }})" != "running" ]; then
-          podman start {{ _sem_name }} >/dev/null
+        vol=$(podman inspect "$ctr" \
+          --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}if eq .Destination "/var/lib/semaphore"{{ "}}" }}{{ "{{" }}.Name{{ "}}" }}{{ "{{" }}end{{ "}}" }}{{ "{{" }}end{{ "}}" }}') \
+          || { echo "cannot inspect $ctr" >&2; exit 1; }
+        image=$(podman inspect "$ctr" --format '{{ "{{" }}.Image{{ "}}" }}') \
+          || { echo "cannot inspect $ctr" >&2; exit 1; }
+        if [ -n "$vol" ]; then
+          podman run --rm --pull=never --entrypoint sh -v "$vol:/var/lib/semaphore:ro" "$image" \
+            -c 'test -f /var/lib/semaphore/config/config.json'
+          rc=$?
+          if [ "$rc" -eq 0 ]; then echo present; exit 0; fi
+          if [ "$rc" -ne 1 ]; then echo "cannot probe volume $vol (rc $rc); $ctr not started" >&2; exit 1; fi
+        fi
+        if [ "$(podman inspect -f '{{ "{{" }}.State.Status{{ "}}" }}' "$ctr")" != "running" ]; then
+          if ! podman start "$ctr" >/dev/null; then
+            [ -n "$vol" ] || { echo "$ctr cannot start and has no named data volume" >&2; exit 1; }
+            # The key is captured in memory, not in a file. A failed or truncated read leaves key empty
+            # or the pipeline failed, and then nothing is written to the volume.
+            if ! key=$(podman cp "$ctr:/etc/semaphore/config.json" - | tar -xO) || [ -z "$key" ]; then
+              echo none
+              exit 0
+            fi
+            printf '%s' "$key" | podman run --rm -i --pull=never --entrypoint sh -v "$vol:/var/lib/semaphore" "$image" \
+              -c 't=/var/lib/semaphore/config/config.json; mkdir -p /var/lib/semaphore/config && cp /dev/stdin "$t.tmp" && chmod 600 "$t.tmp" && mv "$t.tmp" "$t"' || exit 1
+            echo carried
+            exit 0
+          fi
           echo started
         fi
-        podman exec {{ _sem_name }} sh -c '
+        podman exec "$ctr" sh -c '
           t=/var/lib/semaphore/config/config.json
           if [ -f "$t" ]; then echo present
           elif [ -f /etc/semaphore/config.json ]; then
             mkdir -p /var/lib/semaphore/config && cp /etc/semaphore/config.json "$t" && chmod 600 "$t" && echo carried
           else echo none; fi'
+      args:
+        # pipefail is not POSIX: dash (the /bin/sh on Linux) rejects `set -o pipefail`.
+        executable: /bin/bash
       register: _sem_key_carry
       changed_when: "'carried' in _sem_key_carry.stdout_lines or 'started' in _sem_key_carry.stdout_lines"
       failed_when: "_sem_key_carry.rc != 0 or (_sem_key_carry.stdout_lines | last | default('')) not in ['absent', 'present', 'carried']"
@@ -760,6 +842,10 @@
           SECOPT=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}.HostConfig.SecurityOpt{{ "}}" }}')
           ENV=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .Config.Env{{ "}}" }}')
           PORTS=$(podman inspect {{ _sem_name }} --format '{{ "{{" }}json .HostConfig.PortBindings{{ "}}" }}')
+          REPO_SRC=$(podman inspect {{ _sem_name }} \
+            --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}if eq .Destination "{{ _repo_mount }}"{{ "}}" }}{{ "{{" }}.Source{{ "}}" }}{{ "{{" }}end{{ "}}" }}{{ "{{" }}end{{ "}}" }}')
+          SHARE_SRC=$(podman inspect {{ _sem_name }} \
+            --format '{{ "{{" }}range .Mounts{{ "}}" }}{{ "{{" }}if eq .Destination "{{ _deploy_share }}"{{ "}}" }}{{ "{{" }}.Source{{ "}}" }}{{ "{{" }}end{{ "}}" }}{{ "{{" }}end{{ "}}" }}')
           # The host publish is fixed at container creation, so a changed
           # local_semaphore_port only takes effect on a recreated container.
           if ! echo "$PORTS" | grep -q '"HostPort":"{{ _sem_port }}"'; then
@@ -785,6 +871,23 @@
              ! echo "$MOUNTS" | grep -q '{{ _repo_mount }}' || \
              ! echo "$MOUNTS" | grep -q '{{ _deploy_share }}' || \
              ! echo "$SECOPT" | grep -q 'label=disable'; then
+            podman rm -f {{ _sem_name }}
+            echo recreated
+            exit 0
+          fi
+          # A bind mount keeps the SOURCE it was created with. The destination check above reads
+          # only where a mount is, so a container whose checkout was deleted or moved passes it and
+          # then cannot start (2026-11-02: crun could not stat the old source). Recreate when either
+          # source differs from the one this run mounts. The data volume is kept: rm without -v.
+          # The checkout of the last bootstrap wins: bootstrapping from another worktree recreates Semaphore
+          # once (the data volume and its key are kept), and a Semaphore task in flight is killed.
+          # Compare canonical paths: a symlink to the same checkout is not a change, and a repo source that
+          # no longer exists resolves to nothing and counts as stale. The share is a path on the VM, which
+          # this controller cannot stat, so it is compared as written.
+          canon() { if [ -d "$1" ]; then (cd -P "$1" && pwd -P); fi; }
+          REPO_CANON=$(canon "$REPO_SRC")
+          HOST_CANON=$(canon "{{ _repo_host_dir }}")
+          if [ -z "$REPO_CANON" ] || [ "$REPO_CANON" != "$HOST_CANON" ] || [ "$SHARE_SRC" != "{{ _deploy_share }}" ]; then
             podman rm -f {{ _sem_name }}
             echo recreated
             exit 0
@@ -896,10 +999,15 @@
       changed_when: "'INSTALLED' in _sem_deps.stdout | default('')"
       when: not ansible_check_mode
 
-    - name: "Install podman client inside Semaphore (root; drives the mounted socket)"
+    # openssl: tasks/issue-internal-leaf.yml makes each leaf's key and request with openssl ON THE CONSUMER, which
+    # for launch_gate_svc (and every local leaf) is this container. The image has no openssl (measured in a
+    # throwaway --rm container on docker.io/semaphoreui/semaphore:v2.19.11, uid 1001 gid 0, Alpine 3.21.7).
+    # `set -e`: with two `||` guards joined by `;` the exit status would be the openssl half's alone, so a failed
+    # podman install would pass silently. With it, a failed `apk add` of either fails the task.
+    - name: "Install podman and openssl inside Semaphore (root; podman drives the mounted socket)"
       ansible.builtin.command: >-
         podman exec --user root {{ _sem_name }} sh -c
-        "command -v podman >/dev/null || apk add --no-cache podman"
+        "set -e; command -v podman >/dev/null || apk add --no-cache podman; command -v openssl >/dev/null || apk add --no-cache openssl"
       register: _sem_podman
       changed_when: "'OK' in _sem_podman.stdout or 'Installing' in _sem_podman.stdout"
       when: not ansible_check_mode
@@ -1303,6 +1411,10 @@
           opa-local ansible_host=127.0.0.1 ansible_connection=local
 
           [opa_svc:vars]
+          # Verify Service Health (Local) probes this from the Semaphore container, by the container's name on
+          # the local-dev network; OPA's authorization policy admits GET /health (verified 200 there, and 401 for
+          # GET /v1/data, 2026-11-09).
+          health_url=http://opa:8181/health
           ansible_user=semaphore
           service_name=opa
           monorepo_deploy_path=platform/services/opa/deployment
@@ -1311,6 +1423,34 @@
           local_mode=true
           opa_bind=127.0.0.1
           opa_port=8281
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
+          # launch gate (skynet-launch-containment task 3.4) — mirrors local-dev.yml.example's launch_gate_svc. Port
+          # 18443, not 8443: Caddy holds 127.0.0.1:8443 on the Mac. The container still listens on 8443, and the
+          # local probes reach that by the network alias (compose.local.yml), never by this published port.
+          [launch_gate_svc]
+          launch-gate-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [launch_gate_svc:vars]
+          ansible_user=semaphore
+          service_name=launch-gate
+          monorepo_deploy_path=platform/services/launch-gate/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          launch_gate_image={{ _launch_gate_image }}
+          launch_gate_bind=127.0.0.1
+          launch_gate_port=18443
+          launch_gate_semaphore_url=http://{{ _sem_name }}:3000
+          # The live project id (_pid, resolved above by name), not a literal.
+          launch_gate_semaphore_project={{ _pid }}
+          launch_gate_opa_url=http://opa:8181
+          # dns_site local: the gate's TLS name is launch-gate.local.<dns_zone>, the <site>.<zone> shape prod uses.
+          dns_site=local
+          dns_zone={{ _dev_zone }}
+          internal_leaves={{ _launch_gate_leaves | string }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -1358,24 +1498,26 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
-          [tududi_svc]
-          tududi-local ansible_host=127.0.0.1 ansible_connection=local
+          [console_svc]
+          console-local ansible_host=127.0.0.1 ansible_connection=local
 
-          [tududi_svc:vars]
+          [console_svc:vars]
           ansible_user=semaphore
-          service_name=tududi
-          monorepo_deploy_path=platform/services/tududi/deployment
+          service_name=console
+          monorepo_deploy_path=platform/services/console/deployment
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
           local_mode=true
-          tududi_bind=127.0.0.1
-          tududi_port=3402
-          tududi_base_url=https://todo.{{ _dev_zone }}:{{ _edge_https_port }}
-          tududi_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/tududi/
-          # The GitHub sync acts as the user who OWNS the mapped projects (per-user
-          # scoping — see platform/inventory/local-dev.yml.example); locally the
-          # dev-test project belongs to the break-glass account.
-          tududi_sync_user_email={{ hostvars['tududi-local'].tududi_sync_user_email | default('admin@agent-cloud.test') }}
+          console_bind=127.0.0.1
+          console_port=3410
+          console_base_url=https://console.{{ _dev_zone }}:{{ _edge_https_port }}
+          console_oidc_issuer=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}/application/o/console/
+          console_build_seccomp=/usr/share/containers/seccomp.json
+          console_semaphore_api_url=https://semaphore.{{ _dev_zone }}
+          console_semaphore_ui_url=https://semaphore.{{ _dev_zone }}:{{ _edge_https_port }}
+          console_semaphore_project=1
+          console_scope_is_example=true
+          console_tenants={{ _console_example_tenants | string }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
@@ -1446,6 +1588,36 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
+          # plane — work tracker, Commercial edition. Declared here for the same
+          # container-path reason as postiz above: this inventory is what the local
+          # Semaphore runs with, so the paths are the container's, not the host's.
+          [plane_svc]
+          plane-local ansible_host=127.0.0.1 ansible_connection=local
+
+          [plane_svc:vars]
+          ansible_user=semaphore
+          service_name=plane
+          monorepo_deploy_path=platform/services/plane/deployment
+          container_engine=podman
+          openbao_addr={{ _bao_url_net }}
+          local_mode=true
+          plane_bind=127.0.0.1
+          plane_port=8096
+          plane_public_url=https://plane.{{ _dev_zone }}:{{ _edge_https_port }}
+          plane_trusted_proxies=private_ranges
+          plane_automation_email=plane-automation@{{ _dev_zone }}
+          plane_company_name=agent-cloud
+          plane_workspace_slug=agent-cloud
+          plane_workspace_name=agent-cloud
+          plane_authentik_base=https://auth.{{ _dev_zone }}:{{ _edge_https_port }}
+          plane_admin_role=member
+          plane_mcp_public_url=https://plane-mcp.{{ _dev_zone }}:{{ _edge_https_port }}
+          plane_mcp_bind=127.0.0.1
+          plane_mcp_port=8211
+          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
+          local_home_dir=/var/lib/agent-cloud-deploy
+          local_workspace_dir=/workspace/agent-cloud
+
           [honcho_svc]
           honcho-local ansible_host=127.0.0.1 ansible_connection=local
 
@@ -1473,7 +1645,7 @@
           container_engine=podman
           openbao_addr={{ _bao_url_net }}
           local_mode=true
-          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:d1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da
+          skynet_image=ghcr.io/uhstray-io/skynet-tier2@sha256:7eb9fa7b114dc51784745a19ec2a7d03f5254ad7e3cf774694d99f925f62dbe6
           skynet_gateway_url=https://inference.agent-cloud.test
           skynet_model=qwen3.8-flash-next
           skynet_opa_url=https://opa.agent-cloud.test
@@ -1481,6 +1653,16 @@
           # The live project id (_pid, resolved above by name), not a literal.
           skynet_semaphore_project={{ _pid }}
           skynet_semaphore_catalog=local
+          # The launch gate by its local-dev network alias (task 3.6); deploy the gate before skynet.
+          skynet_launch_gate_url=https://launch-gate.local.{{ _dev_zone }}:8443
+          # HTTPS: skynet serves on container 8443, published on loopback 18444 (18443 is the launch gate's).
+          # Local probes reach it by its local-dev alias skynet.local.<dns_zone> on 8443.
+          skynet_tls=true
+          skynet_bind=127.0.0.1
+          skynet_port=18444
+          dns_site=local
+          dns_zone={{ _dev_zone }}
+          internal_leaves={{ _skynet_leaves | string }}
           local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud

@@ -21,9 +21,9 @@ setup() {
   grep -qE '\$\{CADDYFILE' "$f"
 }
 
-@test "caddy: prod defaults are byte-identical (cloudflare image, 80/443, committed Caddyfile)" {
+@test "caddy: prod defaults (registry-qualified cloudflare image, 80/443, committed Caddyfile)" {
   local f="$DEPLOY_DIR/compose.yml"
-  grep -qE '\$\{CADDY_IMAGE:-iarekylew00t/caddy-cloudflare:2\.11\.4-alpine\}' "$f"
+  grep -qE '\$\{CADDY_IMAGE:-docker\.io/iarekylew00t/caddy-cloudflare:2\.11\.4-alpine\}' "$f"
   grep -qE '\$\{CADDY_HTTP_PORT:-80\}:80' "$f"
   grep -qE '\$\{CADDY_HTTPS_PORT:-443\}:443' "$f"
   grep -qE '\$\{CADDYFILE:-\./Caddyfile\}' "$f"
@@ -237,7 +237,7 @@ _render_mcp() {
 @test "caddy: env template prod defaults match the compose defaults" {
   local f="$DEPLOY_DIR/templates/env.j2"
   [ -f "$f" ]
-  grep -qE "caddy_image \| default\('iarekylew00t/caddy-cloudflare:2\.11\.4-alpine'\)" "$f"
+  grep -qE "caddy_image \| default\('docker\.io/iarekylew00t/caddy-cloudflare:2\.11\.4-alpine'\)" "$f"
   grep -qE "caddy_file \| default\('\./Caddyfile'\)" "$f"
 }
 
@@ -270,8 +270,8 @@ PY
 @test "caddy: the OPA site renders as a plain TLS proxy to opa:8181, with no edge gate" {
   # Template pin: a route with no gate flags renders as a plain TLS proxy. It feeds a hand-written route,
   # so it does not guard the inventory; the declared OPA route itself (no forward_auth, no allowlist flag)
-  # is pinned by test_local_dev_inventory.bats. OPA's Phase 1 stays unauthenticated: the site adds server
-  # authentication for callers and nothing else.
+  # is pinned by test_local_dev_inventory.bats. OPA limits itself to decisions and health with its own
+  # authorization policy: the site adds server authentication for callers and nothing else.
   _render_caddy '[{host: opa.agent-cloud.test, upstream: "opa:8181"}]'
   local c="$BATS_TEST_TMPDIR/Caddyfile"
   assert_grep -qF 'opa.agent-cloud.test {' "$c"

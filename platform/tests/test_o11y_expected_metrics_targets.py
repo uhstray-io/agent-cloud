@@ -5,6 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from jinja2 import Environment
@@ -219,6 +220,27 @@ def test_expected_target_coverage_counts_exact_missing_unexpected_and_unhealthy_
     assert (unhealthy["matched_count"], unhealthy["unhealthy_count"]) == (1, 1)
 
 
+def test_expected_target_coverage_keeps_native_source_out_of_prometheus_counts():
+    prometheus = _expected()
+    native = _expected(
+        uid="o11y_missing_alloy", job="alloy", instance="alloy:12345",
+        service="o11y/alloy", source="alloy", target_id="service:o11y",
+    )
+    declaration = {"reviewed": True, "targets": [prometheus, native]}
+    receipt = SURVEY.expected_target_coverage(_target_document([_active(prometheus)]), declaration)
+    assert receipt == {
+        "status": "observed", "reason": "exact_match", "expected_count": 1,
+        "active_target_count": 1, "matched_count": 1, "missing_count": 0,
+        "unexpected_count": 0, "unhealthy_count": 0,
+    }
+
+    native_only = SURVEY.expected_target_coverage(_target_document([]), {
+        "reviewed": True, "targets": [native],
+    })
+    assert native_only["reason"] == "no_expected_targets"
+    assert native_only["expected_count"] == 0
+
+
 def test_expected_target_coverage_refuses_ambiguous_and_untrusted_inputs_without_labels():
     expected = _expected()
     declaration = {"reviewed": True, "targets": [expected]}
@@ -257,6 +279,28 @@ def test_expected_target_declaration_refuses_invalid_duplicates_and_uid_collisio
         SURVEY.validate_expected_target_declaration(
             targets, retired, reviewed=True, other_rule_uids=other_uids
         )
+
+
+def test_expected_target_source_is_private_optional_and_fixed_for_alloy_self():
+    legacy, _ = SURVEY.validate_expected_target_declaration([_expected()])
+    assert legacy == [_expected()]
+
+    native = _expected(
+        job="alloy", instance="alloy:12345", service="o11y/alloy",
+        source="alloy", target_id="service:o11y",
+    )
+    normalized, _ = SURVEY.validate_expected_target_declaration([native])
+    assert normalized == [native]
+
+    for invalid in (
+        {**native, "source": "remote-prometheus"},
+        {**native, "instance": "another:12345"},
+        {**native, "target_id": "service:other"},
+        {**native, "source": "prometheus", "target_id": "service:o11y"},
+        {**native, "source": []},
+    ):
+        with pytest.raises(SURVEY.Refusal, match="invalid_declaration"):
+            SURVEY.validate_expected_target_declaration([invalid])
 
 
 def test_validator_cli_reports_only_fixed_refusal_and_hides_input_values():
@@ -855,6 +899,127 @@ def test_live_expected_target_contract_must_match_validated_previous_ownership(d
         })
 
 
+def _exec_state(document, state):
+    """Set the error state on every generated expected-target rule of a rendered document."""
+    for rule in _service_rules(document):
+        # Active rules only: paused tombstones keep their OK state.
+        if rule["uid"].startswith("o11y_missing_") and rule["isPaused"] is False:
+            rule["execErrState"] = state
+    return document
+
+
+def _alerting_readback(document):
+    """Grafana readback of active rules placed before the KeepLast change: still Alerting."""
+    live = _live_rules(document)
+    for rule in live:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "Alerting"
+    return live
+
+
+def _two_targets():
+    return [_expected(), _expected(uid="o11y_missing_api_backup", instance="api-backup.example.test:9100")]
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_first_deploy_accepts_live_alerting_previous_owners_against_keeplast_render(grouped):
+    # First deploy after the KeepLast change: prod Grafana still holds the Alerting rules
+    # the previous placement wrote, and the new render says KeepLast. The live Alerting
+    # readback is the previous owner's state, so it must not be refused as drift.
+    targets = _two_targets()
+    if grouped:
+        previous = _exec_state(_grouped_render(targets), "Alerting")
+        pending = _grouped_render(targets)
+    else:
+        previous = _exec_state(_render(o11y_expected_metrics_targets=targets), "Alerting")
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_alerting_readback(previous),
+    )
+    # The transition accepted the live Alerting owners: an enabled, prepared result, no refusal.
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_interrupted_first_deploy_recovers_when_live_alerting_and_placed_file_keeplast(grouped):
+    # An interrupted deploy wrote the KeepLast file in Phase 1 and failed before deploy.sh
+    # reloaded Grafana, so the live rules still say Alerting. The rerun must accept that
+    # instead of refusing live_target_drift on every retry.
+    targets = _two_targets()
+    if grouped:
+        previous = _grouped_render(targets)
+        pending = _grouped_render(targets)
+    else:
+        previous = _render(o11y_expected_metrics_targets=targets)
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_alerting_readback(previous),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_interrupted_deploy_recovers_when_live_keeplast_and_placed_file_alerting(grouped):
+    # The reverse order: the placed file still says Alerting while Grafana has already
+    # reloaded KeepLast. The rerun accepts the live rules in either state.
+    targets = _two_targets()
+    if grouped:
+        previous = _exec_state(_grouped_render(targets), "Alerting")
+        pending = _grouped_render(targets)
+    else:
+        previous = _exec_state(_render(o11y_expected_metrics_targets=targets), "Alerting")
+        pending = _render(o11y_expected_metrics_targets=targets)
+    prepared = _transition(
+        previous, pending=pending, enabled=True, targets=targets,
+        mode="grouped" if grouped else "legacy", live=_live_rules(pending),
+    )
+    assert prepared["status"] == "prepared" and prepared["reason"] == "enabled"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_transition_refuses_a_live_error_state_that_no_owner_placed(grouped):
+    # A placement writes only Alerting or KeepLast. Any other live state on an active rule
+    # is still drift, so the relaxed error-state check cannot hide a foreign rule.
+    targets = _two_targets()
+    previous = _grouped_render(targets) if grouped else _render(o11y_expected_metrics_targets=targets)
+    live = _live_rules(previous)
+    for rule in live:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "OK"
+    with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+        _transition(
+            previous, enabled=True, targets=targets, mode="grouped" if grouped else "legacy", live=live,
+        )
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_post_deploy_readback_still_requires_keeplast_on_active_rules(grouped):
+    # After the first deploy the rules are rendered KeepLast; a live Alerting rule at the
+    # active readback is refused, so a placement that never converged cannot pass.
+    targets = _two_targets()
+    document = _grouped_render(targets) if grouped else _render(o11y_expected_metrics_targets=targets)
+    input_document = {
+        "reviewed": True,
+        "mode": "grouped" if grouped else "legacy",
+        "targets": targets,
+        "retired_uids": [],
+        "live_rules": _live_rules(document),
+        "live_folders": [{"uid": "agent-cloud-folder", "title": "agent-cloud"}],
+    }
+    if grouped:
+        # Per-target tombstones render inert beside the group rule and are owned as paused rows.
+        input_document["paused_uids"] = [target["uid"] for target in targets]
+        input_document["tombstones"] = [SURVEY._as_tombstone({"_kind": "target", **target}) for target in targets]
+    assert SURVEY.validate_active_expected_target_rules(input_document)["status"] == "validated"
+    for rule in input_document["live_rules"]:
+        if rule["isPaused"] is False:
+            rule["execErrState"] = "Alerting"
+    with pytest.raises(SURVEY.Refusal, match="live_target_drift"):
+        SURVEY.validate_active_expected_target_rules(input_document)
+
+
 @pytest.mark.parametrize("drift", ["condition", "datasource", "threshold"])
 def test_live_expected_target_preflight_rejects_complete_query_contract_drift(drift):
     previous = _render(o11y_expected_metrics_targets=[_expected()])
@@ -1426,6 +1591,9 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
 
     survey_path = ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml"
     survey = yaml.safe_load(survey_path.read_text())
+    reviewed_paths = survey[1]["vars"]["_reviewed_checkout_payload_paths"]
+    assert "platform/playbooks/files/o11y-coverage-census.py" in reviewed_paths
+    assert "platform/playbooks/filter_plugins/o11y_scrape_budget.py" in reviewed_paths
     receiver = next(
         play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
     )
@@ -1434,11 +1602,331 @@ def test_deploy_preflight_precedes_placement_and_survey_output_is_protected():
         for task in receiver["tasks"]
         if task.get("name") == "Survey expected-target coverage with private input protected"
     )
-    assert task["no_log"] is True
+    assert task["block"][2]["no_log"] is True
     assert task["when"] == "not ansible_check_mode"
+    native_source = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Read current native source evidence privately"
+    )
+    assert native_source["no_log"] is True and native_source["failed_when"] is False
+    assert native_source["ansible.builtin.script"]["cmd"].endswith("--verify-availability-source")
+    assert "O11Y_AVAILABILITY_SOURCE_JSON" in native_source["environment"]
+    assert "delegate_to" not in native_source
+    assert "_expected_target_native_source" in native_source["register"]
+    availability_projection = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Prove the fixed native source when explicitly declared"
+    )
+    assert availability_projection["delegate_to"] == "localhost"
+    for name in ("Require the reviewed native source projection", "Keep the native source projection private"):
+        guarded = next(task for task in receiver["tasks"] if task.get("name") == name)
+        assert "skipped" in guarded["when"]
+    project = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Project the fixed native source evidence privately"
+    )
+    assert "o11y_availability_source_coverage" in project["ansible.builtin.set_fact"]["_expected_target_native_source"]
+    assert "o11y_availability_source_coverage(true)" in project["ansible.builtin.set_fact"][
+        "_expected_target_native_source"
+    ]
     report = next(
         task
         for task in receiver["tasks"]
         if task.get("name") == "Report expected-target coverage without target labels"
     )
     assert "_expected_target_coverage | to_json" in report["ansible.builtin.debug"]["msg"]
+    assert "prometheus_target_coverage" in report["ansible.builtin.debug"]["msg"]
+    assert "native_availability_source" in report["ansible.builtin.debug"]["msg"]
+
+
+def test_expected_target_survey_uses_reviewed_payload_short_argv_and_always_cleanup():
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    task = next(
+        task
+        for task in receiver["tasks"]
+        if task.get("name") == "Survey expected-target coverage with private input protected"
+    )
+    assert task["when"] == "not ansible_check_mode"
+    stage = next(step for step in task["block"] if step.get("name") == "Stage the exact reviewed helper bytes")
+    copy = stage["ansible.builtin.copy"]
+    assert "hostvars['localhost']['_reviewed_checkout_payloads']" in copy["content"]
+    assert "platform/playbooks/files/summarize-o11y-scrape-baseline.py" in copy["content"]
+    assert "b64decode" in copy["content"]
+
+    command = next(
+        step for step in task["block"]
+        if step.get("name") == "Survey expected-target coverage with private input protected"
+    )
+    argv = command["ansible.builtin.command"]["argv"]
+    assert argv[0] == "python3" and argv[-1] == "--expected-target-coverage"
+    assert "_expected_target_helper_workspace.path" in argv[1]
+    assert "-c" not in argv and "lookup('ansible.builtin.file'" not in str(argv)
+    assert "targets" in command["ansible.builtin.command"]["stdin"]
+    assert command["register"] == "_expected_target_coverage_raw"
+    assert command["no_log"] is True
+    assert command["failed_when"] is False
+    assert command["changed_when"] is False
+    assert command["check_mode"] is False
+
+    cleanup = task["always"][0]
+    assert cleanup["ansible.builtin.file"]["path"] == "{{ _expected_target_helper_workspace.path }}"
+    assert cleanup["ansible.builtin.file"]["state"] == "absent"
+    assert cleanup["when"] == "(_expected_target_helper_workspace | default({})).path is defined"
+
+
+def _run_expected_target_survey_fixture(tmp_path, helper_bytes, *, expect_parse_failure):
+    tmp_path.mkdir(parents=True)
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    task = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Survey expected-target coverage with private input protected"
+    )
+    # The real survey uses receiver /tmp. Keep the local Ansible fixture's temp write
+    # inside harness_sandbox's approved test directory.
+    task["block"][0]["ansible.builtin.tempfile"]["path"] = str(tmp_path)
+    parse = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Keep the validated coverage receipt private until projection"
+    )
+    marker = "private-target-marker"
+    declaration = {"reviewed": False, "targets": [_expected(service=marker)]}
+    tasks = [
+        {
+            "name": "Supply only the synthetic reviewed helper payload",
+            "ansible.builtin.set_fact": {
+                "_reviewed_checkout_payloads": {
+                    "platform/playbooks/files/summarize-o11y-scrape-baseline.py": base64.b64encode(
+                        helper_bytes
+                    ).decode("ascii")
+                }
+            },
+            "no_log": True,
+        }
+    ]
+    if expect_parse_failure:
+        tasks.append({
+            "block": [task, parse],
+            "rescue": [
+                {
+                    "name": "Prove helper cleanup after parse failure",
+                    "ansible.builtin.stat": {"path": "{{ _expected_target_helper_workspace.path }}"},
+                    "register": "workspace_after_failure",
+                },
+                {
+                    "name": "Require the parse failure after unconditional cleanup",
+                    "ansible.builtin.assert": {
+                        "that": [
+                            "ansible_failed_task.name.startswith('Keep the validated coverage receipt')",
+                            "not workspace_after_failure.stat.exists",
+                        ],
+                        "fail_msg": "The helper parse failure did not leave a cleaned workspace.",
+                        "quiet": True,
+                    },
+                },
+            ],
+        })
+    else:
+        tasks.extend([
+            task,
+            parse,
+            {
+                "name": "Require the existing fixed receipt contract",
+                "ansible.builtin.assert": {
+                    "that": [
+                        "_expected_target_coverage == expected_receipt",
+                        "_expected_target_coverage.keys() | list | sort == expected_receipt.keys() | list | sort",
+                    ],
+                    "fail_msg": "The survey receipt differs from its existing fixed schema.",
+                    "quiet": True,
+                },
+            },
+            {
+                "name": "Prove helper cleanup after successful projection",
+                "ansible.builtin.stat": {"path": "{{ _expected_target_helper_workspace.path }}"},
+                "register": "workspace_after_success",
+            },
+            {
+                "name": "Require cleanup after success",
+                "ansible.builtin.assert": {
+                    "that": "not workspace_after_success.stat.exists",
+                    "fail_msg": "The helper workspace remains after a successful projection.",
+                    "quiet": True,
+                },
+            },
+        ])
+
+    play = {
+        "name": "Exercise the production expected-target helper transport locally",
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "vars": {
+            "o11y_expected_metrics_targets_reviewed": False,
+            "o11y_expected_metrics_targets": declaration["targets"],
+            "expected_receipt": SURVEY.expected_target_coverage(b"", declaration),
+        },
+        "tasks": tasks,
+    }
+    playbook = tmp_path / "survey-fixture.yml"
+    playbook.write_text(yaml.safe_dump([play]))
+    result = harness_sandbox.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(playbook)],
+        tmp_path,
+        cwd=ROOT,
+        env=harness_sandbox.env_for(tmp_path),
+    )
+    assert marker not in result.stdout + result.stderr
+    return result
+
+
+def test_expected_target_survey_real_ansible_block_preserves_receipt_and_cleans_on_parse_failure(tmp_path):
+    success = _run_expected_target_survey_fixture(tmp_path / "success", HELPER.read_bytes(), expect_parse_failure=False)
+    assert success.returncode == 0, success.stdout + success.stderr
+
+    malformed_json = _run_expected_target_survey_fixture(
+        tmp_path / "malformed-json", b"print('not-json')\n", expect_parse_failure=True,
+    )
+    assert malformed_json.returncode == 0, malformed_json.stdout + malformed_json.stderr
+
+    command_failure = _run_expected_target_survey_fixture(
+        tmp_path / "command-failure", b"syntax error\n", expect_parse_failure=True,
+    )
+    assert command_failure.returncode == 0, command_failure.stdout + command_failure.stderr
+
+
+def test_native_expected_target_survey_preserves_legacy_source_omission_and_skipped_registers():
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    projection = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Prove the fixed native source when explicitly declared"
+    )
+    project = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Project the fixed native source evidence privately"
+    )
+
+    env = Environment()
+    env.filters["bool"] = bool
+    condition = env.compile_expression(projection["when"])
+    common = {
+        "ansible_check_mode": False,
+        "o11y_expected_metrics_targets_reviewed": True,
+    }
+    legacy_self = {"job": "alloy", "instance": "alloy:12345"}
+    assert not condition(**(common | {"o11y_expected_metrics_targets": [legacy_self]}))
+    native_self = legacy_self | {"source": "alloy"}
+    assert condition(**(common | {"o11y_expected_metrics_targets": [native_self]}))
+
+    project_condition = env.compile_expression(project["when"])
+    assert not project_condition(_expected_target_native_source_raw={"skipped": True})
+    assert not project_condition(_expected_target_native_source_raw={"rc": 1, "stdout": ""})
+    assert project_condition(_expected_target_native_source_raw={"rc": 0, "stdout": "{}"})
+
+
+def test_declared_native_readback_failure_makes_final_two_target_report_unavailable(monkeypatch, capsys):
+    prometheus = _expected()
+    native = _expected(
+        uid="o11y_missing_alloy", job="alloy", instance="alloy:12345", service="o11y/alloy",
+        source="alloy", target_id="service:o11y",
+    )
+    declaration = {"reviewed": True, "targets": [prometheus, native]}
+    helper_payload = {
+        "reviewed": True,
+        "targets": declaration["targets"],
+        "availability": {"enabled": False, "targets": [], "limits": {}},
+        "shared_limits": {},
+        "environment": "prod",
+        "cluster": "prod-west",
+        "lower_bound": None,
+        "freshness_seconds": 300,
+        "require_health_targets": False,
+    }
+
+    def fail_receiver_read(*_args, **_kwargs):
+        raise SURVEY.Refusal("native_source_unavailable")
+
+    monkeypatch.setattr(SURVEY, "_run_api", fail_receiver_read)
+    monkeypatch.setattr(SURVEY.sys, "argv", [str(HELPER), "--verify-availability-source"])
+    monkeypatch.setenv("O11Y_AVAILABILITY_SOURCE_JSON", json.dumps(helper_payload))
+    assert SURVEY.main() == 2
+    helper_receipt = json.loads(capsys.readouterr().out)
+    assert helper_receipt == {
+        "status": "unavailable", "reason": "native_source_unavailable", "source": "unknown",
+        "intended_source": "unknown", "matches_intended": False,
+    }
+
+    survey = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-expected-metrics-targets.yml").read_text())
+    receiver = next(
+        play for play in survey if play.get("name") == "Compare the declaration with active Prometheus targets"
+    )
+    tasks = receiver["tasks"]
+    native_projection = next(
+        task for task in tasks if task.get("name") == "Project the fixed native source evidence privately"
+    )
+    failure_projection = next(
+        task for task in tasks
+        if task.get("name") == "Keep required native source failures in the final coverage receipt"
+    )
+    final_report = next(
+        task for task in tasks if task.get("name") == "Report expected-target coverage without target labels"
+    )
+    raw_register = {"rc": 2, "stdout": json.dumps(helper_receipt)}
+    env = Environment()
+    env.filters.update(bool=bool, to_json=json.dumps)
+    assert not env.compile_expression(native_projection["when"])(
+        _expected_target_native_source_raw=raw_register,
+    )
+    failure_condition = env.compile_expression(failure_projection["when"])
+    for failed_register in (raw_register, {"skipped": True}, None):
+        failure_context = {
+            "ansible_check_mode": False,
+            "o11y_expected_metrics_targets_reviewed": True,
+            "o11y_expected_metrics_targets": declaration["targets"],
+        }
+        if failed_register is not None:
+            failure_context["_expected_target_native_source_raw"] = failed_register
+        assert failure_condition(**failure_context)
+    assert not failure_condition(
+        ansible_check_mode=False,
+        o11y_expected_metrics_targets_reviewed=True,
+        o11y_expected_metrics_targets=[prometheus],
+        _expected_target_native_source_raw=raw_register,
+    )
+
+    # The real coverage helper still sees the matching Prometheus row, but the
+    # playbook's final report must carry the separately required native failure.
+    coverage = SURVEY.expected_target_coverage(_target_document([_active(prometheus)]), declaration)
+    assert coverage["status"] == "observed" and coverage["reason"] == "exact_match"
+    assert coverage["expected_count"] == 1
+    report_expr = final_report["ansible.builtin.debug"]["msg"].strip()[2:-2].strip()
+    unavailable = failure_projection["ansible.builtin.set_fact"]["_expected_target_native_source"]
+    report_json = env.compile_expression(report_expr)(
+        _expected_target_coverage=coverage,
+        _expected_target_native_source=unavailable,
+    )
+    report = json.loads(report_json)
+    assert report["overall_status"] == "unavailable"
+    assert report["prometheus_target_coverage"] == coverage
+    assert report["native_availability_source"] == unavailable
+    legacy_report = env.compile_expression(report_expr)(_expected_target_coverage=coverage)
+    assert json.loads(legacy_report) == coverage
+
+    mismatched_prometheus = {
+        "status": "observed", "source": "prometheus", "matches_intended": False,
+        "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+        "body_counter": "not_exposed_by_legacy_prometheus",
+    }
+    mismatch_report = env.compile_expression(report_expr)(
+        _expected_target_coverage=coverage,
+        _expected_target_native_source=mismatched_prometheus,
+    )
+    assert json.loads(mismatch_report)["overall_status"] == "mismatch"

@@ -16,9 +16,9 @@
 **Contributors:** Network architecture review
 
 **References:**
-- [SERVICE-INTEGRATION-PLAN.md](SERVICE-INTEGRATION-PLAN.md) -- Service onboarding checklist
-- [AUTOMATION-COMPOSABILITY.md](AUTOMATION-COMPOSABILITY.md) -- Composable task library and deploy patterns
-- [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) -- Secret generation, storage, rotation
+- [02-service-onboarding.md](02-service-onboarding.md) -- Service onboarding checklist
+- [01-automation-model.md](01-automation-model.md) -- Composable task library and deploy patterns
+- [04-credentials-access.md](04-credentials-access.md) -- Secret generation, storage, rotation
 - `platform/services/caddy/deployment/` -- Templatized Caddyfile and compose stack
 
 ---
@@ -55,15 +55,17 @@ Caddy is classified as **Infrastructure tier** per the SERVICE-INTEGRATION-PLAN.
 
 ```mermaid
 flowchart LR
-    Internet["Internet\n(Browser / API Client)"]
-    CF["CloudFlare DNS\n(DNS-01 TLS Challenge)"]
-    Caddy["Caddy VM\n(TLS Termination)"]
-    SvcA["Service A VM\n(HTTP)"]
-    SvcB["Service B VM\n(HTTP)"]
-    SvcC["Service C VM\n(HTTP)"]
+    Internet["Internet<br/>(Browser / API Client)"]
+    CFP["Cloudflare proxy<br/>(WAF, rate limit)"]
+    CF["CloudFlare DNS<br/>(DNS-01 TLS Challenge)"]
+    Caddy["Caddy VM<br/>(TLS Termination)"]
+    SvcA["Service A VM<br/>(HTTP)"]
+    SvcB["Service B VM<br/>(HTTP)"]
+    SvcC["Service C VM<br/>(HTTP)"]
 
-    Internet -->|"HTTPS :443"| Caddy
-    CF -.->|"DNS-01 challenge\n(certificate issuance)"| Caddy
+    Internet -->|"HTTPS :443"| CFP
+    CFP -->|"to origin"| Caddy
+    CF -.->|"DNS-01 challenge<br/>(certificate issuance)"| Caddy
     Caddy -->|"HTTP :port"| SvcA
     Caddy -->|"HTTP :port"| SvcB
     Caddy -->|"HTTP :port"| SvcC
@@ -71,8 +73,8 @@ flowchart LR
 
 Key properties:
 - **All external traffic enters on port 443.** Port 80 redirects to 443 (Caddy default).
-- **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead.
-- **CloudFlare is DNS-only for most hostnames.** Caddy handles TLS directly with DNS-01 certs. The exceptions are the proxied (orange-cloud) hostnames — the platform records adopted into `platform/infra/cloudflare/dns.tf` and `inference.uhstray.io` — where Cloudflare sits in the request path; see "Cloudflare-proxied hostnames" below for what that decides.
+- **TLS terminates at Caddy.** Backends receive plain HTTP -- no double-encryption overhead. The exception is the agentgateway routes (inference, its operator UI, MCP): Caddy re-encrypts to the gateway with mutual TLS from the internal CA (see "Mutual-TLS Upstream Block" below).
+- **Every platform hostname is proxied by Cloudflare (orange cloud).** All platform records, including the inference hostname (hand-made, adopted into code 2026-09-15), are declared `proxied = true` in `platform/infra/cloudflare/dns.tf`, so Cloudflare sits in the request path for each of them; see "Cloudflare-proxied hostnames" below for what that decides. Caddy still holds its own DNS-01 certificates for the origin. (Corrected 2026-10-27: this line previously said most hostnames were DNS-only.)
 - **Internal services are not internet-exposed.** Only Caddy's ports 80/443 are forwarded through the router.
 
 ---
@@ -452,8 +454,8 @@ declared in site-config, not in this repository.
 - **Certificates follow the names.** Each member's leaf carries its instance name and its
   service name as SANs; the gateway's model `tls.hostname` is the service name. A TLS
   wildcard matches exactly one label (RFC 9525 §6.3), so the one-label local-dev wildcard
-  (`*.agent-cloud.test`, line 201 of this document) does not cover names under a site
-  label.
+  (`*.agent-cloud.test`, the "Internal TLS" row of "TLS strategy" above) does not cover
+  names under a site label.
 
 **Applied example.** agent-cloud is a template to deploy on; which hosts, instances and
 addresses a site has is declared in that site's site-config, never here. The example uses
@@ -702,6 +704,8 @@ Implement Caddy automation in the next onboarding wave (alongside NocoDB and n8n
 
 **Default policy:** All platform services run plain HTTP on the internal network; Caddy terminates TLS. Do not configure HTTPS backends unless the service requires it (e.g., Proxmox's management API).
 
+Plain HTTP backends are permitted only on a host where `apply-firewall.yml`'s default-deny inbound (except Caddy and management SSH) is applied and verified ([PRINCIPLES.md §6](../../PRINCIPLES.md)). As recorded there on 2026-10-27, the firewall is applied on the DNS, internal-CA, o11y and CI-runner hosts but is not yet declared for every service host, and none is recorded for the Caddy host. The agentgateway routes are the exception to plain HTTP and re-encrypt with mutual TLS; see [Mutual-TLS Upstream Block](#mutual-tls-upstream-block).
+
 ### HSTS Policy
 
 All Caddyfile blocks include `Strict-Transport-Security`:
@@ -735,7 +739,7 @@ Evaluate per-service -- some (e.g., collaborative editors, iframe-embedded dashb
 
 ## Caddyfile Management: Public vs Private
 
-The Caddyfile in `agent-cloud/platform/services/caddy/deployment/Caddyfile` is the **public template** -- only `{$VAR}` references, no real domains or IPs.
+The Caddyfile in `platform/services/caddy/deployment/Caddyfile` is the **public template** -- only `{$VAR}` references, no real domains or IPs.
 
 The production Caddyfile with real routing lives in **site-config**, following the public/private repo boundary:
 

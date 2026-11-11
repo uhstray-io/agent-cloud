@@ -30,7 +30,9 @@ deliberation behind them is retained in the Hindsight bank.
    flow that exists is Build #1 (`create-netbox-device.yml`): skynet proposes a JSON
    document, its OPA call gates the logical action, Semaphore executes an idempotent
    playbook that takes the proposal unchanged. That shape works and is the one to
-   generalise; nothing else does.
+   generalise; nothing else does. 2026-10-31: the OPA call in that flow is made by skynet's own
+   client, and Semaphore does not ask OPA. skynet can no longer launch (svc-skynet is `guest`), so
+   this path is stopped until the planned launch gate lands (see the note after the decisions table).
 3. **Existing services drifted.** Twenty-one services have a deploy playbook. Verified gaps
    against the drawn flow: no provisioned VM has `onboot` set (zero hits in
    `provision-vm.yml`), no service sets OTEL exporter variables, Alloy has no OTLP receiver
@@ -59,12 +61,22 @@ deliberation behind them is retained in the Hindsight bank.
 | D10 | **Every existing step is reviewed against explicit criteria** before it is trusted in the graph; the registry records the review date | Trust existing playbooks as-is | An executor that "works" with no stated pass condition cannot report a failure |
 | D11 | **Agents read deployment state.** Every node receives the run's prior step results and the registry entries for its current and next steps; read tools are NetBox custom fields and Semaphore `check_task` | Stateless nodes | The reasoning steps must know what already happened to this service |
 
+> **2026-10-31 note on D3 and D9.** The decisions above are kept as recorded on 2026-09-22. It is not yet
+> true that OPA gates Semaphore launches. skynet's own client asks OPA before each launch; Semaphore does
+> not ask OPA. Because Semaphore v2.19.11 merges a launcher's task environment over the template's,
+> unfiltered (upstream `services/tasks/TaskRunner.go:395-425`), any `task_runner` can inject extra
+> variables, including templated ones. svc-skynet was demoted to `guest` on 2026-10-31, so skynet can no
+> longer launch. The server-side gate that will ask OPA before every agent launch is planned in OpenSpec
+> change `skynet-launch-containment` (`plan/development/openspec/changes/skynet-launch-containment/`) and
+> is not built. Read each statement in this document that OPA gates a launch as the target state until
+> that gate lands.
+
 ## Design Principles
 
 1. **AI proposes, OPA validates, Semaphore executes** (`PRINCIPLES.md` §4;
    `plan/architecture/01-automation-model.md` §8). No agent runs a command on a host, edits
    a file, or calls a service API directly. Every action is a named Semaphore template
-   launched after an OPA decision.
+   launched after an OPA decision. 2026-10-31: target state; see the note after the decisions table.
 2. **Snapshot in, proposal out.** Each reasoning step is a pure function from one
    read-only JSON snapshot to one schema-validated proposal. That is what makes it
    testable, replayable, and auditable.
@@ -123,12 +135,16 @@ flowchart LR
     G -->|read| NB
 ```
 
+2026-10-31: the OPA-to-Semaphore edge in this diagram is the target state. Today skynet's own client
+asks OPA, and Semaphore does not; see the note after the decisions table.
+
 ### The reasoning-step rule (D3 + D9)
 
 A validated proposal is one of two things:
 
 - **A runtime action.** "Run template *T* with arguments *A*." Executes immediately when
-  OPA allows `{agent, service, action: run_task, template_name: T}`.
+  OPA allows `{agent, service, action: run_task, template_name: T}`. 2026-10-31: target state; no launch
+  of this kind happens today (see the note after the decisions table).
 - **A finding that declared state must change.** A VM spec, a firewall variable, an
   Authentik blueprint, a service env template. The workflow records the finding with the
   proposed diff, marks the step `fail: change-required`, and the change goes through the
@@ -146,6 +162,10 @@ Twenty-three steps: the eighteen first drawn plus five added (marked **added**):
 are in the drawing since 2026-10-24 (workflow task 10.2). Owner is
 the OPA identity that may launch the step. "Executor" names the Semaphore-run playbook;
 status is verified against the tree on 2026-09-22.
+
+2026-10-31 note: the owner is the identity skynet asks OPA about before a launch. Semaphore does not
+check it, and skynet can no longer launch (svc-skynet is `guest`), so the owner column binds only once
+the planned launch gate lands (OpenSpec change `skynet-launch-containment`).
 
 | # | Step | Owner | Executor | Status | Criteria (pass condition) |
 |---|---|---|---|---|---|
@@ -432,7 +452,7 @@ regenerated from the updated drawing.
 
 ## Security Considerations
 
-- **No model touches a host.** Every action is a Semaphore template after an OPA decision; snapshot templates are read-only and their output carries no secret values (only names and presence, the `check-secrets.yml` convention).
+- **No model touches a host.** Every action is a Semaphore template after an OPA decision (2026-10-31: target state, see the note after the decisions table); snapshot templates are read-only and their output carries no secret values (only names and presence, the `check-secrets.yml` convention).
 - **Least privilege per role.** `allowed_templates` bounds each identity to its steps; the destructive gate is unchanged; `netclaw`/`nemoclaw` are frozen, not deleted, so existing catalog history stays auditable.
 - **Blast radius of a wrong proposal** is bounded to what the named template can do, which is already reviewed code. A `change-required` finding never applies itself.
 - **Collector credentials:** Semaphore API token, NetBox automation token and Loki push are read from OpenBao under the controller AppRole with `no_log` on the credential tasks only.
@@ -471,3 +491,4 @@ regenerated from the updated drawing.
 |---|---|
 | 2026-09-22 | Initial design, approved in session; decisions D1-D11 recorded |
 | 2026-09-22 | Step results via `set_stats` instead of a `debug` marker line; OpenSpec change `service-deployment-workflow` carries implementation |
+| 2026-10-31 | Dated notes added where the text reads as if OPA gates Semaphore launches (Problem 2, the D3 and D9 note, Design Principle 1, the reasoning-step rule, the Owner column, the architecture diagram, Security Considerations). Decisions unchanged; the planned gate is OpenSpec change `skynet-launch-containment` |

@@ -263,8 +263,9 @@ PY
 
 @test "inventory example and bootstrap INI: OPA is served over HTTPS by a plain Caddy proxy, no edge gate" {
   # Skynet trusts OPA's allow, so the decision API is reached over HTTPS (server-verified via
-  # step-ca) rather than plain http on the shared network. Phase 1 OPA stays unauthenticated, so
-  # the route must carry no forward_auth, allowlist flag or other edge gate.
+  # step-ca) rather than plain http on the shared network. OPA limits itself to decisions and health
+  # with its own authorization policy, so the route must carry no forward_auth, allowlist flag or
+  # other edge gate.
   grep -qE 'host: "opa\.agent-cloud\.test", upstream: "opa:8181" \}' "$INVENTORY"
   run grep -E 'opa\.agent-cloud\.test' "$INVENTORY"
   [ "$status" -eq 0 ]

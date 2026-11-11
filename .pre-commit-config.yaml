@@ -1,6 +1,6 @@
 ---
 # Pre-commit hooks for agent-cloud
-# Install: pip install pre-commit && pre-commit install
+# Install: uv tool install pre-commit && pre-commit install
 # Manual run: pre-commit run --all-files
 # Update hooks: pre-commit autoupdate
 
@@ -204,6 +204,27 @@ repos:
         pass_filenames: false
         stages: [pre-commit]
 
+  # Ledger citations (docs/MISTAKES.md 5.2): the citation test (8.2) runs when the ledger or
+  # its citation ratchet is staged. The pre-push hook is the only other place it runs, and
+  # SKIP_TESTS=1 bypasses that whole hook, so a ledger edit once committed a dead citation
+  # (2026-11-04). It runs inside Gate 1 (.githooks/pre-commit), so SKIP_SECRET_SCAN=1 skips it
+  # too. The test takes about 0.4s, so it can gate the commit itself. Like the pre-push run, it
+  # skips with a message when pytest is not importable for python3 (a missing tool skips;
+  # CLAUDE.md "Test check on push"). A real test failure blocks the commit. One of CI's Python
+  # shards runs the same file.
+  - repo: local
+    hooks:
+      - id: ledger-citations
+        name: ledger citations resolve (docs/MISTAKES.md 5.2)
+        language: system
+        entry: >-
+          sh -c 'python3 -c "import pytest" 2>/dev/null || { echo "ledger-citations: pytest is not installed for python3; skipped (CI still runs it)"; exit 0; };
+          exec python3 -m pytest -q -p no:cacheprovider platform/tests/test_ledger_test_citations.py'
+        files: ^(docs/MISTAKES\.md|platform/tests/ledger_citation_ratchet\.txt)$
+        pass_filenames: false
+        verbose: true
+        stages: [pre-commit]
+
   # Standard pre-commit hooks for general hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
@@ -229,14 +250,16 @@ repos:
         # tag (podman-compose 1.6.0 honours it; it DROPS a base port publish locally).
         # A strict constructor rejects the tag, so that ONE file is excluded here and
         # syntax-checked by the --unsafe hook below instead of going unchecked.
+        # Plane's compose.agentcloud.yml uses the same tag on every overlay it replaces
+        # (volumes, the proxy's ports), so it gets the same treatment.
         exclude: >-
-          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/|platform/services/agentgateway/deployment/compose\.local\.yml)
+          (netbox-docker/|platform/services/.*/deployment/templates/|platform/services/authentik/deployment/blueprints/|platform/services/agentgateway/deployment/compose\.local\.yml|platform/services/plane/deployment/compose\.(agentcloud|local-ca)\.yml)
       - id: check-yaml
         name: check yaml (syntax only, compose overlays with merge tags)
         # --unsafe parses for syntax without constructing, so compose-spec tags
         # (!override, !reset) are accepted while malformed YAML still fails.
         args: [--unsafe]
-        files: ^platform/services/agentgateway/deployment/compose\.local\.yml$
+        files: ^platform/services/(agentgateway/deployment/compose\.local|plane/deployment/compose\.(agentcloud|local-ca))\.yml$
       - id: check-added-large-files
         args: [--maxkb=500]
         # The codebase-memory graph artifact is a deliberately-committed

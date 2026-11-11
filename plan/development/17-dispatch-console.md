@@ -1,0 +1,420 @@
+# 17 — Dispatch Console (agent-cloud administration UI)
+
+**Date:** 2026-10-20
+**Status:** PROPOSED
+**Author:** Joseph A. Wisneski IV
+**Context:** agent-cloud has authorities for every concern (Authentik, OpenBao, OPA,
+Semaphore, skynet, Proxmox, NetBox, agentgateway, GitHub Actions, the o11y stack) but no single
+place to see a tenant's estate, the work running against it and who or what is doing that work,
+or to ask for a change and watch it go through the guardrails. Plan 15 (decision D4) already
+names a **standalone dashboard service** as the long-term outcome of the service deployment
+workflow. This plan builds it. The design was settled in a session on 2026-10-20: three layout
+prototypes were compared, the **Dispatch** (work-first) layout was chosen, and it was refined
+through review comments. The product brief, design system and prototype are saved in
+[`plan/product/dispatch-console/`](../product/dispatch-console/). The UI principles are
+[`plan/architecture/09-console-ui-principles.md`](../architecture/09-console-ui-principles.md).
+
+> **Depends on:** 02 (SSO / Authentik OIDC), 03 (guardrails: one authority per concern),
+> 05 (observability), 06 (skynet), 12 (RBAC user provisioning), 15 (workflow agents, step
+> registry, conformance collector). **Reference design:** `plan/product/dispatch-console/prototype/dispatch.html`.
+
+---
+
+## Problem
+
+1. **No single pane.** Operators move between Semaphore, NetBox, Grafana, Authentik, OpenBao,
+   Proxmox and GitHub to answer "what is wrong, who is fixing it, and what is next".
+2. **No visible work.** skynet roles and Semaphore templates run work, but nothing shows a
+   work item end to end: request → plan → OPA decision → approval → Semaphore receipts →
+   verification.
+3. **No safe request path for non-operators.** Tenant admins have no way to ask for a change
+   that is guaranteed to pass through OPA and run as a reviewed template.
+4. **Scope is implicit.** Nothing makes the tenant, org, site, environment or group being
+   acted on explicit and consistent across tools.
+
+## Decisions (D1–D10 settled 2026-10-20; D11–D15 settled 2026-10-25; D16–D21 settled 2026-10-26)
+
+| # | Decision | Alternatives rejected | Why |
+|---|---|---|---|
+| D1 | **Dispatch layout**: the home screen is the work (lanes of strips), with a details panel; Ask's request dashboard and Atlas's scope tree are folded in | Ask (request-first home), Atlas (map-first home) | Operators manage active work; the board answers "what is happening" fastest |
+| D2 | **All Rust.** A client-side WASM SPA plus a Rust API service (backend-for-frontend) | Server-rendered + HTMX; a JS frontend | Operator's requirement; the API service keeps every authority credential server-side |
+| D3 | **API-first.** The console API is specified (OpenAPI) before UI code; the SPA is one client of it | UI-driven endpoints | Agents and scripts can use the same API; contracts are reviewable |
+| D4 | **The console never writes declared state.** Every mutation becomes a proposal that skynet plans, OPA decides and Semaphore executes, or a PR (plan 15 D3, D9) | Direct API writes to authorities | The platform rule: AI proposes, guardrails validate, automation executes |
+| D5 | **Tenant above Organization.** Tenant is chosen only in the sidebar; Org / Site / Env in the scope bar | Tenant = Org (the PRINCIPLES.md wording before Phase 0) | Operator's call; PRINCIPLES.md must be amended (Phase 0) |
+| D6 | **Per-asset telemetry lives in Grafana.** The console draws tenant / org / site / cluster rollups only and deep-links to Grafana for any single service, node, host or VM | Embedding panels | Grafana is the telemetry authority; duplicating panels drifts |
+| D7 | **skynet roles** are `infra-agent`, `security-agent`, `service-agent`, `o11y-agent` (plan 15 D7); `net-agent` is planned; NetClaw and NemoClaw are not used | Showing legacy agents | Matches the OPA identities and the step registry |
+| D8 | **Authentik OIDC for login; RBAC from Authentik groups**, enforced in the API, never only in the UI | Console-local users | PRINCIPLES.md identity model; plan 12 |
+| D9 | **Read models come from the authorities**: work from skynet and Semaphore; step status from NetBox custom fields written by Collect Service Conformance; inventory from NetBox and Proxmox; rollups from Prometheus and Loki | A console-owned database of record | One authority per concern (plan 03); the console caches, it does not own. The single exception is each user's own UI preferences (profile), which no other authority holds |
+| D10 | **The prototype is the visual reference, not code to port.** Tokens and components carry over; JavaScript does not | Porting the prototype | The prototype's data and logic are illustrative |
+| D11 | **Dioxus 0.7.10 fullstack.** The WASM client and the Rust axum server build from one crate and ship as one binary (see the Architecture note). D2 still holds: all Rust, and the server keeps every authority credential | Separate SPA and API services, the packaging D2 first described. No other framework is recorded as a candidate | Decided by Joseph on 2026-10-25 (O1). No O1 spike result is recorded in this document |
+| D12 | **Code home: `platform/services/console/` in this repository.** The Cargo crate is in `app/` and the deployment in `deployment/` | A new repository (the O2 alternative) | Decided by Joseph on 2026-10-25 (O2). The deployment lives in this repo either way, and AGENTS.md sets one codebase, no forks |
+| D13 | **The image is built on the host at deploy time.** `deploy.sh` builds it with the container engine. A CI build pushed to GHCR with a digest pin is deferred to Phase 7 | A CI build pushed to GHCR with a digest pin, now (deferred, not rejected) | The Phase 1 contract has no registry. The NetBox deploy calls `build_netbox_image` (`platform/services/netbox/deployment/deploy.sh:128`, defined at `platform/services/netbox/deployment/lib/common.sh:446`) |
+| D14 | **Preferences in SQLite** through `rusqlite` (bundled), in `/data/prefs.db` on the `console-data` named volume, one row per subject | None recorded | Decided by Joseph on 2026-10-25. The console stores only the profile preferences, the one exception in D9 |
+| D15 | **Phase 1 tenants and scope tree come from the inventory declaration.** The `console_tenants` variable renders to `scope.json`, and example data is labelled as example. Live NetBox and Proxmox reads wait for Phase 3 | Reading NetBox or Proxmox in Phase 1 (deferred to Phase 3, not rejected) | Decided by Joseph on 2026-10-25. The real tenant values stay in site-config |
+| D16 | **The tenant is the hard isolation boundary.** Organizations inside a tenant share it; nothing crosses from one tenant to another | The organization as the boundary (the PRINCIPLES.md wording before Phase 0) | Decided by Joseph on 2026-10-26; PRINCIPLES.md amended to match |
+| D17 | **Phase 2 work source = Semaphore tasks, joined to the workflow registry.** A task launched by skynet carries the message `skynet <workflow_id> <step_id>` (skynet repository, `src/skynet/orchestrator/service_onboarding.py:285`), which gives the run id and the step id. The owning role is the registry step's `owner` (`platform/workflows/service-onboarding/registry.yml`, `steps[].id`, `order` and `owner`). Skynet is not read in Phase 2 | Reading skynet in Phase 2: it has no list route, no read-only credential and no timestamps (skynet repository, `src/skynet/server.py:199-247`). A console-owned work store (rejected in D9) | Semaphore is the executor and holds every task. A skynet read API is proposed to the skynet repository (O3), not assumed |
+| D18 | **Phase 2 live updates = polling.** The server polls Semaphore every 10 s into an in-memory cache; the client re-fetches `/v1/work` every 10 s and pauses while the tab is hidden. Closes O4 | Server-sent events now, the O4 default. Deferred: Phase 2 has no push source (contract, D18), so an event stream would sit on top of the same poll. WebSocket, named in O4, with no reason recorded for rejecting it | SSE returns once a push source exists. Until then the poll meets the Phase 2 acceptance line |
+| D19 | **`/v1/work*` answers only callers in group `platform-admins`** (403 `{"error":"forbidden"}` for anyone else). Phase 2 is admin-only until Phase 3 | Showing Semaphore work to tenant members. Semaphore tasks are platform-wide and carry no tenant, so a tenant member would see work across the hard boundary (D16). Per-tenant work arrives in Phase 3, when tasks map to inventory | The tenant boundary (D16) and API-enforced RBAC from Authentik groups (D8). The group is declared in `platform/services/authentik/deployment/blueprints/platform-groups.yaml:18` |
+| D20 | **The console's Semaphore credential is a dedicated user, `svc-console`, at project role `guest`** (read-only). Its token is stored at `secret/services/console:semaphore_api_token` (with `semaphore_password`). Never the controller token at `secret/services/semaphore` | The controller token, and any project role that can launch tasks. Launch rights are runner rights (`platform/semaphore/README.md:72`). Guest is read-only: upstream Semaphore v2.19.11 `db/ProjectUser.go` gives guest no write permissions, and `api/projects/project.go:97` lets project members read through GET (contract citations; the upstream files are not in this repository and were not re-read in this session) | Least privilege: the console reads and never launches. The controller credential stays with the executor |
+| D21 | **The console in production runs on its own VM** (host group `console_svc`). Production steps are in "Production site-config checklist" below | None recorded | Decided by Joseph on 2026-10-26 |
+| D22 | **Phase 3 reads NetBox and Proxmox, read-only.**<br>• **NetBox** gives sites, clusters, devices, VMs, prefixes, IP addresses, tags and the workflow custom fields (`ac_workflow_status`, `ac_failed_steps`, `ac_last_run`). It uses a view-only profile, `console`, in `provision-netbox-automation-token.yml` `_profiles`, plus the closed survey list, stored as `secret/services/netbox:console_api_token`.<br>• **Proxmox** gives live node and VM state from `/api2/json/cluster/resources`. It uses `PVEAuditor`, granted to both the user `console@pve` and its privilege-separated token. The token is minted by `provision-console-proxmox-token.yml` with the existing Proxmox admin credential (`secret/services/proxmox`). Its check mode proves that credential's rights to create users and set ACLs with a read-only `GET /access/permissions` before any write. The playbook never rotates, and refuses a token that exists in Proxmox but is not stored unless a replace flag is set.<br>• **Proxmox TLS** is verified against the cluster CA. The CA is a public certificate declared in inventory (`console_proxmox_ca_pem`) and mounted as `CONSOLE_PROXMOX_CA_FILE`. Verification is never disabled. Without it, the console verifies against the bundled web PKI roots, so a self-signed cluster fails closed with a source error. Verification is never disabled. The minting playbook refuses to run without the CA.<br>• **Transport:** the clients refuse a cleartext URL unless the host is loopback or RFC1918, the rule `assert-bao-transport.yml` applies.<br>• **Reachability:** the console VM's path to NetBox, Proxmox and OpenBao is proven by a probe from `console_svc` before the sources are enabled. Missing allow rules are added in site-config (`firewall_allow_rules` on those hosts) | A console copy of the inventory. The automation tokens, which can write. `validate_certs: false` | Plan 17: nothing is drawn from a console store. Each authority is read with the smallest credential, owned where its siblings live |
+| D23 | **Scope sites map to NetBox by declaration.** A `console_tenants` site may declare `netbox_site` (a NetBox site slug). The console joins NetBox site → clusters (the discovery worker sets each cluster's site) → VMs. It attaches Proxmox live state by VM name **only when that name is unique** both across all mapped NetBox VMs and in Proxmox. Otherwise the VM shows no live state rather than another guest's. Every NetBox row returned is checked against the filter that requested it (site slug, cluster site, VM cluster), and a mismatch is dropped. A slug may appear in only one site across all tenants; `deploy-console.yml` asserts this before rendering. A site without `netbox_site` shows "not mapped". The production checklist gains the `netbox_site` keys | Guessing by name | Config as code. A shared slug would show one tenant's hosts to another (D16) |
+| D24 | **Network topology from NetBox; data flows from declarations.** Network topology reads prefixes from NetBox in v1, paginated, with each prefix's site taken from its own scope. Addresses and interfaces are out of scope for v1. Data flows are rendered at deploy into `config/flows.json`, as names only (no addresses or ports), from other groups' declarations:<br>• OIDC edges from the effective `authentik_apps` (the catalog default when unset).<br>• Edge routes from the site hostnames in `caddy_managed_sites` (a Caddyfile string). Routes still maintained by hand are absent until adopted.<br>• Metrics edges from the job and service names of the o11y expected targets.<br>This extends D9's authority list with inventory declarations, as D15 did for the scope file | Flows typed into the console | The declarations are the source of truth for these edges and are already config as code |
+| D25 | **Tenant-scoped reads only where the data has a tenant.** `/v1/tenants/{t}/inventory` and `/services` read only the tenant's mapped sites (D23) and answer the tenant's members (the Phase 1 rule; `platform-admins` see every tenant). Platform-wide data has no tenant attribute, so it answers `platform-admins` only, as D19 does for Work, until a tenant mapping exists. That covers flows, the network view (NetBox prefixes and addresses mostly carry no site), Secrets, Access, Telemetry rollups, CI/CD and the AI Gateway. "Service" means a NetBox VM carrying the workflow custom fields | Tenant-scoping platform-wide data | D16, the hard tenant boundary. Review of the plan, 2026-10-29 |
+| D26 | **Telemetry rollups go through the Grafana API.** The console uses a Viewer service-account token, `secret/services/o11y:console_grafana_token`, provisioned as code like `provision-o11y-mcp-grafana-token.yml`. It goes through the Prometheus data-source proxy on the public URL, which the existing WAF rule admits for token-bearing `/api/` requests. Every per-asset view links to Grafana with dashboard UIDs | Opening Prometheus to the console VM | Prometheus binds loopback on the o11y host, and its firewall admits only Caddy to Grafana. Grafana's API is the governed read path |
+| D27 | **The console reads short-lived credentials from OpenBao at run time with its own AppRole.**<br>• **Policy:** `read` on `secret/data/services/console/*`, plus `list` and `read` on `secret/metadata/*` (precedent `nemoclaw-read.hcl`). Never a data read beyond its own paths.<br>• **Tokens:** an unrenewed token dies after 30 minutes (`token_ttl`), any token after 2 hours (`token_max_ttl`) or 25 uses (`manage-approle.yml` defaults), so the console logs in again on demand. The 90-day secret ID is rotated by a scheduled playbook, which re-mints it and redeploys the console.<br>• **GitHub:** a Semaphore schedule refreshes a GitHub App installation token into `secret/services/console/github:token` every 45 minutes. The token is **downscoped** at mint time: `platform/lib/github_app_token.py` gains a `permissions` request body (contents, checks, actions, pull requests, metadata; all read). Even an App with write grants then yields a read-only token | The `jsonwebtoken` crate (operator chose the refresh playbook, 2026-10-29). Writing the token into `.env`. An undownscoped token | A token that lives one hour cannot sit in a file read once at start, and a web-facing service must never hold write credentials |
+| D28 | **Phase 5 pages read their authorities; changes wait for Phase 4.** The shared credentials (the console AppRole, the Grafana token and the GitHub refresh) are created **before** Phase 5. Each page reads with its own credential:<br>• **Access:** Authentik users and groups, via a view-only Authentik token declared by blueprint.<br>• **Secrets:** OpenBao metadata only (D27).<br>• **Policy:** policy files through the GitHub API.<br>• **LLM access and AI Gateway:** `agw_clients` rendered at deploy, plus usage through D26.<br>• **Organization settings:** business-domain tags as NetBox tags (O5, decided 2026-10-29). NetBox tags are global, so these are platform-wide labels.<br>• **Request a service:** the service catalog rendered at deploy.<br>Every change control creates a proposal. Until the Phase 4 path exists, the controls are disabled and say why | Direct writes from the pages | Plan 17 "No direct writes" |
+| D29 | **Phase 4 waits for OPA and skynet in production.** When this was decided (2026-10-29) neither was deployed there (no `opa_svc` or `skynet_svc` group in site-config). Both are now; Phase 4's remaining dependency is the launch gate (D41). Each is its own piece of work, with operator handoffs written 2026-10-29: `opa-production.md` and `skynet-production.md`, kept outside the repository. The console's proposal path is built when both land and the launch gate is deployed (D41) | An interim console → OPA → Semaphore path | Operator's call, 2026-10-29 |
+| D30 | **Every phase is validated three ways:**<br>1. On local-dev through the Semaphore template.<br>2. In production through the (Dev) templates.<br>3. With computer-use browser tests against the public URL in the operator's signed-in Brave session (operator's choice, 2026-10-29). **Amended 2026-11-07 (operator's call):** Orca's built-in browser, signed in through Authentik, is an accepted session for these tests too, as the operator asked on 2026-10-29 for login and UI checks.<br>Phase 7 writes the operator's own test plan to `plan/product/dispatch-console/TEST-PLAN.md` | LAN probes as proof of "live" | `docs/MISTAKES.md` 1.21 occurrence 3 |
+| D31 | **Credential rotation redeploys the commit the console already runs.**<br>• `Rotate Console Credentials (Dev)` (`platform/semaphore/templates.yml`, cron `0 7 1 * *`) pins the console VM's HEAD commit as `_console_pinned_branch` (`platform/playbooks/rotate-console-credentials.yml`). `platform/playbooks/deploy-console.yml:56-58` reads that pin before `service_branch`.<br>• Before any mint, the controller's committed HEAD must match the pin on the console's deploy inputs: `platform/services/console/deployment`, `platform/playbooks/deploy-console.yml`, `platform/playbooks/tasks/manage-secrets.yml`, `platform/workflows/service-onboarding/registry.yml`, `platform/services/authentik/deployment/app-catalog.yml` and `platform/playbooks/vars/access-role-map.yml` (the Access page's role map, 8.2b). A difference, or a pinned commit missing from the checkout, refuses the run before anything is minted. The check reads committed HEAD, not uncommitted edits (a known limit, stated in the playbook header).<br>• Create, verify, retire: a new `secret_id` is written under a version compare-and-swap. The stored value must be the one minted in this run and must log in, and the proof token is revoked. Only then is the replaced `secret_id` destroyed. | Redeploying the branch head: it ships code during a credential rotation. A survey-chosen branch: a schedule cannot answer a survey, and the default `main` is refused from a Dev checkout. | A rotation must not change code. The pin keeps the redeploy identical to the running commit. The template's `service_branch` field has no effect. It is declared only because `platform/tests/test_placement_branch_guard.py` requires it. |
+| D32 | **The Grafana Viewer token is minted through the Grafana API, with a 90-day lifetime.**<br>• `provision-console-grafana-token.yml` creates or reuses the `console` service account at role `Viewer`, through the admin API inside the `o11y-grafana` container. The admin password comes from that container's `GF_SECURITY_ADMIN_PASSWORD` and reaches curl on stdin, never argv.<br>• A new token has `secondsToLive` 7776000 (90 days). Before it is stored, it must authenticate as `service-account:<id>` through `/api/user`. It is stored at `secret/services/o11y:console_grafana_token`, with its id at `console_grafana_token_id`.<br>• A stored token is reused while more than 30 days remain. Superseded tokens are not deleted; each expires on its own.<br>• `console_grafana_url` is a non-secret deep-link base. The token is read and rendered only when `console_grafana_api_enabled` is true and `console_grafana_url` is set (`platform/playbooks/deploy-console.yml:87-93`, `platform/services/console/deployment/templates/env.j2:87-89`).<br>• Amends D26: the token is minted through the API, not staged by hand as `provision-o11y-mcp-grafana-token.yml` does. | A token minted by hand in the Grafana UI and staged as a candidate, the pattern of `provision-o11y-mcp-grafana-token.yml`: it is a manual step. A token with no expiry. | The renewal runs monthly inside the rotation (D31), so no person handles the token. A finite lifetime bounds the exposure if a token leaks. The token follows the PRINCIPLES.md target that every credential is limited in time (`PRINCIPLES.md:169-170`). It is limited in time, not in uses. |
+| D33 | **The Proxmox cluster CA is read through a connection pinned to the API leaf certificate.**<br>• `read-proxmox-root-ca.yml` reads `pve-root-ca.pem` from each online node's `certificates/info`. It is read-only. Its one survey value is `proxmox_leaf_sha256`.<br>• The first run has no pin. It observes the leaf SHA-256, prints it and stops before any token use. The operator confirms the digest from an independent vantage with `openssl s_client`, as the playbook header gives it.<br>• Every token-bearing request goes through `platform/lib/pve_pinned_get.py`. The helper compares the pin on the same TLS connection before it writes any request byte, and reads the token from stdin only. A mismatch exits 3 and sends nothing.<br>• The run stops unless at least one online node returns `pve-root-ca.pem`, every node that returns it returns the same copy, and that CA is a public, self-signed certificate. Every listing of the pinned leaf must name the root CA as issuer (a name comparison, not a signature check). The same check applies to each serving node's `pve-ssl.pem`.<br>• The operator's confirmation is the root of trust (trust on first use). First production pin: task 10449 (2026-10-30), cross-checked against every reachable node. | `validate_certs: false`, which sends the admin token over unverified TLS. | The pin is checked before the token is used, not after. The CA the console verifies against is compared by name with the issuers the cluster serves. |
+| D34 | **The console's GitHub token comes from its own read-only GitHub App.**<br>• The App is to be created and installed on `agent-cloud` only, with read-only permissions for contents, checks, actions, pull requests and metadata. It is not yet created as of 2026-11-02; until it is, the 45-minute refresh fails by name. Its key and client id are to be seeded at `secret/services/github` (`console_app_key`, `console_app_client_id`), where `platform/playbooks/refresh-console-github-token.yml` reads them.<br>• `Refresh Console GitHub Token (Dev)` (`platform/semaphore/templates.yml`, every 45 minutes) mints the installation token with `platform/lib/github_app_token.py --permissions` and `--repository`. The helper exits 6 when GitHub grants anything wider than requested. It writes nothing to stdout. The refused keys and repository names go to stderr, inside a no_log task, and the store is not written.<br>• The token is written to `secret/services/console/github`, field `token`, beside `refreshed_at`. | The tududi-sync App, whose permissions were issues read and write on the mapped repositories (its contract was deleted 2026-11-07). The runner App, which has an administration token (`platform/playbooks/grant-github-runner-app-repository.yml:90`). An installation token without downscoping. | The grant is narrowed at mint time and checked against the response, so a write grant held by the App cannot reach this token. A separate App keeps the console's grant apart from the other consumers. |
+| D35 | **The Secrets page shows what OpenBao metadata holds, nothing more.** Path, current version, versions kept, created and last-changed time (rotation age). A background refresh walks `secret/metadata/` every 10 minutes (bounded: depth 6, 1000 paths, 1500 requests), so a page load costs no OpenBao request. | Field names and counts (need a data read, which D27 forbids). A "read by" column (needs the policy files parsed at deploy; deferred). Reading per page load (the AppRole token allows 25 uses) | Metadata is all the console AppRole may read; the page must not imply more |
+| D36 | **The Policy page lists the policy files from GitHub, nothing it cannot read.** A background refresh every 15 minutes reads the console's installation token from `secret/services/console/github` (8.0b) and lists, on `console_github_ref` (default `dev`, the branch production deploys from until promotion): OPA's Rego policies, tests and data under `platform/services/opa/deployment/policies/`, and OpenBao's HCL policies under `platform/services/openbao/deployment/config/policies/`. Each file shows its kind, its Rego package or policy name, its last commit (date, short SHA, subject) and a link to the file on GitHub. Propose a change is disabled until Phase 4 | Decision and deny counts (OPA's own API refuses data reads, `system/authz.rego`, and no decision log is collected). Reading per page load | The page shows what the authority holds; a count with no source would be invented |
+| D37 | **Business-domain tags are NetBox tags whose slug starts with `domain-`.** They are declared in site-config inventory (`netbox_business_domains`, names) and created idempotently by `Ensure NetBox Business Domains`, as `Ensure NetBox Prefix` creates prefixes. The console reads them from NetBox: the Services tiles count a service's domain tags, and Organization settings lists the domains with their service counts. Tenant settings shows the tenant's structure (organizations, sites, mapped NetBox sites), not domains, since NetBox tags are global (D28, O5) | A fixed list in the UI (the Phase 3 stopgap, `services.rs` `DOMAIN_TAGS`). Tags identified by a description marker (not visible in NetBox's tag list). Domain tags on the Tenant page | One declaration, one store, and the console reads the store |
+| D38 | **The service catalog is derived at deploy, not hand-kept.** `deploy-console.yml` renders `config/catalog.json` from `platform/semaphore/templates.yml`: each template named `Deploy <name>` whose playbook is `deploy-<service>.yml` (28 on 2026-11-04, all following the pattern), except `Deploy All Services`, one entry per service (the template without ` (Dev)` wins), with the host count of the group the service's own deploy playbook targets (its first play's literal `*_svc` hosts, e.g. Orb Agent → `netbox_svc`), else `<service>_svc` with hyphens as underscores (`step_ca_svc`; 0 means not deployed here). `templates.yml` is deliberately not a D31 pinned input: it changes many times a week, and pinning it would make the monthly rotation refuse until the secret_id expires; the catalog is names and counts, not code. Request a service lists the catalog; the Request control is disabled until Phase 4 | A separate catalog file (drifts from the templates that actually deploy). Reading Semaphore live (the console's Semaphore account is a guest; templates.yml is the declaration) | The templates are the platform's real menu of deployable services |
+| D39 | **Gateway usage is read through Grafana's Prometheus data-source proxy, and labelled as approximate.** The console queries `/api/datasources/proxy/uid/prometheus/api/v1/query` on `console_grafana_url` (the WAF admits token-bearing `/api/` on the o11y host) with `sum by (identity) (increase(agentgateway_gen_ai_client_token_usage_sum{job="agentgateway"}[1h]))`, every 5 minutes, with the D32 Viewer token. LLM access shows each client's tokens in the last hour beside its budget. Verified 2026-11-04 against production Grafana (6 identities answered) | Calling Prometheus directly (bound to loopback on the o11y host). Showing it as the enforced figure (the gateway charges a rolling budget in its own Postgres; the metric is an observation of the same traffic) | The governed read path, honest about what it measures |
+| D40 | **A role page lists only that role's work.** The roles are the owners in the service-onboarding registry (`infra-agent`, `service-agent`, `security-agent`, `o11y-agent`, `network-agent`). `/roles/<role>` shows the Active Work items whose step owner is that role, and the role's gateway client (from `/v1/gateway`, matched by name) with its budget and usage. The Agent roles nav lists the registry's owners | Role from step-name heuristics (the prototype's `roleFor`). A separate role catalogue | The registry already declares who owns each step |
+| D41 | **Phase 4 now waits for the launch gate in production (amends D29).** OPA and skynet are deployed in production:<br>• **OPA:** its own VM, HTTPS on 8281 with the internal-CA server leaf `opa-server`, reached by the name in site-config's `skynet_opa_url` (no production DNS record, so a caller maps the name to the address, as skynet's deploy does). The host firewall admits 8281 only from `console_svc` and `skynet_svc`. No token: `--authorization=basic` admits only `POST /v1/data/agentcloud/decision` without query parameters and `GET /health`; every other request is 401. Policy runs as a read-only bundle, at dev `03ea6c6f` (Deploy OPA (Dev), Semaphore task 11933); Verify Service Health passes (task 12048). Record: `plan/development/03-guardrails-governance.md`, "Production deployment".<br>• **skynet:** deployed 2026-10-30 (Deploy skynet (Dev), tasks 10687 and 10711; redeployed at `7f671690`, task 11156, whose verify gets an OPA decision through skynet's own client). Its Semaphore identity is `guest` and cannot launch.<br>• **What remains:** every agent-initiated launch, the console's included, goes through the launch gate (OpenSpec change `skynet-launch-containment`), the only launch-capable identity. Its code, playbooks, templates and certificate renewal are on `dev`; it is not yet deployed anywhere. The console gets its own caller token and agent set there in Phase 4. | Building the console's proposal path straight to Semaphore now that OPA and skynet are up: any launch right is runner access, which is why skynet was demoted | `skynet-launch-containment` proposal ("The Dispatch Console's proposal flow (plan 17, Phase 4) needs the same path") |
+| D42 | **The CI/CD page reads delivery state from GitHub with the console's read-only token, through the REST client the Policy page uses.** `GET /v1/delivery` (platform admins only, D25) reads a cache that a background task refreshes every 15 minutes, reading the token from `secret/services/console/github` on each run (8.0b). One refresh reads, on `console_github_repo`:<br>1. **Required checks:** `.github/rulesets/protect-main.json` at `console_github_ref`, the `context` names of its `required_status_checks` rule.<br>2. **Promotion path:** `compare/main...<ref>` (commits the ref is ahead of and behind `main`) and the open pull request from the ref into `main`, if any.<br>3. **Open pull requests** into the ref and into `main`, at most 30 each, with each one's check runs on its head commit and its reviews. The review state is the latest review of each reviewer other than the author, ignoring comment-only reviews: any changes request wins, then any approval, else none. A pull request into `main` shows each required check by name as passed, failed, pending, skipped or missing.<br>Re-run is shown disabled until Phase 4 | A GraphQL query (a second request style beside the REST client). The rulesets API (needs Administration read, which the console's GitHub App does not hold, 8.0b) | One client, one token, the permissions the App already has |
+| D43 | **Telemetry rolls up by the o11y labels as they are: environment, then Prometheus cluster label, then service (operator's choice, 2026-11-08).** `GET /v1/telemetry/rollups` (platform admins only, D25) reads a cache refreshed every 5 minutes through Grafana with the Viewer token (D26, D32). One refresh sends two reads: `up` through the Prometheus data-source proxy (targets answering and total per environment, cluster and service), and Grafana's alert instances at `/api/prometheus/grafana/api/v1/alerts` (an instance whose state starts with `Alerting`, or is `firing`, is firing, and one starting with `Pending` is pending; any other instance adds nothing; the Viewer role holds `fixed:alerting:reader`). A series or alert missing one of the three labels is grouped under `(none)`. Each service row links to the `service-overview` dashboard; the console draws no chart (D6). A failed read keeps the last good rollup and says so | A declared map from Prometheus cluster labels to console sites and clusters. Prometheus `ALERTS` | Production Prometheus scrapes no fleet VM yet and its cluster labels (`agent-cloud-prod`, `dgx-spark`) name no NetBox cluster, so a site rollup would be empty or invented. The o11y alerts are Grafana-managed, so `ALERTS` is empty |
+| D44 | **Keyboard access covers what exists now; the composer's keyboard path moves to Phase 4 (operator's call, 2026-11-08).** Task 10.1 is met by:<br>1. a skip link to the page's `main`, the first stop on every page;<br>2. the Work board and its details, where hiding the details returns focus to the rail's Details button and the rail count shows its word;<br>3. the read-only stepper;<br>4. topology selection, where Enter or Space replaces the selection and Shift+Enter or Shift+Space adds or removes a row, and a polite live region says how many are selected;<br>5. the tenant menu, where opening it moves focus to the selected tenant, the arrow keys move, and Escape closes it and returns to the switch.<br>Every disabled change control shows its reason as visible text tied to it with `aria-describedby`, not only in a tooltip. The composer does not exist until Phase 4, so its keyboard path is a Phase 4 task | Leaving 10.1 open until Phase 4 | A tooltip on a disabled button is unreachable by keyboard; the composer cannot be tested before it is built |
+| D45 | **Every page handles the same read states the same way.** A 401 from any console read ends the session, including Active Work, the role-page cards and the work details, which today show a sentence and stay signed in. A failed tenant list says so on every tenant page, instead of asking the operator to pick a tenant. An unknown data-flow state says it is unknown, not that no flows are declared. Every retry sentence takes its seconds from the poll interval constant, never a literal | Leaving per-page wording as built | A 401 that does not sign out leaves a stale session on screen; a literal retry time drifts when the interval changes |
+| D46 | **The API load test runs in-process, against the real router and caches, with no new dependency.** An ignored test (`cargo test --features server -- --ignored load_`) serves the router on a local port with an admin session and sends concurrent GETs to the `/v1` read routes for a fixed time (16 of the 18; the two detail routes need an item key the empty caches cannot supply). It asserts no 5xx and no transport error, and it prints the request count and the p50, p95 and p99 latencies, which task 10.3 records | A load tool (k6, wrk) or a run against production | No dependency to add; the reads under test are cache reads, so upstream load is not what is measured; production is not loaded for a test |
+| D47 | **The status row is proven by rendering, not by data alone.** Tests render each status component with `dioxus::ssr::render_element` and assert that every state's output carries the icon (`<svg`) and the state's word. The `ssr` module is already compiled with the console's `server` feature, because Dioxus's own `server` feature includes `ssr` (`dioxus-0.7.10/Cargo.toml`), so no dependency or feature changes | Data-level tests only | The validation row asks for a component test |
+| D48 | **Phase 4 starts with structured proposals, not the natural-language composer (operator's call, 2026-11-08).** A proposal is a named template, the role that runs it, literal survey values and a note, stored by the console. skynet cannot plan without executing today: it has no plan-only run, no approve or resume route and no questions route (skynet `src/skynet/server.py`). So the composer, "Ask about current work" and skynet-planned requests wait for those skynet features, which are skynet repository work. The first slice covers the two actions OPA allows without an assessment proposal: **Assess resource** (`Snapshot Service Assessment`, registry step `service-assess`) and **Verify health** (`Verify Service Health`, step `service-validate`). **Request a service stays disabled**: its step `service-deploy` acts on a `service-assess` proposal with a `converge` verdict (`agent_actions.rego`, "proposal required"), which only skynet's assessment produces. A console-made verdict would bypass OPA's content rules | Building every change control now; waiting for skynet before shipping anything | The console must not invent the proposal OPA judges a deploy by; read-only actions prove the whole path first |
+| D49 | **The console launches through the launch gate as its own caller, acting as the five existing roles (operator's call, 2026-11-08).** `launch_gate_callers.console` lists infra-, security-, o11y-, service- and network-agent, and the gate's deploy generates `secret/services/launch-gate:caller_console_token`, which the console's deploy shared-reads. Each proposal names the role that owns its registry step (`service-agent` for both first-slice actions). The gate tags the task `console <proposal id> <step>`, and the Work board reads that tag as launcher `console` and links the item to its proposal. In production the console needs the step-ca trust bundle and name mappings for the gate and OPA, as skynet has (`compose.prod.yml`) | A new `console-operator` identity in OPA's catalog | No new policy surface; OPA keeps judging by role, template, step and branch |
+| D50 | **Proposals live in the console's SQLite database on `console-data`, beside the preferences.** A proposal holds its kind, template, role, registry step, service, survey values, check-mode flag, note, proposer, timestamps, the OPA preview, the decision (approver or denier, note, time, self-approved flag), the launched task id or the launch error, and comments. States: `awaiting` → `denied`, or `awaiting` → `launched` or `launch_failed`. Routes, platform admins only (D25): `GET /v1/proposals?state=`, `POST /v1/proposals`, `GET /v1/proposals/{id}`, `PUT /v1/proposals/{id}` (edit values while awaiting; the preview runs again), `POST /v1/proposals/{id}/comments`, `POST /v1/proposals/{id}/approve`, `POST /v1/proposals/{id}/deny` | Proposals as Semaphore tasks waiting for confirmation; a separate service | Nothing may run before approval, and a Semaphore task would already exist |
+| D51 | **The gate decides twice: a decision-only route when a proposal is made or edited, and the launch at approval. The console never calls OPA itself.** The gate gains `POST /v1/decide`: the same caller token and body as `/v1/launch`, every check up to and including OPA (allowlist, declared survey fields and defaults, the branch pin, the check-mode version rule), and it answers `{allowed, reason}` (or the refusal) without creating a task. The console stores that preview. A proposal OPA denies shows the reason and cannot be approved; editing it asks again. At approval `/v1/launch` decides again and is authoritative; a refusal records `launch_failed` with its code and OPA's reason. OPA returns a reason sentence, not a rule identifier (`agent_actions.rego`, the decision object), so the acceptance line "an OPA deny is shown with its rule" is met by showing OPA's reason | A console-side OPA client (it would re-implement the gate's survey defaults and branch pin, and drift); trusting the preview alone | One OPA caller and one input builder, so the preview cannot disagree with the launch; the console needs no OPA URL, name mapping or firewall rule |
+| D52 | **Platform admins approve or deny. The proposer may approve their own proposal, and it is recorded as self-approved on the proposal and its work item (operator's call, 2026-11-08).** Approval launches through the gate immediately, in check mode when the proposal asked for it. A denial needs no note but can carry one. Pause, resume and retry of running tasks are not in the first slice: the gate has no stop or retry route | Two-person approval | One admin can work alone; self-approval stays visible in review |
+| D53 | **Every state-changing console route checks its origin, an approval is one atomic transition, and the template variant comes from inventory.** A POST, PUT or DELETE under `/v1/` (proposals and `PUT /v1/me` alike) is refused 403 unless its `Origin` header equals the console's configured base URL and its body is `application/json`; the session cookie stays `SameSite=Lax`, which other `uhstray.io` subdomains would pass. Approve and deny move a proposal out of `awaiting` with one `UPDATE … WHERE id = ? AND state = 'awaiting'`; only the request that changed the row launches, so two admins approving at once launch once. When `console_launch_dev_variants` is true (inventory, default true, rendered as `CONSOLE_LAUNCH_DEV_VARIANTS`) the console launches each template's ` (Dev)` variant, because production runs the (Dev) variants until promotion and OPA denies an unreviewed step such as `service-assess` from `main` | Relying on SameSite alone; a lock in memory; hard-coding the variant | Plan 17 Security Considerations require CSRF protection; a restart must not reopen a double launch; the flag is turned off in inventory at promotion |
+
+### Open decisions (owner: Joseph A. Wisneski IV)
+
+| # | Question | How it gets decided |
+|---|---|---|
+| O3 | skynet read API (list runs, read-only token) — proposal to the skynet repo | Agree with the skynet repository (the plan-15 graph already holds the state) |
+| O5 | Where business-domain tags are stored | **Decided 2026-10-29: NetBox tags** (D28) |
+| O6 | The real developer agents and workflows on the development gateway | Operator to list; prototype entries are examples |
+
+## Design Principles
+
+Detailed in [`plan/architecture/09-console-ui-principles.md`](../architecture/09-console-ui-principles.md).
+In short: through the platform, never around it; work-first; scope explicit and single-sourced;
+status is shape + label + color; every red explains itself and offers the next action; plain
+words in, evidence out; plans are vertical and owned; fine-grained telemetry in Grafana; secret
+names, never values; fewest steps; planned and example are labelled.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U["Operator / tenant admin<br/>(browser)"] --> SPA["Dispatch Console SPA<br/>Rust → WASM"]
+    SPA -->|"OIDC login"| AK["Authentik"]
+    SPA -->|"JSON API, polled (D18)<br/>(OpenAPI contract)"| API["Console API<br/>Rust service (BFF)"]
+    API -->|"token introspection, groups"| AK
+    subgraph READ["Read (cached, never owned)"]
+        NB["NetBox<br/>inventory · IPAM · step status"]
+        PX["Proxmox API<br/>nodes · VMs · capacity"]
+        PR["Prometheus / Loki<br/>rollups only"]
+        GH["GitHub<br/>reviews · checks"]
+        BAO["OpenBao<br/>paths + metadata only"]
+    end
+    subgraph WRITE["Change path (proposals only)"]
+        SK["skynet<br/>roles plan + answer"]
+        OPA["OPA<br/>/v1/data/agentcloud/decision"]
+        SEM["Semaphore<br/>named templates"]
+    end
+    API --> READ
+    API -->|"proposal"| SK
+    SK --> OPA
+    OPA -->|"allow"| SEM
+    SEM -->|"receipts"| API
+    API -.->|"deep links"| GF["Grafana"]
+```
+
+> **Packaging (D11).** The SPA and the console API are not two services. Both build from one
+> Rust crate and ship as one Dioxus fullstack binary, and the image copies the client bundle beside
+> the server binary. The API routes stay plain JSON under `/v1`, so the routes in the API surface
+> table below are still HTTP routes any client can call. The diagram shows the logical split
+> between the browser client and the API.
+
+### Bounded contexts
+
+| Context | Authority | Console reads | Console proposes |
+|---|---|---|---|
+| Work | skynet, Semaphore | Work items, steps, owning role, receipts, logs | New work, approve, pause/resume, retry |
+| Scope & inventory | NetBox, Proxmox | Tenant → org → site → cluster → host, services, placement, network segments | Assess resource, verify health |
+| Identity & access | Authentik | People, groups, scoped roles; the signed-in user's OIDC claims (locked on the profile) | Add user, role change (blueprint deploy) |
+| Profile & preferences | Console API (preferences store) | Display name, avatar, pronouns, timezone, theme, notifications, default scope | — (the user's own preferences; the one thing the console stores itself) |
+| Tenant & org settings | site-config inventory, Authentik, NetBox tags | Tenant defaults, organizations, sites, approvers, business-domain tags | Settings change (proposal → PR) |
+| Service catalog | Semaphore templates, service inventory | Approved services and their deploy templates | Service request (approved → deploy template; new → onboarding review) |
+| Secrets | OpenBao | Paths, field counts, rotation age, readers | Rotation (Semaphore template) |
+| Policy | OPA (Rego in Git) | Packages, decisions, denies | Policy change (plan → PR → deploy) |
+| AI gateway | agentgateway | Groups, clients, budgets, models | Key request (inventory change + `Deploy agentgateway`) |
+| Delivery | GitHub | PRs, reviews, required checks, promotion stage | Re-run (where permitted) |
+| Telemetry | Prometheus, Loki, Grafana | Rollups by tenant / org / site / cluster | — (Grafana links) |
+
+### API surface (draft; finalised in the Phase 1 OpenAPI document)
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/v1/tenants` · `/v1/tenants/{t}/tree` | Tenants the caller may see; scope tree with rollups |
+| GET | `/v1/work` | Work from Semaphore with lane, owning role, run and step (Phase 2: `platform-admins` only, D19; scope filters arrive with Phase 3 inventory) |
+| GET | `/v1/work/{key}` | Detail: plan steps, OPA decision, receipts, log tail |
+| POST | `/v1/proposals` | Natural-language or structured request → skynet plan (returns the plan, nothing runs) |
+| POST | `/v1/work/{key}/approve` · `/pause` · `/resume` · `/retry` | Lifecycle actions; each is re-checked by OPA |
+| POST | `/v1/questions` | "Ask about current work" → skynet answer with cited work items |
+| GET | `/v1/resources/{kind}/{id}` | Site / cluster / node / service panel data |
+| POST | `/v1/assessments` · `/v1/verifications` | Read-only assess (rightsizing) / verify health plans |
+| GET | `/v1/telemetry/rollups?level=…` | Rollups; per-asset requests return a Grafana link instead |
+| GET | `/v1/access` · `/v1/secrets` · `/v1/policies` · `/v1/gateway` · `/v1/delivery` | Governance and delivery read models |
+| GET | `/v1/proposals?state=awaiting` · POST `/v1/proposals/{key}/comments` · PUT `/v1/proposals/{key}/plan` · POST `/approve` · `/deny` | Proposal queue: review, comment, edit plan (OPA re-checks), decide |
+| GET · PUT | `/v1/me` | The caller's profile: OIDC claims read-only, preferences writable |
+| GET | `/v1/tenants/{t}/settings` · `/v1/orgs/{o}/settings` | Settings read models; changes go through `POST /v1/proposals` |
+| GET | `/v1/catalog` · POST `/v1/service-requests` | Approved services; request one into a scope, or a new one for onboarding |
+| GET | `/v1/events` | Server-sent events for work and status changes. Deferred (D18) until a push source exists |
+
+## Implementation Phases
+
+### Phase 0 — Decide and amend
+
+- Amend PRINCIPLES.md (identity: Tenant above Organization). Made in the Phase 0 commit.
+- O1 and O2 decided on 2026-10-25 (D11 and D12). No O1 spike result is recorded in this document.
+- Write the OpenSpec change `add-dispatch-console` (`plan/development/openspec/changes/add-dispatch-console/`), carrying this plan.
+
+**Acceptance:** PRINCIPLES.md amendment merged; O1 and O2 recorded in this document's revision
+history; OpenSpec change validates (`openspec validate --all --store agent-cloud`).
+
+### Phase 1 — Skeleton, login and deployment path
+
+- Console API with health, OIDC session (Authentik client; secret owned under
+  `secret/services/authentik`, shared-read per the AGENTS.md pattern), tenant list and scope tree.
+- SPA shell: sidebar (tenant switcher, nav, agent roles, admin settings entries, account →
+  profile), scope bar, empty states, tokens from `DESIGN.md`.
+- Profile page: OIDC claims locked, preferences stored by the console API.
+- Onboard as a service per `plan/architecture/02-service-onboarding.md`: `deploy-console.yml`
+  using `place-monorepo.yml` → `manage-secrets.yml` → `deploy.sh` → verify; `manage-approle.yml`
+  for its own scoped AppRole; route through `Manage Caddy Sites`; Semaphore template in
+  `platform/semaphore/templates.yml`.
+
+**Acceptance:** login through Authentik on local-dev; the Semaphore template deploys and the
+verify step passes; an unauthenticated request to the API answers 401.
+
+### Phase 2 — Work (read-only)
+
+- Work source: Semaphore tasks, the executor, joined to the workflow registry (D17). A task
+  launched by skynet is recognised by its `skynet <workflow_id> <step_id>` message, and its
+  owning role is the registry step's `owner`. Skynet is not read in Phase 2.
+- Live updates by polling (D18): the server polls Semaphore every 10 s into an in-memory cache,
+  and the client re-fetches `/v1/work` every 10 s, pausing while the tab is hidden. No SSE.
+- Admin only (D19): `/v1/work*` answers callers in `platform-admins` alone, until Phase 3. Any
+  other signed-in caller gets a 403, and the console shows an empty state that explains why.
+- Semaphore reads use the read-only `svc-console` user at project role `guest` (D20).
+- Work lanes (queued, running, awaiting, blocked, failed, done; done collapsed by default) of
+  strips showing title, role chip, status label and age. Filters for role, lane and text
+  (service or template). A red badge on Active Work counts blocked and failed items.
+- Scope banner "N running", labelled tenant-wide in Phase 2. Details panel with the vertical
+  stepper for skynet runs, minimizable to a summary rail. Every item links its Semaphore receipt.
+
+**Acceptance:** live work from Semaphore appears within one 10 s poll; skynet-launched items show
+run, step and owning role; every item links its Semaphore receipt.
+
+### Phase 3 — Scope and inventory (read-only)
+
+- Compute topology (click / shift-click selection), network topology, data flows, resource
+  panel, service detail, Compute levels, Services table, business-domain tiles.
+
+**Acceptance:** every host, VM and service shown exists in NetBox or Proxmox. Flows come only from inventory declarations (D24). Nothing is drawn from a console store. Platform-wide views answer `platform-admins` only (D25).
+
+### Phase 4 — Proposals
+
+- Work, Topology and Services composers, "Ask about current work" answers from skynet, new
+  requests, the Dashboard proposal queue (review, comment, edit plan, approve, deny), Assess
+  resource, Verify health, approve / pause / resume / retry, all OPA-gated.
+
+**Acceptance:** a request produces a plan with no side effects until approval; an OPA deny is
+shown with its rule; an approved plan runs only named Semaphore templates.
+
+> **2026-11-03 note on Phase 4.** OPA and skynet are now in production; Phase 4 waits on the launch gate
+> being deployed (D41; first numbered D36, renumbered because the console code and task 8.4 cite D36 for the Policy decision). The 2026-10-31 note below is kept as written.
+>
+> **2026-10-31 note on Phase 4.** Phase 4 is not built and waits on OPA and skynet in production (D29).
+> "All OPA-gated" above is the Phase 4 requirement, not current behaviour. Today skynet's own client asks
+> OPA before its launches, Semaphore does not ask OPA, and skynet can no longer launch (svc-skynet is
+> `guest`). A console-initiated launch will go through the planned launch gate (OpenSpec change
+> `skynet-launch-containment`), which reserves a caller slot for the console with no agent identities
+> until Phase 4.
+
+### Phase 5 — Governance pages
+
+- Access (scoped roles, add user via blueprint), Secrets (metadata only, rotation), Policy
+  (propose → PR → deploy), LLM access (scopes → agents keys, admin access requests), AI
+  Gateway (production and development groups, role pages), Tenant and Organization settings
+  (proposals; business-domain tags), Request a service (catalog and onboarding).
+
+**Acceptance:** no secret value is ever returned by the API (tested); every change creates a
+work item; role pages list only that role's work.
+
+### Phase 6 — Delivery and telemetry
+
+- CI/CD delivery context (reviews, required checks, promotion path), Telemetry rollups, Grafana
+  deep links everywhere a per-asset chart would otherwise appear.
+
+**Acceptance:** required-check names match `.github/rulesets/protect-main.json`; no per-asset
+chart renders in the console.
+
+### Phase 7 — Harden and promote
+
+- Accessibility audit, error and permission-denied states, load test of the API (and of server-sent events, if D18 has been revisited by then), `dev`
+  validation, then promotion to production through the branch workflow.
+
+**Acceptance:** the validation table below passes on `dev`; promotion PR merged.
+
+> **2026-11-08 note on Phase 7.** The validation table's "Proposals" row and the composer in its "Accessibility" row are Phase 4 features. They are proven with Phase 4, so the promotion in 10.5 waits for Phase 4 too (D44).
+
+### Production site-config checklist
+
+The console runs in production on its own VM (D21). This checklist lists what must exist before the
+first production deploy, in the order it is needed. It names variables, playbooks and templates
+only. No address, token or tenant value belongs in this document: real values stay in the private
+site-config repository. A step marked **[TARGET]** is not built yet.
+
+1. **VM declaration.** Declare the console VM in `site-config/proxmox/vm-specs.yml`, the file that
+   `resize-vm.yml` reads its desired state from (`platform/tests/test_resize_vm.bats:32-35`).
+2. **Address reservation.** Reserve the static address with `netbox-allocate-ip.yml` run with
+   `-e reserve=true` and the explicit address. Reservation never picks the next free address
+   (`AGENTS.md`, Independent Workflows table).
+3. **Provision.** Run `provision-vm.yml`. Pass `-e target_host=` when the group declares more than
+   one host (`AGENTS.md`, Independent Workflows table).
+4. **Per-service SSH key.** Run `generate-service-ssh-key.yml` with `site_config_dir` pointing at a
+   clone, so the pair also reaches site-config (`AGENTS.md`, step 8 of Adding a New Service).
+5. **Distribute, verify, harden.** Run `distribute-ssh-keys.yml`, then `verify-host-access.yml`, then
+   `harden-ssh.yml`. Hardening follows a passing key-only verify, never the reverse.
+6. **Inventory group `console_svc`.** One host in this group, with the host vars `service_name`,
+   `monorepo_deploy_path`, `container_engine`, `console_bind`, `console_port`, `console_base_url`,
+   `console_oidc_issuer` and `console_tenants`. The consumers are `platform/playbooks/deploy-console.yml`
+   (`hosts: console_svc`; it renders `config/scope.json` from the `scope.json.j2` entry in
+   `_env_templates`) and the templates under `platform/services/console/deployment/templates/`
+   (`env.j2`, `scope.json.j2`). The Semaphore connection variables `console_semaphore_api_url`,
+   `console_semaphore_ui_url` and `console_semaphore_project` are **required** host vars on this
+   host too. `deploy-console.yml` refuses a production run that lacks any of them, or that still
+   carries an `agent-cloud.test` value, before it writes anything. `provision-console-semaphore-access.yml`
+   reads `console_semaphore_project` from this host.
+7. **Authentik.** Set the production host vars `console_redirect_uri` and `console_launch_url`.
+   Add `console` to `authentik_apps`; `deploy-authentik.yml:223` uses that list when it is defined.
+   The catalog entry is `platform/services/authentik/deployment/app-catalog.yml:112-113`
+   (`prod_required` and `verify_redirect`). The promotion guard in `deploy-authentik.yml:234-270`
+   refuses a value that still resolves to an `agent-cloud.test` default or to an unresolved template.
+   The blueprint is `platform/services/authentik/deployment/blueprints/console-oidc.yaml`.
+8. **Caddy route.** Add the console hostname block to `caddy_managed_sites` in site-config and run
+   `Manage Caddy Sites` (`platform/playbooks/manage-caddy-sites.yml:24`). If a hand-maintained block
+   already serves that hostname, retire it through `caddy_retire_sites` in the same run, because
+   Caddy rejects a hostname defined twice (`AGENTS.md`, Caddy routes are readable).
+9. **Semaphore project team.** An inventory sync, then three steps, in this order:
+   Before step a, sync the inventory that declares `console_svc` (item 6) into Semaphore
+   (`platform/semaphore/sync-inventory.yml`): the provisioning play reads `console_semaphore_project`
+   from that host and refuses a production run when it cannot.
+   a. Run **Provision Console Semaphore Access** first. Its template is `Provision Console Semaphore Access`
+      in `platform/semaphore/templates.yml`, and it runs `platform/playbooks/provision-console-semaphore-access.yml`.
+      It places the `svc-console` user and its token (D20). It must come before the declaration:
+      `Manage Semaphore Access` refuses a declared team member that has no Semaphore account
+      (`platform/playbooks/filter_plugins/semaphore_access.py:87`), and it removes a live project member
+      that is not declared (`platform/playbooks/filter_plugins/semaphore_access.py:89-90`).
+   b. Declare `svc-console` at role `guest` in `semaphore_project_members` (top-level `all.vars` in
+      site-config), then sync the inventory into Semaphore (`platform/semaphore/sync-inventory.yml`).
+   c. Run **Manage Semaphore Access** (`platform/playbooks/manage-semaphore-access.yml:15`;
+      `platform/semaphore/README.md:77`).
+10. Run **Deploy Authentik** and **Manage Caddy Sites**, then the three steps of item 9, then **Deploy
+    console** (the template in `platform/semaphore/templates.yml`, the one that deploys
+    `platform/playbooks/deploy-console.yml`), then **Apply Cloudflare Tofu** (`tofu_action=plan`, then
+    `apply`) so the `console` record declared in `platform/infra/cloudflare/dns.tf` exists before the
+    public hostname is checked. Until the promotion, apply only through the `(Dev)` template: `main` and
+    `dev` share one OpenTofu state, so a `main`-bound apply would plan to delete the `console` record.
+
+    Until the `dev` to `main` promotion lands, the console steps run their **(Dev)** twins in production.
+    `Provision Console Semaphore Access`, `Manage Semaphore Access`, `Manage Caddy Sites` and `Deploy console`
+    each carry `dev_variant: true` in `platform/semaphore/templates.yml`, so the `(Dev)` copy is bound to the
+    `agent-cloud dev` record (`platform/semaphore/templates.yml:16-20`).
+
+- **Phase 3 keys** (D22–D23), per `console_tenants` site where NetBox models it: `netbox_site` (slug, unique across tenants). On `console_svc`: `console_netbox_url`, `console_proxmox_url` and `console_proxmox_ca_pem` (the cluster CA, a public certificate). Firewall allow rules on the NetBox, Proxmox and OpenBao hosts for the console VM, if the reachability probe (task 6.3) needs them.
+
+## Requirements traceability
+
+The 22 requirements from the 2026-10-20 brief, mapped to where the design meets them.
+
+| # | Requirement | Where | Phase |
+|---|---|---|---|
+| 1 | Entirely Rust | D2 | 0–1 |
+| 2 | Visualise tenant → org → site | Sidebar tenant, scope bar, hierarchy, compute and network topology | 1, 3 |
+| 3 | Queue work per tenant / org / site / cluster / host | "+" on every hierarchy row, map selection, composers | 3–4 |
+| 4 | Queue work per service | Service detail, Services table | 3–4 |
+| 5 | Track current work and which agent | Work lanes, owning role on every step, Agent roles pages | 2, 5 |
+| 6 | Red / amber / green status | Status vocabulary (`DESIGN.md`), badges, rollups | 1–3 |
+| 7 | Modern UI and icons | `DESIGN.md` | 1 |
+| 8 | Fewest steps | One-row forms, chips, scope carry-over, one-click verify / fix | all |
+| 9 | API-first, DDD, agile-compatible | D3, bounded contexts, work keys and iteration | 1–2 |
+| 10 | Drill into agent → tasks → workflows | Vertical stepper in the details panel | 2 |
+| 11 | Users at tenant / org / site / env; map RBAC | Access page, role map | 5 |
+| 12 | Live telemetry from o11y | Rollups + Grafana deep links (D6) | 6 |
+| 13 | Natural-language requests | Work and Topology composers | 4 |
+| 14 | Relationships, integrations, data flows | Data flows map (API, OIDC, MCP, logs, metrics, traces), network topology | 3 |
+| 15 | Authentik OIDC and RBAC | D8 | 1 |
+| 16 | Semaphore | Change path; receipts | 2, 4 |
+| 17 | OpenBao | Secrets page (metadata only) | 5 |
+| 18 | OPA | Policy page, decisions on every plan | 4–5 |
+| 19 | Proxmox | Compute levels, topology, resource panel | 3 |
+| 20 | agentgateway | AI Gateway and LLM access pages | 5 |
+| 21 | skynet | Plans, roles, answers | 2, 4 |
+| 22 | GitHub Actions | CI/CD delivery context | 6 |
+
+## Validation Criteria
+
+| Check | Pass condition |
+|---|---|
+| Login | Authentik OIDC login works; API rejects unauthenticated calls with 401 |
+| RBAC | A Developer cannot approve; a tenant admin sees only their tenant (API-enforced tests) |
+| No direct writes | Code search and tests show no authority write call outside the proposal path |
+| Secrets | No API response contains a secret value (test fixture with a canary value) |
+| Proposals | Every mutation produces a work item with an OPA decision before any Semaphore task |
+| Telemetry | No per-asset chart in the SPA; every per-asset view links to Grafana |
+| Status | Every status rendering has an icon and a label (component test) |
+| Accessibility | Keyboard-only path through Work, composer, stepper and topology selection |
+| Deployment | `deploy-console.yml` via Semaphore converges on re-run (idempotent) |
+
+## Security Considerations
+
+- **Credential custody:** only the Console API holds authority credentials, through its own
+  AppRole scoped to the paths it needs (`manage-approle.yml`). The SPA holds only its session.
+- **Secrets:** OpenBao is read for metadata (paths, versions, rotation age; D35). Values
+  are never requested.
+- **Authorisation:** every request is authorised server-side from Authentik groups; OPA decides
+  every proposal; the UI hiding a control is never the control.
+- **Blast radius:** the console cannot run a command, write a host or change declared state;
+  the worst case of a compromised console session is a proposal that OPA and an approver must
+  still pass.
+- **Exposure:** served behind Caddy with TLS; API and SPA on one origin; CSRF protection on
+  state-changing requests; any future event stream is authenticated like every other route.
+- **Audit:** every proposal, approval and lifecycle action is a work item with its requester,
+  decision and receipts.
+
+## Cross-references
+
+- [`plan/architecture/09-console-ui-principles.md`](../architecture/09-console-ui-principles.md): UI design principles
+- [`plan/product/dispatch-console/`](../product/dispatch-console/): brief, design system, prototype
+- [15 — Service Deployment Workflow & Agents](15-service-deployment-workflow-agents.md): roles (D7), dashboard service (D4), collector
+- [12 — RBAC user provisioning](12-rbac-user-provisioning.md) · [02 — SSO](02-sso-auth.md) · [03 — Guardrails](03-guardrails-governance.md) · [06 — skynet](06-inference-skynet.md) · [05 — Observability](05-observability.md)
+- [`plan/architecture/02-service-onboarding.md`](../architecture/02-service-onboarding.md) · root [`AGENTS.md`](../../AGENTS.md) · [`PRINCIPLES.md`](../../PRINCIPLES.md)
+
+## Revision History
+
+| Date | Change |
+|---|---|
+| 2026-10-20 | Initial plan from the design session; Dispatch layout chosen; decisions D1–D10, open O1–O6 |
+| 2026-10-21 | Added profile, tenant/org settings, proposal queue, services ask and service requests from final review comments; O5 answered: Organization settings owns business-domain tags |
+| 2026-10-25 | Phase 0: O1 decided as Dioxus 0.7.10 fullstack (D11); O2 decided as `platform/services/console/` in this repository (D12); D13–D15 recorded (host-built image, SQLite preferences, inventory scope tree); architecture note on the single binary; plan renumbered from 16 to 17 because `16-plane-work-management.md` holds 16; PRINCIPLES.md identity amended so that tenant sits above organization; OpenSpec change `add-dispatch-console` added |
+| 2026-10-26 | D16: the tenant is the hard isolation boundary (PRINCIPLES.md amended). Build-only tools in the image builder, `binaryen` (apt) and `esbuild` (npm tarball, sha512-checked), accepted by Joseph alongside the D13 host build |
+| 2026-10-26 | Phase 2 decisions: D17 (work source is Semaphore tasks joined to the workflow registry), D18 (polling, which closes O4), D19 (`/v1/work*` admin-only until Phase 3), D20 (read-only `svc-console` credential). D21: the console runs in production on its own VM. O3 reworded to a proposal to the skynet repository. Phase 2 bullets and acceptance line matched to the decisions. Production site-config checklist added. RBAC group names are labels, and the group tuple and per-project access level are structured site-config data (plan 04 and plan 12) |
+| 2026-10-29 | Phases 3–7 implementation decisions D22–D30. O5 decided as NetBox tags. GitHub reads through a refreshed installation token in OpenBao (no new crate). Phase 4 waits for OPA and skynet in production (operator handoffs). Computer-use testing in the operator's Brave session |
+| 2026-11-02 | D31–D34: credential rotation pins the deployed commit; Grafana Viewer token minted by API with a 90-day lifetime; Proxmox CA bootstrap pins the API leaf; console GitHub App, downscoped token |

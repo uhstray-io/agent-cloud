@@ -1,0 +1,24 @@
+# compose.local.yml — local-dev overlay (applied only when LOCAL_MODE=true).
+#
+# proxy    joins the shared local-dev network so the local Caddy reaches it by name
+#          (plane-proxy:80), as it reaches every other local service.
+# monitor  Plane's licence agent stays ON here: even on the Free plan the API resolves feature
+#          flags and the seat check behind every invitation through it (http://monitor:8080),
+#          so without it an invite is a 500 and nobody can be let in (2026-10-29).
+
+networks:
+  default:
+  local-dev:
+    external: true
+
+services:
+  # The API signs people in through Authentik: it reaches https://auth.<zone>:8443 through the
+  # local Caddy (an alias on local-dev). Its step-ca trust is in compose.local-ca.yml.
+  api:
+    networks:
+      - default
+      - local-dev
+  proxy:
+    networks:
+      - default
+      - local-dev

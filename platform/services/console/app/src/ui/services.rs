@@ -1,0 +1,785 @@
+//! Services: the table of the tenant's services, the business-domain tiles, and the
+//! detail page for one service.
+//!
+//! The rows are the tenant's VMs that carry workflow fields. The RAG is the
+//! server's. The domain tiles come from the inventory answer: the domains NetBox
+//! holds, each counted by the domain slugs the service rows carry. The browser
+//! matches nothing by name.
+
+use dioxus::prelude::*;
+
+use super::api::{self, Me};
+use super::empty::SERVICES;
+use super::icons::icon;
+use super::inventory::{
+    count_text, end_session, mb_text, meta_of, poll_admin, services_in_scope, view, Admin,
+    ScopedServices, Snapshot, View, ViewNotice, POLL_MS, SEP,
+};
+use super::inventory_api::{self, Domain, ServiceBody, ServiceRow};
+use super::proposals_api::{self, Kind, Proposal};
+use super::shell::{is_platform_admin, no_tenant_message, Ctx};
+use super::status::{
+    step_rows, unconfigured_hint, unconfigured_notice, Freshness, Notice, Rag, RagBadge, StepList,
+    DASH,
+};
+use super::Route;
+
+/// Services per declared domain, in the answer's order, and the count of services that carry no
+/// declared domain. A service with two domains counts in both. Matched by slug.
+pub fn domain_counts(rows: &[ServiceRow], domains: &[Domain]) -> (Vec<(Domain, usize)>, usize) {
+    let counts = domains
+        .iter()
+        .map(|domain| {
+            let n = rows
+                .iter()
+                .filter(|row| row.domains.contains(&domain.slug))
+                .count();
+            (domain.clone(), n)
+        })
+        .collect();
+    let untagged = rows
+        .iter()
+        .filter(|row| {
+            !row.domains
+                .iter()
+                .any(|slug| domains.iter().any(|domain| &domain.slug == slug))
+        })
+        .count();
+    (counts, untagged)
+}
+
+/// The table's two filters. An empty `text` matches every row, and `rag` of
+/// `None` matches every status.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ServiceFilter {
+    pub text: String,
+    pub rag: Option<Rag>,
+}
+
+/// The rows that pass the filter, in the server's order. The text matches the
+/// name, site or cluster, ignoring case and surrounding spaces.
+pub fn filter_services(rows: &[ServiceRow], filter: &ServiceFilter) -> Vec<ServiceRow> {
+    let needle = filter.text.trim().to_lowercase();
+    rows.iter()
+        .filter(|row| filter.rag.is_none_or(|rag| Rag::from_wire(&row.rag) == rag))
+        .filter(|row| {
+            needle.is_empty()
+                || row.name.to_lowercase().contains(&needle)
+                || row.site.to_lowercase().contains(&needle)
+                || row.cluster.to_lowercase().contains(&needle)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The failed-steps cell: the names, or a dash when none failed.
+pub fn failed_text(row: &ServiceRow) -> String {
+    if row.failed_steps.is_empty() {
+        DASH.to_string()
+    } else {
+        row.failed_steps.join(", ")
+    }
+}
+
+/// The Services page.
+#[component]
+pub fn Services() -> Element {
+    let ctx = use_context::<Ctx>();
+    let state = ctx.inventory.read().clone();
+    let tenant = ctx.tenant.read().clone();
+    let shown = match view(&state, tenant.as_deref()) {
+        View::Ready(snap) => rsx! { ServicesContent { snap: *snap } },
+        other => rsx! { ViewNotice { view: other } },
+    };
+    rsx! {
+        div { class: "view services",
+            header { class: "view-h",
+                h1 { {icon(SERVICES.icon)} "{SERVICES.title}" }
+                span { class: "authority", "Source of truth: {SERVICES.authority}" }
+                p { "{SERVICES.purpose}" }
+            }
+            {shown}
+        }
+    }
+}
+
+#[component]
+fn ServicesContent(snap: Snapshot) -> Element {
+    let ctx = use_context::<Ctx>();
+    let reason = snap.reason.clone().unwrap_or_default();
+    let Some(body) = snap.services.clone() else {
+        return rsx! {
+            Freshness { meta: meta_of(&snap).cloned().unwrap_or_default(), reason }
+            Notice { message: "The services could not be loaded.".to_string() }
+        };
+    };
+    let scope = ctx.scope.read().clone();
+    let tree = ctx.tree.read().clone();
+    let meta = body.meta.clone();
+    let unconfigured = unconfigured_notice(&meta);
+    match services_in_scope(&body.services, &scope, snap.inventory.as_ref(), &tree) {
+        ScopedServices::Loading => rsx! {
+            Freshness { meta, reason }
+            Notice { message: "Loading scope\u{2026}".to_string() }
+        },
+        ScopedServices::Unresolved => rsx! {
+            Freshness { meta, reason }
+            Notice { message: "The scope could not be loaded for this tenant, so services are not shown.".to_string() }
+        },
+        ScopedServices::Rows(rows) => rsx! {
+            Freshness { meta, reason }
+            if let Some(message) = unconfigured {
+                Notice { message }
+            }
+            ServicesPanel {
+                rows,
+                recorded: body.services.len(),
+                domains: snap.inventory.as_ref().map(|inv| inv.domains.clone()),
+                domains_error: meta_of(&snap).and_then(inventory_api::domains_error),
+            }
+        },
+    }
+}
+
+/// The domain tiles, the filters and the table. The filters are held here, so
+/// they survive a poll that replaces the rows. `domains` is `None` when the
+/// inventory answer has not loaded, so the tiles say so rather than read zero.
+#[component]
+fn ServicesPanel(
+    rows: Vec<ServiceRow>,
+    recorded: usize,
+    domains: Option<Vec<Domain>>,
+    /// The admin's reason for a failed tag read, or `None`. Members never have one.
+    domains_error: Option<String>,
+) -> Element {
+    let filter = use_signal(ServiceFilter::default);
+    let mut filter_w = filter;
+    let current = filter.read().clone();
+    let loaded = domains.is_some();
+    let declared = domains.unwrap_or_default();
+    let (counts, untagged) = domain_counts(&rows, &declared);
+    let shown = filter_services(&rows, &current);
+    let rag_value = current.rag.map_or("", Rag::wire).to_string();
+    let none_match = shown.is_empty() && !rows.is_empty();
+    let total = count_text(rows.len(), "service", "services");
+    rsx! {
+        section { class: "card",
+            div { class: "card-h",
+                h2 { "Business domains" }
+                span { class: "faint", "{total}" }
+            }
+            div { class: "card-b stack",
+                if let Some(reason) = domains_error {
+                    Notice { message: reason }
+                }
+                if loaded {
+                    div { class: "tiles",
+                        for (domain, n) in counts.iter() {
+                            DomainTile { key: "{domain.slug}", domain: domain.clone(), count: *n }
+                        }
+                        div { class: "tile",
+                            b { "{untagged}" }
+                            small { "No domain" }
+                        }
+                    }
+                    if let Some(line) = inventory_api::no_domains_line(&declared) {
+                        p { class: "hint", "{line}" }
+                    }
+                    p { class: "hint", "A service with two domains counts in both." }
+                } else {
+                    Notice { message: "The business domains could not be loaded, so the domain counts are not shown.".to_string() }
+                }
+            }
+        }
+        div { class: "filters", role: "search", aria_label: "Filter services",
+            label { class: "field-inline grow",
+                span { class: "label", "Name, site or cluster" }
+                input {
+                    class: "input",
+                    r#type: "search",
+                    value: "{current.text}",
+                    oninput: move |evt: FormEvent| filter_w.write().text = evt.value(),
+                }
+            }
+            label { class: "field-inline",
+                span { class: "label", "Status" }
+                select {
+                    class: "scope-select",
+                    value: "{rag_value}",
+                    onchange: move |evt: FormEvent| {
+                        let value = evt.value();
+                        filter_w.write().rag = [Rag::Green, Rag::Amber, Rag::Red, Rag::Grey]
+                            .into_iter()
+                            .find(|rag| rag.wire() == value);
+                    },
+                    option { value: "", "All statuses" }
+                    for rag in [Rag::Green, Rag::Amber, Rag::Red, Rag::Grey] {
+                        option { value: "{rag.wire()}", {rag.label()} }
+                    }
+                }
+            }
+        }
+        if none_match {
+            p { class: "faint", role: "status", "No service matches these filters." }
+        }
+        section { class: "card",
+            div { class: "tbl-wrap",
+                table { class: "tbl",
+                    thead {
+                        tr {
+                            th { "Service" }
+                            th { "Site" }
+                            th { "Cluster" }
+                            th { "Live" }
+                            th { "Status" }
+                            th { "Failed steps" }
+                            th { "Last run" }
+                            th { "Tags" }
+                            th { "Grafana" }
+                        }
+                    }
+                    tbody {
+                        for (index, row) in shown.iter().enumerate() {
+                            ServiceTableRow {
+                                key: "{row.site}{SEP}{row.cluster}{SEP}{row.name}{SEP}{index}",
+                                row: row.clone(),
+                            }
+                        }
+                    }
+                }
+            }
+            if recorded == 0 {
+                p { class: "empty", "No service is recorded for this tenant." }
+            } else if rows.is_empty() {
+                p { class: "empty", "No service in this scope." }
+            }
+        }
+    }
+}
+
+/// A domain's colour swatch, drawn only when NetBox gave a valid colour. Shared with the
+/// settings pages, so a domain looks the same wherever it is listed.
+#[component]
+pub fn DomainSwatch(domain: Domain) -> Element {
+    let swatch = domain.css_color();
+    rsx! {
+        if let Some(color) = swatch {
+            span {
+                style: "display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: {color};",
+                aria_hidden: "true",
+            }
+        }
+    }
+}
+
+/// One domain tile: the count, and the name with its colour swatch.
+#[component]
+fn DomainTile(domain: Domain, count: usize) -> Element {
+    rsx! {
+        div { class: "tile",
+            b { "{count}" }
+            small {
+                DomainSwatch { domain: domain.clone() }
+                "{domain.name}"
+            }
+        }
+    }
+}
+
+/// One row of the services table.
+#[component]
+fn ServiceTableRow(row: ServiceRow) -> Element {
+    let live = row
+        .live_status
+        .clone()
+        .unwrap_or_else(|| "No live state".to_string());
+    let failed = failed_text(&row);
+    let last_run = row.last_run.clone().unwrap_or_else(|| DASH.to_string());
+    let tags = row.tags.join(", ");
+    let rag = Rag::from_wire(&row.rag);
+    rsx! {
+        tr { key: "{row.name}",
+            td {
+                Link { to: Route::ServiceDetail { name: row.name.clone() }, "{row.name}" }
+            }
+            td { "{row.site}" }
+            td { "{row.cluster}" }
+            td { "{live}" }
+            td { RagBadge { rag } }
+            td { "{failed}" }
+            td { class: "mono", "{last_run}" }
+            td { "{tags}" }
+            td {
+                if let Some(url) = row.grafana_url.clone() {
+                    a { href: "{url}", target: "_blank", rel: "noopener", "Grafana" }
+                } else {
+                    span { class: "faint", {DASH} }
+                }
+            }
+        }
+    }
+}
+
+/// The detail page for one service. It is keyed on the tenant and the name, so a
+/// tenant switch or another service starts a fresh read.
+#[component]
+pub fn ServiceDetail(name: String) -> Element {
+    let ctx = use_context::<Ctx>();
+    let tenant = ctx.tenant.read().clone();
+    let body = match tenant {
+        Some(tenant) => rsx! {
+            ServiceView { key: "{tenant}/{name}", tenant, name: name.clone() }
+        },
+        None => rsx! {
+            Notice {
+                message: no_tenant_message(&ctx.tenants.read(), "Pick a tenant in the sidebar to see this service."),
+            }
+        },
+    };
+    rsx! {
+        div { class: "view service-detail",
+            header { class: "view-h",
+                h1 { "{name}" }
+                span { class: "authority", "Source of truth: {SERVICES.authority}" }
+                p {
+                    Link { to: Route::Services {}, "Back to Services" }
+                }
+            }
+            {body}
+        }
+    }
+}
+
+/// The service's own read, polled while the tab is visible.
+#[component]
+fn ServiceView(tenant: String, name: String) -> Element {
+    let ctx = use_context::<Ctx>();
+    let state = use_signal(|| Admin::<ServiceBody>::Loading);
+    let path = inventory_api::service_path(&tenant, &name);
+    use_hook(move || {
+        spawn(poll_admin(path, state, ctx.me));
+    });
+    let shown = state.read().clone();
+    match shown {
+        Admin::Loading => rsx! { Notice { message: "Loading the service\u{2026}".to_string() } },
+        Admin::Forbidden => rsx! {
+            Notice { message: "This service is not available to you.".to_string() }
+        },
+        Admin::Missing => rsx! {
+            Notice { message: "Service not found in this tenant.".to_string() }
+        },
+        Admin::SignedOut => rsx! {
+            Notice { message: "Your session ended. Sign in again to see this service.".to_string() }
+        },
+        Admin::Unavailable(reason) => rsx! {
+            Notice { message: format!("The service could not be loaded: {reason}. It retries every {} seconds while this tab is visible.", POLL_MS / 1000) }
+        },
+        Admin::Shown { body, reason } => {
+            let reason = reason.unwrap_or_default();
+            let proposing = shows_proposal_actions(&ctx.me.read());
+            rsx! {
+                ServiceCard { body, reason }
+                if proposing {
+                    ProposalActions { service: name }
+                }
+            }
+        }
+    }
+}
+
+/// One service's placement, workflow and links.
+#[component]
+fn ServiceCard(body: ServiceBody, reason: String) -> Element {
+    let vm = body.vm.clone();
+    let row = body.service.clone();
+    let rag = Rag::from_wire(&row.rag);
+    let live = vm
+        .live_status
+        .clone()
+        .unwrap_or_else(|| "No live state".to_string());
+    let vmid = vm.vmid.map_or(DASH.to_string(), |id| id.to_string());
+    let memory = vm.memory_mb.map_or(DASH.to_string(), mb_text);
+    let disk = vm.disk_mb.map_or(DASH.to_string(), mb_text);
+    let vcpus = vm.vcpus.map_or(DASH.to_string(), |n| format!("{n:.0}"));
+    let ip = vm.primary_ip.clone().unwrap_or_else(|| DASH.to_string());
+    let tags = if vm.tags.is_empty() {
+        DASH.to_string()
+    } else {
+        vm.tags.join(", ")
+    };
+    let steps = vm.workflow.as_ref().map(step_rows).unwrap_or_default();
+    let has_workflow = vm.workflow.is_some();
+    let failed = vm
+        .workflow
+        .as_ref()
+        .map(|wf| wf.failed.join(", "))
+        .unwrap_or_default();
+    let last_run = row.last_run.clone().unwrap_or_else(|| DASH.to_string());
+    let grafana = vm.grafana_url.clone().or(row.grafana_url.clone());
+    let conformance = body.meta.links.grafana_conformance.clone();
+    let links_off = grafana.is_none() && conformance.is_none();
+    let hint = unconfigured_hint("grafana").to_string();
+    rsx! {
+        Freshness { meta: body.meta.clone(), reason }
+        div { class: "row wrap",
+            RagBadge { rag }
+            span { class: "faint", "{row.site} \u{00b7} {row.cluster}" }
+        }
+        section { class: "card",
+            div { class: "card-h",
+                h2 { "Placement" }
+            }
+            div { class: "card-b",
+                dl { class: "fields",
+                    div { class: "field-row", dt { class: "label", "Live status" } dd { "{live}" } }
+                    div { class: "field-row", dt { class: "label", "NetBox status" } dd { "{vm.status}" } }
+                    div { class: "field-row", dt { class: "label", "VM ID" } dd { "{vmid}" } }
+                    div { class: "field-row", dt { class: "label", "vCPUs" } dd { "{vcpus}" } }
+                    div { class: "field-row", dt { class: "label", "Memory" } dd { "{memory}" } }
+                    div { class: "field-row", dt { class: "label", "Disk" } dd { "{disk}" } }
+                    div { class: "field-row", dt { class: "label", "Primary IP" } dd { class: "mono", "{ip}" } }
+                    div { class: "field-row", dt { class: "label", "Tags" } dd { "{tags}" } }
+                }
+            }
+        }
+        section { class: "card",
+            div { class: "card-h",
+                h2 { "Workflow" }
+            }
+            div { class: "card-b stack",
+                if has_workflow {
+                    StepList { steps }
+                    if !failed.is_empty() {
+                        p { class: "hint", "Failed: {failed}" }
+                    }
+                    p { class: "hint", "Last run {last_run}" }
+                } else {
+                    Notice { message: "This VM carries no workflow fields.".to_string() }
+                }
+            }
+        }
+        section { class: "card",
+            div { class: "card-h",
+                h2 { "Links" }
+            }
+            div { class: "card-b row wrap",
+                if let Some(url) = grafana.clone() {
+                    a { class: "btn", href: "{url}", target: "_blank", rel: "noopener", "Service overview in Grafana" }
+                }
+                if let Some(url) = conformance.clone() {
+                    a { class: "btn", href: "{url}", target: "_blank", rel: "noopener", "Deployment conformance in Grafana" }
+                }
+                if links_off {
+                    p { class: "hint", "{hint}" }
+                }
+            }
+        }
+    }
+}
+
+/// What a proposal action on this page reports.
+#[derive(Debug, Clone, PartialEq)]
+enum ProposeResult {
+    Created(String),
+    Failed(String),
+}
+
+/// Posts one proposal. A press while one is in flight does nothing. A 401 ends the session, and any other
+/// failure keeps the sentence the server sent.
+fn propose(
+    kind: Kind,
+    service: String,
+    check_mode: bool,
+    note: String,
+    mut busy: Signal<bool>,
+    mut result: Signal<Option<ProposeResult>>,
+    me: Signal<Me>,
+) {
+    if busy() {
+        return;
+    }
+    busy.set(true);
+    result.set(None);
+    spawn(async move {
+        let reply = proposals_api::create(kind, &service, check_mode, &note).await;
+        busy.set(false);
+        if reply.status == 401 {
+            end_session(me);
+            return;
+        }
+        let done = if (200..=299).contains(&reply.status) {
+            match api::parse::<Proposal>(&reply) {
+                Some(proposal) => ProposeResult::Created(proposal.id),
+                None => ProposeResult::Failed(proposals_api::GENERIC_FAILURE.to_string()),
+            }
+        } else {
+            ProposeResult::Failed(proposals_api::error_text(&reply))
+        };
+        result.set(Some(done));
+    });
+}
+
+/// Whether the Actions card is drawn: only for a platform admin, the same check the shell uses for the admin pages.
+/// The server answers every proposal route 403 to anyone else (D25), so this keeps the card off the page; it is not
+/// the control.
+pub fn shows_proposal_actions(me: &Me) -> bool {
+    matches!(me, Me::SignedIn(account) if is_platform_admin(&account.claims))
+}
+
+/// The Assess resource and Verify health actions on a service's page (plan 17, D48). Each one makes a proposal
+/// for a platform admin to review on the Dashboard. Nothing runs from this page: the gate runs an action only
+/// after an approval.
+#[component]
+fn ProposalActions(service: String) -> Element {
+    let ctx = use_context::<Ctx>();
+    let me = ctx.me;
+    let mut check_mode = use_signal(|| false);
+    let mut note = use_signal(String::new);
+    let busy = use_signal(|| false);
+    let result = use_signal(|| None::<ProposeResult>);
+
+    let assess_service = service.clone();
+    let on_assess = move |_: MouseEvent| {
+        propose(
+            Kind::Assess,
+            assess_service.clone(),
+            check_mode(),
+            note(),
+            busy,
+            result,
+            me,
+        );
+    };
+    let verify_service = service.clone();
+    let on_verify = move |_: MouseEvent| {
+        propose(
+            Kind::Verify,
+            verify_service.clone(),
+            check_mode(),
+            note(),
+            busy,
+            result,
+            me,
+        );
+    };
+
+    rsx! {
+        section { class: "card", aria_labelledby: "svc-actions-h",
+            div { class: "card-h",
+                h2 { id: "svc-actions-h", "Actions" }
+            }
+            div { class: "card-b stack",
+                p { class: "hint", "Each action makes a proposal. A platform admin reviews it on the Dashboard, and nothing runs until they approve." }
+                label { class: "choice",
+                    input {
+                        r#type: "checkbox",
+                        checked: check_mode(),
+                        onchange: move |evt: FormEvent| check_mode.set(evt.checked()),
+                    }
+                    span { "Check mode (dry run)" }
+                }
+                label { class: "field",
+                    span { class: "label", "Note (optional)" }
+                    input {
+                        class: "input",
+                        r#type: "text",
+                        maxlength: "2000",
+                        value: "{note}",
+                        oninput: move |evt: FormEvent| note.set(evt.value()),
+                    }
+                }
+                div { class: "row wrap",
+                    button { r#type: "button", class: "btn primary", onclick: on_assess, "Assess resource" }
+                    button { r#type: "button", class: "btn", onclick: on_verify, "Verify health" }
+                }
+                if busy() {
+                    p { class: "hint", role: "status", "Creating the proposal\u{2026}" }
+                }
+                if let Some(done) = result() {
+                    ProposeStatus { result: done }
+                }
+            }
+        }
+    }
+}
+
+/// What a proposal action said: the new proposal's id with a link to the Dashboard, or the failure.
+#[component]
+fn ProposeStatus(result: ProposeResult) -> Element {
+    match result {
+        ProposeResult::Created(id) => rsx! {
+            p { class: "st ok", role: "status",
+                {icon("circle-check")}
+                span { "Proposal {id} created. Review it on the " Link { to: Route::Dashboard {}, "Dashboard" } "." }
+            }
+        },
+        ProposeResult::Failed(text) => rsx! {
+            p { class: "st crit", role: "alert",
+                {icon("octagon-x")}
+                span { "{text}" }
+            }
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::api::{Account, Claims, Preferences};
+
+    #[test]
+    fn only_a_platform_admin_sees_the_proposal_actions() {
+        let signed_in = |groups: &[&str]| {
+            Me::SignedIn(Account {
+                claims: Claims {
+                    sub: "s".into(),
+                    email: None,
+                    name: None,
+                    username: None,
+                    groups: groups.iter().map(|g| g.to_string()).collect(),
+                },
+                preferences: Preferences::default(),
+            })
+        };
+        assert!(shows_proposal_actions(&signed_in(&[
+            "ops",
+            "platform-admins"
+        ])));
+        assert!(!shows_proposal_actions(&signed_in(&["ops"])));
+        assert!(!shows_proposal_actions(&signed_in(&[
+            "platform-admins-old"
+        ])));
+        assert!(!shows_proposal_actions(&Me::SignedOut));
+        assert!(!shows_proposal_actions(&Me::Loading));
+    }
+
+    /// A service row carrying the given domain slugs.
+    fn row(name: &str, rag: &str, domains: &[&str], failed: &[&str]) -> ServiceRow {
+        ServiceRow {
+            name: name.into(),
+            site: "dc1".into(),
+            cluster: "pve-prod".into(),
+            rag: rag.into(),
+            domains: domains.iter().map(|d| d.to_string()).collect(),
+            failed_steps: failed.iter().map(|s| s.to_string()).collect(),
+            ..ServiceRow::default()
+        }
+    }
+
+    fn domain(slug: &str, name: &str) -> Domain {
+        Domain {
+            name: name.into(),
+            slug: slug.into(),
+            color: "2196f3".into(),
+        }
+    }
+
+    #[test]
+    fn domain_tiles_count_each_service_once_per_domain_and_the_rest_as_no_domain() {
+        let declared = vec![
+            domain("domain-it", "IT"),
+            domain("domain-products", "Products"),
+            domain("domain-automation", "Automation"),
+        ];
+        let rows = vec![
+            row("a", "green", &["domain-products"], &[]),
+            row("b", "red", &["domain-products", "domain-it"], &[]),
+            row("c", "amber", &[], &[]),
+            row("d", "grey", &["domain-ghost"], &[]),
+        ];
+        let (counts, untagged) = domain_counts(&rows, &declared);
+        assert_eq!(counts.len(), 3, "one tile per declared domain");
+        let get = |slug: &str| counts.iter().find(|(d, _)| d.slug == slug).unwrap().1;
+        assert_eq!(get("domain-products"), 2);
+        assert_eq!(get("domain-it"), 1);
+        assert_eq!(get("domain-automation"), 0);
+        assert_eq!(
+            untagged, 2,
+            "c has no domain and d's domain is not declared"
+        );
+    }
+
+    #[test]
+    fn with_no_declared_domains_every_service_is_no_domain_and_there_are_no_tiles() {
+        let rows = vec![
+            row("a", "green", &["domain-it"], &[]),
+            row("b", "grey", &[], &[]),
+        ];
+        let (counts, untagged) = domain_counts(&rows, &[]);
+        assert!(counts.is_empty());
+        assert_eq!(untagged, 2);
+    }
+
+    #[test]
+    fn the_filter_matches_text_and_status_together() {
+        let rows = vec![
+            row("tududi", "red", &[], &[]),
+            row("honcho", "green", &[], &[]),
+            row("postiz", "red", &[], &[]),
+        ];
+        let by_text = filter_services(
+            &rows,
+            &ServiceFilter {
+                text: "  TUD ".into(),
+                rag: None,
+            },
+        );
+        assert_eq!(by_text.len(), 1);
+        assert_eq!(by_text[0].name, "tududi");
+        let red = filter_services(
+            &rows,
+            &ServiceFilter {
+                text: String::new(),
+                rag: Some(Rag::Red),
+            },
+        );
+        let names: Vec<&str> = red.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["tududi", "postiz"], "server order kept");
+        let both = filter_services(
+            &rows,
+            &ServiceFilter {
+                text: "honcho".into(),
+                rag: Some(Rag::Red),
+            },
+        );
+        assert!(both.is_empty(), "both filters must pass");
+    }
+
+    #[test]
+    fn a_text_filter_reads_the_site_and_the_cluster_too() {
+        let rows = vec![row("tududi", "green", &[], &[])];
+        let by_site = filter_services(
+            &rows,
+            &ServiceFilter {
+                text: "DC1".into(),
+                rag: None,
+            },
+        );
+        assert_eq!(by_site.len(), 1);
+        let by_cluster = filter_services(
+            &rows,
+            &ServiceFilter {
+                text: "pve-prod".into(),
+                rag: None,
+            },
+        );
+        assert_eq!(by_cluster.len(), 1);
+    }
+
+    #[test]
+    fn failed_steps_read_as_names_or_a_dash() {
+        assert_eq!(
+            failed_text(&row("a", "red", &[], &["step-b", "step-c"])),
+            "step-b, step-c"
+        );
+        assert_eq!(failed_text(&row("a", "green", &[], &[])), DASH);
+    }
+
+    #[test]
+    fn the_filter_starts_with_every_row_and_every_status() {
+        assert_eq!(ServiceFilter::default().rag, None);
+        assert_eq!(ServiceFilter::default().text, "");
+        let rows = vec![row("a", "red", &[], &[]), row("b", "grey", &[], &[])];
+        assert_eq!(filter_services(&rows, &ServiceFilter::default()).len(), 2);
+    }
+}

@@ -6,6 +6,8 @@
 > Part of the dependency-ordered `plan/development/` set (00–10). The source
 > plans are merged verbatim below under provenance dividers to preserve all
 > detail; read in numbered order to execute.
+>
+> **Status:** ACTIVE (2026-11-04) — o11y is deployed in production (`platform/services/o11y/deployment/CLAUDE.md`; `AGENTS.md` Deployment Status records its boot persistence and health checks, 2026-09-26). The embedded O11Y-DEPLOYMENT plan keeps its original PROPOSED status below; treat this line as current.
 
 ## Signal identity, service visibility, and profiling contract
 
@@ -37,6 +39,16 @@ must not turn absent telemetry into a healthy zero. The Service Overview
 selector is sourced from Prometheus service labels, so it covers metric-enabled
 local and remote services; use Logs Drilldown and the coverage declaration for
 log-only targets.
+
+The same private `estate_coverage_inventory.targets` declaration can describe
+an opt-in health-only `alloy-blackbox-http` signal. Its source contract accepts
+only a fixed RFC1918 IPv4 HTTP(S) GET endpoint, exact statuses, verified TLS,
+disabled redirects/proxying, fixed labels, and reviewed finite per-target and
+aggregate budgets. The source ceilings are documented in the o11y deployment
+README; they are not live cadence or production defaults. Availability remains
+off until actual receiver namespace isolation and post-apply native component
+readback are proven. A health response does not establish application metrics,
+overall service health, or estate coverage.
 
 Service graph rollout records use the same per-service coverage declaration:
 logs, metrics, traces, and profiles are each marked applicable, unsupported,
@@ -1542,8 +1554,10 @@ Proxmox's [disk inventory API](https://github.com/proxmox/pve-storage/blob/maste
 returns paths and optional model/health data; its [device scan](https://github.com/proxmox/pve-storage/blob/master/src/PVE/Diskmanage.pm)
 includes several block-device classes while excluding iSCSI. An exact PV path
 join alone cannot distinguish directly attached media from every virtual or
-remote-backed block device. Require separate physical-origin evidence and a
-reviewed private store declaration before allocating a PBS VM disk.
+remote-backed block device. The operator decision dated 2026-10-29 removes
+physical-origin/BMC/chassis attestation as a prerequisite. The reviewed private
+store declaration, API identity pin, exact lineage, health, and capacity gates
+remain required; no host physical disk operation is authorized.
 
 The GET-only task 2011 run succeeded at reviewed SHA
 `4c1806652ed15cab8d1a4b50fd241bab52724646` and returned
@@ -1967,8 +1981,9 @@ top-level disk-path join with `used=LVM`, SMART category `passed`, and at least
 30% reported VG capacity remaining after the proposed 512-GiB disk. It reports
 only fixed status and booleans and leaves allocation, device safety, PBS and
 filesystem readiness, and write authorization false. A match against the
-private pin is API drift detection only: the operator's local hardware
-attestation is not independently compared with a chassis or BMC identity.
+private pin is API drift detection only; it does not
+independently prove physical origin. Physical-origin/BMC/chassis attestation
+is not a prerequisite per the operator decision dated 2026-10-29.
 This preflight does not create a VM, disk, filesystem, or PBS instance and does
 not change retention. It cannot pass until the private site-config inventory
 contains a reviewed pin; this repository contains no such private value.
@@ -1993,8 +2008,24 @@ selected API disk, the direct LVM disk-path lineage matched, SMART reported
 `passed`, and a proposed 512-GiB data disk left at least 30% reported VG
 headroom. Allocation, device safety, filesystem and PBS readiness, and write
 authorization remain **false**. The identity pin detects API-observed drift;
-it does not independently establish the disk's physical chassis origin. No
+it does not independently establish the disk's physical chassis origin. Per
+the operator decision dated 2026-10-29, that physical-origin comparison is
+not a prerequisite; the API and storage-lineage gates remain unchanged. No
 VM, disk, filesystem, or PBS instance was created and no retention changed.
+
+#### Later GET-only allocation preflight (2026-10-29)
+
+Existing Dev catalog template 341 was independently read back with its expected
+bindings. GET-only Semaphore task 10372 ran at exact reviewed Dev commit
+`ac2b5b6f7076e73bd4a41a12644fb2fb9f10e872`; it completed successfully, and its
+fixed public message parsed and validated. The sanitized result reported
+`backing_identity_matches=true`, `direct_lvm_disk_lineage=true`,
+`smart_health=passed`, and `reported_vg_headroom_passes_512_gib=true`.
+`allocation_authorized`, `device_safety_verified`,
+`filesystem_readiness_verified`, `pbs_readiness_verified`, and
+`write_authorized` were all `false`. This task created no VM, disk, filesystem,
+or PBS object and changed no retention or deployment. It does not authorize an
+allocation or establish guest, PBS, backup, restore, or retention acceptance.
 
 ### 2026-10-18 PBS VM census and static IP reservation
 
@@ -2066,9 +2097,11 @@ which may be block-backed. The Dev-bound `Enable PBS Import Storage Content`
 workflow checks the exact node and active file-store status, preserves the
 existing content list, applies the `import` union with Proxmox's observed digest,
 and reads the config back. Its check mode is read-only. Task 7081 made no
-Proxmox config change. The physical-disk origin remains operator-attested; the
-serial-to-chassis match is not independently verified. No template VM, PBS VM,
-or data disk has been created.
+Proxmox config change. At the time of this receipt, physical-disk origin
+remained operator-attested and the serial-to-chassis match was not
+independently verified. The operator decision dated 2026-10-29 later removed
+that comparison as a prerequisite; this historical receipt remains unchanged.
+No template VM, PBS VM, or data disk has been created.
 
 Production Semaphore task 7106 refused before issuing any Proxmox request: the
 workflow's initial inventory URL assertion required HTTPS, while the shared
@@ -2380,3 +2413,134 @@ prove a fresh PBS artifact, primary-unavailable protected-copy recovery,
 effective role capabilities, writer drain, or isolated restore/cleanup. The
 capacity source ambiguity is cleared for the observed refresh only; its history
 remains too short for the separate seven-day forecast.
+
+### 2026-10-27 conformance dashboard rendering
+
+The live conformance dashboard (schema v8 on Grafana 11.4) rendered the
+service/step/state table and the separate completion-age table correctly,
+including `Unknown` ages. On refresh, after valid collector markers aged beyond
+45 minutes, previously tracked failures and services changed to `No recent data`,
+the marker status read `No valid marker in 45m`, and completion age read
+`Unknown completion time`. This verifies rendering and stale-state behavior
+only. It does not close OpenSpec 7.4, the collector pipeline, or the drill, and
+does not identify a cause for the stale markers.
+
+The live “Selected source records observed (5m)” stat initially rendered
+Grafana's default `Value#A`–`Value#F` names even though its query legends were
+human-readable. The source dashboard now overrides each frame by its stable query
+ref ID to the existing source label. This is source-only; the live dashboard has
+not yet received this change.
+
+### 2026-10-28 bounded browser trace/log pivot
+
+A read-only browser pass followed one existing agentgateway access record to its
+Tempo trace, which rendered two spans. The selected server span's Logs link
+returned three matching Loki records using exact service and trace matching in a
+bounded window around the span. This establishes one existing-data browser
+access-log → trace → logs pivot. It does not establish pivots for other services,
+profile pivots, unsampled requests, privacy of callback payloads, mTLS, or
+sustained ingestion. No trace IDs, identity values, private addresses, or raw
+log/trace payloads were retained. Controller and receiver source revisions were
+not read back during this observation, so it does not establish which source
+revision was live.
+
+### 2026-10-28 OTLP mTLS prover diagnostics
+
+The Linux Python-core CI run for source head `931a72c` stopped after 5,455
+passed, 6 skipped, and 321 subtests passed, with one failure in the
+valid-client HTTP/2 test's later missing-client refusal check. The valid journal
+client proof succeeded; the script then returned
+`UNVERIFIED_NO_CLIENT_AUTH`. A bounded native-Linux ARM reproduction using
+Python 3.12.15/OpenSSL 3.0.22 matched that failure on diagnostic-only source:
+the write-first missing-client probe failed at `SETTINGS_WRITE` with
+`ssl.SSLError` and no reason. It also reproduced a separate foreign-client
+failure under load on source `c8368e5`, after valid-client and missing-client
+proofs had succeeded. A temporary read-first variant completed 100/100 full
+proof cycles and observed `TLSV13_ALERT_CERTIFICATE_REQUIRED` for the missing
+client and `TLSV1_ALERT_UNKNOWN_CA` for the foreign client. Four no-auth fixture
+controls remained unverified. This supports the negative-probe write/alert
+ordering as the cause in the ARM reproduction, but does not establish x86_64 CI
+parity.
+
+The source now uses a negative-only probe mode for the missing-client and
+foreign-CA legs. When that handshake completes with TLS 1.3 and ALPN h2, the
+probe reads for a certificate-auth alert before sending any application bytes.
+Only an explicit alert in the existing certificate-auth allowlist during this
+post-authentication read proves refusal. A plaintext alert before ServerHello,
+or any alert before the server identity and ALPN are verified, remains
+unverified. Application data, EOF, timeout, transport errors, and other TLS
+errors also remain unverified. The valid journal-client leg retains the
+SETTINGS/ACK/serial proof. Fixed diagnostics report the negative probe's
+phase/state without changing stdout or exit status.
+A focused fixture regression records that no HTTP/2 bytes are sent on negative
+probes, verifies early application data and EOF still fail closed, and rejects a
+plaintext certificate-required alert from a peer with no server identity. No CI
+rerun or x86_64 reproduction has yet confirmed the diagnosis.
+
+Follow-up review added the OpenSSL `SSLV3_ALERT_BAD_CERTIFICATE` and
+`SSLV3_ALERT_CERTIFICATE_UNKNOWN` reason labels to the explicit certificate
+rejection allowlist. A focused test injects those reason values at the prover's
+SSL exception boundary and confirms an unrelated SSL alert still fails closed;
+neighboring tests continue to exercise real missing-client and foreign-CA TLS
+handshakes. Renewal stats now describe the OTLP proof and matched server serial
+for its two fixed leaf classes, while the gateway-probe proof text is emitted
+only for `probe-client`. The Linux ARM comparison supports the sequencing
+diagnosis, but the CI x86_64 failure has not been rerun to confirm it.
+
+The exact cached Alloy v1.5.1 receiver image accepted full plaintext and TLS
+renders of the receiver config, and the receiver component reported healthy in
+two consecutive samples for each mode in a bounded network-none fixture. The
+TLS files were synthetic and supplied through tmpfs; this did not exercise a TLS
+handshake, client refusal, deployed read-only bind mounts, telemetry delivery,
+or production activation. Alloy v1.9.2 for the journal remains uncached and
+unverified. The evidence is recorded in
+`/private/tmp/o11y-alloy-pinned-validation-20261028/result.md`; it does not mark
+an OpenSpec live-acceptance criterion complete.
+
+> **Expected-target survey Linux argv transport source fix (2026-10-29, plan before implementation):** The
+> reviewed helper is 218,419 bytes. An isolated cached Linux container reproduced `E2BIG` (`OSError`, errno 7,
+> `Argument list too long`) when the helper was passed as the `python3 -c` argument. This proves the transport
+> fails at the current source size on Linux; it makes that a strong explanation for the later sanitized
+> Semaphore survey's empty output/from-JSON failure, but does not prove task 10278's historical root cause.
+> Change only `survey-o11y-expected-metrics-targets.yml` and its focused regression: stage the helper bytes
+> retained by the existing exact-reviewed-checkout gate into a private receiver temp directory, invoke Python
+> with the short helper path and reviewed declaration on protected stdin, and remove the exact temp directory
+> from an unconditional `always` path with a creation-failure guard. Keep the source/revision gate, declaration
+> privacy, public receipt schema, survey behavior, and all distinct source-versus-live acceptance gates intact.
+> Verify with a test-first regression, focused pytest, syntax/lint and strict OpenSpec checks. This is source-only;
+> it does not rerun the historical task or close any live acceptance gate.
+
+### 2026-10-31 bounded Dev capacity and capability receipts
+
+Verified receipts at merged Dev `d41482be4944d5916030fbbbde147e5a686238f8`
+follow PR 797 source `b518f165dd22ff24528e4dcd0da5571d6e3be090`, independent
+Sol Medium and CodeRabbit approvals, passing final CI `41159999148`, and the
+exact-head read-only merge guard. Tasks 10752, 10762, 10763, 10765, and 10769
+accepted all five declared isolated-environment bindings, with empty
+plaintext/extra-var configuration, encrypted AppRole metadata, sole-template
+ownership, and shared/unrelated settings, surveys, repository, and inventory
+preserved. Task 10761 verified source policy and effective fixed-record
+data/metadata capabilities. Tasks 10767 and 10770 recorded scoped publication
+of the one missing declared controller catalog row and a converged rerun
+without duplicate environments or encrypted inputs. Capability verification
+did not read or write the coordination record and no VM, disk, filesystem,
+backup, restore, or cleanup operation occurred. These facts prove no
+coordination-record read/write or allocation/restore authorization. The
+[PBS task ledger](openspec/changes/pbs-vm-and-restore-gate/tasks.md) and
+[Dev runbook](openspec/changes/pbs-vm-and-restore-gate/implementation/dev-bootstrap-publication-runbook.md)
+record the child acceptance and its remaining parent gates.
+
+Task 10753 reports healthy/running Alloy, zero restarts, no OOM, and receiver
+checkout `67b9cffcdda8b3b10e840c50357c1b23f8410cbb`; this is not loaded-config
+or image proof. Task 10755 correctly returned `native_debug_invalid`; protected
+producer output was not read. A local Go-template reproduction through the
+production row/parser boundary confirmed the default `time.Time` rendering is
+rejected by the strict RFC3339 consumer. The source now formats `StartedAt` as
+RFC3339Nano and retains the zero-time refusal sentinel. Task 10756 passed the
+seven-day readiness assertion after the nine-day lookback but produced no
+structured success receipt; the source now emits only the helper's closed JSON
+receipt after the assertion passes. The owned test suites and direct contracts
+passed 652 tests. These source changes and bounded receipts do not complete a
+fresh live producer receipt, representative baseline, forecast, calibration,
+backup/restore, retention, or growth gate. This entry changes no PBS task or
+gate.

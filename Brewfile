@@ -6,10 +6,13 @@ brew "ansible-lint"
 brew "bats-core"
 brew "gh"
 brew "git"
+brew "go"
 brew "jq"
 brew "make"
+brew "parallel"       # GNU parallel: `bats --jobs` runs test files concurrently (plan 21, D4)
 brew "podman"
 brew "podman-compose"
+brew "rsync"          # GNU rsync: place-monorepo's --delete must honour .gitignore (macOS ships openrsync, which does not)
 brew "shellcheck"
 brew "socat"          # local-dev privileged-port forwarder (make local-https)
 brew "yamllint"

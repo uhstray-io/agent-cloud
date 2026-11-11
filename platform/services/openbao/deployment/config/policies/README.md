@@ -24,6 +24,7 @@ This directory is read by:
 | `semaphore-read.hcl` | Active | Semaphore orchestrator AppRole | Read every `secret/data/services/*` + manage AppRoles + manage policies |
 | `semaphore-write.hcl` | Active | Semaphore VM | Write its own credentials back to `secret/services/semaphore` |
 | `orb-agent.hcl` | Active | NetBox orb-agent AppRole | Read NetBox + discovery credentials |
+| `console.hcl` | Active | Dispatch Console AppRole (`console`, applied by `provision-console-approle.yml`) | Read `secret/services/console/*` and secret metadata (plan 17, D27) |
 | `nemoclaw-read.hcl` | Active | NemoClaw agent AppRole | Read service credentials NemoClaw needs |
 | `nemoclaw-rotate.hcl` | Active | NemoClaw rotation flows | Rotate specific secrets |
 | `nocodb-write.hcl` | Active | NocoDB deploy.sh | Push runtime-generated API tokens back |

@@ -1,0 +1,372 @@
+# Dispatch Console: Phase 3 API (as built)
+
+Author: Joseph A. Wisneski IV
+Scope: server side of plan 17 task 6.3 (decisions D22-D25). Read-only NetBox and Proxmox
+inventory. This file is the contract the UI worker mirrors. Field names and nesting are
+exactly what the handlers in `src/server/inventory.rs` serialize.
+
+## Who may call what
+
+| Route | Who | Answer |
+|---|---|---|
+| `GET /v1/tenants/{t}/inventory` | members of tenant `t` (a tenant `groups` entry matches, or `platform-admins`) | the tenant's sites, joined to NetBox and Proxmox |
+| `GET /v1/tenants/{t}/services` | same | the tenant's VMs that carry workflow fields |
+| `GET /v1/tenants/{t}/services/{name}` | same | one service and its VM |
+| `GET /v1/network` | `platform-admins` only | every prefix NetBox holds, global ones included |
+| `GET /v1/flows` | `platform-admins` only | the data-flow catalogue |
+
+- No session: `401 {"error":"unauthenticated"}`.
+- Tenant routes, tenant the caller may not see, or tenant unknown: `404 {"error":"unknown_tenant"}`. The two
+  answers are byte-identical, so a route cannot be used to learn that a tenant exists.
+- Admin-only routes, caller not in `platform-admins`: `403 {"error":"forbidden"}`.
+- Service name not in the tenant: `404 {"error":"unknown_service"}`.
+- Unknown `/v1/*` paths: `404 {"error":"not_found"}` with a session.
+
+Prefixes live only on the admin route. A prefix without a site names no tenant, so it cannot
+sit in a tenant-scoped answer (D16, D25). The tenant inventory carries topology only.
+
+## Common envelope
+
+Every inventory, services and network answer starts with these fields. The flows answer does not
+use this envelope; its shape is under `GET /v1/flows` below.
+
+```json
+{
+  "source":     {"netbox": "ok", "proxmox": "unconfigured"},
+  "error":      {"netbox": null, "proxmox": null},
+  "stale":      false,
+  "updated_at": {"netbox": "2026-10-26T12:01:00Z", "proxmox": null},
+  "links":      {"grafana": "https://grafana.example.test", "grafana_conformance": "https://grafana.example.test/d/service-conformance/service-deployment-conformance"}
+}
+```
+
+- `source.<authority>` is `ok`, `unconfigured` or `error`. `ok` with `updated_at: null` means
+  configured but no read has finished yet.
+- `error.<authority>` is a fixed text such as `NetBox answered HTTP 500`, or `null`. It never
+  holds a URL, a response body or a token.
+- `updated_at.<authority>` is the time of the last successful read, or `null`. It is kept
+  across a failed read.
+- `links.grafana` is the Grafana origin from `CONSOLE_GRAFANA_URL`, or `null` when unset.
+  `links.grafana_conformance` is the conformance dashboard under that origin, or `null`. The
+  flows answer carries `links` too. The fields are base-level, so they name no tenant.
+- `stale` is `true` when any configured authority's latest read failed. The data served is then
+  the last good read. On `/v1/network` the NetBox fields (`source`, `error`, `updated_at`) and
+  `stale` describe the prefix read alone, so a site outage does not mark that answer.
+- `diagnostics.dropped_mismatched` counts the NetBox rows dropped because their own scope did not
+  match the query that returned them (see "Row checks"). It is a count, not an error: the answer
+  is still served, and a non-zero count means NetBox returned rows the console did not ask for.
+  **Platform admins only.** A tenant member's envelope omits `diagnostics` entirely, on every
+  tenant route. `/v1/network` is admin-only, so its envelope always carries it.
+- `diagnostics.cluster_name_error` is `null`, or the text of why the Proxmox cluster name could not
+  be read (for example `Proxmox answered HTTP 500`). It names the failure and its HTTP code, never a
+  URL or a response body. The source stays `ok`; the node lists then fall back to the placed nodes.
+  Platform admins only, like the rest of `diagnostics`.
+- `diagnostics.domains_error` is `null`, or one sentence saying the tag read failed and which
+  domains are shown, for example `NetBox tags could not be read: HTTP 403. Showing the last good
+  domains.` (or `Showing no domains.` when no good list exists). It carries the HTTP code, or the
+  fixed failure text, and never a body or a URL. It is `null` again after a good read. Platform
+  admins only. A tenant member's envelope never carries it.
+
+The envelope is per authority, not single, so the UI can say which source is down.
+
+## `GET /v1/tenants/{t}/inventory`
+
+```json
+{
+  "source": {...}, "error": {...}, "stale": false, "updated_at": {...},
+  "domains": [{"name": "IT", "slug": "domain-it", "color": "4caf50"}],
+  "sites": [
+    {
+      "id": "dc1", "name": "DC 1", "org": "ops",
+      "netbox_site": "dc-1", "mapped": true,
+      "clusters": [
+        {
+          "name": "pve-prod",
+          "nodes": [
+            {"name": "pve-01", "status": "online", "cpu": 0.12, "maxcpu": 16,
+             "mem": 8589934592, "maxmem": 68719476736, "uptime": 123456}
+          ],
+          "vms": [
+            {
+              "name": "tududi", "vmid": 101,
+              "status": "active", "live_status": "running",
+              "vcpus": 2.0, "memory_mb": 4096, "disk_mb": 40960,
+              "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync", "IT"],
+              "domains": ["domain-it"],
+              "workflow": {"steps": {"step-a": "pass", "step-b": "fail"},
+                           "failed": ["step-b"], "last_run": "2026-10-26T12:00:00Z"},
+              "rag": "red",
+              "grafana_url": "https://grafana.example.test/d/service-overview/service-overview?var-service=tududi&var-log_service=tududi"
+            }
+          ]
+        }
+      ],
+      "devices": [
+        {"name": "pve-01", "role": "Hypervisor", "status": "active"},
+        {"name": null, "role": null, "status": null}
+      ]
+    },
+    {"id": "dc2", "name": "DC 2", "org": "ops", "netbox_site": null, "mapped": false,
+     "clusters": [], "devices": []}
+  ]
+}
+```
+
+- `sites` are the tenant's sites in scope-file order, flattened across orgs. `org` is the owning
+  org id.
+- `domains` are the business domains NetBox holds (D37): the NetBox tags whose slug starts with
+  `domain-`, each as `{name, slug, color}`, sorted by name. `color` is the colour the tag holds, or `""`;
+  the browser draws a swatch only for six hex digits. NetBox tags are global, so the list is platform-wide and every
+  tenant gets the same one. It is `[]` before the first good tag read, and when NetBox holds no
+  `domain-` tag. The tag read (`GET /api/extras/tags/`) sends no lookup filter: it pages with
+  `offset` at 1000 a page, up to 10 pages, and a list longer than that fails the tag read as
+  truncated, so a partial domain list is never shown. It does not follow the `next` link.
+  A tag whose slug does not start with `domain-` (`domainx`, `domain`, `not-domain-x`) is no domain.
+  The tag read stands apart from the site read and from the prefix read. When it fails, `domains`
+  keeps the last good list, and `source.netbox`, `error.netbox`, `stale` and the sites and VMs are
+  unchanged. A failed tag read is never a NetBox failure.
+- `mapped` is `false` when the site declares no `netbox_site`, or NetBox holds no site with that
+  slug, or NetBox is unconfigured or has no data. An unmapped site has `clusters: []` and
+  `devices: []`.
+- `devices` are the devices NetBox holds at the site. `role` is the device role's name. `name`,
+  `role` and `status` are `null` when NetBox holds none. Devices are site-scoped, so they are
+  safe in a tenant answer.
+- Row checks: each row NetBox returns must name the site, cluster or slug the console asked for.
+  A site row must carry the requested slug. A cluster row must name the site by `site.id` or by a
+  `dcim.site` scope id. A VM must name its cluster by `cluster.id`. A device must name its site by
+  `site.id`. A row that fails the check is dropped and counted in `diagnostics`. Tenant isolation
+  holds even when NetBox ignores a filter.
+- A cluster whose scope is a location, a region or any type other than `dcim.site` is dropped and
+  counted, even when its legacy `site` field names the site. The console does not yet resolve those
+  scopes to a site, so it fails closed until it does. Such a cluster is never shown, to anyone.
+- `nodes` are sorted by name. When the Proxmox cluster's name (`GET /api2/json/cluster/status`,
+  its `type: cluster` entry) equals this NetBox cluster's name, and no other declared NetBox cluster
+  holds that name, `nodes` is every node of that Proxmox cluster, including one that hosts no VM and
+  one that is offline. A name two declared clusters share is a guess, so neither lists every node.
+  Otherwise `nodes` lists only the Proxmox nodes that host this cluster's matched VMs, so a cluster
+  never claims another cluster's nodes. If the name read fails, the name is unknown and the second
+  rule applies; the Proxmox source stays `ok`. Every caller gets `name` and `status`. Platform admins also get
+  `cpu`, `maxcpu`, `mem`, `maxmem` and `uptime`; for anyone else those keys are absent. Units are
+  Proxmox's: `cpu` is a fraction of `maxcpu`, `mem`/`maxmem` are bytes, `uptime` is seconds.
+- VM `tags` are the tag names, as before. VM `domains` are the slugs of the declared domains among
+  the VM's tags, in `domains` order. The match is on the tag's slug, never its name. A `domain-` tag
+  the domain list does not hold gives no entry, so it counts for no domain.
+- VM `status` is the NetBox status. `live_status` is the Proxmox status, or `null` when no live
+  state is joined. A VM is joined only when its name is unique across every declared NetBox site,
+  in any tenant, and unique among the Proxmox guests. A name held twice on either side gets `null`,
+  because a guess could show another host's state.
+- `vmid` is the Proxmox id, or `null` when there is no live match.
+- `memory_mb` and `disk_mb` are megabytes, as NetBox stores them.
+- `primary_ip` is the one primary address NetBox holds, prefix length included, or `null`.
+  Other addresses are never returned.
+- `workflow` is `null` for a VM with none of the three `ac_*` fields. Otherwise `steps` maps each
+  step id to its status (`pass`, `fail`, `skip`, or `unknown` for a non-string value), `failed`
+  is the `ac_failed_steps` list, and `last_run` is `ac_last_run` or `null`.
+- No secret custom field, no token and no other custom field is ever read or returned.
+
+## `GET /v1/tenants/{t}/services`
+
+```json
+{ "source": {...}, "error": {...}, "stale": false, "updated_at": {...},
+  "services": [
+    {"name": "tududi", "site": "dc1", "cluster": "pve-prod", "live_status": "running",
+     "rag": "red", "failed_steps": ["step-b"], "last_run": "2026-10-26T12:00:00Z",
+     "tags": ["tududi-sync", "IT"], "domains": ["domain-it"]}
+  ] }
+```
+
+Rows are the tenant's VMs with `workflow` set, in site and cluster order, then NetBox list order.
+`site` is the scope site id. `failed_steps` is the sorted union of `ac_failed_steps` and every step
+whose status is `fail`. `domains` is the VM's `domains`: the slugs of the declared domains it carries.
+`tags` stays the tag names.
+
+## `GET /v1/tenants/{t}/services/{name}`
+
+```json
+{ "source": {...}, "error": {...}, "stale": false, "updated_at": {...},
+  "service": { ...same row as the list... },
+  "vm": { ...same VM object as in the inventory... } }
+```
+
+When two VMs of one tenant share a name, the first in list order is returned.
+
+## `GET /v1/network` (admin-only)
+
+```json
+{ "source": {...}, "error": {...}, "stale": false, "updated_at": {...}, "truncated": false,
+  "prefixes": [
+    {"prefix": "198.51.100.0/24", "vlan": 20, "description": "management", "site": "dc-1"},
+    {"prefix": "192.0.2.0/24", "vlan": null, "description": "documentation", "site": null}
+  ] }
+```
+
+- `vlan` is the VLAN id (`vid`), or `null`.
+- `site` is the slug of the site the prefix's own scope names. A scope of type `dcim.site` gives
+  its slug. A scope with no slug gives `null`, never its name, because this field is a slug. A prefix
+  scoped to anything else (a location, say) gives `null`, and so does a prefix with no scope. A prefix with no scope type gives the slug
+  of its nested `site` object, if it carries one. The prefix's own record decides, never a per-site list.
+- `truncated` is `true` when NetBox still had prefixes after 20 pages of 1000. The prefixes shown
+  are then the first 20,000.
+- The prefix read pages with `offset`. It does not follow the `next` link NetBox returns, so the
+  token is never sent to an address the server supplied.
+- **v1 is prefixes only.** No interfaces and no IP-address list (D24, coordinator decision for v1).
+  Those are deferred to a later phase.
+
+## `GET /v1/flows` (admin-only)
+
+```json
+{"source": "ok", "flows": [{"kind": "oidc", "from": "console", "to": "authentik", "label": "sign-in"}], "links": {"grafana": null, "grafana_conformance": null}}
+```
+
+This answer has its own shape, not the common envelope. It carries no per-authority `source`,
+`error`, `updated_at` or `stale`:
+
+- `source` is the catalogue's own state: `ok` when `CONSOLE_FLOWS_FILE` is set and parsed, or
+  `unconfigured` with `flows: []` when it is unset. There is no `error` and no `stale`.
+- `flows` is the catalogue, one entry per data flow. Each entry is names only: `kind`, `from`, `to`,
+  `label`. An entry with any other key, such as an address, fails startup.
+- `links` is the one field shared with the envelope. It is base-level, like the other answers.
+
+## Grafana links
+
+The console links out to Grafana, and it makes one read of Grafana's API for the gateway usage
+(below). `src/server/grafana.rs` builds the deep links from the dashboards in
+`platform/services/o11y/deployment/config/grafana/dashboards/*.json`, which
+declare these uids and variables:
+
+| Dashboard | uid | Variables | Used for |
+|---|---|---|---|
+| Service Overview | `service-overview` | `service`, `log_service` | `grafana_url` on every VM and service row |
+| Service deployment conformance | `service-conformance` | none | `links.grafana_conformance` |
+| Agentgateway client view | `agentgateway-client-view` | `identity` | not linked in Phase 3 (no per-VM identity exists) |
+
+- Per-VM: `<base>/d/service-overview/service-overview?var-service=<name>&var-log_service=<name>`,
+  with `<name>` the VM name, encoded as a query value. A name cannot add a parameter.
+- Conformance: `<base>/d/service-conformance/service-deployment-conformance`.
+- A VM gets a `grafana_url` whether or not it is a service. What the dashboard shows for a name
+  with no data is unverified: no live Grafana was read.
+
+## Gateway usage (D39)
+
+`GET /v1/gateway` (platform admins) carries the gateway's last-hour token use per client. Each
+client has `tokens_last_hour`: the figure under its name, or `null` when no read has finished or
+the name is not in the read's result. The top-level `usage` block is `{state, refreshed_at,
+error}`. `state` is `ok`, `unconfigured` (no `CONSOLE_GRAFANA_TOKEN`), `loading` (before the first
+read finishes) or `error` (the newest read failed). `refreshed_at` is the last good read's time.
+`error` is the sentence the page shows, or `null`.
+
+The read runs in the background when `CONSOLE_GRAFANA_TOKEN` and `CONSOLE_GRAFANA_URL` are both set.
+The first read runs at once, then one every 5 minutes. Each read is one instant query through
+Grafana's data-source proxy, `/api/datasources/proxy/uid/prometheus/api/v1/query` (the `prometheus`
+datasource uid), with the Viewer token as a bearer. The PromQL is `sum by (identity)
+(increase(agentgateway_gen_ai_client_token_usage_sum{job="agentgateway"}[1h]))`. In the answer, each
+series' `metric.identity` names a client, and `value[1]`, a string, is its token count, rounded to a
+whole number. A series with no identity, or with a sample that is not a finite non-negative number,
+gives its client no figure. An identity named twice in one answer refuses the whole answer.
+
+The figure is approximate. It is the metric of the same traffic. The gateway enforces its own
+rolling budget in its own Postgres, which this read does not see, and the LLM access page says so.
+
+A failed read keeps the last good figures and says so in `error`. The reason is fixed text: no URL,
+no response body and no token. The origin must be `https://`, or cleartext to a loopback or RFC1918
+host. The console refuses any other origin at startup, and checks the origin again before each read.
+
+## RAG (one rule, `inventory::rag`)
+
+First match wins:
+
+| Colour | Condition |
+|---|---|
+| `red` | a workflow step failed (`failed` list or a `fail` status), or live `stopped` while NetBox says `active` |
+| `amber` | the answer is stale; NetBox says `planned` or `staged`; a step is pending or unknown (any status other than `pass`, `skip`, `fail`); or live state is neither `running` nor (above) stopped |
+| `grey` | no live state (Proxmox unconfigured or never read, or no unique name match) |
+| `green` | live `running`, and nothing above applies |
+
+A skipped step counts as settled. `stopped` while NetBox says `planned` is `amber`, not `red`.
+
+## Refresh and caching
+
+- One background task reads each configured authority every 60 s. The first read starts at boot.
+- Requests read the cache only. The join is computed from the cache and the scope, so a request
+  costs no upstream call.
+- A read that fails keeps the last good data and sets `stale`. A repeated identical failure is
+  logged once, not on each refresh.
+- A list that reports a next page fails that read (`NetBox list has more than one page`). The
+  console never shows a partial list as complete.
+- The site read is all-or-nothing per refresh: any failed request fails the whole site read. The
+  prefix read is separate, so a prefix failure never changes the tenant views.
+- A VM name held by two VMs across every declared site, in any tenant, gets no live join.
+
+## Configuration
+
+| Variables | Rule |
+|---|---|
+| `CONSOLE_NETBOX_URL`, `CONSOLE_NETBOX_TOKEN` | all-or-none; a v2 token (`nbt_` prefix) is sent as `Bearer`, a legacy token as `Token` |
+| `CONSOLE_PROXMOX_URL`, `CONSOLE_PROXMOX_TOKEN_ID`, `CONSOLE_PROXMOX_TOKEN` | all-or-none; sent as `Authorization: PVEAPIToken=<id>=<secret>` |
+| `CONSOLE_PROXMOX_CA_FILE` | optional PEM bundle added as roots for the Proxmox client only; counts toward the group, so alone it names `CONSOLE_PROXMOX_URL` as missing |
+| `CONSOLE_FLOWS_FILE` | optional JSON array of flow entries |
+| `CONSOLE_GRAFANA_URL` | optional Grafana origin for deep links and the usage read. Same guard as the other URLs: `https://`, or `http://` only to loopback or RFC1918. Trailing slash trimmed. Unset leaves every link `null` and runs no usage read |
+| `CONSOLE_GRAFANA_TOKEN` | optional Grafana API token, a Viewer service account's (D32), for the usage read (D39). Requires `CONSOLE_GRAFANA_URL`, which alone it names as missing. Unset: `usage.state` is `unconfigured` |
+
+- Cleartext `http://` is accepted only when the host NetBox would connect to, as `reqwest::Url`
+  parses it, is `localhost`, an IPv4 loopback or RFC1918 address, or an IPv6 loopback address. A
+  fragment, a query or a backslash cannot move the host: `http://evil.example#@` followed by a private address is refused.
+  Any other `http://` URL fails startup, naming the variable. `https://` is always accepted.
+- A `netbox_site` slug is declared by one site only, across every tenant. A slug declared twice
+  fails the scope file at load, naming both sites. A slug with whitespace fails the same way.
+- Certificate verification is never turned off. Without `CONSOLE_PROXMOX_CA_FILE` the Proxmox
+  client trusts the roots bundled with reqwest's `rustls-tls` feature (the Mozilla set via
+  `webpki-roots`, not the operating system store). A self-signed Proxmox certificate then fails
+  the read and shows as `source.proxmox: "error"`.
+- The NetBox client shares the OIDC client, so `CONSOLE_EXTRA_CA_FILE` roots apply to it too.
+- Tokens are never printed, returned or put in an error text.
+
+## Not verified
+
+- The prefix read is global: it reads every prefix and takes each site from the prefix's own scope.
+  Its paging is covered by the offset bullet below.
+- Whether NetBox 4.5 returns `site` on a cluster or device, and `scope_type`/`scope_id` on a
+  cluster, or the nested `scope` on a prefix, is unverified against a live NetBox. A row missing the
+  field it is checked by is dropped, so a wrong field name shows as a drop count, not as data.
+- The NetBox `offset` paging on `/api/ipam/prefixes/` is unverified live. It follows the standard
+  limit/offset form.
+- The Grafana dashboard uids and variable names are read from the repository JSON. The URL path
+  slug (`service-deployment-conformance`) follows the dashboard title. Whether a live Grafana
+  resolves a link whose slug differs from the title is unverified: no live Grafana was read.
+- The NetBox device `role` field name is confirmed by `platform/playbooks/create-netbox-device.yml`,
+  which writes `role` and resolves `device-roles`. The nested role `name` and device `status` value
+  are unverified live.
+- VM units are verified against the NetBox source, not the brief. `memory_mb` and `disk_mb` are
+  megabytes. netbox-community/netbox v4.5.0 `netbox/virtualization/models/virtualmachines.py`
+  labels both `(MB)` (lines 121-129). The disk unit changed from gigabytes to megabytes in 4.1
+  (`docs/release-notes/version-4.1.md:8`, v4.1.0). The 4.5 release notes (`version-4.5.md` at v4.5.10)
+  record no change to the stored unit. Their only VM-resource entry is v4.5.7's #21095 (line 75),
+  which adopts IEC display labels such as GiB, a label change. The stored value is read unchanged.
+- The NetBox tag shapes are verified against the NetBox source at tag v4.5.0, not against a live
+  NetBox. The tags list is served at `GET /api/extras/tags/`: `netbox/netbox/urls.py:48` includes
+  `extras.api.urls`, and `netbox/extras/api/urls.py:21` registers `tags`. Its rows are
+  `TagSerializer`, whose fields are `id`, `url`, `display_url`, `display`, `name`, `slug`, `color` and
+  more (`netbox/extras/api/serializers_/tags.py:30-33`). A VM's `tags` are `NestedTagSerializer`
+  objects, with `id`, `url`, `display_url`, `display`, `name`, `slug` and `color`
+  (`netbox/netbox/api/serializers/nested.py:23-27`). They reach the VM serializer through
+  `VirtualMachineSerializer` (`netbox/virtualization/api/serializers_/virtualmachines.py:33`),
+  `PrimaryModelSerializer` (`netbox/netbox/api/serializers/models.py:13`) and `TaggableModelSerializer`
+  (`netbox/netbox/api/serializers/features.py:31`). A tag's colour is a `ColorField`
+  (`netbox/extras/models/tags.py:29`, `netbox/utilities/fields.py:24-25`), validated as six lowercase
+  hex digits by `^[0-9a-f]{6}$` (`netbox/utilities/validators.py:19-22`). No live NetBox response was read.
+- The NetBox VM field `tags` is source-verified (NetBox v4.5.0, cited above). The live console token's
+  `extras.tag` view grant is unverified. `custom_fields` on a VM is confirmed by
+  `platform/playbooks/collect-service-conformance.yml`. The VM fields `vcpus`, `memory`, `disk` and
+  `primary_ip` are taken from the brief and the model, and are unverified against a live NetBox.
+- The Proxmox `cluster/resources` field names are taken from the brief and the repository's test
+  fixtures. Node `status` values are as Proxmox reports them; no live response was read.
+
+## Follow-ups
+
+Not built in Phase 3. Recorded so the next change to the contract and the UI knows what waits.
+
+- **Server: Grafana links for sites, clusters and nodes.** `grafana_url` is set on a VM and on a
+  service row only. The console shows no Grafana link for a site, cluster or node, because the
+  server sends none. The server should send one per level when `CONSOLE_GRAFANA_URL` is set. The
+  UI would then render it in the resource panel. Node usage is already per-asset, so the link
+  goes to Grafana rather than a chart in the console.

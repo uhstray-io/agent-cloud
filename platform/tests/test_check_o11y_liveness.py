@@ -16,12 +16,21 @@ from seed_harness import ROLE, ROOT, FakeBao, run_seed, serve
 PLAYBOOK = "platform/playbooks/check-o11y-liveness.yml"
 TOKEN = "synthetic-watcher-token-value"
 HOOK_SECRET = "synthetic-webhook-secret-value"
+WATCH_EXTRA = {"o11y_watch_webhook_hosts": ["127.0.0.1"], "o11y_watch_retry_delay": 0}
 
 
-def make_handler(grafana="up", datasource="ok", token=TOKEN):
+def make_handler(grafana="up", datasource="ok", token=TOKEN, blips=0):
+    """blips: how many first answers from each Grafana probe fail before it recovers."""
+
     class Handler(FakeBao):
         requests = []
         posts = []
+        failed = {}
+
+        def blip(self):
+            count = type(self).failed.get(self.path, 0)
+            type(self).failed[self.path] = count + 1
+            return count < blips
 
         def do_POST(self):
             self.record("POST")
@@ -45,12 +54,20 @@ def make_handler(grafana="up", datasource="ok", token=TOKEN):
                     data["watcher_token"] = token
                 return self.reply({"data": {"data": data}})
             if self.path == "/api/health":
+                if self.blip():
+                    return self.reply({"database": "failing"}, 503)
                 if grafana == "down":
                     return self.reply({"message": "bad gateway"}, 502)
                 return self.reply({"database": "ok"})
             if self.path == "/api/datasources/uid/prometheus/health":
                 if self.headers.get("Authorization") != f"Bearer {TOKEN}":
                     return self.reply({"message": "invalid API key"}, 401)
+                if datasource == "forbidden":
+                    return self.reply({"message": "Access denied to datasource"}, 403)
+                if self.blip() or datasource == "db-error":
+                    return self.reply({"message": "Unable to load datasource metadata"}, 500)
+                if datasource == "bad-gateway":
+                    return self.reply({"message": "bad gateway"}, 502)
                 if datasource == "down":
                     return self.reply({"status": "ERROR", "message": "connection refused"}, 400)
                 return self.reply({"status": "OK"})
@@ -59,10 +76,10 @@ def make_handler(grafana="up", datasource="ok", token=TOKEN):
     return Handler
 
 
-def run(tmp_path, handler, verbose=True):
+def run(tmp_path, handler, verbose=True, extra=None):
     with serve(handler) as addr:
         handler.addr = addr
-        extra = {"o11y_watch_url": addr, "o11y_watch_webhook_hosts": ["127.0.0.1"]}
+        extra = {"o11y_watch_url": addr, **WATCH_EXTRA, **(extra or {})}
         rc, out = run_seed(tmp_path, PLAYBOOK, addr, extra=extra, verbose=verbose)
     for secret in (TOKEN, HOOK_SECRET):
         assert secret not in out
@@ -82,7 +99,10 @@ def test_healthy_receiver_posts_nothing(tmp_path):
     [
         ({"grafana": "down"}, "grafana /api/health failed (status 502)"),
         ({"datasource": "down"}, "prometheus datasource unhealthy (status 400)"),
+        ({"datasource": "db-error"}, "grafana datasource health errored (status 500, uid prometheus;"),
+        ({"datasource": "bad-gateway"}, "grafana datasource health probe failed (status 502, uid prometheus)"),
         ({"token": "synthetic-stale-token"}, "watcher token rejected by Grafana (status 401)"),
+        ({"datasource": "forbidden"}, "watcher token rejected by Grafana (status 403)"),
         ({"token": ""}, "watcher_token is not in secret/services/o11y"),
     ],
 )
@@ -97,22 +117,70 @@ def test_each_failure_posts_one_named_message(tmp_path, kwargs, named):
     assert named in out
 
 
-def test_check_mode_posts_nothing(tmp_path):
+def test_failure_names_the_configured_datasource_uid(tmp_path):
+    # Grafana answers an unknown uid too; the message must carry the uid that was probed.
+    handler = make_handler()
+    rc, out = run(tmp_path, handler, extra={"o11y_watch_prometheus_uid": "prom-alt"})
+    assert rc != 0
+    assert len(handler.posts) == 1, out
+    assert "grafana datasource health probe failed (status 404, uid prom-alt)" in handler.posts[0]["content"]
+
+
+def test_persistent_failure_is_probed_three_times_before_posting(tmp_path):
     handler = make_handler(grafana="down")
+    rc, _ = run(tmp_path, handler)
+    assert rc != 0
+    assert handler.requests.count(("GET", "/api/health")) == 3
+    assert len(handler.posts) == 1
+
+
+def test_one_transient_blip_on_each_probe_posts_nothing(tmp_path):
+    # A lone 503/500, such as Grafana's store failing one read, must not page anyone.
+    handler = make_handler(blips=1)
+    rc, out = run(tmp_path, handler)
+    assert rc == 0, out
+    assert "o11y liveness OK" in out
+    assert handler.posts == []
+    assert handler.requests.count(("GET", "/api/health")) == 2
+    assert handler.requests.count(("GET", "/api/datasources/uid/prometheus/health")) == 2
+
+
+def test_rejected_token_is_not_retried(tmp_path):
+    handler = make_handler(token="synthetic-stale-token")
+    run(tmp_path, handler)
+    assert handler.requests.count(("GET", "/api/datasources/uid/prometheus/health")) == 1
+
+
+def run_playbook(tmp_path, handler, *flags):
+    """Run the watcher once with `flags` (stock output, no redaction) and return its output."""
     with serve(handler) as addr:
         handler.addr = addr
         inventory = tmp_path / "inventory.yml"
         inventory.write_text(json.dumps({"all": {"vars": {"openbao_addr": addr}}}))
         env = {k: v for k, v in os.environ.items() if k not in ("OPENBAO_ADDR", "BAO_ROLE_ID", "BAO_SECRET_ID")}
         env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
-        extra = {**ROLE, "o11y_watch_url": addr, "o11y_watch_webhook_hosts": ["127.0.0.1"]}
+        extra = {**ROLE, "o11y_watch_url": addr, **WATCH_EXTRA}
         result = subprocess.run(
-            ["ansible-playbook", "--check", "-i", str(inventory), "-c", "local", PLAYBOOK, "-e", json.dumps(extra)],
+            ["ansible-playbook", *flags, "-i", str(inventory), "-c", "local", PLAYBOOK, "-e", json.dumps(extra)],
             cwd=ROOT, env=env, text=True, capture_output=True, timeout=120, stdin=subprocess.DEVNULL,
         )
-    out = result.stdout + result.stderr
+    return result.stdout + result.stderr
+
+
+def test_check_mode_posts_nothing(tmp_path):
+    handler = make_handler(grafana="down")
+    out = run_playbook(tmp_path, handler, "--check")
     assert "grafana /api/health failed (status 502)" in out, out
     assert handler.posts == []
+    for secret in (TOKEN, HOOK_SECRET, "synthetic-login-value"):
+        assert secret not in out
+
+
+def test_retry_output_at_vvvv_carries_no_secret(tmp_path):
+    # Retry lines print at every verbosity; -vvvv prints the most output, so it is the level to prove.
+    handler = make_handler(grafana="down", datasource="db-error")
+    out = run_playbook(tmp_path, handler, "-vvvv")
+    assert "FAILED - RETRYING" in out, out
     for secret in (TOKEN, HOOK_SECRET, "synthetic-login-value"):
         assert secret not in out
 

@@ -2,6 +2,7 @@
 
 import hashlib
 import importlib.util
+import ipaddress
 import json
 import os
 import subprocess
@@ -10,8 +11,12 @@ from pathlib import Path
 
 import pytest
 import yaml
+from jinja2 import Environment
 
 ROOT = Path(__file__).resolve().parents[2]
+# Deterministic synthetic host from the canonical RFC1918 test network; this is
+# not derived from any site inventory or deployment topology.
+PRIVATE_TEST_IP = str(ipaddress.ip_network("192.168.0.0/16")[20])
 HELPER = ROOT / "platform/playbooks/files/verify-o11y-profile-candidates.py"
 PLAYBOOK = ROOT / "platform/playbooks/verify-o11y-profile-pilot.yml"
 TEMPLATES = ROOT / "platform/semaphore/templates.yml"
@@ -58,7 +63,7 @@ pyroscope.scrape "alloy_self_profile" {
     return baseline, baseline + profiles
 
 
-def render_alloy_template(profile_enabled):
+def render_alloy_template(profile_enabled, availability_enabled=False):
     from jinja2 import Environment
 
     env = Environment(keep_trailing_newline=True)
@@ -70,6 +75,29 @@ def render_alloy_template(profile_enabled):
     loaded_vars = {}
     for vars_file in play["vars_files"]:
         loaded_vars.update(yaml.safe_load((PLAYBOOK.parent / vars_file).read_text(encoding="utf-8")))
+    availability = {"enabled": False, "targets": [], "limits": {}}
+    if availability_enabled:
+        module = {"modules": {"health_01": {
+            "prober": "http", "timeout": "10s", "http": {
+                "method": "GET", "valid_status_codes": [200],
+                "follow_redirects": False, "proxy_from_environment": False,
+                "body_size_limit": "4096B",
+            },
+        }}}
+        availability = {
+            "enabled": True,
+            "limits": {"max_targets": 1, "max_total_timeout_seconds": 10, "max_series": 6},
+            "targets": [{
+                "module_name": "health_01", "target_id": "service:alpha",
+                "service_identity": "alpha", "environment": "dev", "cluster": "test-cluster",
+                "endpoint": f"http://{PRIVATE_TEST_IP}/healthz", "expected_status_codes": [200],
+                "tls_server_name": None, "trust": None,
+                "interval_seconds": 60, "scrape_timeout_seconds": 20,
+                "probe_timeout_seconds": 10, "body_size_limit_bytes": 4096,
+                "samples_per_scrape": 64,
+                "blackbox_config": json.dumps(module, sort_keys=True, separators=(",", ":")),
+            }],
+        }
     return template.render(
         **loaded_vars,
         local_mode=False,
@@ -77,6 +105,8 @@ def render_alloy_template(profile_enabled):
         o11y_environment="dev",
         o11y_gateway_span_logs_enabled=False,
         o11y_alloy_profile_pilot_enabled=profile_enabled,
+        _o11y_availability=availability,
+        o11y_availability_probes_enabled=availability_enabled,
     )
 
 
@@ -92,7 +122,18 @@ def test_candidate_structure_accepts_only_cpu_self_profile():
             "process_cpu", "memory", "block", "goroutine", "mutex", "fgprof",
             "godeltaprof_memory", "godeltaprof_mutex", "godeltaprof_block",
         ],
+        "profile_address": "alloy:12345",
     }
+
+
+def test_candidate_structure_accepts_only_the_fixed_availability_loopback_address():
+    disabled, enabled = configs()
+    disabled = disabled.replace('"alloy:12345"', '"127.0.0.1:12345"')
+    enabled = enabled.replace('"alloy:12345"', '"127.0.0.1:12345"')
+    result = CHECK.validate_candidates(disabled, enabled, "127.0.0.1:12345")
+    assert result["target_count"] == 1
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK.validate_candidates(disabled, enabled, "alloy:12345")
 
 
 def test_rendered_template_candidates_match_outside_profile_blocks():
@@ -103,6 +144,16 @@ def test_rendered_template_candidates_match_outside_profile_blocks():
 
     assert result["target_count"] == 1
     assert result["profile_type_count"] == 9
+
+
+def test_profile_candidate_uses_loopback_when_availability_handler_is_isolated():
+    disabled = render_alloy_template(False, availability_enabled=True)
+    enabled = render_alloy_template(True, availability_enabled=True)
+    assert '"__address__" = "127.0.0.1:12345"' in enabled
+    result = CHECK.validate_candidates(disabled, enabled, "127.0.0.1:12345")
+    assert result["target_count"] == 1
+    with pytest.raises(CHECK.Refusal, match="candidate_invalid"):
+        CHECK.validate_candidates(disabled, enabled, "alloy:12345")
 
 
 def test_candidate_structure_refuses_enabled_only_change_outside_profile_blocks():
@@ -619,6 +670,84 @@ def test_playbook_is_read_only_exact_revision_pinned_and_check_mode_safe():
     assert "when: not ansible_check_mode" in rendered
     assert "network: \"none\"" not in rendered
     assert "state: absent" in rendered
+
+
+def test_profile_playbook_uses_validated_availability_projection_and_fixed_expected_address():
+    playbook = yaml.safe_load(PLAYBOOK.read_text(encoding="utf-8"))
+    controller_vars = playbook[2]["vars"]
+    assert "local_monorepo_dir" in controller_vars["_profile_internal_overrides"]
+    assert "monorepo_deploy_path" in controller_vars["_profile_internal_overrides"]
+    tasks = playbook[-1]["tasks"]
+    path_guard = next(
+        index for index, task in enumerate(tasks)
+        if task.get("name") == "Require the reviewed o11y deployment path before source probes"
+    )
+    prepare = next(index for index, task in enumerate(tasks)
+                   if task.get("name") == "Prepare the reviewed availability source projection for profile candidates")
+    block = next(task["block"] for task in tasks
+                 if task.get("name") == "Render, validate, report, and remove temporary candidates")
+    assert any(
+        task.get("name") == "Render disabled and enabled candidates from the reviewed template"
+        for task in block
+    )
+    run = next(
+        task for task in block
+        if task.get("name") == "Run the no-pull, no-network pinned Alloy candidate checks"
+    )
+    outer_render = next(
+        index for index, task in enumerate(tasks)
+        if task.get("name") == "Render, validate, report, and remove temporary candidates"
+    )
+    assert path_guard < prepare
+    assert "monorepo_deploy_path | default('') == 'platform/services/o11y/deployment'" in tasks[path_guard][
+        "ansible.builtin.assert"
+    ]["that"]
+    path_checks = [Environment().compile_expression(expression)
+                   for expression in tasks[path_guard]["ansible.builtin.assert"]["that"]]
+    accepted_context = {
+        "monorepo_deploy_path": "platform/services/o11y/deployment",
+        "_profile_deploy_dir": "/srv/agent-cloud/platform/services/o11y/deployment",
+        "_profile_monorepo_dir": "/srv/agent-cloud",
+    }
+    assert all(check(**accepted_context) for check in path_checks)
+    for deployment_path, rendered_path in (
+        ("platform/services/prometheus", "/srv/agent-cloud/platform/services/prometheus"),
+        (None, "/srv/agent-cloud/"),
+    ):
+        context = accepted_context | {
+            "_profile_deploy_dir": rendered_path,
+        }
+        if deployment_path is None:
+            context.pop("monorepo_deploy_path")
+        else:
+            context["monorepo_deploy_path"] = deployment_path
+        assert not all(check(**context) for check in path_checks)
+    assert prepare < outer_render
+    assert tasks[prepare]["ansible.builtin.import_tasks"] == "tasks/prepare-o11y-availability.yml"
+    assert playbook[-1]["vars"]["_deploy_dir"] == "{{ _profile_deploy_dir }}"
+    assert "profile_address" in run["ansible.builtin.command"]["stdin"]
+    assert "127.0.0.1:12345" in run["ansible.builtin.command"]["stdin"]
+    assert 'estate_coverage_inventory' in str(playbook[2]["vars"]["_profile_internal_overrides"])
+
+
+def test_acceptance_reuses_validated_profile_address_in_operation_payload():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/accept-o11y-profile-pilot.yml").read_text())
+    controller = next(
+        play for play in playbook
+        if play.get("name") == "Require all profile pilot gates before the live operation"
+    )
+    assert "_profile_availability" in controller["vars"]
+    assert (
+        "_profile_candidate.profile_address == _profile_address"
+        in controller["tasks"][-1]["ansible.builtin.assert"]["that"]
+    )
+    operation_play = playbook[-1]
+    block = next(task["block"] for task in operation_play["tasks"] if "block" in task)
+    run = next(
+        task for task in block
+        if task.get("name") == "Run the Alloy-only activation, delivery, restoration, and post-disable query proof"
+    )
+    assert "'profile_address': _profile_address" in run["ansible.builtin.command"]["stdin"]
 
 
 @pytest.mark.parametrize("stdout", ["", "not-json"])

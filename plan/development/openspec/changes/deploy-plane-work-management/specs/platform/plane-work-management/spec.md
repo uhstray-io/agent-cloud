@@ -8,12 +8,12 @@ Provides the platform's work tracker. Plane links GitHub issues and pull request
 
 ### Requirement: Recorded findings gate the phases that depend on them
 
-Each unverified platform behaviour that a later phase depends on MUST be verified in Phase 0, and its dated finding MUST be recorded in the change's design document before the dependent phase starts. A phase that depends on an open finding MUST NOT start.
+Each unverified platform behaviour that a later phase depends on MUST be researched in Phase 0, and its dated finding MUST be recorded in the change's design document before the dependent phase starts. A finding that can only be confirmed against a running Plane instance MUST name a runtime check and the task that check gates. That task MUST NOT start until the check passes and its dated result is recorded. A task that depends on an open finding MUST NOT start.
 
 #### Scenario: Spike findings are recorded before dependent phases start
 
 - **WHEN** a phase depends on a Phase 0 spike
-- **THEN** the design document holds a dated finding for that spike, and no row of the Phase 0 table remains open
+- **THEN** the design document holds a dated finding for that spike, and every runtime check that gates one of the phase's tasks has passed before that task starts
 
 ### Requirement: Each environment runs the Plane tier it can validate
 
@@ -140,12 +140,12 @@ Interactive users SHALL sign in to Plane through the Authentik OIDC client. Self
 
 ### Requirement: Plane roles follow identity-provider groups
 
-Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Owner role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
+Plane roles SHALL follow Authentik group membership under decision D3. Members of `platform-admins` MUST hold the Admin role, Plane's top workspace role. Members of `platform-developers` and `platform-business` MUST hold the Member role. Members of `platform-user` MUST be denied. The reconcile playbook SHALL be read-only unless it is run with `apply=true`, and a member who has left every member group MUST lose access on apply. The reconcile schedule SHALL be registered only after an apply run has succeeded.
 
-#### Scenario: Administrator receives Owner
+#### Scenario: Administrator receives Admin
 
 - **WHEN** the reconcile playbook applies with `apply=true` for a member of `platform-admins`
-- **THEN** that member holds the Owner role in Plane
+- **THEN** that member holds the Admin role in Plane
 
 #### Scenario: Developer and business user receive Member
 
@@ -198,7 +198,7 @@ The GitHub integration SHALL use the GitHub App named Plane. Issues and pull req
 
 ### Requirement: OpenSpec changes project into Plane without overwriting status
 
-The projects sync SHALL read each declared repository's OpenSpec change task files and project them into Plane as modules and work items. Each work item MUST link to its plan file. The generator MUST NOT write a state for any work item, so Plane owns status. A second run of the sync against unchanged input MUST make zero changes.
+The projects sync SHALL read each declared repository's OpenSpec change task files and project them into Plane as modules and work items. Each work item MUST link to its plan file. The generator MUST NOT write a state for any work item, so Plane owns status. The generator MUST be create-only: it identifies each module and work item by an external source and identifier, looks it up before creating it, and MUST NOT change an item that already exists. A second run of the sync against unchanged input MUST make zero changes, and the sync MUST NOT depend on any local state carried between runs.
 
 #### Scenario: Module and work items follow tasks.md
 
@@ -215,10 +215,15 @@ The projects sync SHALL read each declared repository's OpenSpec change task fil
 - **WHEN** the sync runs a second time against unchanged input
 - **THEN** it creates, updates and deletes nothing in Plane
 
-#### Scenario: Status set in Plane survives a re-push
+#### Scenario: Status set in Plane survives a re-sync
 
-- **WHEN** a work item's state is set in the Plane user interface, and the projects are pushed again
-- **THEN** the state set in Plane is still present afterwards
+- **WHEN** a work item's state, assignees and labels are set in the Plane user interface, and the sync runs again with that task's text changed
+- **THEN** the state, assignees and labels set in Plane are still present afterwards
+
+#### Scenario: A fresh runner creates no duplicates
+
+- **WHEN** the sync runs from a clean workspace with no files left by an earlier run
+- **THEN** it finds every existing module and work item by its external identifier and creates nothing that already exists
 
 #### Scenario: Work item links to its plan file
 
@@ -246,22 +251,17 @@ The Plane MCP server SHALL run in OAuth mode behind the reverse proxy. A harness
 
 ### Requirement: tududi retires in a fixed order
 
-The tududi retirement SHALL run only after the gates for the earlier phases pass. Open tasks MUST migrate into Plane under the label `migrated-from-tududi`, each carrying its tududi task id as a stable identity. Before every create, the migration MUST query Plane for that identity, so that a rerun after a partial failure never creates a duplicate. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
-
-#### Scenario: Open tasks migrate under a marker label
-
-- **WHEN** the one-time migration runs
-- **THEN** each open tududi task exists in Plane under the label `migrated-from-tududi`, carrying its tududi task id
-
-#### Scenario: Migration rerun creates no duplicates
-
-- **WHEN** the migration is run again after a partial failure
-- **THEN** the items already migrated are skipped, and no item is created a second time
+The tududi retirement SHALL run only after the Phase 1 gate passes; it does not wait for phases 2 to 6 (decision 2026-11-07). The tududi data MUST be archived, not migrated: its database and uploads are written to site-config and then discarded, and nothing is imported into Plane. The tududi container MUST be stopped before the final archive, so no write lands during or after it. The final archive MUST be taken from the stopped volumes and its checksum read back before any container, volume or VM is removed. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
 
 #### Scenario: Teardown refuses without confirmation
 
 - **WHEN** the tududi teardown is launched with a confirmation value that is absent or does not equal the VM id
 - **THEN** its preflight refuses before any backup or destructive step, and it changes nothing
+
+#### Scenario: Final archive precedes teardown
+
+- **WHEN** the teardown runs
+- **THEN** the tududi container is stopped first, the database and uploads are archived from the stopped volumes to site-config, and the archive checksum is read back before any container, volume or VM is removed
 
 #### Scenario: Sync app is uninstalled after the refresher is gone
 

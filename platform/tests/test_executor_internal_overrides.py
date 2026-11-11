@@ -247,6 +247,10 @@ def test_the_guard_ends_the_run_before_any_other_play(tmp_path, check, forge):
         assert proc.returncode != 0, proc.stdout
         assert "Refusing to run: _verdict set from outside the playbook" in proc.stdout
         assert "VERDICT" not in proc.stdout and "PLAY [tgt]" not in proc.stdout, proc.stdout
+    # The guard never rendered the forged value: the stateful forgery counts its renderings in
+    # this file and was never asked. This is what lets the guard-class tests elsewhere use
+    # forgeries.by_name (plain only); plan 21 D1, docs/MISTAKES.md 1.15.
+    assert not (tmp_path / "forgery-renders-_verdict").exists(), "the guard rendered a forged value"
 
 
 # The name each verdict is computed from, where one name carries it; any other executor is
@@ -274,7 +278,7 @@ def _forged_name(path: Path) -> str:
 @pytest.mark.parametrize("path,forge", [
     pytest.param(path, f.values[0], id=f"{path.name}-{f.id}")
     for path in EXECUTORS
-    for f in forgeries.templated_forgeries(_forged_name(path), [], {"forged": True})
+    for f in forgeries.by_name(_forged_name(path), [], {"forged": True})
 ])
 def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp_path):
     name = _forged_name(path)
@@ -283,6 +287,28 @@ def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp
     assert f"Refusing to run: {name} set from outside the playbook" in proc.stdout, proc.stdout + proc.stderr
     assert proc.stdout.count("PLAY [") == 1, proc.stdout
     assert "CUSTOM STATS" not in proc.stdout or "step_result" not in proc.stdout, proc.stdout
+
+
+# The availability drill input is read by the prepare task that the deploy and the endpoint drill
+# and its recovery import. A launch that sets it as an extra var is refused by the guard before
+# any play, under every templated spelling of the forged value.
+@needs_ansible
+@pytest.mark.parametrize("path,forge", [
+    pytest.param(REPO / "platform/playbooks" / name, f.values[0], id=f"{name}-{f.id}")
+    for name in ("deploy-o11y.yml", "survey-o11y-scrape-baseline.yml", "verify-o11y-profile-pilot.yml",
+                 "drill-o11y-endpoint-availability.yml", "recover-o11y-endpoint-drill.yml")
+    for f in forgeries.by_name(
+        "_o11y_availability_drill",
+        {"target_id": "service:alpha", "status_code": 200},
+        {"target_id": "service:alpha", "status_code": 503},
+    )
+])
+def test_the_availability_drill_input_is_refused_as_a_launch_extra_var(path, forge, tmp_path):
+    proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", forge(tmp_path), "--check")
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "Refusing to run: _o11y_availability_drill set from outside the playbook" in proc.stdout, (
+        proc.stdout + proc.stderr)
+    assert proc.stdout.count("PLAY [") == 1, proc.stdout
 
 
 # The `_` prefix is RESERVED: hostvars also holds inventory vars, so an inventory that defined an
@@ -319,7 +345,7 @@ def test_an_inventory_var_with_the_reserved_prefix_is_refused_with_the_rule(tmp_
 @pytest.mark.parametrize("path, forge", [
     pytest.param(path, f.values[0], id=f"{path.name}-{f.id}")
     for path in _launchable()
-    for f in forgeries.templated_forgeries("_forged_by_launch", None, {"forged": True})
+    for f in forgeries.by_name("_forged_by_launch", None, {"forged": True})
 ])
 def test_every_launchable_playbook_refuses_a_forged_internal_name(path, forge, tmp_path):
     proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", forge(tmp_path), "--check")

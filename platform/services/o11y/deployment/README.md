@@ -74,6 +74,25 @@ gateway host to `o11y_otlp_bind:4317`. The client-view dashboard plots HTTP and
 model (`agentgateway_gen_ai_server_request_duration`) p95 side by side, and the
 inference latency dashboard links to it.
 
+## OTLP receiver mutual TLS source contract
+
+`o11y_otlp_tls_enabled` defaults false. When enabled, the existing OTLP gRPC
+listener requires a step-ca client certificate, and the receiver-host journal
+collector presents its fixed `o11y-journal` client leaf while verifying the required
+`o11y_otlp_tls_server_name`. The receiver uses its fixed `o11y-otlp-server` leaf and
+the authoritative root/intermediate bundle. Both certificate directories and the
+bundle are mounted read-only. Alloy rereads staged leaves natively; existing
+connections are not immediately reauthenticated after a reload.
+
+Alloy's client-CA check verifies trust-chain membership, not a gateway-specific SAN,
+so the existing source-scoped firewall remains part of the sender boundary. The
+source change does not enable private inventory or prove live activation. Leaf
+issuance, gateway exporter transport, coordinated journal/receiver rollout, runtime
+mount and delivery checks, and OpenSpec task 6.5 handshake/refusal evidence remain
+separate gates. Keep the switch false until those owners coordinate the rollout.
+TLS-enabled Clean Deploy is refused because it would remove the issued certificate
+tree.
+
 ## OTLP receiver resource bounds — source slice for task 3.3
 
 Both OTLP inputs pass directly through their own Alloy memory limiter before
@@ -146,12 +165,120 @@ number, so its config appends the `B` unit to the bytes carried in
 crash-loops the container. The other four limits stay numeric.
 
 The existing `o11y_scrape_sample_limit` remains the stricter ceiling for the
-receiver-host and host-node exporters. All scrape paths retain the forbidden
+receiver-host and host-node exporters, and for the scrapes of Alloy's own self-metrics. One filter,
+`o11y_effective_scrape_limits` (`platform/playbooks/filter_plugins/o11y_scrape_budget.py`), defines
+that sample limit for both producers: `templates/env.j2` gives it to Alloy's self-scrape,
+`templates/prometheus.yml.j2` to Prometheus's `alloy` and `receiver-host` jobs, and every availability
+source-review caller passes the same result, so the source gate compares whichever producer is current
+against the limit it was given. The other Prometheus jobs keep the declared `sample_limit`.
+The scrape-baseline survey's budget preview and loaded-limit coverage read the same capped-job set
+(`CEILED_SAMPLE_JOBS` in that module: `receiver-host`, `host-node` and `alloy`), so they judge each job
+against the limit it actually runs with. All scrape paths retain the forbidden
 label drop and target identity labels. Per-scrape bounds restrict one response
 at a time; they do not cap lifetime series churn as label values change across
 scrapes. Live target readback, over-budget refusal checks, and calibration of
 the private values remain open. Prometheus's `body_size_limit` is documented
 as experimental in the pinned v3.1.0 configuration reference.
+
+### Native endpoint availability source contract — task 2.2/3.3 source slice
+
+The private estate declaration remains the only target authority. An applicable
+`signals.health` entry may opt into `collection_method: alloy-blackbox-http`
+with one fixed RFC1918 IPv4 HTTP(S) GET endpoint, exact accepted statuses, and
+`budget.health` interval, timeout, body, and sample limits. HTTPS requires a
+reviewed DNS server name and `system` or `internal-ca` trust; certificate
+verification stays enabled. Redirects and environment proxying are disabled.
+Endpoints, TLS names, and activation limits belong in site-config, never in this
+repository, command logs, or rendered labels.
+
+Source validation requires a matching canonical inventory revision, explicit
+reviewed enablement, a nonempty deployed target set, receiver-matching
+environment, and finite limits. Source safety ceilings are 64 targets, 30–3600
+second intervals, probe timeout at most 10 seconds, scrape timeout at most 30
+seconds with probe < scrape <= interval, response bodies at most 65,536 bytes,
+raw scrape samples at most 256 and within the existing shared cap, aggregate
+probe timeout at most 120 seconds, and at most 384 retained series. These are
+hard source ceilings, not production defaults or a measured cadence. The
+candidate retains six fixed families and fixed service, target, environment,
+cluster, job, and instance labels; endpoint text is not a label.
+
+Availability is explicitly off by default. Enabling it requires
+`o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed` to be
+true, a revision-matched `estate_coverage_inventory` target declaration, and
+finite reviewed limits. Before placement and immediately before lifecycle
+apply, the deployer must prove the actual Linux network namespace is distinct;
+after apply it must bind the new Alloy process to the reviewed candidate and
+pass the fixed component, target, loaded-limit, and fresh-sample readback gates.
+These source gates and their regressions are implemented. A bounded pinned
+Alloy v1.5.1 fixture also parsed the expected component metadata after warm-up.
+No production inventory or live source transition has been accepted, and the
+fixture does not prove fresh sample delivery or endpoint health; runtime
+availability and probe traffic remain unverified. Candidate rendering, source
+tests, and the public source flag alone do not establish runtime availability.
+The Alloy handler and profile consumer use loopback in the availability overlay;
+internal-CA trust uses the existing public CA bundle in a read-only mount,
+deduplicated with the OTLP TLS overlay. Existing self-monitor labels and metrics
+are forwarded through the existing private receiver path. Keep task 3.3 and all
+live acceptance gates open.
+
+**Proving the namespace gate before the first enable.** `Survey o11y Availability Gate (Dev)`
+(`survey-o11y-availability-gate.yml`) runs the pre-placement namespace proof in enabled mode and
+prints one fixed category. `isolated` means the proof passed for the receiver as it runs at that
+moment. Any other value names the decision point that refused: `namespace_alloy_unavailable` (no
+single project Alloy container running with a start time), `namespace_alloy_host_port`
+(a container publishes host port 12345), `namespace_shared` (the Alloy network namespace equals the
+host's, which is the helper's own network namespace, or a project sibling's), `namespace_network_mode` (a network mode that is host, none, or joins
+another namespace), `namespace_provider_unverified` (the compose or podman provider, its version or
+executable identity, or the enabled-mode overlay does not match), `namespace_unstable` (two passes
+disagree, or an expected fingerprint does not match), `namespace_runtime_unreadable` (an inspect,
+`/proc` (including the helper's own namespace) or listing read failed or was malformed, or a running
+container had no usable pid), `namespace_internal_error` (the helper raised an unexpected error; no
+detail is printed), and `namespace_unverified` for every other refusal. The filter adds
+`namespace_helper_failed` when the helper exited with a code other than 0 or 2 before printing a
+result. The producer source gate
+(`--verify-availability-source`) reports `namespace_unverified` in place of the finer categories, so
+its fixed reason set does not change.
+The survey reads no activation switch, places nothing, and prints no container, process or namespace
+identity. A refusal is evidence about the receiver's current state, not a verdict on the overlay, and
+an `isolated` result does not accept availability: the source, placement and post-apply gates still
+apply. The survey covers only the pre-placement runtime proof.
+
+**Candidate-mode refusals.** The effective compose file checks run in candidate mode (`deploy.sh`,
+on the real enabled deploy, at three points: before the first start, before the final start, and
+after apply). Each refusal names the decision point that raised it:
+`namespace_candidate_compose_unreadable` (an overlay file is missing, `compose config` failed, its
+output is not UTF-8 or YAML, `services` is not a mapping of 1 to 32 entries, a service entry is not a
+mapping, or the project `name` is missing or empty),
+`namespace_candidate_inputs_label` (more than one final label overlay, an overlay path or file that
+does not validate, a label service set that differs from the services, or an
+`io.agent-cloud.inputs-sha256` label that does not match), `namespace_candidate_pod` (enabled mode
+without `x-podman: {in_pod: false}`), `namespace_candidate_alloy_spec` (the `alloy` service is missing
+or not a mapping, or its entrypoint, command, network mode, image or config mount differs from the
+declared one; the config mount is read in either form, the long mapping Docker Compose emits or the
+short `source:target:ro` string `podman-compose config` keeps), `namespace_candidate_ports` (a port list or entry is malformed, a port uses 12345, or
+an Alloy port is outside the declared target, protocol or loopback and private address rules),
+`namespace_candidate_project` (the running Alloy belongs to a different project than the candidate),
+and `namespace_network_mode` (a service other than `alloy` declares a network mode; Alloy's own network mode is part of `namespace_candidate_alloy_spec`). `deploy.sh` prints one line,
+`Availability gate category: <category>`, before its error message, so the failing decision is in the
+deploy output. It never prints the helper's raw output. The producer source gate folds all of these
+to `namespace_unverified`.
+
+**Post-apply source readback refusals.** After the lifecycle apply, the deploy reads the Alloy
+self-metrics producer back and prints `Post-apply self-metrics producer diagnostic: <category>`
+when it does not observe the reviewed producer (the pre-placement read prints the same line as
+`Current self-metrics producer diagnostic`). With availability enabled the readback also binds
+the running Alloy to the reviewed candidate config, and each binding check has its own category:
+`native_binding_digest_invalid` (no valid candidate digest), `native_binding_started_before_apply`
+(Alloy was not restarted after the apply boundary), `native_binding_argv` (Alloy's command line),
+`native_binding_compose` (the effective compose project), `native_binding_image`,
+`native_binding_config_digest` (the placed config is not the reviewed candidate),
+`native_binding_config_bytes` (the config Alloy loaded differs from the placed one),
+`native_binding_components` (an unknown root component or a config-loading `import`, `module` or
+`remotecfg` block; a `module = ...` attribute is not a block) and `native_binding_mounts`.
+`native_source_identity_changed` means the Alloy process changed during the read,
+`native_source_transition_unproven` that a producer change was not proven by a new Alloy process,
+and `native_source_internal_error` that the helper raised an unexpected error. The read-only
+`Survey o11y Scrape Baseline (Dev)` runs the same binding without applying anything.
 
 The Dev-bound survey can also emit an optional **source-only candidate
 compatibility preview** when `o11y_scrape_limits_reviewed` is true and the
@@ -461,6 +588,21 @@ validated before placement and serialized as PromQL/YAML strings. Target rules
 use `absent_over_time(up{...}[5m])` and hold for two minutes. An endpoint that
 still exists with `up=0` remains the service-down condition; a target missing
 from Prometheus for five minutes is the disappeared-target condition.
+
+The optional native endpoint-health rules keep three observations separate:
+`probe_success=0` means the reviewed health contract failed while its scrape is
+healthy, `up=0` means telemetry collection failed, and an absent exact
+`probe_success` series is missing health data. The failed-probe rule requires
+`up=1` for the same six-label target identity. The missing-probe rule uses the
+reviewed health freshness window and is suppressed only by `up=0` for that same
+identity. The existing generic service rule reports a telemetry scrape failure
+and does not claim the application is down. Both endpoint rules use the
+existing alert enablement, canary, ownership, and Discord route; disabling the
+source, alerts, or activating the canary removes the rules through the existing
+`deleteRules` cleanup. A rendered rule and source-level PromQL evaluation do not
+prove Grafana readback, live firing/recovery, endpoint behavior, or notification
+delivery. The `agent-cloud-conformance` silence duration remains private and
+must follow its verified schedule; no default cadence is inferred here.
 
 When production alerts or the reviewed-target gate turns off, Grafana's generated
 file keeps every validated previously owned target UID as a paused `vector(0)`
@@ -773,6 +915,80 @@ contact-point removal from code, removes the webhook line from the existing
 OpenBao is unavailable. Persistent alert enablement is a separate reviewed
 inventory rollout after a successful canary receipt.
 
+## Query errors keep the last state
+
+Alert rules set `execErrState: KeepLast`. When a rule's query errors or runs past
+Grafana's 30s evaluation timeout, the rule keeps the state it had before the error
+instead of moving to `Alerting` and paging as a datasource error. The 2026-11-04
+review found that I/O-wait spikes on the receiver host pushed rule evaluations past
+that timeout, and under the earlier `Alerting` setting every rule paged together for
+those transient timeouts. Most of the Discord firing notifications in that review
+came from them.
+
+A sustained failure still pages once. The `alerting-health` group's rule
+`o11y_alert_evaluations_failing` fires when rule evaluations have failed more than
+five times in a five-minute window, and that holds for fifteen minutes, so only a stall
+that keeps failing for about fifteen minutes pages; a short spike does not. A 14-day
+backtest against production (2026-10-21 to 2026-11-04) gave 4 such episodes; counting
+failures over fifteen minutes instead of five would have paged 17 times. It keeps
+`execErrState: Alerting`, so a prolonged disruption is reported by one alert rather
+than by every rule. Rules whose queries are still failing hold their last state while
+it fires; check the receiver host's I/O wait and Prometheus health.
+
+The same group's `o11y_grafana_db_check_failing` warns when Grafana's own database check
+(`/api/health` answering 503) fails more than four times in an hour and that holds for
+fifteen minutes. The external liveness watcher retries each probe before it pages, so this
+rule is what still reports Grafana's store failing in short bursts. Backtested on the 14
+days before the SQLite fix was deployed (merged 2026-11-07, deployed 2026-11-08; window 2026-10-25 to 2026-11-08), it would have fired twice,
+on 2026-10-30 and 2026-11-07; a threshold of more than three would have fired seven times.
+
+Order matters. Run `Deploy o11y (Dev)` with this change before any alert drill or recover
+template. `Drill o11y Active Alert Delivery (Dev)` and `Recover o11y Active Alert Drill (Dev)`
+validate the live rules against the KeepLast contracts and refuse `live_target_drift` until a
+deploy has re-provisioned them. `Restore o11y Alert Baseline (Dev)` accepts either state, and so
+does the transition check at deploy, so a deploy interrupted between writing the file and
+Grafana's reload can simply be rerun. Main-bound o11y templates cannot apply this change until
+the `dev` to `main` promotion.
+
+A full Grafana or Prometheus outage is covered by the external liveness watcher
+(`Check o11y Liveness (Dev)`, `platform/playbooks/check-o11y-liveness.yml`), which runs
+from the Semaphore host and does not depend on Grafana's rule evaluation. Each probe is
+retried twice, `o11y_watch_retry_delay` seconds apart (default 10), before it counts, so a
+page means about 20 s of failure rather than one lost request. Only a datasource health
+400, Prometheus's own unhealthy verdict, is reported as `prometheus datasource unhealthy`.
+A 500 is reported as `grafana datasource health errored`: Grafana itself errored (loading
+the datasource, building the plugin context, the plugin call, or parsing its details), and
+`grafana_plugin_request_total{endpoint="checkHealth"}` shows only whether the plugin call
+failed. A 401 or 403 is reported as `watcher token rejected by Grafana`. Any other status,
+such as a 502 from the edge while Grafana is down, is reported as
+`grafana datasource health probe failed`. The 500 and probe-failure messages name the datasource uid, so a mistyped
+`o11y_watch_prometheus_uid` (Grafana answers it with 500 too) is visible in the message.
+
+Grafana's store is SQLite, and its defaults (`wal=false`, `query_retries=0`) fail a read
+that meets a writer's lock. Lock contention is the suspected cause, not log-confirmed:
+Grafana's logs reach Loki only since the journal collector added it on 2026-11-08 (after
+the fix), and Grafana logs `Database locked, sleeping then retrying` whenever a lock retry
+fires. What was observed: from 2026-10-24 to 2026-11-07 Grafana's own metrics recorded
+`/api/health` 503 (database check) in 26 separate hours and datasource health 500 in at least 4, with
+zero Prometheus plugin `checkHealth` errors, which rules out a failed plugin call but not the
+other 500 paths; the watcher, then unretried, paged on any single 500. `compose.yml` sets
+`GF_DATABASE_WAL=true` and `GF_DATABASE_QUERY_RETRIES=10` (10 attempts, waits doubling from
+10 ms to the 1 s cap, about 3.3 s in all, per Grafana's `pkg/util/retryer`). To judge the fix, compare
+`sum by (handler, status_code) (increase(grafana_http_request_duration_seconds_count{status_code=~"5.."}[7d]))`
+for a week after the deploy against that baseline. A drop is consistent with the suspected
+cause, not proof of it; Grafana's error log would confirm it.
+
+Rolling the setting back does not take the database out of WAL mode. SQLite stores WAL
+mode in the database file and reopens it in WAL ("Persistence of WAL mode",
+<https://www.sqlite.org/wal.html>), and Grafana 11.4 adds `_journal_mode=WAL` to its
+connection only when `wal` is true (`pkg/services/sqlstore/database_config.go`), never
+the reverse. A WAL-mode file with `wal=false` keeps working. Returning to the rollback
+journal means running `PRAGMA journal_mode=DELETE;` on `grafana.db` in the `grafana-data`
+volume with Grafana stopped; no playbook does that yet, so write one before it is needed.
+
+If the 503s persist, the next step is an
+external Postgres for Grafana.
+
 ## Production alert-delivery drill
 
 When production alerts are already enabled, use `Drill o11y Active Alert
@@ -792,6 +1008,89 @@ safe to repeat and clears the marker only after Prometheus no longer has the
 drill job and the active alert/contact state is read back. It does not remove
 stored metrics, logs, or traces. This recovery is separate from the paused
 canary's `Restore o11y Alert Baseline (Dev)` workflow.
+
+## Endpoint availability drill
+
+`Drill o11y Endpoint Availability (Dev)` proves that the endpoint availability rule
+(`o11y_endpoint_probe_failed`) fires to Discord for one reviewed availability target. It
+sets that target's only expected status code to 599, which the target never returns, so
+its health probe fails. A second deploy then restores the normal projection. The drill
+sends a real Discord alert, so tell the operator before it runs.
+
+The drill cannot run until availability is enabled and reviewed in production. The census
+refuses it unless `o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed`
+are both set. Tasks 2.3c.1 to 2.3c.3 in
+`plan/development/openspec/changes/estate-wide-observability-instrumentation/tasks.md` must be
+complete first.
+
+The survey takes the reviewed Dev commit (`expected_repository_sha`), the branch both
+deploys clone (`service_branch`, default `dev`), and `availability_drill_target_id`, which
+must name one selected availability target of this receiver. The drill refuses a
+check-mode run, a local-mode run, a run with alerts disabled, and a run with no declared
+Discord channel.
+
+Before it claims anything, the play checks that the controller checkout is at the reviewed
+commit with no uncommitted files. It refuses to start while the paused-canary markers
+(`config/scrape.d/o11y-prod-canary.yml` and `config/.o11y-alert-canary-active`) or an
+active alert drill's markers (`config/.o11y-active-alert-drill` and
+`config/scrape.d/o11y-prod-alert-drill.yml`) exist in the receiver's deploy directory, or
+while an earlier endpoint drill marker exists. It also requires the rule to exist and be
+unpaused, the Grafana contact point `o11y_ops_discord` to exist exactly once, and the Discord
+credentials to be usable: the bot token must be present, the stored alert webhook must be a
+Discord webhook URL, and the channel's message history must be readable. The census then
+requires the named target to be one selected availability target of this receiver. The target's
+health probe must read 1 and its endpoint alert must not be firing or pending now. Every
+drill-specific refusal (target, availability, markers, rule, contact, Discord, current target
+health and alert) happens before the marker is claimed, so a refused run leaves nothing to recover.
+
+Only then does the play create the marker, an empty directory named `.o11y-endpoint-drill`
+in the parent of the monorepo checkout on the receiver. It sits outside the checkout, so
+placing the monorepo never touches it. The drilled deploy imports `deploy-o11y.yml` with the
+internal input `_o11y_availability_drill`, which names the target and status code 599. The
+census replaces only that target's expected status codes in the projection it prepares.
+
+The shared alert probe (`tasks/o11y-alert-probe.yml`) then waits for three things, in order.
+The `probe_success` series for the target reads 0. Grafana reports the rule's alert as
+firing for the target. A Discord message newer than the last one seen before the probe
+names the drill's delivery marker and carries a ` - instance = <target_id>` line. Each wait
+has a fixed retry budget in `tasks/o11y-alert-probe.yml`. The waits run inside a block with a rescue. A pass
+records the outcome `passed`. A failure records `failed` and does not stop the run, so the
+restore still runs.
+
+The second import of `deploy-o11y.yml`, without the drill input, restores the normal
+projection. If either deploy fails, the run stops there and the marker stays.
+
+The final play waits for one fresh `probe_success` series for the target to read 1, and for
+Grafana to stop reporting the rule as firing for the target. If either proof fails, the run
+says the marker stays and fails. Otherwise it removes the marker with `rmdir`, prints the
+census command only when the outcome is `passed`, and fails unless the outcome is `passed`.
+The marker is removed before that last check. A run whose restored projection is proven but
+whose Discord proof failed therefore clears the marker and still fails.
+
+A passed drill still needs its census, because the drill does not launch the strict health
+receipt or the census. From a workstation, the operator runs:
+
+```bash
+python3 scripts/o11y-coverage-refresh.py --url <semaphore-https-origin> \
+  --reviewed-dev-sha <reviewed-sha> --target-signal <target_id>:health < <token-file>
+```
+
+The script reads the Semaphore token from standard input, so the command ends with a
+redirect from a token file. It requires the local checkout to be
+on `dev` at the reviewed commit with no uncommitted files, and it refuses unless
+`receipt_bindings[<target_id>][health]` is declared in the `estate_coverage_inventory` that
+the Semaphore inventory holds. Task 2.3c.1 covers that declaration. Each binding carries the id of the
+`Verify o11y Target Receipt` template and a positive `observation_window_seconds`, and
+`task_id` is optional.
+
+A run that stops after the marker is claimed leaves `.o11y-endpoint-drill` in place, and the
+next drill refuses to start. Run `Recover o11y Endpoint Drill (Dev)` with the reviewed commit.
+It needs a clean reviewed checkout and a real production run with alerts still enabled. It
+runs a normal `deploy-o11y.yml` import, then removes the marker. It does not check endpoint
+health, so a target that is really down can still be recovered. A normal deploy does not
+refuse on this marker, because a deploy is the recovery path. Other Deploy o11y refusals, and a
+dev move during the drill, can stop the drilled or the restoring deploy after the marker is
+claimed; Recover o11y Endpoint Drill (Dev) is the path back.
 
 ## Fault drills (`o11y Fault Drill (Dev)`)
 
@@ -1214,10 +1513,15 @@ the declared private `o11y_otlp_bind`, at port `4318` and path `/v1/logs`.
 This receiver is separate from the gateway's OTLP/gRPC listener on `4317`.
 Site-config allows TCP/4318 only from the controller CIDR. The collector checks
 that its URL exactly matches the receiver bind and fails visibly when delivery
-fails. Alloy applies `job`, `service`, `step`, and `status` as the conformance-
-specific Loki labels. The shared Loki writer also adds `cluster` and
+fails. Alloy's conformance-specific label hint includes `job`, `service`,
+`step`, `status`, and `kind`. Existing per-step records retain their four-label
+schema; the fixed completion receipt adds only `kind=run` and has no `service`
+or `step`. Per-service dashboard queries require nonempty `service` and `step`
+labels, keeping that global clock record out of service state, failure, and
+inventory-marker rows. The shared Loki writer also adds `cluster` and
 `environment` labels; task identifiers and error details stay in the log body.
-Local development keeps the loopback direct-Loki path.
+This source contract does not prove a live receipt or Loki readback. Local
+development keeps the loopback direct-Loki path.
 
 ## Receiver-host journal collector positions volume
 
@@ -1273,6 +1577,27 @@ because the healthy Alloy process had no recent journal entry; no collector
 start or receiver mutation occurred. The deterministic marker proof is a source
 follow-up to that refusal. It has not been run in production and does not provide
 a live journal or dashboard coverage receipt.
+
+Receiver container cohort. The collector reads one `loki.source.journal` component
+per receiver container declared in `platform/playbooks/vars/o11y-journal-components.yml`
+(`o11y_journal_components`): `o11y_alloy` first, then prometheus, loki, tempo,
+pyroscope, grafana and node-exporter. Each source matches `CONTAINER_NAME=<container>`
+and labels its entries `service="o11y/<name>"`, `signal="container"` and
+`target_id="service:o11y"`. The same list is the template's loop input, the positions
+helper's `--components` allowlist and the input to the deploy's validation, so the three
+cannot diverge. The deploy refuses before it touches any host unless the list has
+`o11y_alloy` first with `o11y-alloy` and `o11y/alloy`, no duplicate component or
+container, container names of the form `o11y-<name>`, no `o11y-journal-collector`, and
+each service `o11y/<name>`. The same apply first runs the receiver log-content survey
+afresh and refuses before any host change unless every declared container is `clear` or
+`no_entries` from an uncapped scan (`platform/playbooks/README.md`). `o11y_alloy` remains the delivery proof: its exact
+`service="o11y/alloy"` marker gates apply as before. A newly declared source has no
+cursor and replays at most its 15-minute `max_age` window, never history. After apply,
+a read-only observation queries Loki once per non-alloy source over the last 300 seconds,
+filtered by that source's own `service` label, and prints one category per service:
+`observed`; `not_yet_observed` (no line in the window yet, expected for a quiet
+container); or `query_unverified` (the request failed or returned an unexpected body).
+The observation never fails the apply and is a report, not a delivery receipt.
 
 First bootstrap requires the v3 volume to be absent: bounded volume inventory
 must prove no exact-name collision, and an all-container query, including stopped

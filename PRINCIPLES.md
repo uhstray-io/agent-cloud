@@ -192,9 +192,10 @@ As-built: `nemoclaw-read.hcl` grants the wildcard to an AI agent - tighten it, a
 **Human access is provisioned by role, never granted by hand.** Identity decomposes as
 **Organization > Department > Team > Role**, with an orthogonal **Access Level** privilege tier -
 highest-to-lowest **Admin -> Maintainer -> Developer -> User** - applied per tenant and per project.
-Organization is the hard tenant-isolation boundary (tenants are orgs); Department/Team/Role place a
-person within an org; Access Level is how much they may do. Authentik groups are the source of truth;
-a provisioning mechanism maps an identity's (org, department, team, role, access-level) to per-service
+A tenant is a tier above Organization (tenant -> org -> site -> env), and the **tenant is the hard
+isolation boundary**; organizations inside one tenant share it. Department/Team/Role place a person within an org;
+Access Level is how much they may do. Authentik groups are the source of truth;
+a provisioning mechanism maps an identity's (tenant, org, department, team, role, access-level) to per-service
 roles - Semaphore admin-flag vs project owner/manager/task_runner/guest, NetBox permissions, etc. Any
 Admin-level user is provisioned with admin rights and all-project visibility automatically - never a
 per-service hand-grant.
@@ -202,8 +203,10 @@ per-service hand-grant.
 it is the no-monkey-patch rule (Section 2) applied to people. Decomposing identity (vs one opaque
 "user type") lets access be derived from real org structure instead of bespoke per-person grants.
 **[TARGET]** the provisioning automation + the group schema are not built yet - the operator's Semaphore user
-was hand-set to admin (a stopgap), and `platform-admins` is today's sole admin group, with a proposed rename to
-`uhstray-admins` (the uhstray-org Admin tier). The exact group-naming + (identity -> per-service role)
+was hand-set to admin (a stopgap, superseded by the Semaphore admin flag now derived from the declared
+administrator list, issue #604), and `platform-admins` is today's sole admin group. It stays as the cross-tenant
+operator group, and `uhstray-uhstray-io-admins` (the Admin tier of the uhstray-io org in the uhstray tenant) is
+added beside it. The exact group-naming + (identity -> per-service role)
 mapping table lives in `plan/architecture/04-credentials-access.md`. Do not reason as if role-based
 provisioning already holds.*
 
@@ -320,11 +323,31 @@ persist. Tagging reversibility makes the one-way risk visible at launch, not aft
 Caddy is the sole HTTPS ingress and only TLS terminator. Internal traffic is plain HTTP unless a
 backend protocol genuinely requires TLS (prefer the internal CA over `tls_insecure_skip_verify`).
 Plain-HTTP backends are permitted **only** on a host where `apply-firewall.yml`'s default-deny-inbound
-(except Caddy + mgmt SSH) is applied and verified by `validate-all.yml`.
+(except Caddy + mgmt SSH) is applied and verified. The verification is the playbook's own: after
+converging it re-reads `ufw show added` and asserts every declared rule landed and no stale tagged
+rule or declared SSH allow is missing, forces a fresh SSH handshake through the live firewall, and
+raises a per-host verdict that the run fails unless UFW is active with default-deny incoming
+(`validate-all.yml` checks service health only and performs no firewall check).
+A passing verdict does not prove that access is exclusive. The playbook leaves untagged rules alone
+(`platform/playbooks/apply-firewall.yml:66-72`), and an untagged rule may admit traffic that the declared
+policy does not describe. An operator must read the untagged rules that the run lists in its report before
+treating the network as trusted.
 *Why: terminating once keeps the cert surface to one place and avoids unrotated self-signed sprawl.
-But "trusted network" is a security claim only a firewall can back. As-built caveat: the host firewall
-is still a pending canary (task #16) - finish the rollout and make it a mandatory onboarding step
-(Phase 1) before relying on the trust boundary for any new service.*
+But "trusted network" is a security claim only a firewall can back. As-built caveat (updated
+2026-10-27): the host firewall is applied through Semaphore on the DNS, internal-CA, o11y and CI-runner
+hosts, but is not yet declared for every service host (none is recorded for the Caddy host) - finish
+the rollout and make it a mandatory onboarding step (Phase 1) before relying on the trust boundary
+for any new service.*
+
+**EXCEPTION (recorded 2026-11-05, review by 2027-02-05): the gateway-to-vLLM hop is plain HTTP and
+carries the vLLM API key in clear.** On the inference path the agentgateway-to-vLLM hop (the DGX
+Spark host) does not meet the rule above: it is plain HTTP and the upstream key travels unencrypted.
+Compensating control: the GPU host's firewall admits only the gateway host to the vLLM port - that
+control is enforced outside this repository and is not verifiable from this checkout. Fix: internal-CA
+TLS for that hop, decided 2026-10-16 (dgx-spark ADR-0017, as cited in
+[plan/architecture/network-architecture.md](plan/architecture/network-architecture.md)), pending - the
+agent-cloud build is not started. This exception ends when that TLS lands, and it must be reviewed no
+later than 2027-02-05. The rule above is unchanged.
 
 **Consume public TLS, run a private CA; never become a public CA.** Browser-trusted certs via Caddy +
 CloudFlare DNS-01 (incl. On-Demand TLS for SaaS tenant domains); internal/LAN certs from the step-ca

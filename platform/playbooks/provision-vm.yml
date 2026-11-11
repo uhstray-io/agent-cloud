@@ -118,6 +118,9 @@
     _name: "{{ _decl.vm_name | default(_svc.name | default(target_service)) }}"
     _node: "{{ target_node | default(_decl.vm_node | default(_svc.node | default(''))) }}"
     _cores: "{{ _decl.vm_cores | default(_svc.cores | default('')) }}"
+    # The CPU model (Proxmox `cpu`, declared as vm_cpu). Unset leaves the template's CPU. Checked
+    # for shape and for node support before any write.
+    _cpu: "{{ _decl.vm_cpu | default(_svc.cpu | default('')) | string | trim }}"
     _mem: "{{ _decl.vm_memory | default(_svc.memory | default('')) }}"
     _disk: "{{ _decl.vm_disk | default(_svc.disk | default('')) }}"
     # Per-host opt-outs, read from the declared host like every value above: this play runs
@@ -132,11 +135,6 @@
     _bridge: "{{ _decl.vm_net_bridge | default(_defaults.net_bridge | default('vmbr0')) }}"
     _netmask: "{{ _decl.vm_netmask | default(_defaults.netmask | default(24)) }}"
     _tags: "{{ _decl.vm_tags | default(_svc.tags | default(_defaults.base_tags | default('pbs;debian13' if _pbs_mode else 'ubuntu;24.04'))) }}"
-    # Proxmox CPU type. Empty means the VM keeps whatever the template gave it, which is every
-    # VM's behaviour before this existed. A workload compiled for an instruction set declares
-    # it: weft's workspace image needs AVX2 (`x86-64-v3` or `host`, never the `kvm64` default),
-    # or its transcriber dies of SIGILL on the first recording.
-    _cpu: "{{ _decl.vm_cpu | default(_svc.cpu | default('')) }}"
 
   tasks:
     # Every hard failure below (a refused declaration, the clone, migrate, configure, start,
@@ -206,6 +204,7 @@
               - vm_tags
               - vm_onboot
               - vm_agent
+              - vm_cpu
               - pbs_debian_template_vmid
               - pbs_debian_template_name
               - pbs_debian_template_node
@@ -247,6 +246,15 @@
               private site-config repo the runner never checks out. From a
               workstation you may instead pass -e project_root=<site-config path>.{% endif %}
             success_msg: "VM declaration for '{{ target_service }}' is complete."
+
+        # The same bare-name rule as resize-vm.yml: the PUT below writes this value as the whole `cpu`.
+        - name: "Validate the declared CPU model"
+          ansible.builtin.assert:
+            that:
+              - (_cpu | length) == 0 or (_cpu is match('^[A-Za-z0-9][A-Za-z0-9._-]*$'))
+            fail_msg: >-
+              vm_cpu '{{ _cpu }}' is not a bare Proxmox CPU model name (letters, digits,
+              '.', '_', '-'; for example x86-64-v3). Commas and '=' are refused. Nothing was written.
 
         # Keep this token-ID guard before the play's first URI call; later PVE
         # requests receive the credential from module_defaults.
@@ -624,6 +632,17 @@
             msg: "{{ 'The declared PBS VM already exists; skipping clone.' if _pbs_mode else 'VM ' ~ _vmid ~ ' (' ~ _name ~ ') already exists — skipping clone.' }}"
           when: _vm_exists | bool
 
+        # A named CPU model the declared node cannot back is refused before the clone, so no write
+        # happens for it. The clone lands on the template's node and a migration then moves the VM
+        # to the declared node, so the check is about the node the VM is meant to run on.
+        - name: "Refuse a named CPU model the node cannot provide"
+          ansible.builtin.include_tasks: tasks/assert-node-cpu-model.yml
+          vars:
+            _ncm_node: "{{ _node }}"
+            _ncm_want_cpu: "{{ _cpu }}"
+          when: _cpu | length > 0
+          tags: [always]
+
         # ── Clone template ────────────────────────────────────────────────────
         # Proxmox: "--target: Target node. Only allowed if the original VM is on shared
         # storage" (qm(1)). Template 9000's disk is on alphacentauri's LOCAL vm-lvms, so a
@@ -810,6 +829,35 @@
             _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
           tags: [always]
 
+        # The VM's CPU as it is now, so the write keeps the flags it already carries (resize-vm.yml
+        # rebuilds its value the same way). Read on the declared node, where the write goes.
+        - name: "Read the VM's CPU before the config write"
+          ansible.builtin.uri:
+            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
+            method: GET
+          register: _cpu_cur
+          check_mode: false
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - _cpu | length > 0
+
+        - name: "List the VM's CPU items as they are now"
+          ansible.builtin.set_fact:
+            _cpu_cur_items: "{{ (_cpu_cur.json.data.cpu | default('') | string).split(',') | select | list }}"
+          when:
+            - not ansible_check_mode
+            - _cpu | length > 0
+
+        # Same rebuild as resize-vm.yml: the declared model first, then the key=value items the VM
+        # already had (flags=..., hidden=..., phys-bits=...), without a cputype= key.
+        - name: "Work out the CPU model to write"
+          ansible.builtin.set_fact:
+            _cpu_put: "{{ ([_cpu] + (_cpu_cur_items | select('match', '^[a-z-]+=') | reject('match', '^cputype=') | list)) | join(',') }}"
+          when:
+            - not ansible_check_mode
+            - _cpu | length > 0
+
         - name: "Configure VM resources and cloud-init"
           ansible.builtin.uri:
             url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
@@ -819,6 +867,7 @@
               cores: "{{ _cores }}"
               memory: "{{ _mem }}"
               agent: "{{ _agent }}"
+              cpu: "{{ _cpu_put if (_cpu | length > 0) else omit }}"
               # Start with the node (Proxmox `onboot`, default 0 per qm(1)); a VM that does not
               # come back after a hypervisor reboot silently takes its service down. Workflow
               # step provision-vm requires it (registry criteria). Per-host opt-out: vm_onboot.
@@ -831,25 +880,6 @@
               description: "{{ _pbs_vm_description if (_pbs_mode | bool) else omit }}"
             status_code: [200]
           when: not ansible_check_mode
-
-        - name: "Guard target VMID before CPU type"
-          ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
-          vars:
-            _o11y_restore_target_guard_candidates: ["{{ _vmid }}"]
-          tags: [always]
-
-        - name: "Set the declared CPU type"
-          # Its own request so a VM that declares none is configured exactly as before.
-          ansible.builtin.uri:
-            url: "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}/config"
-            method: PUT
-            body_format: form-urlencoded
-            body:
-              cpu: "{{ _cpu }}"
-            status_code: [200]
-          when:
-            - not ansible_check_mode
-            - _cpu | length > 0
 
         - name: "Guard target VMID before tag update"
           ansible.builtin.include_tasks: tasks/guard-o11y-restore-target.yml
@@ -911,12 +941,16 @@
           vars:
             _cfg: "{{ _pv_cfg.json.data | default({}) }}"
             _want_disk: "{{ (_disk | string) ~ ('G' if (_disk | string) is match('^[0-9]+$') else '') }}"
+            _cpu_items: "{{ (_cfg.cpu | default('') | string).split(',') | select | list }}"
+            _cpu_model: "{{ ((_cpu_items | select('match', '^cputype=') | map('regex_replace', '^cputype=', '') | list) + (_cpu_items | reject('match', '=') | list) + [''])[0] }}"
           ansible.builtin.set_fact:
             _pv_step:
               service: "{{ target_service }}"
               vmid: "{{ _vmid | int }}"
               node: "{{ _node }}"
               onboot: "{{ _cfg.onboot | default(none) }}"
+              cpu: "{{ _cfg.cpu | default(none) }}"
+              cpu_declared: "{{ (_cpu | default('') | string | length) > 0 }}"
               # A dry run of a VM that is not cloned yet, or still awaits its migration, has
               # nothing on the declared node to prove.
               skip: "{{ ansible_check_mode and (not (_vm_exists | bool) or (_do_migrate | bool)) }}"
@@ -930,7 +964,9 @@
                    + (['disk scsi0 is not ' ~ _want_disk]
                       if not ((_cfg.scsi0 | default('')) is search('size=' ~ _want_disk ~ '([^0-9]|$)')) else [])
                    + (['onboot ' ~ (_cfg.onboot | default('unset')) ~ ', declared ' ~ _onboot]
-                      if (_cfg.onboot | default('0') | string) != _onboot else []) }}
+                      if (_cfg.onboot | default('0') | string) != _onboot else [])
+                   + (['cpu ' ~ (_cpu_model or 'default') ~ ', declared ' ~ _cpu]
+                      if (_cpu | default('') | string | length > 0) and (_cpu_model != _cpu) else []) }}
 
         # ── Start VM ──────────────────────────────────────────────────────────
         # A dry run of a VM that does not exist yet skipped the clone, so every check below would

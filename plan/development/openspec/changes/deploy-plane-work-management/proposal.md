@@ -9,13 +9,13 @@ Plane replaces tududi as the work tracker. It gives the team one place where a G
 ## What Changes
 
 - **New platform service `plane`.** It is a composable Compose stack on its own VM in the `plane_svc` group, deployed, cleaned, backed up and restored through Semaphore playbooks. Its secrets come from OpenBao. Production runs the Commercial edition on the Pro plan, and local-dev runs the Commercial Free tier.
-- **Single sign-on and roles.** Users sign in through the Authentik OIDC client. A reconcile playbook maps Authentik groups to Plane roles: `platform-admins` to Owner, `platform-developers` and `platform-business` to Member, and `platform-user` is denied.
+- **Single sign-on and roles.** Users sign in through the Authentik OIDC client. A reconcile playbook maps Authentik groups to Plane roles: `platform-admins` to Admin (the top role; Plane has no Owner role), `platform-developers` and `platform-business` to Member, and `platform-user` is denied.
 - **Native GitHub integration.** A GitHub App named "Plane" carries issues, pull requests and the webhook. The trigger labels are `plane` for GitHub-to-Plane and `github` for Plane-to-GitHub. Pull requests that name a work item key link to it.
-- **Projects as code.** A generator reads each repository's OpenSpec `tasks.md` files and writes Plane modules and work items. It never writes status, so Plane owns status. A scheduled sync pushes the generated state.
+- **Projects as code.** A generator reads each repository's OpenSpec `tasks.md` files and writes Plane modules and work items. It never writes status, so Plane owns status. Plane Compose configures each project's schema, and a scheduled sync creates the modules and work items through the Plane API, create-only and keyed on an external identifier, so nothing set in Plane is overwritten.
 - **Plane MCP server for harnesses.** The MCP server runs in OAuth mode behind Caddy, so each edit is attributed to the signed-in user. weft uses a service identity, a personal access token held in OpenBao.
 - **Forge Discord app.** A second composable service on the Plane VM posts notifications, answers slash commands and unfurls links. It uses the platform bot token, read from the shared store and never copied.
-- **tududi teardown.** The teardown is the final phase. It runs behind an explicit confirmation value, after a final backup, and it removes the tududi containers, route, DNS record, identity client, the tududi sync GitHub App and inventory entries.
-- **BREAKING for tududi.** tududi stops being the tracker. Open tasks migrate into Plane under the `migrated-from-tududi` label.
+- **tududi teardown.** The teardown runs ahead of phases 3 to 6 (decided 2026-11-07), after the Phase 1 gate. It runs behind an explicit confirmation value, after tududi is stopped and a final archive is taken, and it removes the tududi containers, route, DNS record, identity client, the tududi sync GitHub App and inventory entries.
+- **BREAKING for tududi.** tududi stops being the tracker. Its open tasks are not migrated: tududi's data is archived to site-config and discarded (decided 2026-11-07, superseding the 2026-10-23 migration decision).
 - **Documentation.** `AGENTS.md` loses the tududi lines and gains the Plane entries in Phase 7.
 
 ## Capabilities
@@ -38,7 +38,7 @@ None. The existing specs in this store are `platform/inference-edge` and `platfo
 - **Secret store.** A new path `secret/services/plane`, holding generated values, a seeded license key, the GitHub App fields and the service personal access token. The shared read of `secret/services/discord:bot_token`. In Phase 7, the tududi sync key fields are deleted from `secret/services/github`.
 - **New dependencies, approved by Joseph A. Wisneski IV on 2026-10-23.** The `plane-compose` CLI for the controller (Phase 4), and `discord.py` and `plane-sdk` for the Forge app image (Phase 6). Each version is pinned at implementation time.
 - **Out of repository.** A companion pull request in the weft repository adds the MCP entry for weft's builder. Each UI-only step, including the GitHub App and OAuth app registrations, is resolved in Phase 0 by a code path or an explicit FORCED playbook, and never left as a runbook click.
-- **Not affected.** The n8n stack keeps running. Its tududi-sync workflows are removed only in Phase 7, through the provisioning playbook.
+- **Not affected.** The n8n stack keeps running. Production n8n never received the tududi-sync workflows; the sync and its provisioning playbook are removed outright (2026-11-07).
 
 ## Rollback Plan
 
@@ -50,6 +50,6 @@ Rollback is staged to match the deployment, and it is lossless only while no rea
 4. **Discord app.** Stop and remove the Forge app service. The platform bot token is only read, never written, so it is not affected.
 5. **MCP and harnesses.** Remove the Plane MCP route. The harness entries contain no secrets, so leaving them behind exposes nothing, and the removal method is decided with the client script in Phase 5.
 6. **GitHub sync.** Uninstall the Plane GitHub App installation from the repositories to stop the sync.
-7. **tududi teardown (Phase 7) is one-way.** Once the tududi VM is destroyed, rollback means restoring tududi from the final backup taken to site-config. The approved plan does not record a restore procedure for tududi, so this is an open item recorded in `design.md`.
+7. **tududi teardown (Phase 7) is one-way.** Once the tududi VM is destroyed, rollback means restoring tududi from the final archive taken to site-config. No restore procedure is written: the data is discarded by decision (2026-11-07, `design.md` "tududi data"). Earlier text: an open item recorded in `design.md`.
 
-Phase 3 disables tududi's sync before the Plane sync is enabled. Undoing that step is a deliberate action recorded in the tasks, not a free revert.
+The tududi sync is removed outright before the Plane sync is enabled (2026-11-07). Restoring it would mean reverting #909, a deliberate action, not a free revert.

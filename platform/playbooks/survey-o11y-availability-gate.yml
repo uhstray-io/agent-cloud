@@ -1,0 +1,91 @@
+# Read-only, Dev-bound proof of the availability namespace gate in ENABLED mode.
+# It runs the same bounded runtime proof the pre-placement gate in deploy-o11y.yml runs, with
+# O11Y_AVAILABILITY_ENABLED=true, and reports one fixed category. It never imports the
+# availability preparation task and never reads o11y_availability_probes_enabled, so it can
+# answer "would the gate pass now" before the activation switch is set. It places nothing.
+
+- name: Refuse extra vars that set internal names
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Require the reviewed source and survey helper bytes
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/files/summarize-o11y-scrape-baseline.py
+      - platform/playbooks/filter_plugins/o11y_scrape_budget.py
+
+- name: Pre-flight
+  ansible.builtin.import_playbook: preflight-target-group.yml
+  vars:
+    preflight_group: o11y_svc
+    preflight_group_expected: o11y_svc
+    _preflight_redact_hostnames: true
+
+- name: Require one o11y target for the availability gate survey
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _survey_o11y_hosts: "{{ groups.get('o11y_svc', []) }}"
+  tasks:
+    - name: Require exactly one o11y target
+      ansible.builtin.assert:
+        that:
+          - _survey_o11y_hosts | length == 1
+        fail_msg: "The availability gate survey requires exactly one o11y_svc target."
+        quiet: true
+
+- name: Prove the availability namespace gate read-only on the receiver
+  hosts: o11y_svc
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    _survey_engine: "{{ container_engine | default('') }}"
+    _survey_helper: "{{ playbook_dir }}/files/summarize-o11y-scrape-baseline.py"
+    _survey_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _survey_deploy_dir: "{{ _survey_monorepo_dir }}/{{ monorepo_deploy_path }}"
+  tasks:
+    - name: Require the supported receiver runtime
+      ansible.builtin.assert:
+        that: _survey_engine == 'podman'
+        fail_msg: "The availability gate survey requires an explicitly declared Podman receiver."
+        quiet: true
+
+    # Same bounded helper and environment as the pre-placement gate, except that enabled mode
+    # is fixed here and only the enabled-mode overlay is listed. The namespace verdict does not
+    # depend on the other overlays: outside candidate mode they are checked only against the
+    # allowlist, and the provider fingerprint they feed is not compared by this survey. The
+    # output is consumed only through the fixed-category filter below, so it is not printed.
+    - name: Run the namespace gate in enabled mode without reading the activation switch
+      ansible.builtin.script:
+        cmd: "{{ _survey_helper }} --verify-availability-namespace"
+      register: _survey_namespace_run
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      environment:
+        CONTAINER_ENGINE: "{{ _survey_engine }}"
+        COMPOSE_CMD: podman-compose
+        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        O11Y_AVAILABILITY_ENABLED: "true"
+        O11Y_DEPLOYMENT_DIR: "{{ _survey_deploy_dir }}"
+        COMPOSE_OVERLAYS: compose.availability.yml
+
+    - name: Reduce the protected namespace result to a fixed category
+      ansible.builtin.set_fact:
+        _survey_namespace_diagnostic: "{{ _survey_namespace_run | o11y_availability_namespace_diagnostic }}"
+      no_log: true
+
+    - name: Report only the fixed availability namespace category
+      ansible.builtin.debug:
+        msg: "Availability namespace gate in enabled mode: {{ _survey_namespace_diagnostic }}"
+
+    - name: Require an isolated current Alloy namespace in enabled mode
+      ansible.builtin.assert:
+        that: _survey_namespace_diagnostic == 'isolated'
+        fail_msg: >-
+          The availability namespace gate refused with category {{ _survey_namespace_diagnostic }}.
+          Nothing was placed; the category names the decision point that refused.

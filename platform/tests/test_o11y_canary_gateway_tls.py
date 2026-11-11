@@ -8,9 +8,13 @@ TLS, the published bind without it, and presents the verifier leaf and the inter
 
 import json
 import os
+import shutil
 import subprocess
+import sys
+from copy import deepcopy
 from pathlib import Path
 
+import pytest
 import yaml
 from ansible_python import needs_ansible
 
@@ -26,6 +30,24 @@ TLS_VARS = {
 }
 PLAIN_VARS = {"agw_bind": "127.0.0.1"}
 
+TRACE_ROLLOUT_RECEIVER_VARS = {
+    "o11y_trace_rollout_enabled": True,
+    "o11y_alerts_enabled": True,
+    "o11y_metrics_receipt_id": "101",
+    "o11y_alert_delivery_receipt_id": "102",
+    "o11y_retention_receipt_id": "103",
+    "o11y_cardinality_receipt_id": "104",
+    "o11y_prom_retention": "15d",
+    "o11y_prom_retention_size": "0B",
+    "o11y_loki_retention": "7d",
+    "o11y_tempo_retention": "7d",
+    "o11y_scrape_sample_limit": 2000,
+    "agentgateway_metrics_address": "127.0.0.1:9090",
+}
+
+TRACE_ROLLOUT_PREREQUISITES = tuple(TRACE_ROLLOUT_RECEIVER_VARS)
+_ABSENT = object()
+
 
 def _play():
     return next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if p.get("name") == PLAY_NAME)
@@ -33,6 +55,182 @@ def _play():
 
 def _task(prefix):
     return next(t for t in _play()["tasks"] if t.get("name", "").startswith(prefix))
+
+
+def _module(task):
+    return next((key for key in task if key.startswith("ansible.builtin.")), None)
+
+
+def _safe_preflight_harness(tmp_path, *, receiver_vars=None, receiver_count=1,
+                            verification_mode="legacy", emit=_ABSENT):
+    """Run the real canary pre_tasks and shared gate with only local debug sentinels after them."""
+    play = deepcopy(_play())
+    receiver_vars = TRACE_ROLLOUT_RECEIVER_VARS.copy() if receiver_vars is None else receiver_vars
+    hosts = {
+        "gateway": {"ansible_connection": "local", "o11y_verification_mode": verification_mode},
+    }
+    if emit is not _ABSENT:
+        hosts["gateway"]["emit_agentgateway_canary"] = emit
+    receivers = {
+        f"receiver{index + 1}": {"ansible_connection": "local", **receiver_vars}
+        for index in range(receiver_count)
+    }
+    inventory = {
+        "all": {"children": {
+            "agentgateway_svc": {"hosts": {"gateway": hosts["gateway"]}},
+            "o11y_svc": {"hosts": receivers},
+        }},
+    }
+    harness_dir = tmp_path / "ansible-harness"
+    task_dir = harness_dir / "tasks"
+    task_dir.mkdir(parents=True)
+    shutil.copy2(REPO / "platform/playbooks/tasks/assert-o11y-trace-rollout.yml",
+                 task_dir / "assert-o11y-trace-rollout.yml")
+    inventory_path = harness_dir / "inventory.yml"
+    inventory_path.write_text(yaml.safe_dump(inventory))
+
+    # The source play's pre_tasks (including its rollout gate once added) stay intact. These
+    # sentinels replace the clock, stat, resolution, set_fact, and URI operations entirely.
+    play["tasks"] = [
+        {"name": "SAFE_PREFLIGHT_COMPLETE", "ansible.builtin.debug": {"msg": "SAFE_PREFLIGHT_COMPLETE"}},
+        {"name": "Safe conditional canary operation", "ansible.builtin.debug": {
+            "msg": "CANARY_OPERATION_REACHED",
+        }, "when": "_canary_on"},
+    ]
+    safe_modules = {"ansible.builtin.assert", "ansible.builtin.debug", "ansible.builtin.include_tasks"}
+    for task in play.get("pre_tasks", []) + play["tasks"]:
+        assert _module(task) in safe_modules, task.get("name")
+    gate = yaml.safe_load((task_dir / "assert-o11y-trace-rollout.yml").read_text())
+    assert all(_module(task) == "ansible.builtin.assert" for task in gate)
+
+    playbook_path = harness_dir / "preflight.yml"
+    playbook_path.write_text(yaml.safe_dump([play]))
+    ansible_home = harness_dir / "ansible-home"
+    local_temp = harness_dir / "ansible-local"
+    remote_temp = harness_dir / "ansible-remote"
+    for directory in (ansible_home, local_temp, remote_temp):
+        directory.mkdir()
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(ansible_home),
+        "TMPDIR": str(tmp_path),
+        "ANSIBLE_HOME": str(ansible_home),
+        "ANSIBLE_LOCAL_TEMP": str(local_temp),
+        "ANSIBLE_REMOTE_TEMP": str(remote_temp),
+        "ANSIBLE_NOCOLOR": "1",
+    }
+    return subprocess.run(
+        ["ansible-playbook", "-i", str(inventory_path), str(playbook_path)],
+        cwd=REPO,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+def _assert_refused_before_canary(done, expected_message="Trace rollout is blocked"):
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert expected_message in done.stdout
+    assert "SAFE_PREFLIGHT_COMPLETE" not in done.stdout
+    assert "CANARY_OPERATION_REACHED" not in done.stdout
+
+
+def test_shared_trace_gate_is_guarded_before_the_existing_canary_tasks():
+    play = _play()
+    includes = [task for task in play.get("pre_tasks", [])
+                if task.get("ansible.builtin.include_tasks") == "tasks/assert-o11y-trace-rollout.yml"]
+    assert len(includes) == 1
+    assert includes[0]["when"] == "_canary_on"
+    assert play["gather_facts"] is False
+    assert play["tasks"][0]["name"] == "Mark the canary start on the Tempo receiver clock"
+
+
+@needs_ansible
+def test_removed_shared_trace_gate_reaches_canary_and_breaks_refusal_contract(tmp_path, monkeypatch):
+    play = deepcopy(_play())
+    includes = [task for task in play.get("pre_tasks", [])
+                if task.get("ansible.builtin.include_tasks") == "tasks/assert-o11y-trace-rollout.yml"]
+    assert len(includes) == 1
+    play["pre_tasks"].remove(includes[0])
+
+    mutant_playbook = tmp_path / "verify-o11y-service-without-trace-gate.yml"
+    mutant_playbook.write_text(yaml.safe_dump([play]))
+    monkeypatch.setattr(sys.modules[__name__], "PLAYBOOK", mutant_playbook)
+
+    done = _safe_preflight_harness(tmp_path, receiver_vars={}, emit="true")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "SAFE_PREFLIGHT_COMPLETE" in done.stdout
+    assert "CANARY_OPERATION_REACHED" in done.stdout
+    with pytest.raises(AssertionError):
+        _assert_refused_before_canary(done)
+
+
+@needs_ansible
+@pytest.mark.parametrize("prerequisite", TRACE_ROLLOUT_PREREQUISITES)
+def test_legacy_emitting_canary_refuses_each_missing_receiver_prerequisite(tmp_path, prerequisite):
+    receiver_vars = TRACE_ROLLOUT_RECEIVER_VARS.copy()
+    receiver_vars.pop(prerequisite)
+    done = _safe_preflight_harness(tmp_path, receiver_vars=receiver_vars, emit="true")
+    _assert_refused_before_canary(done)
+
+
+@needs_ansible
+@pytest.mark.parametrize(("prerequisite", "invalid_value"), [
+    ("o11y_trace_rollout_enabled", False),
+    ("o11y_alerts_enabled", False),
+    ("o11y_metrics_receipt_id", "0"),
+    ("o11y_alert_delivery_receipt_id", "0"),
+    ("o11y_retention_receipt_id", "0"),
+    ("o11y_cardinality_receipt_id", "0"),
+    ("o11y_prom_retention", "0d"),
+    ("o11y_prom_retention_size", "0"),
+    ("o11y_loki_retention", "0d"),
+    ("o11y_tempo_retention", "0d"),
+    ("o11y_scrape_sample_limit", 0),
+    ("agentgateway_metrics_address", ""),
+])
+def test_legacy_emitting_canary_refuses_disabled_or_invalid_receiver_prerequisites(
+        tmp_path, prerequisite, invalid_value):
+    receiver_vars = TRACE_ROLLOUT_RECEIVER_VARS.copy()
+    receiver_vars[prerequisite] = invalid_value
+    done = _safe_preflight_harness(tmp_path, receiver_vars=receiver_vars, emit="true")
+    _assert_refused_before_canary(done)
+
+
+@needs_ansible
+@pytest.mark.parametrize("receiver_count", [0, 2])
+def test_legacy_emitting_canary_refuses_non_exact_receiver_count(tmp_path, receiver_count):
+    done = _safe_preflight_harness(tmp_path, receiver_count=receiver_count, emit="true")
+    _assert_refused_before_canary(
+        done, expected_message="Trace rollout requires exactly one declared o11y receiver",
+    )
+
+
+@needs_ansible
+def test_complete_receiver_only_prerequisites_allow_canary_progression(tmp_path):
+    done = _safe_preflight_harness(tmp_path, emit="true")
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "SAFE_PREFLIGHT_COMPLETE" in done.stdout
+    assert "CANARY_OPERATION_REACHED" in done.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("emit", [_ABSENT, False, "false"])
+def test_legacy_nonemitting_canary_skips_shared_trace_gate(tmp_path, emit):
+    done = _safe_preflight_harness(tmp_path, receiver_vars={}, emit=emit)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "SAFE_PREFLIGHT_COMPLETE" in done.stdout
+    assert "CANARY_OPERATION_REACHED" not in done.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize("emit", [False, "false", "true"])
+def test_strict_verification_skips_shared_trace_gate(tmp_path, emit):
+    done = _safe_preflight_harness(tmp_path, receiver_vars={}, verification_mode="strict", emit=emit)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "SAFE_PREFLIGHT_COMPLETE" in done.stdout
+    assert "CANARY_OPERATION_REACHED" not in done.stdout
 
 
 def _canary_url(tmp_path, host_vars):

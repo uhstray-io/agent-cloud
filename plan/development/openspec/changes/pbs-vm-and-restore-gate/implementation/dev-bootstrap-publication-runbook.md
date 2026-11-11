@@ -19,11 +19,12 @@ identity, or storage exists.
   `391a4f7` stopped after creating the template. Catalog readback proves the
   definitions, not success of every publication invocation or acceptance of
   the created Proxmox template.
-- Private site-config PR #110 is approval-blocked. This blocks target allocation
-  and guest configuration until the PBS inventory declaration is approved,
-  merged, synchronized, and read back. It does not block publishing the Dev
-  catalog entries. Do not substitute launch-time identity values or
-  public-repository inventory.
+- Private site-config PR #110 merged to `main` at
+  `eb6b65912cc6345ccbbee269f67b81a7b4923ad7` on 2026-10-28. This records PR
+  merge state only; it does not establish current live inventory synchronization,
+  exact-byte provenance, IP/VMID acceptance, or allocation authorization. Keep
+  those acceptance gates separate. Do not substitute launch-time identity
+  values or public-repository inventory.
 - OpenSpec tasks 1.3 and 2.3 remain open: VMID/address authority and the exact
   Debian 13 cloud-init template/provisioning result have not been accepted.
   If the supported Debian template is unavailable, task 2.1 requires a separate
@@ -34,10 +35,25 @@ identity, or storage exists.
   no-subscription path is allowed only with explicit private
   `pbs_accept_no_subscription_risk: true` acceptance and is not an implicit
   production default.
-- The seven-day capacity/retention gate remains blocked by
-  `source_series_ambiguous`. That does not prove capacity, authorize VM growth,
-  or authorize retention changes. Task 4.4's second-PBS destination remains a
-  planning candidate only.
+- **Bounded capacity receipt (task 10756):** the seven-day readiness
+  assertion passed after the nine-day history lookback, but the task output
+  retained no structured successful history receipt. The source now emits its
+  bounded receipt after the assertion; full representative baseline,
+  forecast/calibration, backup/restore, retention, and growth acceptance remain
+  open. Task 4.4's second-PBS destination remains a planning candidate only.
+- **Historical capability refusal (task 10282):** the verifier refused the
+  shared environment's protected credential extra vars before authentication.
+  This was resolved by the isolated-environment source workflow and the
+  verified Dev sequence below. At merged SHA
+  `d41482be4944d5916030fbbbde147e5a686238f8`, tasks 10752, 10762, 10763,
+  10765, and 10769 accepted all five declared environment bindings and
+  preserved shared/unrelated configuration. Task 10761 verified source policy
+  and effective fixed-record data/metadata capabilities. Task 10767 created
+  the missing `Provision PBS VM (Dev)` workflow catalog row, and task 10770
+  records the converged rerun. The capability check did not
+  read or write the coordination record. The environment/catalog operations
+  performed no VM/storage, backup, or restore mutation. Child 5.2g is complete,
+  while its parent gates remain open.
 
 ## Preconditions before allocation or guest configuration
 
@@ -51,8 +67,9 @@ identity, or storage exists.
    VMID, Debian 13 template, static guest network declaration, selected OS
    storage, the 512-GiB PBS data disk declaration, and the VMID-derived disk
    serial contract `ac-pbs-data-<vm_vmid>`. Resolve IP and VMID through the
-   existing NetBox/IPAM and pfSense checks; preserve the required physical-origin
-   attestation for the selected Proxmox storage.
+   existing NetBox/IPAM and pfSense checks. Physical-origin/BMC/chassis
+   attestation is not a prerequisite (operator decision, 2026-10-29); retain
+   the declared API serial/WWN identity pin and exact storage/VG/PV lineage.
 3. Confirm the declared repository channel and its prerequisite before task
    launch. Do not add a subscription key through argv, Semaphore survey, or a
    new credential path. Enterprise cannot be treated as ready until the
@@ -128,9 +145,9 @@ run does not establish the corresponding live acceptance evidence.
 Stop before allocation, package, identity, ACL, storage, backup, or restore
 writes when the private declaration or exact repository SHA is missing; the
 Dev catalog does not match the five reviewed entries; the PBS guest, VMID,
-address, template, disk serial, selected storage, or physical origin is
-ambiguous; repository/subscription acceptance is absent; the mount UUID or
-datastore containment check differs; an existing identity, ACL, storage or
+address, template, disk serial, selected storage, or required API/storage
+identity is ambiguous; repository/subscription acceptance is absent; the mount UUID
+or datastore containment check differs; an existing identity, ACL, storage or
 backup job conflicts; or the service/readback is unhealthy. Preserve existing
 data and destinations for investigation. Do not bypass a refusal with direct
 Proxmox/PBS API calls, manual guest commands, or alternate credentials.
@@ -167,3 +184,50 @@ workflow must journal each PVE write before execution, authenticate the complete
 prior restore task output, prove stopped/no-pending-action state, and prove
 cleanup task success plus authoritative exact-VMID absence. No restore target
 has been reserved or used, and no restore or cleanup has been performed.
+
+### Protected workflow environment sequence
+
+The five guarded workflows have separate `isolated_environment` declarations:
+`Verify o11y Restore Coordination Capabilities (Dev)`, `Preflight o11y Restore
+Target (Dev)`, `Provision PBS Debian Cloud Template (Dev)`, `Attach PBS Data
+Disk (Dev)`, and `Provision PBS VM (Dev)`. The new **Provision o11y Workflow
+Environment (Dev)** controller entry accepts one of those explicit rows, an
+exact reviewed repository SHA, and verified project, inventory, and current
+source-environment IDs. Before running the command-bearing checkout verifier,
+the controller refuses any `ansible_` launch extra-var name; inventory-sourced
+execution context remains valid. The verifier checks the exact checkout before
+API access. The wrapper pins Semaphore to controller loopback and requires the sole private
+`openbao_svc.service_url` to match `openbao_addr` and pass transport validation.
+The wrapper uses the existing provisioner's `main` base-instance mode for these
+already-suffixed names; it preserves their `agent-cloud dev` binding without
+adding another `(Dev)` suffix. Do not pass the provisioner's `seed_template`,
+`seed_variant`, or credential-replacement aliases through the wrapper.
+
+Verified Dev completion receipt: at merged SHA
+`d41482be4944d5916030fbbbde147e5a686238f8`, tasks 10752, 10762, 10763, 10765,
+and 10769 accepted all five bindings; task 10761 verified effective
+fixed-record capabilities; task 10767 created the missing `Provision PBS VM
+(Dev)` workflow catalog row; task 10770 confirmed rerun convergence without
+duplicate environments or encrypted inputs. This is recorded history; use the
+ordered procedure below for future convergence.
+
+For future convergence:
+
+1. Select only the declared capability-verification environment. Read back its
+   repository, playbook, inventory, source-environment and isolated-environment
+   bindings; confirm empty JSON/plaintext configuration, encrypted AppRole
+   metadata, sole-template ownership, and preserved shared/unrelated settings
+   and surveys.
+2. Run the capability verifier at the same reviewed SHA. Require a fresh
+   successful receipt proving source-policy and effective data/metadata
+   capabilities for the fixed records. Stop and reconcile any mismatch before
+   continuing. Capability verification does not read or write the coordination
+   record or authorize a VM/storage operation.
+3. Only after that receipt passes, converge the other four declared PBS/restore
+   environments one at a time. Re-read current state and reconcile each result
+   before the next launch. Never blindly retry an uncertain write.
+
+Preserve shared/unrelated environment and template ownership; generic VM-writer
+isolation remains under its separate owner. VM/disk operations still require
+their independent declaration, identity, capacity, writer-drain, and lifecycle
+gates. Environment acceptance is not live backup or restore acceptance.

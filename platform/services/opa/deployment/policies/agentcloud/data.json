@@ -148,9 +148,9 @@
         "Deploy agentgateway",
         "Deploy n8n",
         "Deploy OpenHands",
-        "Deploy tududi",
         "Deploy honcho",
         "Deploy Postiz",
+        "Deploy Plane",
         "Deploy UhhCraft",
         "Deploy ComfyUI Sidecar",
         "Deploy Hunyuan3D Sidecar"
@@ -179,6 +179,12 @@
         "Clean Deploy OPA",
         "Clean Deploy ERPNext",
         "Wipe and Rebuild"
+      ],
+      "bare_service_name_templates": [
+        "Provision VM",
+        "Resize VM",
+        "Lookup Service Inventory",
+        "Validate Address Free"
       ],
       "launch_branches": [
         "main",

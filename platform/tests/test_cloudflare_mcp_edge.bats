@@ -40,8 +40,33 @@ _rule() {
   assert_grep -qE '^[[:space:]]*action[[:space:]]+= "skip"$' "$BATS_TEST_TMPDIR/skip.tf"
   assert_grep -qE '^[[:space:]]*expression[[:space:]]+= local\.mcp_endpoint$' "$BATS_TEST_TMPDIR/skip.tf"
   assert_grep -qF 'phases   = ["http_request_sbfm"]' "$BATS_TEST_TMPDIR/skip.tf"
-  # Last in the ruleset, so no existing rule moves (a list reorder is a plan diff).
-  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | tail -n 1 | cut -d'"' -f2)" = "mcp-api-bypass-challenge" ]
+  # Appended after every earlier rule, so none of them moved (a list reorder is a plan diff): the
+  # only rule after it is the Plane MCP skip, which was appended later still.
+  [ "$(awk -F'"' '/^      ref +=/ { if (prev == "mcp-api-bypass-challenge") print $2; prev = $2 }' "$CF/waf.tf")" = "plane-mcp-bypass-challenge" ]
+}
+
+@test "cloudflare mcp: the Plane MCP skip names its host and exact machine paths only, appended last" {
+  _rule "$CF/waf.tf" plane-mcp-bypass-challenge > "$BATS_TEST_TMPDIR/plane.tf"
+  [ -s "$BATS_TEST_TMPDIR/plane.tf" ]
+  assert_grep -qE '^[[:space:]]*action[[:space:]]+= "skip"$' "$BATS_TEST_TMPDIR/plane.tf"
+  assert_grep -qF 'phases   = ["http_request_sbfm"]' "$BATS_TEST_TMPDIR/plane.tf"
+  local e
+  e=$(grep -E '^[[:space:]]*expression[[:space:]]+=' "$BATS_TEST_TMPDIR/plane.tf")
+  assert_contains "$e" 'http.host eq \"plane-mcp.uhstray.io\" and ('
+  # The machine paths, exact: both MCP endpoints and the token and registration endpoints; the
+  # protected-resource and authorization-server documents by prefix, so the SDK's path-inserted
+  # lookups reach the origin (PR 866 review).
+  assert_contains "$e" 'http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\" \"/http/token\" \"/http/register\"}'
+  assert_contains "$e" 'starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\")'
+  assert_contains "$e" 'starts_with(http.request.uri.path, \"/.well-known/oauth-authorization-server\")'
+  # Claude Code resolves the endpoints and documents relative to the issuer `/http` (2026-11-07).
+  assert_contains "$e" 'starts_with(http.request.uri.path, \"/http/.well-known/\")'
+  # The browser step stays challenged, and no broader prefix opens the host.
+  refute_contains "$e" '/authorize'
+  [ "$(grep -o 'starts_with' <<<"$e" | wc -l | tr -d ' ')" -eq 3 ]
+  refute_contains "$e" 'contains('
+  # Appended, so no existing rule moved: the rules before it are exactly the ones that predate it.
+  [ "$(grep -E '^      ref +=' "$CF/waf.tf" | cut -d'"' -f2 | sed -n '1,/^plane-mcp-bypass-challenge$/p' | tr '\n' ' ')" = "18ca3c2e79b845c59acb2148f295c07e 882488a5afd543eebc0037d22fcb1754 [CF AI Audit] 48c8a0a15cc64245a27285d298db0f32 semaphore-api-bypass-challenge o11y-api-bypass-challenge inference-api-bypass-challenge authentik-oidc-bypass-challenge mcp-api-bypass-challenge plane-mcp-bypass-challenge " ]
 }
 
 @test "cloudflare mcp: the inference skip rule and rate-limit rule are not widened to MCP" {

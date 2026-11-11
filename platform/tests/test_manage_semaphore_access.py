@@ -71,7 +71,8 @@ class Fake(DrainingHandler):
         self.reply({}, 204)
 
 
-def run(tmp_path, *, declared, integrations=(), check=False, ignore_put=False):
+def run(tmp_path, *, declared, integrations=(), check=False, ignore_put=False, admin_users=("ops-admin",),
+        platform_admins=None):
     Fake.writes = []
     Fake.ignore_put = ignore_put
     Fake.state = {
@@ -91,8 +92,9 @@ def run(tmp_path, *, declared, integrations=(), check=False, ignore_put=False):
         tasks = play["tasks"][names.index("Semaphore runtime access (injected token, or the controller AppRole)") + 1:]
         harness = [{"hosts": "localhost", "connection": "local", "gather_facts": False,
                     "vars": {"_semaphore_url": f"http://127.0.0.1:{server.server_port}", "_pid": 1,
-                             "_token": TOKEN, "semaphore_admin_users": ["ops-admin"],
-                             **({"semaphore_project_members": declared} if declared is not None else {})},
+                             "_token": TOKEN, "semaphore_admin_users": list(admin_users),
+                             **({"semaphore_project_members": declared} if declared is not None else {}),
+                             **({"platform_admins": platform_admins} if platform_admins is not None else {})},
                     "tasks": tasks}]
         path = tmp_path / "play.yml"
         path.write_text(yaml.safe_dump(harness, sort_keys=False))
@@ -156,3 +158,24 @@ def test_a_write_the_server_did_not_apply_fails_the_read_back(tmp_path):
     code, output = run(tmp_path, declared=DECLARED, ignore_put=True)
     assert code != 0
     assert "The team still differs after convergence" in output and "role ['runner-a']" in output
+
+
+MATCHING = {"runner-a": "task_runner", "viewer-b": "guest"}
+
+
+def test_a_platform_admin_is_a_declared_admin_and_is_named_for_promotion(tmp_path):
+    # #604: the admin roster is derived from the administrator list, not kept by hand.
+    admins = [{"key": "ops", "username": "ops-admin"}, {"key": "second", "username": "newcomer"},
+              {"key": "unseen", "username": "not-signed-in"}]
+    code, output = run(tmp_path, declared=MATCHING, check=True, admin_users=(), platform_admins=admins)
+    assert code == 0, output
+    assert "is not declared" not in output
+    assert "Declared admins to promote (Promote Semaphore Admins): ['newcomer']" in output
+    assert "Declared admins with no account yet (each signs in once): ['not-signed-in']" in output
+
+
+def test_without_the_admin_list_an_admin_must_still_be_declared_by_name(tmp_path):
+    code, output = run(tmp_path, declared=MATCHING, check=True, admin_users=())
+    assert code != 0
+    assert "system admin ops-admin is not declared" in output
+    assert "platform_admins is not visible to this play" in output

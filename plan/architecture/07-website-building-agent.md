@@ -131,10 +131,10 @@ When a WebSmith session reaches Phase 3 (Tooling), the agent must surface these 
 |---------|--------------------|--------|
 | Database | PostgreSQL | NetBox, NocoDB, UhhCraft — no incompatible service in production |
 | Container runtime | Podman | Root `CLAUDE.md`; NetBox is the only Docker exception |
-| Reverse proxy | Central Caddy with CloudFlare DNS-01 | [`CADDY-REVERSE-PROXY.md`](CADDY-REVERSE-PROXY.md) |
+| Reverse proxy | Central Caddy with CloudFlare DNS-01 | [`05-platform-infra.md`](05-platform-infra.md) |
 | Secrets management | OpenBao + Ansible-templated `.env` (not runtime AppRole in v1) | Root `CLAUDE.md` "Secrets Management" |
-| CI/CD | Unified `lint-and-test.yml` with path filters | [`CI-TESTING-SPECIFICATION.md`](CI-TESTING-SPECIFICATION.md) |
-| Deployment orchestration | Semaphore running composable playbooks | [`AUTOMATION-COMPOSABILITY.md`](AUTOMATION-COMPOSABILITY.md) |
+| CI/CD | Unified `lint-and-test.yml` with path filters | [`03-testing-ci-quality.md`](03-testing-ci-quality.md) |
+| Deployment orchestration | Semaphore running composable playbooks | [`01-automation-model.md`](01-automation-model.md) |
 | Hosting | Dedicated Proxmox VM per service | `platform/hypervisor/proxmox/vm-specs.example.yml` |
 | SSH | Per-service ed25519 key from OpenBao | `distribute-ssh-keys.yml` + `harden-ssh.yml` |
 | Generated code | Generate-in-CI; nothing generated lives in git | UhhCraft `_templ.go` / `sqlcdb/` policy |
@@ -168,7 +168,7 @@ The recipe is also captured in [`agents/websmith/context/architecture/integratio
 
 ## Implementation Phases
 
-The implementation of WebSmith + UhhCraft inside agent-cloud is tracked in [`plan/development/07-websmith-uhhcraft.md`](../development/WEBSMITH-INTEGRATION-PLAN.md) as 11 sequential phases. This architecture doc describes the *steady state*; the integration plan describes how we get there.
+The implementation of WebSmith + UhhCraft inside agent-cloud is tracked in [`plan/development/07-websmith-uhhcraft.md`](../development/07-websmith-uhhcraft.md) as 11 sequential phases. This architecture doc describes the *steady state*; the integration plan describes how we get there.
 
 The integration plan is the authoritative phase tracker — see its **Status** line and per-phase sections rather than duplicating a snapshot here. In summary: Phases 1–9 are merged to `main` (each as its own reviewed PR), with the Phase 6 GPU sub-plan §1 still awaiting a user decision; Phases 10 (branch-deploy validation, needs the real VMs from Phase 6) and 11 (second-site recipe codified in WebSmith catalogs) are pending.
 
@@ -217,16 +217,16 @@ Sites built via WebSmith share infrastructure (central Caddy, OpenBao, Semaphore
 
 - Root [`CLAUDE.md`](../../CLAUDE.md) — repo-wide conventions and the four-layer model.
 - Root [`README.md`](../../README.md) — service surface, AI agent inventory.
-- [`AUTOMATION-COMPOSABILITY.md`](AUTOMATION-COMPOSABILITY.md) — the deployment half once a spec is signed.
-- [`SERVICE-INTEGRATION-PLAN.md`](SERVICE-INTEGRATION-PLAN.md) — standard onboarding checklist (sites are a special case detailed in §2 of that doc).
-- [`CADDY-REVERSE-PROXY.md`](CADDY-REVERSE-PROXY.md) — per-site fragment pattern.
-- [`PODMAN-VS-DOCKER-COMPOSE.md`](PODMAN-VS-DOCKER-COMPOSE.md) — UhhCraft is the reference example.
-- [`CI-TESTING-SPECIFICATION.md`](CI-TESTING-SPECIFICATION.md) — language-specific CI patterns.
+- [`01-automation-model.md`](01-automation-model.md) — the deployment half once a spec is signed.
+- [`02-service-onboarding.md`](02-service-onboarding.md) — standard onboarding checklist (sites are a special case detailed in §2 of that doc).
+- [`05-platform-infra.md`](05-platform-infra.md) — per-site fragment pattern.
+- [`05-platform-infra.md`](05-platform-infra.md) — container runtime; UhhCraft is the reference example.
+- [`03-testing-ci-quality.md`](03-testing-ci-quality.md) — language-specific CI patterns.
 
 ### Integration plan
 
-- [`plan/development/07-websmith-uhhcraft.md`](../development/WEBSMITH-INTEGRATION-PLAN.md) — 11-phase rollout, locked decisions, open questions, definition of done.
-- [`plan/development/07-websmith-uhhcraft.md`](../development/UHHCRAFT-GPU-PASSTHROUGH.md) — GPU host preparation for the inference VMs.
+- [`plan/development/07-websmith-uhhcraft.md`](../development/07-websmith-uhhcraft.md) — 11-phase rollout, locked decisions, open questions, definition of done.
+- [`plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md`](../archive/development/UHHCRAFT-GPU-PASSTHROUGH.md) — GPU host preparation for the inference VMs (archived original; the consolidated plan is `07-websmith-uhhcraft.md`).
 
 ### Agent files
 

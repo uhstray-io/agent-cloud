@@ -6,9 +6,11 @@ import hashlib
 import importlib.util
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/merge-when-green.py"
 SPEC = importlib.util.spec_from_file_location("merge_when_green", SCRIPT)
@@ -30,6 +32,38 @@ PARTITIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
 AGW_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-agw-partition.txt").read_bytes()
 
+# The workflow as it stood before the Rust (console) job was added.
+NODE_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-node-partition.txt").read_bytes()
+
+# The workflow as it stood before the Python Playbook Runs job was split out of Python core.
+CONSOLE_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-console-partition.txt").read_bytes()
+
+# The workflow as it stood before the Node pi provider job was removed (the provider moved to the harness repo).
+RUNS_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-runs-partition.txt").read_bytes()
+
+# The workflow as it stood before ruff was pinned in Static Analysis.
+PI_MOVED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-pi-moved.txt").read_bytes()
+
+# The workflow as it stood before the Version job was added (ruff pinned).
+RUFF_PINNED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-ruff-pinned.txt").read_bytes()
+
+# The workflow as it stood before the Python jobs installed with uv (Version job added).
+VERSIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-versioned.txt").read_bytes()
+
+# The workflow as it stood before every job was pinned to ubuntu-24.04 (uv, on ubuntu-latest).
+UV_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-uv.txt").read_bytes()
+
+# The workflow as it stood before the six Python jobs became one eight-shard matrix job.
+RUNNER_PINNED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-runner-pinned.txt").read_bytes()
+
 
 def _blob_sha(source):
     return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
@@ -39,7 +73,17 @@ assert _blob_sha(PRE_PARTITION_WORKFLOW) == guard.PRE_PARTITION_WORKFLOW_BLOB_SH
 assert _blob_sha(INTERMEDIATE_PARTITIONED_WORKFLOW) == "29020efdaa1747bd2dc42d4c6468a96e676d8b4b"
 assert _blob_sha(PARTITIONED_WORKFLOW) == guard.PARTITIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(AGW_WORKFLOW) == guard.AGW_PARTITIONED_WORKFLOW_BLOB_SHA
-assert _blob_sha(CURRENT_WORKFLOW) == guard.NODE_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(NODE_WORKFLOW) == guard.NODE_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(CONSOLE_WORKFLOW) == guard.CONSOLE_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(RUNS_WORKFLOW) == guard.RUNS_PARTITIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(PI_MOVED_WORKFLOW) == guard.PI_MOVED_WORKFLOW_BLOB_SHA
+assert _blob_sha(RUFF_PINNED_WORKFLOW) == guard.RUFF_PINNED_WORKFLOW_BLOB_SHA
+assert _blob_sha(VERSIONED_WORKFLOW) == guard.VERSIONED_WORKFLOW_BLOB_SHA
+assert _blob_sha(UV_WORKFLOW) == guard.UV_WORKFLOW_BLOB_SHA
+assert _blob_sha(RUNNER_PINNED_WORKFLOW) == guard.RUNNER_PINNED_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.SHARDED_WORKFLOW_BLOB_SHA
+# The on-disk workflow carries exactly one Version job; the policy-drift tests below depend on it.
+assert CURRENT_WORKFLOW.count(b"\n    name: Version\n") == 1
 
 HEAD = "a" * 40
 BASE = "b" * 40
@@ -54,7 +98,7 @@ class FakeGitHub:
             "number": PR, "state": "open", "draft": False, "merged": False,
             "base": {"ref": "dev", "sha": BASE, "repo": {"full_name": guard.REPO}},
             "head": {"sha": HEAD, "repo": {"full_name": guard.REPO}},
-            "user": {"login": "author"},
+            "user": {"login": "author"}, "title": "feat: x",
         }
         self.files = ["docs/change.md"]
         self.reviews = [{"user": {"login": "reviewer"}, "state": "APPROVED",
@@ -169,6 +213,70 @@ class FakeGitHub:
 
     def set_node_transition(self):
         self.workflow_sources[BASE] = AGW_WORKFLOW
+        self.workflow_sources[HEAD] = NODE_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_console_transition(self):
+        self.workflow_sources[BASE] = NODE_WORKFLOW
+        self.workflow_sources[HEAD] = CONSOLE_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_runs_transition(self):
+        self.workflow_sources[BASE] = CONSOLE_WORKFLOW
+        self.workflow_sources[HEAD] = RUNS_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_pi_moved_transition(self):
+        self.workflow_sources[BASE] = RUNS_WORKFLOW
+        self.workflow_sources[HEAD] = PI_MOVED_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_ruff_pinned_transition(self):
+        self.workflow_sources[BASE] = PI_MOVED_WORKFLOW
+        self.workflow_sources[HEAD] = RUFF_PINNED_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_versioned_transition(self):
+        self.workflow_sources[BASE] = RUFF_PINNED_WORKFLOW
+        self.workflow_sources[HEAD] = VERSIONED_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_uv_transition(self):
+        self.workflow_sources[BASE] = VERSIONED_WORKFLOW
+        self.workflow_sources[HEAD] = UV_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_runner_pinned_transition(self):
+        self.workflow_sources[BASE] = UV_WORKFLOW
+        self.workflow_sources[HEAD] = RUNNER_PINNED_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_sharded_transition(self):
+        self.workflow_sources[BASE] = RUNNER_PINNED_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
@@ -176,8 +284,8 @@ class FakeGitHub:
             next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
 
     def set_partition_baseline(self):
-        self.workflow_sources[BASE] = CURRENT_WORKFLOW
-        self.workflow_sources[HEAD] = CURRENT_WORKFLOW
+        self.workflow_sources[BASE] = PARTITIONED_WORKFLOW
+        self.workflow_sources[HEAD] = PARTITIONED_WORKFLOW
         self.files = []
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
             self.jobs[name]["conclusion"] = "success"
@@ -205,9 +313,9 @@ class FakeGitHub:
 
         self.api = changed
 
-    def merge(self, pr, sha):
+    def merge(self, pr, sha, title):
         self.merge_calls.append(["gh", "pr", "merge", str(pr), "--repo", guard.REPO,
-                                 "--merge", "--match-head-commit", sha])
+                                 "--merge", "--match-head-commit", sha, "--body", title])
         self.pr["merged"] = True
 
 
@@ -230,7 +338,7 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed"], api), 0)
         self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
-                                            "--merge", "--match-head-commit", HEAD]])
+                                            "--merge", "--match-head-commit", HEAD, "--body", "feat: x"]])
         self.assertEqual(sum(endpoint == f"repos/{guard.REPO}/pulls/{PR}" for endpoint, _ in api.calls), 5)
 
     def test_stale_head_refuses_without_merge(self):
@@ -240,22 +348,30 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_missing_running_failing_and_unconditional_skipped_jobs_refuse(self):
         changes = [
-            (lambda api: api.jobs.pop("Python core"), "Missing expected Actions jobs"),
-            (lambda api: api.jobs.pop("Python Playbook Safety"), "Missing expected Actions jobs"),
-            (lambda api: api.jobs.pop("Node pi provider"), "Missing expected Actions jobs"),
-            (lambda api: api.jobs["Node pi provider"].update(conclusion="failure"), "Node pi provider is failure"),
-            (lambda api: api.jobs["Node pi provider"].update(conclusion="skipped"), "was skipped"),
-            (lambda api: api.jobs["Python Playbook Safety"].update(
+            (lambda api: api.jobs.pop("Python (1/8)"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs.pop("Python (8/8)"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs.pop("Rust (console)"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs["Rust (console)"].update(conclusion="failure"), "Rust (console) is failure"),
+            (lambda api: api.jobs["Rust (console)"].update(conclusion="skipped"), "was skipped"),
+            (lambda api: api.jobs.pop("Version"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs["Version"].update(conclusion="failure"), "Version is failure"),
+            (lambda api: api.jobs["Version"].update(conclusion="skipped"), "was skipped"),
+            (lambda api: api.jobs.pop("Python (2/8)"), "Missing expected Actions jobs"),
+            (lambda api: api.jobs["Python (2/8)"].update(conclusion="failure"),
+             "Python (2/8) is failure"),
+            (lambda api: api.jobs["Python (2/8)"].update(conclusion="cancelled"), "is cancelled"),
+            (lambda api: api.jobs["Python (2/8)"].update(conclusion="skipped"), "was skipped"),
+            (lambda api: api.jobs["Python (3/8)"].update(
                 status="in_progress", conclusion=None), "incomplete"),
-            (lambda api: api.jobs["Python Playbook Safety"].update(
+            (lambda api: api.jobs["Python (3/8)"].update(
                 conclusion="cancelled"), "is cancelled"),
-            (lambda api: api.jobs["Python Playbook Safety"].update(
+            (lambda api: api.jobs["Python (3/8)"].update(
                 conclusion="skipped"), "was skipped"),
-            (lambda api: api.jobs["Python Agentgateway"].update(
+            (lambda api: api.jobs["Python (4/8)"].update(
                 status="in_progress", conclusion=None), "incomplete"),
-            (lambda api: api.jobs["Python Agentgateway"].update(
+            (lambda api: api.jobs["Python (4/8)"].update(
                 conclusion="cancelled"), "is cancelled"),
-            (lambda api: api.jobs["Python Agentgateway"].update(
+            (lambda api: api.jobs["Python (4/8)"].update(
                 conclusion="skipped"), "was skipped"),
             (lambda api: api.jobs["Bash Tests"].update(status="in_progress", conclusion=None), "incomplete"),
             (lambda api: api.jobs["Security Scan"].update(conclusion="failure"), "failure"),
@@ -303,24 +419,96 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_partitioned_workflow_is_accepted_for_later_prs(self):
         api = FakeGitHub()
+        api.workflow_source = PARTITIONED_WORKFLOW
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
     def test_agentgateway_partition_unchanged_passes_the_workflow_check(self):
         # The workflow-change check alone accepts an unchanged Agentgateway partition. This fake still
-        # supplies a Node pi provider job, which a real run of that workflow never has; see the next test.
+        # supplies the jobs added after it, which a real run of that workflow never has; see the next test.
         api = FakeGitHub()
         api.workflow_source = AGW_WORKFLOW
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
-    def test_agentgateway_partition_pr_without_the_node_job_is_refused(self):
-        # What happens live to a pull request opened before the transition: its workflow runs no
-        # Node pi provider job, so the required-job gate refuses it until it merges dev.
+    def test_agentgateway_partition_pr_without_the_later_jobs_is_refused(self):
+        # What happens live to a pull request opened that long ago: its workflow runs none of the jobs
+        # added since (Rust (console) among them), so the required-job gate refuses it until it merges dev.
         api = FakeGitHub()
         api.workflow_source = AGW_WORKFLOW
-        api.jobs.pop("Node pi provider")
+        api.jobs.pop("Rust (console)")
         run_refusal(self, api, "Missing expected Actions jobs")
+
+    def test_node_partition_unchanged_passes_the_workflow_check(self):
+        # The workflow-change check alone accepts an unchanged Node partition. This fake still
+        # supplies a Rust (console) job, which a real run of that workflow never has; see the next test.
+        api = FakeGitHub()
+        api.workflow_source = NODE_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_node_partition_pr_without_the_rust_console_job_is_refused(self):
+        # What happens live to a pull request opened before the transition: its workflow runs no
+        # Rust (console) job, so the required-job gate refuses it until it merges dev.
+        api = FakeGitHub()
+        api.workflow_source = NODE_WORKFLOW
+        api.jobs.pop("Rust (console)")
+        run_refusal(self, api, "Missing expected Actions jobs")
+
+    def test_node_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = NODE_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Node pi provider partition may only remain byte-identical")
+
+    def test_console_partition_unchanged_passes_the_workflow_check(self):
+        # The workflow-change check alone accepts an unchanged console partition. This fake still
+        # supplies a Python Playbook Runs job, which a real run of that workflow never has; see the next test.
+        api = FakeGitHub()
+        api.workflow_source = CONSOLE_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_console_partition_pr_without_the_playbook_runs_job_is_refused(self):
+        # What happens live to a pull request opened before the transition: its workflow runs no
+        # Python Playbook Runs job, so the required-job gate refuses it until it merges dev.
+        api = FakeGitHub()
+        api.workflow_source = CONSOLE_WORKFLOW
+        api.jobs.pop("Python (2/8)")
+        run_refusal(self, api, "Missing expected Actions jobs")
+
+    def test_console_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = CONSOLE_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Rust console partition may only remain byte-identical")
+
+    def test_runs_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = RUNS_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Playbook Runs partition may only remain byte-identical")
+
+    def test_runs_partition_pr_still_running_the_node_job_is_refused(self):
+        # What happens live to a pull request opened before the pi provider moved out: its workflow still
+        # runs the Node pi provider job, which the gate no longer knows, so it refuses until it merges dev.
+        api = FakeGitHub()
+        api.workflow_source = RUNS_WORKFLOW
+        api.extra_jobs = [{"name": "Node pi provider", "status": "completed", "conclusion": "success",
+                           "check_run_url": f"https://api.github.com/repos/{guard.REPO}/check-runs/99"}]
+        run_refusal(self, api, "Unknown or duplicate Actions job")
+
+    def test_pi_moved_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = PI_MOVED_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Pi-moved workflow may only remain byte-identical")
+
+    def test_ruff_pinned_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = RUFF_PINNED_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Ruff-pinned workflow may only remain byte-identical")
 
     def test_agentgateway_to_node_transition_is_allowed(self):
         api = FakeGitHub()
@@ -346,28 +534,530 @@ class MergeGuardTests(unittest.TestCase):
         cases = [
             ("agentgateway to node with extra byte", lambda api: (
                 api.set_node_transition(),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
-            ("partitioned base to node head", lambda api: api.workflow_sources.__setitem__(
-                BASE, PARTITIONED_WORKFLOW)),
-            ("pre-partition base to node head", lambda api: api.workflow_sources.__setitem__(
-                BASE, PRE_PARTITION_WORKFLOW)),
-            ("node base to agentgateway head", lambda api: api.workflow_sources.__setitem__(
-                HEAD, AGW_WORKFLOW)),
-            ("node base to partitioned head", lambda api: api.workflow_sources.__setitem__(
-                HEAD, PARTITIONED_WORKFLOW)),
-            ("node base with extra byte", lambda api: api.workflow_sources.__setitem__(
-                BASE, CURRENT_WORKFLOW + b"# extra\n")),
-            ("node base to edited head", lambda api: api.workflow_sources.__setitem__(
-                HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW + b"# extra\n"))),
+            ("partitioned base to node head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PARTITIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW))),
+            ("pre-partition base to node head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW))),
+            ("node base to agentgateway head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW))),
+            ("node base to partitioned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PARTITIONED_WORKFLOW))),
+            ("node base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW))),
+            ("node base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW + b"# extra\n"))),
             ("agentgateway base to node head with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n"))),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW + b"# extra\n"))),
         ]
         for label, change in cases:
             with self.subTest(label=label):
                 api = FakeGitHub()
                 change(api)
                 run_refusal(self, api)
+
+    def test_node_to_console_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_console_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_node_to_console_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_console_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_console_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_console_transition_or_console_baseline_is_accepted(self):
+        cases = [
+            ("node to console with extra byte", lambda api: (
+                api.set_console_transition(),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW + b"# extra\n"))),
+            ("partitioned base to console head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PARTITIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("pre-partition base to console head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("agentgateway base to console head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("node base to console head with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW + b"# extra\n"))),
+            ("node base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("console base to node head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW))),
+            ("console base to agentgateway head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, AGW_WORKFLOW))),
+            ("console base to partitioned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PARTITIONED_WORKFLOW))),
+            ("console base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("console base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW + b"# extra\n"))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api)
+
+    def test_console_to_playbook_runs_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_runs_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_console_to_playbook_runs_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_runs_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_runs_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_playbook_runs_transition_or_runs_baseline_is_accepted(self):
+        cases = [
+            ("console to runs with extra byte", lambda api: (
+                api.set_runs_transition(),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW + b"# extra\n"))),
+            ("node base to runs head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
+            ("agentgateway base to runs head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, AGW_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
+            ("partitioned base to runs head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PARTITIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
+            ("pre-partition base to runs head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PRE_PARTITION_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
+            ("console base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
+            ("runs base to console head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("runs base to node head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, NODE_WORKFLOW))),
+            ("runs base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
+            ("runs base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW + b"# extra\n"))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api)
+
+    def test_runs_to_pi_moved_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_pi_moved_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_runs_to_pi_moved_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_pi_moved_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_pi_moved_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_pi_moved_transition_or_pi_moved_baseline_is_accepted(self):
+        cases = [
+            ("runs to pi-moved with extra byte", lambda api: (
+                api.set_pi_moved_transition(),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW + b"# extra\n"))),
+            ("console base to pi-moved head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
+            ("node base to pi-moved head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, NODE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
+            ("runs base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
+            ("pi-moved base to runs head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNS_WORKFLOW))),
+            ("pi-moved base to console head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CONSOLE_WORKFLOW))),
+            ("pi-moved base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
+            ("pi-moved base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW + b"# extra\n"))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api)
+
+    def test_pi_moved_to_ruff_pinned_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_ruff_pinned_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_pi_moved_to_ruff_pinned_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_ruff_pinned_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_ruff_pinned_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_ruff_pinned_transition_or_ruff_pinned_baseline_is_accepted(self):
+        cases = [
+            ("pi-moved to ruff-pinned with extra byte", lambda api: (
+                api.set_ruff_pinned_transition(),
+                api.workflow_sources.__setitem__(HEAD, RUFF_PINNED_WORKFLOW + b"# extra\n"))),
+            ("runs base to ruff-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUFF_PINNED_WORKFLOW))),
+            ("console base to ruff-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CONSOLE_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUFF_PINNED_WORKFLOW))),
+            ("ruff-pinned base to pi-moved head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUFF_PINNED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, PI_MOVED_WORKFLOW))),
+            ("ruff-pinned base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUFF_PINNED_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, RUFF_PINNED_WORKFLOW))),
+            ("ruff-pinned base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUFF_PINNED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUFF_PINNED_WORKFLOW + b"# extra\n"))),
+        ]
+        for label, change in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api)
+
+    def test_ruff_pinned_to_versioned_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_versioned_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_ruff_pinned_to_versioned_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_versioned_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_versioned_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_versioned_transition_or_versioned_baseline_is_accepted(self):
+        cases = [
+            ("ruff-pinned to versioned with extra byte", lambda api: (
+                api.set_versioned_transition(),
+                api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed ruff-pinned workflow"),
+            ("pi-moved base to versioned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, PI_MOVED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
+             "Workflow head is not the exact reviewed pi-moved workflow"),
+            ("runs base to versioned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNS_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
+             "Workflow head is not the exact reviewed Playbook Runs partition"),
+            ("versioned base to ruff-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, VERSIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUFF_PINNED_WORKFLOW)),
+             "Workflow head is not the exact reviewed versioned workflow"),
+            ("versioned base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, VERSIONED_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
+             "Workflow base is outside the exact pre-partition or reviewed partition states"),
+            ("versioned base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, VERSIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed versioned workflow"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api, message)
+
+    def test_versioned_workflow_unchanged_passes_the_workflow_check(self):
+        api = FakeGitHub()
+        api.workflow_source = VERSIONED_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_versioned_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = VERSIONED_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Versioned workflow may only remain byte-identical")
+
+    def test_versioned_to_uv_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_uv_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_versioned_to_uv_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_uv_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_uv_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_uv_transition_or_uv_baseline_is_accepted(self):
+        cases = [
+            ("versioned to uv with extra byte", lambda api: (
+                api.set_uv_transition(),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed versioned workflow"),
+            ("ruff-pinned base to uv head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUFF_PINNED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
+             "Workflow head is not the exact reviewed ruff-pinned workflow"),
+            ("uv base to versioned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, UV_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
+             "Workflow head is not the exact reviewed uv workflow"),
+            ("uv base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, UV_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
+             "Workflow base is outside the exact pre-partition or reviewed partition states"),
+            ("uv base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, UV_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed uv workflow"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api, message)
+
+    def test_uv_workflow_unchanged_passes_the_workflow_check(self):
+        api = FakeGitHub()
+        api.workflow_source = UV_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_uv_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = UV_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "uv workflow may only remain byte-identical")
+
+    def test_uv_to_runner_pinned_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_runner_pinned_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_uv_to_runner_pinned_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_runner_pinned_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_runner_pinned_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_runner_pinned_transition_or_baseline_is_accepted(self):
+        cases = [
+            ("uv to runner-pinned with extra byte", lambda api: (
+                api.set_runner_pinned_transition(),
+                api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed uv workflow"),
+            ("versioned base to runner-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, VERSIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW)),
+             "Workflow head is not the exact reviewed versioned workflow"),
+            ("runner-pinned base to uv head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNNER_PINNED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
+             "Workflow head is not the exact reviewed runner-pinned workflow"),
+            ("runner-pinned base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNNER_PINNED_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW)),
+             "Workflow base is outside the exact pre-partition or reviewed partition states"),
+            ("runner-pinned base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUNNER_PINNED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed runner-pinned workflow"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api, message)
+
+    def test_runner_pinned_workflow_unchanged_passes_the_workflow_check(self):
+        api = FakeGitHub()
+        api.workflow_source = RUNNER_PINNED_WORKFLOW
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_runner_pinned_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.workflow_source = RUNNER_PINNED_WORKFLOW
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Runner-pinned workflow may only remain byte-identical")
+
+    def test_runner_pinned_workflow_pins_every_job_to_ubuntu_24_04(self):
+        for source in (RUNNER_PINNED_WORKFLOW, CURRENT_WORKFLOW):
+            text = source.decode()
+            assert text.count("\n    runs-on: ubuntu-24.04\n") == text.count("\n    runs-on: ")
+            assert "\n    runs-on: ubuntu-latest\n" not in text
+
+    def test_runner_pinned_to_sharded_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_sharded_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_runner_pinned_to_sharded_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_sharded_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_sharded_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_sharded_transition_or_baseline_is_accepted(self):
+        cases = [
+            ("runner-pinned to sharded with extra byte", lambda api: (
+                api.set_sharded_transition(),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed runner-pinned workflow"),
+            ("uv base to sharded head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, UV_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW)),
+             "Workflow head is not the exact reviewed uv workflow"),
+            ("sharded base to runner-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW)),
+             "Workflow head is not the exact reviewed sharded workflow"),
+            ("sharded base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW)),
+             "Workflow base is outside the exact pre-partition or reviewed partition states"),
+            ("sharded base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed sharded workflow"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api, message)
+
+    def test_sharded_workflow_unchanged_passes_the_workflow_check(self):
+        api = FakeGitHub()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_sharded_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Sharded workflow may only remain byte-identical")
+
+    def test_sharded_workflow_names_one_python_matrix_job_and_the_guard_its_eight_legs(self):
+        # The policy check compares the literal `name:` line; job evidence compares check-run names.
+        guard.check_workflow_policy(CURRENT_WORKFLOW, sharded=True)
+        assert CURRENT_WORKFLOW.count(b"\n    name: Python (${{ matrix.shard }}/8)\n") == 1
+        assert b"shard: [1, 2, 3, 4, 5, 6, 7, 8]" in CURRENT_WORKFLOW
+        assert tuple(f"Python ({k}/8)" for k in range(1, 9)) == guard.PYTHON_SHARDS
+        assert set(guard.PYTHON_SHARDS) <= guard.EXPECTED
+        assert not {"Python core", "Python NetBox", "Python Semaphore"} & guard.EXPECTED
+        assert all(guard.required_jobs([])[name] for name in guard.PYTHON_SHARDS)
+
+    def test_a_pr_still_running_the_six_named_python_jobs_is_refused(self):
+        # A pull request opened before the transition runs no shard jobs until it merges dev.
+        api = FakeGitHub()
+        api.jobs["Python core"] = dict(api.jobs.pop("Python (1/8)"), name="Python core")
+        run_refusal(self, api, "Unknown or duplicate Actions job")
+
+    def test_ruff_pinned_pr_without_the_version_job_is_refused(self):
+        # What happens live to a pull request opened before the transition: its workflow runs no
+        # Version job, so the required-job gate refuses it until it merges dev.
+        api = FakeGitHub()
+        api.workflow_source = RUFF_PINNED_WORKFLOW
+        api.jobs.pop("Version")
+        run_refusal(self, api, "Missing expected Actions jobs: Version")
 
     def test_only_exact_transition_or_partitioned_baseline_is_accepted(self):
         cases = [
@@ -431,8 +1121,9 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_partitioned_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = PARTITIONED_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
-        run_refusal(self, api, "byte-identical on subsequent PRs")
+        run_refusal(self, api, "Credential-safe partition may only remain byte-identical")
 
     def test_agentgateway_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
@@ -442,36 +1133,36 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_agentgateway_job_must_succeed_and_be_present_exactly_once(self):
         api = FakeGitHub()
-        api.jobs["Python Agentgateway"].update(conclusion="failure")
-        next(check for check in api.checks if check["name"] == "Python Agentgateway")["conclusion"] = "failure"
-        run_refusal(self, api, "Python Agentgateway is failure")
+        api.jobs["Python (4/8)"].update(conclusion="failure")
+        next(check for check in api.checks if check["name"] == "Python (4/8)")["conclusion"] = "failure"
+        run_refusal(self, api, "Python (4/8) is failure")
 
         api = FakeGitHub()
-        api.jobs.pop("Python Agentgateway")
+        api.jobs.pop("Python (4/8)")
         run_refusal(self, api, "Missing expected Actions jobs")
 
         api = FakeGitHub()
-        api.extra_jobs = [dict(api.jobs["Python Agentgateway"])]
+        api.extra_jobs = [dict(api.jobs["Python (4/8)"])]
         run_refusal(self, api, "Unknown or duplicate Actions job")
 
         api = FakeGitHub()
-        next(check for check in api.checks if check["name"] == "Python Agentgateway")["head_sha"] = "f" * 40
+        next(check for check in api.checks if check["name"] == "Python (4/8)")["head_sha"] = "f" * 40
         run_refusal(self, api, "missing, stale, or incomplete")
 
     def test_partition_job_must_succeed_even_when_the_aggregate_run_is_green(self):
         api = FakeGitHub()
-        api.jobs["Python Playbook Safety"].update(conclusion="failure")
-        next(check for check in api.checks if check["name"] == "Python Playbook Safety")["conclusion"] = "failure"
-        run_refusal(self, api, "Python Playbook Safety is failure")
+        api.jobs["Python (3/8)"].update(conclusion="failure")
+        next(check for check in api.checks if check["name"] == "Python (3/8)")["conclusion"] = "failure"
+        run_refusal(self, api, "Python (3/8) is failure")
 
     def test_duplicate_partition_job_refuses_even_when_both_are_green(self):
         api = FakeGitHub()
-        api.extra_jobs = [dict(api.jobs["Python Playbook Safety"])]
+        api.extra_jobs = [dict(api.jobs["Python (3/8)"])]
         run_refusal(self, api, "Unknown or duplicate Actions job")
 
     def test_stale_partition_check_run_refuses_even_when_job_is_green(self):
         api = FakeGitHub()
-        next(check for check in api.checks if check["name"] == "Python Playbook Safety")["head_sha"] = "f" * 40
+        next(check for check in api.checks if check["name"] == "Python (3/8)")["head_sha"] = "f" * 40
         run_refusal(self, api, "missing, stale, or incomplete")
 
     def test_missing_go_check_refuses_when_workflow_is_touched(self):
@@ -484,6 +1175,26 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         api.files = [".github/workflows/other.yml"]
         run_refusal(self, api, "another protected workflow path")
+
+    def test_release_scripts_refuse_because_they_run_with_a_write_token(self):
+        for path in guard.RELEASE_SCRIPTS:
+            with self.subTest(path=path):
+                api = FakeGitHub()
+                api.files = [path]
+                run_refusal(self, api, "release script that runs with a write token")
+
+    def test_invalid_live_title_refuses(self):
+        for title in ("Feat: x", "frobnicate: x", "feat: x\n", "", None, 7):
+            with self.subTest(title=title):
+                api = FakeGitHub()
+                api.pr["title"] = title
+                run_refusal(self, api, "not a Conventional Commits title")
+
+    def test_title_edited_after_a_green_version_run_is_refused_at_merge(self):
+        api = FakeGitHub()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        api.pr["title"] = "Feat: x"
+        run_refusal(self, api, "not a Conventional Commits title")
 
     def test_pinned_workflow_blob_tree_and_mode_evidence_fail_closed(self):
         cases = [
@@ -618,6 +1329,19 @@ class MergeGuardTests(unittest.TestCase):
         self.assertTrue(any(dict(fields).get("page") == "2" for endpoint, fields in api.calls
                             if endpoint.endswith("check-runs")))
 
+    def test_completed_coderabbit_check_run_passes_and_other_external_runs_refuse(self):
+        api = FakeGitHub()
+        coderabbit = {"id": 3000, "name": "CodeRabbit", "head_sha": HEAD, "status": "completed",
+                      "conclusion": "success", "app": {"slug": "coderabbitai"}}
+        api.checks = api.checks + [coderabbit]
+        self.assertTrue(guard.validate(api, PR, HEAD, None))
+        api.checks[-1] = dict(coderabbit, conclusion="neutral")  # review limit reached
+        self.assertTrue(guard.validate(api, PR, HEAD, None))
+        for override in ({"conclusion": "failure"}, {"status": "in_progress", "conclusion": None},
+                         {"app": {"slug": "other-app"}}, {"app": None}, {"app": "coderabbitai"}):
+            api.checks[-1] = dict(coderabbit, **override)
+            run_refusal(self, api, "Unknown external check policy: CodeRabbit")
+
     def test_queued_rerun_supersedes_an_older_successful_workflow_run(self):
         api = FakeGitHub()
         api.runs.append({**api.runs[0], "id": 901, "run_number": 4, "run_attempt": 2,
@@ -684,45 +1408,113 @@ class MergeGuardTests(unittest.TestCase):
             guard.check_workflow_policy(changed, agw=True)
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
             guard.check_workflow_policy(changed, node=True)
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, console=True)
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, runs=True)
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, pi_moved=True)
+        with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
+            guard.check_workflow_policy(changed, versioned=True)
 
     def test_each_policy_state_requires_exactly_its_own_job_set(self):
         guard.check_workflow_policy(PARTITIONED_WORKFLOW, partitioned=True)
         guard.check_workflow_policy(AGW_WORKFLOW, agw=True)
-        guard.check_workflow_policy(CURRENT_WORKFLOW, node=True)
+        guard.check_workflow_policy(NODE_WORKFLOW, node=True)
+        guard.check_workflow_policy(CONSOLE_WORKFLOW, console=True)
+        guard.check_workflow_policy(RUNS_WORKFLOW, runs=True)
+        guard.check_workflow_policy(RUFF_PINNED_WORKFLOW, pi_moved=True)
+        guard.check_workflow_policy(RUNNER_PINNED_WORKFLOW, versioned=True)
+        guard.check_workflow_policy(CURRENT_WORKFLOW, sharded=True)
         for label, source, kwargs in (
             ("agentgateway workflow read as playbook safety", AGW_WORKFLOW, {"partitioned": True}),
             ("playbook safety workflow read as agentgateway", PARTITIONED_WORKFLOW, {"agw": True}),
             ("agentgateway workflow read as node", AGW_WORKFLOW, {"node": True}),
-            ("node workflow read as agentgateway", CURRENT_WORKFLOW, {"agw": True}),
+            ("node workflow read as agentgateway", NODE_WORKFLOW, {"agw": True}),
+            ("node workflow read as console", NODE_WORKFLOW, {"console": True}),
+            ("console workflow read as node", CONSOLE_WORKFLOW, {"node": True}),
+            ("console workflow read as runs", CONSOLE_WORKFLOW, {"runs": True}),
+            ("runs workflow read as console", RUNS_WORKFLOW, {"console": True}),
+            ("runs workflow read as pi-moved", RUNS_WORKFLOW, {"pi_moved": True}),
+            ("pi-moved workflow read as runs", PI_MOVED_WORKFLOW, {"runs": True}),
             ("agentgateway job renamed", AGW_WORKFLOW.replace(
                 b"name: Python Agentgateway", b"name: Python Agw", 1), {"agw": True}),
-            ("node job renamed", CURRENT_WORKFLOW.replace(
+            ("node job renamed", NODE_WORKFLOW.replace(
                 b"name: Node pi provider", b"name: Node pi", 1), {"node": True}),
+            ("rust console job renamed", CONSOLE_WORKFLOW.replace(
+                b"name: Rust (console)", b"name: Rust console", 1), {"console": True}),
+            ("playbook runs job renamed", RUNS_WORKFLOW.replace(
+                b"name: Python Playbook Runs", b"name: Python Runs", 1), {"runs": True}),
+            ("playbook runs job renamed after the move", RUFF_PINNED_WORKFLOW.replace(
+                b"name: Python Playbook Runs", b"name: Python Runs", 1), {"pi_moved": True}),
+            ("ruff-pinned workflow read as versioned", RUFF_PINNED_WORKFLOW, {"versioned": True}),
+            ("versioned workflow read as pi-moved", RUNNER_PINNED_WORKFLOW, {"pi_moved": True}),
+            ("version job renamed", RUNNER_PINNED_WORKFLOW.replace(
+                b"    name: Version\n", b"    name: Versioning\n", 1), {"versioned": True}),
+            ("runner-pinned workflow read as sharded", RUNNER_PINNED_WORKFLOW, {"sharded": True}),
+            ("sharded workflow read as versioned", CURRENT_WORKFLOW, {"versioned": True}),
+            ("python matrix job renamed", CURRENT_WORKFLOW.replace(
+                b"name: Python (${{ matrix.shard }}/8)", b"name: Python shard", 1), {"sharded": True}),
         ):
             with self.subTest(label=label), self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
                 guard.check_workflow_policy(source, **kwargs)
 
     def test_path_gate_drift_refuses_before_merge(self):
+        # The unmodified versioned workflow must pass first, so the refusal below can only come from the filter edit.
+        guard.check_workflow_policy(CURRENT_WORKFLOW, sharded=True)
         changed = CURRENT_WORKFLOW.replace(
             b"              - '.github/workflows/lint-and-test.yml'\n",
             b"              - '.github/workflows/lint-and-test.yml'\n              - 'platform/services/other/**'\n",
             1,
         )
         with self.assertRaisesRegex(guard.Refusal, "Dev PR workflow changed"):
-            guard.check_workflow_policy(changed, node=True)
+            guard.check_workflow_policy(changed, sharded=True)
 
     def test_ambiguous_merge_response_is_read_back_and_never_retried(self):
         api = FakeGitHub()
 
-        def uncertain(_pr, _sha):
+        def uncertain(_pr, _sha, _title):
             api.merge_calls.append(["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
-                                    "--merge", "--match-head-commit", HEAD])
+                                    "--merge", "--match-head-commit", HEAD, "--body", "feat: x"])
             raise guard.Refusal("merge outcome unavailable")
 
         api.merge = uncertain
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed"], api), 1)
         self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
-                                            "--merge", "--match-head-commit", HEAD]])
+                                            "--merge", "--match-head-commit", HEAD, "--body", "feat: x"]])
+
+    def test_merge_command_carries_the_validated_title_as_its_body(self):
+        # The real command, not the fake: the body is one argv element after --match-head-commit.
+        seen = []
+
+        def record(command, **_kwargs):
+            seen.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(guard.subprocess, "run", record):
+            guard.GitHub().merge(PR, HEAD, "fix(api): trim the route")
+        self.assertEqual(seen, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO, "--merge",
+                                 "--match-head-commit", HEAD, "--body", "fix(api): trim the route"]])
+
+    def test_merge_body_is_the_title_the_final_validation_pass_read(self):
+        # The title changes after the first pass and before the merge pass: the merge carries the new, validated title.
+        api = FakeGitHub()
+        original = api.api
+        reads = 0
+
+        def retitled(endpoint, fields=()):
+            nonlocal reads
+            if endpoint == f"repos/{guard.REPO}/pulls/{PR}":
+                reads += 1
+                if reads == 3:  # first read of the merge pass
+                    api.pr["title"] = "fix: retitled before the merge"
+            return original(endpoint, fields)
+
+        api.api = retitled
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed"], api), 0)
+        self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
+                                            "--merge", "--match-head-commit", HEAD,
+                                            "--body", "fix: retitled before the merge"]])
 
 if __name__ == "__main__":
     unittest.main()

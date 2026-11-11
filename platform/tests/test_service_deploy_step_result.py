@@ -49,11 +49,9 @@ WAVE = {
     "deploy-o11y.yml": "Phase 3: Verify o11y",
     "deploy-openhands.yml": "Phase 3: Verify OpenHands",
     "deploy-postiz.yml": "Phase 3: Verify postiz",
-    "deploy-tududi.yml": "Phase 3: Verify tududi",
 }
 # The services whose deploy.sh this change made change-aware, plus the two that already were.
 RECREATE_AWARE = {
-    "tududi": "deploy-tududi.yml",
     "honcho": "deploy-honcho.yml",
     "openhands": "deploy-openhands.yml",
     "n8n": "deploy-n8n.yml",
@@ -124,7 +122,7 @@ def test_deploy_playbook_reads_the_change_line_and_carries_the_lever(service, pl
     assert "deploy_force_recreate" in {v["name"] for v in template["survey_vars"]}, service
 
 
-@pytest.mark.parametrize("service", ["tududi", "n8n", "postiz"])
+@pytest.mark.parametrize("service", ["n8n", "postiz"])
 def test_every_bind_mounted_file_is_a_digest_input(service):
     # A bind-mounted input left out of the digest changes without the container being
     # recreated. The compose files themselves are always in the digest; the files they mount

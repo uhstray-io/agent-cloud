@@ -1,10 +1,15 @@
 """Daily stored-byte sampling and the seven-day readiness gate fail closed."""
 
+import copy
 import importlib.util
 import json
+import os
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import playbook_yaml
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -132,20 +137,20 @@ def test_history_requires_distinct_source_samples_across_seven_days():
 
 def test_history_excludes_carried_in_sample_from_window_evidence():
     now = 1_800_000_000
-    samples = [now - survey.RANGE_SECONDS - 12 * 60 * 60 + day * 86400 for day in range(9)]
+    samples = [now - survey.RANGE_SECONDS - 12 * 60 * 60 + day * 86400 for day in range(10)]
 
     receipt = survey.assess(_history(now, samples), now)
 
     assert receipt["status"] == "ready_for_separate_forecast_review"
-    assert receipt["history"]["source_samples"] == 8
-    assert receipt["history"]["source_span_seconds"] == 7 * 86400
+    assert receipt["history"]["source_samples"] == 9
+    assert receipt["history"]["source_span_seconds"] == 8 * 86400
     assert receipt["history"]["latest_sample_age_seconds"] == 12 * 60 * 60
-    assert receipt["source_diagnostics"]["canonical_source_events"] == 8
-    assert receipt["source_diagnostics"]["source_event_span_seconds"] == 7 * 86400
+    assert receipt["source_diagnostics"]["canonical_source_events"] == 9
+    assert receipt["source_diagnostics"]["source_event_span_seconds"] == 8 * 86400
     first_index = (samples[1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     last_index = (samples[-1] - (now - survey.RANGE_SECONDS)) // survey.STEP_SECONDS
     assert all(
-        backend["source_samples"] == 8
+        backend["source_samples"] == 9
         and backend["first_bytes"] == 100 + first_index
         and backend["last_bytes"] == 100 + last_index
         for backend in receipt["backend_stored_bytes"].values()
@@ -159,6 +164,30 @@ def test_history_rejects_carried_in_sample_plus_only_seven_in_window_samples():
 
     with pytest.raises(survey.InsufficientHistory):
         survey.assess(_history(now, samples), now)
+
+
+def test_nine_day_query_admits_nine_daily_events_but_eight_day_slice_refuses_same_history():
+    now = 1_800_000_000
+    assert survey.RANGE_SECONDS == 9 * 86400
+    last_event = now - 12 * 60 * 60
+    offsets = [-691129, -604653, -518274, -431895, -345516, -259137, -172758, -86379, 0]
+    nine_day = _history(now, [last_event + offset for offset in offsets])
+    receipt = survey.assess(nine_day, now)
+    assert receipt["history"]["source_samples"] == 9
+    assert receipt["history"]["source_span_seconds"] == 691129
+
+    eight_day = copy.deepcopy(nine_day)
+    cutoff = now - 8 * 86400
+    for response in eight_day.values():
+        for series in response["data"]["result"]:
+            series["values"] = [point for point in series["values"] if int(point[0]) >= cutoff]
+    with pytest.raises(survey.InsufficientHistory) as error:
+        survey.assess(eight_day, now)
+    assert error.value.reason == "source_history_too_short"
+    diagnostics = survey.source_diagnostics(eight_day["source"])
+    assert diagnostics["canonical_source_events"] == 8
+    assert diagnostics["source_event_span_seconds"] == 604653
+    assert survey.MIN_HISTORY_SECONDS == 7 * 86400
 
 
 def test_history_rejects_a_stale_latest_capacity_sample():
@@ -518,7 +547,7 @@ def test_history_rejects_a_repeated_single_point_snapshot():
 
 def test_history_query_resolution_and_response_time_are_bounded(monkeypatch):
     assert survey.STEP_SECONDS == 300
-    assert survey.RANGE_SECONDS // survey.STEP_SECONDS + 1 == 2305
+    assert survey.RANGE_SECONDS // survey.STEP_SECONDS + 1 == 2593
     assert survey.MAX_RESPONSE_BYTES == 2_000_000
     assert survey.CURL_TIMEOUT_SECONDS == 15
     assert survey.QUERY_TIMEOUT_SECONDS == 20
@@ -563,7 +592,9 @@ def test_deploy_gates_capacity_collector_and_units_for_local_mode():
     plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text())
     p1 = next(play for play in plays if str(play.get("name", "")).startswith("Phase 1"))
     p2 = next(play for play in plays if str(play.get("name", "")).startswith("Phase 2"))
-    overlay = next(task for task in p2["tasks"] if task.get("name") == "Run deploy.sh (container lifecycle)")
+    overlay = next(
+        task for task in playbook_yaml.tasks(p2["tasks"])
+        if task.get("name") == "Run deploy.sh (container lifecycle)")
     jinja = Environment()
     jinja.filters["bool"] = bool
     template = jinja.from_string(overlay["environment"]["COMPOSE_OVERLAYS"])
@@ -573,12 +604,12 @@ def test_deploy_gates_capacity_collector_and_units_for_local_mode():
     probe_artefacts = p1["vars"]["_probe_host_artefacts"]
     assert all("o11y_capacity" not in path for path in probe_artefacts)
     install = next(
-        task for task in p1["tasks"]
+        task for task in playbook_yaml.tasks(p1["tasks"])
         if task.get("name") == "Install the read-only o11y capacity sampler"
     )
     assert install["when"] == "not (local_mode | default(false) | bool)"
     sample = next(
-        task for task in p2["tasks"]
+        task for task in playbook_yaml.tasks(p2["tasks"])
         if task.get("name") == "Take a complete capacity sample after the stack is available"
     )
     assert sample["when"] == [
@@ -607,6 +638,86 @@ def test_history_survey_is_read_only_exact_revision_and_uses_only_fixed_series()
     assert "ready_for_separate_forecast_review" in source
     assert "growth" not in source.lower() and "forecast" in source.lower()
     assert "node_cpu_seconds_total" in source and "[5m]" in source
+
+
+def test_history_success_receipt_is_visible_only_after_readiness_assertion(tmp_path):
+    ansible_playbook = shutil.which("ansible-playbook")
+    if ansible_playbook is None:
+        pytest.skip("ansible-playbook is not installed")
+    original = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-seven-day-capacity.yml").read_text())
+    actual_tasks = original[-1]["tasks"]
+    selected = [
+        copy.deepcopy(task)
+        for task in actual_tasks
+        if task.get("name") in {
+            "Read bounded Prometheus capacity history",
+            "Require seven days of fresh source and receiver-host observations",
+            "Record the bounded successful seven-day capacity receipt",
+        }
+    ]
+    assert [task["name"] for task in selected] == [
+        "Read bounded Prometheus capacity history",
+        "Require seven days of fresh source and receiver-host observations",
+        "Record the bounded successful seven-day capacity receipt",
+    ]
+    play_dir = tmp_path / "playbook"
+    files_dir = play_dir / "files"
+    local_tmp = tmp_path / "ansible-local"
+    files_dir.mkdir(parents=True)
+    local_tmp.mkdir()
+    helper = files_dir / "capacity-helper.py"
+    selected[0]["ansible.builtin.script"]["cmd"] = "{{ playbook_dir }}/files/capacity-helper.py"
+    playbook = play_dir / "capacity-flow.yml"
+    playbook.write_text(yaml.safe_dump([{
+        "name": "Exercise the capacity history gate",
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "tasks": selected,
+    }]), encoding="utf-8")
+    env = {
+        **os.environ,
+        "ANSIBLE_LOCAL_TEMP": str(local_tmp),
+        "ANSIBLE_REMOTE_TEMP": str(local_tmp),
+    }
+
+    def run_case(payload, exit_code):
+        helper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            f"print({json.dumps(payload, sort_keys=True)!r})\n"
+            f"sys.exit({exit_code})\n",
+            encoding="utf-8",
+        )
+        return subprocess.run(
+            [ansible_playbook, "-i", "localhost,", str(playbook)],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=60,
+        )
+
+    success = {
+        "status": "ready_for_separate_forecast_review",
+        "history": {"source_samples": 9, "source_span_seconds": 691200},
+        "source_diagnostics": {"available": True},
+        "receiver_host_observations": {"cpu": {"points": 2017}},
+        "backend_stored_bytes": {name: {"change_bytes": 1} for name in sorted(survey.BACKENDS)},
+    }
+    successful_run = run_case(success, 0)
+    assert successful_run.returncode == 0, successful_run.stdout + successful_run.stderr
+    assert "Record the bounded successful seven-day capacity receipt" in successful_run.stdout
+    assert "ready_for_separate_forecast_review" in successful_run.stdout
+    assert r'\"source_samples\": 9' in successful_run.stdout
+    assert all(name in successful_run.stdout for name in survey.BACKENDS)
+
+    refused = {
+        "status": "insufficient",
+        "reason": "source_history_too_short",
+        "source_diagnostics": {"available": False},
+    }
+    refused_run = run_case(refused, 1)
+    assert refused_run.returncode != 0
+    assert "Require seven days of fresh source and receiver-host observations" in refused_run.stdout
+    assert "Record the bounded successful seven-day capacity receipt" not in refused_run.stdout
+    assert "ready_for_separate_forecast_review" not in refused_run.stdout
 
 
 def test_daily_units_are_bounded_and_the_history_survey_has_a_registered_template():

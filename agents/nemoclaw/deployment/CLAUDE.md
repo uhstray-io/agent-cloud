@@ -32,10 +32,11 @@ agents/nemoclaw/deployment/
 ```
 
 Historical standalone inputs (not instructions to copy credentials):
-- `config/credentials.json` — NVIDIA API key for inference
-- `config/sandboxes.json` — Sandbox name and policy assignments
-- `config/discord.json` — Discord guild and user IDs
-- `secrets/*.txt` — API keys and tokens (NVIDIA, Gemini, Discord, Google Search)
+- `config/sandboxes.json` — Sandbox name and policy assignments (private site configuration)
+- `config/credentials.json` — NVIDIA API key for inference (credential; OpenBao is authoritative)
+- `config/discord.json` — Discord guild and user IDs (private site configuration)
+- `config/presets/google.yaml` — Custom network policy preset (public configuration)
+- `secrets/*.txt` — legacy API keys and tokens; do not use as a credential source
 
 ## Historical wrapper interface
 

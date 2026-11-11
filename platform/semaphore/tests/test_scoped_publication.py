@@ -3,6 +3,7 @@
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,8 +17,12 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "platform/tests"))
 from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
+from fake_semaphore import template_write  # noqa: E402 - the shared v2.19 template-write rule
 
-NAME = "Store tududi API Token (Dev)"
+sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
+from publication import survey_enum_option_problems  # noqa: E402
+
+NAME = "Store n8n API Key (Dev)"
 CONFORMANCE_NAME = "Collect Service Conformance (Dev)"
 TEMPLATE = {
     "id": 206,
@@ -26,12 +31,26 @@ TEMPLATE = {
     "repository_id": 5,
     "inventory_id": 37,
     "environment_id": 42,
-    "playbook": "platform/playbooks/store-tududi-api-token.yml",
+    "environment_ids": [42],
+    "playbook": "platform/playbooks/store-n8n-api-key.yml",
     "app": "ansible",
     "arguments": '["--limit", "tududi"]',
     "autorun": False,
     "view_id": 9,
     "survey_vars": [],
+}
+
+
+# The survey tests publish one declared survey whose first default is "true". The real
+# catalog no longer declares NAME (its tududi survey was retired 2026-11-07), so they pass
+# this declaration explicitly through _all_templates.
+SURVEY_DECLARATION = {
+    "name": NAME,
+    "repository": "agent-cloud dev",
+    "playbook": TEMPLATE["playbook"],
+    "survey_vars": [{"name": "fixture_validate_only", "title": "Validate existing token only",
+                     "description": "fixture: prove the stored value and stop", "type": "string",
+                     "required": False, "default_value": "true"}],
 }
 
 
@@ -146,6 +165,7 @@ class ScopedPublicationTests(unittest.TestCase):
                     ]
                     if cls.drop_setting:
                         value.pop("description", None)
+                    value = template_write(value)
                     cls.records[0] = value
                 return self.reply({})
 
@@ -240,6 +260,39 @@ class ScopedPublicationTests(unittest.TestCase):
         for secret in (self.access_value, self.login_value, env["BAO_SECRET_ID"]):
             self.assertNotIn(secret, output)
         return result.returncode, output
+
+    def test_catalog_enum_options_match_semaphore_api_objects_and_o11y_values(self):
+        catalog = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())
+        self.assertEqual(survey_enum_option_problems(catalog["templates"]), [])
+
+        wrapper = next(
+            template for template in catalog["templates"]
+            if template["name"] == "Provision o11y Workflow Environment (Dev)"
+        )
+        survey = next(row for row in wrapper["survey_vars"] if row["name"] == "o11y_workflow_target")
+        expected = [
+            "Verify o11y Restore Coordination Capabilities (Dev)",
+            "Preflight o11y Restore Target (Dev)",
+            "Provision PBS Debian Cloud Template (Dev)",
+            "Attach PBS Data Disk (Dev)",
+            "Provision PBS VM (Dev)",
+        ]
+        self.assertEqual([option["name"] for option in survey["values"]], expected)
+        self.assertEqual([option["value"] for option in survey["values"]], expected)
+
+    def test_malformed_selected_enum_refuses_before_any_api_request(self):
+        declaration = {
+            "name": NAME,
+            "repository": "agent-cloud dev",
+            "playbook": TEMPLATE["playbook"],
+            "survey_vars": [{"name": "target", "type": "enum", "values": ["wrong shape"]}],
+        }
+        code, output = self.run_play(selection=[NAME], _all_templates=[declaration])
+
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("enum option 0 must have string name and value fields", output)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.writes, [])
 
     def test_full_catalog_always_publishes_templates_and_upserts_schedules(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
@@ -413,31 +466,10 @@ class ScopedPublicationTests(unittest.TestCase):
                               if v["name"] == "service_branch")
                 self.assertEqual(branch["default_value"], expected_branch)
 
-    def test_all_generated_dev_branch_surveys_preserve_other_fields(self):
-        declarations = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
-        self.assertIn("Deploy GitHub Runner", {
-            template["name"] for template in declarations
-            if template.get("dev_variant") and any(
-                survey["name"] == "service_branch" for survey in template.get("survey_vars", []))
-        })
-        for base in declarations:
-            surveys = base.get("survey_vars", [])
-            if not base.get("dev_variant") or not any(v["name"] == "service_branch" for v in surveys):
-                continue
-            with self.subTest(name=base["name"]):
-                self.setUp()
-                name = base["name"] + " (Dev)"
-                self.records[0].update(name=name, repository_id=5, playbook=base["playbook"],
-                                       survey_vars=copy.deepcopy(surveys))
-                expected = copy.deepcopy(surveys)
-                branch = next(v for v in expected if v["name"] == "service_branch")
-                self.assertEqual(branch["default_value"], "main")
-                branch.update(default_value="dev",
-                              description="Target branch for this Dev-bound template (use dev for reviewed Dev code)")
-                code, output = self.run_play(selection=[name])
-                self.assertEqual(code, 0, output)
-                self.assertEqual(len(self.template_payloads), 1)
-                self.assertEqual(self.template_payloads[0]["survey_vars"], expected)
+    def test_dev_branch_survey_set_includes_github_runner(self):
+        names = {template["name"] for template in _dev_branch_declarations()}
+        self.assertTrue(names, "no Dev-branch survey declarations found")
+        self.assertIn("Deploy GitHub Runner", names)
 
     def test_scoped_surveys_do_not_create_or_change_declared_environment(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
@@ -458,6 +490,9 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_provisioner_encrypts_runtime_auth_preserves_source_and_converges(self):
         self.prepare_seed_template()
+        # A template read back without environment_ids (an older record shape); the v2.19 test
+        # below starts from the list.
+        self.records[0].pop("environment_ids")
         original = copy.deepcopy(self.records[0])
         source = copy.deepcopy(self.environments[0])
         code, output = self.run_play(provision=True)
@@ -466,7 +501,23 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(self.environments[0], source)
         self.assertEqual(json.loads(target["json"] or "{}"), {})  # no pin: the address is the inventory's
         self.assertEqual(self.auth_values, {"BAO_ROLE_ID": "fixture-role", "BAO_SECRET_ID": "fixture-secret"})
-        self.assertEqual(self.records[0], original | {"environment_id": target["id"]})
+        self.assertEqual(self.records[0], original | {
+            "environment_id": target["id"],
+            "environment_ids": [target["id"]],
+        })
+        writes = copy.deepcopy(self.writes)
+        code, output = self.run_play(provision=True)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.writes, writes)
+
+    def test_provisioner_binds_through_environment_ids_on_semaphore_v2_19(self):
+        self.prepare_seed_template()
+        original = copy.deepcopy(self.records[0])  # TEMPLATE carries environment_ids, as v2.19 does
+        code, output = self.run_play(provision=True)
+        self.assertEqual(code, 0, output)
+        target = self.environments[1]
+        self.assertEqual(self.records[0],
+                         original | {"environment_id": target["id"], "environment_ids": [target["id"]]})
         writes = copy.deepcopy(self.writes)
         code, output = self.run_play(provision=True)
         self.assertEqual(code, 0, output)
@@ -501,6 +552,31 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.records[0]["environment_id"], 501)
         self.assertEqual(self.environments[1]["name"], "Postiz seed inputs")
+
+    def test_provisioner_main_variant_targets_explicit_dev_name_without_adding_suffix(self):
+        target_name = "Verify o11y Restore Coordination Capabilities (Dev)"
+        declaration = next(
+            row for row in yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+            if row["name"] == target_name
+        )
+        self.prepare_seed_template()
+        self.records[0].update(
+            name=target_name,
+            repository_id=5,
+            playbook=declaration["playbook"],
+            environment_id=42,
+            arguments="[]",
+        )
+        code, output = self.run_play(
+            provision=True,
+            seed_template=target_name,
+            seed_variant="main",
+        )
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.records[0]["name"], target_name)
+        self.assertEqual(self.records[0]["repository_id"], 5)
+        self.assertEqual(self.environments[1]["name"], declaration["isolated_environment"])
+        self.assertEqual(self.records[0]["environment_id"], self.environments[1]["id"])
 
     def test_provisioner_leaves_a_clean_provisioned_environment_untouched(self):
         self.prepare_seed_template()
@@ -668,7 +744,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.records[0]["description"] = "preserve detail-only setting"
         original = copy.deepcopy(self.records)
         code, output = self.run_play(semaphore_project_id="", semaphore_inventory_id="",
-                                     semaphore_environment_id="")
+                                     semaphore_environment_id="", _all_templates=[SURVEY_DECLARATION])
         self.assertEqual(code, 0, output)
         self.assertEqual(self.writes, [("PUT", "/api/project/1/templates/206")])
         self.assertEqual(self.records[1], original[1])
@@ -677,7 +753,7 @@ class ScopedPublicationTests(unittest.TestCase):
         self.assertIn(("POST", "/v1/auth/approle/login"), self.requests)
         self.assertIn(("GET", "/v1/secret/data/services/semaphore"), self.requests)
         self.assertFalse(any("schedules" in path for _, path in self.requests))
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertEqual(code, 0, output)
         self.assertEqual(len(self.writes), 1, "Identical second publication must perform no writes")
 
@@ -786,27 +862,27 @@ class ScopedPublicationTests(unittest.TestCase):
                     self.records[0]["repository_id"] = 1
                 else:
                     self.records[0]["playbook"] = "unrelated.yml"
-                code, _ = self.run_play()
+                code, _ = self.run_play(_all_templates=[SURVEY_DECLARATION])
                 self.assertNotEqual(code, 0)
                 self.assertEqual(self.writes, [])
 
     def test_repository_branch_drift_refuses_before_write(self):
         self.repositories[1]["git_branch"] = "main"
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("differs from repositories.yml", output)
         self.assertEqual(self.writes, [])
 
     def test_success_response_without_saved_survey_fails_readback(self):
         type(self).ignore_write = True
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("Scoped publication readback failed", output)
 
     def test_lost_detail_only_setting_fails_readback(self):
         self.records[0]["description"] = "preserve this setting"
         type(self).drop_setting = True
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("Scoped publication readback failed", output)
 
@@ -833,15 +909,58 @@ class ScopedPublicationTests(unittest.TestCase):
 
     def test_denied_runtime_read_is_named_and_secret_free(self):
         type(self).deny_secret = True
-        code, output = self.run_play()
+        code, output = self.run_play(_all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertIn("Runtime Semaphore access is unavailable", output)
         self.assertEqual(self.writes, [])
 
     def test_public_cleartext_refuses_before_authentication(self):
-        code, _ = self.run_play(_semaphore_url="http://semaphore.example.test")
+        code, _ = self.run_play(_semaphore_url="http://semaphore.example.test", _all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertEqual(self.requests, [])
+
+
+def _dev_branch_declarations():
+    """Base templates whose generated (Dev) variant takes a service_branch survey."""
+    declarations = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    return [
+        template for template in declarations
+        if template.get("dev_variant")
+        and any(survey["name"] == "service_branch" for survey in template.get("survey_vars", []))
+    ]
+
+
+def _dev_branch_slug(name):
+    return re.sub(r"[^a-z0-9]+", "_", name.lower())
+
+
+def _make_case(base):
+    """One Dev-branch survey case: publish the (Dev) variant and check the saved survey."""
+    def case(self):
+        surveys = base.get("survey_vars", [])
+        name = base["name"] + " (Dev)"
+        self.records[0].update(name=name, repository_id=5, playbook=base["playbook"],
+                               survey_vars=copy.deepcopy(surveys))
+        expected = copy.deepcopy(surveys)
+        branch = next(v for v in expected if v["name"] == "service_branch")
+        self.assertEqual(branch["default_value"], "main")
+        branch.update(default_value="dev",
+                      description="Target branch for this Dev-bound template (use dev for reviewed Dev code)")
+        code, output = self.run_play(selection=[name])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.template_payloads), 1)
+        self.assertEqual(self.template_payloads[0]["survey_vars"], expected)
+
+    case.__name__ = f"test_dev_branch_survey_preserved_{_dev_branch_slug(base['name'])}"
+    return case
+
+
+# One test method per declaration, so pytest-xdist spreads the (slow, one-ansible-run-each) cases.
+_DEV_BRANCH_CASES = [_make_case(base) for base in _dev_branch_declarations()]
+_DEV_BRANCH_NAMES = [case.__name__ for case in _DEV_BRANCH_CASES]
+assert len(set(_DEV_BRANCH_NAMES)) == len(_DEV_BRANCH_NAMES), "Dev-branch survey test names collide"
+for _case in _DEV_BRANCH_CASES:
+    setattr(ScopedPublicationTests, _case.__name__, _case)
 
 
 if __name__ == "__main__":

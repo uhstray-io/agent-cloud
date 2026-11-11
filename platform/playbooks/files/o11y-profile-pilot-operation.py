@@ -31,7 +31,7 @@ SCHEMA = {
     "receiver_sha": "",
 }
 REASONS = {
-    "invalid_input", "receiver_unavailable", "baseline_ambiguous", "mount_mismatch",
+    "invalid_input", "candidate_invalid", "receiver_unavailable", "baseline_ambiguous", "mount_mismatch",
     "container_state_changed", "volume_state_changed", "config_write_failed",
     "reload_failed", "profile_component_unhealthy", "profile_not_observed",
     "rollback_failed", "post_disable_query_not_observed", "operation_failed",
@@ -418,17 +418,19 @@ def evaluate(
 ) -> dict:
     result = dict(SCHEMA)
     if not isinstance(payload, dict) or set(payload) != {
-        "config_path", "receiver_sha", "disabled", "enabled", "candidate_helper",
+        "config_path", "receiver_sha", "disabled", "enabled", "candidate_helper", "profile_address",
     }:
         return result
     path, receiver_sha = payload.get("config_path"), payload.get("receiver_sha")
     disabled = payload.get("disabled")
     enabled = payload.get("enabled")
     candidate_helper = payload.get("candidate_helper")
+    profile_address = payload.get("profile_address")
     if (not isinstance(path, str) or not os.path.isabs(path)
             or not path.endswith("/config/config.alloy")
             or not isinstance(receiver_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", receiver_sha)
             or not isinstance(disabled, str) or not isinstance(enabled, str)
+            or profile_address not in {"alloy:12345", "127.0.0.1:12345"}
             or not isinstance(candidate_helper, str)
             or not os.path.isfile(candidate_helper)):
         return result
@@ -447,6 +449,13 @@ def evaluate(
     temporary_enable_attempted = False
     try:
         candidate_module = _candidate_module(candidate_helper)
+        validate_candidates = getattr(candidate_module, "validate_candidates", None)
+        if not callable(validate_candidates):
+            raise Refusal("candidate_invalid")
+        try:
+            validate_candidates(disabled, enabled, profile_address)
+        except Exception:
+            raise Refusal("candidate_invalid") from None
         before, inode = _read_config(path)
         before_containers, before_state = _container_snapshot(path, runner)
         before_volumes, before_volume_names = _volume_snapshot(runner)

@@ -1167,6 +1167,27 @@ def test_known_title_with_changed_query_is_unverified(monkeypatch, tmp_path):
     }
 
 
+def test_known_scrape_health_requires_the_canonical_job_exclusion(monkeypatch, tmp_path):
+    dashboard = json.loads((DASHBOARDS / "service-overview.json").read_text())
+    panel = next(p for p in dashboard["panels"] if p.get("title") == "Scrape target health")
+    panel["targets"][0]["expr"] = 'min by (service) (up{service=~"$service"})'
+    monkeypatch.setattr(vdd, "_query", lambda *args: {"data": _numeric_vector([1])})
+    report = vdd.evaluate(
+        _payload(
+            "service-overview",
+            panel_titles=["Scrape target health"],
+            dashboards_dir=_dashboard_dir(tmp_path, dashboard),
+        ),
+        now=1700000000,
+    )
+    assert report["status"] == "pass"
+    assert report["panels"][0]["observation"] == {
+        "name": "scrape_health",
+        "status": "unverified",
+        "reason": "contract_mismatch",
+    }
+
+
 @pytest.mark.parametrize(
     "source_drift",
     [

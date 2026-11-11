@@ -192,7 +192,8 @@ def _run(
     if path_prefix:
         env["PATH"] = f"{path_prefix}:{env['PATH']}"
     return subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc", *extra],
+        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc",
+         "-e", "ih_wait_delay=0", *extra],
         cwd=REPO,
         env=env,
         text=True,
@@ -533,7 +534,7 @@ def test_an_exporter_the_receiver_cannot_reach_is_never_declared(estate):
 
 @needs_ansible
 def test_a_declared_host_without_series_fails(estate):
-    # The playbook waits two scrape intervals for the series (about 40 s here).
+    # The playbook waits for the series over its retries; _run passes ih_wait_delay=0, so they run without the delay.
     estate["prometheus"].silent_hosts = {"beta"}
     proc = _run(estate)
     assert proc.returncode != 0
@@ -716,7 +717,7 @@ def test_the_run_opens_by_refusing_internal_extra_vars():
 @needs_ansible
 @pytest.mark.parametrize("name, forge", [
     pytest.param(n, f.values[0], id=f"{n}-{f.id}")
-    for n in sorted(_defined_names()) for f in forgeries.templated_forgeries(n, [], [])
+    for n in sorted(_defined_names()) for f in forgeries.by_name(n, [], [])
 ])
 def test_refuses_an_extra_var_forging_an_internal_name(estate, name, forge):
     # beta's declaration is unusable, so a forged verdict would turn a failing group into a pass.

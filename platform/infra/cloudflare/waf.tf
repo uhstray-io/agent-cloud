@@ -194,5 +194,65 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Plane's MCP server — bypass the challenge for the MCP and OAuth machine paths only
+    # (Joseph, 2026-11-04; plane change task 5.3).
+    #
+    # Why: harnesses (Claude Code, pi, weft) are non-browser clients, and the zone answered every
+    # plane-mcp path with `cf-mitigated: challenge` (HTTP 403), so none could reach the server.
+    # The server is its own OAuth authorization server: its discovery documents (read from the
+    # production container, 2026-11-04) name issuer `.../http` and `/authorize`, `/token` and
+    # `/register` at this host's root. A harness reads the protected-resource document, then looks
+    # for the authorization-server metadata at the RFC 8414 path-inserted URLs for issuer `/http`
+    # (the MCP SDK in Claude Code and pi tries `/.well-known/oauth-authorization-server/http` and two
+    # openid-configuration forms, never the root document); the server serves it only at the root,
+    # so the lookup misses and the SDK falls back to `/authorize`, `/token` and `/register` at the
+    # root (PR 866 review). Claude Code 2.1.319 resolves them relative to the issuer instead: its
+    # sign-in POSTed to `/http/register` and was challenged (Joseph, 2026-11-07, "Dynamic Client
+    # Registration rejected (HTTP 403)"), and the origin serves registration at both `/register` and
+    # `/http/register` (201 from each, probed on the VM). So the skip covers both MCP endpoints,
+    # `/token` and `/register` at the root and under `/http`, and the `.well-known` documents at the
+    # root and under `/http` by prefix, so a path-inserted lookup gets the origin's own answer instead
+    # of a challenge page. `/authorize` runs in the user's browser, which passes a
+    # challenge, and stays challenged with every other path. Authentication stays at the origin: both MCP
+    # endpoints refuse an anonymous call (401, the deploy's verify probe), `/token` needs a client
+    # and a code, and Plane OAuth runs through Authentik.
+    {
+      ref         = "plane-mcp-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Plane MCP + its OAuth machine endpoints - bypass challenge for non-browser clients"
+      expression  = "(http.host eq \"plane-mcp.uhstray.io\" and (http.request.uri.path in {\"/http/mcp\" \"/http/api-key/mcp\" \"/token\" \"/register\" \"/http/token\" \"/http/register\"} or starts_with(http.request.uri.path, \"/.well-known/oauth-protected-resource\") or starts_with(http.request.uri.path, \"/.well-known/oauth-authorization-server\") or starts_with(http.request.uri.path, \"/http/.well-known/\")))"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
+    # Plane's GitHub App webhook — bypass the challenge for the one delivery path (plane change
+    # task 3.3). GitHub posts deliveries server-side, and the zone answered this path with
+    # `cf-mitigated: challenge` (HTTP 403, probed 2026-11-10), so no delivery could reach Plane.
+    # Authentication stays at the origin: spike 0.16 showed silo refuses an unsigned or wrongly
+    # signed delivery (401) once GITHUB_WEBHOOK_SECRET is set, env.j2 refuses to render the GitHub
+    # settings without it, and Deploy Plane's verify asserts the 401. Not gated on the App being
+    # declared (tofu cannot read the Ansible inventory, and needs no gate): with no App configured
+    # silo refuses every delivery with 403 (spike 0.16), so the path is closed either way; the one
+    # unsafe state, an App without the secret, is the one env.j2 refuses. Exact path only; the
+    # OAuth callbacks run in the user's browser, which passes a challenge.
+    {
+      ref         = "plane-github-webhook-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Plane GitHub App webhook - bypass challenge for GitHub's deliveries"
+      expression  = "(http.host eq \"plane.uhstray.io\" and http.request.uri.path eq \"/silo/api/github/github-webhook\")"
+      action_parameters = {
+        phases   = ["http_request_sbfm"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }

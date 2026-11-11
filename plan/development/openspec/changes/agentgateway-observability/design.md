@@ -377,11 +377,23 @@ This change owns the gateway side and lists the o11y items as dependencies.
    local-dev only on the landed private, non-loopback bind behind the host firewall
    (`deploy-o11y.yml:164-175`), until `production-internal-ca` can issue both leaves.
    When the o11y session turns on the receiver's `tls` block with `client_ca_file`, the
-   gateway follows the receiver's declaration, which it reads from the receiver's
+   declaration is `o11y_otlp_tls_enabled` (default false) and its required server name
+   is `o11y_otlp_tls_server_name`. The gateway follows those values from the receiver's
    hostvars the same way it reads `o11y_otlp_bind` today (`deploy-agentgateway.yml:108`).
    It then renders `backendTLS.{root, cert, key, hostname}` on both exporters and
-   refuses to render plaintext against a TLS-declared receiver. unverified: the name of
-   the receiver's TLS declaration, which the o11y session picks (task 6.1 records it).
+   refuses to render plaintext against a TLS-declared receiver. The receiver uses its
+   fixed `o11y-otlp-server` server leaf and the authoritative step-ca root/intermediate
+   bundle. The receiver-host journal collector is also a sender on this same gRPC
+   listener, so it must use its fixed `o11y-journal` client leaf, trust the same bundle,
+   and verify `o11y_otlp_tls_server_name` before the receiver can be enabled. Both
+   leaves use existing staged `current` paths and native Alloy TLS reload; their fixed
+   directories are mounted read-only. Default rendering and the existing HTTP 4318 and
+   internal Alloy-to-Tempo hops stay unchanged. Alloy's client-CA check authenticates
+   CA membership, not a gateway-specific SAN; the source-scoped firewall remains the
+   sender boundary. Source implementation and actual leaf lifecycle are recorded
+   separately from live enablement: receiver and journal must be prepared together,
+   and task 6.5 still requires a real Semaphore-run handshake and refusal proof. No
+   plaintext fallback or readiness waiver is part of this contract.
    The receiver cannot check the client certificate's name at Alloy `v1.5.1` (Context),
    so the firewall rule admitting only the gateway host to the OTLP port is what binds
    the sender. That is accepted: the receiver serves nothing back, so a forged sender can

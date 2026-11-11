@@ -21,7 +21,7 @@ all:
     # 127.0.0.1:3000; an integer 1024-65535. Re-run `make local-bootstrap` to apply.
     # Avoid ports the stack already uses on the Mac: 3001 (UhhCraft when run with
     # UHHCRAFT_PORT=3001), 3002 (Grafana), 3100 (Loki, also the collector's Loki URL),
-    # 3402 (tududi), 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca).
+    # 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca).
     local_semaphore_port: 3000
     # Genesis (Mac-direct) foundation deploys (§12A) place the repo like every
     # composable deploy: rsync local_workspace_dir (the working tree) into a
@@ -151,8 +151,8 @@ all:
             # (community n8n has no native OIDC — see n8n-forward-auth.yaml).
             - { host: "n8n.agent-cloud.test", upstream: "workflow-n8n:5678", forward_auth: "authentik-server:9000" }
             - { host: "erp.agent-cloud.test", upstream: "erpnext-frontend:8080" }
-            # tududi uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
-            - { host: "todo.agent-cloud.test", upstream: "tududi:3002" }
+            # console uses NATIVE OIDC (not forward_auth) - plain reverse_proxy.
+            - { host: "console.agent-cloud.test", upstream: "console:8080" }
             # honcho: /v3 API is JWT-authenticated in-app; only the human /docs
             # surface is Authentik-gated (path-scoped forward_auth).
             - { host: "memory.agent-cloud.test", upstream: "honcho-api:8000", forward_auth: "authentik-server:9000", forward_auth_paths: ["/docs*", "/redoc*", "/openapi.json"] }
@@ -160,6 +160,10 @@ all:
             # An edge gate would also gate /api/public/v1, breaking n8n's
             # API-key calls; postiz authenticates interactively in-app instead.
             - { host: "postiz.agent-cloud.test", upstream: "postiz:5000" }
+            # plane uses in-app auth, so plain reverse_proxy like postiz. The upstream is the
+            # stack's own proxy container (plane-proxy:80), which joins the local-dev network.
+            - { host: "plane.agent-cloud.test", upstream: "plane-proxy:80" }
+            - { host: "plane-mcp.agent-cloud.test", upstream: "plane-mcp:8211" }
             # inference — the OpenAI-compatible edge, the same shape as prod: this route
             # fronts the local agentgateway's default listener (/v1), which holds the
             # per-client keys and budgets. inference_api renders the /v1 + /health
@@ -236,6 +240,36 @@ all:
           opa_bind: 127.0.0.1
           opa_port: 8281
 
+    # launch gate — the gate between the agents and Semaphore (skynet-launch-containment, Phase 3). Port 18443
+    # because Caddy holds 127.0.0.1:8443; the container listens on 8443, which the local probes reach by the
+    # network alias. Mirrors bootstrap-local-dev.yml's [launch_gate_svc], which is the authority for the local
+    # Semaphore's inventory. The leaf's dir is <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>.
+    launch_gate_svc:
+      hosts:
+        launch-gate-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: launch-gate
+          monorepo_deploy_path: platform/services/launch-gate/deployment
+          container_engine: podman
+          local_mode: true
+          launch_gate_image: docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+          launch_gate_bind: 127.0.0.1
+          launch_gate_port: 18443
+          launch_gate_semaphore_url: http://local-semaphore:3000
+          # id of the agent-cloud project in local Semaphore
+          launch_gate_semaphore_project: 1
+          launch_gate_opa_url: http://opa:8181
+          dns_site: local
+          dns_zone: agent-cloud.test
+          internal_leaves:
+            - name: launch-gate-server
+              host: launch-gate-local
+              profile: server
+              dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/launch-gate/deployment/certs/launch-gate-server
+              sans: [launch-gate.local.agent-cloud.test]
+              reload: none
+
     # n8n — workflow automation (composable; greenfield locally). Behind Caddy
     # at n8n.agent-cloud.test. The encryption key is stateful (see deploy-n8n.yml).
     n8n_svc:
@@ -256,27 +290,60 @@ all:
           # inside the container). Same /api path shape as the public route.
           n8n_postiz_credential_host: "http://postiz:5000/api"
 
-    # tududi - self-hosted to-do app (single rootless container, SQLite). Native
-    # OIDC to Authentik (blueprints/tududi-oidc.yaml). Behind Caddy at
-    # todo.agent-cloud.test. Deploy: make local-deploy-tududi.
-    tududi_svc:
+    # console — the Dispatch Console (Rust/Dioxus app; SQLite preferences on a named volume). Native
+    # OIDC to Authentik (client `console`), behind Caddy at console.agent-cloud.test. The image is
+    # built on this host from platform/services/console (no registry). Deploy: make local-deploy-console.
+    console_svc:
       hosts:
-        tududi-local:
+        console-local:
           ansible_host: 127.0.0.1
           ansible_connection: local
-          service_name: tududi
-          monorepo_deploy_path: platform/services/tududi/deployment
+          service_name: console
+          monorepo_deploy_path: platform/services/console/deployment
           container_engine: podman
-          tududi_bind: 127.0.0.1
-          tududi_port: 3402   # host debug port; Caddy reaches the container :3002 by name
-          # The tududi user the GitHub sync acts AS (Store tududi API Token mints
-          # its token). It must be the user who OWNS the mapped projects: tududi
-          # scopes lists per user, and a task the token creates is invisible to
-          # a project owner who is not the token's user. Locally the mapped
-          # dev-test project belongs to the deploy's break-glass account, which
-          # is also the default — set this only if you map a project you own
-          # through your OIDC login instead.
-          tududi_sync_user_email: admin@agent-cloud.test
+          console_bind: 127.0.0.1
+          console_port: 3410   # host debug port; Caddy reaches the container :8080 by name
+          # The local podman client sends its own default seccomp path to the podman-machine engine,
+          # which has the profile only at this path ON THE ENGINE. Without it the image build's RUN
+          # steps fail "opening seccomp profile failed" (the NetBox build hit this 2026-09-22).
+          console_build_seccomp: /usr/share/containers/seccomp.json
+          # The Phase 2 work source: the Semaphore API the console reads server-side, the UI its links
+          # open, and the project it lists. Its token is the svc-console account's, stored by
+          # Provision Console Semaphore Access (guest; no run permission).
+          console_semaphore_api_url: https://semaphore.agent-cloud.test
+          console_semaphore_ui_url: https://semaphore.agent-cloud.test:8443
+          console_semaphore_project: 1
+          # Phase 3 read-only inventory (plan 17, D22): optional. Unset means that panel reports "unconfigured"
+          # and no token is read. Set a URL only after its provisioning template has stored the token:
+          # Provision NetBox Automation Token (profile console) and Provision Console Proxmox Token.
+          # console_netbox_url: https://netbox.agent-cloud.test
+          # console_proxmox_url: <Proxmox API base URL, from site-config>
+          # console_grafana_url: https://grafana.agent-cloud.test   # base for Grafana deep links (not a credential)
+          # console_grafana_api_enabled: false   # true, with console_grafana_url, also reads the console's Viewer token:
+          #                                # run Provision Console Grafana Token first.
+          # console_openbao_url: https://openbao.agent-cloud.test   # the console's own AppRole login (D27). Setting it also reads
+          #                                # approles/console: run Provision Console AppRole first.
+          # console_proxmox_ca_pem: |      # the PUBLIC CA certificate. REQUIRED by Provision Console Proxmox Token
+          #                                # (it refuses to mint without it). Optional for the console runtime: unset
+          #                                # means the runtime's default trust (not yet read by the server code)
+          #   -----BEGIN CERTIFICATE-----
+          # Example scope only: no real tenants, sites or addresses. Production declares its own in
+          # site-config. Sites and environments here are names, not hosts.
+          console_scope_is_example: true
+          console_tenants:
+            - id: uhstray
+              name: "Uhstray (example)"
+              # Authentik groups that may see this tenant (platform-admins sees every tenant).
+              groups: [platform-admins, platform-developers]
+              orgs:
+                - id: uhstray-io
+                  name: uhstray-io
+                  # Optional per site: netbox_site: <NetBox site slug> maps the site to its NetBox site
+                  # (D23). Each slug on one site only; a site without it shows "not mapped".
+                  sites:
+                    - { id: site-hq, name: HQ, envs: [prod, dev] }
+                    - { id: do-nyc1, name: DigitalOcean NYC1, envs: [prod] }
+                    - { id: cloudflare, name: Cloudflare, envs: [prod] }
     # agentgateway — the inference edge gateway (OpenAI-compatible /v1 with
     # per-client API keys + limits) in front of the model API. Locally the
     # upstream is the PUBLIC edge, https://inference.uhstray.io/v1 (prod's route to
@@ -328,6 +395,12 @@ all:
             isolation-probe:
               tokens_per_hour: 50
             mcp-self: { tokens_per_hour: 500000 }
+          # Budget tiers: platform_admins identities are tier admin; another identity joins a tier with
+          # agw_client_policies.<name>.tier. Its own tokens_per_hour still wins.
+          agw_tier_tokens_per_hour:
+            admin: 1000000000
+            developer: 500000000
+            business: 250000000
           # MCP (agentgateway-mcp): the key-gated /mcp endpoint on the default gateway. OFF by default:
           # false renders no mcp block and no loopback gateway, and the verify asserts /mcp is not served.
           # /mcp admits the PERSONAL ADMIN identities only (derived from platform_admins), never an
@@ -405,9 +478,10 @@ all:
           service_name: skynet
           monorepo_deploy_path: platform/services/skynet/deployment
           container_engine: podman
-          # skynet main 45fd8698 (2026-10-20); bump to the digest skynet CI prints in its publish job
-          # summary, never a tag. The deploy refuses a tag or any non-digest value.
-          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:d1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da
+          # skynet main 031863d (publish-tier2 run 42712964432, 2026-11-09: HTTPS listener skynet#17, questions
+          # route skynet#16); bump to the digest skynet CI prints in its publish job, never a tag. The deploy
+          # refuses a tag or any non-digest value.
+          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:7eb9fa7b114dc51784745a19ec2a7d03f5254ad7e3cf774694d99f925f62dbe6
           skynet_gateway_url: https://inference.agent-cloud.test
           skynet_model: qwen3.8-flash-next
           skynet_opa_url: https://opa.agent-cloud.test
@@ -415,6 +489,25 @@ all:
           # id of the agent-cloud project in local Semaphore
           skynet_semaphore_project: 1
           skynet_semaphore_catalog: local
+          # The launch gate (skynet-launch-containment task 3.6): its TLS name is a network alias on the
+          # local-dev network, so skynet reaches the container port 8443 by name. Deploy the gate first:
+          # skynet's deploy reads its caller token from the gate's OpenBao path.
+          skynet_launch_gate_url: https://launch-gate.local.agent-cloud.test:8443
+          # HTTPS: skynet serves on container 8443, published on loopback 18444 (18443 is the launch gate's).
+          # Local probes reach it by its local-dev alias skynet.local.agent-cloud.test on 8443. The leaf's dir is
+          # <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>, as for launch_gate_svc above.
+          skynet_tls: true
+          skynet_bind: 127.0.0.1
+          skynet_port: 18444
+          dns_site: local
+          dns_zone: agent-cloud.test
+          internal_leaves:
+            - name: skynet-server
+              host: skynet-local
+              profile: server
+              dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/skynet/deployment/certs/skynet-server
+              sans: [skynet.local.agent-cloud.test]
+              reload: none
 
     # postiz — social-media scheduling and publishing. Five containers: the app
     # (the only one publishing), its own Postgres + Redis, and the Temporal
@@ -450,11 +543,46 @@ all:
           # here. They are consumed when deploy-authentik renders the blueprint,
           # so they belong on the AUTHENTIK host — and locally the blueprint's own
           # defaults already match these URLs. Prod sets them in site-config on
-          # authentik_svc (same convention tududi follows).
+          # authentik_svc.
           # Open for the FIRST sign-in, then flip to true and redeploy. Upstream
           # allows a single signup then closes; encoding the flip here keeps it
           # reproducible instead of a manual step on the host.
           postiz_disable_registration: false
+
+    # plane — work tracker, Commercial edition. Plane's own Compose file is fetched and
+    # sha256-verified per deploy (its EULA forbids committing it); native in-app auth.
+    # Behind Caddy at plane.agent-cloud.test. Deploy: local Semaphore "Deploy Plane (Local)".
+    plane_svc:
+      hosts:
+        plane-local:
+          ansible_host: 127.0.0.1
+          ansible_connection: local
+          service_name: plane
+          monorepo_deploy_path: platform/services/plane/deployment
+          container_engine: podman
+          plane_bind: 127.0.0.1
+          # Host debug port only; Caddy reaches the proxy container (plane-proxy:80) by name.
+          plane_port: 8096
+          # MUST match the URL the browser uses: Plane derives WEB_URL, CORS_ALLOWED_ORIGINS
+          # and INTEGRATION_CALLBACK_BASE_URL from it (platform/services/plane/deployment/templates/env.j2).
+          # Includes :8443 unless `make local-https` is running.
+          plane_public_url: "https://plane.agent-cloud.test:8443"
+          plane_trusted_proxies: private_ranges
+          plane_automation_email: "plane-automation@agent-cloud.test"
+          plane_company_name: "agent-cloud"
+          plane_workspace_slug: agent-cloud
+          plane_workspace_name: agent-cloud
+          # Sign-in through Authentik: the IdP base Plane's API calls server-side for the token and
+          # userinfo (same host:port the browser uses). Unset = OIDC switched off on the next deploy.
+          plane_authentik_base: "https://auth.agent-cloud.test:8443"
+          # Plane MCP server (Deploy Plane MCP): its public URL, which is also its OAuth base. Not
+          # published locally; Caddy reaches plane-mcp:8211 on local-dev.
+          plane_mcp_public_url: "https://plane-mcp.agent-cloud.test:8443"
+          plane_mcp_bind: 127.0.0.1
+          plane_mcp_port: 8211
+          # Plane's Admin role is a plan feature (WORKSPACE_ADMIN_ROLE) the Free plan lacks, so
+          # platform-admins join as members here.
+          plane_admin_role: member
 
     # ERPNext — ERP (slim local tier: db + redis x2 + backend + frontend + one
     # worker + scheduler + websocket; MinIO/backup are prod-only). Behind Caddy
@@ -532,3 +660,12 @@ all:
           # agent is started by tasks/deploy-orb-agent.yml, carries no compose label, and so
           # is not found by the project selector.
           stop_extra_containers: [netbox-orb-agent]
+          # Business-domain tags (Ensure NetBox Business Domains, plan 17 D37): display names only, one NetBox tag
+          # each (slug `domain-<name>`). The template creates and updates the declared tags and never deletes; a
+          # domain-* tag that is no longer declared is reported by name. Undefined or empty is a visible no-op.
+          # netbox_business_domains:
+          #   - Products
+          #   - Professional Services
+          #   - Automation
+          #   - Administration
+          #   - IT

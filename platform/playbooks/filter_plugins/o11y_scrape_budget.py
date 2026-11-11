@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import yaml
@@ -39,6 +41,10 @@ CANDIDATE_FIELDS = {
     "label_value_length_limit": 20_480,
 }
 
+# Jobs whose sample limit is held to the stricter o11y_scrape_sample_limit ceiling. Must match the
+# jobs prometheus.yml.j2 and scrape-host-node.yml.j2 cap (and Alloy's own self-scrape in env.j2,
+# job "alloy"); test_o11y_scrape_budgets.py renders the templates and compares.
+CEILED_SAMPLE_JOBS = frozenset({"receiver-host", "host-node", "alloy"})
 MAX_ACTIVE_TARGETS = 10_000
 MAX_HOST_SAMPLE_LIMIT = 20_000
 MAX_CONFIG_BYTES = 16 * 1024 * 1024
@@ -50,6 +56,10 @@ LOADED_LIMIT_FIELDS = {
     "label_limit": ("label_limit", 640),
     "label_name_length_limit": ("label_name_length_limit", 1_280),
     "label_value_length_limit": ("label_value_length_limit", 20_480),
+}
+NATIVE_HEALTH_SAMPLE_LIMITS = {
+    "scrape_samples_scraped": "sample_limit",
+    "scrape_body_size_bytes": "body_size_limit",
 }
 PUBLIC_JOB_ALIASES = {
     "prometheus": "prometheus",
@@ -103,6 +113,22 @@ SOURCE_READBACK_REASONS = frozenset(
         "source_readback_unavailable",
     }
 )
+NATIVE_SOURCE_REFUSAL_REASONS = frozenset({
+    "native_declaration_invalid", "native_source_unavailable", "native_source_absent",
+    "native_source_ambiguous", "native_source_stale", "native_source_limits_unavailable",
+    "native_source_limits_mismatch", "native_samples_unavailable", "native_samples_invalid",
+    "native_samples_missing", "native_samples_stale", "native_samples_ambiguous",
+    "native_detail_unavailable", "native_detail_invalid", "native_component_absent",
+    "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
+    "native_debug_stale", "native_debug_mismatch", "native_readback_timeout", "native_target_mismatch",
+    "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
+    # Decision points of the post-apply candidate binding and source transition.
+    "native_binding_digest_invalid", "native_binding_started_before_apply", "native_binding_argv",
+    "native_binding_compose", "native_binding_image", "native_binding_config_digest",
+    "native_binding_config_bytes", "native_binding_components", "native_binding_mounts",
+    "native_source_identity_changed", "native_source_transition_unproven", "native_source_internal_error",
+})
+SOURCE_GATE_REFUSAL_REASONS = READBACK_REASONS | SOURCE_READBACK_REASONS | NATIVE_SOURCE_REFUSAL_REASONS
 SOURCE_JOB_CATEGORIES = {
     "agentgateway": "agentgateway",
     "dgx-spark-node": "dgx-spark",
@@ -227,7 +253,7 @@ def o11y_scrape_budget_preview(
     results = []
     for item in receipt["jobs"]:
         sample_limit = limits["sample_limit"]
-        if item["job"] in {"receiver-host", "host-node"}:
+        if item["job"] in CEILED_SAMPLE_JOBS:
             sample_limit = min(sample_limit, sample_cap)
 
         comparisons = (
@@ -402,7 +428,7 @@ def _o11y_loaded_scrape_limit_coverage(
                 if loaded is None or loaded > maximum:
                     return _loaded_unavailable("invalid_loaded_limit")
                 expected = limits[candidate_key]
-                if category == "receiver-host" and config_key == "sample_limit":
+                if category in CEILED_SAMPLE_JOBS and config_key == "sample_limit":
                     expected = min(expected, sample_cap)
                 if loaded != expected:
                     category_results.setdefault(category, []).append("mismatch")
@@ -551,12 +577,373 @@ def o11y_source_scrape_limit_coverage(
         return _loaded_unavailable("source_readback_unavailable")
 
 
+def _valid_availability_limits(value: Any) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and set(value) == set(LOADED_LIMIT_FIELDS)
+        and all(_integer(value[field], maximum) for field, (_config_field, maximum) in LOADED_LIMIT_FIELDS.items())
+    )
+
+
+def _valid_native_duration(value: Any) -> bool:
+    if (
+        not isinstance(value, str) or len(value) > 32
+        or not re.fullmatch(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?", value)
+    ):
+        return False
+    try:
+        duration = Decimal(value)
+    except InvalidOperation:
+        return False
+    return duration.is_finite() and Decimal(0) <= duration <= Decimal(10)
+
+
+def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = False) -> dict[str, Any]:
+    """Consume the source-specific availability evidence without returning private labels."""
+    if (
+        isinstance(readback, Mapping) and readback.get("status") == "unavailable"
+        and set(readback) == {"status", "reason", "source", "intended_source", "matches_intended"}
+        and readback.get("reason") in NATIVE_SOURCE_REFUSAL_REASONS and readback.get("source") == "unknown"
+        and readback.get("intended_source") == "unknown" and readback.get("matches_intended") is False
+    ):
+        return {"status": "unavailable", "reason": readback["reason"], "source": "unknown"}
+    if (
+        not isinstance(readback, Mapping)
+        or set(readback) not in (
+            {"status", "source", "intended_source", "matches_intended", "evidence"},
+            {"status", "source", "intended_source", "matches_intended", "evidence", "container_identity_sha256"},
+        )
+        or readback.get("status") != "observed"
+        or readback.get("source") not in {"prometheus", "alloy"}
+        or readback.get("intended_source") not in {"prometheus", "alloy"}
+        or not isinstance(readback.get("matches_intended"), bool)
+        or readback["matches_intended"] is not (readback["source"] == readback["intended_source"])
+        or (
+            "container_identity_sha256" in readback
+            and (not isinstance(readback.get("container_identity_sha256"), str)
+                 or not re.fullmatch(r"[0-9a-f]{64}", readback["container_identity_sha256"]))
+        )
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    evidence = readback["evidence"]
+    if readback["source"] == "prometheus":
+        has_native_absence = isinstance(evidence, Mapping) and set(evidence) == {
+            "status", "source", "alloy_self", "scrape_body_size_bytes", "native_components",
+        }
+        native_components = evidence.get("native_components") if has_native_absence else None
+        if (
+            not isinstance(evidence, Mapping)
+            or set(evidence) not in (
+                {"status", "source", "alloy_self", "scrape_body_size_bytes"},
+                {"status", "source", "alloy_self", "scrape_body_size_bytes", "native_components"},
+            )
+            or evidence.get("status") != "observed" or evidence.get("source") != "prometheus"
+            or not isinstance(evidence.get("alloy_self"), Mapping)
+            or set(evidence["alloy_self"]) != {"up", "scrape_samples_scraped"}
+            or isinstance(evidence["alloy_self"].get("up"), bool)
+            or not isinstance(evidence["alloy_self"].get("up"), int)
+            or evidence["alloy_self"]["up"] != 1
+            or isinstance(evidence["alloy_self"].get("scrape_samples_scraped"), bool)
+            or not isinstance(evidence["alloy_self"].get("scrape_samples_scraped"), int)
+            or evidence["alloy_self"]["scrape_samples_scraped"] < 1
+            or evidence.get("scrape_body_size_bytes") != {
+                "status": "unavailable", "reason": "legacy_extra_scrape_metrics_not_enabled",
+            }
+            or (has_native_absence and (
+                not isinstance(native_components, Mapping)
+                or set(native_components) != {"status", "reason", "component_count"}
+                or native_components.get("status") != "observed"
+                or native_components.get("reason") != "native_components_absent"
+                or isinstance(native_components.get("component_count"), bool)
+                or not isinstance(native_components.get("component_count"), int)
+                or not 1 <= native_components["component_count"] <= 256
+            ))
+        ):
+            return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+        projection = {
+            "status": "observed", "source": "prometheus",
+            "matches_intended": readback["matches_intended"],
+            "sample_count": 1, "probe_failed_count": 0, "scrape_failed_count": 0,
+            "body_counter": "not_exposed_by_legacy_prometheus",
+        }
+        if has_native_absence:
+            projection["native_components"] = "absent"
+        return projection
+    if (
+        not isinstance(evidence, Mapping) or set(evidence) != {"status", "source", "detail", "samples"}
+        or evidence.get("status") != "observed" or evidence.get("source") != "alloy"
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    detail, samples = evidence["detail"], evidence["samples"]
+    self_only = (
+        allow_self_only is True
+        and isinstance(detail, Mapping) and detail.get("target_count") == 0
+        and detail.get("targets") == []
+        and isinstance(samples, Mapping) and samples.get("targets") == []
+    )
+    if (
+        not isinstance(detail, Mapping) or not isinstance(samples, Mapping)
+        or detail.get("status") != "observed" or samples.get("status") != "observed"
+        or set(detail) != {"status", "reason", "target_count", "targets", "alloy_self"}
+        or set(samples) != {"status", "reason", "freshness_seconds", "alloy_self", "targets"}
+        or detail.get("reason") != "fixed_native_components_loaded"
+        or samples.get("reason") != "fresh_native_samples"
+        or isinstance(samples.get("freshness_seconds"), bool)
+        or not isinstance(samples.get("freshness_seconds"), int)
+        or not 60 <= samples["freshness_seconds"] <= 86400
+        or not isinstance(detail.get("target_count"), int) or isinstance(detail.get("target_count"), bool)
+        or not (detail["target_count"] == 0 if self_only else 1 <= detail["target_count"] <= 64)
+        or not isinstance(detail.get("targets"), list) or len(detail["targets"]) != detail["target_count"]
+        or not isinstance(samples.get("targets"), list) or len(samples["targets"]) != detail["target_count"]
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    loaded_self, sampled_self = detail.get("alloy_self"), samples.get("alloy_self")
+    if (
+        not isinstance(loaded_self, Mapping) or set(loaded_self) != {"status", "limits"}
+        or loaded_self.get("status") != "observed" or not _valid_availability_limits(loaded_self.get("limits"))
+        or not isinstance(sampled_self, Mapping)
+        or set(sampled_self) != {"status", "scrape_up", "scrape_samples_scraped", "scrape_body_size_bytes"}
+        or sampled_self.get("status") != "observed"
+        or isinstance(sampled_self.get("scrape_up"), bool)
+        or not isinstance(sampled_self.get("scrape_up"), int)
+        or sampled_self["scrape_up"] != 1
+        or any(
+            isinstance(sampled_self.get(field), bool) or not isinstance(sampled_self.get(field), int)
+            or not 1 <= sampled_self[field] <= loaded_self["limits"][limit_field]
+            for field, limit_field in NATIVE_HEALTH_SAMPLE_LIMITS.items()
+        )
+    ):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    detail_ids: list[str] = []
+    probe_failed = scrape_failed = 0
+    for detail_row, sample_row in zip(detail["targets"], samples["targets"], strict=True):
+        if (
+            not isinstance(detail_row, Mapping) or set(detail_row) != {"target_id", "status", "probe_health", "limits"}
+            or detail_row.get("status") != "observed" or detail_row.get("probe_health") not in {"up", "down", "unknown"}
+            or not isinstance(detail_row.get("target_id"), str)
+            or not re.fullmatch(r"service:[A-Za-z0-9_.:/@-]{1,120}", detail_row["target_id"])
+            or not _valid_availability_limits(detail_row.get("limits"))
+            or not isinstance(sample_row, Mapping) or sample_row.get("target_id") != detail_row["target_id"]
+        ):
+            return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+        detail_ids.append(detail_row["target_id"])
+        if sample_row.get("status") == "scrape_failed" and set(sample_row) == {"target_id", "status"}:
+            scrape_failed += 1
+        elif (
+            sample_row.get("status") == "observed"
+            and set(sample_row) == {
+                "target_id", "status", "scrape_up", "probe_success", "probe_http_status_code",
+                "probe_duration_seconds", "scrape_samples_scraped", "scrape_body_size_bytes",
+            }
+            and isinstance(sample_row.get("scrape_up"), int)
+            and not isinstance(sample_row.get("scrape_up"), bool)
+            and sample_row["scrape_up"] == 1
+            and isinstance(sample_row.get("probe_success"), int)
+            and not isinstance(sample_row.get("probe_success"), bool)
+            and sample_row["probe_success"] in {0, 1}
+            and isinstance(sample_row.get("probe_http_status_code"), int)
+            and not isinstance(sample_row.get("probe_http_status_code"), bool)
+            and 0 <= sample_row["probe_http_status_code"] <= 599
+            and _valid_native_duration(sample_row.get("probe_duration_seconds"))
+            and isinstance(sample_row.get("scrape_samples_scraped"), int)
+            and not isinstance(sample_row.get("scrape_samples_scraped"), bool)
+            and 1 <= sample_row["scrape_samples_scraped"] <= detail_row["limits"]["sample_limit"]
+            and isinstance(sample_row.get("scrape_body_size_bytes"), int)
+            and not isinstance(sample_row.get("scrape_body_size_bytes"), bool)
+            and 1 <= sample_row["scrape_body_size_bytes"] <= detail_row["limits"]["body_size_limit"]
+        ):
+            probe_failed += sample_row["probe_success"] == 0
+        else:
+            return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    if len(set(detail_ids)) != len(detail_ids):
+        return {"status": "unavailable", "reason": "source_readback_unavailable", "source": "unknown"}
+    return {
+        "status": "observed", "source": "alloy",
+        "matches_intended": readback["matches_intended"],
+        "sample_count": 1 if self_only else detail["target_count"],
+        "probe_failed_count": probe_failed, "scrape_failed_count": scrape_failed,
+        "body_counter": "observed_positive",
+    }
+
+
+def o11y_availability_source_gate_diagnostic(result: Any) -> str:
+    """Reduce a protected Ansible command result to one fixed diagnostic category."""
+    fallback = "producer_evidence_invalid"
+    try:
+        if not isinstance(result, Mapping):
+            return "producer_process_unexpected"
+        rc, stdout, stderr = result.get("rc"), result.get("stdout"), result.get("stderr")
+        if isinstance(rc, bool) or not isinstance(rc, int) or rc not in {0, 2}:
+            return "producer_process_unexpected"
+        if not isinstance(stdout, str):
+            return "producer_process_unexpected"
+        if len(stdout.encode("utf-8")) > 65536:
+            return "producer_stdout_oversized"
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate JSON key")
+                value[key] = item
+            return value
+
+        def reject_nonfinite(value: str) -> Any:
+            raise ValueError("non-finite JSON number")
+
+        try:
+            readback = json.loads(
+                stdout, object_pairs_hook=unique_object, parse_float=Decimal, parse_constant=reject_nonfinite,
+            )
+        except (ValueError, TypeError, InvalidOperation, RecursionError):
+            return "producer_json_invalid"
+        if (
+            rc == 2 and isinstance(readback, Mapping)
+            and set(readback) == {"status", "reason", "source", "intended_source", "matches_intended"}
+            and readback.get("status") == "unavailable"
+            and readback.get("reason") in SOURCE_GATE_REFUSAL_REASONS
+            and readback.get("source") == "unknown"
+            and readback.get("intended_source") == "unknown"
+            and readback.get("matches_intended") is False
+        ):
+            return readback["reason"]
+        coverage = o11y_availability_source_coverage(readback, allow_self_only=True)
+        if stderr != "":
+            return "producer_stderr_present"
+        if rc == 0 and coverage.get("status") == "observed":
+            return "producer_observed" if coverage.get("matches_intended") is True else "producer_mismatch"
+        if rc == 2:
+            return "producer_exit_code_mismatch" if coverage.get("status") == "observed" else fallback
+        return fallback
+    except Exception:
+        return "producer_evidence_invalid"
+
+
+# Must match AVAILABILITY_NAMESPACE_REASONS in files/summarize-o11y-scrape-baseline.py;
+# test_o11y_availability_namespace_survey.py compares the two sets.
+AVAILABILITY_NAMESPACE_REASONS = frozenset({
+    "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
+    "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
+    "namespace_runtime_unreadable", "namespace_unverified", "namespace_internal_error",
+    "namespace_candidate_compose_unreadable", "namespace_candidate_inputs_label",
+    "namespace_candidate_pod", "namespace_candidate_alloy_spec", "namespace_candidate_ports",
+    "namespace_candidate_project",
+})
+_NAMESPACE_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def o11y_availability_namespace_diagnostic(result: Any) -> str:
+    """Reduce a protected namespace-gate command result to one fixed category.
+
+    Returns "isolated" only for a clean, well-formed isolated result, the refusal reason for a
+    well-formed unverified result, "namespace_helper_failed" when the helper exited with a code
+    other than 0 or 2 (it crashed before printing), and "namespace_unverified" for anything else.
+    No value from the protected stdout is returned, so a caller can print the answer without
+    printing the result it was computed from.
+    """
+    generic = "namespace_unverified"
+    try:
+        if not isinstance(result, Mapping):
+            return generic
+        rc, stdout = result.get("rc"), result.get("stdout")
+        if isinstance(rc, bool) or not isinstance(rc, int):
+            return generic
+        if rc not in {0, 2}:
+            return "namespace_helper_failed"
+        if not isinstance(stdout, str) or len(stdout.encode("utf-8")) > 4096:
+            return generic
+
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate JSON key")
+                value[key] = item
+            return value
+
+        def reject_nonfinite(value: str) -> Any:
+            raise ValueError("non-finite JSON number")
+
+        readback = json.loads(stdout, object_pairs_hook=unique_object, parse_constant=reject_nonfinite)
+        if not isinstance(readback, Mapping):
+            return generic
+        if (
+            rc == 0
+            and set(readback) == {"status", "reason", "container_count", "namespace_snapshot_sha256",
+                                  "runtime_context_sha256", "provider", "provider_version"}
+            and readback.get("status") == "isolated"
+            and readback.get("reason") == "distinct_kernel_namespaces"
+            and isinstance(readback.get("namespace_snapshot_sha256"), str)
+            and _NAMESPACE_SHA256.fullmatch(readback["namespace_snapshot_sha256"])
+            and isinstance(readback.get("runtime_context_sha256"), str)
+            and _NAMESPACE_SHA256.fullmatch(readback["runtime_context_sha256"])
+        ):
+            return "isolated"
+        if (
+            rc == 2
+            and set(readback) == {"status", "reason"}
+            and readback.get("status") == "unverified"
+            and readback.get("reason") in AVAILABILITY_NAMESPACE_REASONS
+        ):
+            return readback["reason"]
+        return generic
+    except (ValueError, TypeError, RecursionError):
+        return generic
+
+
+# Finite local-dev limits env.j2 has always applied when local inventory declares none.
+_LOCAL_SCRAPE_LIMIT_DEFAULTS = {
+    "body_size_limit_bytes": 16777216,
+    "sample_limit": 10000,
+    "label_limit": 64,
+    "label_name_length_limit": 128,
+    "label_value_length_limit": 2048,
+}
+
+
+def o11y_effective_scrape_limits(limits: Any, sample_ceiling: Any = 2000, local: Any = False,
+                                 reviewed: Any = False) -> dict[str, Any]:
+    """The scrape limits Alloy actually runs with: the one definition env.j2 renders.
+
+    Unreviewed production limits are withheld ({}), local mode falls back to finite defaults,
+    and `o11y_scrape_sample_limit` stays the stricter ceiling on `sample_limit`. Every
+    source-review caller passes this result as `shared_limits`, so the gate compares the live
+    Alloy scrape against the value it was actually given.
+    """
+    if not (local is True or reviewed is True):
+        return {}
+    if limits is None:
+        limits = _LOCAL_SCRAPE_LIMIT_DEFAULTS if local is True else {}
+    if not isinstance(limits, Mapping):
+        return {}
+    effective = dict(limits)
+    sample, ceiling = _limit_int(effective.get("sample_limit")), _limit_int(sample_ceiling)
+    if sample is not None and ceiling is not None:
+        effective["sample_limit"] = min(sample, ceiling)
+    return effective
+
+
+def _limit_int(value: Any) -> int | None:
+    """An integer limit, accepting the numeric strings the templates' `| int` always accepted."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,9}", value.strip()):
+        return int(value.strip())
+    return None
+
+
 class FilterModule:
     """Expose the pure preview as an Ansible filter."""
 
     def filters(self) -> dict[str, Any]:
         return {
             "o11y_scrape_budget_preview": o11y_scrape_budget_preview,
+            "o11y_effective_scrape_limits": o11y_effective_scrape_limits,
             "o11y_loaded_scrape_limit_coverage": o11y_loaded_scrape_limit_coverage,
             "o11y_source_scrape_limit_coverage": o11y_source_scrape_limit_coverage,
+            "o11y_availability_source_coverage": o11y_availability_source_coverage,
+            "o11y_availability_source_gate_diagnostic": o11y_availability_source_gate_diagnostic,
+            "o11y_availability_namespace_diagnostic": o11y_availability_namespace_diagnostic,
         }

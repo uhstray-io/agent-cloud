@@ -1,0 +1,22 @@
+# console — launch-gate overlay. deploy.sh appends it outside LOCAL_MODE, and only when .env carries
+# CONSOLE_LAUNCH_GATE_HOSTNAME. templates/env.j2 renders that line outside local mode, and only when the inventory
+# declares console_launch_gate_url. .env is the one decision point, so this file and the variables it needs cannot
+# disagree. Undeclared, the overlay is not loaded and the stack is what it was before the gate existed.
+#
+# The console calls the launch gate over https, and the gate's leaf is signed by the internal step-ca for a name that
+# has no production DNS record. Two settings on the console service make that call verify:
+#   - extra_hosts maps the gate's name to the address the inventory declares (console_launch_gate_ip).
+#   - the step-ca bundle (root and intermediate), written into ./certs by tasks/distribute-ca-root.yml, is mounted
+#     read-only and named by CONSOLE_EXTRA_CA_FILE. The console adds it to the roots it already trusts
+#     (server/mod.rs client_with_roots); it does not replace them, so the public OIDC issuer keeps verifying.
+#
+# Both variables are required (:?), so compose refuses to start without them rather than starting with no mapping.
+
+services:
+  console:
+    volumes:
+      - ./certs/step-ca-bundle.crt:/etc/ssl/certs/step-ca-bundle.crt:ro
+    environment:
+      CONSOLE_EXTRA_CA_FILE: /etc/ssl/certs/step-ca-bundle.crt
+    extra_hosts:
+      - "${CONSOLE_LAUNCH_GATE_HOSTNAME:?set console_launch_gate_url in the inventory}:${CONSOLE_LAUNCH_GATE_IP:?set console_launch_gate_ip in the inventory}"

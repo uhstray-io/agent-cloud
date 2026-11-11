@@ -41,22 +41,22 @@ The webhook receiver SHALL verify each delivery before it acts on the delivery. 
 
 ### Requirement: Each delivery is posted once and never lost to a failed post
 
-The app keys each delivery on the event's identity, the identifier Plane keeps unchanged across retries of one event (the payload's event id or the `X-Plane-Delivery` header, whichever spike 0.15 shows is stable), in a persistent store on the app's own volume. Before posting, it MUST take a `pending` lease on that identity with a unique-key insert that records the lease time. It MUST mark the identity `posted` only after Discord accepts the post. When the post fails or times out, it MUST release the lease and answer Plane with an error status, so that Plane's own retry delivers the event again. A delivery whose identity is `posted` MUST NOT be posted again. A delivery that meets an unexpired `pending` lease is answered with an error status and is not posted, so concurrent deliveries post once. A `pending` lease older than the lease period, left by a process that stopped, is treated as released. Delivery is therefore at least once up to Plane's retry limit, and a duplicate post is possible only when Discord accepted a post whose acknowledgement was lost.
+Plane does not retry a delivery that receives an error status, and it emits each event more than once (spike 0.15, 2026-10-27), so the app owns its own durability. The app keys each verified delivery on the event's content identity: the payload's `event`, `action`, `data.id` and `data.updated_at`. No identifier in the v3.3.3 payload or headers stays the same between the copies of one event. It MUST record the delivery in a persistent store on the app's own volume with a unique-key insert, where a repeat insert of the same identity changes nothing, and MUST answer Plane with a success status only after that insert has committed. A worker posts each recorded event. Before posting, it MUST take a `pending` lease on the identity that records the lease time. It MUST mark the identity `posted` only after Discord accepts the post. When the post fails or times out, it MUST release the lease and retry later with backoff. An identity that is `posted` MUST NOT be posted again. A `pending` lease older than the lease period, left by a worker that stopped, is treated as released. Delivery to Discord is therefore at least once for every event the store recorded. A duplicate post is possible only when Discord accepted a post whose acknowledgement was lost. An event is lost only if the store could not record it, and the app then answers with an error status and logs the failure at error level.
 
 #### Scenario: Redelivered event is not posted twice
 
-- **WHEN** Plane redelivers an event whose delivery identity has already been claimed
-- **THEN** the app posts nothing for the redelivery
+- **WHEN** Plane sends a second copy of an event whose content identity is already recorded
+- **THEN** the app records nothing new, answers with a success status, and posts nothing for the copy
 
 #### Scenario: Concurrent deliveries post once
 
-- **WHEN** two deliveries that carry the same delivery identity arrive at the same time
+- **WHEN** two deliveries that carry the same content identity arrive at the same time
 - **THEN** exactly one of them is posted to Discord
 
 #### Scenario: Failed post is retried
 
-- **WHEN** the Discord post for a verified delivery fails
-- **THEN** the app releases the lease and answers Plane with an error status, and Plane's retry of the same event is posted
+- **WHEN** the Discord post for a recorded event fails
+- **THEN** the worker releases the lease, and a later attempt by the worker posts the event
 
 ### Requirement: Slash commands are received over the Gateway and answered over HTTP
 

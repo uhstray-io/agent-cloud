@@ -1,0 +1,19 @@
+# compose.local.yml — local-dev overlay. platform/lib/common.sh:compose() applies it only when LOCAL_MODE=true
+# and this file exists.
+#
+# mcp joins the shared local-dev network, so the local Caddy reaches it by name (plane-mcp:8211), as it
+# reaches every other local service. Local mode publishes nothing to the host: deploy.sh skips
+# compose.publish.yml here.
+#
+# Author: Joseph A. Wisneski IV
+
+networks:
+  local-dev:
+    external: true
+
+services:
+  mcp:
+    # Only local-dev here. compose.yml already attaches plane, and compose appends an overlay's list to
+    # the base list, so repeating plane would name the same network twice (podman-compose config shows it).
+    networks:
+      - local-dev

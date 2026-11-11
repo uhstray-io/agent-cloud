@@ -1,8 +1,10 @@
 # agentgateway — the inference edge gateway
 
 Author: Joseph A. Wisneski IV <stray@uhstray.io>. Status: local-dev proven (2026-09-17). Prod VM (node, vmid and address declared in site-config) provisioned, keyed and
-SSH-hardened through Semaphore (2026-09-18); the prod gateway rollout (Authentik app,
-edge record, key seed, deploy, firewall, Caddy block) is pending.
+SSH-hardened through Semaphore (2026-09-18). Production `/v1` traffic has been routed through
+the gateway since 2026-10-14 (the route switch in OpenSpec change
+`inference-gateway-agentgateway`). Still open: retiring the shared vLLM key (2026-11-13,
+"Shared-key retirement" below) and TLS from the gateway to vLLM.
 
 ## Role
 
@@ -13,7 +15,7 @@ identity itself; Caddy in front of it keeps TLS, the path allowlist and a header
 Bearer check only.
 
 Decision record: `plan/architecture/05-platform-infra.md`, "Inference gateway:
-agentgateway alongside skynet" (Proposed until the operator confirms). OpenSpec change:
+agentgateway alongside skynet" (Accepted 2026-10-12). OpenSpec change:
 `plan/development/openspec/changes/inference-gateway-agentgateway`.
 
 ## Shape
@@ -199,10 +201,12 @@ per-client layer. Everything is inventory-driven code (design §10):
 |---|---|
 | Add a client | Add the name to `agw_clients` (site-config / local inventory), or declare the admin in `platform_admins`, and deploy: manage-secrets mints `client_<name>` once and reuses it; the config enrols its sha256 hash |
 | Per-client policy | `agw_client_policies.<name>.allowed_models` and `.tokens_per_hour` render `allowedModels` and the budget amount |
+| Shared model cap | `pool_identity: <name>` on an `agw_models` entry, `<name>` in `agw_clients` with `agw_client_policies.<name>.tokens_per_hour`: every caller together is held to that figure for the model (v1.5.0 has no per-model budget, so the public entry relays over the loopback listener to a hidden `pool/<name>` entry only the pool identity may call). Calls are charged twice (caller and pool) and count twice against the global request bucket |
+| Budget tiers | `agw_tier_tokens_per_hour` maps `admin`, `developer`, `business` to hourly figures; `platform_admins` identities are `admin`, others set `agw_client_policies.<name>.tier`. Own `tokens_per_hour` wins, then the tier, then `agw_rate_tokens_per_hour` |
 | Rotate | Semaphore `Manage agentgateway Client Key`, `client=<name> action=rotate` (name must be declared); merges a new value, re-renders, reloads |
 | Revoke | Remove the name from `agw_clients` and `platform_admins` FIRST, then `action=revoke`: deletes the field (KV-v2 merge-patch null), re-renders, reloads; the old key is 401 |
 | Hand out | `Back Up Credentials to site-config` with `credential_service=agentgateway credential_fields=client_<name>`: a site-config branch, names only in the task output |
-| pi client | `context/clients/pi-provider/` (README there): a pi package, `pi install <path>`; `/login uhstray` validates the key against `GET /v1/models` and pi stores it in `auth.json`; the model list is the gateway's own, per key, discovered live and kept as pi's persisted snapshot; streaming is pi's built-in OpenAI Chat Completions client. No secret in the package; `UHSTRAY_INFERENCE_BASE_URL` points it at the local-dev gateway |
+| pi client | Lives in the harness repository, not here: `harnesses/pi/extensions/uhstray-provider/` in `uhstray-io/harness`. `/login uhstray` validates the key against `GET /v1/models` and pi stores it in `auth.json`; the model list is the gateway's own, per key, discovered live and kept as pi's persisted snapshot; streaming is pi's built-in OpenAI Chat Completions client. No secret in the package; `UHSTRAY_INFERENCE_BASE_URL` points it at the local-dev gateway |
 | UI key editor | Disabled on purpose: `UI_READ_ONLY=true` in `.env` puts the config store in read-only mode (writes get 403), and `config.yaml` is mounted `:ro`; configuration is code |
 | Saved keys in the playground | Local-dev only: `agw_plaintext_keys: true` renders values instead of hashes so the UI can offer them. Prod stays on hashes |
 | Upstream key | `vllm_api_key` (`existing`, seeded separately) → `params.apiKey: $VLLM_API_KEY`; omitted when the upstream takes no key (LM Studio locally); rotated on vLLM's schedule (task 5.1) |
@@ -245,6 +249,8 @@ If the key is rotated before the date, the grace-period probe is skipped rather 
 false failure (#631).
 
 ## Upstream
+
+Source paths under `crates/`, `entrypoints/`, `management/` and `http/`, and upstream project documentation under `docs/`, refer to the respective upstream agentgateway, vLLM, Pi or dgx-spark repositories, not this repository. The repository-local `docs/MISTAKES.md` references remain local.
 
 `custom` provider, `formats: [{type: completions}, {type: responses}]`, `params.baseUrl` from inventory
 `agw_upstream_base_url`, one model entry per name in `agw_models` (an optional

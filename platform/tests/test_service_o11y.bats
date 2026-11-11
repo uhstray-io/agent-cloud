@@ -12,17 +12,55 @@ load assert_helpers
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/o11y/deployment"
+  mkdir -p "$BATS_TEST_TMPDIR/ansible"
+}
+
+run_o11y_guard() {
+  run env -i \
+    PATH="$PATH" HOME="$HOME" \
+    TMPDIR="$BATS_TEST_TMPDIR" \
+    ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" \
+    ANSIBLE_REMOTE_TEMP="$BATS_TEST_TMPDIR/ansible/remote" \
+    ANSIBLE_HOME="$BATS_TEST_TMPDIR/ansible/home" \
+    ansible-playbook "$@"
 }
 
 @test "o11y: webhook provisioning requires an exact reviewed revision before OpenBao access" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  cp "$REPO_ROOT/platform/inventory/local-dev.yml.example" "$BATS_TEST_TMPDIR/inventory.yml"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook \
-    -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" \
-    -e openbao_addr=http://127.0.0.1:8200
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe:
+          ansible_connection: local
+YAML
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [
+        ("platform/playbooks/seed-o11y-alert-webhook.yml", "Require exactly one declared o11y receiver"),
+        ("platform/playbooks/seed-o11y-alert-webhook.yml", "Read the controller revision"),
+        ("platform/playbooks/seed-o11y-alert-webhook.yml", "Require the exact candidate revision"),
+    ],
+)
+PY
+  # Keep the original missing-SHA refusal, then prove a valid-shaped but mismatched SHA.
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Semaphore checked out a different revision; no webhook was provisioned."* ]]
+  assert_contains "$output" "Semaphore checked out a different revision; no webhook was provisioned."
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" \
+    -e expected_repository_sha=0000000000000000000000000000000000000000
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Semaphore checked out a different revision; no webhook was provisioned."
+  assert_precedes "$REPO_ROOT/platform/playbooks/seed-o11y-alert-webhook.yml" \
+    'Require the exact candidate revision' 'Authenticate to OpenBao'
 }
 
 @test "o11y: webhook credentials stay on the controller and out of task output" {
@@ -102,13 +140,18 @@ PY
 }
 
 @test "o11y: Grafana OIDC uses local bridge only in local mode" {
-  python3 - "$DEPLOY_DIR/templates/env.j2" <<'PY'
+  python3 - "$DEPLOY_DIR/templates/env.j2" "$DEPLOY_DIR/../../../playbooks/filter_plugins/o11y_scrape_budget.py" <<'PY'
+import importlib.util
 import sys
 from jinja2 import Environment, StrictUndefined
 
+spec = importlib.util.spec_from_file_location('o11y_scrape_budget', sys.argv[2])
+budget = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(budget)
 env = Environment(undefined=StrictUndefined)
 env.filters['bool'] = bool
 env.filters['mandatory'] = lambda value: value
+env.filters['o11y_effective_scrape_limits'] = budget.o11y_effective_scrape_limits
 template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
 secrets = {'grafana_admin_password': 'test-only', 'grafana_oidc_client_secret': 'test-only'}
 limits = {'body_size_limit_bytes': 16777216, 'sample_limit': 10000, 'label_limit': 64,
@@ -162,11 +205,26 @@ all:
         o11y-probe:
           ansible_connection: local
 YAML
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [("platform/playbooks/deploy-o11y.yml", "Require the production DNS zone and Caddy origin before rendering Grafana OIDC")],
+    source_vars=[("platform/playbooks/deploy-o11y.yml", "Phase 1: Place repo + manage o11y secrets", ("_auth_edge_hosts", "_auth_edge_ip"))],
+    public_vars={"local_mode": False},
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" -e local_mode=false
   [ "$status" -ne 0 ]
   assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
-  refute_contains "$output" "TASK [Place the monorepo"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the production DNS zone and Caddy origin before rendering Grafana OIDC' \
+    'Place the monorepo'
 }
 
 @test "o11y: production refuses a missing Caddy origin before placement" {
@@ -178,13 +236,29 @@ all:
       hosts:
         o11y-probe:
           ansible_connection: local
+    caddy_svc: {}
 YAML
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [("platform/playbooks/deploy-o11y.yml", "Require the production DNS zone and Caddy origin before rendering Grafana OIDC")],
+    source_vars=[("platform/playbooks/deploy-o11y.yml", "Phase 1: Place repo + manage o11y secrets", ("_auth_edge_hosts", "_auth_edge_ip"))],
+    public_vars={"local_mode": False, "o11y_zone": "example.invalid"},
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" \
     -e local_mode=false -e o11y_zone=example.invalid
   [ "$status" -ne 0 ]
   assert_contains "$output" "Production o11y needs its declared DNS zone and one Caddy origin IP"
-  refute_contains "$output" "TASK [Place the monorepo"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the production DNS zone and Caddy origin before rendering Grafana OIDC' \
+    'Place the monorepo'
 }
 
 @test "o11y: local clean excludes production overlay and reports a failed Compose teardown" {
@@ -273,20 +347,56 @@ all:
         o11y-probe:
           ansible_connection: local
 YAML
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [
+        ("platform/playbooks/deploy-o11y.yml", "Read the controller checkout revision when a candidate SHA is required"),
+        ("platform/playbooks/deploy-o11y.yml", "Require the exact reviewed candidate revision"),
+    ],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/guard.yml" \
     -e expected_repository_sha=0000000000000000000000000000000000000000
   [ "$status" -ne 0 ]
   assert_contains "$output" "Semaphore checked out a different revision; no o11y files were placed."
-  refute_contains "$output" "PLAY [Phase 1: Place repo + manage o11y secrets]"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the exact reviewed candidate revision' 'Place the monorepo'
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Require the exact reviewed candidate revision' 'Configure o11y alert provisioning from OpenBao'
 }
 
 @test "o11y: an empty receiver inventory refuses before placement" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  run ansible-playbook -i localhost, "$REPO_ROOT/platform/playbooks/deploy-o11y.yml"
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "localhost",
+    [
+        ("platform/playbooks/preflight-target-group.yml", "Require a group name to check, and refuse a conflicting override"),
+        ("platform/playbooks/preflight-target-group.yml", "Require the inventory to have parsed"),
+        ("platform/playbooks/preflight-target-group.yml", "Require the group to exist and contain at least one host"),
+    ],
+    public_vars={"preflight_group": "o11y_svc", "preflight_group_expected": "o11y_svc"},
+)
+PY
+  run_o11y_guard -i localhost, "$BATS_TEST_TMPDIR/guard.yml" \
+    -e preflight_group=o11y_svc -e preflight_group_expected=o11y_svc
   [ "$status" -ne 0 ]
   assert_contains "$output" "Inventory group 'o11y_svc' is absent or empty"
-  refute_contains "$output" "PLAY [Phase 1: Place repo + manage o11y secrets]"
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Pre-flight' 'name: "Phase 1: Place repo'
 }
 
 @test "o11y: fault drill accepts Grafana alert states and verifies the failing instance list" {
@@ -465,12 +575,9 @@ def write_play(path, body, failed):
 write_play(sys.argv[2], content, False)
 write_play(sys.argv[3], marker, False)
 PY
-  mkdir -p "$BATS_TEST_TMPDIR/ansible-local"
-  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
-    ansible-playbook -i localhost, "$valid_playbook"
+  run_o11y_guard -i localhost, "$valid_playbook"
   [ "$status" -eq 0 ]
-  run env TMPDIR="$BATS_TEST_TMPDIR" ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible-local" \
-    ansible-playbook -i localhost, "$invalid_playbook"
+  run_o11y_guard -i localhost, "$invalid_playbook"
   [ "$status" -ne 0 ]
   assert_contains "$output" "Discord firing receipt was incomplete after the wait: webhook messages=1, readable messages=1, owned messages=1"
   refute_contains "$output" "o11y-delivery-status=firing service=o11y-fault-probe-new"
@@ -693,6 +800,186 @@ PY
   grep -qE 'url: http://loki:3100' "$DEPLOY_DIR/config/grafana/provisioning/datasources/datasources.yml"
 }
 
+@test "o11y: OTLP mTLS is opt-in on the existing receiver and journal endpoint" {
+  python3 - "$DEPLOY_DIR/templates/config.alloy.j2" "$DEPLOY_DIR/templates/journal.alloy.j2" "$DEPLOY_DIR/compose.otlp-tls.yml" "$DEPLOY_DIR/compose.journal.otlp-tls.yml" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$REPO_ROOT/platform/playbooks/clean-deploy-o11y.yml" "$REPO_ROOT/.gitignore" <<'PY'
+import json
+import re
+import sys
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+receiver, journal, receiver_overlay, journal_overlay, deploy, clean, gitignore = [open(path, encoding='utf-8').read() for path in sys.argv[1:]]
+env = Environment(undefined=StrictUndefined)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+receiver_block = re.search(r'otelcol\.receiver\.otlp "traces" \{.*?\n\}', receiver, re.S).group()
+off = env.from_string(receiver_block).render(o11y_otlp_tls_enabled=False)
+on = env.from_string(receiver_block).render(o11y_otlp_tls_enabled=True)
+assert 'tls {' not in off
+assert 'endpoint = "0.0.0.0:4317"' in off and 'endpoint = "0.0.0.0:4317"' in on
+assert 'cert_file = "/certs/otlp-server/current/cert.pem"' in on
+assert 'client_ca_file = "/certs/step-ca-bundle.crt"' in on
+assert 'reload_interval = "1m"' in on
+
+journal_block = re.search(r'otelcol\.exporter\.otlp "journal" \{.*?\n\}', journal, re.S).group()
+off = env.from_string(journal_block).render(o11y_otlp_tls_enabled=False, o11y_otlp_bind='otlp.internal.test')
+on = env.from_string(journal_block).render(o11y_otlp_tls_enabled=True, o11y_otlp_bind='otlp.internal.test', o11y_otlp_tls_server_name='o11y.internal.test')
+assert 'insecure = true' in off and 'insecure = true' not in on
+assert 'server_name = "o11y.internal.test"' in on
+assert 'cert_file = "/certs/journal-client/current/cert.pem"' in on
+assert 'reload_interval = "1m"' in on
+
+for overlay, service, expected in ((receiver_overlay, 'alloy', ('./certs/o11y-otlp-server', '/certs/otlp-server')),
+                                   (journal_overlay, 'journal-collector', ('./certs/o11y-journal', '/certs/journal-client'))):
+    mount, = yaml.safe_load(overlay)['services'][service]['volumes'][:1]
+    assert (mount['source'], mount['target']) == expected
+    assert mount['read_only'] is True and mount['bind']['create_host_path'] is False
+    assert all(item['read_only'] is True for item in yaml.safe_load(overlay)['services'][service]['volumes'])
+deploy_plays = yaml.safe_load(deploy)
+deploy_tasks = next(
+    play['tasks'] for play in deploy_plays
+    if any(task.get('name') == 'Place the monorepo + ensure podman/compose'
+           for task in play.get('tasks', []))
+)
+tls_validation = next(
+    task for task in deploy_tasks
+    if task.get('name') == 'Validate the fixed receiver and journal TLS contract before placement or rendering'
+)
+placement = next(task for task in deploy_tasks
+                 if task.get('name') == 'Place the monorepo + ensure podman/compose')
+mount_assertion = next(
+    task for task in next(play['tasks'] for play in deploy_plays if play.get('name') == 'Phase 3: Verify o11y')
+    if task.get('name') == 'Require exact read-only runtime receiver TLS mounts'
+)
+assert 'o11y_otlp_tls_enabled | default(false)' in str(tls_validation['when'])
+assert deploy_tasks.index(tls_validation) < deploy_tasks.index(placement)
+mount_that = '\n'.join(map(str, mount_assertion['ansible.builtin.assert']['that']))
+assert mount_assertion['when'] == 'not ansible_check_mode'
+assert "'Source', 'equalto', _deploy_dir ~ '/certs/o11y-otlp-server'" in mount_that
+assert "'Destination', 'equalto', '/certs/otlp-server'" in mount_that
+assert "'Source', 'equalto', _deploy_dir ~ '/certs/step-ca-bundle.crt'" in mount_that
+assert "'Destination', 'equalto', '/certs/step-ca-bundle.crt'" in mount_that
+assert "'RW', 'equalto', false" in mount_that
+play = next(p for p in yaml.safe_load(deploy) if p.get('name') == 'Phase 2: Start o11y')
+source_review = next(t for t in play['tasks'] if t.get('name') == 'Run deploy.sh with a protected source-review input')
+deploy_task = next(t for t in source_review['block'] if t.get('name') == 'Run deploy.sh (container lifecycle)')
+overlays = deploy_task['environment']['COMPOSE_OVERLAYS']
+assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == ''
+assert env.from_string(overlays).render(local_mode=False, o11y_otlp_tls_enabled=False, o11y_inference_probe_enabled=False) == 'capacity/compose.textfile.yml'
+assert env.from_string(overlays).render(local_mode=True, o11y_otlp_tls_enabled=True, o11y_inference_probe_enabled=False) == 'compose.otlp-tls.yml'
+clean_plays = yaml.safe_load(clean)
+clean_tasks = next(play['tasks'] for play in clean_plays if play.get('name') == 'Clean o11y deployment')
+clean_tls_guard = next(task for task in clean_tasks
+                       if task.get('name') == 'Refuse TLS-enabled clean deploy before any teardown')
+clean_destroy = next(task for task in clean_tasks if task.get('name') == 'Destroy existing deployment')
+assert 'o11y_otlp_tls_enabled' in str(clean_tls_guard['ansible.builtin.assert']['that'])
+assert clean_tasks.index(clean_tls_guard) < clean_tasks.index(clean_destroy)
+assert 'platform/services/o11y/deployment/certs/' in gitignore.splitlines()
+PY
+}
+
+@test "o11y: enabled TLS deploy and Clean Deploy refuse before placement or teardown" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  cat > "$BATS_TEST_TMPDIR/inventory.yml" <<'YAML'
+all:
+  children:
+    o11y_svc:
+      hosts:
+        o11y-probe-local:
+          ansible_connection: local
+YAML
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/deploy-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "o11y_svc",
+    [("platform/playbooks/tasks/assert-o11y-otlp-tls.yml", "Require one internal CA for o11y OTLP TLS",
+      "platform/playbooks/deploy-o11y.yml",
+      "Validate the fixed receiver and journal TLS contract before placement or rendering")],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/deploy-guard.yml" \
+    -e local_mode=true -e o11y_otlp_tls_enabled=true
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "o11y OTLP TLS requires exactly one step_ca_svc host"
+
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/clean-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "o11y_svc",
+    [
+        ("platform/playbooks/tasks/assert-reset-confirmed.yml", "Refuse a reset the launch did not name"),
+        ("platform/playbooks/clean-deploy-o11y.yml", "Refuse TLS-enabled clean deploy before any teardown"),
+    ],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/clean-guard.yml" \
+    -e local_mode=true -e o11y_otlp_tls_enabled=true \
+    -e confirm_reset=o11y-probe-local
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "Clean Deploy o11y would remove the issued OTLP certificate tree"
+  assert_precedes "$REPO_ROOT/platform/playbooks/clean-deploy-o11y.yml" \
+    'Refuse TLS-enabled clean deploy before any teardown' 'Destroy existing deployment'
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    'Validate the fixed receiver and journal TLS contract before placement or rendering' \
+    'Place the monorepo'
+  assert_precedes "$REPO_ROOT/platform/playbooks/tasks/assert-o11y-otlp-tls.yml" \
+    'Require one internal CA for o11y OTLP TLS' \
+    'Distribute the authoritative internal CA bundle to the fixed o11y certificate directory'
+}
+
+@test "o11y: runtime readback requires the exact deduplicated TLS mount set" {
+  python3 - "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+import sys
+import yaml
+from jinja2 import Environment
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+verify = next(play for play in plays if play.get("name") == "Phase 3: Verify o11y")
+task = next(task for task in verify["tasks"]
+            if task.get("name") == "Require exact read-only runtime receiver TLS mounts")
+environment = Environment()
+environment.filters["bool"] = bool
+checks = [environment.compile_expression(item)
+          for item in task["ansible.builtin.assert"]["that"]]
+root = "/srv/o11y"
+server = {"Source": root + "/certs/o11y-otlp-server", "Destination": "/certs/otlp-server", "RW": False}
+bundle = {"Source": root + "/certs/step-ca-bundle.crt", "Destination": "/certs/step-ca-bundle.crt", "RW": False}
+
+def accepts(mtls, internal_ca, mounts):
+    context = {
+        "_o11y_otlp_runtime_mounts": mounts,
+        "_o11y_availability_internal_ca": internal_ca,
+        "o11y_otlp_tls_enabled": mtls,
+        "_deploy_dir": root,
+    }
+    return all(check(**context) for check in checks)
+
+cases = [
+    (False, False, []),
+    (False, True, [bundle]),
+    (True, False, [server, bundle]),
+    (True, True, [server, bundle]),
+]
+for mtls, internal_ca, mounts in cases:
+    assert accepts(mtls, internal_ca, mounts), (mtls, internal_ca)
+    for missing in mounts:
+        assert not accepts(mtls, internal_ca, [mount for mount in mounts if mount is not missing])
+assert not accepts(False, True, [bundle, bundle])
+assert not accepts(True, False, [{**server, "Source": root + "/wrong/cert-tree"}, bundle])
+assert not accepts(True, False, [{**server, "RW": True}, bundle])
+PY
+}
+
 @test "o11y: DGX scrape jobs render from inventory with GPU optional" {
   python3 - "$DEPLOY_DIR/templates/scrape-dgx-spark.yml.j2" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
 import json
@@ -832,25 +1119,7 @@ all:
         caddy:
           ansible_host: "192.0.2.3"
 YAML
-  # The probe refuses a checkout that differs from the reviewed commit or has local changes
-  # (its "Refuse an altered controller checkout" gate), and it reads the repo it lives in. Run
-  # it from a scratch repo holding this working tree's playbooks, so the test covers uncommitted
-  # edits and passes in a developer checkout with untracked files (PR 281 review). Git exports
-  # GIT_DIR and friends to hooks; clear them before touching any repo (2026-09-23 incident).
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
-    GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
-  local probe_repo="$BATS_TEST_TMPDIR/probe-repo"
-  mkdir -p "$probe_repo/platform"
-  cp -R "$REPO_ROOT/platform/playbooks" "$probe_repo/platform/"
-  # The repo's ignore rules, so interpreter caches Ansible writes (filter_plugins/__pycache__)
-  # stay ignored exactly as in a real checkout.
-  cp "$REPO_ROOT/.gitignore" "$probe_repo/"
-  git -C "$probe_repo" init -q
-  git -C "$probe_repo" add -A
-  git -C "$probe_repo" -c user.email=t@example.invalid -c user.name=t -c core.hooksPath=/dev/null \
-    -c commit.gpgsign=false commit -q -m scratch
-  local sha probe="$probe_repo/platform/playbooks/probe-o11y-metrics-endpoint.yml"
-  sha=$(git -C "$probe_repo" rev-parse HEAD)
+  local probe="$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml"
   python3 - "$REPO_ROOT/platform/playbooks/probe-o11y-metrics-endpoint.yml" "$REPO_ROOT/platform/semaphore/templates.yml" <<'PY'
 import sys
 import yaml
@@ -869,18 +1138,30 @@ assert template['repository'] == 'agent-cloud dev'
 assert [item['name'] for item in template['survey_vars']] == ['expected_repository_sha', 'probe_target']
 assert template['survey_vars'][1]['type'] == 'enum'
 PY
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/probe-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "receiver",
+    [
+        ("platform/playbooks/probe-o11y-metrics-endpoint.yml", "Require one fixed target kind and its inventory declaration"),
+        ("platform/playbooks/probe-o11y-metrics-endpoint.yml", "Resolve the fixed inventory endpoint"),
+        ("platform/playbooks/probe-o11y-metrics-endpoint.yml", "Refuse an unusable metrics address or port"),
+    ],
+)
+PY
   for target in dgx-vllm agentgateway; do
-    run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-      -i "$BATS_TEST_TMPDIR/inventory.yml" \
-      "$probe" \
-      -e expected_repository_sha="$sha" -e probe_target="$target"
+    run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+      -e probe_target="$target"
     [ "$status" -eq 0 ]
     assert_contains "$output" "Refuse an unusable metrics address or port"
   done
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$probe" \
-    -e expected_repository_sha="$sha" -e probe_target=arbitrary
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+    -e probe_target=arbitrary
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
   python3 - "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/missing-gateway.yml" "$BATS_TEST_TMPDIR/mismatched-head.yml" <<'PY'
@@ -897,24 +1178,36 @@ mismatched['all']['children']['o11y_svc']['hosts']['receiver']['dgx_spark_head_a
 with open(sys.argv[3], 'w', encoding='utf-8') as stream:
     yaml.safe_dump(mismatched, stream)
 PY
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/missing-gateway.yml" \
-    "$probe" \
-    -e expected_repository_sha="$sha" -e probe_target=agentgateway
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/missing-gateway.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+    -e probe_target=agentgateway
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/mismatched-head.yml" \
-    "$probe" \
-    -e expected_repository_sha="$sha" -e probe_target=dgx-vllm
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/mismatched-head.yml" "$BATS_TEST_TMPDIR/probe-guard.yml" \
+    -e probe_target=dgx-vllm
   [ "$status" -ne 0 ]
   assert_contains "$output" "Select dgx-vllm or agentgateway"
-  run env ANSIBLE_LOCAL_TEMP="$BATS_TEST_TMPDIR/ansible" ansible-playbook --check \
-    -i "$BATS_TEST_TMPDIR/inventory.yml" \
-    "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" -e local_mode=false
+
+  python3 - "$REPO_ROOT" "$BATS_TEST_TMPDIR/deploy-target-guard.yml" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]) / "platform/tests"))
+from o11y_preflight_fixture import build_play
+
+root = Path(sys.argv[1])
+build_play(
+    Path(sys.argv[2]), root, "receiver",
+    [("platform/playbooks/deploy-o11y.yml", "Require the receiver target to match the gateway's published stats listener")],
+)
+PY
+  run_o11y_guard -i "$BATS_TEST_TMPDIR/inventory.yml" "$BATS_TEST_TMPDIR/deploy-target-guard.yml" \
+    -e local_mode=false
   [ "$status" -ne 0 ]
   assert_contains "$output" "receiver's gateway scrape target differs"
-  refute_contains "$output" "TASK [Place the monorepo"
+  assert_precedes "$probe" 'Require one fixed target kind and its inventory declaration' \
+    'Read the receiver route and chosen source'
+  assert_precedes "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" \
+    "Require the receiver target to match the gateway's published stats listener" \
+    'Place the monorepo'
 }
 
 @test "o11y: agentgateway scrape renders from a declared remote endpoint" {
@@ -1079,6 +1372,180 @@ assert all(
     for rule in target_rules
 )
 assert all(rule['labels']['instance'] in rule['annotations']['summary'] for rule in target_rules)
+PY
+}
+
+@test "o11y: alerting-health meta rules page on sustained failure and stay paused while local or canaried" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+canary = 'o11y-fault-probe-' + 'b' * 12
+
+
+def render(**values):
+    return yaml.safe_load(template.render(o11y_expected_metrics_targets=[], **values))
+
+
+def alerting_health(doc):
+    groups = [group for group in doc['groups'] if group['name'] == 'alerting-health']
+    assert len(groups) == 1, [group['name'] for group in doc['groups']]
+    assert groups[0]['orgId'] == 1 and groups[0]['folder'] == 'agent-cloud' and groups[0]['interval'] == '60s'
+    return groups[0]
+
+
+def meta(doc):
+    rules = alerting_health(doc)['rules']
+    assert [rule['uid'] for rule in rules] == ['o11y_alert_evaluations_failing', 'o11y_grafana_db_check_failing']
+    return rules[0]
+
+
+def db(doc):
+    return alerting_health(doc)['rules'][1]
+
+
+# The meta rule sits after service-telemetry, so the uid list pinned on groups[0] is unchanged.
+prod_doc = render(local_mode=False, o11y_alerts_enabled=True, o11y_cluster='test-cluster',
+                  o11y_environment='prod')
+assert [group['name'] for group in prod_doc['groups']][:2] == ['service-telemetry', 'alerting-health']
+assert 'o11y_alert_evaluations_failing' not in [rule['uid'] for rule in prod_doc['groups'][0]['rules']]
+
+rule = meta(prod_doc)
+assert rule['title'] == 'Alert rule evaluations failing'
+assert rule['condition'] == 'B' and rule['for'] == '15m'
+assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'Alerting'
+assert rule['data'][0]['datasourceUid'] == 'prometheus'
+assert rule['data'][0]['relativeTimeRange'] == {'from': 300, 'to': 0}
+assert rule['data'][0]['model']['instant'] is True
+assert rule['data'][0]['model']['expr'] == (
+    'sum(increase(grafana_alerting_rule_evaluation_failures_total{job="grafana"}[5m]))')
+assert rule['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [5]}
+assert rule['labels'] == {
+    'severity': 'warning', 'service': 'o11y/grafana', 'owner': 'platform-operations',
+    'environment': 'prod', 'cluster': 'test-cluster',
+}
+assert rule['isPaused'] is False
+assert rule['notification_settings'] == {
+    'receiver': 'agent-cloud-ops', 'group_by': ['service', 'environment', 'cluster', 'alertname'],
+    'group_wait': '30s', 'group_interval': '5m', 'repeat_interval': '4h',
+}
+
+# The database-check rule: a one-hour count of Grafana's own /api/health 5xx, routed like
+# the sibling and gated the same way.
+check = db(prod_doc)
+assert check['uid'] == 'o11y_grafana_db_check_failing'
+assert check['title'] == 'Grafana database check failing'
+assert check['condition'] == 'B' and check['for'] == '15m'
+assert check['noDataState'] == 'OK' and check['execErrState'] == 'KeepLast'
+assert check['data'][0]['datasourceUid'] == 'prometheus'
+assert check['data'][0]['relativeTimeRange'] == {'from': 3600, 'to': 0}
+assert check['data'][0]['model']['instant'] is True
+assert check['data'][0]['model']['expr'] == (
+    'sum(increase(grafana_http_request_duration_seconds_count{job="grafana",handler="/api/health",status_code=~"5.."}[1h]))')
+assert check['data'][1]['model']['conditions'][0]['evaluator'] == {'type': 'gt', 'params': [4]}
+assert check['labels'] == rule['labels']
+assert check['isPaused'] is False
+assert check['notification_settings'] == rule['notification_settings']
+
+# Paused and unrouted while local, with alerts off, or while a canary runs: the same
+# gating as the paging rules, so the deploy readback holds in every rollout state.
+for values in (dict(local_mode=True, o11y_alerts_enabled=True), dict(local_mode=False),
+               dict(local_mode=False, o11y_alerts_enabled=True, o11y_alert_canary_service=canary)):
+    paused = meta(render(**values))
+    assert paused['isPaused'] is True and 'notification_settings' not in paused, values
+    paused_check = db(render(**values))
+    assert paused_check['isPaused'] is True and 'notification_settings' not in paused_check, values
+PY
+}
+
+@test "o11y: endpoint health alerts preserve scrape failure and missing-series distinctions" {
+  python3 - "$DEPLOY_DIR/templates/alerts.yml.j2" <<'PY'
+import json
+import sys
+
+import yaml
+from jinja2 import Environment, StrictUndefined
+
+env = Environment(undefined=StrictUndefined, trim_blocks=True)
+env.filters['bool'] = bool
+env.filters['to_json'] = json.dumps
+template = env.from_string(open(sys.argv[1], encoding='utf-8').read())
+
+targets = [
+    {'target_id': 'service:alpha', 'service_identity': 'alpha', 'environment': 'prod',
+     'cluster': 'test-cluster', 'freshness_seconds': 600},
+    {'target_id': 'service:beta', 'service_identity': 'beta', 'environment': 'prod',
+     'cluster': 'test-cluster', 'freshness_seconds': 900},
+]
+base = {
+    'local_mode': False,
+    'o11y_environment': 'prod',
+    'o11y_cluster': 'test-cluster',
+    'o11y_alerts_enabled': True,
+    '_o11y_availability': {'enabled': True, 'targets': targets},
+}
+
+def rules(**values):
+    document = yaml.safe_load(template.render(**(base | values)))
+    return document['groups'][0]['rules'], document
+
+rendered, active_doc = rules()
+by_uid = {rule['uid']: rule for rule in rendered}
+failed = by_uid['o11y_endpoint_probe_failed']
+missing = by_uid['o11y_endpoint_probe_missing']
+identity = 'job="o11y-availability",instance="service:alpha",service="alpha",target_id="service:alpha",environment="prod",cluster="test-cluster"'
+labels = 'on(job,instance,service,target_id,environment,cluster)'
+assert failed['title'] == 'Endpoint health check failed'
+assert failed['labels']['service'] == '{{ $$labels.service }}'
+assert failed['labels']['target_id'] == '{{ $$labels.target_id }}'
+assert failed['labels']['environment'] == '{{ $$labels.environment }}'
+assert failed['labels']['cluster'] == '{{ $$labels.cluster }}'
+assert all('{{ $labels.' in value.replace('$$', '$') for value in (
+    failed['labels']['service'], failed['labels']['target_id'],
+    failed['labels']['environment'], failed['labels']['cluster'],
+))
+assert failed['data'][0]['model']['expr'] == (
+    f'(1 - probe_success{{{identity}}}) and {labels} (up{{{identity}}} == 1) or '
+    '(1 - probe_success{job="o11y-availability",instance="service:beta",service="beta",'
+    'target_id="service:beta",environment="prod",cluster="test-cluster"}) and '
+    'on(job,instance,service,target_id,environment,cluster) '
+    '(up{job="o11y-availability",instance="service:beta",service="beta",target_id="service:beta",'
+    'environment="prod",cluster="test-cluster"} == 1)'
+)
+assert missing['data'][0]['model']['expr'] == (
+    'absent_over_time(probe_success{' + identity + '}[600s]) unless ' + labels +
+    ' (up{' + identity + '} == 0) or '
+    'absent_over_time(probe_success{job="o11y-availability",instance="service:beta",service="beta",'
+    'target_id="service:beta",environment="prod",cluster="test-cluster"}[900s]) unless '
+    'on(job,instance,service,target_id,environment,cluster) '
+    '(up{job="o11y-availability",instance="service:beta",service="beta",target_id="service:beta",'
+    'environment="prod",cluster="test-cluster"} == 0)'
+)
+assert missing['data'][0]['relativeTimeRange'] == {'from': 900, 'to': 0}
+assert all(rule['for'] == '2m' for rule in (failed, missing))
+assert all(rule['notification_settings']['receiver'] == 'agent-cloud-ops' for rule in (failed, missing))
+assert all(rule['labels']['severity'] == 'critical' for rule in (failed, missing))
+assert by_uid['o11y_service_down']['title'] == 'Service telemetry scrape failed'
+
+disabled, disabled_doc = rules(o11y_alerts_enabled=False)
+unavailable, unavailable_doc = rules(_o11y_availability={'enabled': False, 'targets': targets})
+canary, canary_doc = rules(o11y_alert_canary_service='o11y-fault-probe-' + 'a' * 12)
+for document in (disabled_doc, unavailable_doc, canary_doc):
+    assert [item['uid'] for item in document['deleteRules']].count('o11y_endpoint_probe_failed') == 1
+    assert [item['uid'] for item in document['deleteRules']].count('o11y_endpoint_probe_missing') == 1
+    assert not any(rule['uid'] in {'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'}
+                   for group in document['groups'] for rule in group['rules'])
+assert not any(rule['uid'] in {'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'}
+               for rule in disabled)
+assert not any(rule['uid'] in {'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'}
+               for rule in unavailable)
 PY
 }
 
@@ -1435,16 +1902,19 @@ tasks = block['block']
 by_name = {task['name']: task for task in tasks}
 scope = by_name['Scope live rules to the provisioned folders and groups']
 set_check = by_name['Require the live rule set to equal the provisioned rules']
-field_check = by_name["Require each live rule's pause, labels, annotations and duration to equal the provisioned rule's"]
+field_check = by_name["Require each live rule's pause, error states, labels, annotations and duration to equal the provisioned rule's"]
 settings_check = by_name["Require each live rule's notification settings to equal the provisioned rule's"]
+query_check = by_name['Require live endpoint-health and scheduled-job PromQL to equal the provisioned expressions']
 live_rules = by_name['Read live o11y alert rules']
 slurp = by_name['Read the provisioned alert rules file']
 folders = by_name['Read live Grafana folders']
 assert tasks.index(slurp) < tasks.index(scope) and tasks.index(folders) < tasks.index(scope)
-assert tasks.index(scope) < tasks.index(set_check) < tasks.index(field_check) < tasks.index(settings_check)
+assert tasks.index(scope) < tasks.index(set_check) < tasks.index(query_check) < tasks.index(field_check) < tasks.index(settings_check)
 assert slurp['register'] == '_provisioned_rules_file' and not block.get('no_log', False)
 assert live_rules['no_log'] is True and folders['no_log'] is True
 assert 'no_log' not in field_check and 'no_log' not in settings_check
+assert {'execErrState', 'noDataState', 'isPaused', 'for'} <= set(
+    re.findall(r"attribute='(\w+)'", json.dumps(field_check['ansible.builtin.assert']['that']))), 'readback must compare error and no-data states'
 assert slurp['ansible.builtin.slurp']['src'].endswith('/config/grafana/provisioning/alerting/observability.yml')
 assert '/api/folders' in folders['ansible.builtin.command']['argv'][-1]
 assert 'match' not in json.dumps(scope), 'scope comes from the provisioned file, never a uid pattern'
@@ -1457,6 +1927,7 @@ compile_value = lambda value: env.compile_expression(value.strip().removeprefix(
 set_checks = [env.compile_expression(expr) for expr in set_check['ansible.builtin.assert']['that']]
 direct_exprs = [env.compile_expression(expr) for expr in field_check['ansible.builtin.assert']['that']]
 field_exprs = [env.compile_expression(expr) for expr in settings_check['ansible.builtin.assert']['that']]
+query_exprs = [env.compile_expression(expr) for expr in query_check['ansible.builtin.assert']['that']]
 fields = settings_check['loop']
 assert {'receiver', 'group_by', 'group_wait', 'group_interval', 'repeat_interval', 'mute_time_intervals'} == set(fields)
 
@@ -1482,6 +1953,10 @@ def verify_rules(rules, provisioned, live_folders=({'uid': 'f1', 'title': 'agent
         names[key] = compile_value(expr)(**names)
     if not all(bool(check(**names)) for check in set_checks):
         return False
+    for key, expr in query_check['vars'].items():
+        names[key] = expr if isinstance(expr, list) else compile_value(expr)(**names)
+    if not all(bool(check(**names)) for check in query_exprs):
+        return False
     if not all(bool(check(**names)) for check in direct_exprs):
         return False
     for key, expr in settings_check['vars'].items():
@@ -1504,6 +1979,22 @@ assert next(rule for rule in local_live if rule['uid'] == 'o11y_receiver_root_di
 assert verify_rules(local_live, local_doc)
 assert verify_rules(prod_live, prod_doc)
 assert verify_rules(inf_live, inf_doc)
+availability_doc = yaml.safe_load(render_alerts.render(
+    local_mode=False, o11y_alerts_enabled=True,
+    _o11y_availability={'enabled': True, 'targets': [
+        {'target_id': 'service:alpha', 'service_identity': 'alpha', 'environment': 'prod',
+         'cluster': 'test-cluster', 'freshness_seconds': 600},
+    ]},
+    o11y_scheduled_jobs=[{'job': 'agent-cloud-conformance', 'max_silence_hours': 2}],
+))
+availability_live = live_of(availability_doc)
+assert verify_rules(availability_live, availability_doc)
+for uid in ('o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing', 'o11y_scheduled_job_silent'):
+    drifted = [dict(rule) for rule in availability_live]
+    rule = next(item for item in drifted if item['uid'] == uid)
+    rule['data'] = [dict(item) for item in rule['data']]
+    rule['data'][0]['model'] = dict(rule['data'][0]['model'], expr='vector(0)')
+    assert not verify_rules(drifted, availability_doc), uid
 assert any(rule.get('labels', {}).get('service') == '{{ $$labels.job }}'
            for group in prod_doc['groups'] for rule in group['rules'])
 assert any(rule.get('labels', {}).get('service') == '{{ $labels.job }}'
@@ -1525,6 +2016,11 @@ assert not verify_rules(swap(ns(mute_time_intervals=['maintenance'])), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, labels=r['labels'] | {'owner': 'unexpected'})), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, annotations=r['annotations'] | {'dashboard_url': '/unexpected'})), inf_doc)
 assert not verify_rules(swap(lambda r: dict(r, **{'for': '45s'})), inf_doc)
+# The readback compares the error and no-data states too: a rendered KeepLast rule
+# read back as Alerting (or the reverse) is drift, as is a rendered OK no-data state.
+assert routed['execErrState'] == 'KeepLast' and routed['noDataState'] == 'OK', routed['uid']
+assert not verify_rules(swap(lambda r: dict(r, execErrState='Alerting')), inf_doc)
+assert not verify_rules(swap(lambda r: dict(r, noDataState='Alerting')), inf_doc)
 # Routing values come from the file, not a parallel list: rendered 45s vs live 30s fails,
 # and a file that says 45s passes when live says 45s.
 wait45 = {**inf_doc, 'groups': [dict(g, rules=[dict(r, notification_settings=r['notification_settings'] | {'group_wait': '45s'})
@@ -1611,7 +2107,7 @@ PY
 }
 
 @test "o11y: self-monitoring scrapes feed the provisioned dashboard" {
-  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" <<'PY'
+  python3 - "$DEPLOY_DIR" "$REPO_ROOT/platform/playbooks/deploy-o11y.yml" "$REPO_ROOT/platform/playbooks/survey-o11y-scrape-baseline.yml" <<'PY'
 import json
 import pathlib
 import re
@@ -1620,14 +2116,32 @@ import yaml
 from jinja2 import Environment, StrictUndefined
 
 deploy = pathlib.Path(sys.argv[1])
+import importlib.util
+budget_spec = importlib.util.spec_from_file_location(
+    'o11y_scrape_budget', pathlib.Path(sys.argv[2]).parent / 'filter_plugins/o11y_scrape_budget.py')
+budget = importlib.util.module_from_spec(budget_spec)
+budget_spec.loader.exec_module(budget)
 env = Environment(undefined=StrictUndefined)
 env.filters['to_json'] = json.dumps
 env.filters['bool'] = bool
 env.filters['mandatory'] = lambda value: value
+env.filters['o11y_effective_scrape_limits'] = budget.o11y_effective_scrape_limits
 plays = yaml.safe_load(pathlib.Path(sys.argv[2]).read_text())
 phase_one = next(play for play in plays if play.get('name') == 'Phase 1: Place repo + manage o11y secrets')
 assert 'vars/o11y-metric-labels.yml' in phase_one['vars_files']
 policy = yaml.safe_load(open(sys.argv[2].rsplit('/', 1)[0] + '/vars/o11y-metric-labels.yml', encoding='utf-8'))['_o11y_forbidden_metric_label_names_regex']
+survey_plays = yaml.safe_load(pathlib.Path(sys.argv[3]).read_text())
+survey_receiver = next(play for play in survey_plays if play.get('name') == 'Read and reduce the production scrape baseline')
+assert 'vars/o11y-metric-labels.yml' in survey_receiver['vars_files']
+candidate_context = {
+    'local_mode': False,
+    '_o11y_availability': {'enabled': True, 'targets': []},
+    '_o11y_forbidden_metric_label_names_regex': policy,
+    'o11y_cluster': 'prod-west',
+    'o11y_environment': 'prod',
+}
+candidate = env.from_string((deploy / 'templates/config.alloy.j2').read_text()).render(**candidate_context)
+assert f'regex  = {json.dumps(policy)}' in candidate
 prometheus_template = (deploy / 'templates/prometheus.yml.j2').read_text()
 rendered_prometheus = env.from_string(prometheus_template).render(
     o11y_cluster='test-cluster', o11y_environment='prod', local_mode=False,
@@ -1657,6 +2171,8 @@ for job in scrapes:
 compose = yaml.safe_load((deploy / 'compose.yml').read_text())
 local_overlay = yaml.safe_load((deploy / 'compose.local.yml').read_text())
 assert compose['services']['grafana']['environment']['GF_METRICS_ENABLED'] == 'true'
+assert compose['services']['grafana']['environment']['GF_DATABASE_WAL'] == 'true'
+assert int(compose['services']['grafana']['environment']['GF_DATABASE_QUERY_RETRIES']) >= 2
 pyroscope = compose['services']['pyroscope']
 assert pyroscope['image'].endswith('grafana/pyroscope:2.2.0}')
 assert './config/pyroscope-config.yml:/etc/pyroscope/config.yml:ro' in pyroscope['volumes']
@@ -1965,7 +2481,7 @@ assert 'otelcol.processor.attributes.conformance_logs.input' in conformance_limi
 assert 'otelcol.processor.attributes.conformance_logs.input' in alloy
 assert 'otelcol.exporter.loki "conformance"' in alloy
 assert 'action = "upsert"' in alloy
-assert 'value  = "job,service,step,status"' in alloy
+assert 'value  = "job,service,step,status,kind"' in alloy
 datasources = yaml.safe_load((deploy / 'config/grafana/provisioning/datasources/datasources.yml').read_text())['datasources']
 assert {d['uid'] for d in datasources} == {'prometheus', 'loki', 'tempo', 'pyroscope'}
 assert any(d['uid'] == 'tempo' and d['url'] == 'http://tempo:3200' for d in datasources)
@@ -2366,7 +2882,7 @@ for verifier in ('verify-o11y-service.yml', 'verify-o11y-metrics-target.yml'):
 overview = json.loads((deploy / 'config/grafana/dashboards/service-overview.json').read_text())
 service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'service')
 assert service['datasource']['uid'] == 'prometheus'
-assert service['query'] == 'label_values(up, service)'
+assert service['query'] == 'label_values(up{job!="o11y-availability"}, service)'
 assert service['label'] == 'Metrics service'
 log_service = next(variable for variable in overview['templating']['list'] if variable['name'] == 'log_service')
 assert log_service['datasource']['uid'] == 'loki'
@@ -2768,7 +3284,9 @@ assert expansion_expression(o11y_prom_retention='90d', o11y_loki_retention='45d'
 preflight = names_in_phase.index('Read o11y volume backing capacity before retention expansion')
 assert preflight < names_in_phase.index('Configure o11y alert provisioning from OpenBao')
 phase_two = next(play for play in deploy if play.get('name') == 'Phase 2: Start o11y')
-assert phase_two['tasks'][0]['name'] == 'Run deploy.sh (container lifecycle)'
+source_review = phase_two['tasks'][0]
+assert source_review['name'] == 'Run deploy.sh with a protected source-review input'
+assert any(task['name'] == 'Run deploy.sh (container lifecycle)' for task in source_review['block'])
 assert '30' in phase_one['tasks'][preflight]['ansible.builtin.script']['cmd']
 assert phase_one['tasks'][preflight]['failed_when'] is False
 gate_when = phase_one['tasks'][preflight]['when']
@@ -2889,9 +3407,9 @@ def seconds(value):
 
 
 def own(groups):
-    # The Loki-backed platform groups and the always-provisioned trace rule render
-    # regardless of the DGX scrape; tested separately.
-    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca', 'agentgateway-traces')]
+    # The Loki-backed platform groups, the always-provisioned trace rule and the
+    # alerting-health meta rule render regardless of the DGX scrape; tested separately.
+    return [group for group in groups if group['name'] not in ('scheduled-jobs', 'internal-ca', 'agentgateway-traces', 'alerting-health')]
 
 
 for scrape in (False, True):
@@ -2990,15 +3508,18 @@ enabled = yaml.safe_load(template.render(**base, dgx_spark_scrape_enabled=True, 
 created = [rule['uid'] for group in enabled['groups'] for rule in group['rules']
            if rule['uid'].startswith('inference_')]
 assert created, 'enabled render carries no inference rules'
-assert 'deleteRules' not in enabled, enabled.get('deleteRules')
+assert sorted(entry['uid'] for entry in enabled['deleteRules']) == [
+    'o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing',
+], enabled.get('deleteRules')
 
 for values in (dict(base, dgx_spark_scrape_enabled=False), dict(base), dict(local_mode=True)):
     disabled = yaml.safe_load(template.render(**values))
     assert [group['name'] for group in disabled['groups']
-            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry', 'agentgateway-traces'], values
+            if group['name'] not in ('scheduled-jobs', 'internal-ca')] == ['service-telemetry', 'alerting-health', 'agentgateway-traces'], values
     assert all(not rule['uid'].startswith('inference_')
                for group in disabled['groups'] for rule in group['rules']), values
-    assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(created), disabled['deleteRules']
+    assert sorted(entry['uid'] for entry in disabled['deleteRules']) == sorted(
+        created + ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing']), disabled['deleteRules']
     assert all(entry['orgId'] == 1 for entry in disabled['deleteRules'])
 PY
 }
@@ -3072,13 +3593,18 @@ def loki_rules(doc):
 
 
 default = render(local_mode=False, o11y_alerts_enabled=True, o11y_expected_metrics_targets=[])
-assert [group['name'] for group in default['groups']] == ['service-telemetry', 'agentgateway-traces', 'scheduled-jobs', 'internal-ca']
+assert [group['name'] for group in default['groups']] == ['service-telemetry', 'alerting-health', 'agentgateway-traces', 'scheduled-jobs', 'internal-ca']
 assert all(group['interval'] == '5m' for group in default['groups'] if group['name'] in LOKI_GROUPS)
 rules = loki_rules(default)
 assert list(rules) == ['o11y_scheduled_job_silent', 'o11y_internal_ca_leaf_expiring',
                        'o11y_internal_ca_intermediate_expiring']
-assert 'deleteRules' not in render(local_mode=False, o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True,
-                                  o11y_inference_probe_enabled=True)
+assert 'deleteRules' not in render(local_mode=False, o11y_alerts_enabled=True,
+                                  o11y_expected_metrics_targets=[], dgx_spark_scrape_enabled=True,
+                                  o11y_inference_probe_enabled=True,
+                                  _o11y_availability={'enabled': True, 'targets': [
+                                      {'target_id': 'service:alpha', 'service_identity': 'alpha',
+                                       'environment': 'prod', 'cluster': 'test-cluster', 'freshness_seconds': 600}
+                                  ]})
 
 silent = rules['o11y_scheduled_job_silent']
 assert silent['title'] == 'Scheduled job silent'
@@ -3103,7 +3629,7 @@ for rule in rules.values():
     query = rule['data'][0]
     assert query['datasourceUid'] == 'loki' and query['model']['queryType'] == 'instant'
     assert rule['condition'] == 'B' and rule['data'][1]['datasourceUid'] == '__expr__'
-    assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'Alerting'
+    assert rule['noDataState'] == 'OK' and rule['execErrState'] == 'KeepLast'
     assert rule['for'] == '5m' and rule['labels']['owner'] == 'platform-operations'
 
 # Active and routed exactly when alerts are enabled and no canary is running, in local
@@ -3143,8 +3669,9 @@ inference = ['inference_queue_stalled', 'inference_queue_depth_high', 'inference
              'inference_node_memavailable_low', 'inference_node_memfree_low',
              'inference_benchmark_gate_placeholder']
 probe = ['inference_probe_failing', 'inference_probe_stale']
-for scrape, deleted in ((True, probe + ['o11y_scheduled_job_silent']),
-                        (False, inference + probe + ['o11y_scheduled_job_silent'])):
+availability = ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing']
+for scrape, deleted in ((True, probe + availability + ['o11y_scheduled_job_silent']),
+                        (False, inference + probe + availability + ['o11y_scheduled_job_silent'])):
     empty = render(local_mode=False, o11y_scheduled_jobs=[], o11y_expected_metrics_targets=[],
                    dgx_spark_scrape_enabled=scrape)
     assert 'scheduled-jobs' not in [group['name'] for group in empty['groups']]
@@ -3339,11 +3866,109 @@ for values in (dict(local_mode=True), dict(local_mode=True, o11y_alerts_enabled=
         for rule in group['rules']:
             seen += 1
             assert set(rule) <= RULE, (rule['uid'], set(rule) - RULE)
-            assert rule['execErrState'] == 'Alerting' and 'executionErrorState' not in rule, rule['uid']
+            assert rule['execErrState'] == ('Alerting' if rule['uid'] == 'o11y_alert_evaluations_failing' else 'KeepLast') and 'executionErrorState' not in rule, rule['uid']
             assert rule['noDataState'] in ('OK', 'Alerting', 'NoData'), rule['uid']
             for query in rule['data']:
                 assert set(query) <= QUERY, (rule['uid'], set(query) - QUERY)
             assert set(rule.get('notification_settings', {})) <= NOTIFY, rule['uid']
 assert seen > 10, seen
 PY
+}
+
+# ---- deploy.sh candidate-gate category line ------------------------------------------------
+# Runs the real deploy.sh from a copy of its tree. The copy has a stub common.sh and a fake
+# namespace helper that refuses at one call site: pre (before the first start), start (the
+# final pre-start check) or post (after apply). The refusal prints valid category JSON plus a
+# SENTINEL_DETAIL field, and exits with the given status. The category line must be the only
+# helper-derived text the deploy prints.
+o11y_gate_run() {
+  local site="$1" reason="$2" rc="$3"
+  local tree="$BATS_TEST_TMPDIR/gate"
+  local dep="$tree/platform/services/o11y/deployment"
+  mkdir -p "$dep" "$tree/platform/lib" "$tree/platform/playbooks/files"
+  cp "$DEPLOY_DIR/deploy.sh" "$dep/deploy.sh"
+  : > "$dep/.env"
+  : > "$tree/source.json"
+  cat > "$tree/platform/lib/common.sh" <<'SH'
+info() { printf '%s\n' "$*"; }
+error() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+detect_runtime() { CONTAINER_ENGINE=podman; }
+compose() { :; }
+compose_up_if_changed() { if declare -F compose_staged_up >/dev/null; then compose_staged_up; fi; }
+wait_for_healthy() { :; }
+SH
+  cat > "$tree/platform/playbooks/files/summarize-o11y-scrape-baseline.py" <<'PY'
+import json
+import os
+import sys
+
+if sys.argv[1:2] == ["--verify-availability-source"]:
+    print(json.dumps({"status": "observed", "source": "alloy", "container_identity_sha256": "a" * 64}))
+    sys.exit(0)
+if os.environ.get("O11Y_AVAILABILITY_FINAL_START") == "true":
+    site = "start"
+elif "O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256" in os.environ:
+    site = "post"
+else:
+    site = "pre"
+if site == os.environ.get("FAKE_FAIL"):
+    print(json.dumps({"status": "unverified", "reason": os.environ["FAKE_REASON"],
+                      "detail": "SENTINEL_DETAIL_456"}))
+    sys.exit(int(os.environ["FAKE_RC"]))
+print(json.dumps({"status": "isolated", "reason": "distinct_kernel_namespaces"}))
+sys.exit(0)
+PY
+  run env -i PATH="$PATH" HOME="$HOME" \
+    FAKE_FAIL="$site" FAKE_REASON="$reason" FAKE_RC="$rc" \
+    O11Y_AVAILABILITY_ENABLED=true O11Y_AVAILABILITY_SOURCE_FILE="$tree/source.json" \
+    bash "$dep/deploy.sh" --no-pull
+}
+
+@test "o11y deploy gate: a pre-start candidate refusal prints its fixed category line" {
+  o11y_gate_run pre namespace_candidate_pod 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_candidate_pod"
+  # The category line comes before the error it explains.
+  local category_line error_line
+  category_line=$(printf '%s\n' "$output" | grep -n "Availability gate category:" | head -1 | cut -d: -f1)
+  error_line=$(printf '%s\n' "$output" | grep -n "Availability refused because" | head -1 | cut -d: -f1)
+  [ -n "$category_line" ]
+  [ -n "$error_line" ]
+  [ "$category_line" -lt "$error_line" ]
+}
+
+@test "o11y deploy gate: a helper that exits 1 is namespace_helper_failed even when its JSON names a category" {
+  o11y_gate_run pre namespace_candidate_pod 1
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_helper_failed"
+  refute_contains "$output" "namespace_candidate_pod"
+}
+
+@test "o11y deploy gate: an unusable reason prints namespace_unverified and no raw helper text" {
+  o11y_gate_run pre SENTINEL_ID_123 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_unverified"
+  refute_contains "$output" "SENTINEL_ID_123"
+  refute_contains "$output" "SENTINEL_DETAIL_456"
+}
+
+@test "o11y deploy gate: the final pre-start check prints its category before the lifecycle apply" {
+  o11y_gate_run start namespace_candidate_alloy_spec 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_candidate_alloy_spec"
+  refute_contains "$output" "lifecycle complete"
+}
+
+@test "o11y deploy gate: the post-apply check prints its category and keeps the running stack" {
+  o11y_gate_run post namespace_candidate_project 2
+  [ "$status" -eq 1 ]
+  assert_contains "$output" "Availability gate category: namespace_candidate_project"
+  assert_contains "$output" "running stack is preserved"
+}
+
+@test "o11y deploy gate: a clean enabled run prints no category line" {
+  o11y_gate_run none none 0
+  [ "$status" -eq 0 ]
+  refute_contains "$output" "Availability gate category"
+  assert_contains "$output" "o11y container lifecycle complete"
 }

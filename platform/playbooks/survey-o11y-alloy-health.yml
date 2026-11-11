@@ -69,6 +69,7 @@
   vars:
     ansible_remote_tmp: /dev/shm/ansible-tmp
     ansible_become: false
+    _receiver_monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _alloy_health_helper: "{{ hostvars['localhost']._reviewed_checkout_payloads['platform/playbooks/files/survey-o11y-alloy-health.py'] | b64decode(encoding='utf-8') }}"
     _alloy_health_refusals:
       - container_missing
@@ -109,6 +110,51 @@
       check_mode: false
       no_log: true
       when: not ansible_check_mode
+
+    - name: Read the receiver checkout HEAD privately
+      ansible.builtin.command:
+        argv: [python3, "-", --checkout-head, "{{ _receiver_monorepo_dir }}"]
+        stdin: "{{ _alloy_health_helper }}"
+        stdin_add_newline: false
+      register: _receiver_revision_raw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: Parse and verify the receiver checkout HEAD receipt
+      when: not ansible_check_mode
+      block:
+        - name: Parse the receiver checkout HEAD receipt privately
+          ansible.builtin.set_fact:
+            _receiver_revision_receipt: "{{ _receiver_revision_raw.stdout | from_json }}"
+          no_log: true
+
+        - name: Require the closed receiver checkout HEAD schema
+          ansible.builtin.assert:
+            that:
+              - _receiver_revision_raw.rc == 0
+              - >-
+                (_receiver_revision_receipt.keys() | sort == ['meaning', 'sha', 'status']
+                and _receiver_revision_receipt.meaning == 'checkout_head'
+                and _receiver_revision_receipt.status == 'observed'
+                and _receiver_revision_receipt.sha is match('^[0-9a-f]{40}$'))
+                or
+                (_receiver_revision_receipt.keys() | sort == ['meaning', 'status']
+                and _receiver_revision_receipt.meaning == 'checkout_head'
+                and _receiver_revision_receipt.status == 'unavailable')
+            fail_msg: "The receiver checkout HEAD receipt failed its bounded schema; raw output is suppressed."
+            quiet: true
+          no_log: true
+
+      rescue:
+        - name: Reduce a failed receiver checkout HEAD read to unavailable
+          ansible.builtin.set_fact:
+            _receiver_revision_receipt:
+              meaning: checkout_head
+              status: unavailable
+          no_log: true
 
     - name: Parse and verify the sanitized Alloy health receipt
       block:
@@ -163,6 +209,12 @@
         msg: "{{ _alloy_health_receipt | to_json }}"
       changed_when: false
       when: not ansible_check_mode and _alloy_health_receipt.status == 'observed'
+
+    - name: Report the bounded receiver checkout HEAD receipt
+      ansible.builtin.debug:
+        msg: "{{ _receiver_revision_receipt | to_json }}"
+      changed_when: false
+      when: not ansible_check_mode
 
     - name: Report a fixed Alloy health refusal category
       ansible.builtin.debug:

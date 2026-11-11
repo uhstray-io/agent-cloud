@@ -27,6 +27,8 @@ VERIFY_PLAYBOOK = ROOT / "platform/playbooks/verify-agentgateway-runtime.yml"
 TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 HELPER = ROOT / "platform/playbooks/files/inspect-agentgateway-runtime.py"
 IMAGE_HELPER = ROOT / "platform/playbooks/files/check-agentgateway-rendered-image.py"
+RUNTIME_INPUT_ADAPTER = ROOT / "platform/playbooks/files/verify-agentgateway-runtime-inputs.py"
+RUNTIME_REPORT_FILTER = ROOT / "platform/playbooks/filter_plugins/agw_runtime_report.py"
 CONFIG_TEMPLATE = ROOT / "platform/services/agentgateway/deployment/templates/config.yaml.j2"
 ENV_TEMPLATE = ROOT / "platform/services/agentgateway/deployment/templates/env.j2"
 RENDERED_CONFIG = (
@@ -1412,8 +1414,22 @@ def test_dev_template_is_read_only_and_requires_the_expected_revision():
         for task in receipt_tasks
         if task.get("name") == "Compare rendered inputs to the running deployment without mutation"
     )
-    assert verify["ansible.builtin.command"]["argv"] == ["bash", "deploy.sh", "--verify-only"]
-    assert "_ready_once" in (ROOT / "platform/services/agentgateway/deployment/deploy.sh").read_text()
+    argv = verify["ansible.builtin.command"]["argv"]
+    assert argv[:2] == ["python3", "-c"]
+    assert '["bash", "deploy.sh", "--verify-only"]' in RUNTIME_INPUT_ADAPTER.read_text()
+    assert verify["failed_when"] is False
+    assert verify.get("no_log", False) is False
+    runtime_assert = next(
+        task
+        for task in receipt_tasks
+        if task.get("name") == "Require the current files and running container input label to match"
+    )
+    assert "agw_runtime_report" in runtime_assert["ansible.builtin.assert"]["fail_msg"]
+    assert "_agw_runtime_match" in str(runtime_assert["ansible.builtin.assert"]["that"])
+    assert "is mapping" in str(runtime_assert["ansible.builtin.assert"]["that"])
+    assert "is not boolean" in str(runtime_assert["ansible.builtin.assert"]["that"])
+    assert "is boolean" in str(runtime_assert["ansible.builtin.assert"]["that"])
+    assert "runtime-inputs-result: pass" in (ROOT / "platform/services/agentgateway/deployment/deploy.sh").read_text()
     other_commands = [
         task["ansible.builtin.command"]["argv"]
         for task in receipt_tasks
@@ -1433,6 +1449,172 @@ def test_dev_template_is_read_only_and_requires_the_expected_revision():
         "checkout_revision", "running_image_id"
     }
     assert "rendered_config_sha256" not in report["ansible.builtin.debug"]["msg"]
+
+
+def test_runtime_refusal_message_only_renders_allowlisted_reason_and_adapter_error():
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    receipt_tasks = [task for play in plays if "tasks" in play for task in play["tasks"]]
+    guard = next(
+        task["ansible.builtin.assert"]
+        for task in receipt_tasks
+        if task.get("name") == "Require the current files and running container input label to match"
+    )
+    env = Environment()
+
+    report_spec = importlib.util.spec_from_file_location("agw_runtime_report", RUNTIME_REPORT_FILTER)
+    report_filter = importlib.util.module_from_spec(report_spec)
+    assert report_spec and report_spec.loader
+    report_spec.loader.exec_module(report_filter)
+    env.filters.update(report_filter.FilterModule().filters())
+    template = env.from_string(guard["fail_msg"])
+    unsafe = template.render(
+        _agw_runtime_match={
+            "stdout": json.dumps(
+                {"reason": "secret-reason", "error": "secret-error"}, separators=(",", ":")
+            )
+        }
+    )
+    assert "secret-reason" not in unsafe
+    assert "secret-error" not in unsafe
+    assert "reason=diagnostic-unavailable" in unsafe
+    assert "adapter=invalid-output" in unsafe
+
+    safe = template.render(
+        _agw_runtime_match={
+            "stdout": json.dumps(
+                {
+                    "rc": None,
+                    "result": "unavailable",
+                    "reason": "readiness-unproven",
+                    "pass_marker": False,
+                    "error": "timeout",
+                },
+                separators=(",", ":"),
+            )
+        }
+    )
+    assert "reason=readiness-unproven" in safe
+    assert "adapter=timeout" in safe
+
+
+def test_runtime_guard_evaluates_the_loaded_closed_protocol_and_pass_contract():
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    receipt_tasks = [task for play in plays if "tasks" in play for task in play["tasks"]]
+    guard = next(
+        task["ansible.builtin.assert"]
+        for task in receipt_tasks
+        if task.get("name") == "Require the current files and running container input label to match"
+    )
+    env = Environment()
+    env.filters["from_json"] = json.loads
+    report_spec = importlib.util.spec_from_file_location("agw_runtime_report", RUNTIME_REPORT_FILTER)
+    report_filter = importlib.util.module_from_spec(report_spec)
+    assert report_spec and report_spec.loader
+    report_spec.loader.exec_module(report_filter)
+    env.filters.update(report_filter.FilterModule().filters())
+
+    def accepts_raw(stdout, adapter_rc=0):
+        match = {"rc": adapter_rc, "stdout": stdout}
+        return all(
+            bool(env.compile_expression(expression)(_agw_runtime_match=match))
+            for expression in guard["that"]
+        )
+
+    def accepts(payload, adapter_rc=0):
+        return accepts_raw(json.dumps(payload, separators=(",", ":")), adapter_rc)
+
+    valid = {
+        "rc": 0,
+        "result": "pass",
+        "reason": "matched",
+        "pass_marker": True,
+        "error": "none",
+    }
+    assert accepts(valid)
+    # Old deploy.sh versions have no reason marker; a literal successful pass remains accepted.
+    assert accepts({**valid, "reason": "diagnostic-unavailable"})
+
+    refusals = [
+        ({**valid, "rc": 1, "result": "refused", "reason": "inputs-not-matched", "pass_marker": False}, 0),
+        ({**valid, "pass_marker": False}, 0),
+        ({**valid, "rc": True}, 0),
+        ({**valid, "extra": "closed-shape-violation"}, 0),
+        ({**valid, "result": "unavailable"}, 0),
+        ({**valid, "reason": "secret-reason"}, 0),
+        ({**valid, "error": "secret-error"}, 0),
+        (
+            {
+                **valid,
+                "rc": None,
+                "result": "unavailable",
+                "reason": "diagnostic-unavailable",
+                "pass_marker": False,
+                "error": "timeout",
+            },
+            0,
+        ),
+        (valid, 1),
+    ]
+    for payload, adapter_rc in refusals:
+        assert not accepts(payload, adapter_rc)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "not-json secret-value",
+        (
+            '{"rc": 0, "rc": 1, "result": "pass", "reason": "matched", '
+            '"pass_marker": true, "error": "none"}'
+        ),
+        (
+            '{"rc": 0, "result": "pass", "reason": "matched", "pass_marker": true, '
+            '"pass_marker": false, "error": "none"}'
+        ),
+        (
+            '{"rc": 0, "result": "pass", "reason": "matched", '
+            '"reason": "secret-reason", "pass_marker": true, "error": "none"}'
+        ),
+        '"' + ("secret" * 700) + '"',
+        "[" * 1100 + '"secret"' + "]" * 1100,
+        '"secret-scalar"',
+        '["secret-list-entry"]',
+        "null",
+        "{}",
+        '{"rc": [], "result": "pass", "reason": "matched", "pass_marker": true, "error": "none"}',
+        '{"rc": 0, "result": ["secret-result"], "reason": "matched", "pass_marker": true, "error": "none"}',
+        '{"rc": 0, "result": "pass", "reason": {"secret": "reason"}, "pass_marker": true, "error": "none"}',
+        '{"rc": 0, "result": "pass", "reason": "matched", "pass_marker": "secret-marker", "error": "none"}',
+        '{"rc": 0, "result": "pass", "reason": "matched", "pass_marker": true, "error": ["secret-error"]}',
+        '{"rc": 0, "result": "pass", "reason": "matched", "pass_marker": true, "error": "none", "secret": "extra"}',
+    ],
+)
+def test_malformed_raw_runtime_stdout_becomes_a_fixed_refusal(stdout):
+    plays = yaml.safe_load(VERIFY_PLAYBOOK.read_text())
+    receipt_tasks = [task for play in plays if "tasks" in play for task in play["tasks"]]
+    guard = next(
+        task["ansible.builtin.assert"]
+        for task in receipt_tasks
+        if task.get("name") == "Require the current files and running container input label to match"
+    )
+    env = Environment()
+    env.filters["from_json"] = json.loads
+    report_spec = importlib.util.spec_from_file_location("agw_runtime_report", RUNTIME_REPORT_FILTER)
+    report_filter = importlib.util.module_from_spec(report_spec)
+    assert report_spec and report_spec.loader
+    report_spec.loader.exec_module(report_filter)
+    env.filters.update(report_filter.FilterModule().filters())
+
+    assert not all(
+        bool(env.compile_expression(expression)(_agw_runtime_match={"rc": 0, "stdout": stdout}))
+        for expression in guard["that"]
+    )
+    template = env.from_string(guard["fail_msg"])
+    failure = template.render(_agw_runtime_match={"stdout": stdout})
+    assert "diagnostic-unavailable" in failure
+    assert "invalid-output" in failure
+    assert "secret" not in failure
+    assert "not-json" not in failure
 
 
 def test_provisioned_dashboard_has_access_signal_selector():

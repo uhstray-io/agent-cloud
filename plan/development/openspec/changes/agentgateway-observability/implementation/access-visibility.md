@@ -35,6 +35,46 @@ category. That output is marked `observed_unverified`; it does not make the mism
 acceptable and the exact-checkout assertion still fails. Invalid observed stdout is
 reported as `unknown`, never echoed.
 
+## Implemented source follow-up: runtime comparison refusal reasons
+
+The read-only runtime-input guard now reports a fixed safe reason for its comparison,
+without exposing the existing human-readable `RECREATE_REASON`, which can contain a
+container name.
+
+`deploy.sh` assigns a closed machine reason alongside the human reason for each current
+comparison branch: missing/unavailable gateway state, stopped gateway, rendered-input
+mismatch, project enumeration failure, running image mismatch, and readiness failure.
+In verify-only mode it emits one `runtime-inputs-reason` marker with that fixed value
+before the existing pass/refused marker. Comparison ordering, checks, exit status, and
+lifecycle behavior stay unchanged. Earlier verification failures and older scripts
+have no machine reason.
+
+The controller-side Python command-boundary adapter is invoked with the fixed
+`bash deploy.sh --verify-only` argv, playbook-selected working directory, and the
+existing deployment environment. It bounds capture, duration, and child cleanup;
+raw child output and exceptions never leave the adapter. Its closed JSON result carries
+the return code, pass/refused classification, and an allowlisted reason. Acceptance
+continues to require return code zero and the existing literal pass marker. Missing,
+old, duplicate, malformed, or unknown reason markers become `diagnostic-unavailable`
+for reporting, but do not reject a historically successful pass. Adapter failures,
+timeouts, and output overflow cannot pass.
+
+The visible playbook guard validates the adapter's closed result and includes only
+the normalized fixed reason in a refusal message. It retains the existing read-only,
+check-mode, and sampling-receipt gates; raw output, exception text, names, paths,
+environment, and receipt metadata stay out of refusals. The existing fake-engine
+deployment fixture exercises each comparison branch and proves the refusal path does
+not pull or recreate containers. Adapter tests cover malformed reason markers,
+legacy-script success, exit/marker contradictions, timeout, overflow, and output
+non-disclosure; playbook projection checks the strict JSON shape and safe failure
+summary.
+
+Focused source checks passed on 2026-10-24: 71 pytest cases across the adapter, runtime
+proof, and shared deploy-environment guard, plus all 20 change-aware BATS cases. This
+improves future source-side diagnosis only. It cannot reconstruct the cause of a
+historical refusal or prove deployed telemetry behavior; observability-estate task 5.7
+remains open until its independent runtime checks and retention assessment pass.
+
 ## Parser and guardrails
 
 Use the existing inspector's standard-library-only, exact-indentation approach. Scope
