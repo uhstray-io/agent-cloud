@@ -259,6 +259,11 @@ PY
   # The edge skip is the exact webhook path on Plane's host, nothing wider.
   grep -qF 'http.request.uri.path eq \"/silo/api/github/github-webhook\"' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
   refute_grep -qF 'starts_with(http.request.uri.path, \"/silo' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
+  # It skips the managed rules too (AC-687: they blocked signed deliveries), never the rate limit.
+  sed -n '/ref *= "plane-github-webhook-bypass-challenge"/,/^    },*$/p' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" > "$BATS_TEST_TMPDIR/hook.tf"
+  assert_grep -qF 'expression  = "(http.host eq \"plane.uhstray.io\" and http.request.uri.path eq \"/silo/api/github/github-webhook\")"' "$BATS_TEST_TMPDIR/hook.tf"
+  assert_grep -qF 'phases   = ["http_request_sbfm", "http_request_firewall_managed"]' "$BATS_TEST_TMPDIR/hook.tf"
+  refute_grep -qF 'http_ratelimit' "$BATS_TEST_TMPDIR/hook.tf"
   # Appended after the Plane MCP rule, so no existing rule moved.
   [ "$(grep -E '^      ref +=' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" | cut -d'"' -f2 | awk 'p { print; exit } $0 == "plane-mcp-bypass-challenge" { p = 1 }')" = "plane-github-webhook-bypass-challenge" ]
 }
