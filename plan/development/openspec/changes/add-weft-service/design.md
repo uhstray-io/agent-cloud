@@ -28,13 +28,15 @@ So:
 - Root owns it: the directory is 0755 and every file 0644, and every write is a task with `become`, the sudo password read from OpenBao (`tasks/resolve-become-password.yml`) as every escalating play does. Nothing in it is a credential (weft D539), so the deploy user and the containers may read it.
 - No container mounts the directory. Two files are mounted read-only: `weft.toml`, into the board and the orchestrator (capture reads no deployment file) and the `deploy.sh` one-off, and `release.replaced.json`, into the backup one-off alone.
 - `release.json` is never a file on the VM: the manifest and the blob are fetched by digest to stdout, so nothing can swap it between the fetch and the read.
+- The verifiers run as root, from root's image store: cosign (`tasks/verify-cosign.yml`, whose only callers are weft's) and the three oras runs. The deploy user's rootless store is one the orchestrator can write through its socket, and podman does not re-verify the layers of a digest-pinned image it already holds, so a verifier from that store could be a tampered one that lies. oras is not trusted even as root: the controller hashes the manifest it fetched against the digest cosign verified, and `release.json` against the layer digest the manifest names.
+- A record that is not a plain file owned by root is refused before it is read; the state directory's contents are made root's, and a leftover `release-incoming/` removed, each time a deploy makes the directory.
+
+**Accepted until task 5.5: the orchestrator owns the deploy user.** The orchestrator holds the deploy user's podman socket, so a compromised orchestrator owns that user's image store and every container it runs: it could replace a stored weft image under its digest (podman does not re-verify a stored digest's layers) and survive a redeploy, until the VM is rebuilt. The record, `weft.toml` and the verifiers are out of its reach, so it cannot make a deploy or rollback choose a different release, but it can tamper with what a chosen digest runs. Task 5.5 gives the orchestrator the socket of a separate unprivileged user who runs only agent and egress-proxy containers, before the rack.
 - A rollback treats the record as a claim, not a fact: `tasks/weft-verify-images.yml` re-checks the previous release's images (weft's registry, by digest, the role's images present, the pinned signer, cosign) before anything is rendered for them.
 
 The backup sets under the workspace directory (`deploys/`) stay where the binary writes them. They decide what data is restored, not which image runs, and `restore` refuses a copy that does not verify or that is newer than the image restoring it.
 
 **Accepted: the whisper model is board-writable.** The model file stays in `/srv/weft/<id>/models/`, because `weft.toml`'s paths all live under the workspace directory and the model is data rather than a decision. Between deploys a compromised board could swap it, and `weft-whisper` would parse the swapped file. It chooses no image and no command, and every deploy and rollback checks it against the sum in the signed `release.json` again.
-
-The backup sets under the workspace directory (`deploys/`) stay where the binary writes them. They decide what data is restored, not which image runs, and `restore` refuses a copy that does not verify or that is newer than the image restoring it.
 
 ### D4. A fresh host is not stopped (B1)
 
@@ -83,6 +85,7 @@ Until task 8.5 lands there is no supported path to retire a host's data. The int
 ## Accepted costs
 
 - A deploy interrupts agent sessions in progress; the next pass starts them again.
+- Until task 5.5, a compromised orchestrator owns the deploy user's image store and containers until the VM is rebuilt (D3).
 - A rollback re-verifies the previous release's signatures, so it needs the registry and Sigstore reachable. When they are not, the rollback fails safe: every container stops, nothing is deleted, and a person is asked.
 - OpenBao holds every workspace's seal copy, so a compromise of OpenBao opens every workspace's stored credentials. Only the controller's AppRole reads them, and no weft VM reaches OpenBao (task 4.4).
 - A new workspace has no model to call until its admin signs in and enters its keys.

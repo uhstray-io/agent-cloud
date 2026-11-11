@@ -45,7 +45,8 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 - [ ] 5.2 Until V is decided, the workspace's health no longer asserts the voice UDP port.
 - [ ] 5.3 A failing-health drill, a migration-failure drill, `reboot-host.yml` on each staging VM, and the hairpin check, each recorded as a Semaphore task id.
 - [ ] 5.4 A weft-only package-read token, read by `tasks/registry-login.yml` through `registry_login_key`, in place of the shared `secret/services/github:pat`, which until then sits in the deploy user's `auth.json` on every weft VM (moved here from the customer-ready phase: it must land before the rack).
-- [ ] 5.5 Validation gate: scenarios "Staging runs a signed commit within one tick" and "Health fails within the watch window" hold on staging.
+- [ ] 5.5 The orchestrator gets the podman socket of a separate unprivileged user, who runs only agent and egress-proxy containers, so its compromise no longer owns the deploy user's image store and containers (design.md D3). Before the rack.
+- [ ] 5.6 Validation gate: scenarios "Staging runs a signed commit within one tick" and "Health fails within the watch window" hold on staging.
 
 ## 6. The rack [step 28]
 

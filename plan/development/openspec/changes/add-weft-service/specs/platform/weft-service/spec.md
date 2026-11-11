@@ -18,6 +18,15 @@ A weft host SHALL run only images named by digest in a `release.json` whose sign
 - **WHEN** a release names an image whose signature's identity is `images.yml` on any ref other than `refs/heads/main`
 - **THEN** the deploy fails at verification on that host, and nothing on the host is stopped
 
+### Requirement: The verifiers cannot be handed a different release
+
+cosign and oras SHALL run from root's image store, never from a store the deploy user can write, and the controller SHALL hash what oras fetches against the digest it was fetched by before reading it.
+
+#### Scenario: A fetched file that does not match its digest is refused
+
+- **WHEN** the manifest or the `release.json` oras returns does not hash to the digest it was fetched by
+- **THEN** the deploy fails before reading a field of it, and nothing on the host is stopped
+
 ### Requirement: The first deploy to a fresh host succeeds
 
 A deploy to a host that has never run a weft release SHALL reach the start of the new release. `deploy.sh <role> stop` SHALL treat a missing `.env` as nothing running, because every weft container is started from a rendered `.env`.
