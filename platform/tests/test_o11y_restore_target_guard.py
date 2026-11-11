@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -424,6 +425,7 @@ print(json.dumps([
         capture_output=True,
         check=True,
         env=env,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     merged = json.loads(proc.stdout)
     assert merged[0]["headers"] == {}

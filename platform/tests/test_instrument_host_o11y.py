@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -200,6 +201,7 @@ def _run(
         capture_output=True,
         stdin=subprocess.DEVNULL,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 

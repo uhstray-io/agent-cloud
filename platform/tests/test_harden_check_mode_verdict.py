@@ -11,11 +11,10 @@ The record play is run as-is, behind a play that plants the facts the host play 
 
 import importlib.util
 import json
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -60,12 +59,9 @@ def _record(tmp_path: Path, facts: dict, check: bool):
     pb.write_text(yaml.safe_dump([plant, plays[-1]], sort_keys=False))
     inv = tmp_path / "inv.ini"
     inv.write_text("[demo_svc]\nh1 ansible_connection=local service_name=demo\n")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(
-        ["ansible-playbook", "-i", str(inv), str(pb), *(["--check"] if check else []),
-         "-e", "target_service=demo_svc", "-e", json.dumps({"_fx": facts})],
-        cwd=REPO, env=env, text=True, capture_output=True, check=False)
+    proc = harness_sandbox.run_playbook(
+        pb, tmp_path, *(["--check"] if check else []),
+        "-e", "target_service=demo_svc", "-e", json.dumps({"_fx": facts}), inventory=inv)
     found = step_results.results_in(proc.stdout.splitlines())
     assert len(found) == 1, proc.stdout + proc.stderr
     return proc, found[0]

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -1503,12 +1504,8 @@ def test_candidate_digest_block_skips_a_dry_run_runs_for_real_and_leaves_no_temp
     (tmp_path / "playbooks/probe.yml").write_text(yaml.safe_dump([probe]), encoding="utf-8")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    env = dict(os.environ, ANSIBLE_NOCOLOR="1", TMPDIR=str(scratch))
-    proc = subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", "-c", "local", *(["--check"] if check else []),
-         str(tmp_path / "playbooks/probe.yml")],
-        cwd=ROOT, env=env, text=True, capture_output=True, check=False,
-    )
+    proc = harness_sandbox.run_playbook(tmp_path / "playbooks/probe.yml", tmp_path, "-c", "local",
+                                        *(["--check"] if check else []), env={"TMPDIR": str(scratch)})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     if check:
         assert "digest=skipped" in proc.stdout, proc.stdout
