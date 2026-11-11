@@ -713,19 +713,19 @@ mod tests {
     #[test]
     fn the_filter_matches_text_and_status_together() {
         let rows = vec![
-            row("tududi", "red", &[], &[]),
+            row("step-ca", "red", &[], &[]),
             row("honcho", "green", &[], &[]),
             row("postiz", "red", &[], &[]),
         ];
         let by_text = filter_services(
             &rows,
             &ServiceFilter {
-                text: "  TUD ".into(),
+                text: "  STEP ".into(),
                 rag: None,
             },
         );
         assert_eq!(by_text.len(), 1);
-        assert_eq!(by_text[0].name, "tududi");
+        assert_eq!(by_text[0].name, "step-ca");
         let red = filter_services(
             &rows,
             &ServiceFilter {
@@ -734,7 +734,7 @@ mod tests {
             },
         );
         let names: Vec<&str> = red.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["tududi", "postiz"], "server order kept");
+        assert_eq!(names, ["step-ca", "postiz"], "server order kept");
         let both = filter_services(
             &rows,
             &ServiceFilter {
@@ -747,7 +747,7 @@ mod tests {
 
     #[test]
     fn a_text_filter_reads_the_site_and_the_cluster_too() {
-        let rows = vec![row("tududi", "green", &[], &[])];
+        let rows = vec![row("step-ca", "green", &[], &[])];
         let by_site = filter_services(
             &rows,
             &ServiceFilter {

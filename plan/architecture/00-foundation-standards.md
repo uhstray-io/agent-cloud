@@ -5,7 +5,7 @@
 >
 > **Depends on:** —
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs merged verbatim below under provenance dividers to preserve all detail.
+> Part of the dependency-ordered `plan/architecture/` set (00–06, 08, 09). Source docs merged verbatim below under provenance dividers to preserve all detail.
 
 
 <!-- ======================= source: architecture-reference.md ======================= -->
@@ -143,7 +143,6 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards. A
 | [09-console-ui-principles.md](09-console-ui-principles.md) | PROPOSED | Console UI principles: through the platform never around it, work first, single-sourced scope, red explains itself, vertical owned plans, Grafana for per-asset telemetry, secret names never values; the console interaction loop and how operators work with agent-cloud through it. |
 | [network-architecture.md](network-architecture.md) | ACTIVE | Current-state network map: Cloudflare edge, Caddy route shapes, the inference path with its mutual-TLS hop, internal CA and DNS, host firewall, control-plane and provisioning paths, local-dev network; status per component, decision criteria, in-flight work. |
 | [service-architecture.md](service-architecture.md) | ACTIVE | Current-state service map: every service and agent by layer with runtime, edge authentication and status; identity, shared-secret and runtime-dependency maps; deploy lifecycle, AI propose-validate-execute path, deployment workflow, lifecycle states. |
-| [WEBSITE-BUILDING-AGENT.md](../archive/architecture/WEBSITE-BUILDING-AGENT.md) | SUPERSEDED | WebSmith agent integration: position in the four-layer model, SPEC-to-service handoff, agent-cloud preset, and second-site recipe; successor: [07-website-building-agent.md](07-website-building-agent.md). |
 
 ---
 
@@ -153,12 +152,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 
 | Document | Status | Purpose |
 |---|---|---|
-| [IMPLEMENTATION_PLAN.md](../archive/development/IMPLEMENTATION_PLAN.md) | COMPLETE | Master implementation plan. Agent roles, service topology, guardrails model, phase roadmap. |
 | [03-guardrails-governance.md](../development/03-guardrails-governance.md) (OPA section; original in `plan/archive/development/OPA-INTEGRATION-PLAN.md`) | IN PROGRESS | OPA policy engine deployment, agent authorization, Rego policies, Semaphore governance. |
-| [NETCLAW-INTEGRATION-PLAN.md](../archive/development/NETCLAW-INTEGRATION-PLAN.md) | PROPOSED | NetClaw network agent deployment, MCP server selection, device inventory, cross-agent coordination. |
-| [WISAI-DEPLOYMENT-PLAN.md](../archive/WISAI-DEPLOYMENT-PLAN.md) | SUPERSEDED | WisAI LLM plane (Ollama + Open WebUI) — superseded by skynet `/v1`; see `SKYNET-REPLACEMENT-PLAN.md`. Retained as provenance. |
-| [SKYNET-REPLACEMENT-PLAN.md](../archive/development/SKYNET-REPLACEMENT-PLAN.md) | PROPOSED | Reframe agent-cloud docs for skynet replacing WisAI's LLM plane + NemoClaw/OpenClaw; preserve OPA; harvest use-cases into skynet's catalog. |
-| [WISAI-TO-SKYNET-MIGRATION-PLAN.md](../archive/development/WISAI-TO-SKYNET-MIGRATION-PLAN.md) | PLANNING | Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao endpoint lever, dependency gates, rollback, X2 telemetry gap. |
 | [DEV-PROXMOX-CLUSTER-PLAN.md](../archive/development/DEV-PROXMOX-CLUSTER-PLAN.md) | PLANNING | Dev Proxmox cluster with ZimaBoard + nested VMs, VLAN isolation, MAAS assessment. |
 | [SPARSE-CHECKOUT-MIGRATION.md](../archive/development/SPARSE-CHECKOUT-MIGRATION.md) | PROPOSED | Migrate from full clone to sparse checkout + runtime directory separation. |
 | [NETBOX-DISCOVERY-EXPANSION.md](../archive/development/NETBOX-DISCOVERY-EXPANSION.md) | IMPLEMENTED | NetBox discovery pipeline architecture (Diode, proxmox_discovery, pfsense_sync). |
@@ -170,10 +164,6 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [PODMAN-UPGRADE-PLAN.md](../archive/development/PODMAN-UPGRADE-PLAN.md) | PLANNING | Podman-compose upgrade strategy for services using Podman. |
 | [CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md](../archive/development/CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md) | PROPOSED | Implementation phases for credential rotation, metadata, dynamic secrets, site lifecycle. |
 | [ARCHITECTURE-REVIEW-FOLLOWUP.md](../archive/development/ARCHITECTURE-REVIEW-FOLLOWUP.md) | TODO | Deferred items from the 2026-05-07 architecture review. |
-| [WEBSMITH-INTEGRATION-PLAN.md](../archive/development/WEBSMITH-INTEGRATION-PLAN.md) | ACTIVE | 11-phase integration of the WebSmith agent + UhhCraft platform service into agent-cloud (Phases 1–9 + 11 merged; only Phase 10 go-live pending). |
-| [UHHCRAFT-GO-LIVE-PLAN.md](../archive/development/UHHCRAFT-GO-LIVE-PLAN.md) | ACTIVE | Phase 10 production-validation runbook: decisions, provisioning chain, deploy sequence, smoke + rollback, Definition of Done. Execution pending hardware. |
-| [UHHCRAFT-GO-LIVE-WALKTHROUGH.md](../archive/development/UHHCRAFT-GO-LIVE-WALKTHROUGH.md) | ACTIVE | Step-by-step operator session script for the go-live: sequential [YOU]/[CLAUDE] steps with hand-off cues. Companion to the go-live plan. |
-| [UHHCRAFT-GPU-PASSTHROUGH.md](../archive/development/UHHCRAFT-GPU-PASSTHROUGH.md) | PLANNING | Proxmox PCIe passthrough procedure for the two inference VMs. §1 decision pending. |
 | [ERPNEXT-DEPLOYMENT.md](../archive/development/ERPNEXT-DEPLOYMENT.md) | PROPOSED | ERPNext + LLM integration: dev/prod VMs, accounting cutover, backup cross-mirror, read-only MCP, llm-gate service. |
 | [LOCAL-DEV-DEPLOYMENT.md](../archive/development/LOCAL-DEV-DEPLOYMENT.md) | ACTIVE | Local dev instance via podman: make bootstraps, local Semaphore operates; slim overlays; promotion pipeline; local DNS (hickory-dns), ERPNext/OPA local tiers. |
 | [DNS-SERVER-DEPLOYMENT.md](../archive/development/DNS-SERVER-DEPLOYMENT.md) | PROPOSED | hickory-dns internal DNS platform service: zones-as-code, pfSense delegation, decision-gated internal ACME (RFC 2136 + TSIG). |
@@ -196,7 +186,6 @@ Documents in `plan/archive/` have reached terminal status (COMPLETE or SUPERSEDE
 
 | Document | Status | Reason |
 |---|---|---|
-| [UNIFICATION-PLAN.md](../archive/UNIFICATION-PLAN.md) | SUPERSEDED | Content absorbed into IMPLEMENTATION_PLAN.md. |
 | [LINT-COMPLIANCE-PLAN.md](../archive/LINT-COMPLIANCE-PLAN.md) | COMPLETE | All violations fixed in PR #7. |
 
 ---

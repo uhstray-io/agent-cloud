@@ -39,8 +39,7 @@ the orchestrator, check mode, the Semaphore environment model and local NetBox.
   documentation, and the automation documents are brought into line with it.
 - **Four OPA identities** (`infra-agent`, `security-agent`, `o11y-agent`, `service-agent`;
   a fifth, `network-agent`, was added 2026-10-04 to own the edge-dns step)
-  with per-role template allowlists and content rules over proposals. `netclaw` and
-  `nemoclaw` are frozen as agent runtimes. A firewall proposal can never remove the
+  with per-role template allowlists and content rules over proposals. A firewall proposal can never remove the
   orchestrator's SSH source and can never open SSH wider than the declared sources.
 - **The inference edge and skynet are delineated.** agent-cloud's agentgateway owns
   `inference.uhstray.io`: keys, budgets, limits, telemetry and every route. skynet is a set of
@@ -113,8 +112,7 @@ Every piece is additive or flag-guarded, and each reverts independently:
   normal execution. The `dry_run` shim keeps old launch arguments working during the
   transition.
 - **OPA identities and rules**: the new identities are additive; reverting `data.json` and the
-  rego restores the previous decisions. `netclaw` and `nemoclaw` entries are frozen, not
-  removed, so nothing that uses them breaks.
+  rego restores the previous decisions.
 - **Semaphore branch model**: the `(Dev)` twins are removed only after branch-at-launch is
   proven; until then both coexist, and re-running `setup-templates.yml` from the previous
   commit restores the twins.

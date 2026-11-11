@@ -11,7 +11,7 @@
 # local 127.0.0.1 bind is env-driven in the base via HONCHO_BIND/HONCHO_PORT
 # (.env).
 #
-# No CA-root mount (unlike tududi): honcho makes no server-side calls to the
+# No CA-root mount: honcho makes no server-side calls to the
 # internal IdP — /docs gating is Caddy-side forward_auth, /v3 auth is a local
 # JWT check. Its only outbound TLS is to Gemini (publicly trusted).
 

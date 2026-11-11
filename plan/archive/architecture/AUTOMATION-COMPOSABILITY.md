@@ -175,33 +175,33 @@ The split enables:
 ```
 platform/playbooks/tasks/
   manage-secrets.yml       Fetch/generate secrets via OpenBao, template env files
-  manage-approle.yml       Create/update AppRole + policy, store credentials     
-  manage-diode-credentials.yml  Create fresh Diode orb-agent credentials         
-  write-secret-metadata.yml     Write KV v2 custom metadata after secret store [PLANNED]   
-  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper [PLANNED]    
+  manage-approle.yml       Create/update AppRole + policy, store credentials  
+  manage-diode-credentials.yml  Create fresh Diode orb-agent credentials  
+  write-secret-metadata.yml     Write KV v2 custom metadata after secret store [PLANNED]  
+  rotate-credential.yml         Generic Create→Verify→Retire rotation wrapper [PLANNED]  
   revoke-service-credentials.yml  Revoke AppRole secret_id + delete Hydra clients [PLANNED]
-  clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check           
-  clean-service.yml        Destroy containers, volumes, clone + runtime dir       
-  sparse-checkout.yml      Sparse-clone monorepo for specific service paths [PLANNED]       
-  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone [PLANNED]           
+  clone-and-deploy.yml     Clone monorepo, run deploy.sh, health check  
+  clean-service.yml        Destroy containers, volumes, clone + runtime dir  
+  sparse-checkout.yml      Sparse-clone monorepo for specific service paths [PLANNED]  
+  setup-runtime-dir.yml    Create ~/services/<name>/, symlinks to clone [PLANNED]  
   run-deploy.yml           Execute deploy.sh from runtime dir (passes CLONE_DIR) [PLANNED]  
-  verify-health.yml        Health check a service endpoint [PLANNED]                        
+  verify-health.yml        Health check a service endpoint [PLANNED]  
 
 platform/playbooks/
   deploy-<service>.yml     Composable: clone + secrets + deploy + verify            [NETBOX DONE]
   clean-deploy-<service>.yml  Wipe + fresh deploy                                  [NETBOX DONE]
-  check-secrets.yml        Read-only secret inventory from OpenBao                
-  validate-secrets.yml     Active credential testing (DB, Redis, HTTP)            
-  distribute-ssh-keys.yml  Deploy SSH keys from OpenBao                           
-  harden-ssh.yml           NOPASSWD sudo + sshd lockdown                          
-  install-docker.yml       Install Docker CE (standalone)                          
-  sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)     
+  check-secrets.yml        Read-only secret inventory from OpenBao  
+  validate-secrets.yml     Active credential testing (DB, Redis, HTTP)  
+  distribute-ssh-keys.yml  Deploy SSH keys from OpenBao  
+  harden-ssh.yml           NOPASSWD sudo + sshd lockdown  
+  install-docker.yml       Install Docker CE (standalone)  
+  sync-secrets-to-openbao.yml  Push VM secrets → OpenBao (recovery/migration)  
   rotate-diode-credentials.yml  Monthly Diode client rotation (Hydra admin API)  
-  rotate-ssh-keys.yml           Annual SSH key rotation                          
-  audit-credentials.yml         Weekly credential inventory + stale detection    
+  rotate-ssh-keys.yml           Annual SSH key rotation  
+  audit-credentials.yml         Weekly credential inventory + stale detection  
 ```
 
-`[PLANNED]` tasks are design targets that do **not** yet exist in `platform/playbooks/tasks/` — current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead (see `deploy-uhhcraft.yml` for the live pattern). Implement on demand; tracked in `plan/development/LOCAL-DEV-DEPLOYMENT.md` Phase 0A.
+`[PLANNED]` tasks are design targets that do **not** yet exist in `platform/playbooks/tasks/` — current playbooks use a full `git clone` (`ansible.builtin.git`), inline health checks (`ansible.builtin.uri`), and per-purpose playbooks instead. Implement on demand; tracked in `plan/development/LOCAL-DEV-DEPLOYMENT.md` Phase 0A.
 
 ### Task Responsibilities
 
@@ -542,7 +542,7 @@ During migration, services not yet converted continue using `clone-and-deploy.ym
 | Post-deploy creds sync | orb-agent creds written to `.env` → Phase 4 patches OpenBao |
 | check-secrets reports accurately | Lists all secrets, flags missing |
 | validate-secrets tests credentials | DB/API/Redis auth verified against live services |
-| Task reuse works | Same manage-secrets.yml for netbox, nocodb, n8n |
+| Task reuse works | Same manage-secrets.yml for netbox |
 | Idempotent end-to-end | Running deploy twice = same state, same passwords |
 | deploy.sh split works | deploy.sh completes independently; post-deploy.sh retryable |
 | Git pull after deploy works | `git -C ~/agent-cloud pull` succeeds, clean working tree |
@@ -564,7 +564,7 @@ During migration, services not yet converted continue using `clone-and-deploy.ym
 - **Source/runtime separation:** The git clone (`~/agent-cloud/`) is read-only source code. All secrets land in the runtime dir (`~/services/<name>/`). Filesystem isolation — not `.gitignore` — is the security boundary. No accidental `git add .` can capture secrets.
 - **No `secrets/` directory in the clone:** Eliminated entirely. The bind-mount secret (`netbox_to_diode_client_secret.txt`) lives in `_runtime_dir/secrets/`, not the clone.
 - **Runtime dir permissions:** `chmod 700` on the directory, `chmod 600` on all env files. Symlinked files (compose, libs) are world-readable since they contain no secrets.
-- **Reduced attack surface per VM:** Sparse checkout means each VM only has code for its own service. A compromised NetBox VM cannot read deploy scripts for OpenBao, NemoClaw, or other services.
+- **Reduced attack surface per VM:** Sparse checkout means each VM only has code for its own service. A compromised NetBox VM cannot read deploy scripts for OpenBao or other services.
 - **Root ownership eliminated:** deploy.sh never runs with `become`. Only specific sudo commands (orb-agent start) require privilege. No root-owned files in the clone.
 - **CLONE_DIR validation:** deploy.sh validates that `CLONE_DIR` points to a directory containing `.git` before sourcing libraries. Prevents library injection via environment variable manipulation.
 - **Minimal disk footprint:** Only `.env` and `env/*.env` files exist in the runtime dir (required by Docker Compose). These are overwritten on every deploy.

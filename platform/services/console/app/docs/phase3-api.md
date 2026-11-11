@@ -88,15 +88,15 @@ The envelope is per authority, not single, so the UI can say which source is dow
           ],
           "vms": [
             {
-              "name": "tududi", "vmid": 101,
+              "name": "postiz", "vmid": 101,
               "status": "active", "live_status": "running",
               "vcpus": 2.0, "memory_mb": 4096, "disk_mb": 40960,
-              "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync", "IT"],
+              "primary_ip": "198.51.100.5/24", "tags": ["postiz-sync", "IT"],
               "domains": ["domain-it"],
               "workflow": {"steps": {"step-a": "pass", "step-b": "fail"},
                            "failed": ["step-b"], "last_run": "2026-10-26T12:00:00Z"},
               "rag": "red",
-              "grafana_url": "https://grafana.example.test/d/service-overview/service-overview?var-service=tududi&var-log_service=tududi"
+              "grafana_url": "https://grafana.example.test/d/service-overview/service-overview?var-service=postiz&var-log_service=postiz"
             }
           ]
         }
@@ -169,9 +169,9 @@ The envelope is per authority, not single, so the UI can say which source is dow
 ```json
 { "source": {...}, "error": {...}, "stale": false, "updated_at": {...},
   "services": [
-    {"name": "tududi", "site": "dc1", "cluster": "pve-prod", "live_status": "running",
+    {"name": "postiz", "site": "dc1", "cluster": "pve-prod", "live_status": "running",
      "rag": "red", "failed_steps": ["step-b"], "last_run": "2026-10-26T12:00:00Z",
-     "tags": ["tududi-sync", "IT"], "domains": ["domain-it"]}
+     "tags": ["postiz-sync", "IT"], "domains": ["domain-it"]}
   ] }
 ```
 

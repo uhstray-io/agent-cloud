@@ -9,7 +9,7 @@
 
 ### Baseline (measured 2026-11-10)
 
-Source: run 42768444354 (PR #1001, green), job step timings from `gh run view --json jobs`, per-test worker time computed from the `-v` log timestamps of each xdist worker. Runners are GitHub-hosted `ubuntu-latest`; every Python job except NetBox runs `-n auto`, which started 4 workers in core. Static counts below are at `dev` after the tududi removal (`e6214688b`); timings are from the run above.
+Source: run 42768444354 (PR #1001, green), job step timings from `gh run view --json jobs`, per-test worker time computed from the `-v` log timestamps of each xdist worker. Runners are GitHub-hosted `ubuntu-latest`; every Python job except NetBox runs `-n auto`, which started 4 workers in core. Static counts below are at `dev` as of `e6214688b`; timings are from the run above.
 
 | Job | Wall | Tests | Worker-seconds | Note |
 |---|---|---|---|---|
@@ -61,7 +61,7 @@ Two more forgery families are **not** in the by-name class and keep all three sp
 
 ### F3. Single tests that set a job's floor
 
-- `test_scoped_publication.py::test_all_generated_dev_branch_surveys_preserve_other_fields` (`platform/semaphore/tests/test_scoped_publication.py:468-492`) loops over the 21 Dev templates (22 before tududi's removal) that carry a `service_branch` survey and runs `setup-templates.yml` once per template, in sequence, inside one test. xdist cannot spread a loop.
+- `test_scoped_publication.py::test_all_generated_dev_branch_surveys_preserve_other_fields` (`platform/semaphore/tests/test_scoped_publication.py:468-492`) loops over the 21 Dev templates that carry a `service_branch` survey and runs `setup-templates.yml` once per template, in sequence, inside one test. xdist cannot spread a loop.
 - `test_authentik_audit_recovery.py` is one test with nine sequential playbook runs (`:100-162`).
 - `test_o11y_workflow_environment.py::test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template` runs the full wrapper twice per case (37 s each).
 
@@ -97,8 +97,6 @@ Few tests are dead. The sweep found **no** test referencing a path that no longe
 | `test_mistakes_doc.bats:120-143` (four named tests exist; non-exhaustive by its own comment) | **Not redundant, kept.** `test_ledger_test_citations.py:169-174` checks that cited names exist, not that each name appears in the ledger (`:139`) |
 | `test_a_forged_internal_name_is_refused_by_the_real_executor` | Overlaps `test_every_launchable_playbook_refuses_a_forged_internal_name` (same guard), but forges each executor's own internal name and checks `CUSTOM STATS` (`:289`); kept, and reduced to the plain spelling by item 1.1 (#1041) |
 
-Retired services: tududi's code and tests were removed together (`e6214688b`). NocoDB is retired by decision but its code is still present (`platform/services/nocodb/`, `deploy-nocodb.yml`); no test is specific to it (`test_service_opa.bats:170`, `:226` and `test_caddyfile_sites.py:38`, `:90` use the name as sample data). The generic catalog tests include its templates, `Deploy NocoDB` and `Update NocoDB`, as cases, and drop them when the templates go.
-
 Six of the eight ratchet allowlists (`platform/tests/known_*.txt`, `check_mode_allowlist.txt`) are empty: those migrations finished. The tests that read them still prevent regressions and cost nothing; they stay.
 
 13 test functions assert rows in `AGENTS.md`, service `CLAUDE.md` files or openspec task lists. They spawn nothing and enforce the repository's own documentation rule; they stay.
@@ -125,7 +123,6 @@ Six of the eight ratchet allowlists (`platform/tests/known_*.txt`, `check_mode_a
 | D4 | How BATS runs in parallel | **GNU `parallel` and `bats --jobs`** (Joseph, 2026-11-10): installed by apt in CI and through the repository's `Brewfile` locally (`brew bundle`), with `--no-parallelize-within-files`, so files run concurrently and tests within a file keep their order. Pre-push falls back to serial BATS when `parallel` is absent, with a warning, under its fail-open contract | One flag instead of hand-rolled sharding; the cross-file audit in F6 is the safety precondition. It is a new dependency, approved |
 | D5 | Fixed waits in playbooks | Every retry count and delay a test must shorten becomes a public, non-underscore variable with the production default, as `renew_proof_retries` already is | A shorter wait can only make a run fail sooner, never pass falsely, so exposing it to a launcher adds no forgery risk. Underscore names stay refused |
 | D6 | What pre-push runs | **A fast lane** (Joseph, 2026-11-10; the cutoff was moved from 1 s to below one Ansible start in the revision he approved the same day): pytest runs, by whole file, every test file the push changes, every file holding a test missing from the durations file, and every file whose recorded tests all ran under 0.25 s of CI time with none skipped in CI; BATS runs in full with `--jobs`. CI keeps the full suite | It finishes on the shared workstation, so it gets run. The cutoff sits below the cost of one `ansible-playbook` start in CI (the guard-refusal tests in F1 average at least 0.7 s), so the lane does not pay for the forgery matrix on every push. It is a narrower gate than 5.2 asked for, and the hook says so in its output |
-| D7 | NocoDB | Out of scope: it has no service-specific tests; its code and templates go in its own decommission change | The generic catalog tests drop its cases with its templates |
 | D8 | Order | **Phases 1 and 2 run in parallel** (Joseph, 2026-11-10), each in its own worktree and pull requests; phase 4 waits on phase 2's durations file | They touch different files: phase 1 tests and playbooks, phase 2 the workflow, `conftest.py` and the partition test |
 
 ## Architecture
@@ -153,7 +150,7 @@ What has landed against the phases below. Counts and timings are from each pull 
 | 1.1b clean-deploy gate | #1040 (merged) | Full matrix on `o11y`, `step-ca` and `agentgateway`; plain on the other 16. 399 → 111 runs |
 | 1.2 fixed waits | #1026, #1031 (merged) | `RUNNER_KILL_WAIT_SECONDS` in the runner's `deploy.sh`; `ih_wait_*` and `console_gate_probe_*` playbook knobs. The two runner quiesce tests went from about 30 s to 1.5 s each |
 | 1.3 stub delays | none (dropped) | Measured 2026-11-10 on the shared workstation: `pytest -n 12 platform/tests/test_agw_conformance.py --junitxml`, `time` summed over its 172 testcases, 910.5 s with the stub's defaults at 0.4/0.1 and 890.9 s at 0.04/0.01. The cost is process start-up, not the stub's sleeps, so the estimate above was wrong and the change was not worth carrying |
-| 1.4 single-test floors | #1030 (merged) | 21 generated per-template tests (22 before tududi's removal). `test_authentik_audit_recovery.py` is not split yet |
+| 1.4 single-test floors | #1030 (merged) | 21 generated per-template tests. `test_authentik_audit_recovery.py` is not split yet |
 | 1.5 parse caching | #1028 (merged) | `test_workflow_registry.py` only: 178 s to 44.5 s locally. The other `templates.yml` readers are not migrated |
 | 1.6 BATS | #1027, #1029 (merged) | Loud shellcheck skip; one shared git-environment unset in `assert_helpers.bash`, held equal to the pre-push hook's list by a test. The redundancy deletions were not made (F7). The `test_credential_leaks.bats` batching is not done |
 | Phase 2 steps 1-2 | #1032 (merged) | The shard hook, `shards.py`, the durations builder and their tests, inert until `PYTEST_SHARD` is set |

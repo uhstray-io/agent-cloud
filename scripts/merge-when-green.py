@@ -27,21 +27,17 @@ UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
 BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
+# The bats-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
+RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
-    "Detect changes", "Static Analysis", "Security Scan", *PYTHON_SHARDS,
-    "Bash Tests", "Rego Tests", "Unit Tests",
-    "Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)", "Rust (console)",
-    "Version",
+    "Static Analysis", "Security Scan", *PYTHON_SHARDS,
+    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Version",
 }
+# Paths of the pinned historical workflow states only; the current workflow has no such job.
 GO_PATH = "platform/services/uhhcraft/deployment/"
 GO_WORKFLOW = WORKFLOW
-DOCKERFILES = {
-    "platform/services/uhhcraft/deployment/Dockerfile",
-    "platform/services/inference-comfyui/deployment/Dockerfile",
-    "platform/services/inference-hunyuan3d/deployment/Dockerfile",
-}
 SHA = re.compile(r"^[0-9a-f]{40}$")
 # The one rule set for pull request titles (plan 20), loaded from the sibling script so the two cannot disagree.
 SEMVER = Path(__file__).resolve().with_name("semver.py")
@@ -178,16 +174,9 @@ def changed_files(api, number):
 
 
 def required_jobs(files):
-    go = any(p.startswith(GO_PATH) or p == GO_WORKFLOW for p in files)
-    go_build = go or any(p in DOCKERFILES for p in files)
-    return {
-        "Detect changes": True, "Static Analysis": True, "Security Scan": True,
-        **dict.fromkeys(PYTHON_SHARDS, True),
-        "Bash Tests": True, "Rego Tests": True, "Unit Tests": True, "Rust (console)": True,
-        "Version": True,
-        "Go lint (uhhcraft)": go, "Go test (uhhcraft)": go,
-        "Go build (uhhcraft image)": go_build,
-    }
+    # Every expected job is required on every pull request; none is path-gated now. A future path-gated
+    # job would return False here for the files that prove it absent.
+    return dict.fromkeys(EXPECTED, True)
 
 
 def workflow_bytes(api, commit_sha):
@@ -230,7 +219,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False, versioned=False, sharded=False):
+                          pi_moved=False, versioned=False, sharded=False, retired=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -259,6 +248,10 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         for job in ("python-core", "python-semaphore", "python-netbox"):
             del expected[job]
         expected["python"] = "Python (${{ matrix.shard }}/8)"
+    if retired:
+        # The current workflow: the change detector and the Go jobs it gated are gone.
+        for job in ("changes", "go-lint", "go-test", "go-build"):
+            del expected[job]
     jobs = {}
     current = None
     in_jobs = False
@@ -278,12 +271,13 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
             jobs[current]["name"] = name.group(1)
         elif current and (condition := re.fullmatch(r"    if: (.+)", line)):
             jobs[current]["if"] = condition.group(1)
-    conditions = {
-        "test": "always()",
-        "go-lint": "needs.changes.outputs.go == 'true'",
-        "go-test": "needs.changes.outputs.go == 'true'",
-        "go-build": "needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'",
-    }
+    conditions = {"test": "always()"}
+    if not retired:
+        conditions.update({
+            "go-lint": "needs.changes.outputs.go == 'true'",
+            "go-test": "needs.changes.outputs.go == 'true'",
+            "go-build": "needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'",
+        })
     filters = {}
     inside_filters = False
     current_filter = None
@@ -305,7 +299,7 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
             if not path:
                 raise Refusal("Dev PR workflow path filters changed; review the merge gate policy first")
             filters[current_filter].append(path.group(1))
-    expected_filters = {
+    expected_filters = {} if retired else {
         "go": [GO_PATH + "**", GO_WORKFLOW],
         "python_inference": ["platform/services/inference-comfyui/deployment/**",
                              "platform/services/inference-hunyuan3d/deployment/**", WORKFLOW],
@@ -313,14 +307,15 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
                         "platform/services/inference-comfyui/deployment/Dockerfile",
                         "platform/services/inference-hunyuan3d/deployment/Dockerfile"],
     }
-    required = [
-        "name: Lint and Test", "pull_request:", "branches: [main, dev]",
-        "platform/services/uhhcraft/deployment/**",
-        GO_WORKFLOW,
-        "platform/services/uhhcraft/deployment/Dockerfile",
-        "platform/services/inference-comfyui/deployment/Dockerfile",
-        "platform/services/inference-hunyuan3d/deployment/Dockerfile",
-    ]
+    required = ["name: Lint and Test", "pull_request:", "branches: [main, dev]"]
+    if not retired:
+        required += [
+            "platform/services/uhhcraft/deployment/**",
+            GO_WORKFLOW,
+            "platform/services/uhhcraft/deployment/Dockerfile",
+            "platform/services/inference-comfyui/deployment/Dockerfile",
+            "platform/services/inference-hunyuan3d/deployment/Dockerfile",
+        ]
     if (jobs.keys() != expected.keys()
             or any(jobs[job].get("name") != name for job, name in expected.items())
             or any(jobs[job].get("if") != condition for job, condition in conditions.items())
@@ -528,11 +523,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Sharded workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == BATS_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+            # Same jobs as bats-pinned minus the change detector and the retired jobs.
+            check_workflow_policy(base, sharded=True)
+            check_workflow_policy(candidate, sharded=True, retired=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != BATS_PINNED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed bats-pinned workflow")
         check_workflow_policy(base, sharded=True)
         if base != candidate or workflow_records:
             raise Refusal("Bats-pinned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed current workflow")
+        check_workflow_policy(base, sharded=True, retired=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Current workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 

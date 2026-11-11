@@ -480,61 +480,6 @@ SH
   deploy; [ "$status" -eq 0 ]; changed true
 }
 
-# ── n8n: ordered start behind the change gate ────────────────────────────────
-n_setup() {
-  svc_setup n8n workflow-n8n-postgres=n8n-postgres workflow-n8n-redis=n8n-redis workflow-n8n=n8n workflow-n8n-worker=n8n-worker
-}
-
-@test "n8n: first deploy starts the stages in order, labelled; the second run touches nothing" {
-  n_setup
-  deploy; [ "$status" -eq 0 ]; changed true
-  [ "$(cat "$S/up.log")" = "$(printf 'up: n8n-postgres n8n-redis n8n\nup: n8n-worker')" ]
-  [ -e "$S/down.log" ]
-  grep -qE '^[0-9a-f]{64}$' "$S/c/workflow-n8n-worker/label"
-  : > "$S/compose.log"; rm -f "$S/up.log" "$S/down.log"
-  deploy; [ "$status" -eq 0 ]; changed false
-  refute_grep -q -e ' up ' -e ' down ' "$S/compose.log"
-  [ ! -e "$S/down.log" ]
-}
-
-@test "n8n: a changed .env or init script restarts the whole ordered stack; the volumes are not removed" {
-  n_setup
-  deploy; [ "$status" -eq 0 ]
-  local f
-  for f in .env config/n8n-init-data.sh; do
-    rm -f "$S/up.log"
-    echo "# changed" >> "$D/$f"
-    deploy; [ "$status" -eq 0 ]; changed true
-    [ "$(wc -l < "$S/up.log" | tr -d ' ')" -eq 2 ]
-    deploy; changed false
-  done
-  # Neither compose (down -v) nor the engine (rm -v) may take a volume with the containers.
-  refute_grep -q -e ' -v' -e '--volumes' "$S/compose.log"
-  grep -q '^rm ' "$S/engine.log"
-  refute_grep -qE '^rm .*( -v|--volumes| -[a-z]*v)' "$S/engine.log"
-}
-
-@test "n8n: a changed published bind address (N8N_LISTEN in .env) recreates, then is a no-op" {
-  n_setup
-  echo 'N8N_LISTEN=127.0.0.1' >> "$D/.env"
-  deploy; [ "$status" -eq 0 ]; changed true
-  deploy; changed false
-  sed -i.bak 's/^N8N_LISTEN=.*/N8N_LISTEN=0.0.0.0/' "$D/.env"
-  deploy; [ "$status" -eq 0 ]; changed true
-  deploy; changed false
-}
-
-@test "n8n: a failing first up fails the deploy, prints no DEPLOY_CHANGED=true, never starts the worker" {
-  n_setup
-  STUB_UP_FAIL=1 deploy
-  [ "$status" -ne 0 ]
-  refute_grep -q 'DEPLOY_CHANGED=true' <<< "$output"
-  [ ! -e "$S/up.log" ]
-  # It stops at the failed up: no health wait on containers that were never created.
-  refute_grep -q 'State.Health' "$S/engine.log"
-  deploy; [ "$status" -eq 0 ]; changed true
-}
-
 # ── playbooks read the line ──────────────────────────────────────────────────
 @test "deploy playbooks derive changed from DEPLOY_CHANGED, not changed_when: true" {
   local pb

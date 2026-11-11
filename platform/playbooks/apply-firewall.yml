@@ -210,7 +210,7 @@
 # `192.0.2.1/24` is the same network as `192.0.2.0/24`. A denial INSIDE an SSH CIDR, a single
 # host or a narrower broad range, is accepted: that is where the real targets are.
 #
-# Usage (via Semaphore): -e target_service=openhands_svc
+# Usage (via Semaphore): -e target_service=opa_svc
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).

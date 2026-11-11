@@ -22,7 +22,7 @@ from fake_semaphore import template_write  # noqa: E402 - the shared v2.19 templ
 sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
 from publication import survey_enum_option_problems  # noqa: E402
 
-NAME = "Store n8n API Key (Dev)"
+NAME = "Store Postiz API Key (Dev)"
 CONFORMANCE_NAME = "Collect Service Conformance (Dev)"
 TEMPLATE = {
     "id": 206,
@@ -32,9 +32,9 @@ TEMPLATE = {
     "inventory_id": 37,
     "environment_id": 42,
     "environment_ids": [42],
-    "playbook": "platform/playbooks/store-n8n-api-key.yml",
+    "playbook": "platform/playbooks/store-postiz-api-key.yml",
     "app": "ansible",
-    "arguments": '["--limit", "tududi"]',
+    "arguments": '["--limit", "postiz"]',
     "autorun": False,
     "view_id": 9,
     "survey_vars": [],
@@ -42,7 +42,7 @@ TEMPLATE = {
 
 
 # The survey tests publish one declared survey whose first default is "true". The real
-# catalog no longer declares NAME (its tududi survey was retired 2026-11-07), so they pass
+# catalog declares NAME without a survey, so they pass
 # this declaration explicitly through _all_templates.
 SURVEY_DECLARATION = {
     "name": NAME,

@@ -213,14 +213,13 @@ def test_the_local_controller_may_read_what_the_secrets_step_reads():
         assert block and '"read"' in block.group(1), prefix
 
 
-def test_uhhcraft_requires_the_keys_its_app_panics_without(tmp_path):
-    # PR 203 Codex review: stripe_secret_key is `type: user`, so it was not required, and the step
-    # passed a service whose app panics on an empty STRIPE_SECRET_KEY (config.go requireEnv).
-    raw = (REPO / "platform/playbooks/deploy-uhhcraft.yml").read_text()
-    stored = dict.fromkeys(("stripe_publishable_key", "stripe_webhook_secret", "resend_api_key",
-                            "discord_orders_webhook_url", "discord_ops_webhook_url"), "v")
-    v = _verdict(tmp_path, service="uhhcraft", stored=stored, deploy_raw=raw)
-    assert v["status"] == "fail" and v["evidence"]["missing"] == ["stripe_secret_key"], v
+def test_honcho_requires_the_gemini_key(tmp_path):
+    # The Gemini key is operator-seeded (`type: existing`) and listed in _required_existing_secrets,
+    # so a honcho store without it fails the step and names the key, rather than passing.
+    raw = (REPO / "platform/playbooks/deploy-honcho.yml").read_text()
+    stored = {"honcho_jwt_secret": "v", "honcho_db_password": "v"}
+    v = _verdict(tmp_path, service="honcho", stored=stored, deploy_raw=raw)
+    assert v["status"] == "fail" and v["evidence"]["missing"] == ["gemini_api_key"], v
 
 
 def test_a_deploy_with_no_secret_contract_fails_closed(tmp_path):

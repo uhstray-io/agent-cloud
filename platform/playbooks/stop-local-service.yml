@@ -18,16 +18,16 @@
 #
 # Bring it back: run the service's own "Deploy <Service> (Local)" template. How that restarts the
 # stopped containers depends on the service's deploy.sh (read from the scripts, 2026-10-12):
-#   - authentik, honcho, o11y, openhands call compose_up_if_changed
+#   - authentik, honcho, o11y call compose_up_if_changed
 #     (lib/common.sh): a not-running container is the reason "container not running", which
 #     recreates the project. agentgateway keeps its own copy of that comparison
 #     ("gateway container not running", deploy.sh:153), and caddy runs
 #     `compose up -d --force-recreate` every time, so both recreate too.
-#   - dns, step-ca, opa, n8n, erpnext, uhhcraft, netbox, postiz (and the other services whose
+#   - dns, step-ca, opa, erpnext, netbox, postiz (and the other services whose
 #     deploy.sh runs plain `compose up -d`) rely on `compose up -d` to start an existing,
 #     stopped container. unverified: that podman-compose does so. The local Semaphore installs
 #     podman-compose with an unpinned `pip3 install podman-compose` when the image lacks it
-#     (bootstrap-local-dev.yml:853), so which version it runs is not recorded in the repo.
+#     (bootstrap-local-dev.yml:992), so which version it runs is not recorded in the repo.
 #   - A container listed in stop_extra_containers is NOT restarted by the service's Deploy: it
 #     was never part of the compose project. NetBox's `netbox-orb-agent` comes back only through
 #     its own "Deploy Orb Agent (Local)" template (deploy-netbox.yml: "Orb Agent is a separate
