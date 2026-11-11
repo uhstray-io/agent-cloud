@@ -567,15 +567,22 @@ prod_accepted() {
 @test "skynet: a forged local_mode on a production host keeps the production refusals; on skynet-local it passes" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
-  printf 'skynet-prod ansible_connection=local\n' > "$BATS_TEST_TMPDIR/forged-prod.ini"
+  # The inventory and skynet_opa_ip satisfy every other production refusal, so the bind refusal is the only one
+  # left that can fail the run. The assertion reads its failure message, which Ansible prints only when it fails
+  # (the task name is printed for a skipped task too).
+  printf 'skynet-prod ansible_connection=local\n\n[step_ca_svc]\nskynet-prod\n' > "$BATS_TEST_TMPDIR/forged-prod.ini"
   run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_opa_ip=203.0.113.20
   [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run whose skynet_publish_bind is unset or loopback'
+  assert_contains "$output" "Production skynet must publish on the VM's own LAN address"
   run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_publish_bind=127.0.0.1
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=127.0.0.1
   [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run whose skynet_publish_bind is unset or loopback'
+  assert_contains "$output" "Production skynet must publish on the VM's own LAN address"
+  # A declared LAN bind on the same forged host passes: the run above failed on the bind and nothing else.
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10
+  [ "$status" -eq 0 ]
   # The -local host passes. Its recap must name that host, so a run that matched no host cannot pass for this one.
   run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true
