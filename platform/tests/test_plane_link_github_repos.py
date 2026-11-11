@@ -67,7 +67,8 @@ class Stub(DrainingHandler):
             cookie = "csrftoken=tok; Path=/" if path == "/auth/get-csrf-token/" else None
             return self._send(200, routes[path], cookie=cookie)
         if path.startswith("/api/workspaces/uhstray/projects/") and path.endswith("/states/"):
-            return self._send(200, STATES)
+            pid = path.split("/")[5]
+            return self._send(200, s.get("states", {}).get(pid, STATES))
         self._send(404, {})
 
     def do_POST(self):
@@ -77,7 +78,10 @@ class Stub(DrainingHandler):
         if path == "/auth/sign-in/":
             return self._send(302, location="/", cookie="session-id=sess; Path=/")
         if path == f"/silo/api/entity-connections/{W}/{C}":
-            s["created"].append(json.loads(raw))
+            body = json.loads(raw)
+            if (body["type"], body["project_id"]) in s.get("refuse", ()):
+                return self._send(500, {})
+            s["created"].append(body)
             return self._send(200, {"id": "new"})
         self._send(404, {})
 
@@ -359,3 +363,20 @@ def test_the_apply_runs_only_after_a_clean_plan(tmp_path, plan, skipped):
         check=False,
     )
     assert proc.returncode == 0, proc.stdout[-1500:]
+
+
+def test_a_dry_run_refuses_a_missing_state_and_claims_nothing_created(stub):
+    state, base = stub
+    state["states"] = {"p-hu": [st for st in STATES if st["name"] != "Cancelled"]}
+    rc, out = run(base, apply=False)
+    assert rc == 1 and "lacks the states Cancelled" in out["error"] and state["created"] == []
+    # Planned, not created: a dry run's refusal must not read as if Plane changed.
+    assert out["would_link"] == ["AC"] and "linked" not in out and "pr_linked" not in out
+
+
+def test_a_failed_apply_names_every_record_already_created(stub):
+    state, base = stub
+    state["refuse"] = {("PROJECT_PR_AUTOMATION", "p-hu")}
+    rc, out = run(base, apply=True)
+    assert rc == 1 and "PROJECT_PR_AUTOMATION" in out["error"]
+    assert out["linked"] == ["AC", "HUHHB"] and out["pr_linked"] == ["AC"]

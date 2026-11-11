@@ -100,8 +100,10 @@ done, present, pr_done, pr_present, missing_projects, conflicts = [], [], [], []
 
 
 def abort(message):
-    """fail() with what this run already created, both record types, so the message is complete."""
-    fail(message, linked=done, pr_linked=pr_done)
+    """fail() with the progress so far, both record types: created on an apply, planned on a dry run."""
+    if cfg["apply"]:
+        fail(message, linked=done, pr_linked=pr_done)
+    fail(message, would_link=done, pr_would_link=pr_done)
 
 
 def states_of(ident, pid):
