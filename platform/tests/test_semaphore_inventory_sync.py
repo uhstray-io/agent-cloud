@@ -159,6 +159,13 @@ def _load_script(name):
     return module
 
 
+_FRONTEND = _load_script("sync_inventory_bounds")
+# The bound on a frontend run sits above the frontend's own deadline for its Ansible child plus the
+# cleanup it then does, so the frontend, not this timeout, ends a slow child. Killing the frontend
+# first would leave the child, which runs in its own session, behind (#1055 review).
+FRONTEND_TIMEOUT = _FRONTEND.CHILD_TIMEOUT_SECONDS + _FRONTEND.CHILD_CLEANUP_TIMEOUT_SECONDS + 60
+
+
 def _sync_env(tmp_path, path_prefix, temp_prefix, base=None):
     """Environment for one sync run: private Ansible temp dirs and a sync-owned TMPDIR under tmp_path.
 
@@ -188,7 +195,7 @@ def run_sync(tmp_path, url, inventory, *options, token=TOKEN, path=None, env_ove
         [str(SCRIPT), "--url", url, "--inventory", str(source), "--name", "production",
          "--project", "1", *options],
         input=token + "\n", text=True, capture_output=True, env=env, cwd=ROOT, check=False,
-        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
+        timeout=FRONTEND_TIMEOUT,
     )
 
 
@@ -519,7 +526,7 @@ def test_inherited_ansible_debug_and_log_path_cannot_leak_preview_inventory(
     result = subprocess.run(
         [str(SCRIPT), "--url", url, "--inventory", str(source)],
         input=TOKEN + "\n", text=True, capture_output=True, env=env, cwd=ROOT, check=False,
-        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
+        timeout=FRONTEND_TIMEOUT,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert state["gets"] == state["readbacks"] == 1

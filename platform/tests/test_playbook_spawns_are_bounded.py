@@ -78,6 +78,7 @@ DIRECT = frozenset({
     "platform/tests/test_retire_openbao_fields.py",
     "platform/tests/test_semaphore_inventory_sync.py",
     "platform/tests/test_semaphore_token_rotation.py",
+    "platform/tests/test_service_persistence_podman.py",
     "platform/tests/test_survey_o11y_alloy_health.py",
     "platform/tests/test_workflow_credential_boundaries.py",
     "platform/tests/test_workflow_registry.py",
