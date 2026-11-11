@@ -4,16 +4,14 @@ Runs a real play from the repository root, so ansible.cfg selects the callback e
 does for Semaphore, against a local HTTP server, with a synthetic token in the request headers.
 """
 
-import http.server
 import importlib.util
 import os
 import subprocess
 import textwrap
-import threading
 from pathlib import Path
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 TOKEN = "SYNTHETIC-HEADER-VALUE-4f1c"
@@ -55,10 +53,8 @@ def server():
         def log_message(self, *args):
             pass
 
-    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=httpd.serve_forever, daemon=True).start()
-    yield httpd.server_address[1]
-    httpd.shutdown()
+    with serve(Handler) as url:
+        yield int(url.rsplit(":", 1)[1])
 
 
 def run(tmp_path, port, *extra, callback=None):
