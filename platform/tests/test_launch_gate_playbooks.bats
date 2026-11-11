@@ -563,28 +563,102 @@ INV
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
 }
 
-@test "launch-gate deploy: -e local_mode=true on a host that is not <name>-local does not lift the production refusals" {
-  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  local inv="$BATS_TEST_TMPDIR/hosts.ini"
-  # A production-shaped host (no -local suffix) on the loopback default bind. With the public flag alone
-  # selecting local-dev, the loopback refusal would be skipped; the mode is the host's identity instead.
-  cat > "$inv" <<'INV'
+# Writes a one-host launch_gate_svc inventory. $1 = inventory file, $2 = host name, $3 = launch_gate_image.
+# The image is a tag in the forged-mode tests, so a run that gets past the mode refusal stops at the image refusal,
+# before the repo is placed: each test stays bounded whichever way the mode check goes.
+write_mode_inventory() {
+  cat > "$1" <<INV
 [launch_gate_svc]
-lg-prod ansible_connection=local
+$2 ansible_connection=local
 
 [launch_gate_svc:vars]
 service_name=launch-gate
 monorepo_deploy_path=platform/services/launch-gate/deployment
 openbao_addr=http://127.0.0.1:8200
-launch_gate_image=docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+launch_gate_image=$3
 launch_gate_semaphore_url=https://semaphore.example.test
 launch_gate_semaphore_project=1
 launch_gate_opa_url=https://opa.example.test:8281
 INV
+}
+
+@test "launch-gate deploy: local mode is the hosts' identity in all three plays, and the mode refusal is the first task" {
+  python3 - "$DEPLOY" <<'PY'
+import sys, yaml
+text = open(sys.argv[1], encoding="utf-8").read()
+plays = [p for p in yaml.safe_load(text) if "hosts" in p]
+want = r"{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | length == 0) }}"
+assert all(p["vars"]["_launch_gate_local_mode"] == want for p in plays), [p["vars"].get("_launch_gate_local_mode") for p in plays]
+assert "inventory_hostname is match" not in text
+assert plays[0]["vars"]["_launch_gate_mode_set"] == "{{ local_mode | default('unset') }}", plays[0]["vars"]
+first = plays[0]["tasks"][0]
+assert first["name"] == "Refuse a local_mode that disagrees with the hosts' identity", first.get("name")
+assert first["ansible.builtin.assert"]["that"] == "_launch_gate_mode_set == 'unset' or (_launch_gate_mode_set | bool) == _launch_gate_local_mode", first
+assert "when" not in first, first
+assert plays[1]["tasks"][0]["environment"]["LOCAL_MODE"] == "{{ 'true' if _launch_gate_local_mode else '' }}", plays[1]["tasks"][0]["environment"]
+PY
+}
+
+@test "launch-gate deploy: -e local_mode=true on a host that is not <name>-local is refused as a disagreeing mode, before any production refusal" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local inv="$BATS_TEST_TMPDIR/hosts.ini"
+  write_mode_inventory "$inv" lg-prod docker.io/library/python:3.12-slim
   run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=true -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
   [ "$status" -ne 0 ]
+  assert_contains "$output" 'The mode follows the hosts, not the variable'
+  refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
+  refute_contains "$output" 'Place the monorepo'
+  [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
+}
+
+@test "launch-gate deploy: -e inventory_hostname=<name>-local on a production host does not make it a local-dev run" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local inv="$BATS_TEST_TMPDIR/hosts.ini"
+  write_mode_inventory "$inv" lg-prod docker.io/library/python:3.12-slim
+  # The first guard reads hostvars[inventory_hostname], so the forged name must be a host of the inventory (here in
+  # another group, outside the play): a name that is not a host fails that guard before the mode is read at all.
+  printf '\n[other]\nlaunch-gate-local ansible_connection=local\n' >> "$inv"
+  run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=true -e inventory_hostname=launch-gate-local -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'The mode follows the hosts, not the variable'
+  refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
+  refute_contains "$output" 'Place the monorepo'
+  [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
+}
+
+@test "launch-gate deploy: -e local_mode=false on a local-dev host is refused as a disagreeing mode" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local inv="$BATS_TEST_TMPDIR/hosts.ini"
+  write_mode_inventory "$inv" lg-test-local docker.io/library/python:3.12-slim
+  run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=false -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'The mode follows the hosts, not the variable'
+  refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
+  refute_contains "$output" 'Place the monorepo'
+  [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
+}
+
+@test "launch-gate deploy: a local-dev host with -e local_mode=true passes the mode refusal and reaches the image refusal" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local inv="$BATS_TEST_TMPDIR/hosts.ini"
+  write_mode_inventory "$inv" lg-test-local docker.io/library/python:3.12-slim
+  run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=true -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
+  [ "$status" -ne 0 ]
+  refute_contains "$output" 'The mode follows the hosts, not the variable'
+  assert_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
+  refute_contains "$output" 'Place the monorepo'
+  [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
+}
+
+@test "launch-gate deploy: a production host with no local_mode keeps the production refusals" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local inv="$BATS_TEST_TMPDIR/hosts.ini"
+  # The loopback default bind is what the production refusal catches; the digest image gets past its own refusal.
+  write_mode_inventory "$inv" lg-prod docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
+  run ansible-playbook -i "$inv" "$DEPLOY" -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
+  [ "$status" -ne 0 ]
+  refute_contains "$output" 'The mode follows the hosts, not the variable'
   assert_contains "$output" 'Refuse a production run whose launch_gate_bind is loopback'
-  assert_contains "$output" 'Production launch-gate must publish on the VM'
   refute_contains "$output" 'Place the monorepo'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
 }
