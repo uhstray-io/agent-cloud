@@ -63,6 +63,7 @@ and why.
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
+| 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1535,6 +1536,16 @@ the producer identity and Prometheus targets read now have their own words, so t
 **The rule.** An integration is "working" only once every leg a person uses has been exercised, the in-app setup page included. Name the legs that were proven and the ones that were not.
 
 **Enforced by.** For this integration, a test: Deploy Plane Phase 3e creates the missing applications and fails unless every one exists (`test_the_marketplace_phase_judges_the_script_summary`). The general rule is Convention.
+
+### 1.34 Recorded a PR's scope from one of its commits
+
+**What happened.** On 2026-11-11, closing openspec task 1.1a.3 (a source validation gate whose job is to verify exact source ownership), I wrote into `tasks.md` on PR #1073 that PR #803 "changed exactly the scoped files". My evidence was `git show --stat 03539978`, the first of #803's seven commits. The independent review diffed #803's merge `403afc62` against its first parent and found nine files, not five: #803 also carried three scrape-baseline and `deploy.sh` commits that belong to another task. The review caught it before merge.
+
+**Root cause.** A claim about a pull request was established from one commit inside it. A commit's file list proves nothing about the PR's merge diff, and the gate being recorded existed to check exactly that.
+
+**The rule.** A scope claim names the object it was measured on. Take a PR's file set from `git diff <merge>^1 <merge>` (or `gh pr view --json files`). Take a source slice from the exact commits listed by SHA. Never let one stand in for the other.
+
+**Enforced by.** Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
