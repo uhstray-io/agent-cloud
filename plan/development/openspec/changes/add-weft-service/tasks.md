@@ -11,7 +11,7 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 - [x] 1.5 "Follow weft main" becomes the directly Dev-bound scheduled template "Follow weft main (Dev)" (the pattern of "Check o11y Liveness (Dev)"), and places the branch it runs from, because a scheduled task gets no survey default (`tasks/assert-placement-branch.yml`). "Roll Out weft Release" keeps its `dev_variant` and loses its schedule until promotion (task 6.1).
 - [x] 1.6 Add `weft_svc`, with the four weft groups as children, to `platform/inventory/production.yml`, with each group's variables as comments.
 - [x] 1.7 Rename `plan/development/16-weft-service.md` to `23-weft-service.md` and fix its references; add weft's row to `plan/architecture/service-architecture.md`.
-- [ ] 1.8 Add `clean-deploy-weft.yml` and its template, or record the decision that weft has none (see `design.md`, "Clean Deploy").
+- [x] 1.8 Record that weft has no Clean Deploy (Jacob, 2026-11-11): a Clean Deploy in the platform's shape either keeps a company's bind-mounted catalog or deletes it behind one confirmation. The destructive path is offboarding (task 8.5), which takes a final backup and honours retention first. Declared in `design.md`, "Clean Deploy" and "Declared deviations".
 - [ ] 1.9 Validation gate: CI on the pull request is green (`bats platform/tests/`, the Python suite, `ansible-lint`, `yamllint`, the security scans), and `openspec validate --all --store agent-cloud` passes. Scenarios "A fresh host has no .env", "The state directory is mounted by no container", "A rollback refuses an unverifiable previous image" and "A tag is refused" hold in `platform/tests/test_weft_deploy_runs.py` and `platform/tests/test_service_weft.bats`. Local run of 2026-11-11, before the push: bats 1307 of 1307; pytest 10846 passed, with two failures outside this change (a password-prompt test that needs a terminal and also fails on `dev` here, and an agentgateway stream-timing test that passes two runs in three); `ansible-lint` 0 failures; `yamllint` 0 errors on tracked files; openspec 27 of 27.
 
 ## 2. Deviations declared [step 18]
@@ -65,6 +65,6 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 - [ ] 8.2 TLS from Caddy to each weft VM with the internal CA (decision D17).
 - [ ] 8.3 The voice path, by decision V.
 - [ ] 8.4 A weft-only package-read token for `registry-login.yml`.
-- [ ] 8.5 "Onboard weft workspace" and "Offboard weft workspace", the offboarding over `destroy-vm.yml` and confirmed like any destructive step.
+- [ ] 8.5 "Onboard weft workspace" and "Offboard weft workspace". Offboarding is weft's only destructive path (it has no Clean Deploy): it takes a final backup, keeps the company's data for the retention period (D19), and only then runs `destroy-vm.yml`, confirmed like any destructive step.
 - [ ] 8.6 A scheduled reboot window over `reboot-host.yml` that honours the deploy lock.
 - [ ] 8.7 Validation gate: scenario "No rack approval, no deploy" holds for a held host, and scenario "Health fails within the watch window" holds for a workspace onboarded and offboarded on a scratch host.

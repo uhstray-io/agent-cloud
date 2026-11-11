@@ -53,16 +53,14 @@ Until weft's log schema lands, its containers write to stdout as they do today, 
 | Rootless podman, or name the capability | The orchestrator starts agent and egress-proxy containers through the workspace user's rootless podman socket; only the orchestrator gets it, never the board | task 2.3 |
 | A database sidecar with an exporter | SQLite per workspace on the VM's own disk (weft D537); weft exports its own numbers | task 7.3 |
 | `update-service.yml`'s tag pull | A deploy by signed digest only (D1) | this design |
+| `clean-deploy-<service>.yml` on `tasks/clean-service.yml` (02, Phase 4) | No Clean Deploy: the destructive path is offboarding, which takes a final backup and honours retention first (D19) | this design, "Clean Deploy" |
 | Full-tier logs to Loki | Scrubbed process logs only; customer content stays on its VM (D7) | task 2.2 |
 
-## Clean Deploy
+## Clean Deploy (Jacob, 2026-11-11)
 
-The onboarding standard asks for `clean-deploy-<service>.yml` on `tasks/clean-service.yml` (`plan/architecture/02-service-onboarding.md`, Phase 4), and `platform/tests/test_clean_deploy_confirm.py` holds every Clean Deploy to one shape: a single play on `<service>_svc` whose only task includes `clean-service.yml`. For weft that shape either keeps the data or destroys a company's:
+weft has no Clean Deploy. The onboarding standard asks for `clean-deploy-<service>.yml` on `tasks/clean-service.yml` (`plan/architecture/02-service-onboarding.md`, Phase 4), and `platform/tests/test_clean_deploy_confirm.py` holds every Clean Deploy to one shape: a single play on `<service>_svc` whose only task includes `clean-service.yml`. For weft that shape either keeps the data or destroys a company's. `clean-service.yml` removes containers, volumes and the clone, and weft keeps its catalog in a bind mount (D537), so it would leave every company's data in place and not be clean. Deleting the workspace or front door directory as well would destroy a company's catalog, or every company's sign-in records, behind one confirmation.
 
-- `clean-service.yml` removes containers, volumes and the clone. weft keeps its catalog in a bind mount (D537), so a Clean Deploy in that shape leaves every company's data in place and is not clean.
-- Deleting the workspace or front door directory as well would destroy a company's catalog, or every company's sign-in records, behind the one confirmation every Clean Deploy has. The data of a company that leaves is decision D19 (kept 30 days, then deleted), and that belongs to offboarding (task 8.5).
-
-So task 1.8 is open for a decision: (A) a Clean Deploy limited to staging, which needs `test_clean_deploy_confirm.py` to admit a direct gate for weft as it does for o11y and step-ca; (B) a Clean Deploy that removes containers and the clone and keeps the data, which is what `clean-service.yml` does for any bind-mounted service; (C) no Clean Deploy for weft, with offboarding (task 8.5) as the destructive path, recorded as a deviation.
+So the destructive path for weft is offboarding (task 8.5): it takes a final backup and keeps a company's data for the retention period (D19) before anything is deleted. A redeploy from scratch is a normal deploy with `weft_force_redeploy`. This is a declared deviation (table above).
 
 ## Accepted costs
 
@@ -75,5 +73,5 @@ So task 1.8 is open for a decision: (A) a Clean Deploy limited to staging, which
 
 - **V**: how live voice reaches a workspace now that every name is proxied. Blocks tasks 4.4 (the UDP allow), 5.2 and 8.3.
 - **D17**: TLS on the LAN hop. Blocks task 8.2.
-- **D19**: a company's data after it leaves. Blocks task 8.5, and decides task 1.8.
+- **D19**: a company's data after it leaves. Blocks task 8.5.
 - **#108**: seal custody. Blocks task 6.2.
