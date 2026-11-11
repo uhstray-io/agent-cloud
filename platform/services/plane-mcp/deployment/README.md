@@ -19,3 +19,5 @@ Plane's MCP server, run as its own compose project beside Plane. The design, the
 Semaphore template `Deploy Plane MCP`, playbook `platform/playbooks/deploy-plane-mcp.yml`. Run it after `Deploy Plane`: it registers (or repairs) Plane's OAuth application for the server itself, so there is no manual step.
 
 Harness clients (Claude Code, pi): `scripts/plane-mcp-client.py`, described in [CLAUDE.md](CLAUDE.md#harness-clients).
+
+Teammate onboarding (Claude Code): the skill [`connecting-to-plane`](../context/skills/connecting-to-plane/SKILL.md) is a template with no instance details. Hand it over with the instance's four values (Plane URL, MCP host, workspace, platform admin), which live in the private site-config repository, never here. The teammate copies the skill folder to `~/.claude/skills/` and asks Claude Code to connect to Plane.

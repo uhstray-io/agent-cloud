@@ -350,12 +350,12 @@ mod tests {
     #[test]
     fn a_role_page_lists_only_its_own_board_strips() {
         let items = vec![
-            work_item("sem-1", Some("netclaw"), true),
-            work_item("sem-2", Some("netclaw"), false),
+            work_item("sem-1", Some("network-agent"), true),
+            work_item("sem-2", Some("network-agent"), false),
             work_item("sem-3", Some("bridge"), true),
             work_item("sem-4", None, true),
         ];
-        assert_eq!(keys(&role_work(&items, "netclaw")), ["sem-1"]);
+        assert_eq!(keys(&role_work(&items, "network-agent")), ["sem-1"]);
         assert_eq!(keys(&role_work(&items, "bridge")), ["sem-3"]);
         assert!(role_work(&items, "ghost").is_empty());
         assert!(

@@ -99,7 +99,7 @@ mod tests {
         let value = serde_json::json!({
             "state": "ok",
             "paths": [{
-                "path": "secret/services/tududi",
+                "path": "secret/services/postiz",
                 "current_version": 4,
                 "versions": 3,
                 "created_time": "2026-01-01T00:00:00Z",

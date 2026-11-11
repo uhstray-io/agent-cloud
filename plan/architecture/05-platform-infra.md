@@ -16,9 +16,9 @@
 **Contributors:** Network architecture review
 
 **References:**
-- [SERVICE-INTEGRATION-PLAN.md](SERVICE-INTEGRATION-PLAN.md) -- Service onboarding checklist
-- [AUTOMATION-COMPOSABILITY.md](AUTOMATION-COMPOSABILITY.md) -- Composable task library and deploy patterns
-- [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) -- Secret generation, storage, rotation
+- [02-service-onboarding.md](02-service-onboarding.md) -- Service onboarding checklist
+- [01-automation-model.md](01-automation-model.md) -- Composable task library and deploy patterns
+- [04-credentials-access.md](04-credentials-access.md) -- Secret generation, storage, rotation
 - `platform/services/caddy/deployment/` -- Templatized Caddyfile and compose stack
 
 ---
@@ -34,7 +34,7 @@ Caddy is the sole HTTPS ingress for the uhstray-io platform: every external requ
 Caddy operates at the **Platform Layer** -- infrastructure, not automation or AI. It has no business logic; it accepts inbound HTTPS, terminates TLS, and forwards to internal service VMs over HTTP.
 
 ```text
-AI Layer         NemoClaw, NetClaw, WisBot, Claude Cowork
+AI Layer         skynet, agentgateway
                  (consumers of services behind Caddy)
 
 Guardrail Layer  OpenBao, Kyverno, OPA
@@ -177,20 +177,21 @@ The central `Caddyfile` enables this with one line:
 import sites/*.caddy
 ```
 
-Each fragment is a standalone Caddy site block. Example shape (from `platform/services/uhhcraft/deployment/templates/caddy-site.j2`):
+Each fragment is a standalone Caddy site block. Example shape (from `platform/services/erpnext/deployment/templates/caddy-site.j2`):
 
 ```caddyfile
-{{ uhhcraft_domain }} {
+{{ svc_domain }} {
     encode brotli gzip
-    header { ... HSTS, CSP, ... }
-
-    # Routed asset paths — cross-MinIO proxies
-    handle_path /generated/img/* { reverse_proxy {{ comfyui_minio_upstream }} ... }
-    handle_path /generated/3d/*  { reverse_proxy {{ hunyuan_minio_upstream }} ... }
-
-    # Static + app
-    handle /static/*  { reverse_proxy {{ uhhcraft_upstream }} ... }
-    reverse_proxy {{ uhhcraft_upstream }} { ... }
+    header {
+        Strict-Transport-Security "max-age=15552000;"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+    reverse_proxy {{ svc_upstream }} {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
 }
 ```
 
@@ -548,7 +549,7 @@ In CloudFlare (or via Terraform/API), create an A record pointing the FQDN to th
 
 #### Step 2: Write `templates/caddy-site.j2` in your service
 
-In `platform/services/<svc>/deployment/templates/`, create `caddy-site.j2` -- a full Caddy site block with Jinja2 variables for everything dynamic (domain, upstream IP, ports). UhhCraft's is the reference shape (`platform/services/uhhcraft/deployment/templates/caddy-site.j2`).
+In `platform/services/<svc>/deployment/templates/`, create `caddy-site.j2` -- a full Caddy site block with Jinja2 variables for everything dynamic (domain, upstream IP, ports). ERPNext's is the reference shape (`platform/services/erpnext/deployment/templates/caddy-site.j2`).
 
 Minimum useful skeleton:
 
@@ -688,7 +689,7 @@ Per SERVICE-INTEGRATION-PLAN.md, Caddy is an **auxiliary-to-infrastructure** tie
 
 ### Priority
 
-Implement Caddy automation in the next onboarding wave (alongside NocoDB and n8n migration). The CloudFlare API key must be in OpenBao before Caddy can use the composable credential flow.
+Implement Caddy automation in the next onboarding wave. The CloudFlare API key must be in OpenBao before Caddy can use the composable credential flow.
 
 ---
 
@@ -703,6 +704,8 @@ Implement Caddy automation in the next onboarding wave (alongside NocoDB and n8n
 | **HTTPS with trusted CA** | `reverse_proxy https://IP:PORT { transport http { tls_trusted_ca_certs /path/to/ca.pem } }` | Backend uses internal CA. Preferred over skip verify when an internal CA exists. |
 
 **Default policy:** All platform services run plain HTTP on the internal network; Caddy terminates TLS. Do not configure HTTPS backends unless the service requires it (e.g., Proxmox's management API).
+
+Plain HTTP backends are permitted only on a host where `apply-firewall.yml`'s default-deny inbound (except Caddy and management SSH) is applied and verified ([PRINCIPLES.md §6](../../PRINCIPLES.md)). As recorded there on 2026-10-27, the firewall is applied on the DNS, internal-CA, o11y and CI-runner hosts but is not yet declared for every service host, and none is recorded for the Caddy host. The agentgateway routes are the exception to plain HTTP and re-encrypt with mutual TLS; see [Mutual-TLS Upstream Block](#mutual-tls-upstream-block).
 
 ### HSTS Policy
 
@@ -737,7 +740,7 @@ Evaluate per-service -- some (e.g., collaborative editors, iframe-embedded dashb
 
 ## Caddyfile Management: Public vs Private
 
-The Caddyfile in `agent-cloud/platform/services/caddy/deployment/Caddyfile` is the **public template** -- only `{$VAR}` references, no real domains or IPs.
+The Caddyfile in `platform/services/caddy/deployment/Caddyfile` is the **public template** -- only `{$VAR}` references, no real domains or IPs.
 
 The production Caddyfile with real routing lives in **site-config**, following the public/private repo boundary:
 
@@ -800,8 +803,6 @@ flowchart TD
 | NetBox (+ Diode pipeline) | Docker | Privileged orb-agent needs `CAP_NET_RAW` via `sudo docker run --privileged`. Compose healthcheck dependency chains are critical for the 12-container stack. `lib/common.sh` (NetBox-specific) hardcodes Docker. |
 | OpenBao | Podman | Simple single-container service. `cap_add: IPC_LOCK` works in rootless Podman. |
 | Semaphore | Podman | Two-container stack (app + postgres). |
-| NocoDB | Podman | Two-container stack (app + postgres). |
-| n8n | Podman | Four-container stack (app + worker + postgres + redis). |
 | Caddy | Podman | Single container, binds ports 80/443. |
 | Postiz | Podman | Three-container stack (app + postgres + redis). |
 
@@ -825,9 +826,9 @@ The separator difference (`-` vs `_`) breaks any script that builds container na
 ```yaml
 # CORRECT: explicit names, runtime-agnostic
 services:
-  nocodb-postgres:
-    container_name: workflow-nocodb-postgres
-    image: docker.io/postgres:16.6
+  semaphore-db:
+    container_name: workflow-semaphore-db
+    image: docker.io/postgres:16
 
 # INCORRECT: relies on auto-generated names
 services:
@@ -836,7 +837,7 @@ services:
     # Name will be "project-postgres-1" (Docker) or "project_postgres_1" (Podman)
 ```
 
-All agent-cloud compose files use a `workflow-` prefix (e.g., `workflow-nocodb`, `workflow-semaphore-db`) or a service-specific prefix (e.g., `postiz-postgres`). This prevents naming collisions across services on a host and makes names deterministic regardless of runtime.
+All agent-cloud compose files use a `workflow-` prefix (e.g., `workflow-semaphore`, `workflow-semaphore-db`) or a service-specific prefix (e.g., `postiz-postgres`). This prevents naming collisions across services on a host and makes names deterministic regardless of runtime.
 
 When scripts must reference containers without knowing the name, use `CONTAINER_SEP` from `lib/common.sh`:
 - Docker: `CONTAINER_SEP="-"`
@@ -869,7 +870,7 @@ volumes:
 # INCORRECT: name: property (incompatible with podman-compose < 1.3.0)
 volumes:
   db_data:
-    name: nocodb-db-data
+    name: app-db-data
 ```
 
 The compose wrapper in `lib/common.sh` uses `--project-name` to ensure consistent naming:
@@ -915,11 +916,11 @@ services:
 Deploy scripts on Podman VMs use explicit health-wait functions from `lib/common.sh` instead of compose dependency conditions:
 
 ```bash
-# From deploy.sh — start backing services, wait, then start app
-compose up -d postgres redis
-wait_for_healthy "workflow-nocodb-postgres" 120
-compose up -d nocodb
-wait_for_http "${NOCODB_URL}/api/v1/health" "NocoDB" 120
+# Start backing services, wait, then start the app
+compose up -d semaphore-db
+wait_for_healthy "workflow-semaphore-db" 120
+compose up -d semaphore
+wait_for_http "${SEMAPHORE_URL}/api/ping" "Semaphore" 120
 ```
 
 `wait_for_healthy()` polls `$CONTAINER_ENGINE inspect --format='{{.State.Health.Status}}'` until `healthy` or timeout; `wait_for_http()` polls an HTTP endpoint with curl.
@@ -956,8 +957,8 @@ Once all VMs run podman-compose >= 1.3.0 (see `plan/development/09-service-migra
 **Docker Compose:**
 ```json
 {
-  "Name": "workflow-nocodb",
-  "Service": "nocodb",
+  "Name": "workflow-semaphore",
+  "Service": "semaphore",
   "State": "running",
   "Health": "healthy"
 }
@@ -966,9 +967,9 @@ Once all VMs run podman-compose >= 1.3.0 (see `plan/development/09-service-migra
 **podman-compose (via `podman ps --format json`):**
 ```json
 {
-  "Names": ["workflow-nocodb"],
+  "Names": ["workflow-semaphore"],
   "Labels": {
-    "io.podman.compose.service": "nocodb"
+    "io.podman.compose.service": "semaphore"
   },
   "State": "running",
   "Status": "Up 2 minutes (healthy)"
@@ -1017,14 +1018,14 @@ podman-compose 1.0.6 requires strict `KEY=VALUE` env files. It does not support:
 
 ```bash
 # CORRECT: simple KEY=VALUE
-POSTGRES_USER=nocodb
+POSTGRES_USER=app
 POSTGRES_PASSWORD=s3cur3p4ss
-POSTGRES_DB=nocodb
+POSTGRES_DB=app
 
 # INCORRECT: features not supported in podman-compose 1.0.6
 POSTGRES_PASSWORD="${ADMIN_PASS}"    # Variable interpolation
 DATABASE_URL="postgres://..."        # Quotes may cause issues
-POSTGRES_DB=nocodb # the database     # Trailing comment
+POSTGRES_DB=app # the database     # Trailing comment
 ```
 
 ### env_file vs environment
@@ -1042,17 +1043,17 @@ services:
 
 ### YAML anchors in env_file
 
-podman-compose 1.0.6 supports YAML anchors (`&name` / `*name`) in `environment:` but NOT the merge key (`<<: *anchor`). The n8n compose file uses this pattern:
+podman-compose 1.0.6 supports YAML anchors (`&name` / `*name`) in `environment:` but NOT the merge key (`<<: *anchor`). The pattern looks like this:
 
 ```yaml
-x-n8n-env: &n8n-env
-  N8N_HOST: localhost
+x-app-env: &app-env
+  APP_HOST: localhost
   NODE_ENV: production
 
 services:
-  n8n:
+  app:
     environment:
-      <<: *n8n-env    # Works in Docker Compose, may not work in podman-compose 1.0.6
+      <<: *app-env    # Works in Docker Compose, may not work in podman-compose 1.0.6
 ```
 
 If this causes issues on podman-compose 1.0.6, move shared env vars into the `env_file` instead.
@@ -1155,7 +1156,7 @@ services:
     environment:
       DB_HOST: postgres     # Resolves via compose DNS in both runtimes
   postgres:
-    container_name: workflow-nocodb-postgres  # Not used for DNS resolution
+    container_name: workflow-semaphore-db  # Not used for DNS resolution
 ```
 
 ### Custom networks
@@ -1402,7 +1403,7 @@ The codebase uses two naming patterns for compose files:
 
 | Pattern | Used By | Reason |
 |---------|---------|--------|
-| `compose.yml` | OpenBao, NocoDB, n8n, Semaphore, Caddy, Postiz | Modern compose spec default filename |
+| `compose.yml` | OpenBao, Semaphore, Caddy, Postiz | Modern compose spec default filename |
 | `docker-compose.yml` | NetBox | Legacy filename; NetBox's compose wrapper uses explicit `-f docker-compose.yml` |
 
 Both are valid; new services use `compose.yml`. The `compose()` wrapper in `lib/common.sh` defaults to `compose.yml`; the NetBox-specific wrapper overrides this.
@@ -1428,22 +1429,3 @@ flowchart TD
 - [Docker Compose specification](https://docs.docker.com/compose/compose-file/)
 - [Podman networking (netavark)](https://docs.podman.io/en/latest/markdown/podman-network.1.html)
 - [Compose spec depends_on reference](https://docs.docker.com/compose/how-tos/startup-order/)
-
-## Appendix: UhhCraft — reference Podman service
-
-[`platform/services/uhhcraft/deployment/`](../../platform/services/uhhcraft/deployment/) is the first agent-cloud service designed Podman-first. Its `compose.yml` illustrates every pattern this document recommends:
-
-| Pattern | UhhCraft applies it as |
-|---------|------------------------|
-| **Explicit `container_name:`** | `uhhcraft-postgres`, `uhhcraft-redis`, `uhhcraft-minio`, `uhhcraft-app` |
-| **Fully-qualified image names** | `docker.io/library/postgres:16-alpine` (not bare `postgres:16-alpine`) — Podman requires the registry prefix; Docker accepts both |
-| **No top-level `name:` property on volumes** | Volume keys are short (`postgres_data`, `redis_data`, `minio_data`); the project name `uhhcraft` (set by `name: uhhcraft` at the top of the file) prefixes them |
-| **`depends_on` with `condition: service_healthy`** | Declared on `app` for `postgres`/`redis`/`minio`. Honored by Docker and podman-compose ≥ 1.3.0; on podman-compose 1.0.6 it is parsed but **not** enforced (see §4), so readiness is gated by the explicit health-wait helpers in deploy/post-deploy scripts |
-| **Healthchecks on every backing service** | Postgres uses `pg_isready`, Redis uses authenticated `redis-cli ping`, MinIO uses its `/minio/health/ready` endpoint |
-| **Loopback port binding** | App is published as `127.0.0.1:3000:3000` so only the central Caddy on the same host can reach it; backing services don't expose ports at all |
-| **`env_file: [.env]`** | The Ansible-templated `.env` is the single source of compose env-vars; no literal values in `compose.yml` |
-| **`nvidia.com/gpu=all` device** | Sister services [`inference-comfyui`](../../platform/services/inference-comfyui/deployment/compose.yml) and [`inference-hunyuan3d`](../../platform/services/inference-hunyuan3d/deployment/compose.yml) use the CDI handoff for GPU passthrough under Podman |
-
-UhhCraft also shows the Go + templ + sqlc generation lifecycle in a multi-stage `Dockerfile` (Stage 1 installs the toolchain, Stage 2 generates + builds, Stage 3 is distroless runtime). See [`platform/services/uhhcraft/deployment/Dockerfile`](../../platform/services/uhhcraft/deployment/Dockerfile) -- the pattern any future Go service should mirror.
-
-Compose file: [`platform/services/uhhcraft/deployment/compose.yml`](../../platform/services/uhhcraft/deployment/compose.yml). Use it as a template for a new Podman-first service.

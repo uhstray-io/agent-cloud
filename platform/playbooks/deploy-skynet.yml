@@ -1,13 +1,18 @@
 ---
 # deploy-skynet.yml — skynet orchestration API deploy (composable).
 #
-# Phase 1: Refuse invalid inputs before anything changes; place repo + manage-secrets
+# Phase 1: Refuse invalid inputs before anything changes (the production podman check follows placement,
+#          which installs podman); place repo + manage-secrets
 #          (api_token, db_password and read_token generated once into OpenBao, reused
 #          thereafter; semaphore_api_token is the svc-skynet account's token, read and
 #          never generated; the agentgateway role keys shared-read, because the gateway
 #          enrolls them for skynet's agents); template .env; distribute the trust bundle the
 #          overlay names (local: step-ca root; production: root + intermediate + this VM's public
-#          roots, because SSL_CERT_FILE replaces the whole trust store).
+#          roots, because SSL_CERT_FILE replaces the whole trust store). With skynet_tls, the HTTPS
+#          listener's server leaf is declared in internal_leaves and issued from step-ca before
+#          deploy.sh (local-dev re-issues a leaf with under 7 days left; production keeps an issued one,
+#          which Renew Internal Certs renews). With skynet_tls in production, the podman version is checked after
+#          placement installs podman: keep-id (compose.prod-tls.yml) needs podman 4.3 or later.
 # Phase 2: registry login (GHCR package is private) + image pre-flight + deploy.sh
 #          (container lifecycle only).
 # Phase 3: Verify inside the skynet container: /skynet/healthz answers 200, an
@@ -15,7 +20,9 @@
 #          which no graph carries), and the same request without a token is 401.
 #          The read token lists runs (200) and cannot start one (401). When skynet_launch_gate_url
 #          is declared, the launch gate answers 401 to a request with no token and 400 to skynet's
-#          caller token (an empty body, which starts no task).
+#          caller token (an empty body, which starts no task). With skynet_tls, the HTTPS listener,
+#          probed from this host against the step-ca bundle, answers 200 to /skynet/healthz, 401 to an
+#          unauthenticated run listing, and not 200 to plain HTTP.
 #
 # skynet is a two-container rootless-podman stack (skynet API on the CI-built GHCR
 # image pinned by digest, and its own Postgres). The API listens on 8080 inside the
@@ -101,6 +108,12 @@
     _shared_reads: "{{ _skynet_agentgateway_reads + _skynet_launch_gate_reads }}"
     _env_templates:
       - { src: env.j2, dest: .env, mode: "0600" }
+    # The HTTPS listener (skynet_tls, optional; undeclared, nothing below it runs). Renewal reads these
+    # names by prefix (vars/renew-listener-servers.yml, the skynet row), so they are fixed: do not rename.
+    _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
+    _skynet_server_leaf: "{{ skynet_server_leaf | default('skynet-server') | string }}"
+    _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
+    _skynet_local: "{{ local_mode | default(false) | bool }}"
 
   tasks:
     # Read-only check of the credential path before anything is written: a refused
@@ -226,10 +239,10 @@
     - name: "Refuse skynet_launch_gate_url unless it is https"
       ansible.builtin.assert:
         that:
-          - (skynet_launch_gate_url | string) is match('^https://[^/:?#]+')
+          - (skynet_launch_gate_url | string) is match('^https://[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?(:[0-9]{1,5})?/?\Z')
         fail_msg: >-
-          skynet_launch_gate_url must be an https:// URL with a host name (the launch gate skynet calls over TLS). Set it in
-          the inventory and re-run, or remove it to leave the gate undeclared.
+          skynet_launch_gate_url must be an https origin: https://<host>[:port][/], with no user info, path, query, fragment or whitespace
+          (the launch gate skynet calls over TLS). Set it in the inventory and re-run, or remove it to leave the gate undeclared.
       when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
     - name: "Refuse skynet_launch_gate_ip unless it is one non-wildcard IPv4 address in production"
@@ -244,8 +257,94 @@
         - not (local_mode | default(false) | bool)
         - (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
+    # The HTTPS listener (skynet_tls). Renewal proves the leaf at skynet_bind:skynet_port with the names below, so each
+    # value is checked here, before anything changes, and each refusal names its variable.
+    - name: "Refuse a TLS deploy whose internal_leaves does not declare the skynet server leaf for this host"
+      ansible.builtin.assert:
+        that:
+          - _skynet_leaf_decl | length == 1
+          - _skynet_leaf_decl[0].profile == 'server'
+          - _skynet_leaf_decl[0].host == inventory_hostname
+          - _skynet_leaf_decl[0].dir == _deploy_dir ~ '/certs/' ~ _skynet_server_leaf
+          - _skynet_leaf_decl[0].reload == 'none'
+          - _skynet_tls_name in (_skynet_leaf_decl[0].sans | default([]))
+          - _skynet_server_leaf is match('^[A-Za-z0-9][A-Za-z0-9._-]*$')
+        fail_msg: >-
+          With skynet_tls, internal_leaves must declare `{{ _skynet_server_leaf }}` once (profile server, host
+          {{ inventory_hostname }}, dir {{ _deploy_dir }}/certs/{{ _skynet_server_leaf }}, reload none, sans
+          including {{ _skynet_tls_name }}). Local-dev declares it in bootstrap-local-dev.yml (skynet_svc); a local
+          inventory without it refuses here.
+        quiet: true
+      vars:
+        _skynet_leaf_decl: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _skynet_server_leaf) | list }}"
+      when: _skynet_tls
+
+    # Production only: renewal proves the listener at skynet_bind, and the deploy publishes it on skynet_bind too, so
+    # the value must be declared. Undeclared, the deploy would fall back to skynet_publish_bind while the proof fell
+    # back to 127.0.0.1, and the two would disagree.
+    - name: "Refuse a TLS production skynet_bind unless it is declared as one non-wildcard, non-loopback IPv4 address"
+      ansible.builtin.assert:
+        that:
+          - skynet_bind is defined
+          - (skynet_bind | string) is match('^(?!0[.]0[.]0[.]0$)((0|[1-9][0-9]{0,2})[.]){3}(0|[1-9][0-9]{0,2})$')
+          - ((skynet_bind | string).split('.') | map('int') | max) <= 255
+          - not ((skynet_bind | string) is match('^127[.]'))
+        fail_msg: >-
+          With skynet_tls in production, skynet_bind must be declared as the VM's own LAN IPv4 address: the HTTPS port is
+          published there and the renewal proof connects there. 0.0.0.0 and 127.x addresses are refused. Set it in the
+          inventory and re-run.
+      when:
+        - _skynet_tls
+        - not _skynet_local
+
+    # skynet_port is the HTTPS listener's host port (8443 by default). It must not equal the plain API's port.
+    - name: "Refuse skynet_port unless it is a whole port number from 1024 to 65535 and not skynet_publish_port"
+      ansible.builtin.assert:
+        that:
+          - (skynet_port | default(8443) | string) is match('^[0-9]{4,5}$')
+          - (skynet_port | default(8443) | string | int) >= 1024
+          - (skynet_port | default(8443) | string | int) <= 65535
+          - (skynet_port | default(8443) | string) != (skynet_publish_port | default(8380) | string)
+        fail_msg: >-
+          With skynet_tls, skynet_port must be a whole port number from 1024 to 65535 (the host port the HTTPS listener
+          is published on; 8443 by default) and must differ from skynet_publish_port (the plain API's port; 8380 by
+          default). Set it in the inventory and re-run.
+      when: _skynet_tls
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    # Production with the HTTPS listener: keep-id (compose.prod-tls.yml) needs podman 4.3 or later. This read runs
+    # after placement, because placement installs podman (tasks/place-monorepo.yml), so a fresh VM has one to read.
+    # Read-only. Undeclared, and in local mode, neither task runs.
+    - name: "Read the podman version for keep-id (production)"
+      ansible.builtin.command:
+        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
+      register: _skynet_podman_version
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - not _skynet_local
+        - _skynet_tls
+
+    - name: "Refuse a production run on a podman older than 4.3 (userns keep-id)"
+      ansible.builtin.assert:
+        that:
+          # The read must succeed first: a missing podman prints no version, and the comparison would then fail on ''.
+          - _skynet_podman_version.rc | default(1) == 0
+          # keep-id is a podman option: another engine's version number would pass the comparison.
+          - (container_engine | default('podman')) == 'podman'
+          - _skynet_podman_version.stdout is version('4.3', '>=')
+        fail_msg: >-
+          Production skynet needs podman 4.3 or later for the userns keep-id mapping (compose.prod-tls.yml), which the
+          HTTPS listener requires. This host runs
+          {{ container_engine | default('podman') }} {{ _skynet_podman_version.stdout | default('(no version read)') | trim }}
+          (read rc {{ _skynet_podman_version.rc | default('unset') }}). Run Install Podman on this host, then re-run this deploy.
+        quiet: true
+      when:
+        - not _skynet_local
+        - _skynet_tls
 
     - name: "Manage secrets and template env file"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
@@ -271,6 +370,29 @@
         _ca_host: "{{ groups['step_ca_svc'] | first }}"
         _ca_root_combined_dest: "{{ _deploy_dir ~ '/certs/ca-bundle-combined.crt' }}"
       when: not (local_mode | default(false) | bool)
+
+    # The HTTPS listener's server leaf (skynet_tls): key generated on this host, signed by the one step_ca_svc host
+    # (production) or by the local CA on this host (local_mode). Local-dev has no Renew Internal Certs run, and a local
+    # Clean Deploy keeps certs/, so the local deploy re-issues a leaf with under 7 days left. Production keeps an issued
+    # leaf (renewal's job). rc 0 = still valid for 7 days; rc 1 = expiring or absent. Read-only.
+    - name: "Local-dev: is the skynet server leaf valid for at least 7 more days"
+      ansible.builtin.command:
+        argv: [openssl, x509, -checkend, "604800", -noout, -in, "{{ _deploy_dir }}/certs/{{ _skynet_server_leaf }}/current/cert.pem"]
+      register: _skynet_leaf_fresh
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when:
+        - _skynet_tls
+        - _skynet_local
+
+    - name: "Issue the skynet server leaf (key here, signed on the CA host)"
+      ansible.builtin.include_tasks: tasks/mint-internal-cert.yml
+      vars:
+        _mint_name: "{{ _skynet_server_leaf }}"
+        _mint_ca_host: "{{ groups['step_ca_svc'] | first if not _skynet_local else inventory_hostname }}"
+        _mint_reissue: "{{ _skynet_local and (_skynet_leaf_fresh.rc | default(0)) != 0 }}"
+      when: _skynet_tls
 
     - name: "Create convenience symlink ~/skynet -> deploy dir"
       # Points ~/skynet at the deployment dir in the composable monorepo clone.
@@ -372,6 +494,39 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
+    # The launch-gate probe, shared by the two probe tasks below so their request contract cannot drift apart.
+    # The script is a linted file, run as `python -I -c`. argv carries only the mode, 'anon' or 'caller', and
+    # no secret. The anon mode never reads SKYNET_LAUNCH_GATE_TOKEN; only the caller mode reads it, inside the container.
+    _skynet_gate_probe_script: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/skynet-launch-gate-probe.py') }}"
+    # Play vars do not carry over from Phase 1, so the HTTPS probes redefine what they read. The names match
+    # Phase 1 and vars/renew-listener-servers.yml (the skynet row), and the bind default matches renewal's.
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
+    _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
+    _skynet_local: "{{ local_mode | default(false) | bool }}"
+    _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
+    _skynet_bind: "{{ skynet_bind | default('127.0.0.1') | string }}"
+    _skynet_port: "{{ skynet_port | default(8443) | string }}"
+    # Local-dev: these probes run in the Semaphore container, and the Mac's loopback publish is out of its reach, so a
+    # local probe dials the TLS name on the container's own port (8443) through the local-dev network alias
+    # (compose.local.yml) and sends no --resolve. Production dials the declared port and sends --resolve to the bind.
+    _skynet_probe_port: "{{ '8443' if _skynet_local else _skynet_port }}"
+    _skynet_plain_host: "{{ _skynet_tls_name if _skynet_local else _skynet_bind }}"
+    # curl, not uri: --resolve (production only) sends the declared name to the bind address, while the certificate is
+    # still verified against that name and the step-ca bundle. The body is discarded; only the status is read.
+    _tls_resolve: "{{ [] if _skynet_local else ['--resolve', _skynet_tls_name ~ ':' ~ _skynet_port ~ ':' ~ _skynet_bind] }}"
+    _tls_args:
+      - curl
+      - --silent
+      - --show-error
+      - --max-time
+      - "10"
+      - --output
+      - /dev/null
+      - --write-out
+      - "%{http_code}"
+      - --cacert
+      - "{{ _deploy_dir }}/certs/step-ca-bundle.crt"
 
   tasks:
     # Every check runs INSIDE the container, so it never depends on a published port or
@@ -634,31 +789,10 @@
           - exec
           - skynet
           - python
+          - -I
           - -c
-          - |
-            import json
-            import os
-            import urllib.error
-            import urllib.request
-            if not os.environ.get('SKYNET_LAUNCH_GATE_URL'):
-                print('env-missing')
-                raise SystemExit(0)
-            request = urllib.request.Request(
-                os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
-                data=b'{}',
-                headers={'Content-Type': 'application/json'},
-                method='POST',
-            )
-            try:
-                response = urllib.request.urlopen(request, timeout=10)
-                status, body = response.status, response.read()
-            except urllib.error.HTTPError as error:
-                status, body = error.code, error.read()
-            try:
-                code = json.loads(body.decode('utf-8')).get('error', '')
-            except (ValueError, AttributeError):
-                code = ''
-            print(status, code)
+          - "{{ _skynet_gate_probe_script }}"
+          - anon
       register: _skynet_gate_anon
       changed_when: false
       failed_when: false
@@ -690,31 +824,10 @@
           - exec
           - skynet
           - python
+          - -I
           - -c
-          - |
-            import json
-            import os
-            import urllib.error
-            import urllib.request
-            if not os.environ.get('SKYNET_LAUNCH_GATE_URL') or not os.environ.get('SKYNET_LAUNCH_GATE_TOKEN'):
-                print('env-missing')
-                raise SystemExit(0)
-            request = urllib.request.Request(
-                os.environ['SKYNET_LAUNCH_GATE_URL'].rstrip('/') + '/v1/launch',
-                data=b'{}',
-                headers={'Authorization': 'Bearer ' + os.environ['SKYNET_LAUNCH_GATE_TOKEN'], 'Content-Type': 'application/json'},
-                method='POST',
-            )
-            try:
-                response = urllib.request.urlopen(request, timeout=10)
-                status, body = response.status, response.read()
-            except urllib.error.HTTPError as error:
-                status, body = error.code, error.read()
-            try:
-                code = json.loads(body.decode('utf-8')).get('error', '')
-            except (ValueError, AttributeError):
-                code = ''
-            print(status, code)
+          - "{{ _skynet_gate_probe_script }}"
+          - caller
       register: _skynet_gate_authed
       changed_when: false
       failed_when: false
@@ -736,6 +849,77 @@
           env-missing means the running container predates the gate declaration; a dry run does not recreate it, so only a real run proves the gate.
       when: (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
+    # The HTTPS listener (skynet_tls), from this host against the step-ca bundle: the same listener and name that Renew
+    # Internal Certs proves. Skipped under --check, which starts nothing.
+    - name: "TLS listener: health over TLS from this host (GET /skynet/healthz -> 200, against the step-ca bundle)"
+      ansible.builtin.command:
+        argv: "{{ _tls_args + _tls_resolve + ['https://' ~ _skynet_tls_name ~ ':' ~ _skynet_probe_port ~ '/skynet/healthz'] }}"
+      register: _skynet_tls_health
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      retries: 10
+      delay: 3
+      until: _skynet_tls_health.stdout | trim == '200'
+      when: _skynet_tls and not ansible_check_mode
+
+    - name: "TLS listener: assert healthz answered 200 over TLS"
+      ansible.builtin.assert:
+        that:
+          - _skynet_tls_health.stdout | trim == '200'
+        fail_msg: >-
+          skynet /skynet/healthz over TLS answered {{ _skynet_tls_health.stdout | trim }} (curl rc {{ _skynet_tls_health.rc }}).
+          A certificate verify failure means the step-ca bundle at certs/step-ca-bundle.crt does not verify the leaf; a
+          refused or timed-out connection means the bind or port is not reachable; a 000 that survives the retries with the
+          listener up can mean the container cannot read its key (rootless keep-id, uid 10001), so check its logs for the
+          key's read error.
+      when: _skynet_tls and not ansible_check_mode
+
+    - name: "TLS listener: unauthenticated run listing is refused (GET /skynet/runs -> 401, against the step-ca bundle)"
+      ansible.builtin.command:
+        argv: "{{ _tls_args + _tls_resolve + ['https://' ~ _skynet_tls_name ~ ':' ~ _skynet_probe_port ~ '/skynet/runs'] }}"
+      register: _skynet_tls_unauthed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _skynet_tls and not ansible_check_mode
+
+    - name: "TLS listener: assert the unauthenticated run listing got 401"
+      ansible.builtin.assert:
+        that:
+          - _skynet_tls_unauthed.stdout | trim == '401'
+        fail_msg: >-
+          skynet GET /skynet/runs over TLS with no token answered {{ _skynet_tls_unauthed.stdout | trim }}, not 401
+          (curl rc {{ _skynet_tls_unauthed.rc }}). Anything else means the HTTPS listener serves run state without a bearer.
+      when: _skynet_tls and not ansible_check_mode
+
+    # The listener is TLS only, so plain HTTP to the same port must not answer 200.
+    - name: "TLS listener: plain HTTP to the TLS port must not answer 200"
+      ansible.builtin.command:
+        argv:
+          - curl
+          - --silent
+          - --output
+          - /dev/null
+          - --write-out
+          - "%{http_code}"
+          - --max-time
+          - "10"
+          - "http://{{ _skynet_plain_host }}:{{ _skynet_probe_port }}/skynet/healthz"
+      register: _skynet_tls_plain
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      when: _skynet_tls and not ansible_check_mode
+
+    - name: "TLS listener: refuse a plain-HTTP 200 from the TLS port"
+      ansible.builtin.assert:
+        that:
+          - _skynet_tls_plain.stdout | trim != '200'
+        fail_msg: "The skynet HTTPS listener answered plain HTTP with 200 on {{ _skynet_plain_host }}:{{ _skynet_probe_port }}; TLS is not enforced."
+        quiet: true
+      when: _skynet_tls and not ansible_check_mode
+
     - name: "Report"
       ansible.builtin.debug:
         msg: >-
@@ -744,7 +928,11 @@
           skynet's own OPA client got OPA's default deny over {{ skynet_opa_url | default('its OPA URL') }},
           and OPA refused skynet's write to /v1/data (401).
           {% if (skynet_launch_gate_url | default('', true) | string | trim | length) > 0 %}
+          {% if (_skynet_gate_authed.stdout_lines | default([]) | last | default('')) == 'env-missing' %}
+          The launch gate was not probed: skynet's running container has no launch-gate variables yet, and a dry run does not recreate it.
+          {% else %}
           The launch gate answered 401 to a request with no token and 400 to skynet's caller token, over {{ skynet_launch_gate_url }}.
+          {% endif %}
           {% else %}
           The launch gate is not declared (skynet_launch_gate_url unset), so it was not probed.
           {% endif %}

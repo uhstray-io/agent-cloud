@@ -612,7 +612,7 @@ mod tests {
                     mapped: true,
                     clusters: vec![Cluster {
                         name: "pve-prod".into(),
-                        vms: vec![vm("tududi", "red"), vm("honcho", "green")],
+                        vms: vec![vm("postiz", "red"), vm("honcho", "green")],
                         ..Cluster::default()
                     }],
                     ..Site::default()
@@ -693,7 +693,7 @@ mod tests {
 
     #[test]
     fn a_plain_click_replaces_and_a_shift_click_toggles() {
-        let a = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let a = vm_pick("dc1", "pve-prod", "postiz", 0);
         let b = vm_pick("dc1", "pve-prod", "honcho", 1);
         let one = after_click(&[], a.clone(), false);
         assert_eq!(one, vec![a.clone()]);
@@ -707,10 +707,10 @@ mod tests {
 
     #[test]
     fn two_vms_of_one_name_in_one_cluster_are_distinct_rows() {
-        // Two VMs named "tududi" in pve-prod: different IDs, different RAGs.
-        let mut first = vm("tududi", "red");
+        // Two VMs named "postiz" in pve-prod: different IDs, different RAGs.
+        let mut first = vm("postiz", "red");
         first.vmid = Some(101);
-        let mut second = vm("tududi", "green");
+        let mut second = vm("postiz", "green");
         second.vmid = Some(202);
         let inv = Inventory {
             sites: vec![Site {
@@ -730,15 +730,15 @@ mod tests {
             vm_key("dc1", "pve-prod", &second, 1)
         );
         // Two NetBox-only VMs have no VM ID, so only their position can tell them apart.
-        let unlinked = vm("tududi", "red");
+        let unlinked = vm("postiz", "red");
         assert_ne!(
             vm_key("dc1", "pve-prod", &unlinked, 0),
             vm_key("dc1", "pve-prod", &unlinked, 1),
             "same name and no VM ID: the position keys them apart"
         );
         // Distinct picks, so each selects on its own.
-        let a = vm_pick("dc1", "pve-prod", "tududi", 0);
-        let b = vm_pick("dc1", "pve-prod", "tududi", 1);
+        let a = vm_pick("dc1", "pve-prod", "postiz", 0);
+        let b = vm_pick("dc1", "pve-prod", "postiz", 1);
         assert_ne!(a, b);
         let picked = after_click(std::slice::from_ref(&a), b.clone(), true);
         assert_eq!(
@@ -769,14 +769,14 @@ mod tests {
     #[test]
     fn a_selection_rolls_up_to_the_worst_vm() {
         let inv = inventory();
-        let tududi = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let postiz = vm_pick("dc1", "pve-prod", "postiz", 0);
         let honcho = vm_pick("dc1", "pve-prod", "honcho", 1);
-        assert_eq!(selection_rag(&inv, std::slice::from_ref(&tududi)), Rag::Red);
+        assert_eq!(selection_rag(&inv, std::slice::from_ref(&postiz)), Rag::Red);
         assert_eq!(
             selection_rag(&inv, std::slice::from_ref(&honcho)),
             Rag::Green
         );
-        assert_eq!(selection_rag(&inv, &[honcho, tududi]), Rag::Red);
+        assert_eq!(selection_rag(&inv, &[honcho, postiz]), Rag::Red);
     }
 
     #[test]
@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn a_pick_whose_row_left_the_inventory_is_dropped() {
         let inv = inventory();
-        let kept = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let kept = vm_pick("dc1", "pve-prod", "postiz", 0);
         let gone = vm_pick("dc1", "pve-prod", "removed", 5);
         let moved = vm_pick("dc1", "pve-prod", "honcho", 0);
         let live = live_picks(&inv, &[kept.clone(), gone, moved]);
@@ -847,14 +847,14 @@ mod tests {
                 id: "dc1".into(),
                 clusters: vec![Cluster {
                     name: "pve-other".into(),
-                    vms: vec![vm("tududi", "green")],
+                    vms: vec![vm("postiz", "green")],
                     ..Cluster::default()
                 }],
                 ..Site::default()
             }],
             ..Inventory::default()
         };
-        let from_first = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let from_first = vm_pick("dc1", "pve-prod", "postiz", 0);
         assert!(!resolves(&other, &from_first));
         assert!(live_picks(&other, &[from_first]).is_empty());
     }
@@ -1030,7 +1030,7 @@ mod tests {
     fn services_follow_their_site_and_the_tree_gives_their_org() {
         let rows = vec![
             ServiceRow {
-                name: "tududi".into(),
+                name: "postiz".into(),
                 site: "dc1".into(),
                 ..ServiceRow::default()
             },
@@ -1049,7 +1049,7 @@ mod tests {
             .into_iter()
             .map(|r| r.name)
             .collect();
-        assert_eq!(names, ["tududi"]);
+        assert_eq!(names, ["postiz"]);
         assert_eq!(
             scoped_services(&rows, &Scope::default(), None, Some(&t)).len(),
             2,
@@ -1116,7 +1116,7 @@ mod tests {
     #[test]
     fn a_vm_pick_with_a_vm_id_survives_a_reorder() {
         let a = Vm {
-            name: "tududi".into(),
+            name: "postiz".into(),
             vmid: Some(101),
             rag: "red".into(),
             ..Vm::default()
@@ -1144,13 +1144,13 @@ mod tests {
             kind: Kind::Vm,
             site: "dc1".into(),
             cluster: Some("pve-prod".into()),
-            name: "tududi".into(),
+            name: "postiz".into(),
             ordinal: 0,
             vmid: Some(101),
         };
         assert!(resolves(&before, &picked));
 
-        // The list is reordered by the next poll: tududi moves to position 1.
+        // The list is reordered by the next poll: postiz moves to position 1.
         let after = site(vec![b, a]);
         assert!(resolves(&after, &picked), "found by VM ID, not by position");
         assert_eq!(
@@ -1176,7 +1176,7 @@ mod tests {
 
     #[test]
     fn a_vm_pick_without_a_vm_id_falls_back_to_position_and_name() {
-        let a = vm("tududi", "red");
+        let a = vm("postiz", "red");
         let b = vm("honcho", "green");
         let site = |vms: Vec<Vm>| Inventory {
             sites: vec![Site {
@@ -1190,7 +1190,7 @@ mod tests {
             }],
             ..Inventory::default()
         };
-        let picked = vm_pick("dc1", "pve-prod", "tududi", 0);
+        let picked = vm_pick("dc1", "pve-prod", "postiz", 0);
         assert!(resolves(&site(vec![a.clone(), b.clone()]), &picked));
         assert!(
             !resolves(&site(vec![b, a]), &picked),
@@ -1200,7 +1200,7 @@ mod tests {
 
     #[test]
     fn services_with_no_tree_and_no_inventory_are_loading_not_empty() {
-        let rows = vec![service("tududi", "dc1")];
+        let rows = vec![service("postiz", "dc1")];
         let scope = Scope {
             org: "ops".into(),
             ..Scope::default()
@@ -1219,7 +1219,7 @@ mod tests {
 
     #[test]
     fn an_empty_or_site_scope_does_not_wait_for_the_tree() {
-        let rows = vec![service("tududi", "dc1"), service("scratch", "dc2")];
+        let rows = vec![service("postiz", "dc1"), service("scratch", "dc2")];
         assert_eq!(
             services_in_scope(&rows, &Scope::default(), None, &Loaded::Loading),
             ScopedServices::Rows(rows.clone()),
@@ -1231,14 +1231,14 @@ mod tests {
         };
         assert_eq!(
             services_in_scope(&rows, &by_site, None, &Loaded::Loading),
-            ScopedServices::Rows(vec![service("tududi", "dc1")]),
+            ScopedServices::Rows(vec![service("postiz", "dc1")]),
             "a site is compared by id, so it needs no tree"
         );
     }
 
     #[test]
     fn an_env_scope_waits_for_the_tree_because_only_the_tree_has_envs() {
-        let rows = vec![service("tududi", "dc1")];
+        let rows = vec![service("postiz", "dc1")];
         let prod = Scope {
             env: Some("prod".into()),
             ..Scope::default()
@@ -1259,7 +1259,7 @@ mod tests {
         // answer the services came from, so it wins.
         let mut inv = inventory();
         inv.sites[0].org = "labs".into();
-        let rows = vec![service("tududi", "dc1")];
+        let rows = vec![service("postiz", "dc1")];
         let labs = Scope {
             org: "labs".into(),
             ..Scope::default()
@@ -1282,7 +1282,7 @@ mod tests {
 
     #[test]
     fn the_inventory_alone_resolves_an_org_scope_while_the_tree_loads() {
-        let rows = vec![service("tududi", "dc1")];
+        let rows = vec![service("postiz", "dc1")];
         let ops = Scope {
             org: "ops".into(),
             ..Scope::default()

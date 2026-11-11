@@ -10,6 +10,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
+
 ROOT = Path(__file__).resolve().parents[2]
 RULESETS = ROOT / ".github" / "rulesets"
 
@@ -121,7 +123,8 @@ def _run_check(tmp_path, gh_body):
     gh.chmod(0o755)
     env = dict(os.environ, PATH=f"{fake}{os.pathsep}{os.environ['PATH']}")
     return subprocess.run(
-        [str(RULESETS / "check-drift.sh"), "o/r"], env=env, capture_output=True, text=True, check=False
+        [str(RULESETS / "check-drift.sh"), "o/r"], env=env, capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 

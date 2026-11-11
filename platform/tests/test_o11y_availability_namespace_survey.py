@@ -9,8 +9,10 @@ are checked as playbook structure, and the report is also run under ansible-play
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -36,11 +38,16 @@ assert FILTER_SPEC and FILTER_SPEC.loader
 BUDGET = importlib.util.module_from_spec(FILTER_SPEC)
 FILTER_SPEC.loader.exec_module(BUDGET)
 
+CANDIDATE_CATEGORIES = [
+    "namespace_candidate_compose_unreadable", "namespace_candidate_inputs_label",
+    "namespace_candidate_pod", "namespace_candidate_alloy_spec", "namespace_candidate_ports",
+    "namespace_candidate_project",
+]
 CATEGORIES = [
     "namespace_alloy_unavailable", "namespace_alloy_host_port", "namespace_shared",
     "namespace_network_mode", "namespace_provider_unverified", "namespace_unstable",
-    "namespace_runtime_unreadable", "namespace_unverified",
-]
+    "namespace_runtime_unreadable", "namespace_unverified", "namespace_internal_error",
+] + CANDIDATE_CATEGORIES
 ALLOY = "a" * 64
 SIBLING = "b" * 64
 HOST_NAMESPACE = (7, 1)
@@ -85,6 +92,8 @@ def test_synthetic_baseline_is_isolated():
 
 def test_the_helper_and_the_filter_name_the_same_categories():
     assert GATE.AVAILABILITY_NAMESPACE_REASONS == BUDGET.AVAILABILITY_NAMESPACE_REASONS == frozenset(CATEGORIES)
+    # The filter-only word is computed from a helper exit code; the helper never prints it.
+    assert "namespace_helper_failed" not in GATE.AVAILABILITY_NAMESPACE_REASONS
 
 
 # Each row mutates the synthetic baseline so that exactly one decision point refuses.
@@ -271,15 +280,53 @@ def test_a_runtime_context_that_does_not_match_the_expected_fingerprint_is_provi
     assert _refusal_category(GATE.verify_availability_namespace) == "namespace_provider_unverified"
 
 
+def _stub_namespace_reads(monkeypatch, *, self_error=None):
+    """The host reference is the helper's own netns. /proc/1 is EACCES for the unprivileged deploy user.
+
+    Returns the list of paths the runtime pass stat'd, in order.
+    """
+    reads = []
+    real_stat = os.stat
+
+    def stat(path, *args, **kwargs):
+        if path in ("/proc/1/ns/net", "/proc/self/ns/net"):
+            reads.append(path)
+        if path == "/proc/1/ns/net":
+            raise PermissionError(13, "Permission denied", path)
+        if path == "/proc/self/ns/net":
+            if self_error is not None:
+                raise self_error
+            return SimpleNamespace(st_dev=HOST_NAMESPACE[0], st_ino=HOST_NAMESPACE[1])
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(GATE.os, "stat", stat)
+    return reads
+
+
+def test_the_runtime_pass_reads_the_helper_netns_and_never_pid_one(monkeypatch):
+    containers, _processes = _fixture()
+    monkeypatch.setattr(GATE, "_availability_inspect_all", lambda _deadline, _path: containers)
+    monkeypatch.setattr(GATE, "_availability_process_identity", lambda pid: {"pid": pid})
+    reads = _stub_namespace_reads(monkeypatch)
+    _related, _process_identities, host_namespace = GATE._availability_runtime_pass("/usr/bin/podman")
+    assert host_namespace == HOST_NAMESPACE
+    assert "/proc/self/ns/net" in reads and "/proc/1/ns/net" not in reads
+
+
+def test_an_unreadable_helper_namespace_is_an_unreadable_runtime(monkeypatch):
+    containers, _processes = _fixture()
+    monkeypatch.setattr(GATE, "_availability_inspect_all", lambda _deadline, _path: containers)
+    _stub_namespace_reads(monkeypatch, self_error=PermissionError(13, "Permission denied"))
+    assert _refusal_category(
+        lambda: GATE._availability_runtime_pass("/usr/bin/podman")
+    ) == "namespace_runtime_unreadable"
+
+
 def test_a_publisher_of_host_port_12345_is_refused_by_the_runtime_pass(monkeypatch):
     containers, _processes = _fixture()
     containers[1]["ports"] = {"12345/tcp": [{"HostIp": "0.0.0.0", "HostPort": "12345"}]}
     monkeypatch.setattr(GATE, "_availability_inspect_all", lambda _deadline, _path: containers)
-    real_stat = os.stat
-    monkeypatch.setattr(GATE.os, "stat", lambda path, *a, **k: (
-        SimpleNamespace(st_dev=HOST_NAMESPACE[0], st_ino=HOST_NAMESPACE[1]) if path == "/proc/1/ns/net"
-        else real_stat(path, *a, **k)
-    ))
+    _stub_namespace_reads(monkeypatch)
     assert _refusal_category(
         lambda: GATE._availability_runtime_pass("/usr/bin/podman")
     ) == "namespace_alloy_host_port"
@@ -289,9 +336,8 @@ def test_a_relative_podman_path_is_a_provider_refusal():
     assert _refusal_category(lambda: GATE._availability_runtime_pass("podman")) == "namespace_provider_unverified"
 
 
-def test_the_candidate_port_parser_keeps_the_generic_category():
-    # Candidate effective-compose checks stay generic on purpose: the survey is pre-placement only.
-    assert _refusal_category(lambda: GATE._availability_compose_port("4317")) == "namespace_unverified"
+def test_the_candidate_port_parser_names_the_ports_decision():
+    assert _refusal_category(lambda: GATE._availability_compose_port("4317")) == "namespace_candidate_ports"
 
 
 # ---- CLI -----------------------------------------------------------------------------------
@@ -311,14 +357,15 @@ def test_cli_prints_the_category_of_a_namespace_refusal(monkeypatch, capsys, cat
     assert json.loads(capsys.readouterr().out) == {"status": "unverified", "reason": category}
 
 
-def test_cli_prints_the_generic_reason_for_an_unexpected_exception(monkeypatch, capsys):
+def test_cli_prints_the_internal_error_category_for_an_unexpected_exception(monkeypatch, capsys):
     def explode(**_kwargs):
         raise RuntimeError("private detail SENTINEL-PRIVATE-TEXT /srv/example")
 
     assert _cli(monkeypatch, explode) == 2
     output = capsys.readouterr().out
-    assert json.loads(output) == {"status": "unverified", "reason": "namespace_unverified"}
+    assert json.loads(output) == {"status": "unverified", "reason": "namespace_internal_error"}
     assert "SENTINEL-PRIVATE-TEXT" not in output and "/srv/example" not in output
+    assert BUDGET.o11y_availability_namespace_diagnostic({"rc": 2, "stdout": output}) == "namespace_internal_error"
 
 
 def test_cli_does_not_print_a_refusal_that_is_not_a_namespace_category(monkeypatch, capsys):
@@ -359,9 +406,13 @@ def test_filter_returns_isolated_only_for_a_complete_isolated_result():
     "result",
     [
         "not a mapping",
-        {"rc": 1, "stdout": ISOLATED},
         {"rc": "0", "stdout": ISOLATED},
+        {"rc": "1", "stdout": ""},
+        {"rc": 1.0, "stdout": ""},
+        {"rc": None, "stdout": ""},
         {"rc": True, "stdout": ISOLATED},
+        {"rc": True, "stdout": ""},
+        {"rc": 2, "stdout": "{not json"},
         {"rc": 0, "stdout": None},
         {"rc": 0, "stdout": "{not json"},
         {"rc": 0, "stdout": ISOLATED.replace('"provider":', '"provider": "x", "provider":')},
@@ -379,6 +430,13 @@ def test_filter_returns_isolated_only_for_a_complete_isolated_result():
 )
 def test_filter_collapses_anything_else_to_the_generic_category(result):
     assert BUDGET.o11y_availability_namespace_diagnostic(result) == "namespace_unverified"
+
+
+@pytest.mark.parametrize("rc", [1, 3, 127, -9])
+def test_filter_names_a_helper_that_exited_before_printing(rc):
+    # An int exit code outside {0, 2} means the helper died before its own refusal handling ran.
+    assert BUDGET.o11y_availability_namespace_diagnostic({"rc": rc, "stdout": ""}) == "namespace_helper_failed"
+    assert BUDGET.o11y_availability_namespace_diagnostic({"rc": rc, "stdout": ISOLATED}) == "namespace_helper_failed"
 
 
 def test_filter_never_returns_protected_text():
@@ -511,7 +569,7 @@ def test_readmes_document_the_survey_and_the_fixed_categories():
     assert "survey-o11y-availability-gate.yml" in playbook_readme
     o11y = O11Y_README.read_text(encoding="utf-8")
     assert "Survey o11y Availability Gate (Dev)" in o11y
-    for category in CATEGORIES:
+    for category in CATEGORIES + ["namespace_helper_failed"]:
         assert category in o11y, category
 
 
@@ -668,15 +726,50 @@ def test_producer_refusal_from_provider_inspect_or_process_is_the_generic_source
 
 
 def test_native_only_producer_refusal_keeps_its_native_reason(monkeypatch, capsys, tmp_path):
-    # No single Alloy record is a native refusal; the gate's reason set must not widen for it.
+    # No single Alloy record is a native refusal with its own word, not a namespace one.
     _provider_mocks(monkeypatch, tmp_path)
     loki = f"{PRODUCER_ID}\tsha256:loki\ttrue\t4101\t2026-10-28T00:00:00Z\to11y\t{{}}\to11y\tloki\t/o11y-loki\n"
     monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=loki))
     code, readback = _source_cli(monkeypatch, capsys)
-    assert code == 2 and readback["reason"] == "native_source_unavailable"
+    assert code == 2 and readback["reason"] == "native_identity_alloy_count"
     assert BUDGET.o11y_availability_source_gate_diagnostic(
         {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
-    ) == "native_source_unavailable"
+    ) == "native_identity_alloy_count"
+
+
+def test_a_stopped_alloy_record_names_the_not_running_decision(monkeypatch, capsys, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    stopped = f"{PRODUCER_ID}\tsha256:alloy\tfalse\t0\t\to11y\t{{}}\to11y\talloy\t/o11y-alloy\n"
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=stopped))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2 and readback["reason"] == "native_identity_alloy_not_running"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
+    ) == "native_identity_alloy_not_running"
+
+
+@pytest.mark.parametrize("targets_raw", [
+    b"not json", b'{"status":"success","data":{"activeTargets":{}}}',
+    b'{"status":"success","data":{"activeTargets":["not-a-mapping"]}}',
+])
+def test_a_malformed_prometheus_targets_response_names_the_targets_decision(targets_raw):
+    with pytest.raises(GATE.Refusal, match="native_targets_invalid"):
+        GATE._active_prometheus_self_target(targets_raw, environment="prod", cluster="prod-west")
+
+
+def test_a_failed_targets_fetch_names_the_targets_fetch_decision(monkeypatch, capsys):
+    def refused(_path, reason="query_unavailable", **_kwargs):
+        raise GATE.Refusal(reason)
+
+    monkeypatch.setattr(GATE, "_validate_availability_source_payload", lambda _payload: {
+        "environment": "prod", "cluster": "prod-west",
+    })
+    monkeypatch.setattr(GATE, "_input_document", dict)
+    monkeypatch.delenv("O11Y_AVAILABILITY_SOURCE_JSON", raising=False)
+    monkeypatch.setattr(GATE, "_run_api", refused)
+    monkeypatch.setattr(GATE.sys, "argv", ["summarize-o11y-scrape-baseline.py", "--verify-availability-source"])
+    assert GATE.main() == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == "native_targets_unavailable"
 
 
 def _candidate_cli(monkeypatch, capsys, tmp_path):
@@ -687,10 +780,9 @@ def _candidate_cli(monkeypatch, capsys, tmp_path):
     return code, json.loads(capsys.readouterr().out)
 
 
-def test_candidate_compose_provider_refusal_is_the_generic_namespace_reason(monkeypatch, capsys, tmp_path):
+def test_candidate_compose_read_failure_names_the_compose_decision(monkeypatch, capsys, tmp_path):
     _provider_mocks(monkeypatch, tmp_path)
-    # The effective-config read is a real provider refusal in the candidate path; the wrap must
-    # make it the generic category for the CLI, as README states for candidate checks.
+    # The `compose config` command fails in the candidate path; the CLI names that decision point.
     for name in ("compose.prod.yml", "compose.availability.yml"):
         (tmp_path / name).write_text("services: {}\n", encoding="utf-8")
 
@@ -701,16 +793,444 @@ def test_candidate_compose_provider_refusal_is_the_generic_namespace_reason(monk
 
     monkeypatch.setattr(GATE, "_availability_command", command)
     code, result = _candidate_cli(monkeypatch, capsys, tmp_path)
-    assert code == 2 and result == {"status": "unverified", "reason": "namespace_unverified"}
+    assert code == 2 and result == {"status": "unverified", "reason": "namespace_candidate_compose_unreadable"}
 
 
-def test_candidate_refusal_raised_as_a_direct_call_is_also_generic(monkeypatch, tmp_path):
+def test_candidate_refusal_keeps_the_category_of_its_decision_point(monkeypatch, tmp_path):
     _provider_mocks(monkeypatch, tmp_path)
 
-    def provider_refusal(*_args):
-        raise GATE.Refusal("namespace_provider_unverified")
+    def label_refusal(*_args):
+        raise GATE.Refusal("namespace_candidate_inputs_label")
 
-    monkeypatch.setattr(GATE, "_verify_availability_effective_compose", provider_refusal)
+    monkeypatch.setattr(GATE, "_verify_availability_effective_compose", label_refusal)
     assert _refusal_category(
         lambda: GATE.verify_availability_namespace(validate_candidate=True)
-    ) == "namespace_unverified"
+    ) == "namespace_candidate_inputs_label"
+
+
+# ---- candidate effective-compose decision points (deploy.sh --candidate) -------------------
+# Each row below changes one thing in a crafted `compose config` result. The base config passes
+# every candidate check in enabled mode, so each refusal is the one decision point the row names.
+
+def _candidate_config(deployment_dir):
+    source = os.path.realpath(os.path.join(deployment_dir, "config", "config.alloy"))
+    return {
+        "name": "o11y",
+        "x-podman": {"in_pod": False},
+        "services": {
+            "alloy": {
+                "image": "docker.io/grafana/alloy:v1.5.1",
+                "command": ["run", "--server.http.listen-addr=127.0.0.1:12345", "/etc/alloy/config.alloy"],
+                "volumes": [{
+                    "type": "bind", "source": source, "target": "/etc/alloy/config.alloy", "read_only": True,
+                }],
+                "ports": [{"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": "127.0.0.1"}],
+            },
+            "prometheus": {"image": "docker.io/prom/prometheus:v3.0.0"},
+        },
+    }
+
+
+def _candidate(monkeypatch, tmp_path, config, *, enabled=True, overlays=(), raw=None):
+    """Run the real effective-compose check on one crafted `compose config` result."""
+    monkeypatch.setenv("O11Y_AVAILABILITY_ENABLED", "true" if enabled else "false")
+    monkeypatch.delenv("LOCAL_MODE", raising=False)
+    body = raw if raw is not None else yaml.safe_dump(config).encode("utf-8")
+    monkeypatch.setattr(GATE, "_availability_command", lambda _argv, **_kwargs: body)
+    return GATE._verify_availability_effective_compose(str(tmp_path), ["podman-compose"], list(overlays))
+
+
+def _mutated_refusal(monkeypatch, tmp_path, mutate, *, enabled=True):
+    config = _candidate_config(str(tmp_path))
+    mutate(config)
+    return _refusal_category(lambda: _candidate(monkeypatch, tmp_path, config, enabled=enabled))
+
+
+def _alloy(config):
+    return config["services"]["alloy"]
+
+
+def _listener(config, address):
+    _alloy(config)["command"][1] = f"--server.http.listen-addr={address}"
+
+
+def _ports(config, service, ports):
+    config["services"][service]["ports"] = ports
+
+
+def _label(config, digest, *names):
+    for name in names:
+        config["services"][name]["labels"] = {"io.agent-cloud.inputs-sha256": digest}
+
+
+def _pod_missing_and_alloy_wrong(config):
+    config.pop("x-podman")
+    _listener(config, "0.0.0.0:12345")
+
+
+COMPOSE_UNREADABLE_DECISIONS = [
+    lambda c: c.update(services=["alloy"]),
+    lambda c: c.update(services={}),
+    lambda c: c.update(services={f"svc{index}": {} for index in range(33)}),
+    lambda c: c["services"].update(sidecar="not-a-mapping"),
+    lambda c: c.pop("name"),
+    lambda c: c.update(name=""),
+]
+POD_DECISIONS = [
+    lambda c: c.pop("x-podman"),
+    lambda c: c.update({"x-podman": {"in_pod": True}}),
+    _pod_missing_and_alloy_wrong,
+]
+ALLOY_SPEC_DECISIONS = [
+    lambda c: c["services"].pop("alloy"),
+    lambda c: c["services"].update(alloy="not-a-mapping"),
+    lambda c: _alloy(c).update(entrypoint=["/bin/sh"]),
+    lambda c: _listener(c, "0.0.0.0:12345"),
+    lambda c: _alloy(c).update(command="run"),
+    lambda c: _alloy(c).update(network_mode="bridge"),
+    lambda c: _alloy(c).update(image="docker.io/grafana/alloy:latest"),
+    lambda c: _alloy(c).update(volumes={}),
+    lambda c: _alloy(c).update(volumes=[]),
+    lambda c: _alloy(c)["volumes"].append(dict(_alloy(c)["volumes"][0])),
+    lambda c: _alloy(c)["volumes"][0].update(type="volume"),
+    lambda c: _alloy(c)["volumes"][0].update(source="/etc/passwd"),
+    lambda c: _alloy(c)["volumes"][0].update(source=None),
+    lambda c: _alloy(c)["volumes"][0].update(read_only=False),
+    lambda c: _alloy(c)["volumes"].append(
+        {"type": "bind", "source": "/tmp", "target": "/etc/alloy/extra.alloy", "read_only": True}
+    ),
+    lambda c: _alloy(c)["volumes"].append({"type": "volume", "target": "/etc/alloy", "read_only": True}),
+    lambda c: _alloy(c)["volumes"].append({"type": "bind", "source": "/tmp", "target": "/etc", "read_only": True}),
+    lambda c: _alloy(c)["volumes"].append(
+        {"type": "bind", "source": "/tmp", "target": "/etc/alloy/", "read_only": True}
+    ),
+    lambda c: _alloy(c)["volumes"].append(
+        {"type": "bind", "source": "/tmp", "target": "//etc/alloy", "read_only": True}
+    ),
+]
+PORT_DECISIONS = [
+    lambda c: _alloy(c).update(ports="4317:4317"),
+    lambda c: _ports(c, "prometheus", [{"target": 12345, "published": "9999"}]),
+    lambda c: _ports(c, "prometheus", [{"target": 9999, "published": "12345"}]),
+    lambda c: _ports(c, "alloy", [{"target": 9999, "published": "4317", "protocol": "tcp", "host_ip": "127.0.0.1"}]),
+    lambda c: _ports(c, "alloy", [{"target": 4317, "published": "4317", "protocol": "udp", "host_ip": "127.0.0.1"}]),
+    lambda c: _ports(c, "alloy", [{"target": 4317, "published": "4317", "protocol": "tcp"}]),
+    lambda c: _ports(c, "alloy", [{"target": 4317, "published": "4317", "protocol": "tcp", "host_ip": "203.0.113.10"}]),
+    lambda c: _ports(c, "prometheus", ["4317"]),
+    lambda c: _ports(c, "prometheus", [{"target": 4317, "published": "4317", "extra": 1}]),
+    lambda c: _ports(c, "prometheus", [{"target": 9999, "published": "70000"}]),
+    lambda c: _ports(c, "prometheus", [{"target": True, "published": "4317"}]),
+]
+NETWORK_MODE_DECISIONS = [
+    lambda c: c["services"]["prometheus"].update(network_mode="host"),
+    lambda c: c["services"]["prometheus"].update(network_mode="container:other"),
+]
+
+
+@pytest.mark.parametrize("mutate", COMPOSE_UNREADABLE_DECISIONS)
+def test_candidate_compose_shape_refusals_name_compose_unreadable(monkeypatch, tmp_path, mutate):
+    assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_candidate_compose_unreadable"
+
+
+@pytest.mark.parametrize("raw", [b"services: [\n", b"\xff\xfe\x00"])
+def test_candidate_compose_output_that_is_not_yaml_or_utf8_is_unreadable(monkeypatch, tmp_path, raw):
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, _candidate_config(str(tmp_path)), raw=raw)
+    ) == "namespace_candidate_compose_unreadable"
+
+
+def test_candidate_missing_overlay_file_is_unreadable(monkeypatch, tmp_path):
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, _candidate_config(str(tmp_path)), overlays=["compose.absent.yml"])
+    ) == "namespace_candidate_compose_unreadable"
+
+
+def test_candidate_base_config_passes_every_check_in_enabled_mode(monkeypatch, tmp_path):
+    assert _candidate(monkeypatch, tmp_path, _candidate_config(str(tmp_path))) == "o11y"
+
+
+def test_candidate_pod_setting_is_checked_only_in_enabled_mode(monkeypatch, tmp_path):
+    config = _candidate_config(str(tmp_path))
+    config.pop("x-podman")
+    _listener(config, "0.0.0.0:12345")
+    assert _candidate(monkeypatch, tmp_path, config, enabled=False) == "o11y"
+
+
+@pytest.mark.parametrize("mutate", POD_DECISIONS)
+def test_candidate_pod_refusals_name_the_pod_decision(monkeypatch, tmp_path, mutate):
+    assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_candidate_pod"
+
+
+@pytest.mark.parametrize("mutate", ALLOY_SPEC_DECISIONS)
+def test_candidate_alloy_spec_refusals_name_the_alloy_spec_decision(monkeypatch, tmp_path, mutate):
+    assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_candidate_alloy_spec"
+
+
+# ---- the shape `podman-compose config` actually emits --------------------------------------
+# Captured from `podman-compose` 1.6.0 `config` over compose.yml + compose.prod.yml +
+# compose.availability.yml on 2026-11-10. Unlike Docker Compose it keeps the short volume and
+# port forms the compose file declares. The long-form fixture above alone hid this: the first
+# real enabled deploy (Semaphore task 14401) refused with namespace_candidate_alloy_spec.
+PODMAN_COMPOSE_ALLOY_VOLUMES = ["./config/config.alloy:/etc/alloy/config.alloy:ro"]
+PODMAN_COMPOSE_ALLOY_PORTS = ["127.0.0.1:4317:4317", "127.0.0.1:4318:4318"]
+
+
+def _podman_compose_config(deployment_dir):
+    config = _candidate_config(deployment_dir)
+    _alloy(config)["volumes"] = list(PODMAN_COMPOSE_ALLOY_VOLUMES)
+    _alloy(config)["ports"] = list(PODMAN_COMPOSE_ALLOY_PORTS)
+    return config
+
+
+def test_candidate_accepts_the_short_forms_podman_compose_emits(monkeypatch, tmp_path):
+    assert _candidate(monkeypatch, tmp_path, _podman_compose_config(str(tmp_path))) == "o11y"
+
+
+def test_candidate_reads_a_double_slash_config_target_as_the_config_mount(monkeypatch, tmp_path):
+    config = _podman_compose_config(str(tmp_path))
+    _alloy(config)["volumes"] = ["./config/config.alloy://etc/alloy/config.alloy:ro"]
+    assert _candidate(monkeypatch, tmp_path, config) == "o11y"
+
+
+def test_candidate_resolves_a_relative_source_against_the_deployment_dir(monkeypatch, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert _candidate(monkeypatch, tmp_path, _podman_compose_config(str(tmp_path))) == "o11y"
+    config = _candidate_config(str(tmp_path))
+    _alloy(config)["volumes"][0]["source"] = "./config/config.alloy"
+    assert _candidate(monkeypatch, tmp_path, config) == "o11y"
+
+
+SHORT_FORM_ALLOY_SPEC_DECISIONS = [
+    ["./config/config.alloy:/etc/alloy/config.alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:rw"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro,rw"],
+    ["/etc/passwd:/etc/alloy/config.alloy:ro"],
+    ["alloy-config:/etc/alloy/config.alloy:ro"],
+    ["/etc/alloy/config.alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro:extra"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "./config/config.alloy:/etc/alloy/config.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/extra.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/conf.d"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", 7],
+    ["./config/config.alloy::ro"],
+    # Shadowing or ambiguous targets: a mount at /etc/alloy or an ancestor, or a relative target.
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/etc/alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/etc/alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/../alloy/x:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc//alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/./alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc/alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc/alloy/extra.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:etc/alloy:ro"],
+    ["./config/config.alloy:etc/alloy/config.alloy:ro"],
+]
+
+
+@pytest.mark.parametrize("volumes", SHORT_FORM_ALLOY_SPEC_DECISIONS)
+def test_candidate_short_form_mount_refusals_name_the_alloy_spec_decision(monkeypatch, tmp_path, volumes):
+    config = _podman_compose_config(str(tmp_path))
+    _alloy(config)["volumes"] = volumes
+    assert _refusal_category(lambda: _candidate(monkeypatch, tmp_path, config)) == "namespace_candidate_alloy_spec"
+
+
+@pytest.mark.parametrize("mutate", PORT_DECISIONS)
+def test_candidate_port_refusals_name_the_ports_decision(monkeypatch, tmp_path, mutate):
+    assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_candidate_ports"
+
+
+@pytest.mark.parametrize("mutate", NETWORK_MODE_DECISIONS)
+def test_candidate_network_mode_on_another_service_keeps_the_network_mode_category(monkeypatch, tmp_path, mutate):
+    assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_network_mode"
+
+
+def test_candidate_service_entry_that_is_not_a_mapping_is_unreadable_under_a_label_overlay(
+    monkeypatch, tmp_path, inputs_label_overlay,
+):
+    digest = "a" * 64
+    path = inputs_label_overlay(_label_overlay("alloy", "prometheus", digest=digest))
+    config = _candidate_config(str(tmp_path))
+    _label(config, digest, "alloy")
+    config["services"]["prometheus"] = "not-a-mapping"
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, config, overlays=[path])
+    ) == "namespace_candidate_compose_unreadable"
+
+
+# ---- final-label overlay (inputs-label.yml) ------------------------------------------------
+
+@pytest.fixture
+def inputs_label_overlay():
+    """Write one overlay where the candidate validator accepts it: inputs-label.yml, in an owner-only
+    directory that sits directly under the real temporary directory. Cleanup removes only these two
+    entries, one plain delete each."""
+    made = []
+
+    def write(text):
+        directory = os.path.realpath(tempfile.mkdtemp(prefix="o11y-gate-test-", dir=tempfile.gettempdir()))
+        made.append(directory)
+        path = os.path.join(directory, "inputs-label.yml")
+        Path(path).write_text(text, encoding="utf-8")
+        made.append(path)
+        return path
+
+    yield write
+    for entry in reversed(made):
+        if os.path.isdir(entry):
+            os.rmdir(entry)
+        else:
+            os.remove(entry)
+
+
+def _label_overlay(*names, digest="a" * 64):
+    return yaml.safe_dump({"services": {
+        name: {"labels": {"io.agent-cloud.inputs-sha256": digest}} for name in names
+    }})
+
+
+def test_candidate_label_overlay_that_matches_the_effective_labels_is_accepted(
+    monkeypatch, tmp_path, inputs_label_overlay,
+):
+    digest = "a" * 64
+    path = inputs_label_overlay(_label_overlay("alloy", "prometheus", digest=digest))
+    config = _candidate_config(str(tmp_path))
+    _label(config, digest, "alloy", "prometheus")
+    assert _candidate(monkeypatch, tmp_path, config, overlays=[path]) == "o11y"
+
+
+def test_candidate_two_final_label_overlays_name_inputs_label(monkeypatch, tmp_path):
+    first, second = tmp_path / "first.yml", tmp_path / "second.yml"
+    first.write_text("services: {}\n", encoding="utf-8")
+    second.write_text("services: {}\n", encoding="utf-8")
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, _candidate_config(str(tmp_path)),
+                           overlays=[str(first), str(second)])
+    ) == "namespace_candidate_inputs_label"
+
+
+def test_candidate_final_overlay_at_an_invalid_path_names_inputs_label(monkeypatch, tmp_path):
+    other = tmp_path / "other.yml"
+    other.write_text(_label_overlay("alloy", "prometheus"), encoding="utf-8")
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, _candidate_config(str(tmp_path)), overlays=[str(other)])
+    ) == "namespace_candidate_inputs_label"
+
+
+def test_candidate_invalid_label_overlay_content_names_inputs_label(monkeypatch, tmp_path, inputs_label_overlay):
+    path = inputs_label_overlay("services: {}\n")
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, _candidate_config(str(tmp_path)), overlays=[path])
+    ) == "namespace_candidate_inputs_label"
+
+
+def test_candidate_label_service_set_that_differs_from_services_names_inputs_label(
+    monkeypatch, tmp_path, inputs_label_overlay,
+):
+    digest = "a" * 64
+    path = inputs_label_overlay(_label_overlay("alloy", "prometheus", "extra", digest=digest))
+    config = _candidate_config(str(tmp_path))
+    _label(config, digest, "alloy", "prometheus")
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, config, overlays=[path])
+    ) == "namespace_candidate_inputs_label"
+
+
+def test_candidate_inputs_sha256_label_mismatch_names_inputs_label(monkeypatch, tmp_path, inputs_label_overlay):
+    path = inputs_label_overlay(_label_overlay("alloy", "prometheus", digest="a" * 64))
+    config = _candidate_config(str(tmp_path))
+    _label(config, "b" * 64, "alloy", "prometheus")
+    assert _refusal_category(
+        lambda: _candidate(monkeypatch, tmp_path, config, overlays=[path])
+    ) == "namespace_candidate_inputs_label"
+
+
+# ---- running Alloy project versus the candidate project -------------------------------------
+
+def test_candidate_project_that_differs_from_the_running_alloy_names_the_project(monkeypatch, tmp_path):
+    _verify_context(monkeypatch)
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(tmp_path))
+    containers, processes = _fixture()
+    monkeypatch.setattr(GATE, "_availability_runtime_pass", lambda _path: _passes(containers, processes))
+    monkeypatch.setattr(GATE, "_verify_availability_effective_compose", lambda *_args: "other-project")
+    assert _refusal_category(
+        lambda: GATE.verify_availability_namespace(validate_candidate=True)
+    ) == "namespace_candidate_project"
+
+
+# ---- producer source gate folds every namespace word --------------------------------------
+
+@pytest.mark.parametrize("word", CANDIDATE_CATEGORIES)
+def test_producer_source_gate_folds_each_candidate_word_to_the_generic_reason(monkeypatch, capsys, word):
+    def refuse():
+        raise GATE.Refusal(word)
+
+    monkeypatch.setattr(GATE, "_availability_provider_context", refuse)
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2
+    assert readback == {
+        "status": "unavailable", "reason": "namespace_unverified",
+        "source": "unknown", "intended_source": "unknown", "matches_intended": False,
+    }
+
+
+
+def test_every_native_word_the_helper_raises_reaches_the_gate_diagnostic():
+    """A word the helper raises but the filter drops would be reported as producer_evidence_invalid."""
+    source = (ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py").read_text(encoding="utf-8")
+    raised = set(re.findall(r'Refusal\("(native_[a-z_]+)"\)', source))
+    raised |= set(re.findall(r'_run_api\([^)]*?"(native_[a-z_]+)"', source))
+    raised |= set(re.findall(r'"status": "unavailable", "reason": "(native_[a-z_]+)"', source))
+    assert raised, "no native refusal words found"
+    missing = raised - BUDGET.SOURCE_GATE_REFUSAL_REASONS
+    assert not missing, f"raised but dropped by the diagnostic filter: {sorted(missing)}"
+    for word in raised:
+        readback = {"status": "unavailable", "reason": word, "source": "unknown",
+                    "intended_source": "unknown", "matches_intended": False}
+        assert BUDGET.o11y_availability_source_gate_diagnostic(
+            {"rc": 2, "stdout": json.dumps(readback), "stderr": ""}
+        ) == word
+
+
+def test_an_unusable_podman_path_names_the_podman_identity_decision(monkeypatch):
+    monkeypatch.setattr(GATE, "_availability_provider_context", lambda: (
+        ["podman-compose"], [], "1.3.0", "4.9.3", [], {"podman": {"path": "podman"}},
+    ))
+    with pytest.raises(GATE.Refusal, match="native_identity_podman_unavailable"):
+        GATE._current_alloy_identity()
+
+
+def test_the_survey_source_read_turns_an_unexpected_exception_into_its_own_word(monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("detail that must never be printed")
+
+    monkeypatch.setattr(GATE, "_validate_availability_source_payload", lambda _payload: {
+        "availability": {}, "shared_limits": {}, "environment": "prod", "cluster": "prod-west",
+        "intended_source": "alloy", "lower_bound": None, "freshness_seconds": 300,
+        "require_health_targets": True, "candidate_config_sha256": None,
+        "previous_source": None, "previous_container_sha256": None,
+    })
+    monkeypatch.setattr(GATE, "collect_current_availability_source", explode)
+    _context, result = GATE._survey_source_result(b"{}", {}, json.dumps({"reviewed": True}))
+    assert result["reason"] == "native_source_internal_error"
+    assert "detail" not in json.dumps(result)
+
+
+
+def test_zero_containers_is_an_alloy_count_for_the_producer_identity(monkeypatch, capsys, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row="", ids=""))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2 and readback["reason"] == "native_identity_alloy_count"
+
+
+def test_zero_containers_still_refuses_the_namespace_inspect(monkeypatch, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row="", ids=""))
+    with pytest.raises(GATE.Refusal, match="namespace_runtime_unreadable"):
+        GATE._availability_inspect_all(GATE.time.monotonic() + 5, "/usr/bin/podman")

@@ -9,7 +9,6 @@ load assert_helpers
 ORDER="local-semaphore authentik-worker authentik-server authentik-redis authentik-postgresql caddy step-ca dns local-openbao"
 
 setup() {
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
   REPO_ROOT=$(git rev-parse --show-toplevel)
   SCRIPT="$REPO_ROOT/scripts/local-dev.sh"
   MF="$REPO_ROOT/Makefile"

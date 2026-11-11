@@ -2,7 +2,7 @@
 # deploy-service.yml — Deploy a single service from the agent-cloud monorepo.
 #
 # Usage:
-#   ansible-playbook deploy-service.yml -e "target_service=nocodb_svc"
+#   ansible-playbook deploy-service.yml -e "target_service=plane_svc"
 #   Semaphore task template: set target_service as extra variable.
 #
 # Requires inventory vars per host: service_name, monorepo_repo,

@@ -488,6 +488,9 @@ live_listeners() {
 #      require both to be gone.
 cmd_quiesce() {
   local drain="${RUNNER_DRAIN_SECONDS:-600}" grace="${RUNNER_STOP_GRACE_SECONDS:-300}"
+  # The wait after SIGKILL. The default is production's; the BATS quiesce tests shorten it,
+  # because a fake Listener that survives SIGKILL runs the whole wait.
+  local kill_wait="${RUNNER_KILL_WAIT_SECONDS:-30}"
   local uid deadline rc=0 cg procs="" listeners="" left stray
   uid=$(id -u)
 
@@ -545,7 +548,7 @@ cmd_quiesce() {
   if [ -n "$left$stray" ]; then
     # shellcheck disable=SC2086
     kill -KILL $left $stray 2>/dev/null || true
-    deadline=$((SECONDS + 30))
+    deadline=$((SECONDS + kill_wait))
     # shellcheck disable=SC2086
     while { [ -n "$procs" ] && [ -n "$(cat "$procs" 2>/dev/null || true)" ]; } \
           || [ -n "$(live_listeners $stray)" ]; do

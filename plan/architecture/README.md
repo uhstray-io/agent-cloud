@@ -1,7 +1,18 @@
 # plan/architecture
 
 Current-state architecture and the decisions that produced it, as **numbered
-documents** read in order (`00-foundation-standards.md` is the index).
+documents (00, 01–06, 08, 09)** read in order (`00-foundation-standards.md` is the index):
+
+- [00 — Architecture Foundation & Doc Standards](00-foundation-standards.md)
+- [01 — Automation Model](01-automation-model.md)
+- [02 — Service Onboarding](02-service-onboarding.md)
+- [03 — Testing & CI Quality](03-testing-ci-quality.md)
+- [04 — Credentials & Access](04-credentials-access.md)
+- [05 — Platform Infrastructure](05-platform-infra.md)
+- [06 — Observability Instrumentation](06-observability-instrumentation.md)
+- [08 — Ansible Automation Standards](08-ansible-automation-standards.md)
+- [09 — Console UI Principles](09-console-ui-principles.md)
+- [Skills Recommendation](skills-recommendation.md)
 
 This is the repo's own decision-record convention and it is authoritative here.
 It is deliberately *not* the `DECISIONS.md` + `YYYY/YYYY-MM.md` layout used by

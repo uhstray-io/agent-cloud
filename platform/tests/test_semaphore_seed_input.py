@@ -85,7 +85,7 @@ class FakeAPI:
     def __call__(self, path, body=None):
         self.calls.append((path, copy.deepcopy(body)))
         if path == "/templates":
-            return [copy.deepcopy(self.template), {"id": 5, "name": "Deploy n8n", "environment_id": 2,
+            return [copy.deepcopy(self.template), {"id": 5, "name": "Deploy Postiz", "environment_id": 2,
                                                    "environment_ids": [2]},
                     *copy.deepcopy(self.extra_templates)]
         if path == "/templates/301":

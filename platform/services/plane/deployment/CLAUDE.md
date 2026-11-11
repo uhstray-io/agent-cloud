@@ -70,6 +70,65 @@ The OIDC client secret is Authentik's (`secret/services/authentik:plane_oidc_cli
 injected into the provider by `blueprints/plane-oidc.yaml`). The deploy shared-reads it, only when
 `plane_authentik_base` is set, and never stores a copy under `secret/services/plane`.
 
+The Pro licence key is the operator's, at `plane_license_key`, and the deploy never generates it.
+Seed it through the isolated seed environment, with the value in a file, never in argv:
+
+```bash
+scripts/semaphore-seed-input.py --template "Seed OpenBao Key" --variant dev \
+  --set bao_path=services/plane --set bao_key=plane_license_key \
+  --input BAO_VALUE=<key-file> --inventory <id> --url <semaphore> [--apply] < <token-file>
+```
+
+Phase 3c of `deploy-plane.yml` (`activate_license.py`) then signs in as the workspace owner (the
+automation account; billing needs owner or Admin, and Admin needs the licence, so no person needs
+Admin first), reads the plan,
+and only when it is not `plane_license_plan` (default `PRO`) posts the key to
+`/api/payments/workspaces/<slug>/licenses/` — the route the Billing page calls; Plane documents
+no other — and reads the plan back. No key stored: the phase reports that and skips. A refusal
+reports the HTTP status only, because Plane's error body can echo the key.
+
+### GitHub integration
+
+On when the inventory declares `plane_github_app_id` (with `plane_github_app_name`, the App's
+slug, and `plane_github_client_id`; none of the three is secret). Removing `plane_github_app_id`
+switches it off on the next deploy. The App's OAuth client secret (`plane_github_client_secret`)
+and private key (`plane_github_private_key`, the base64 of the PEM on one line, which is what
+Plane reads in `GITHUB_PRIVATE_KEY` and what the seed CLI accepts) are the operator's: seed each
+with Seed OpenBao Key as above, and the deploy refuses to run without them while the App is
+declared. `plane_github_webhook_secret` is generated once.
+
+`env.j2` renders the six `GITHUB_*` values together or fails. Phase 3d then sets the App's own
+webhook (URL `<plane_public_url>/silo/api/github/github-webhook`, JSON, and the same secret)
+through `github_app_token.py set-hook-secret` on the controller; GitHub never returns the secret,
+so it is set on every deploy. Verify sends an unsigned delivery through the proxy and requires
+401: spike 0.16 showed silo answers 403 when it has no App configured and 401 to an unsigned
+delivery once it has the App and the secret. The Cloudflare challenge skip for that one path
+(`plane-github-webhook-bypass-challenge` in `platform/infra/cloudflare/waf.tf`) depends on that
+check. It is safe to apply at any time: with no App configured silo answers every delivery 403, so
+it is not gated on the deploy; after both are live, redeliver one App delivery and expect 202.
+
+Integrations lists GitHub only once Plane's marketplace application for it exists. Plane creates
+those applications from a migration that skips on an empty database, from the add-admin endpoint,
+or from `setup_instance`. Our first admin signs up through the sign-up endpoint, which takes none
+of those paths. Phase 3e (`ensure_marketplace_apps.py`, inside plane-api) therefore runs Plane's own
+`create_applications`, which skips any application already present, and fails unless all of them
+exist (MISTAKES 1.33).
+
+Connecting the organization is a one-time step in Plane: Workspace settings > Integrations >
+GitHub > Connect. GitHub sends the browser back to Plane only when the App has the Setup URL
+`<plane_public_url>/silo/api/github/auth/callback` and "Redirect on update" turned on. With the App
+already installed, GitHub otherwise stops on its own installation page. Each person connects their
+own GitHub account on the same page ("Connect Personal Account"); that needs the callback URL
+`<plane_public_url>/silo/api/github/auth/user/callback` on the App.
+
+Sync Plane Projects Play 3 (`link_github_repos.py`) then links every declared project that names a
+repository to it, by creating the two records Plane's own GitHub settings create: the "Project
+Issue Sync" link, and the "Pull Request State Mapping". The states match the choices Joseph made by
+hand for the first eight projects. Open issues go to Todo and closed ones to Done. Pull requests go
+Backlog (draft), then Todo (opened), then In Progress (review requested or ready for merge), then Done (merged);
+a closed pull request goes to Cancelled. Silo
+authenticates by session, so the script signs in as the automation account.
+
 Plane ships **working default credentials** in `variables.env` and in its Compose fallbacks,
 identical on every install. `env.j2` refuses to render if any of them comes out empty or
 equal to the shipped value. Note the RabbitMQ trap: Plane's Compose reads `RABBITMQ_PASSWORD`,
@@ -113,6 +172,8 @@ address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automatio
 through Authentik on, and leaving it unset switches it OFF on the next deploy. `plane_admin_role`
 (default `admin`) is the role `platform-admins` get from the member reconcile; local-dev sets
 `member`, because the Admin role is a plan feature (`WORKSPACE_ADMIN_ROLE`) the Free plan lacks.
+`plane_github_app_id`, `plane_github_app_name` and `plane_github_client_id` turn the GitHub
+integration on (see Credentials).
 
 ## Operate
 

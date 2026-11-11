@@ -1595,23 +1595,114 @@ def test_a_server_leaf_on_a_host_in_no_listener_group_keeps_the_gateway_refusal(
              "a server leaf can be proven only as the gateway's own (agentgateway_svc, agw_server_leaf)")
 
 
+# ── The skynet API's HTTPS listener leaf (skynet_svc: deploy-skynet.yml's skynet_tls listener) ──
+
+def _skynet_leaf(tmp: Path) -> dict:
+    """The skynet host's server leaf, at the path the TLS deploy gives it (<deploy>/certs/<leaf>)."""
+    return {"name": "skynet-server", "host": "skynet",
+            "dir": str(tmp / "skynet-root/skynet-deploy/certs/skynet-server"),
+            "profile": "server", "sans": [f"skynet.{ZONE}"], "reload": "none"}
+
+
+def _skynet_host(tmp: Path, port, **over) -> dict:
+    """The skynet_svc host's vars: the TLS switch on, the bind and port the proof connects to, the deploy dir under
+    the test root. The name defaults to skynet.<dns_site>.<dns_zone>."""
+    host = {"skynet_tls": True, "skynet_bind": "127.0.0.1", "skynet_port": str(port),
+            "local_monorepo_dir": str(tmp / "skynet-root"), "monorepo_deploy_path": "skynet-deploy"}
+    return {**host, **over}
+
+
+def _skynet_listener(world, leaf, frozen=False):
+    """A skynet-shaped listener: it serves `current` on each new connection (or, `frozen`, the leaf it started with)
+    and asks for no client certificate."""
+    scratch = world.tmp / "skynet-scratch"
+    scratch.mkdir(exist_ok=True)
+    return _thread(_gateway(world.ca, leaf, [], scratch, frozen, True))
+
+
+def test_a_skynet_server_leaf_is_admitted_renewed_and_proven_by_its_name(world):
+    skynet = _skynet_leaf(world.tmp)
+    _place(world.ca, skynet, DUE)
+    world.place()
+    before = _current_serial(skynet)
+    with _skynet_listener(world, skynet) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), skynet],
+                            host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, listener.server_port)}})
+    assert rc == 0, out
+    assert "skynet-server (skynet-server)" in out and "host renews" in out
+    assert "skynet listener served the expected serial, verified by name against the bundle" in out
+    assert _current_serial(skynet) != before
+    assert [c["sans"] for c in world.signed()] == [[f"skynet.{ZONE}"]]
+    assert world.reloads() == [], "skynet re-reads its leaf itself: nothing is reloaded or restarted"
+    [run] = [s for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert run["stream"]["status"] == "success"
+    assert json.loads(run["values"][0][1])["renewed"] == ["skynet-server"]
+
+
+def test_a_skynet_listener_still_serving_the_old_leaf_fails_the_run(world):
+    skynet = _skynet_leaf(world.tmp)
+    _place(world.ca, skynet, DUE)
+    world.place()
+    with _skynet_listener(world, skynet, frozen=True) as listener:
+        rc, out = world.run(leaves=[*world.leaves.values(), skynet], extra={"renew_proof_retries": 1},
+                            host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, listener.server_port)}})
+    assert rc != 0
+    assert "Prove OPA serves the new server leaf, and each other self-reloading listener its own" in out
+    runs = [s["stream"] for s in world.streams() if s["stream"]["kind"] == "run"]
+    assert runs == [{"job": "renew-internal-certs", "kind": "run", "status": "failure"}]
+
+
+@pytest.mark.parametrize("change,host_over", [
+    (lambda leaf, tmp: None, {"skynet_tls": False}),
+    (lambda leaf, tmp: leaf.update(reload="restart"), {}),
+    (lambda leaf, tmp: leaf.update(dir=str(tmp / "skynet-root/elsewhere/skynet-server")), {}),
+    (lambda leaf, tmp: leaf.update(sans=[f"other.{ZONE}"]), {}),
+    (lambda leaf, tmp: leaf.update(name="skynet-api", dir=str(tmp / "skynet-root/skynet-deploy/certs/skynet-api")), {}),
+], ids=["skynet-tls-off", "reload-restart", "dir-off-deploy", "name-not-in-sans", "wrong-leaf-name"])
+def test_a_skynet_server_leaf_outside_its_declared_shape_is_refused_before_issuance(world, change, host_over):
+    skynet = _skynet_leaf(world.tmp)
+    change(skynet, world.tmp)
+    _place(world.ca, skynet, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), skynet],
+                        host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, 8443, **host_over)}})
+    _refused(world, out, rc, "the skynet server leaf is admitted only as the skynet_svc host's own")
+
+
+def test_the_skynet_refusal_names_the_declared_shape_word_for_word(world):
+    # Byte-identity pin for the skynet admission message, as the OPA and launch-gate pins above: a change to the tail
+    # of the message would pass the prefix-only refusals.
+    skynet = _skynet_leaf(world.tmp)
+    skynet.update(reload="restart")
+    _place(world.ca, skynet, DUE)
+    world.place()
+    rc, out = world.run(leaves=[*world.leaves.values(), skynet],
+                        host_over={"skynet_svc": {"skynet": _skynet_host(world.tmp, 8443)}})
+    _refused(world, out, rc, "skynet-server: the skynet server leaf is admitted only as the skynet_svc host's own "
+                             "(skynet_tls on, skynet_server_leaf, reload none, dir <deploy>/certs/<leaf>, "
+                             "SAN skynet_tls_server_name)")
+
+
 # ── The listener table's fallbacks match each service's own compose default ──
 # A row's default_port is what the proof connects to when the host declares no port. If it drifted from
 # the port the service publishes, a host relying on the default would fail its proof every day, and the
 # behaviour tests (which all set the port) would not notice. Review of PR 842.
-_LISTENER_COMPOSE = {
-    "opa-server": ("platform/services/opa/deployment/compose.yml", "OPA_PORT"),
-    "launch-gate-server": ("platform/services/launch-gate/deployment/compose.yml", "LAUNCH_GATE_PORT"),
+# Each entry: the file that holds the service's default port, the text that comes just before the default, and the
+# character that ends it. skynet publishes through compose.tls.yml's required variable (no default there), so its
+# default is the one the deploy's env template renders.
+_LISTENER_DEFAULTS = {
+    "opa-server": ("platform/services/opa/deployment/compose.yml", "${OPA_PORT:-", "}"),
+    "launch-gate-server": ("platform/services/launch-gate/deployment/compose.yml", "${LAUNCH_GATE_PORT:-", "}"),
+    "skynet-server": ("platform/services/skynet/deployment/templates/env.j2", "skynet_port | default(", ")"),
 }
 
 
 def test_each_listener_row_defaults_to_its_services_published_port():
     table = yaml.safe_load((playbook_yaml.REPO / "platform/playbooks/vars/renew-listener-servers.yml").read_text())
     rows = {row["class"]: row for row in table["_renew_listener_servers"]}
-    assert sorted(rows) == sorted(_LISTENER_COMPOSE)
-    for cls, (compose_path, var) in _LISTENER_COMPOSE.items():
-        compose = (playbook_yaml.REPO / compose_path).read_text()
-        marker = "${" + var + ":-"
-        start = compose.index(marker) + len(marker)
-        published = compose[start:compose.index("}", start)]
+    assert sorted(rows) == sorted(_LISTENER_DEFAULTS)
+    for cls, (path, marker, end) in _LISTENER_DEFAULTS.items():
+        text = (playbook_yaml.REPO / path).read_text()
+        start = text.index(marker) + len(marker)
+        published = text[start:text.index(end, start)]
         assert rows[cls]["default_port"] == published, (cls, rows[cls]["default_port"], published)

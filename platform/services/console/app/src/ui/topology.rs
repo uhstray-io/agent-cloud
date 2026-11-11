@@ -929,12 +929,12 @@ mod tests {
     }
 
     fn inventory() -> Inventory {
-        let mut tududi = vm("tududi", "red", Some("running"));
-        tududi.workflow = Some(Workflow {
+        let mut postiz = vm("postiz", "red", Some("running"));
+        postiz.workflow = Some(Workflow {
             failed: vec!["step-b".into()],
             ..Workflow::default()
         });
-        tududi.grafana_url = Some("https://grafana.example.test/d/service-overview".into());
+        postiz.grafana_url = Some("https://grafana.example.test/d/service-overview".into());
         Inventory {
             sites: vec![
                 Site {
@@ -958,7 +958,7 @@ mod tests {
                             maxmem: Some(68_719_476_736),
                             uptime: Some(123_456),
                         }],
-                        vms: vec![tududi, vm("honcho", "green", Some("running"))],
+                        vms: vec![postiz, vm("honcho", "green", Some("running"))],
                     }],
                     ..Site::default()
                 },
@@ -989,7 +989,7 @@ mod tests {
     fn a_vm_detail_carries_its_rag_grafana_link_and_workflow() {
         let d = detail(
             &inventory(),
-            &pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0),
+            &pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 0),
         )
         .unwrap();
         assert_eq!(d.kind_label, "VM");
@@ -1041,7 +1041,7 @@ mod tests {
 
     #[test]
     fn a_vm_disk_is_shown_in_its_own_unit() {
-        let mut big = vm("tududi", "green", Some("running"));
+        let mut big = vm("postiz", "green", Some("running"));
         big.disk_mb = Some(40_960);
         let row = vm_detail(&big, "dc1", "pve-prod")
             .rows
@@ -1062,9 +1062,9 @@ mod tests {
 
     #[test]
     fn two_vms_of_one_name_show_their_own_detail() {
-        let mut first = vm("tududi", "red", Some("running"));
+        let mut first = vm("postiz", "red", Some("running"));
         first.vmid = Some(101);
-        let mut second = vm("tududi", "green", Some("stopped"));
+        let mut second = vm("postiz", "green", Some("stopped"));
         second.vmid = Some(202);
         let inv = Inventory {
             sites: vec![Site {
@@ -1078,8 +1078,8 @@ mod tests {
             }],
             ..Inventory::default()
         };
-        let a = detail(&inv, &pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0)).unwrap();
-        let b = detail(&inv, &pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 1)).unwrap();
+        let a = detail(&inv, &pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 0)).unwrap();
+        let b = detail(&inv, &pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 1)).unwrap();
         assert!(a.rows.iter().any(|(k, v)| *k == "VM ID" && v == "101"));
         assert!(b.rows.iter().any(|(k, v)| *k == "VM ID" && v == "202"));
         assert_eq!(a.rag, Some(Rag::Red));
@@ -1239,8 +1239,8 @@ mod tests {
     fn a_site_chip_shows_the_site_and_other_rows_their_name() {
         assert_eq!(pick_name(&pick(Kind::Site, "dc1", None, "", 0)), "dc1");
         assert_eq!(
-            pick_name(&pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0)),
-            "tududi"
+            pick_name(&pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 0)),
+            "postiz"
         );
         // The separator used in keys is not a character a name can carry.
         assert_eq!(SEP, '\u{1f}');
@@ -1249,7 +1249,7 @@ mod tests {
     #[test]
     fn a_vm_pick_keeps_its_panel_after_a_reorder() {
         let a = Vm {
-            name: "tududi".into(),
+            name: "postiz".into(),
             vmid: Some(101),
             rag: "red".into(),
             ..Vm::default()
@@ -1272,16 +1272,16 @@ mod tests {
             }],
             ..Inventory::default()
         };
-        // Picked while tududi was first, then the next poll put honcho first.
+        // Picked while postiz was first, then the next poll put honcho first.
         let picked = Pick {
             ordinal: 0,
             vmid: Some(101),
-            ..pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0)
+            ..pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 0)
         };
         let reordered = site(vec![b, a]);
         let d = detail(&reordered, &picked).expect("the pick still names a VM");
         assert_eq!(
-            d.title, "tududi",
+            d.title, "postiz",
             "the panel shows the picked VM, not the one now first"
         );
         assert!(d.rows.iter().any(|(k, v)| *k == "VM ID" && v == "101"));
@@ -1290,7 +1290,7 @@ mod tests {
 
     #[test]
     fn enter_and_space_select_a_row_and_shift_toggles_it() {
-        let a = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0);
+        let a = pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 0);
         let b = pick(Kind::Vm, "dc1", Some("pve-prod"), "honcho", 1);
         let space = Key::Character(" ".to_string());
         // Plain Enter or Space replaces the selection.
@@ -1315,7 +1315,7 @@ mod tests {
 
     #[test]
     fn other_keys_leave_the_selection_alone() {
-        let a = pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0);
+        let a = pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 0);
         for key in [
             Key::Escape,
             Key::Tab,
@@ -1378,7 +1378,7 @@ mod tests {
     #[test]
     fn the_selection_live_region_is_in_the_page_and_names_the_count() {
         let two = vec![
-            pick(Kind::Vm, "dc1", Some("pve-prod"), "tududi", 0),
+            pick(Kind::Vm, "dc1", Some("pve-prod"), "postiz", 0),
             pick(Kind::Vm, "dc1", Some("pve-prod"), "honcho", 1),
         ];
         let html = dioxus::ssr::render_element(rsx! {

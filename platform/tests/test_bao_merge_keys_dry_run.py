@@ -5,11 +5,10 @@ _bm_data, and the report dereferenced _bm_data, so the dry run failed instead of
 revocation. Runs the real task under --check. Requires ansible-playbook.
 """
 
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -30,10 +29,7 @@ def _report(tmp_path, **inputs):
     }]
     path = tmp_path / "report.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", "--check", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    return harness_sandbox.run_playbook(path, tmp_path, "--check")
 
 
 def test_a_remove_only_merge_reports_the_removal(tmp_path):

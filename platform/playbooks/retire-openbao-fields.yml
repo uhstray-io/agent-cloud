@@ -1,0 +1,228 @@
+---
+# retire-openbao-fields.yml — remove the OpenBao KV-v2 fields that
+# platform/playbooks/vars/retired-secret-fields.yml declares retired, as code.
+#
+# A retired field is one no live code reads or writes any more, and the store keeps it until this
+# playbook removes it. The removal is one KV-v2 merge-patch per path, with a null for each planned
+# field (RFC 7396). OpenBao keeps every sibling field, and tasks/bao-merge-keys.yml verifies its own
+# write. The declaration is the authority: a field is retired by a change that lists it there.
+#
+# Order, and why:
+#   1. Extra vars that set internal names are refused (refuse-internal-extra-vars.yml).
+#   2. The declaration is checked for shape. Then every (path, field) pair is refused while a file in
+#      the path's own scope still declares the field: vars/secret-declarations/<svc>.yml and
+#      deploy-<svc>.yml for path services/<svc>. A deploy that still declares a field regenerates it
+#      (manage-secrets generates an absent random field), which would undo the removal. The refusal
+#      runs before OpenBao is reached and names the path, field and file. It is a whole-word match in
+#      those files only: a bare field name is never matched across the repository, because another
+#      service may declare the same name for its own path.
+#   3. The transport guard, then the AppRole login. The login is a credential task (no_log).
+#   4. Each declared path is read (a read, so it also runs in check mode). A path that does not exist
+#      is "absent", a no-op. A path that exists is planned for removal of the declared fields it holds.
+#      Only field NAMES reach any printed output; the response's values never do.
+#   5. On a live run only, each planned path is merged through tasks/bao-merge-keys.yml, with a null per
+#      planned field. The include runs only for a path that exists and holds at least one planned
+#      field, so the merge never creates a path. It is not given `_bm_on_missing: fail`: a missing path
+#      is simply not planned.
+#   6. Each merged path is read back, and the run fails if a planned field is still present.
+#
+# Check mode is a dry run: the reads run, the merge and the read-back are skipped. Run the Dev
+# template in Semaphore's Dry run first and read the plan.
+#
+# OpenBao is reached at openbao_addr, as the shared-environment playbooks read it, else at the single host of
+# the openbao_svc group (issue #1019 tracks why the group alone resolved empty in the shared environment). The
+# AppRole comes from BAO_ROLE_ID / BAO_SECRET_ID, or the bao_role_id / bao_secret_id extra vars the
+# other OpenBao playbooks accept. Field values are never printed.
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Remove declared retired OpenBao KV-v2 fields"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    _retired: "{{ (lookup('file', playbook_dir ~ '/vars/retired-secret-fields.yml') | from_yaml).retired_secret_fields | default([], true) }}"
+    # openbao_addr first, as the shared-environment playbooks read it (deploy-authentik.yml,
+    # manage-agentgateway-client-key.yml): Retire OpenBao Fields (Dev) runs in the shared
+    # environment, where the inventory-group expression alone resolved empty (task 14650,
+    # 2026-11-10; the same expression passes locally on the same inventory; cause tracked in issue #1019).
+    # The inventory's single openbao_svc host stays the fallback for an environment without it.
+    _bao_url: "{{ openbao_addr | default(hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') if (groups['openbao_svc'] | default([]) | length == 1) else '', true) }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Require a well-formed declaration (paths, field names, no empty list)"
+      ansible.builtin.assert:
+        that:
+          - _retired | length > 0
+          - _retired | map(attribute='path') | unique | list | length == _retired | length
+          - _retired | map(attribute='path') | select('match', '^services/[a-z0-9-]+$') | list | length == _retired | length
+          - _retired | map(attribute='fields') | map('length') | select('gt', 0) | list | length == _retired | length
+          - _all_fields | select('match', '^[a-z][a-z0-9_]*$') | list | length == _all_fields | length
+        fail_msg: >-
+          platform/playbooks/vars/retired-secret-fields.yml must list at least one path, each path as
+          services/<name> and unique, with at least one field, and every field a lowercase name.
+      vars:
+        _all_fields: "{{ _retired | map(attribute='fields') | flatten }}"
+
+    - name: "Refuse a retired field that a file in its own path's scope still declares"
+      ansible.builtin.assert:
+        that: _declared_hits | length == 0
+        fail_msg: >-
+          Still declared, so a deploy would regenerate the field this run removes. Nothing was changed:
+          {{ _declared_hits | map(attribute='line') | join('; ') }}. Remove the declaration in the same
+          change that retires the field (see retired-secret-fields.yml).
+      vars:
+        # The scope of a path is its own two files, computed from the path, never a glob of the repository.
+        # Whole-word match, so a name inside a longer name does not refuse. Literal, not structural: the
+        # declarations are Jinja templates, and a parse cannot read every one.
+        _declared_hits_json: >-
+          {% set hits = [] %}
+          {% for entry in _retired %}
+          {% set svc = entry.path | regex_replace('^services/', '') %}
+          {% set sources = query('ansible.builtin.fileglob', playbook_dir ~ '/vars/secret-declarations/' ~ svc ~ '.yml')
+             + query('ansible.builtin.fileglob', playbook_dir ~ '/deploy-' ~ svc ~ '.yml') %}
+          {% for source in sources %}
+          {% set shown = source | replace(playbook_dir ~ '/', '') %}
+          {% set text = lookup('ansible.builtin.file', source) %}
+          {% for field in entry.fields %}
+          {% if text is search('(?<![A-Za-z0-9_])' ~ field ~ '(?![A-Za-z0-9_])') %}
+          {% set _ = hits.append({'path': entry.path, 'field': field, 'source': shown,
+               'line': entry.path ~ ' ' ~ field ~ ' declared in ' ~ shown}) %}
+          {% endif %}
+          {% endfor %}
+          {% endfor %}
+          {% endfor %}
+          {{ hits | to_json }}
+        _declared_hits: "{{ _declared_hits_json | from_json }}"
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Authenticate to OpenBao"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/auth/approle/login"
+        method: POST
+        body_format: json
+        body: { role_id: "{{ _bao_role_id }}", secret_id: "{{ _bao_secret_id }}" }
+        status_code: [200]
+      register: _bao_auth
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Read each declared path (a read, also in check mode; the values are never printed)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ item.path }}"
+        method: GET
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        # 404: the path does not exist, which is a planned no-op, not an error.
+        status_code: [200, 404]
+      loop: "{{ _retired }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: _reads
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: "Plan the removal from the live state (paths, statuses and field NAMES only)"
+      ansible.builtin.set_fact:
+        _plan: "{{ _plan_json | from_json }}"
+      vars:
+        # Indexed by loop position: result i is the read of declared entry i.
+        _plan_json: >-
+          {% set plan = [] %}
+          {% for entry in _retired %}
+          {% set read = _reads.results[loop.index0] %}
+          {% if read.status == 404 %}
+          {% set _ = plan.append({'path': entry.path, 'status': 'absent', 'fields': []}) %}
+          {% else %}
+          {% set held = read.json.data.data | default({}, true) %}
+          {% set present = entry.fields | select('in', held.keys() | list) | list %}
+          {% set _ = plan.append({'path': entry.path, 'status': ('present' if present | length > 0 else 'nothing-held'), 'fields': present}) %}
+          {% endif %}
+          {% endfor %}
+          {{ plan | to_json }}
+
+    - name: "Report the plan (paths, statuses and field names; no values)"
+      ansible.builtin.debug:
+        msg:
+          - "{{ 'Dry run (check mode): nothing is written.' if ansible_check_mode else 'Live run.' }}"
+          - >-
+            {% for p in _plan %}{{ p.path }}: {{ 'absent (no-op)' if p.status == 'absent'
+               else ('holds ' ~ (p.fields | join(', ')) ~ ' (to remove)' if p.status == 'present'
+               else 'holds no declared field (no-op)') }}; {% endfor %}
+
+    - name: "Remove each planned field (live only: a merge-patch null per field, verified by the shared task)"
+      # The shared task owns the merge, the version-checked read and its own verify. It runs only for a
+      # path that exists and holds a planned field, so `_bm_on_missing` is left at its default: the
+      # create branch needs data to write and this merge has none, so it cannot create a path.
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "{{ item.path }}"
+        _bm_remove: "{{ item.fields }}"
+      loop: "{{ _plan | selectattr('status', 'equalto', 'present') | list }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when: not ansible_check_mode
+
+    - name: "Read each merged path back (live only; the values are never printed)"
+      ansible.builtin.uri:
+        url: "{{ _bao_url }}/v1/secret/data/{{ item.path }}"
+        method: GET
+        follow_redirects: none
+        unredirected_headers: [X-Vault-Token]
+        headers:
+          X-Vault-Token: "{{ _bao_auth.json.auth.client_token }}"
+        status_code: [200, 404]
+      loop: "{{ _plan | selectattr('status', 'equalto', 'present') | list }}"
+      loop_control:
+        label: "{{ item.path }}"
+      register: _readback
+      delegate_to: localhost
+      changed_when: false
+      check_mode: false
+      no_log: true
+      when: not ansible_check_mode
+
+    - name: "Compute the planned fields still present after the merge (names only)"
+      ansible.builtin.set_fact:
+        _remaining: "{{ _remaining_json | from_json }}"
+      vars:
+        _remaining_json: >-
+          {% set left = [] %}
+          {% for p in _plan | selectattr('status', 'equalto', 'present') | list %}
+          {% set read = _readback.results[loop.index0] %}
+          {% set held = (read.json.data.data | default({}, true)) if read.status == 200 else {} %}
+          {% set still = p.fields | select('in', held.keys() | list) | list %}
+          {% if still | length > 0 %}{% set _ = left.append({'path': p.path, 'fields': still}) %}{% endif %}
+          {% endfor %}
+          {{ left | to_json }}
+      when: not ansible_check_mode
+
+    - name: "Require every planned field to be gone after the merge"
+      ansible.builtin.assert:
+        that: _remaining | length == 0
+        fail_msg: "A planned field is still present after the merge, so the retirement is incomplete: {{ _remaining | to_json }}"
+      when: not ansible_check_mode
+
+    - name: "Summarise the retirement"
+      ansible.builtin.debug:
+        msg:
+          - "Mode: {{ 'dry run (check mode), nothing written' if ansible_check_mode else 'live' }}"
+          - "Paths {{ 'that would be merged' if ansible_check_mode else 'merged' }}: {{ _plan | selectattr('status', 'equalto', 'present') | map(attribute='path') | join(', ') or 'none' }}"
+          - "Absent, no-op: {{ _plan | selectattr('status', 'equalto', 'absent') | map(attribute='path') | join(', ') or 'none' }}"
+          - "Holding no declared field, no-op: {{ _plan | selectattr('status', 'equalto', 'nothing-held') | map(attribute='path') | join(', ') or 'none' }}"

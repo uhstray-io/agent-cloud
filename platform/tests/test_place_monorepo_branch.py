@@ -111,11 +111,9 @@ def _unscanned_mentions(paths):
 
 def test_the_scanner_reads_the_placements_it_guards():
     # A renamed key or a new include form would make the guard pass for every file. These pins
-    # keep it honest against known playbooks: tududi names its branch in play vars, skynet is
-    # unguarded (no local_mode term) and names its branch in play vars, the o11y playbooks gate
-    # placement on local_mode, the journal collector names its branch on each include, console has
-    # one placement.
-    assert _shape("deploy-tududi.yml") == [(True, False)]
+    # keep it honest against known playbooks: skynet is unguarded (no local_mode term) and names
+    # its branch in play vars, the o11y playbooks gate placement on local_mode, the journal
+    # collector names its branch on each include, console has one placement.
     assert _shape("deploy-skynet.yml") == [(True, False)]
     assert _shape("drill-o11y-alert-canary.yml") == [(False, False)]
     assert _shape("restore-o11y-alert-baseline.yml") == [(False, False)]

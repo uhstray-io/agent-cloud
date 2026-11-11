@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -247,6 +248,10 @@ def test_the_guard_ends_the_run_before_any_other_play(tmp_path, check, forge):
         assert proc.returncode != 0, proc.stdout
         assert "Refusing to run: _verdict set from outside the playbook" in proc.stdout
         assert "VERDICT" not in proc.stdout and "PLAY [tgt]" not in proc.stdout, proc.stdout
+    # The guard never rendered the forged value: the stateful forgery counts its renderings in
+    # this file and was never asked. This is what lets the guard-class tests elsewhere use
+    # forgeries.by_name (plain only); plan 21 D1, docs/MISTAKES.md 1.15.
+    assert not (tmp_path / "forgery-renders-_verdict").exists(), "the guard rendered a forged value"
 
 
 # The name each verdict is computed from, where one name carries it; any other executor is
@@ -274,7 +279,7 @@ def _forged_name(path: Path) -> str:
 @pytest.mark.parametrize("path,forge", [
     pytest.param(path, f.values[0], id=f"{path.name}-{f.id}")
     for path in EXECUTORS
-    for f in forgeries.templated_forgeries(_forged_name(path), [], {"forged": True})
+    for f in forgeries.by_name(_forged_name(path), [], {"forged": True})
 ])
 def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp_path):
     name = _forged_name(path)
@@ -293,7 +298,7 @@ def test_a_forged_internal_name_is_refused_by_the_real_executor(path, forge, tmp
     pytest.param(REPO / "platform/playbooks" / name, f.values[0], id=f"{name}-{f.id}")
     for name in ("deploy-o11y.yml", "survey-o11y-scrape-baseline.yml", "verify-o11y-profile-pilot.yml",
                  "drill-o11y-endpoint-availability.yml", "recover-o11y-endpoint-drill.yml")
-    for f in forgeries.templated_forgeries(
+    for f in forgeries.by_name(
         "_o11y_availability_drill",
         {"target_id": "service:alpha", "status_code": 200},
         {"target_id": "service:alpha", "status_code": 503},
@@ -341,7 +346,7 @@ def test_an_inventory_var_with_the_reserved_prefix_is_refused_with_the_rule(tmp_
 @pytest.mark.parametrize("path, forge", [
     pytest.param(path, f.values[0], id=f"{path.name}-{f.id}")
     for path in _launchable()
-    for f in forgeries.templated_forgeries("_forged_by_launch", None, {"forged": True})
+    for f in forgeries.by_name("_forged_by_launch", None, {"forged": True})
 ])
 def test_every_launchable_playbook_refuses_a_forged_internal_name(path, forge, tmp_path):
     proc = _run(path, tmp_path, "-e", "target_service=demo_svc", "-e", forge(tmp_path), "--check")
@@ -377,7 +382,8 @@ def test_the_alias_list_is_what_the_installed_plugins_read():
         "for m, opt in ((a, 'become_pass'), (b, 'become_pass'), (c, 'become_pass'), (d, 'password')):\n"
         "    names |= {v['name'] for v in yaml.safe_load(m.DOCUMENTATION)['options'][opt].get('vars', [])}\n"
         "print(' '.join(sorted(names)))")
-    out = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    out = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True,
+                         timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS).stdout.split()
     assert sorted(out) == sorted(PASSWORD_ALIASES)
 
 

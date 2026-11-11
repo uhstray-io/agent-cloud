@@ -41,33 +41,6 @@ templates:
   - name: "Deploy OPA (Local)"
     playbook: platform/playbooks/deploy-opa.yml
 
-  # n8n — workflow automation (composable; greenfield locally). The legacy
-  # secret-gen deploy.sh path is replaced by manage-secrets + a templated .env.
-  - name: "Deploy n8n (Local)"
-    playbook: platform/playbooks/deploy-n8n.yml
-
-  # n8n Postiz substrate: mint+capture the API key, then provision the
-  # postizApi credential from shared custody (local Postiz reachable on the
-  # local-dev network — see n8n_postiz_credential_host in the inventory).
-  - name: "Store n8n API Key (Local)"
-    playbook: platform/playbooks/store-n8n-api-key.yml
-  - name: "Provision n8n Postiz Credential (Local)"
-    playbook: platform/playbooks/provision-n8n-postiz-credential.yml
-
-  # n8n upgrade tooling (design D7): timestamped pg_dump + named-dump restore.
-  # Local is where the pair is proven before it carries the prod cutover.
-  # The restore hard-requires n8n_dump_file, so the survey var is declared
-  # here too — without it a direct local UI launch fails on task 1.
-  - name: "Back Up n8n DB (Local)"
-    playbook: platform/playbooks/backup-n8n-db.yml
-  - name: "Restore n8n DB (Local)"
-    playbook: platform/playbooks/restore-n8n-db.yml
-    survey_vars:
-      - name: n8n_dump_file
-        title: "Dump file path"
-        description: "Explicit dump to restore (named in Back Up n8n DB's report). Never 'the latest'."
-        type: string
-        required: true
   - name: "Reconcile Plane Members (Local)"
     playbook: platform/playbooks/reconcile-plane-members.yml
     survey_vars:
@@ -99,10 +72,6 @@ templates:
   # ERPNext — ERP (slim local tier; site bootstrap in post-deploy phase).
   - name: "Deploy ERPNext (Local)"
     playbook: platform/playbooks/deploy-erpnext.yml
-
-  # tududi - self-hosted to-do app (single rootless container, SQLite; native OIDC).
-  - name: "Deploy tududi (Local)"
-    playbook: platform/playbooks/deploy-tududi.yml
 
   # console - the Dispatch Console (Rust/Dioxus; the image is built on this host from the committed sources).
   - name: "Deploy console (Local)"
@@ -206,24 +175,8 @@ templates:
         description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
         type: string
         required: true
-  - name: "Clean Deploy n8n (Local)"
-    playbook: platform/playbooks/clean-deploy-n8n.yml
-    survey_vars:
-      - name: confirm_reset
-        title: "Confirm: host whose data is destroyed"
-        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
-        type: string
-        required: true
   - name: "Clean Deploy ERPNext (Local)"
     playbook: platform/playbooks/clean-deploy-erpnext.yml
-    survey_vars:
-      - name: confirm_reset
-        title: "Confirm: host whose data is destroyed"
-        description: "Type the target host name to confirm destroying its data. Anything else refuses. No default on purpose."
-        type: string
-        required: true
-  - name: "Clean Deploy tududi (Local)"
-    playbook: platform/playbooks/clean-deploy-tududi.yml
     survey_vars:
       - name: confirm_reset
         title: "Confirm: host whose data is destroyed"
@@ -320,7 +273,7 @@ templates:
     survey_vars:
       - name: target_service
         title: Target group
-        description: Inventory group whose secrets to inventory (e.g. tududi_svc)
+        description: Inventory group whose secrets to inventory (e.g. honcho_svc)
         type: string
         required: true
 
@@ -361,7 +314,7 @@ templates:
     survey_vars:
       - name: target_service
         title: Target group
-        description: Inventory group of the service to check (e.g. tududi_svc)
+        description: Inventory group of the service to check (e.g. honcho_svc)
         type: string
         required: true
 
@@ -382,7 +335,7 @@ templates:
     survey_vars:
       - name: target_service
         title: Target group
-        description: Inventory group of the service to snapshot (e.g. tududi_svc)
+        description: Inventory group of the service to snapshot (e.g. honcho_svc)
         type: string
         required: true
 
@@ -391,7 +344,7 @@ templates:
     survey_vars:
       - name: target_service
         title: Target group
-        description: Inventory group of the service to snapshot for the service assessment (e.g. tududi_svc)
+        description: Inventory group of the service to snapshot for the service assessment (e.g. honcho_svc)
         type: string
         required: true
 
@@ -400,7 +353,7 @@ templates:
     survey_vars:
       - name: target_service
         title: Target group
-        description: Inventory group of the service to snapshot for the access assessment (e.g. tududi_svc)
+        description: Inventory group of the service to snapshot for the access assessment (e.g. honcho_svc)
         type: string
         required: true
 
@@ -433,6 +386,6 @@ templates:
       - name: target_service
         title: Target group
         # Only groups with a health_url in the generated local inventory can pass (task 7.9).
-        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc)
+        description: Inventory group of the service to check (declared locally - step_ca_svc, authentik_svc, o11y_svc, agentgateway_svc, opa_svc)
         type: string
         required: true

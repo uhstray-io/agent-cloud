@@ -14,7 +14,7 @@
 #
 # Where the probe runs: the executor, by default. A host that publishes its port on loopback only,
 # or firewalls it to the Caddy host, cannot answer the executor however healthy it is (production
-# tududi, honcho and n8n answered -1). Such a host sets health_probe_on_host: true with a loopback
+# honcho answered -1). Such a host sets health_probe_on_host: true with a loopback
 # health_url, and the probe runs ON the host, where the container's own healthcheck also looks.
 #
 # Internal CA at a pinned address: production OPA serves TLS only, under a certificate name
@@ -23,7 +23,7 @@
 # pinned to). The probe then runs curl with --cacert and --resolve, as deploy-opa.yml does for OPA,
 # and the certificate is still verified against the URL's own name. Neither var set keeps the uri probe.
 #
-# Usage (Semaphore): -e target_service=tududi_svc
+# Usage (Semaphore): -e target_service=honcho_svc
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
