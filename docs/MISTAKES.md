@@ -44,7 +44,7 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
+| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
 | 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
@@ -836,6 +836,16 @@ and requires a counter assertion and a negative meta-test fixture. Why the rule 
 `test_extra_var_refusal_tests.py` checks test code, and this was prose in a plan proposing to
 change those tests; the one experiment felt like proof of the class. The rule covers it: the
 guarantee was stated for inputs the experiment did not exercise.
+
+**Enforcement note — 2026-11-10.** A refusal test whose refusal comes from the run-start guard,
+which refuses an underscore name by its presence and never renders its value, may use
+`forgeries.by_name` (the plain spelling only; plan 21 D1). Three checks hold that boundary:
+`test_executor_internal_overrides.py::test_the_guard_ends_the_run_before_any_other_play` still sends all three spellings to the guard
+and asserts the stateful forgery is never rendered; `by_name` refuses a name without the
+underscore prefix and any name the guard file itself references (`_extra_var_guard_nested` is
+read by its own `when:`); and `test_extra_var_refusal_tests.py` accepts `by_name` only where the test
+positively asserts the guard's own message (naming the forged name when that name is a literal; a computed name is not cross-checked). A value-reading refusal, a gate run without the guard, and a connection
+variable keep all three spellings.
 
 ### 1.16 A count written into a committed plan without running the count
 

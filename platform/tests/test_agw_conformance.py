@@ -1328,7 +1328,7 @@ def _refused_first(out: str, name: str) -> bool:
 @pytest.mark.parametrize("name, forge", [
     pytest.param(name, f.values[0], id=f"{name}-{f.id}")
     for name in ["victim", "agw-conformance.evil"]
-    for f in forgeries.templated_forgeries("_agwc_tmpdir", {"path": "/tmp/agw-conformance.honest"},
+    for f in forgeries.by_name("_agwc_tmpdir", {"path": "/tmp/agw-conformance.honest"},
                                            lambda t, n=name: {"path": str(t / n)})
 ])
 def test_an_extra_var_cannot_redirect_the_key_files_or_the_delete(tmp_path, stubs, name, forge):
@@ -1468,7 +1468,7 @@ PROBE_INTERNALS = {"_agwp_raw": {"status": 401}, "_agwp_out": {"status": 401, "m
 @pytest.mark.parametrize("name, forge", [
     pytest.param(n, f.values[0], id=f"{n}-{f.id}")
     for n, value in [*[(n, "/forged") for n in PROBE_INPUTS + GATEWAY_URLS], *PROBE_INTERNALS.items()]
-    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
+    for f in forgeries.by_name(n, "__override_probe__", value)
 ])
 def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name, forge):
     # The gateway here serves a keyless request: only a redirected or forged gate could pass it.
@@ -1483,7 +1483,7 @@ def test_an_extra_var_cannot_aim_or_forge_the_keyless_gate(tmp_path, stubs, name
     pytest.param(n, f.values[0], id=f"{n}-{f.id}")
     for n, value in [("_agwr_hosts", {"content": "MTI3LjAuMC4xIGdhdGV3YXk="}),
                      ("_agwr_getent", {"rc": 0, "stdout_lines": ["127.0.0.1"]})]
-    for f in forgeries.templated_forgeries(n, "__override_probe__", value)
+    for f in forgeries.by_name(n, "__override_probe__", value)
 ])
 def test_an_extra_var_cannot_forge_the_resolution_verdict(tmp_path, stubs, name, forge):
     gw, direct = stubs(key=GW_KEY), stubs(key=UP_KEY)
