@@ -13,14 +13,17 @@
 #      chained copy, whose source is read before that write). A refusal names the entry and changes nothing.
 #   3. The transport guard, then the AppRole login. The login is a credential task (no_log).
 #   4. Each source path and each target path is read. The reads also run in check mode. Every entry is
-#      then planned into exactly one state, from the live values and vars/retired-secret-fields.yml. A
-#      source listed there as retired is decided first, since it is meant to be gone from the store:
-#        source-retired                 the source (path, field) is listed as retired, and the target field holds a
-#                                       value other than '' (a no-op: the retired source's value is not compared)
-#        source-retired-target-missing  the source is listed as retired, and the target field is absent or ''
-#        source-missing                 the source path is absent, the source field is absent, or its value is empty
-#        copied                         the target field already holds the source value (no write)
+#      then planned into exactly one state, from the live values and vars/retired-secret-fields.yml. A source
+#      that is missing (its path or field absent, or its value empty) is decided first: when its (path, field)
+#      is listed as retired, the retirement decides it, otherwise it is source-missing. Only a source that is
+#      not missing reaches the target checks, so a retired source that still holds a value is planned by the
+#      same rules as any other source.
+#        source-retired                 the source is missing and listed as retired, and the target field holds a
+#                                       value other than '' (a no-op: the source is gone, so nothing is compared)
+#        source-retired-target-missing  the source is missing and listed as retired, and the target field is absent or ''
+#        source-missing                 the source is missing and not listed as retired
 #        pending                        the target path is absent, or the target field is absent (the copy writes it)
+#        copied                         the target field already holds the source value (no write)
 #        conflict                       the target field holds a different value, an empty one included
 #      Presence is key membership, not truthiness. The comparison runs in a no_log step, so only field
 #      NAMES and states reach the output.
@@ -182,15 +185,17 @@
           {% set dst_held = (dst.json.data.data | default({}, true)) if dst.status == 200 else {} %}
           {% set src_value = src_held[entry.from_field] if entry.from_field in src_held else none %}
           {% set dst_value = dst_held[entry.to_field] if entry.to_field in dst_held else none %}
-          {# A retired source is meant to be gone from the store: decided before source-missing, and its value is not compared. #}
+          {# A missing source is decided by the retirement when its (path, field) is listed as retired: the source is gone, so nothing is compared. #}
+          {% if src_value is none or src_value == '' %}
           {% if (entry.from_path ~ '/' ~ entry.from_field) in _retired_sources %}
           {% if dst_value is none or dst_value == '' %}
           {% set state = 'source-retired-target-missing' %}
           {% else %}
           {% set state = 'source-retired' %}
           {% endif %}
-          {% elif src_value is none or src_value == '' %}
+          {% else %}
           {% set state = 'source-missing' %}
+          {% endif %}
           {% elif entry.to_field not in dst_held %}
           {% set state = 'pending' %}
           {% elif dst_held[entry.to_field] == src_value %}
