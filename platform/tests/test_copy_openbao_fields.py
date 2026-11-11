@@ -20,11 +20,10 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import threading
 from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import fake_http
 import harness_sandbox
 import playbook_yaml
 import pytest
@@ -403,14 +402,8 @@ def _handler(vault: _Vault):
 @contextmanager
 def _bao(paths: dict, interleave: dict | None = None):
     vault = _Vault(paths, interleave)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(vault))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield vault, f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
+    with fake_http.serve(_handler(vault)) as url:
+        yield vault, url
 
 
 def _tree(tmp_path: Path, declaration: list[dict]) -> Path:
