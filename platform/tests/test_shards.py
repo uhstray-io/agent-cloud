@@ -8,6 +8,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import shards
 
@@ -156,6 +157,7 @@ def _run_builder(tmp_path, xml_text):
         capture_output=True,
         text=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     return proc, out
 
@@ -208,6 +210,7 @@ def _collect(shard, testpath):
         capture_output=True,
         text=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert proc.returncode in (0, pytest.ExitCode.NO_TESTS_COLLECTED), proc.stdout[-3000:] + proc.stderr[-3000:]
     return {line.strip() for line in proc.stdout.splitlines() if "::" in line}
@@ -249,6 +252,7 @@ def test_an_invalid_shard_spec_is_a_usage_error():
         capture_output=True,
         text=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert proc.returncode == pytest.ExitCode.USAGE_ERROR
     assert "PYTEST_SHARD" in proc.stdout + proc.stderr

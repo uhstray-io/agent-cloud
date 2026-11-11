@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -109,7 +110,10 @@ class Repo:
 
 
 def _cli(*args):
-    return subprocess.run([sys.executable, str(SCRIPT), *args], text=True, capture_output=True, check=False)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args], text=True, capture_output=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
+    )
 
 
 def _run(repo, *args):
@@ -686,6 +690,7 @@ def _run_stdin(repo, stdin, *args):
         text=True,
         capture_output=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 
