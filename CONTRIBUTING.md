@@ -262,7 +262,8 @@ run in CI (plan 21). Four rules keep that cost and its failure modes down:
    child no stdin, and stops it after 120 seconds (pass `timeout=` for a longer play). Where
    `sandbox-exec` or `bwrap` exists, it also confines writes to `tmp_path`. CI has neither, so
    a test that writes outside `tmp_path` fails only on a sandboxed workstation.
-   `test_playbook_spawns_are_bounded.py` refuses a new direct spawn; its lists only shrink.
+   `test_playbook_spawns_are_bounded.py` refuses a new direct spawn and a new unbounded one. Its
+   lists must match exactly, and adding to them is the change review refuses.
 2. **Pick the forgery spellings by what the refusal reads.** A refusal by the run-start guard
    reads names only, so one spelling proves it: `forgeries.by_name(name, honest, forged)`,
    with an assert of the guard's own message. A refusal that reads the value, a gate run

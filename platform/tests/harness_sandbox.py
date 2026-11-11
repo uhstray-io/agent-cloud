@@ -99,8 +99,11 @@ def run_playbook(playbook, tmp_path: Path, *args, inventory="localhost,", env: d
                  cwd: Path = REPO, timeout: float = DEFAULT_TIMEOUT_SECONDS):
     """`ansible-playbook -i INVENTORY PLAYBOOK *ARGS` through run(): from the repository root, in
     env_for's environment with `env` laid over it, bounded by `timeout`. The one way a test runs a
-    playbook (platform/tests/test_playbook_spawns_are_bounded.py holds the rest to it)."""
+    playbook (platform/tests/test_playbook_spawns_are_bounded.py holds the rest to it).
+    ANSIBLE_CONFIG is dropped even when `env` carries it (as `{**os.environ, ...}` would), so the
+    repository's ansible.cfg always applies; a test that needs another config uses run()."""
     environment = env_for(tmp_path)
     environment.update(env or {})
+    environment.pop("ANSIBLE_CONFIG", None)
     return run(["ansible-playbook", "-i", str(inventory), str(playbook), *map(str, args)], tmp_path,
                cwd=cwd, env=environment, timeout=timeout)

@@ -70,7 +70,7 @@ def test_run_playbook_builds_the_command_environment_and_bound(tmp_path, monkeyp
     seen = {}
     monkeypatch.setattr(harness_sandbox.subprocess, "run", lambda cmd, **kwargs: seen.update(kwargs, cmd=cmd))
     harness_sandbox.run_playbook(tmp_path / "p.yml", tmp_path, "--check", "-e", "x=1",
-                                 inventory="inv.yml", env={"EXTRA": "1"}, timeout=7)
+                                 inventory="inv.yml", env={"EXTRA": "1", "ANSIBLE_CONFIG": "/x.cfg"}, timeout=7)
     assert seen["cmd"] == ["ansible-playbook", "-i", "inv.yml", str(tmp_path / "p.yml"), "--check", "-e", "x=1"]
     assert seen["cwd"] == harness_sandbox.REPO
     assert (harness_sandbox.REPO / "ansible.cfg").is_file()
