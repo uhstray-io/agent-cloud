@@ -10,13 +10,12 @@ ansible-playbook.
 
 import datetime
 import json
-import os
 import shutil
 import ssl
-import subprocess
 import threading
 from http.server import ThreadingHTTPServer
 
+import harness_sandbox
 import pytest
 import yaml
 from cryptography import x509
@@ -122,9 +121,8 @@ def _snapshot(tmp_path, check):
     threading.Thread(target=openbao.serve_forever, daemon=True).start()
     extra = {"pve_api_host": fake.url, "pve_node": "n1", "pve_vmid": 100, "snapshot_name": SNAP,
              "pve_token_id": "automation@pve!fixture"}
-    env = {k: v for k, v in os.environ.items() if k not in ("ANSIBLE_CONFIG", "PVE_TOKEN_SECRET")}
-    env.update(ANSIBLE_NOCOLOR="1", PVE_TOKEN_SECRET="synthetic-pve-secret",
-               BAO_ROLE_ID="synthetic-role", BAO_SECRET_ID="synthetic-secret")
+    env = {"PVE_TOKEN_SECRET": "synthetic-pve-secret", "BAO_ROLE_ID": "synthetic-role",
+           "BAO_SECRET_ID": "synthetic-secret"}
     inventory = tmp_path / "inventory.yml"
     inventory.write_text(yaml.safe_dump({
         "all": {
@@ -134,9 +132,8 @@ def _snapshot(tmp_path, check):
         }
     }))
     try:
-        done = subprocess.run(["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", json.dumps(extra),
-                               *(["--check"] if check else [])],
-                              cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+        done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", json.dumps(extra),
+                                            *(["--check"] if check else []), inventory=inventory, env=env)
     finally:
         fake.close()
         openbao.shutdown()

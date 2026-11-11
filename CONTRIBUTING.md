@@ -110,6 +110,9 @@ brew install go              # Go 1.26+ for the full test/pre-push suite; also i
 # group's cryptography is needed by the BATS suite, which signs a real GitHub App
 # assertion with a throwaway key; without it those tests SKIP rather than verify.
 uv sync --locked
+# The playbooks' Ansible collections, as every CI Python shard installs them. Tests that run a
+# whole playbook through harness_sandbox.run_playbook resolve them from ~/.ansible/collections.
+uv run --locked ansible-galaxy collection install -r collections/requirements.yml
 # To run a suite by hand on the locked versions (the playbook tests find ansible-playbook
 # on PATH, so swapping the interpreter alone is not enough):
 #   PATH="$PWD/.venv/bin:$PATH" pytest -q

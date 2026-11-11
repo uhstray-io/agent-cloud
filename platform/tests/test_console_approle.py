@@ -17,6 +17,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import jinja2
 import playbook_yaml
 import yaml
@@ -522,7 +523,8 @@ def _run_drift(subcommand_argv: list, root: Path, pin: str) -> int:
         .replace("{{ _drift_pin }}", pin)
         for arg in subcommand_argv
     ]
-    return subprocess.run(argv, env=GIT_ENV, capture_output=True).returncode
+    return subprocess.run(argv, env=GIT_ENV, capture_output=True,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS).returncode
 
 
 def test_the_drift_argv_refuses_exactly_when_a_console_input_differs_from_the_pin(tmp_path):

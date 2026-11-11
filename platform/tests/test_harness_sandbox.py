@@ -87,3 +87,24 @@ def test_run_playbook_runs_a_real_playbook(tmp_path):
     proc = harness_sandbox.run_playbook(play, tmp_path)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "ran-from-the-shared-runner" in proc.stdout
+
+
+def test_env_for_keeps_the_callers_collections_visible(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANSIBLE_COLLECTIONS_PATH", raising=False)
+    monkeypatch.setenv("ANSIBLE_HOME", "/caller/ansible-home")
+    env = harness_sandbox.env_for(tmp_path)
+    assert env["ANSIBLE_COLLECTIONS_PATH"] == "/caller/ansible-home/collections:/usr/share/ansible/collections"
+    assert env["ANSIBLE_HOME"].startswith(str(tmp_path))  # Ansible's own state still moves
+    monkeypatch.setenv("ANSIBLE_COLLECTIONS_PATH", "/explicit/collections")
+    assert harness_sandbox.env_for(tmp_path)["ANSIBLE_COLLECTIONS_PATH"] == "/explicit/collections"
+
+
+def test_a_playbook_run_through_the_harness_resolves_an_installed_collection(tmp_path):
+    # ansible.posix is installed for the suite (collections/requirements.yml); before env_for kept
+    # the collections path, this module failed to resolve under the harness.
+    play = tmp_path / "play.yml"
+    play.write_text("- hosts: localhost\n  gather_facts: false\n  connection: local\n  tasks:\n"
+                    "    - ansible.posix.authorized_key:\n        user: nobody\n        key: x\n"
+                    "      check_mode: true\n      failed_when: false\n")
+    proc = harness_sandbox.run_playbook(play, tmp_path, "--syntax-check")
+    assert proc.returncode == 0, proc.stdout + proc.stderr

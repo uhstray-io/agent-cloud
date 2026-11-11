@@ -20,10 +20,10 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -112,10 +112,7 @@ def _render_catalog(tmp_path: Path, templates, host_counts: dict, playbooks: Pat
     inv.write_text(yaml.safe_dump(inventory))
     plays_path = case_playbooks / "plays.yml"
     plays_path.write_text(yaml.safe_dump(plays))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(["ansible-playbook", "-i", str(inv), str(plays_path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    proc = harness_sandbox.run_playbook(plays_path, case, inventory=inv)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     return json.loads(out.read_text())
 

@@ -93,7 +93,7 @@ def _fixture_checkout(tmp_path: Path, *, api_origin=None, catalog_change=None) -
     check = subprocess.run(
         [sys.executable, str(checkout / "platform/playbooks/files/reviewed-checkout.py"),
          "--checkout", str(checkout), "--expected-sha", revision],
-        text=True, capture_output=True, check=False,
+        text=True, capture_output=True, check=False, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert check.returncode == 0, check.stdout + check.stderr
     return checkout, revision

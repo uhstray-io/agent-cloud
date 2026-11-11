@@ -60,6 +60,15 @@ def env_for(tmp_path: Path, base: dict | None = None) -> dict:
     """The harness environment: ANSIBLE_CONFIG dropped (the repo's ansible.cfg applies via cwd),
     and Ansible's own writable state kept inside the test directory."""
     env = {k: v for k, v in (base if base is not None else os.environ).items() if k != "ANSIBLE_CONFIG"}
+    # Ansible's default collections path is "$ANSIBLE_HOME/collections:/usr/share/ansible/collections"
+    # (`ansible-config list`, COLLECTIONS_PATHS). Moving ANSIBLE_HOME into the test directory below
+    # would hide the collections installed for the caller (CI's `ansible-galaxy collection install`
+    # puts them in ~/.ansible/collections), so a playbook needing ansible.posix would fail to resolve
+    # a module, and a refusal test that only checks the return code would pass for the wrong reason.
+    # Keep the caller's path: its own ANSIBLE_COLLECTIONS_PATH, else the default under its home.
+    if "ANSIBLE_COLLECTIONS_PATH" not in env:
+        home = env.get("ANSIBLE_HOME") or os.path.join(os.path.expanduser("~"), ".ansible")
+        env["ANSIBLE_COLLECTIONS_PATH"] = f"{home}/collections:/usr/share/ansible/collections"
     state = tmp_path / ".ansible-state"
     for key, sub in (("ANSIBLE_HOME", "home"), ("ANSIBLE_LOCAL_TEMP", "local"),
                      ("ANSIBLE_REMOTE_TEMP", "remote")):

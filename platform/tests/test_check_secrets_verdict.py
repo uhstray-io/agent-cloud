@@ -5,12 +5,11 @@ exercises the verdict the playbook computes, not a copy of it. Requires ansible-
 """
 
 import json
-import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -70,10 +69,8 @@ def _verdict(tmp_path, *, stored, deploy=True, policy_file=False, role=200, poli
     }]
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=True)
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    done.check_returncode()
     line = next(ln for ln in done.stdout.splitlines() if "VERDICT " in ln)
     return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("VERDICT ", 1)[1])
 

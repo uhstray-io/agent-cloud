@@ -14,6 +14,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -875,6 +876,7 @@ def test_the_category_program_decodes_valid_summaries_and_leaves_the_rest_out(co
         capture_output=True,
         text=True,
         check=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert json.loads(result.stdout) == expected
 
@@ -883,7 +885,8 @@ def test_the_category_program_decodes_valid_summaries_and_leaves_the_rest_out(co
 def test_the_category_program_prints_an_empty_object_for_input_that_is_not_a_list(stdin):
     _check, command = _category_program()
     result = subprocess.run(
-        [sys.executable, "-I", "-c", command["argv"][3]], input=stdin, capture_output=True, text=True, check=True
+        [sys.executable, "-I", "-c", command["argv"][3]], input=stdin, capture_output=True, text=True, check=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS
     )
     assert json.loads(result.stdout) == {}
 

@@ -216,7 +216,7 @@ def _patches():
 def _load_live(tmp):
     """Make Caddy's running config the current file, as a start would (logged nowhere)."""
     subprocess.run([str(tmp / "engine"), "load"], env={**os.environ, "STUB_DIR": str(tmp), "STUB_SITES_LIB": SITES_LIB},
-                   check=True)
+                   check=True, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     (tmp / "calls").unlink()
 
 
