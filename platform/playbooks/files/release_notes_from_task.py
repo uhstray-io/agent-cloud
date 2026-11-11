@@ -17,7 +17,7 @@ Accepted only when every rule holds:
   - the task is the expected task: its id equals expected_task_id and its status is "success";
   - it ran in check mode: params is an object whose dry_run is exactly true;
   - the template is the task's own template (same id) and is a refresh template by name;
-  - the output, with ANSI colour stripped and read line by line, carries exactly one RUN line;
+  - the output, with ANSI colour stripped and split on "\n" only, carries exactly one RUN line;
   - that line's JSON is an object with a release_notes object, and no key repeats in it;
   - release_notes.tag equals expected_tag;
   - release_notes.body is a non-empty string;
@@ -89,7 +89,10 @@ def _output_lines(rows: object) -> list[str]:
         _require(isinstance(row, dict), "output_row_invalid")
         text = row.get("output")
         _require(isinstance(text, str), "output_row_invalid")
-        lines.extend(ANSI.sub("", text).splitlines())
+        # ponytail: split on "\n" only. str.splitlines() also splits on U+2028, U+0085 and a bare "\r",
+        # which the stats dump prints raw inside the body's JSON string, so a body holding one would
+        # break its own RUN line and be refused as no_run_line.
+        lines.extend(line.removesuffix("\r") for line in ANSI.sub("", text).split("\n"))
     return lines
 
 

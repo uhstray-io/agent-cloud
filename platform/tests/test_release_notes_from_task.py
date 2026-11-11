@@ -107,6 +107,32 @@ def test_accepts_the_recorded_body_exactly() -> None:
     }
 
 
+def callback_run_line(body: str) -> str:
+    """The RUN line exactly as the repository's stdout callback prints set_stats (captured from
+    ansible-playbook with the repo ansible.cfg): a tab, spaced JSON, sorted keys, and U+2028 or
+    U+0085 inside the body printed raw rather than escaped."""
+    return (
+        '\tRUN: { "release_notes": {  "body": '
+        + json.dumps(body, ensure_ascii=False)
+        + ',  "sha256": "'
+        + sha256_hex(body)
+        + '",  "tag": "'
+        + TAG
+        + '" }}'
+    )
+
+
+def test_accepts_the_callback_format_with_raw_line_separators_in_the_body() -> None:
+    body = "## Summary\n\nline\u2028two\u0085three\n"
+    request = valid_request()
+    request["output_rows"] = rows("CUSTOM STATS: ****\r\n\r\n" + callback_run_line(body) + "\r\n")
+
+    result = run(request)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["body"] == body
+
+
 def test_accepts_a_run_line_inside_a_multi_line_row() -> None:
     request = valid_request()
     request["output_rows"] = rows("warning: first line\n" + run_line({"release_notes": notes()}) + "\nlast line")
