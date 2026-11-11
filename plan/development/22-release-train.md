@@ -31,10 +31,13 @@ claims this plan depends on were re-checked at their cited lines.
   "after `dev` → `main` promotion". Examples: `inference-personal-keys` 6.4,
   `recover-netbox-discovery` 5.4, `deploy-postiz-social-publishing` 6.6. Infrequent
   promotions held them back. Frequent releases unblock them.
-- **A deadline falls inside the first release window.** The gateway's legacy shared key
-  expires on **2026-11-13** (`openspec/changes/inference-gateway-agentgateway/tasks.md:697`,
-  which records site-config #81). The live site-config value was not re-read for this plan.
-  The task records that the rotation is held: dgx-spark ADR-0018 is not approved (`:701`).
+- **A deadline falls inside the release train.** The gateway's legacy shared key grace
+  period ends on **2026-12-11** (site-config #183, merged 2026-11-11 and synced to the
+  production Semaphore inventory; it was 2026-11-13). The date is applied when the gateway
+  config is rendered, so the first `Deploy agentgateway` on or after it drops the shared key
+  and fails until dgx-spark rotates the vLLM key. Rotation is being automated in
+  uhstray-io/dgx-spark#43, which waits on dgx-spark ADR-0018
+  (`openspec/changes/inference-gateway-agentgateway/tasks.md:701`).
 
 ## Design Principles
 
@@ -116,10 +119,10 @@ carries a `feat`, else a patch). Release N cannot start its code until every ear
 whose output it needs has merged. Each release's runs continue after its promotion, alongside
 the next release's build.
 
-**Urgent, before Release 1 is cut (no repository files):** decide how the 2026-11-13 legacy
-shared key expiry is handled (`inference-gateway-agentgateway` 5.1). One option is rotating
-the vLLM key under dgx-spark#34's two-step plan. The other is moving `legacy_shared_expires`
-again in site-config. Either is site-config or dgx-spark work, outside this repository's budget.
+**Decided 2026-11-11 (no repository files):** the shared-key grace period moved to 2026-12-11
+(site-config #183) while dgx-spark#43 automates the vLLM key rotation. The agent-cloud half
+of that automation (a Semaphore workflow that runs the stages in order) needs a release slot
+before 2026-12-11; plan it into Release 2 or 3 once ADR-0018 is decided.
 
 | Release | Scope (OpenSpec change: tasks) | Planned files | Gates that must clear first | Unblocks |
 |---|---|---|---|---|
@@ -178,7 +181,7 @@ scope is re-sized from the real diff when each release is planned.
   file. Plan 20's guard refusal for those paths stands, so a person merges them.
 - **Smaller production changes.** Each `main`-bound promotion changes at most 120 files,
   which shortens rollback analysis when something regresses.
-- **The 2026-11-13 deadline is a credential event.** Whatever is decided, the vLLM key copies
+- **The 2026-12-11 deadline is a credential event.** Whatever is decided, the vLLM key copies
   in OpenBao (`direct_*`, `inference-gateway-agentgateway/tasks.md:653`) are part of it.
 
 ## Cross-references
