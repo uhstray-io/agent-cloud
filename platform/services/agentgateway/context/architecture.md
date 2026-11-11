@@ -3,7 +3,7 @@
 Author: Joseph A. Wisneski IV <stray@uhstray.io>. Status: local-dev proven (2026-09-17). Prod VM (node, vmid and address declared in site-config) provisioned, keyed and
 SSH-hardened through Semaphore (2026-09-18). Production `/v1` traffic has been routed through
 the gateway since 2026-10-14 (the route switch in OpenSpec change
-`inference-gateway-agentgateway`). Still open: retiring the shared vLLM key (2026-11-13,
+`inference-gateway-agentgateway`). Still open: retiring the shared vLLM key (2026-12-11,
 "Shared-key retirement" below) and TLS from the gateway to vLLM.
 
 ## Role
@@ -242,8 +242,9 @@ the key nor its hash is printed. `legacy-shared` may not appear in `agw_clients`
 `VLLM_API_KEY` at vLLM and in OpenBao belongs to dgx-spark, which owns the key; the rollback
 `restore` mode does not rotate it either.
 
-Retirement date: **2026-11-13** (`legacy_shared_expires` in the production inventory, site-config #81;
-first set by task 4.7 as the route-switch date + 14 days, then moved from 2026-10-28). A deploy on or
+Retirement date: **2026-12-11** (`legacy_shared_expires` in the production inventory, site-config #183;
+first set by task 4.7 as the route-switch date + 14 days, moved from 2026-10-28 to 2026-11-13 by
+site-config #81, then to 2026-12-11 while dgx-spark#43 automates the vLLM key rotation). A deploy on or
 after that date drops `legacy-shared`, and fails until the vLLM key has been rotated (gateway task 5.1).
 If the key is rotated before the date, the grace-period probe is skipped rather than reporting a
 false failure (#631).

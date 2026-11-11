@@ -344,7 +344,8 @@ stateDiagram-v2
 ```
 
 **Shared-key retirement.** Before the gateway, every client sent vLLM's one key. The gateway
-admits that key as a `legacy-shared` identity until **2026-11-13**; a deploy on or after that date
+admits that key as a `legacy-shared` identity until **2026-12-11** (moved from 2026-11-13 by
+site-config #183 while dgx-spark#43 automates the rotation); a deploy on or after that date
 drops the identity and fails until dgx-spark rotates the vLLM key [24].
 
 **skynet's route.** agentgateway can carry a `/skynet/` route to the skynet orchestration API,
@@ -618,10 +619,10 @@ This is a current-state map, so its "phases" are the network work in flight. Eac
 change or plan named, and each acceptance criterion is what would let this document move the item's
 status forward.
 
-### Phase A: retire the shared inference key (due 2026-11-13)
+### Phase A: retire the shared inference key (due 2026-12-11)
 
 **Owner:** `inference-gateway-agentgateway` task 5.1, with dgx-spark rotating the vLLM key [24].
-**Acceptance:** a deploy after 2026-11-13 passes with no `legacy-shared` identity; rollback
+**Acceptance:** a deploy after 2026-12-11 passes with no `legacy-shared` identity; rollback
 `restore` completes and withdraws every `direct_` copy.
 
 ### Phase B: TLS from the gateway to vLLM
