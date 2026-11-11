@@ -16,11 +16,23 @@ This replaces "a tag bump is an inventory change" (`update-service.yml`) for wef
 
 `tasks/weft-deploy.yml` is the only deploy: preflight, stop, the binary's own `backup --before-deploy`, start, health through the edge within 5 minutes, a 15-minute watch, and, if health or the watch fails, `tasks/weft-rollback.yml` with that deploy's own backup. After the watch people have used the new version, so a later rollback is a person's (`rollback-weft-workspace.yml`), naming the host twice and the backup set. A release a host refused is never deployed there again by a timer.
 
-### D3. The deploy record is outside every container mount (B2)
+### D3. What decides what runs is root's, and outside every container mount (B2)
 
-The workspace directory is bind-mounted read-write into the board, which faces the internet. While `deployed.json` lived there, a compromised board could name an attacker's digest as "the previous release" and have the orchestrator, with the podman socket, run it on the next failed deploy; it could also fake "already on this release" or create `deploying/` to stop every timer.
+The workspace directory is bind-mounted read-write into the board, which faces the internet. While `deployed.json` lived there, a compromised board could name an attacker's digest as "the previous release" and have the orchestrator, with the podman socket, run it on the next failed deploy; it could also fake "already on this release" or create `deploying/` to stop every timer. `weft.toml` lived there too, and it names the builder, proxy and session images, the orchestrator's command, and the checkout and clone paths the orchestrator runs through the socket.
 
-The record now lives in a state directory per role under `weft_state_root` (default `/srv/weft-state`): `/srv/weft-state/workspaces/<id>/` and `/srv/weft-state/door/`. No compose file and no `deploy.sh` one-off mounts it; the one file a one-off reads from it, `release.replaced.json`, is mounted read-only into the backup container alone. The deploy refuses a state directory that is inside, or above, a directory a container mounts. And a rollback treats the record as a claim, not a fact: `tasks/weft-verify-images.yml` re-checks the previous release's images (weft's registry, by digest, the role's images present, the pinned signer) before `.env` is rendered for them.
+There are two writers to keep out, not one. The board writes the workspace directory. The orchestrator holds the deploy user's podman socket, so it can do whatever the deploy user can, and a record the deploy user owns is one it could forge: skip a security release, add a release to `refused`, hold the lock, or name an older signed release for the rollback.
+
+So:
+
+- The record and `weft.toml` live in a state directory per role under `weft_state_root` (default `/srv/weft-state`): `/srv/weft-state/workspaces/<id>/` and `/srv/weft-state/door/`. `tasks/weft-release.yml` refuses a state directory that is a mounted directory or inside one.
+- Root owns it: the directory is 0755 and every file 0644, and every write is a task with `become`, the sudo password read from OpenBao (`tasks/resolve-become-password.yml`) as every escalating play does. Nothing in it is a credential (weft D539), so the deploy user and the containers may read it.
+- No container mounts the directory. Two files are mounted read-only: `weft.toml`, into the board and the orchestrator (capture reads no deployment file) and the `deploy.sh` one-off, and `release.replaced.json`, into the backup one-off alone.
+- `release.json` is never a file on the VM: the manifest and the blob are fetched by digest to stdout, so nothing can swap it between the fetch and the read.
+- A rollback treats the record as a claim, not a fact: `tasks/weft-verify-images.yml` re-checks the previous release's images (weft's registry, by digest, the role's images present, the pinned signer, cosign) before anything is rendered for them.
+
+The backup sets under the workspace directory (`deploys/`) stay where the binary writes them. They decide what data is restored, not which image runs, and `restore` refuses a copy that does not verify or that is newer than the image restoring it.
+
+**Accepted: the whisper model is board-writable.** The model file stays in `/srv/weft/<id>/models/`, because `weft.toml`'s paths all live under the workspace directory and the model is data rather than a decision. Between deploys a compromised board could swap it, and `weft-whisper` would parse the swapped file. It chooses no image and no command, and every deploy and rollback checks it against the sum in the signed `release.json` again.
 
 The backup sets under the workspace directory (`deploys/`) stay where the binary writes them. They decide what data is restored, not which image runs, and `restore` refuses a copy that does not verify or that is newer than the image restoring it.
 
@@ -50,17 +62,23 @@ Until weft's log schema lands, its containers write to stdout as they do today, 
 |---|---|---|
 | OpenBao is the sole source of truth for every credential (`PRINCIPLES.md` §3) | A company's model keys and forge token are sealed in its own catalog and never in OpenBao (weft D539); OpenBao holds weft's own platform credentials and one copy of each workspace's seal | task 2.1 |
 | Each hostname declares an `auth_mode` | weft's own password sign-in is its main method, with SSO beside it; each weft hostname declares its `auth_mode` | task 2.4 |
+| An AI-tier service keeps a `context/` directory (02, Service Classification) | `platform/services/weft/context/architecture.md` points to weft's own architecture, in the weft repository, and records what agent-cloud needs: the surfaces a request reaches, `/mcp` among them | met |
 | Rootless podman, or name the capability | The orchestrator starts agent and egress-proxy containers through the workspace user's rootless podman socket; only the orchestrator gets it, never the board | task 2.3 |
 | A database sidecar with an exporter | SQLite per workspace on the VM's own disk (weft D537); weft exports its own numbers | task 7.3 |
 | `update-service.yml`'s tag pull | A deploy by signed digest only (D1) | this design |
-| `clean-deploy-<service>.yml` on `tasks/clean-service.yml` (02, Phase 4) | No Clean Deploy: the destructive path is offboarding, which takes a final backup and honours retention first (D19) | this design, "Clean Deploy" |
+| `clean-deploy-<service>.yml` on `tasks/clean-service.yml`, and its "Clean Deploy" template (`plan/architecture/02-service-onboarding.md`, Phase 4, lines 164 and 172) | No Clean Deploy (Jacob, 2026-11-11). The destructive path is offboarding (task 8.5; weft's step 44), which takes a final backup and honours retention first (D19). Until it lands there is no supported path to retire a host's data; the Rollback Plan's step 3 retires the service from a host and keeps the data | this design, "Clean Deploy" |
+| One `compose.yml` per service (`plan/architecture/02-service-onboarding.md`, Phase 2, lines 113-129) | Two compose bases in one directory, `compose.door.yml` and `compose.workspace.yml`, one per kind of host; `deploy.sh` names its base through `COMPOSE_BASE` in `platform/lib/common.sh`, which refuses a named base that does not exist and is byte-identical when unset. `update-service.yml` and `clean-service.yml`, which read `compose.yml`, skip weft | this design |
+| Private images through `tasks/registry-login.yml` with the shared `secret/services/github:pat` | Until task 5.4, the shared package-read PAT sits in the deploy user's `auth.json` on every weft VM, where the orchestrator, through its socket, can read it. A weft-only package-read token replaces it before the rack (task 5.4) | task 5.4 |
+| A compose healthcheck on every container that supports one (02, Phase 2) | The board has one. The orchestrator, capture and the front door have none: their images ship no probe a healthcheck could run without adding a tool. The deploy stands in for it: `deploy.sh` waits for the front door over HTTP, and each deploy checks `health` through the edge and watches restart counts for 15 minutes. Healthchecks are added when weft's images ship a probe (task 7.5) | task 7.5 |
 | Full-tier logs to Loki | Scrubbed process logs only; customer content stays on its VM (D7) | task 2.2 |
 
 ## Clean Deploy (Jacob, 2026-11-11)
 
 weft has no Clean Deploy. The onboarding standard asks for `clean-deploy-<service>.yml` on `tasks/clean-service.yml` (`plan/architecture/02-service-onboarding.md`, Phase 4), and `platform/tests/test_clean_deploy_confirm.py` holds every Clean Deploy to one shape: a single play on `<service>_svc` whose only task includes `clean-service.yml`. For weft that shape either keeps the data or destroys a company's. `clean-service.yml` removes containers, volumes and the clone, and weft keeps its catalog in a bind mount (D537), so it would leave every company's data in place and not be clean. Deleting the workspace or front door directory as well would destroy a company's catalog, or every company's sign-in records, behind one confirmation.
 
-So the destructive path for weft is offboarding (task 8.5): it takes a final backup and keeps a company's data for the retention period (D19) before anything is deleted. A redeploy from scratch is a normal deploy with `weft_force_redeploy`. This is a declared deviation (table above).
+So the destructive path for weft is offboarding (task 8.5, weft's step 44): it takes a final backup and keeps a company's data for the retention period (D19) before anything is deleted. A redeploy from scratch is a normal deploy with `weft_force_redeploy`. This is a declared deviation (table above).
+
+Until task 8.5 lands there is no supported path to retire a host's data. The interim is the Rollback Plan's step 3, which stops the service on a host and removes its route and records, and keeps the workspace directory, its backups and the OpenBao paths.
 
 ## Accepted costs
 

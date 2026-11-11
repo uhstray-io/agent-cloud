@@ -29,16 +29,20 @@ A deploy to a host that has never run a weft release SHALL reach the start of th
 
 ### Requirement: What decides which image runs is outside every container mount
 
-The deploy record (`deployed.json`), the replaced release (`release.replaced.json`), the fetched release (`release-incoming/`) and the deploy lock (`deploying/`) SHALL live in a state directory that no weft container mounts. A rollback SHALL re-check that the previous release's images are weft images in weft's registry, by digest, and SHALL verify their signatures before it renders them.
+The deploy record (`deployed.json`), the replaced release (`release.replaced.json`), the deploy lock (`deploying/`) and a workspace's `weft.toml` SHALL live in a state directory that root owns and no weft container mounts, and every write to it SHALL run as root. `weft.toml` SHALL be mounted only read-only, and only into the containers that read it. `release.json` SHALL NOT be written to a file on the VM.
 
 #### Scenario: The state directory is mounted by no container
 
-- **WHEN** a deploy or a rollback reads or writes `deployed.json`, `release.replaced.json`, `release-incoming/` or `deploying/`
-- **THEN** the path is under the role's state directory, and neither that directory nor any directory above or below it is a bind-mount source in `compose.workspace.yml`, `compose.door.yml` or a `deploy.sh` one-off container
+- **WHEN** a deploy or a rollback reads or writes `deployed.json`, `release.replaced.json`, `deploying/` or `weft.toml`
+- **THEN** the path is under the role's state directory, root owns what was written, the directory is no bind-mount source in `compose.workspace.yml`, `compose.door.yml` or a `deploy.sh` one-off container, and `weft.toml` is mounted only with `:ro`
+
+### Requirement: A rollback verifies the release it goes back to
+
+A rollback SHALL re-check that the previous release's images are weft images in weft's registry, by digest, and SHALL verify their signatures against the pinned identity before it renders anything for them.
 
 #### Scenario: A rollback refuses an unverifiable previous image
 
-- **WHEN** the previous release in `deployed.json` names an image outside weft's registry, not pinned by digest, or not signed by the pinned identity
+- **WHEN** the previous release in `deployed.json` names an image outside weft's registry, not pinned by digest, or whose cosign verification against the pinned identity fails
 - **THEN** the rollback stops before it renders `.env`, leaves every container stopped and every file in place, and asks a person in Discord
 
 ### Requirement: A failed deploy restores the previous release inside its watch window

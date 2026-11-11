@@ -6,12 +6,13 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 
 - [x] 1.1 Merge `origin/dev` into `feat/weft-service` (a merge, not a rebase: it is a shared pull-request branch). Resolve `validate-all.yml` keeping Plane's plays and weft's, take `dev`'s `AGENTS.md` and `README.md` text with weft's rows added after it, and take `dev`'s `provision-vm.yml`, `vm-specs.example.yml` and `test_provision_vm.bats`: `dev` converges `vm_cpu` since `cfc8ad69`, and the automatic merge defined `_cpu` twice and added a second CPU write.
 - [x] 1.2 B1: `deploy.sh <role> stop` treats a missing `.env` as nothing running, so the deploy's stop, which runs before `.env` is rendered, succeeds on a fresh host.
-- [x] 1.3 B2: move `deployed.json`, `release.replaced.json`, `release-incoming/` and `deploying/` to the role's state directory under `weft_state_root` (default `/srv/weft-state`), made by the front door and workspace deploy plays, and refuse a state directory that is a mounted directory or inside one. Mount `release.replaced.json` read-only into the one-off backup container, which needs it.
+- [x] 1.3 B2: move `deployed.json`, `release.replaced.json`, `deploying/` and `weft.toml` to the role's state directory under `weft_state_root` (default `/srv/weft-state`), root's (0755, files 0644, every write with `become`), made by the front door and workspace deploy plays; refuse a state directory that is a mounted directory or inside one. Mount `weft.toml` read-only into the board, the orchestrator and the `deploy.sh` one-off, and `release.replaced.json` read-only into the backup one-off. Fetch `release.json` to stdout, never to a file.
 - [x] 1.4 B2: one task, `tasks/weft-verify-images.yml`, checks a release's images (weft's registry, by digest, the role's images present, signed by the pinned identity); `tasks/weft-release.yml` and `tasks/weft-rollback.yml` both call it, the rollback on the previous release before it renders `.env`.
 - [x] 1.5 "Follow weft main" becomes the directly Dev-bound scheduled template "Follow weft main (Dev)" (the pattern of "Check o11y Liveness (Dev)"), and places the branch it runs from, because a scheduled task gets no survey default (`tasks/assert-placement-branch.yml`). "Roll Out weft Release" keeps its `dev_variant` and loses its schedule until promotion (task 6.1).
 - [x] 1.6 Add `weft_svc`, with the four weft groups as children, to `platform/inventory/production.yml`, with each group's variables as comments.
 - [x] 1.7 Rename `plan/development/16-weft-service.md` to `23-weft-service.md` and fix its references; add weft's row to `plan/architecture/service-architecture.md`.
-- [x] 1.8 Record that weft has no Clean Deploy (Jacob, 2026-11-11): a Clean Deploy in the platform's shape either keeps a company's bind-mounted catalog or deletes it behind one confirmation. The destructive path is offboarding (task 8.5), which takes a final backup and honours retention first. Declared in `design.md`, "Clean Deploy" and "Declared deviations".
+- [x] 1.8 Record that weft has no Clean Deploy (Jacob, 2026-11-11, deviating from `02-service-onboarding.md` Phase 4, lines 164 and 172): a Clean Deploy in the platform's shape either keeps a company's bind-mounted catalog or deletes it behind one confirmation. The destructive path is offboarding (task 8.5, weft's step 44), which takes a final backup and honours retention first. **Until 8.5 lands there is no supported path to retire a host's data**; the Rollback Plan's step 3 (stop, remove the route and records, keep the data) is the interim. Declared in `design.md`, "Clean Deploy" and "Declared deviations".
+- [x] 1.8a `platform/services/weft/context/architecture.md`, the AI tier's context directory: weft's surfaces (`/mcp` among them) and where its own architecture lives.
 - [ ] 1.9 Validation gate: CI on the pull request is green (`bats platform/tests/`, the Python suite, `ansible-lint`, `yamllint`, the security scans), and `openspec validate --all --store agent-cloud` passes. Scenarios "A fresh host has no .env", "The state directory is mounted by no container", "A rollback refuses an unverifiable previous image" and "A tag is refused" hold in `platform/tests/test_weft_deploy_runs.py` and `platform/tests/test_service_weft.bats`. Local run of 2026-11-11, before the push: bats 1307 of 1307; pytest 10846 passed, with two failures outside this change (a password-prompt test that needs a terminal and also fails on `dev` here, and an agentgateway stream-timing test that passes two runs in three); `ansible-lint` 0 failures; `yamllint` 0 errors on tracked files; openspec 27 of 27.
 
 ## 2. Deviations declared [step 18]
@@ -38,12 +39,13 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 - [ ] 4.4 Host firewall on every weft VM: Caddy-only ports, single-host egress denies to OpenBao, Semaphore, the hypervisors and every other weft VM, `o11y_svc` on 9100, and a bats test for the denies. The voice UDP allow waits on decision V (how live voice reaches a workspace when every name is proxied).
 - [ ] 4.5 Validation gate: scenarios "The plan holds every weft name proxied", "A client-supplied forwarding header does not reach the door" and "A weft VM attempting OpenBao is refused" hold on staging.
 
-## 5. Staging follows main [steps 24 to 27]
+## 5. Staging follows main [steps 24 to 27, 42]
 
 - [ ] 5.1 Runner groups `weft-ci` and `weft-release` with `restricted_to_workflows`, and `weft-ci-svc-01`.
 - [ ] 5.2 Until V is decided, the workspace's health no longer asserts the voice UDP port.
 - [ ] 5.3 A failing-health drill, a migration-failure drill, `reboot-host.yml` on each staging VM, and the hairpin check, each recorded as a Semaphore task id.
-- [ ] 5.4 Validation gate: scenarios "Staging runs a signed commit within one tick" and "Health fails within the watch window" hold on staging.
+- [ ] 5.4 A weft-only package-read token, read by `tasks/registry-login.yml` through `registry_login_key`, in place of the shared `secret/services/github:pat`, which until then sits in the deploy user's `auth.json` on every weft VM (moved here from the customer-ready phase: it must land before the rack).
+- [ ] 5.5 Validation gate: scenarios "Staging runs a signed commit within one tick" and "Health fails within the watch window" hold on staging.
 
 ## 6. The rack [step 28]
 
@@ -57,14 +59,16 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 - [ ] 7.2 A log size cap per container and journald `SystemMaxUse` on weft hosts; an image prune after a healthy watch.
 - [ ] 7.3 The `prometheus.io/scrape` and `prometheus.io/port` labels in both compose files (once weft serves `/metrics`), a weft dashboard and its alert rules in the o11y deployment.
 - [ ] 7.4 An alert on OpenBao audit reads under `weft*/workspaces/*` outside a restore run.
-- [ ] 7.5 Validation gate: scenarios "A fresh Loki line carries the service label" and "A workspace that stops answering is reported within 15 minutes" hold on staging.
+- [ ] 7.5 Compose healthchecks for the orchestrator, capture and the front door, once weft's images ship a probe they can run.
+- [ ] 7.6 Validation gate: scenarios "A fresh Loki line carries the service label" and "A workspace that stops answering is reported within 15 minutes" hold on staging.
 
-## 8. Customer-ready [steps 39 to 42, 44, 46]
+## 8. Customer-ready [steps 39 to 41, 44, 46]
+
+Task 8.4 (step 42, the weft-only package-read token) moved to 5.4: the shared PAT must be off the weft VMs before the rack.
 
 - [ ] 8.1 Rollout waves with a window and a hold (`serial: [1, 1, 5]`, `weft_hold_release`).
 - [ ] 8.2 TLS from Caddy to each weft VM with the internal CA (decision D17).
 - [ ] 8.3 The voice path, by decision V.
-- [ ] 8.4 A weft-only package-read token for `registry-login.yml`.
 - [ ] 8.5 "Onboard weft workspace" and "Offboard weft workspace". Offboarding is weft's only destructive path (it has no Clean Deploy): it takes a final backup, keeps the company's data for the retention period (D19), and only then runs `destroy-vm.yml`, confirmed like any destructive step.
 - [ ] 8.6 A scheduled reboot window over `reboot-host.yml` that honours the deploy lock.
 - [ ] 8.7 Validation gate: scenario "No rack approval, no deploy" holds for a held host, and scenario "Health fails within the watch window" holds for a workspace onboarded and offboarded on a scratch host.

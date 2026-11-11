@@ -76,6 +76,8 @@ those images too.
 
 ## Related
 
+- Context (AI tier): [`../context/architecture.md`](../context/architecture.md): the surfaces a
+  request reaches, `/mcp` among them, and where weft's own architecture lives
 - Playbooks: `deploy-weft-door.yml`, `deploy-weft-workspace.yml`, `rollback-weft-workspace.yml`,
   `follow-weft-main.yml`, `roll-out-weft-release.yml`, `stand-up-weft-workspace.yml`,
   `seed-weft-secrets.yml` (all in [`../../../playbooks/`](../../../playbooks/)). The two
