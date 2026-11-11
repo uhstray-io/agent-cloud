@@ -1,0 +1,26 @@
+---
+# weft-check-record.yml — before a host's deploy record is read, refuse one a deploy did not write.
+# The state directory is root's (vars/weft.yml), and every deploy writes deployed.json there as
+# root, so a record that is a link, not a plain file, or not root's was put there some other way:
+# refuse it rather than read where it points. Included by tasks/weft-deploy.yml and
+# rollback-weft-workspace.yml, the two readers that decide from it.
+#
+# Caller passes _weft_state_dir, with vars/weft.yml loaded. A missing record is not refused: a
+# fresh host has none.
+
+- name: "Look at the record before reading it"
+  ansible.builtin.stat:
+    path: "{{ _weft_state_dir }}/deployed.json"
+    follow: false
+  register: _weft_record_stat
+
+- name: "Refuse a record that is not root's, or not a plain file"
+  ansible.builtin.assert:
+    that:
+      - not _weft_record_stat.stat.islnk
+      - _weft_record_stat.stat.isreg
+      - _weft_record_stat.stat.pw_name == _weft_state_owner
+    fail_msg: >-
+      {{ _weft_state_dir }}/deployed.json is not a plain file owned by {{ _weft_state_owner }}, so a
+      deploy did not write it. Nothing was changed; look at the host.
+  when: _weft_record_stat.stat.exists

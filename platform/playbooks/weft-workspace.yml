@@ -144,6 +144,9 @@
         owner: "{{ _weft_state_owner }}"
         group: "{{ _weft_state_group }}"
         recurse: true
+        # Without this, root follows a link planted in the directory and chowns what it points
+        # at: the catalog, or the deploy user's home.
+        follow: false
       become: true
 
     - name: "Remove a leftover release-incoming directory"

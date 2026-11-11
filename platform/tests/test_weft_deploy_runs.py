@@ -94,7 +94,7 @@ def host(tmp_path):
     pb = tmp_path / "pb"
     (pb / "tasks").mkdir(parents=True)
     for name in ("weft-deploy.yml", "weft-rollback.yml", "weft-verify-images.yml", "verify-cosign.yml",
-                 "weft-workspace-files.yml"):
+                 "weft-workspace-files.yml", "weft-check-record.yml"):
         shutil.copy(PLAYBOOKS / "tasks" / name, pb / "tasks" / name)
     for name, tasks in STUBS.items():
         (pb / "tasks" / name).write_text(yaml.safe_dump(tasks))
@@ -133,7 +133,7 @@ def _record(tmp_path: Path, previous: dict) -> None:
         json.dumps({"release": _with_model(tmp_path, previous), "deployed_at": None, "refused": []}))
 
 
-def _deploy(tmp_path: Path, release: dict, udp_port: int):
+def _deploy(tmp_path: Path, release: dict, udp_port: int, owner: str | None = None):
     srv = tmp_path / "srv"
     release = _with_model(tmp_path, release)
     play = [{
@@ -173,7 +173,7 @@ def _deploy(tmp_path: Path, release: dict, udp_port: int):
     # The state directory is root's on a VM, written with become. Here the run is a user's: the owner
     # is this user and escalation is off, which a launch cannot do (both are internal names, refused
     # as extra vars by refuse-internal-extra-vars.yml, or connection variables).
-    me = {"_weft_state_owner": os.environ.get("USER") or str(os.getuid()),
+    me = {"_weft_state_owner": owner or os.environ.get("USER") or str(os.getuid()),
           "_weft_state_group": grp.getgrgid(os.getgid()).gr_name, "ansible_become": False}
     proc = subprocess.run(["ansible-playbook", "-i", "localhost,", "-e", json.dumps(me), str(playbook)],
                           cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=180)
@@ -226,6 +226,26 @@ def test_a_deploy_writes_nothing_of_its_record_into_the_mounted_workspace_direct
     for name in ("deployed.json", "release.replaced.json", "deploying", "weft.toml"):
         assert not list(_workspace(host).rglob(name)), f"{name} is under the mounted workspace directory"
     assert (_state(host) / "deployed.json").is_file()
+
+
+@pytest.mark.parametrize("planted", ["symlink", "not-root-s"])
+def test_a_record_a_deploy_did_not_write_stops_the_deploy_before_anything_starts(host, planted):
+    # The state directory is root's, so a record that is a link, or that someone other than root
+    # owns, was planted: reading it would let its writer choose what the deploy keeps or rolls to.
+    record = {"release": _with_model(host, _release(OLD, "b")), "deployed_at": None, "refused": []}
+    _state(host).mkdir(parents=True)
+    if planted == "symlink":
+        elsewhere = host / "elsewhere.json"
+        elsewhere.write_text(json.dumps(record))
+        (_state(host) / "deployed.json").symlink_to(elsewhere)
+        owner = None
+    else:
+        (_state(host) / "deployed.json").write_text(json.dumps(record))
+        owner = "root"  # the record is this test user's, not root's
+    proc, log, _ = _deploy(host, _release(NEW, "a"), _udp_port(host), owner=owner)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "is not a plain file owned by" in proc.stdout, proc.stdout[-4000:]
+    assert not _ups(log), "a container was started on a planted record:\n" + log
 
 
 def test_a_rollback_refuses_a_previous_image_from_outside_weft_s_registry(host):
@@ -386,6 +406,13 @@ def test_every_write_to_the_state_directory_escalates_and_leaves_it_root_s():
                     bad.append(f"{f.name}: {task.get('name')} mode {body.get('mode')}")
     assert writes >= 10, writes
     assert not bad, bad
+    # The recursive chown runs as root over a directory something else could once write: it must
+    # not follow a link out of it (to the catalog, or a home directory).
+    for play in ("weft-workspace.yml", "weft-door.yml"):
+        tasks = list(_tasks(yaml.safe_load((PLAYBOOKS / play).read_text())))
+        (chown,) = [t for t in tasks if t.get("name") == "Take ownership of what is in the state directory"]
+        body = chown["ansible.builtin.file"]
+        assert body.get("recurse") is True and body.get("follow") is False and chown.get("become") is True, play
     weft_vars = yaml.safe_load((PLAYBOOKS / "vars/weft.yml").read_text())
     assert weft_vars["_weft_state_owner"] == "root" and weft_vars["_weft_state_group"] == "root"
 

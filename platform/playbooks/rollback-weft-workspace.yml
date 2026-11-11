@@ -119,6 +119,9 @@
       ansible.builtin.meta: end_host
       when: ansible_check_mode
 
+    - name: "Refuse a record a deploy did not write"
+      ansible.builtin.include_tasks: tasks/weft-check-record.yml
+
     - name: "Read what this host runs"
       ansible.builtin.slurp:
         src: "{{ _weft_state_dir }}/deployed.json"

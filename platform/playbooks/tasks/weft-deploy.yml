@@ -43,24 +43,8 @@
   ansible.builtin.meta: end_host
   when: ansible_check_mode
 
-# The state directory is root's, so a record that is not root's, or is a link, was not written by
-# a deploy: refuse it rather than read where it points.
-- name: "Look at the record before reading it"
-  ansible.builtin.stat:
-    path: "{{ _weft_state_dir }}/deployed.json"
-    follow: false
-  register: _weft_record_stat
-
-- name: "Refuse a record that is not root's, or not a plain file"
-  ansible.builtin.assert:
-    that:
-      - not _weft_record_stat.stat.islnk
-      - _weft_record_stat.stat.isreg
-      - _weft_record_stat.stat.pw_name == _weft_state_owner
-    fail_msg: >-
-      {{ _weft_state_dir }}/deployed.json is not a plain file owned by {{ _weft_state_owner }}, so a
-      deploy did not write it. Nothing was changed; look at the host.
-  when: _weft_record_stat.stat.exists
+- name: "Refuse a record a deploy did not write"
+  ansible.builtin.include_tasks: weft-check-record.yml
 
 - name: "Read what this host runs"
   ansible.builtin.slurp:
