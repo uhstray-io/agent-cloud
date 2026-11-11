@@ -270,17 +270,16 @@ OWN_SERVERS = frozenset({
     "platform/tests/test_instrument_host_o11y.py",
     "platform/tests/test_probe_launch_gate.py",
     "platform/tests/test_renew_internal_certs.py",
+    "platform/tests/test_verify_o11y_dashboard_data.py",
 })
 
 
 def _builds_own_server(tree) -> bool:
+    # Any use of the class counts, not only a direct call or a class base: an alias
+    # (`server_type = ThreadingHTTPServer`) or a type() subclass builds a server too.
+    # Import statements are alias nodes, not Name/Attribute, so an unused import is not flagged.
     names = {"HTTPServer", "ThreadingHTTPServer"}
-
-    def named(node):
-        return node.id if isinstance(node, ast.Name) else getattr(node, "attr", None)
-
-    return any((isinstance(n, ast.Call) and named(n.func) in names)
-               or (isinstance(n, ast.ClassDef) and any(named(b) in names for b in n.bases))
+    return any((isinstance(n, ast.Name) and n.id in names) or (isinstance(n, ast.Attribute) and n.attr in names)
                for n in ast.walk(tree))
 
 
