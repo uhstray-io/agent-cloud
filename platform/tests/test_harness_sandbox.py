@@ -52,3 +52,38 @@ def test_run_enforces_subprocess_timeout(tmp_path, monkeypatch):
             timeout=0.1,
         )
     assert time.monotonic() - started < 2
+
+
+def test_run_gives_the_child_no_stdin(tmp_path, monkeypatch):
+    # A prompt in a playbook must fail at once, not hold the worker until the timeout.
+    monkeypatch.setattr(harness_sandbox, "SANDBOX", None)
+    seen = {}
+    monkeypatch.setattr(harness_sandbox.subprocess, "run", lambda cmd, **kwargs: seen.update(kwargs))
+    harness_sandbox.run(["true"], tmp_path, cwd=tmp_path, env={})
+    assert seen["stdin"] is subprocess.DEVNULL
+    assert seen["timeout"] == harness_sandbox.DEFAULT_TIMEOUT_SECONDS
+
+
+def test_run_playbook_builds_the_command_environment_and_bound(tmp_path, monkeypatch):
+    monkeypatch.setattr(harness_sandbox, "SANDBOX", None)
+    monkeypatch.setenv("ANSIBLE_CONFIG", "/elsewhere/ansible.cfg")
+    seen = {}
+    monkeypatch.setattr(harness_sandbox.subprocess, "run", lambda cmd, **kwargs: seen.update(kwargs, cmd=cmd))
+    harness_sandbox.run_playbook(tmp_path / "p.yml", tmp_path, "--check", "-e", "x=1",
+                                 inventory="inv.yml", env={"EXTRA": "1", "ANSIBLE_CONFIG": "/x.cfg"}, timeout=7)
+    assert seen["cmd"] == ["ansible-playbook", "-i", "inv.yml", str(tmp_path / "p.yml"), "--check", "-e", "x=1"]
+    assert seen["cwd"] == harness_sandbox.REPO
+    assert (harness_sandbox.REPO / "ansible.cfg").is_file()
+    assert "ANSIBLE_CONFIG" not in seen["env"]  # the repository's ansible.cfg applies via cwd
+    assert seen["env"]["EXTRA"] == "1" and seen["env"]["ANSIBLE_NOCOLOR"] == "1"
+    assert seen["env"]["ANSIBLE_LOCAL_TEMP"].startswith(str(tmp_path))
+    assert seen["timeout"] == 7
+
+
+def test_run_playbook_runs_a_real_playbook(tmp_path):
+    play = tmp_path / "play.yml"
+    play.write_text('- hosts: localhost\n  gather_facts: false\n  connection: local\n'
+                    '  tasks:\n    - debug: {msg: "ran-from-the-shared-runner"}\n')
+    proc = harness_sandbox.run_playbook(play, tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ran-from-the-shared-runner" in proc.stdout

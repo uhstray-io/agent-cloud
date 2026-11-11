@@ -127,6 +127,9 @@ NATIVE_SOURCE_REFUSAL_REASONS = frozenset({
     "native_binding_compose", "native_binding_image", "native_binding_config_digest",
     "native_binding_config_bytes", "native_binding_components", "native_binding_mounts",
     "native_source_identity_changed", "native_source_transition_unproven", "native_source_internal_error",
+    # Decision points of the current-producer identity and the Prometheus targets read.
+    "native_identity_podman_unavailable", "native_identity_alloy_count", "native_identity_alloy_not_running",
+    "native_targets_invalid", "native_targets_unavailable",
 })
 SOURCE_GATE_REFUSAL_REASONS = READBACK_REASONS | SOURCE_READBACK_REASONS | NATIVE_SOURCE_REFUSAL_REASONS
 SOURCE_JOB_CATEGORIES = {

@@ -126,6 +126,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/09-console-ui-principles.md` — Console UI principles and how operators work with agent-cloud through the console (interaction loop, information architecture, review checklist)
 - `plan/development/20-semantic-versioning.md` — Semantic versioning: PR titles set the bump, `Version` check on every PR, `-dev.N` tags on `dev`, `vX.Y.Z` tags and Releases on `main`, 0.x line with every major behind the operator-launched `Release Major Version (Dev)`
 - `plan/development/21-test-suite-runtime.md` — Test suite runtime and redundancy: measured CI baseline, the forged-extra-var matrix reduced where the guard reads names only, fixed waits given public knobs, self-balancing pytest shards from a committed durations file, a shared playbook runner with timeouts, GNU parallel for BATS, a pre-push fast lane
+- `plan/development/22-console-access-requests.md` — Console access requests and the skynet iam-agent (PROPOSED handoff plan): the site-config declaration stays the authority, a request becomes a reviewed site-config PR, Plane follows the Authentik groups
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 

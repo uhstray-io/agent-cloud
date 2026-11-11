@@ -295,9 +295,20 @@ jobs:
 
       # GNU parallel runs bats files concurrently (plan 21, D4). Tests within one file keep
       # their order (--no-parallelize-within-files), because some files share state between
-      # their own tests. Checked on this image: bats 1.10.0 has both flags.
-      - name: Install BATS and GNU parallel
-        run: sudo apt-get install -y -qq bats parallel
+      # their own tests. bats 1.10.0 has both flags.
+      - name: Install GNU parallel
+        run: sudo apt-get install -y -qq parallel
+
+      # bats from its pinned release, not from apt: on 2026-11-11 the runner could not fetch the
+      # bats package from the Ubuntu archive for hours (its mirror did not resolve, with or
+      # without apt-get update) while parallel still installed. The clone must be the tag's
+      # commit, so a moved tag fails the job instead of running other code.
+      - name: Install BATS v1.10.0
+        run: |
+          git clone --quiet --depth 1 --branch v1.10.0 https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats-core"
+          test "$(git -C "$RUNNER_TEMP/bats-core" rev-parse HEAD)" = f7defb94362f2053a3e73d13086a167448ea9133
+          sudo "$RUNNER_TEMP/bats-core/install.sh" /usr/local
+          bats --version
 
       - name: Run Bash tests
         run: bats --jobs 4 --no-parallelize-within-files platform/tests/

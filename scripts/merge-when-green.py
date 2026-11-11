@@ -26,8 +26,9 @@ VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
 UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
-# The sharded workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
-RETIRED_WORKFLOW_BLOB_SHA = "1212589d3a85b02083ddb27191ee0cddccee1627"
+BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
+# The bats-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
+RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
@@ -506,10 +507,10 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Runner-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
-        if candidate_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
-            # Same jobs as sharded minus the change detector and the retired jobs.
+        if candidate_blob_sha == BATS_PINNED_WORKFLOW_BLOB_SHA:
+            # Same job set as sharded: Bash Tests installs bats from its pinned release, not apt.
             check_workflow_policy(base, sharded=True)
-            check_workflow_policy(candidate, sharded=True, retired=True)
+            check_workflow_policy(candidate, sharded=True)
             if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
                     or workflow_records[0]["filename"] != WORKFLOW
                     or workflow_records[0].get("previous_filename") is not None):
@@ -520,6 +521,22 @@ def check_workflow_change(api, base_sha, head_sha, files):
         check_workflow_policy(base, sharded=True)
         if base != candidate or workflow_records:
             raise Refusal("Sharded workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == BATS_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+            # Same jobs as bats-pinned minus the change detector and the retired jobs.
+            check_workflow_policy(base, sharded=True)
+            check_workflow_policy(candidate, sharded=True, retired=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != BATS_PINNED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed bats-pinned workflow")
+        check_workflow_policy(base, sharded=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Bats-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
         if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
@@ -621,6 +638,15 @@ def check_job_evidence(api, number, sha, files):
                 and run["app"].get("slug") == "coderabbitai"
                 and run.get("status") == "completed"
                 and run.get("conclusion") in ("success", "neutral")):
+            continue
+        # Dependabot validates its own config on any commit that changes .github/dependabot.yml
+        # (so on every head that merges such a dev change in). Only its successful config check is
+        # accepted; a failed validation, or any other Dependabot run, still refuses.
+        if (isinstance(run, dict) and isinstance(run.get("app"), dict)
+                and run["app"].get("slug") == "dependabot"
+                and run.get("name") == ".github/dependabot.yml"
+                and run.get("status") == "completed"
+                and run.get("conclusion") == "success"):
             continue
         name = run.get("name", "<unnamed>") if isinstance(run, dict) else "<unnamed>"
         raise Refusal(f"Unknown external check policy: {name}")
