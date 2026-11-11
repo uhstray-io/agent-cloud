@@ -1,5 +1,6 @@
 """Execute the real controller playbook against disposable provider fixtures."""
 
+import contextlib
 import copy
 import json
 import os
@@ -7,16 +8,14 @@ import re
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "platform/tests"))
-from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
+from fake_http import DrainingHandler, serve  # noqa: E402 - the shared fake-server base
 from fake_semaphore import template_write  # noqa: E402 - the shared v2.19 template-write rule
 
 sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
@@ -169,24 +168,16 @@ class ScopedPublicationTests(unittest.TestCase):
                     cls.records[0] = value
                 return self.reply({})
 
-        # socketserver's default listen backlog is 5. A playbook issues requests in quick
-        # bursts, and on a loaded machine a queued connect can be reset. The larger queue
-        # alone did not end the "Connection reset by peer" flake: the unread login body in
-        # do_POST was the rest of it. A fixture must not be the flaky part of the test.
-        class Server(ThreadingHTTPServer):
-            request_queue_size = 128
-            daemon_threads = True
-
-        cls.server = Server(("127.0.0.1", 0), Handler)
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
-        cls.endpoint = f"http://127.0.0.1:{cls.server.server_port}"
+        # serve() listens with a 128-deep backlog (socketserver's default of 5 let a playbook's
+        # request bursts be reset on a loaded machine), and DrainingHandler reads each request
+        # body before dispatch (the unread login body was the rest of that flake). A fixture
+        # must not be the flaky part of the test.
+        cls.servers = contextlib.ExitStack()
+        cls.endpoint = cls.servers.enter_context(serve(Handler))
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-        cls.thread.join()
+        cls.servers.close()
         cls.scratch.cleanup()
 
     def setUp(self):
