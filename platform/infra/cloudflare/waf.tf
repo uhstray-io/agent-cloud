@@ -250,7 +250,7 @@ resource "cloudflare_ruleset" "custom_firewall" {
       ref         = "plane-github-webhook-bypass-challenge"
       action      = "skip"
       enabled     = true
-      description = "Plane GitHub App webhook - bypass challenge for GitHub's deliveries"
+      description = "Plane GitHub App webhook - bypass challenge and managed rules for GitHub's deliveries"
       expression  = "(http.host eq \"plane.uhstray.io\" and http.request.uri.path eq \"/silo/api/github/github-webhook\")"
       action_parameters = {
         phases   = ["http_request_sbfm", "http_request_firewall_managed"]
