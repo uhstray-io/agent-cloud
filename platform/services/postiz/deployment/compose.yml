@@ -40,7 +40,7 @@
 # backend, /uploads/ to static files, / to the frontend — so Caddy needs exactly
 # one upstream and no path routing. Auth is in-app OIDC against Authentik, NOT a
 # Caddy forward_auth gate, so the /api/public/v1 automation path stays usable by
-# n8n with an API key.
+# API-key clients.
 # Plan: plan/development/14-postiz-social-publishing.md
 
 name: postiz

@@ -24,6 +24,16 @@
 #          rendered into the content from inventory so they do — see
 #          deploy-authentik.yml + the *-oidc.yaml context blocks).
 #
+# ── Retirement runbook (remove an SSO app) ───────────────────────────────────
+# Removing an app's entry from this catalog does NOT remove its objects from the live
+# Authentik: blueprints create objects and never delete them. So also:
+# 1. Delete the app's entry here, and its blueprint file under blueprints/.
+# 2. Add a `state: absent` entry for each object it created (its application, then its
+#    provider, by the identifiers that blueprint used) to blueprints/retired-apps.yaml.
+#    That file is always applied, so the deletion runs on the next deploy.
+# 3. Remove the slug from the site-config `authentik_apps` list. A slug that is not in
+#    this catalog fails the deploy ("Validate every enabled app exists in the catalog").
+#
 # Per app:
 #   file             blueprint under blueprints/ that creates its provider + app
 #   type             oidc (native, app reads token) | forward_auth (Caddy outpost gate)
@@ -49,10 +59,6 @@ authentik_app_catalog:
     provider: grafana
     prod_required: [grafana_redirect_uri, grafana_launch_url]
     verify_redirect: grafana_redirect_uri
-  n8n:
-    file: n8n-forward-auth.yaml
-    type: forward_auth
-    tier: member
   netbox:
     file: netbox-forward-auth.yaml
     type: forward_auth
@@ -79,10 +85,6 @@ authentik_app_catalog:
     provider: agentgateway
     prod_required: [agentgateway_redirect_uri, agentgateway_launch_url]
     verify_redirect: agentgateway_redirect_uri
-  openhands:
-    file: openhands-forward-auth.yaml
-    type: forward_auth
-    tier: member
   plane:
     file: plane-oidc.yaml
     type: oidc
@@ -104,13 +106,6 @@ authentik_app_catalog:
     provider: semaphore
     prod_required: [semaphore_redirect_uri, semaphore_launch_url]
     verify_redirect: semaphore_redirect_uri
-  tududi:
-    file: tududi-oidc.yaml
-    type: oidc
-    tier: member
-    provider: tududi
-    prod_required: [tududi_redirect_uri, tududi_launch_url]
-    verify_redirect: tududi_redirect_uri
   console:
     file: console-oidc.yaml
     type: oidc

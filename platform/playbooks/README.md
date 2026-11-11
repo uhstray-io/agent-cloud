@@ -2,6 +2,13 @@
 
 Ansible playbooks for deploying, updating, validating, and hardening agent-cloud services via Semaphore.
 
+> **This README is a selected reference, not the catalog.** The authoritative
+> list of Semaphore templates — every task the orchestrator can launch, with its
+> survey vars, schedule and repository record — is
+> [`platform/semaphore/templates.yml`](../semaphore/templates.yml) (plus
+> `templates-local.yml` for the local instance), rendered to live templates by
+> `setup-templates.yml`. When the two disagree, `templates.yml` wins.
+
 ## Conventions
 
 ### Dry run, verify and results
@@ -27,11 +34,11 @@ There are two deployment patterns in use:
 **Legacy (thin wrapper):** Services that have not yet migrated to the composable pattern use a thin wrapper that imports `deploy-service.yml` with `target_service` set. This is required because the Semaphore version in use does not support `extra_cli_arguments`.
 
 ```yaml
-# deploy-nocodb.yml (legacy pattern)
-- name: "Deploy NocoDB"
+# deploy-openbao.yml (legacy pattern)
+- name: "Deploy OpenBao"
   import_playbook: deploy-service.yml
   vars:
-    target_service: nocodb_svc
+    target_service: openbao_svc
 ```
 
 **Composable (multi-phase):** Services migrated to the composable pattern have their own multi-phase playbook that uses the composable task library directly. NetBox is the reference implementation.
@@ -52,7 +59,7 @@ See `plan/architecture/01-automation-model.md` for the full composable pattern s
 | Variable | Source | Notes |
 |----------|--------|-------|
 | `ansible_user` | Inventory (private) | Declare explicitly; individual playbooks may supply fallback values |
-| `service_name` | Inventory per-host | e.g., `nocodb`, `openbao` |
+| `service_name` | Inventory per-host | e.g., `openbao` |
 | `monorepo_deploy_path` | Inventory per-host | Path within monorepo to deploy.sh |
 | `monorepo_repo` | Inventory global | Git SSH URL |
 | `openbao_addr` | Inventory `all.vars` | OpenBao API URL. Declared for every host, `localhost` included (production since 2026-09-25); an environment extra var of the same name overrides it, which the seed playbooks refuse as drift (`tasks/assert-bao-addr-declared.yml`). Isolated seed environments carry no extra vars |
@@ -143,18 +150,12 @@ and launches each with a forged internal name.
 | Playbook | Pattern | Purpose |
 |----------|---------|---------|
 | `deploy-service.yml` | Legacy | Generic deploy: clone monorepo, run deploy.sh, health check |
-| `deploy-all.yml` | Legacy aggregate | Covers OpenBao, NocoDB, n8n, NetBox and NemoClaw through the legacy clone task; not a complete current-platform deployment or recovery path |
+| `deploy-all.yml` | Legacy aggregate | Deploys OpenBao, then NetBox, through the legacy clone task; not a complete current-platform deployment or recovery path |
 | `deploy-openbao.yml` | Legacy | Deploy OpenBao (self-bootstrapping, special case) |
-| `deploy-nocodb.yml` | Legacy | Retained for retired NocoDB; decommissioning is separate, not a new composable migration |
-| `deploy-n8n.yml` | Composable | Stateful-secret cutover guard, readiness-gated app/worker, verification and owner setup; use the service README for upgrades |
 | `deploy-semaphore.yml` | Legacy | Deploy Semaphore (new VM only) |
 | `deploy-netbox.yml` | Composable | Deploy NetBox (5-phase: secrets, containers, bootstrap, Diode creds, verify) |
 | `recover-netbox-runtime.yml` | Dev-bound recovery | Default preflight reports each core service's start/recreate/noop action; explicit apply converges only existing NetBox core containers through Compose and verifies health |
-| `deploy-nemoclaw.yml` | Legacy | Deploy NemoClaw |
 | `deploy-orb-agent.yml` | Composable | Deploy Orb Agent (standalone: Diode creds + agent.yaml + start) |
-| `deploy-uhhcraft.yml` | Composable | Deploy UhhCraft (5-phase: secrets, containers, post-deploy migrations, caddy fragment, verify) |
-| `deploy-inference-comfyui.yml` | Composable | Deploy ComfyUI sidecar (GPU prereqs + secrets + containers + verify) |
-| `deploy-inference-hunyuan3d.yml` | Composable | Deploy Hunyuan3D sidecar (GPU prereqs + weights check + secrets + containers + verify) |
 | `store-postiz-api-key.yml` | Composable | Read the org's API key from postiz's own Postgres (minted by the app on the first authenticated request; the stored value IS the bearer token) and place it at `secret/services/postiz:postiz_api_key`, no_log throughout |
 | `deploy-authentik.yml` | Composable | Deploy Authentik IdP (secrets → containers → blueprints assembled from inventory → live-state verify: every placed blueprint applied, declared accounts present/active/in-group, retired accounts gone → Caddy fragment) |
 | `audit-authentik-retirements.yml` | Read-only | Count the live Authentik accounts named by private `*_legacy_username` declarations before a Dev blueprint deploy; prints counts, not usernames or credentials |
@@ -162,7 +163,6 @@ and launches each with a forged internal name.
 | `recover-authentik-audit-runtime.yml` | Dev-bound recovery | Default read-only preflight checks existing container identity, restart policy, and exact Postgres/Redis data volumes; explicit apply starts only the existing database, cache, and server, leaving the blueprint worker stopped for the retirement audit |
 | `clean-deploy-netbox.yml` | Composable | Destructive: wipe volumes + fresh NetBox deploy. Every `clean-deploy-*.yml` requires `-e confirm_reset=<host name>` (required, no-default survey field on its template); the gate also refuses under `--check`, so a dry run names its host too. Locally: `make local-clean-deploy-<svc> CONFIRM_RESET=<svc>-local` |
 | `stop-local-service.yml` | Local-dev only | `Stop Local Service`: `<engine> stop` over ONE idle `*_svc` group's running containers (compose working-dir label, as `verify-service-persistence.yml`) plus the host var `stop_extra_containers` for unlabelled ones (NetBox's `netbox-orb-agent`). Keeps containers, images and volumes; no `down`, no `rm`, no restart-policy change. Refuses any host not named `<name>-local` and an empty or non-`_svc` group before an engine call; idempotent, check mode stops nothing. Fails when the engine does not answer, and refuses a non-`local` connection. Reverse it with the service's Deploy (how a stopped container restarts varies by `deploy.sh`: see `docs/LOCAL-DEV.md`); extras are restarted only by their own workflow (`Deploy Orb Agent (Local)`); `restart: always` containers can come back at the next machine boot. Locally: `make local-service-down SERVICE=<group>` |
-| `clean-deploy-uhhcraft.yml` | Composable | Destructive: wipe volumes + fresh UhhCraft deploy |
 | `deploy-launch-gate.yml` | Composable | The launch gate (skynet-launch-containment, Phase 3): refuses bad inputs before any change, renders the allowlist from OPA's catalog through `templates.yml`, manages the caller and Semaphore tokens, issues the TLS server leaf from the internal CA, runs `deploy.sh`, and verifies over TLS and inside the container. Run after `provision-launch-gate-semaphore-access.yml` |
 | `clean-deploy-launch-gate.yml` | Composable | Destructive: removes the gate's containers and, outside local-dev, its placed clone, then runs `deploy-launch-gate.yml`. Requires `-e confirm_reset=<host name>` |
 | `rollback-inference-route.yml` | Composable | Take the inference gateway out of the public path or put it back, as code (`-e mode=gateway-config\|direct\|restore`): the previous gateway config (validated with the pinned image first, also under `--check`; the config it replaces is kept for the run and put back, with the run still failing, if the gateway is not ready on the previous one), or `direct_<name>` copies of the current vLLM key published before Caddy is pointed at vLLM, then withdrawn on restore |
@@ -171,13 +171,8 @@ and launches each with a forged internal name.
 | Playbook | Purpose |
 |----------|---------|
 | `update-service.yml` | Generic update: pull images, restart compose, health check |
-| `update-nocodb.yml` | Update NocoDB |
-| `update-n8n.yml` | Legacy generic update wrapper; use the composable `deploy-n8n.yml` and backup/restore runbook for current n8n |
 | `update-semaphore.yml` | Update Semaphore |
 | `update-netbox.yml` | Legacy generic update wrapper; current full service configuration uses `deploy-netbox.yml`, with Orb Agent deployed separately |
-| `update-uhhcraft.yml` | Update UhhCraft |
-| `update-inference-comfyui.yml` | Update ComfyUI sidecar |
-| `update-inference-hunyuan3d.yml` | Update Hunyuan3D sidecar |
 
 ### SSH & Security
 | Playbook | Purpose |
@@ -222,10 +217,6 @@ and launches each with a forged internal name.
 | `apply-policy-orb-agent.yml` | Apply orb-agent policy |
 | `provision-orb-agent-approle.yml` | Provision the dedicated orb-agent AppRole + policy (from `orb-agent.hcl`) and store creds at `secret/services/approles/orb-agent` |
 | `apply-policy-semaphore.yml` | Apply Semaphore policy |
-| `apply-policy-nemoclaw.yml` | Apply NemoClaw policy |
-| `apply-policy-uhhcraft.yml` | Apply UhhCraft policy (reserved) |
-| `apply-policy-inference-comfyui.yml` | Apply ComfyUI sidecar policy (reserved) |
-| `apply-policy-inference-hunyuan3d.yml` | Apply Hunyuan3D sidecar policy (reserved) |
 
 For the one-time Grafana token handoff, create the service-account token in Grafana's
 UI and copy it to the clipboard. Save it locally without printing it:
@@ -256,7 +247,7 @@ untouched for explicit cleanup after the new token is confirmed.
 | `cleanup-o11y-isolated-restore.yml` | Separately launched Dev-only source workflow that fetches and authenticates the restore task and receipt, compares the complete OpenBao journal/version, deletes only the stopped unchanged target, and marks cleaned only after exact task success and authoritative VMID absence |
 | `validate-all.yml` | Health check all services (HTTP only, no SSH commands) |
 | `verify-o11y-metrics-target.yml` | Dev-bound, read-only Prometheus receipt for one exact healthy target and one named exporter series; refuses an altered controller checkout |
-| `survey-o11y-availability-gate.yml` | Dev-bound, read-only proof of the availability namespace gate in enabled mode (`Survey o11y Availability Gate (Dev)`): runs the same bounded runtime helper as the pre-placement gate with `O11Y_AVAILABILITY_ENABLED=true` and the enabled-mode overlay. It imports no availability preparation and never reads `o11y_availability_probes_enabled`, so it can answer before the switch is set. Reports one fixed category: `isolated`, or the refusal decision point (`namespace_alloy_unavailable`, `namespace_alloy_host_port`, `namespace_shared`, `namespace_network_mode`, `namespace_provider_unverified`, `namespace_unstable`, `namespace_runtime_unreadable`, or `namespace_unverified` for anything else). The protected result is reduced by a filter and never printed; no container, process or namespace identity appears. Places nothing; `--check` runs the same read. |
+| `survey-o11y-availability-gate.yml` | Dev-bound, read-only proof of the availability namespace gate in enabled mode (`Survey o11y Availability Gate (Dev)`): runs the same bounded runtime helper as the pre-placement gate with `O11Y_AVAILABILITY_ENABLED=true` and the enabled-mode overlay. It imports no availability preparation and never reads `o11y_availability_probes_enabled`, so it can answer before the switch is set. Reports one fixed category: `isolated`, or the refusal decision point (`namespace_alloy_unavailable`, `namespace_alloy_host_port`, `namespace_shared`, `namespace_network_mode`, `namespace_provider_unverified`, `namespace_unstable`, `namespace_runtime_unreadable`, `namespace_internal_error` (the helper raised an unexpected error), `namespace_helper_failed` (the helper exited with a code other than 0 or 2), or `namespace_unverified` for anything else). The protected result is reduced by a filter and never printed; no container, process or namespace identity appears. Places nothing; `--check` runs the same read. |
 | `survey-o11y-expected-metrics-targets.yml` | Dev-bound, read-only comparison of the reviewed exact five-label target declaration with all active Prometheus targets, including unhealthy targets; reports only fixed status/reason values and bounded counts |
 | `verify-o11y-dashboard-data.yml` | Dev-bound, read-only: evaluate one provisioned dashboard's Prometheus panel queries (read from the receiver's provisioned JSON by `dashboard_uid`) over `lookback` (default 1h) and pass only when every selected panel returns a series with a finite sample. Grafana variables are reproduced (`$__rate_interval`, `$__interval`, `$__range*`, saved Custom all values, custom-variable defaults; overrides via `dashboard_variables`), anything else refused; Loki/Tempo panels reported skipped. Prints names and series counts, never label values; identical under `--check` |
 | `drill-o11y-active-alert-delivery.yml` | Dev-bound production drill against already-active Grafana rules/contact; adds one failed scrape, reuses the named Discord receipt path, then removes only its scrape declaration and verifies recovery |
@@ -338,7 +329,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `inspect-host-containers.yml` | Read-only: the containers on exactly one host, per engine (the connecting user's and any declared `linger_user`'s rootless podman, rootful podman, Docker), with the engine version, each container's state, restart policy and compose working directory; for onboarding a host with no service group and for finding which engine and account own a service's containers. The inspect format is passed as a `command` argv, because production Semaphore's Ansible re-templates `environment:` values |
 | `inspect-service-runtime.yml` | Read-only Semaphore diagnostic for one populated `*_svc` inventory group; reports existing container names, states, exit codes, OOM-killed flag, restart counts, health status and start/finish times (why a container restarts), including stopped containers; never environment, logs or engine error text |
 | `provision-netbox-custom-fields.yml` | Converge the workflow's NetBox custom fields to their declaration through the Django shell. Writes, and refuses to retype a field |
-| `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history (newest 1000 tasks each; a full window is reported, and marks the services it can hide) → newest result per service and step, with the status NetBox already holds merged underneath so an older result is kept everywhere → NetBox custom fields (scoped view/change-VM token) and Loki. Declared on a 15-minute schedule on its base template, which production does not have until `dev` is promoted (`main` has no collector); the `(Dev)` copy is unscheduled and launched by hand. Its dry run is the read-only failure report. A host that sets `service_conformance_tracked: false` (default true) is not mapped to a service (a group takes its service from its first tracked host), so a non-service host that borrows a `service_name` (the DGX drill hosts) never shows as a service that has not run |
+| `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history (newest 1000 tasks each; a full window is reported, and marks the services it can hide) → newest result per service and step, with the status NetBox already holds merged underneath so an older result is kept everywhere → NetBox custom fields (scoped view/change-VM token) and Loki. The live template `Collect Service Conformance (Dev)` runs from `dev` (repository record `agent-cloud dev`) on a `*/15 * * * *` schedule declared in `platform/semaphore/templates.yml`; no `main`-bound copy is published; production runs the collector only through the `(Dev)` template until promotion. Whether the schedule is live in production is not verified from this repository. Its dry run is the read-only failure report. A host that sets `service_conformance_tracked: false` (default true) is not mapped to a service (a group takes its service from its first tracked host), so a non-service host that borrows a `service_name` (the DGX drill hosts) never shows as a service that has not run |
 
 ### Infrastructure
 | Playbook | Purpose |
@@ -395,8 +386,6 @@ used to live in `AUTOMATION-COMPOSABILITY.md`, which is now under `plan/archive/
 | `tasks/apply-openbao-policy.yml` | Implemented | Apply a single OpenBao policy from an .hcl file |
 | `tasks/seed-discovery-credential.yml` | Implemented | Copy/update one credential set at a discovery/* vault path |
 | `tasks/update-vault-field.yml` | Implemented | Read a vault secret, update a specific field, write back |
-| `tasks/run-migrations.yml` | Implemented | Generic goose migration runner; container or host execution |
-| `tasks/install-nvidia-toolkit.yml` | Implemented | NVIDIA Container Toolkit + CDI for Podman on GPU hosts |
 | `tasks/install-podman-compose.yml` | Implemented | Verify podman + `podman compose` / `podman-compose` is callable (Linux apt / macOS Homebrew) |
 | `tasks/place-monorepo.yml` | Implemented | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble. The local copy reports `changed` only for a transfer, a created or retargeted symlink, a deletion or a mode change on a non-symlink (`filter_plugins/rsync_itemize.py`), so a second deploy of an unchanged tree reports none |
 | `tasks/enable-linger.yml` | Implemented | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot. Included by `place-monorepo.yml`; optional `linger_user` for a dedicated service account |
@@ -441,7 +430,7 @@ Planned tasks (not yet implemented):
 | `tasks/setup-runtime-dir.yml` | Create ~/services/<name>/, symlinks to clone |
 | `tasks/run-deploy.yml` | Execute deploy.sh from runtime dir (passes CLONE_DIR) |
 | `tasks/verify-health.yml` | Health check a service endpoint with retry/backoff |
-| `tasks/write-secret-metadata.yml` | Write KV v2 custom metadata after secret store |
+| `tasks/write-secret-metadata.yml` | Not built (planned; `plan/architecture/01-automation-model.md` marks it `[PLANNED]`). Would write KV v2 custom metadata after a secret store |
 | `tasks/rotate-credential.yml` | Generic Create-Verify-Retire rotation wrapper |
 | `tasks/revoke-service-credentials.yml` | Revoke AppRole secret_id + delete Hydra clients |
 

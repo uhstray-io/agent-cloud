@@ -236,14 +236,6 @@ create_task_templates() {
     "playbooks/deploy-service.yml" \
     "-e target_service=openbao_svc"
 
-  create_template "Deploy NocoDB" \
-    "playbooks/deploy-service.yml" \
-    "-e target_service=nocodb_svc"
-
-  create_template "Deploy n8n" \
-    "playbooks/deploy-service.yml" \
-    "-e target_service=n8n_svc"
-
   create_template "Deploy Semaphore" \
     "playbooks/deploy-service.yml" \
     "-e target_service=semaphore_svc"
@@ -251,18 +243,6 @@ create_task_templates() {
   create_template "Deploy NetBox" \
     "playbooks/deploy-service.yml" \
     "-e target_service=netbox_svc"
-
-  create_template "Deploy NemoClaw" \
-    "playbooks/deploy-service.yml" \
-    "-e target_service=nemoclaw_svc"
-
-  create_template "Update NocoDB" \
-    "playbooks/update-service.yml" \
-    "-e target_service=nocodb_svc"
-
-  create_template "Update n8n" \
-    "playbooks/update-service.yml" \
-    "-e target_service=n8n_svc"
 
   create_template "Update Semaphore" \
     "playbooks/update-service.yml" \
@@ -283,21 +263,9 @@ create_task_templates() {
     "playbooks/provision-vm.yml" \
     "-e target_service=openbao"
 
-  create_template "Provision NocoDB VM" \
-    "playbooks/provision-vm.yml" \
-    "-e target_service=nocodb"
-
-  create_template "Provision n8n VM" \
-    "playbooks/provision-vm.yml" \
-    "-e target_service=n8n"
-
   create_template "Provision Semaphore VM" \
     "playbooks/provision-vm.yml" \
     "-e target_service=semaphore"
-
-  create_template "Provision NemoClaw VM" \
-    "playbooks/provision-vm.yml" \
-    "-e target_service=nemoclaw"
 
   create_template "Provision NetBox VM" \
     "playbooks/provision-vm.yml" \

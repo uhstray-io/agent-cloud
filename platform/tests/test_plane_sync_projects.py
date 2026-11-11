@@ -448,6 +448,19 @@ def test_identifier_taken_fails_by_name_before_anything_is_created(plane, lock):
     assert [c["path"] for c in writes(state)] == [f"{WS}/projects/"]
 
 
+@pytest.mark.parametrize("apply", [False, True])
+@pytest.mark.parametrize("clash", [{"identifier": "ACL", "name": "Other"},
+                                   {"identifier": "OTH", "name": "Agent Cloud"}])
+def test_a_project_the_sync_did_not_make_holding_the_identifier_or_name_is_named_in_the_dry_run_too(
+        plane, lock, apply, clash):
+    state, base = plane
+    state["projects"].append({"id": "x1", "external_source": None, "external_id": None, **clash})
+    err = refusal(run(base, lock, [PROJECT], apply=apply))
+    assert err["error"] == (f"project agent-cloud: identifier ACL or name Agent Cloud is already used by project "
+                            f"{clash['identifier']} ({clash['name']}), which this sync did not create")
+    assert writes(state) == []
+
+
 def test_every_page_of_every_list_is_followed(plane, lock):
     state, base = plane
     state["projects"].append(row("p0", name="Other", identifier="OTH", external_id="other-repo"))

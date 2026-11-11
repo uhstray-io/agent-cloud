@@ -17,12 +17,11 @@ reads, not inferred from the YAML.
 
 import importlib.util
 import json
-import os
 import re
-import subprocess
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -44,19 +43,13 @@ WAVE = {
     "deploy-authentik.yml": "Phase 3: Verify authentik",
     "deploy-github-runner.yml": "Deploy GitHub Actions self-hosted runner",
     "deploy-honcho.yml": "Phase 3: Verify honcho",
-    "deploy-n8n.yml": "Phase 3: Verify n8n",
     "deploy-netbox.yml": "Phase 5: Verify deployment",
     "deploy-o11y.yml": "Phase 3: Verify o11y",
-    "deploy-openhands.yml": "Phase 3: Verify OpenHands",
     "deploy-postiz.yml": "Phase 3: Verify postiz",
-    "deploy-tududi.yml": "Phase 3: Verify tududi",
 }
 # The services whose deploy.sh this change made change-aware, plus the two that already were.
 RECREATE_AWARE = {
-    "tududi": "deploy-tududi.yml",
     "honcho": "deploy-honcho.yml",
-    "openhands": "deploy-openhands.yml",
-    "n8n": "deploy-n8n.yml",
     "netbox": "deploy-netbox.yml",
     "postiz": "deploy-postiz.yml",
 }
@@ -124,7 +117,7 @@ def test_deploy_playbook_reads_the_change_line_and_carries_the_lever(service, pl
     assert "deploy_force_recreate" in {v["name"] for v in template["survey_vars"]}, service
 
 
-@pytest.mark.parametrize("service", ["tududi", "n8n", "postiz"])
+@pytest.mark.parametrize("service", ["postiz"])
 def test_every_bind_mounted_file_is_a_digest_input(service):
     # A bind-mounted input left out of the digest changes without the container being
     # recreated. The compose files themselves are always in the digest; the files they mount
@@ -140,21 +133,6 @@ def test_every_bind_mounted_file_is_a_digest_input(service):
     calls = " ".join(line for line in code.splitlines() if "compose_up_if_changed" in line)
     for mount in sorted(mounts):
         assert mount.removeprefix("./") in calls, f"{service}: {mount} is not passed to compose_up_if_changed"
-
-
-def test_n8n_keeps_its_ordered_start_inside_the_change_gate():
-    # The worker must not boot while the app migrates, and a recreate must not run unless the
-    # helper found a change: the ordered start is the helper's hook, never a bare call.
-    code = _code(SERVICES / "n8n/deployment/deploy.sh")
-    hook = code[code.index("compose_staged_up()"):code.index("main()")]
-    stages = ("n8n-postgres n8n-redis n8n", "wait_for_healthy workflow-n8n 300", "up -d n8n-worker")
-    assert hook.index(stages[0]) < hook.index(stages[1]) < hook.index(stages[2])
-    # The project name is the directory's basename, shared with other services' compose files: a
-    # project-wide orphan sweep would remove their containers.
-    assert "--remove-orphans" not in hook
-    main = code[code.index("main()"):]
-    assert "up -d" not in main, "a bare `compose up` outside the hook recreates on every run"
-    assert "compose_up_if_changed" in main
 
 
 def test_postiz_has_no_unconditional_recreate_of_the_app():
@@ -190,12 +168,8 @@ def _run_shared(tmp_path, hosts: dict, *extra, var="_deploy", before=(), fail_ho
     base = {"ansible_connection": "local", "service_name": "demo"}
     inventory = {"all": {"children": {"svc": {"hosts": {h: {**base, **v} for h, v in hosts.items()}}}}}
     (tmp_path / "inv.yml").write_text(json.dumps(inventory))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(
-        ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"),
-         *(["--check"] if check else []), *extra],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False,
+    proc = harness_sandbox.run_playbook(
+        tmp_path / "play.yml", tmp_path, *(["--check"] if check else []), *extra, inventory=tmp_path / "inv.yml",
     )
     return proc, step_results.results_in(proc.stdout.splitlines())
 
@@ -291,30 +265,6 @@ def test_agentgateway_result_is_unverified_when_an_unproven_429_was_accepted(tmp
 
 
 @needs_ansible
-@pytest.mark.parametrize(
-    "vars_,status,changed",
-    [
-        ({"_deploy": CHANGED}, "pass", True),
-        ({"_deploy": SAME}, "pass", False),
-        ({"_deploy": SAME, "_n8n_owner_seed": {"changed": True}}, "pass", True),  # re-run that seeded the owner
-        ({"_deploy": SAME, "_n8n_owner_seed": {"skipped": True, "changed": False}}, "pass", False),
-        ({"_deploy": SKIPPED}, "skip", False),
-        ({}, "skip", False),
-    ],
-)
-def test_n8n_result_folds_the_owner_seed_into_the_deploy_result(tmp_path, vars_, status, changed):
-    # Rendered exactly as deploy-n8n.yml writes it: the owner seed is the one post-deploy step
-    # that changes state, and renaming a var it reads silently reports "no change".
-    fold = _task("deploy-n8n.yml", "Fold the owner seed into the service-deploy result")
-    proc, found = _run_shared(tmp_path, {"h1": vars_}, var="_n8n_service_deploy", before=[fold])
-    assert proc.returncode == 0, proc.stdout[-3000:]
-    res = _one(found)
-    assert (res["status"], res["evidence"]["changed_on_rerun"]) == (status, changed)
-    include = _task("deploy-n8n.yml", "Record the service-deploy step result")
-    assert include["vars"] == {"service_deploy_result_var": "_n8n_service_deploy"}
-
-
-@needs_ansible
 def test_shared_task_evidence_keys_are_the_registrys():
     registry = yaml.safe_load((REPO / "platform/workflows/service-onboarding/registry.yml").read_text())["steps"]
     keys = next(s for s in registry if s["id"] == "service-deploy")["evidence_keys"]
@@ -333,16 +283,3 @@ def test_shared_task_refuses_the_input_forged_as_an_extra_var(tmp_path, forge):
     assert proc.returncode != 0
     assert "Refusing to record a service-deploy result" in proc.stdout
     assert not found
-
-
-def test_n8n_published_bind_address_is_rendered_into_the_hashed_env():
-    # compose substitutes ${N8N_LISTEN} into the port publish. The playbook used to export it
-    # into deploy.sh's environment, which the digest cannot see; rendering it into .env (one
-    # source, hashed with the rest) makes a changed n8n_bind recreate the container.
-    template = (SERVICES / "n8n/deployment/templates/n8n.env.j2").read_text()
-    assert "N8N_LISTEN={{ n8n_bind | default('127.0.0.1') }}" in template
-    (task,) = [
-        t for t in playbook_yaml.tasks(playbook_yaml.plays(PLAYBOOKS / "deploy-n8n.yml"))
-        if "deploy.sh" in str(t.get("ansible.builtin.shell", ""))
-    ]
-    assert "N8N_LISTEN" not in task["environment"], "a shell-exported value outranks .env and escapes the digest"

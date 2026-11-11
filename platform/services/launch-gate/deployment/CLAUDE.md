@@ -8,7 +8,7 @@ It then asks OPA for a decision and creates the Semaphore task only on an allow.
 checks and answers the decision without creating a task (see "The decision route"). Full design and the check order:
 `plan/development/openspec/changes/skynet-launch-containment/design.md`.
 
-## Status: deployed and validated in local-dev; not deployed in production
+## Status: deployed in production since 2026-11-09, and deployed and validated in local-dev
 
 The container files are in this directory. This directory does not deploy anything by itself. The playbooks that
 deploy it are in `platform/playbooks/`, and their Semaphore templates are declared in `platform/semaphore/templates.yml`
@@ -26,14 +26,13 @@ The playbook headers hold the behaviour, the refusals and the order of the steps
 
 Local-dev ran the gate on 2026-11-04: bootstrapped from dev, deployed and validated (local Semaphore tasks 11594
 and 11596; the 3.8 scenarios passed against the live gate), then stopped again with its volumes kept. Production
-does not run it yet. The decision route and the `console` caller are task 7.2 of `add-dispatch-console`
+has run it since 2026-11-09: `Deploy launch-gate (Dev)` task 14113 proved that OPA answers from inside the gate, and `Probe launch-gate (Dev)` task 14117 proved the allow path (AGENTS.md, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"). The decision route and the `console` caller are task 7.2 of `add-dispatch-console`
 (`plan/development/openspec/changes/add-dispatch-console/tasks.md`; decisions D49 and D51 in
 `plan/development/17-dispatch-console.md`). That change deploys nothing. The console's own deploy, which shared-reads
-`caller_console_token`, is built in `deploy-console.yml` (read when `console_launch_gate_url` is declared). The open tasks of the `skynet-launch-containment` change
-(`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) are:
-
-- skynet's side: the shared read of `caller_skynet_token` and the route to the gate (3.6),
-- the production host, firewall rules, the `svc-launch-gate` team member, and the rollout (5.1-5.5).
+`caller_console_token`, is built in `deploy-console.yml` (read when `console_launch_gate_url` is declared). The `skynet-launch-containment` change
+(`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) records skynet's shared read and route (3.6),
+the production host, firewall rules, the `svc-launch-gate` team member and the rollout (5.1 to 5.5) as done. Its one
+open task is 4.4, the end-to-end proof of a skynet-tagged task through the locally deployed gate.
 
 ## Files
 
@@ -226,7 +225,7 @@ repo is placed.
 - Do not put a token in `config.json`, in a template outside the `secrets` namespace, or in any committed file.
   Templates use `secrets.*` and `_`-prefixed variables only. `test_credential_leaks.bats` is meant to check
   that, but its regex does not match `{{ name` written with a space. CI's GNU grep shows the same miss: run
-  38731550214 (head 66c18f5b) passes that test while `n8n.env.j2` at that head has `{{ n8n_bind |`.
+  38731550214 (head 66c18f5b) passes that test while a template at that head has `{{ <variable> |`.
   `test_launch_gate_allowlist.py` therefore checks the parsed templates instead.
 - Do not add a template to the gate by hand. The list comes from OPA's catalog, and a template the catalog
   does not name never reaches the gate.

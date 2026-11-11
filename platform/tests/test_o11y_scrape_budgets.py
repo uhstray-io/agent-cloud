@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -53,6 +54,7 @@ def _environment():
     env.filters["to_json"] = json.dumps
     env.filters["bool"] = bool
     env.filters["mandatory"] = _mandatory
+    env.filters["o11y_effective_scrape_limits"] = BUDGET.o11y_effective_scrape_limits
     return env
 
 
@@ -1155,7 +1157,7 @@ def test_all_prometheus_scrape_jobs_render_finite_limits_and_keep_identity_polic
         "prometheus", "receiver-host", "grafana", "loki", "alloy", "tempo", "pyroscope"
     }
     for job in base:
-        _assert_bounded(job, 2000 if job["job_name"] == "receiver-host" else None)
+        _assert_bounded(job, 2000 if job["job_name"] in CEILED_JOBS else None)
         assert job["metric_relabel_configs"][0] == {"action": "labeldrop", "regex": POLICY}
         labels = job["static_configs"][0]["labels"]
         assert labels["cluster"] == "test-cluster"
@@ -1297,7 +1299,7 @@ def test_local_prometheus_render_uses_finite_defaults():
         _o11y_forbidden_metric_label_names_regex=POLICY,
     )
     for job in config["scrape_configs"]:
-        _assert_bounded(job, 2000 if job["job_name"] == "receiver-host" else None)
+        _assert_bounded(job, 2000 if job["job_name"] in CEILED_JOBS else None)
 
     env = _environment().from_string((DEPLOY / "templates/env.j2").read_text(encoding="utf-8"))
     rendered_env = env.render(
@@ -1502,15 +1504,108 @@ def test_candidate_digest_block_skips_a_dry_run_runs_for_real_and_leaves_no_temp
     (tmp_path / "playbooks/probe.yml").write_text(yaml.safe_dump([probe]), encoding="utf-8")
     scratch = tmp_path / "scratch"
     scratch.mkdir()
-    env = dict(os.environ, ANSIBLE_NOCOLOR="1", TMPDIR=str(scratch))
-    proc = subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", "-c", "local", *(["--check"] if check else []),
-         str(tmp_path / "playbooks/probe.yml")],
-        cwd=ROOT, env=env, text=True, capture_output=True, check=False,
-    )
+    proc = harness_sandbox.run_playbook(tmp_path / "playbooks/probe.yml", tmp_path, "-c", "local",
+                                        *(["--check"] if check else []), env={"TMPDIR": str(scratch)})
     assert proc.returncode == 0, proc.stdout + proc.stderr
     if check:
         assert "digest=skipped" in proc.stdout, proc.stdout
     else:
         assert re.search(r"digest=[0-9a-f]{64}", proc.stdout), proc.stdout
     assert not any(scratch.iterdir()), sorted(path.name for path in scratch.iterdir())
+
+
+# ---- one definition of the limits Alloy runs with ------------------------------------------
+# Production declared o11y_scrape_limits.sample_limit 8192 with the stricter
+# o11y_scrape_sample_limit 2000. env.j2 gave Alloy 2000 while the availability source gate was
+# handed the raw 8192, so the first real enabled deploy (Semaphore task 14414) failed its
+# post-apply readback with native_limits_mismatch.
+# Prometheus jobs held to the stricter o11y_scrape_sample_limit ceiling (the effective limit).
+CEILED_JOBS = {"receiver-host", "alloy"}
+PRODUCTION_SHAPED_LIMITS = {
+    "body_size_limit_bytes": 1048576,
+    "sample_limit": 8192,
+    "label_limit": 128,
+    "label_name_length_limit": 128,
+    "label_value_length_limit": 256,
+}
+SOURCE_REVIEW_CALLERS = [
+    "platform/playbooks/deploy-o11y.yml",
+    "platform/playbooks/tasks/prepare-o11y-availability.yml",
+    "platform/playbooks/survey-o11y-expected-metrics-targets.yml",
+    "platform/playbooks/survey-o11y-scrape-baseline.yml",
+]
+
+
+def test_effective_limits_apply_the_stricter_sample_ceiling():
+    effective = BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, True)
+    assert effective == {**PRODUCTION_SHAPED_LIMITS, "sample_limit": 2000}
+    assert BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 20000, False, True)["sample_limit"] == 8192
+
+
+def test_effective_limits_withhold_unreviewed_production_limits_and_default_local_ones():
+    assert BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, False) == {}
+    assert BUDGET.o11y_effective_scrape_limits(None, 2000, True, False) == {**LIMITS, "sample_limit": 2000}
+    assert BUDGET.o11y_effective_scrape_limits("not-a-mapping", 2000, False, True) == {}
+
+
+def test_the_rendered_alloy_sample_limit_is_the_value_the_source_gate_expects():
+    env = _environment().from_string((DEPLOY / "templates/env.j2").read_text(encoding="utf-8"))
+    rendered = env.render(
+        local_mode=False,
+        o11y_zone="example.test",
+        o11y_scrape_limits=PRODUCTION_SHAPED_LIMITS,
+        o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000,
+        secrets={"grafana_admin_password": "test", "grafana_oidc_client_secret": "test"},
+    )
+    env_values = dict(line.split("=", 1) for line in rendered.splitlines() if "=" in line)
+    gate_limits = BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, True)
+    assert env_values["O11Y_SCRAPE_SAMPLE_LIMIT"] == str(gate_limits["sample_limit"]) == "2000"
+    assert env_values["O11Y_SCRAPE_BODY_SIZE_LIMIT_BYTES"] == str(gate_limits["body_size_limit_bytes"])
+    assert env_values["O11Y_SCRAPE_LABEL_LIMIT"] == str(gate_limits["label_limit"])
+
+
+@pytest.mark.parametrize("caller", SOURCE_REVIEW_CALLERS)
+def test_every_source_review_payload_passes_the_effective_limits(caller):
+    text = (ROOT / caller).read_text(encoding="utf-8")
+    payloads = re.findall(r"'shared_limits':\s*([^\n]+)", text)
+    assert payloads, f"{caller} has no shared_limits payload"
+    for payload in payloads:
+        assert "o11y_effective_scrape_limits(" in payload, f"{caller} passes raw limits: {payload}"
+
+
+def test_both_producers_of_alloy_self_metrics_run_the_limits_the_source_gate_expects():
+    common = dict(
+        local_mode=False, o11y_cluster="prod-west", o11y_environment="prod",
+        o11y_scrape_limits=PRODUCTION_SHAPED_LIMITS, o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000, _o11y_forbidden_metric_label_names_regex=POLICY,
+    )
+    gate_limits = BUDGET.o11y_effective_scrape_limits(PRODUCTION_SHAPED_LIMITS, 2000, False, True)
+    prometheus = _render_yaml("prometheus.yml.j2", o11y_availability_probes_enabled=False, **common)
+    alloy_job = next(job for job in prometheus["scrape_configs"] if job["job_name"] == "alloy")
+    assert alloy_job["sample_limit"] == gate_limits["sample_limit"] == 2000
+    host_job = next(job for job in prometheus["scrape_configs"] if job["job_name"] == "receiver-host")
+    assert host_job["sample_limit"] == gate_limits["sample_limit"]
+
+
+@pytest.mark.parametrize(("limit", "ceiling", "expected"), [
+    ("8192", 2000, 2000), (8192, "2000", 2000), (" 1500 ", 2000, 1500), ("many", 2000, "many"),
+    (True, 2000, True), (8192, None, 8192),
+])
+def test_effective_limits_coerce_numeric_strings_like_the_templates_did(limit, ceiling, expected):
+    limits = {**PRODUCTION_SHAPED_LIMITS, "sample_limit": limit}
+    assert BUDGET.o11y_effective_scrape_limits(limits, ceiling, False, True)["sample_limit"] == expected
+
+
+def test_post_apply_source_diagnostic_prints_only_the_fixed_category():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/deploy-o11y.yml").read_text(encoding="utf-8"))
+    tasks = [task for play in plays for task in play.get("tasks", []) if isinstance(task, dict)]
+    by_name = {task.get("name"): task for task in tasks}
+    validate = by_name["Validate the fixed post-apply source diagnostic category"]
+    report = by_name["Report only the fixed post-apply source diagnostic category"]
+    assert validate["no_log"] is True
+    fact = validate["ansible.builtin.set_fact"]["_o11y_source_postapply_diagnostic"]
+    assert "o11y_availability_source_gate_diagnostic" in fact
+    assert "no_log" not in report
+    assert "_o11y_source_postapply_raw" not in json.dumps(report)
+    assert "_o11y_source_postapply_diagnostic" in report["ansible.builtin.debug"]["msg"]

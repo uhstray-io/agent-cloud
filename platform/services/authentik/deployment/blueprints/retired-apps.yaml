@@ -1,0 +1,43 @@
+# Authentik blueprint — tombstones for SSO apps retired from the catalog (state: absent).
+#
+# Blueprints create objects and never delete them. Removing an app from app-catalog.yml or
+# from the site-config `authentik_apps` list only stops its blueprint being placed, so the
+# provider and application it created stay in the live Authentik. Only an entry that still
+# runs can delete them, which is why this file is always applied (deploy-authentik.yml
+# `_shared_blueprints`).
+#
+# Each entry names an object by the identifiers its original blueprint used. Keep an entry
+# until one prod deploy has applied it; a later cleanup may then remove it. Order matters:
+# the application goes first, because it references the provider.
+#
+# Retired 2026-11-09: tududi (its blueprint, tududi-oidc.yaml, was deleted with this change).
+# Retired 2026-11-10: n8n, openhands (their blueprints, n8n-forward-auth.yaml and
+# openhands-forward-auth.yaml, were deleted with this change).
+version: 1
+metadata:
+  name: agent-cloud - retired SSO apps
+entries:
+  - model: authentik_core.application
+    state: absent
+    identifiers:
+      slug: tududi
+  - model: authentik_providers_oauth2.oauth2provider
+    state: absent
+    identifiers:
+      name: tududi
+  - model: authentik_core.application
+    state: absent
+    identifiers:
+      slug: n8n
+  - model: authentik_providers_proxy.proxyprovider
+    state: absent
+    identifiers:
+      name: n8n
+  - model: authentik_core.application
+    state: absent
+    identifiers:
+      slug: openhands
+  - model: authentik_providers_proxy.proxyprovider
+    state: absent
+    identifiers:
+      name: openhands

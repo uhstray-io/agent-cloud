@@ -6,11 +6,10 @@ adds `,signal="<x>"` to the selector; empty leaves it exactly `{service="<svc>"}
 """
 
 import json
-import os
-import subprocess
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import harness_sandbox
 import yaml
 from ansible_python import needs_ansible
 
@@ -36,10 +35,10 @@ def _run(tmp_path, harness, check=True):
     path.write_text(yaml.safe_dump(harness))
     inventory = tmp_path / "inventory.ini"
     inventory.write_text("[o11y_svc]\nlocalhost ansible_connection=local\n")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", str(inventory), str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=check)
+    proc = harness_sandbox.run_playbook(path, tmp_path, inventory=inventory)
+    if check:
+        proc.check_returncode()  # what subprocess.run(check=True) raised on a non-zero exit
+    return proc
 
 
 def _selector(tmp_path, extra):

@@ -10,8 +10,7 @@ If you only read one other document, read the top-level [`README.md`](README.md)
 
 **agent-cloud** is the unified platform monorepo for [uhstray-io](https://github.com/uhstray-io) — a privacy-focused, open-source AI platform. One repo holds:
 
-- **Service deployments** (NetBox, OpenBao, NocoDB, n8n, Semaphore, Caddy, skynet inference, ...)
-- **AI agent configurations** (NemoClaw, NetClaw, Claude Cowork, WisBot)
+- **Service deployments** (NetBox, OpenBao, Semaphore, Caddy, skynet (orchestration API; inference route pending), ...)
 - **Ansible playbooks** that orchestrate every deploy
 - **Kubernetes manifests** (Kustomize) for the future multi-site path
 - **Shared bash libraries** (`platform/lib/common.sh`, `bao-client.sh`)
@@ -22,16 +21,16 @@ Real IPs, production inventory, and credential backups live in a **separate priv
 ### The four-layer mental model
 
 ```
-AI Layer          NemoClaw, NetClaw, Claude Cowork, WisBot
-                  Backed by skynet (OpenAI-compatible /v1; placement + policy gates)
+AI Layer          skynet agent roles (infra-agent, security-agent, o11y-agent, service-agent, network-agent, skynet-eval)
+                  skynet API deployed 2026-10-30; models via the agentgateway edge (/v1, vLLM on DGX Spark)
 
 Guardrail Layer   OpenBao (secrets), Kyverno (k8s), OPA (policy), AppRole scoping
                   AI proposes -> guardrails validate -> automation runs
 
-Automation Layer  Ansible playbooks, Semaphore orchestration, n8n workflows
+Automation Layer  Ansible playbooks, Semaphore orchestration
                   Deterministic, idempotent, auditable
 
-Platform Layer    Podman by default; Docker for the declared NetBox/NemoClaw/OpenHands paths,
+Platform Layer    Podman by default; Docker for the declared NetBox path,
                   Compose/Podman (single-site) <-> Kubernetes/k0s (multi-site),
                   Proxmox VMs for all hosting
 ```
@@ -66,8 +65,10 @@ You don't need all of these to read or contribute docs, but you'll want them for
 ```bash
 git clone https://github.com/uhstray-io/agent-cloud.git
 cd agent-cloud
-bash platform/scripts/setup-project.sh   # installs Ansible collections, sets up pre-commit
+make git-setup   # repo-local git config: core.hooksPath=.githooks and the merge.ours.driver used by the graph artifact
 ```
+
+Local bring-up runs through `make local-init`, which creates the gitignored working inventory, and `make local-bootstrap`, which brings up the secure foundation and the local Semaphore. Semaphore templates are declared in `platform/semaphore/templates.yml` and published with `platform/semaphore/setup-templates.yml`. Do not create or change templates through the Semaphore API. `make local-templates` re-publishes the shared and local-only templates to the local Semaphore.
 
 ---
 
@@ -88,7 +89,7 @@ agent-cloud/
 ├── .yamllint.yml          YAML lint config
 ├── .pre-commit-config.yaml
 ├── platform/              All service + automation code
-├── agents/                AI agent definitions and context
+├── agents/                Cross-agent workflows (reserved)
 ├── plan/                  Architecture and implementation plans
 ├── collections/           Vendored Ansible collections (auto-installed)
 ├── roles/                 (Reserved for future shared Ansible roles)
@@ -134,6 +135,7 @@ platform/
 │   └── bao-client.sh      OpenBao HTTP API client (curl + jq)
 │
 ├── inventory/             Placeholder inventory (real IPs live in site-config)
+│   ├── local-dev.yml.example   Template for the gitignored working inventory (`make local-init`)
 │   ├── local.yml
 │   └── production.yml
 │
@@ -144,28 +146,15 @@ platform/
 ├── hypervisor/proxmox/    VM provisioning, cloud-init templates
 ├── k8s/                   Kustomize manifests (base / overlays / bootstrap)
 ├── scripts/               Project setup helpers
-└── tests/                 BATS tests for shared bash libs
+└── tests/                 BATS tests for shared bash libs (repo path: platform/tests/)
 ```
 
-### `agents/` — AI agent definitions
+### `agents/` — cross-agent workflows (reserved)
 
 ```
 agents/
-├── nemoclaw/      Headless engineer: background automation, CI/CD, monitoring
-│   ├── deployment/
-│   └── context/{architecture,prompts,skills,use-cases}
-├── netclaw/       Network engineer: topology, SNMP/LLDP, config backup
-│   ├── deployment/
-│   └── context/...
-├── cowork/        Interactive architect (Claude Cowork)
-│   └── context/
-├── websmith/      Website-building agent (prompt-only — produces signed SPEC.md per site)
-│   ├── deployment/  (stub — WebSmith has no runtime)
-│   └── context/{phases,catalogs,schemas,examples,architecture,prompts,skills,use-cases}
 └── workflows/     (Cross-agent workflows — reserved)
 ```
-
-Each agent's `context/` is the AI-facing half: the skills it can run, the prompts it ships with, the architecture docs it grounds itself in. `deployment/` is the human-facing half: how to actually run the agent on a VM.
 
 ### `plan/` — architecture and roadmap
 
@@ -179,7 +168,6 @@ plan/
 │   ├── 04-credentials-access.md            secret lifecycle; Semaphore vs SSH
 │   ├── 05-platform-infra.md                Caddy, TLS/DNS, container runtime
 │   ├── 06-observability-instrumentation.md
-│   ├── 07-website-building-agent.md
 │   ├── skills-recommendation.md
 │   └── README.md                           <- what belongs here (ADR convention)
 │
@@ -243,7 +231,7 @@ These come straight from `CLAUDE.md` and they govern every change in this repo:
 
 **Key facts:**
 - OpenBao is the only source of truth.
-- Semaphore holds *only* an AppRole `role_id` + `secret_id` in its environment — every other secret is fetched at playbook runtime.
+- Semaphore holds *only* the controller AppRole `role_id` + `secret_id` in its environment — every other secret is fetched from OpenBao at playbook runtime, in memory. The access chain is: an authenticated operator launches a reviewed Semaphore template → controller AppRole → OpenBao → target credentials.
 - `.env` files on disk are a minimal bridge for Compose. They are gitignored, overwritten every deploy, and never authoritative.
 - Policy / AppRole / template changes are **code-only**: edit the `.hcl` file or `templates.yml`, run the apply playbook. Never poke OpenBao or Semaphore via ad-hoc API calls.
 
@@ -256,7 +244,7 @@ OpenBao secret layout (high level):
 | `secret/services/netbox` | NetBox DB, Redis, Diode, Hydra, superuser, orb-agent |
 | `secret/services/approles/<name>` | AppRole `role_id` + `secret_id` |
 | `secret/services/proxmox` | Proxmox API token |
-| `secret/services/{nocodb,n8n,semaphore,github,discord}` | API tokens / URLs |
+| `secret/services/{semaphore,github,discord}` | API tokens / URLs |
 
 The full layout lives in `CLAUDE.md` and `plan/architecture/04-credentials-access.md`.
 
@@ -271,8 +259,8 @@ You can do all of this without any deploy credentials.
 git clone https://github.com/uhstray-io/agent-cloud.git
 cd agent-cloud
 
-# 2. Install dev tooling
-bash platform/scripts/setup-project.sh
+# 2. Point git at the repo's hooks
+make git-setup
 
 # 3. Skim the high-leverage docs
 $EDITOR README.md
@@ -309,7 +297,7 @@ There are two patterns currently in use — same shape, different mechanics:
 
 ### Composable pattern (preferred, all new services)
 
-Used by NetBox, Authentik, n8n, tududi, honcho, Postiz and other migrated services. Multi-phase playbook:
+Used by NetBox, Authentik, honcho, Postiz and other migrated services. Multi-phase playbook:
 
 1. **Phase 1 — Secrets.** `tasks/manage-secrets.yml` fetches existing or generates new secrets in OpenBao, then renders Jinja2 templates into `.env` and config files on the target VM.
 2. **Phase 2 — Containers.** `deploy.sh` runs on the VM and only touches Docker/Podman Compose lifecycle (pull, build, up).
@@ -319,7 +307,7 @@ Used by NetBox, Authentik, n8n, tududi, honcho, Postiz and other migrated servic
 
 ### Legacy pattern (remaining wrappers)
 
-A thin wrapper playbook imports `deploy-service.yml` with a `target_service` variable. `deploy-service.yml` clones the monorepo to the VM, runs `deploy.sh`, and health-checks. Check the service-specific status before using a legacy wrapper; NocoDB is retired, while n8n already has a composable deploy.
+A thin wrapper playbook imports `deploy-service.yml` with a `target_service` variable. `deploy-service.yml` clones the monorepo to the VM, runs `deploy.sh`, and health-checks. Check the service-specific status before using a legacy wrapper.
 
 ### Triggering a deploy
 
@@ -329,9 +317,9 @@ You don't.  Semaphore does.
 
 You:
 
-1. Push your branch.
-2. Open a PR; CI runs the lint + security + test jobs.
-3. After merge (or for branch-testing), the Semaphore task template for that service is what actually pulls the repo and runs the playbook.
+1. Push your branch (only with your explicit go-ahead).
+2. Open a PR (only with your explicit go-ahead); CI runs the lint + security + test jobs.
+3. After the merge you approve (or for branch-testing), the Semaphore task template for that service is what actually pulls the repo and runs the playbook.
 
 Invoke the declared Semaphore deployment template. `deploy.sh` is an internal
 container-lifecycle step consuming rendered files; it does not fetch OpenBao
@@ -369,12 +357,12 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 # 6. Commit (conventional commits, no AI attribution)
 git commit -m "feat(<scope>): <short summary>"
 
-# 7. Push and open a PR
-git push -u origin feat/<short-description>
-gh pr create
+# 7. Push and open a PR — each is user-gated: ask first
+git push -u origin feat/<short-description>   # only after explicit approval
+gh pr create                                  # only after explicit approval
 ```
 
-**Wait for all PR checks to pass before merging.** This applies equally to code, plans, and docs. CodeRabbit + the three CI jobs (static analysis, security, unit tests) are gating.
+**Wait for all PR checks to pass before merging.** This applies equally to code, plans, and docs. CodeRabbit + the three CI jobs (static analysis, security, unit tests) are gating. The unit-tests job includes the Dispatch Console's Rust checks (`Rust (console)`). Merging needs your explicit approval for that PR.
 
 ### Common gotchas
 
@@ -399,7 +387,7 @@ The authoritative checklist is `plan/architecture/02-service-onboarding.md`. The
 5. Add the host to the **site-config** inventory with `service_name`, `monorepo_deploy_path`, `service_url`.
 6. Add Semaphore templates to `platform/semaphore/templates.yml`; run `setup-templates.yml`.
 7. Generate an SSH keypair, store at `secret/services/ssh/<name>`, run `distribute-ssh-keys.yml`.
-8. Optionally provision a dedicated AppRole via `tasks/manage-approle.yml`.
+8. Optionally provision a dedicated AppRole via `platform/playbooks/tasks/manage-approle.yml`.
 
 Model everything on `platform/services/netbox/deployment/` + `platform/playbooks/deploy-netbox.yml`.
 
@@ -407,21 +395,7 @@ Model everything on `platform/services/netbox/deployment/` + `platform/playbooks
 
 ## 10. AI agents at a glance
 
-| Agent | Type | Where it lives | What it does |
-|-------|------|----------------|--------------|
-| **NemoClaw** | Headless engineer | `agents/nemoclaw/` | Background automation, API integrations, CI/CD, health monitoring |
-| **NetClaw** | Network engineer | `agents/netclaw/` | Topology discovery, SNMP/LLDP, config backup, security auditing |
-| **Claude Cowork** | Interactive architect | `agents/cowork/` | Research, architecture decisions, document generation |
-| **WebSmith** | Website builder | `agents/websmith/` | Prompt-only — walks users through a 5-phase workflow producing a signed `SPEC.md` for a new website service |
-| **WisBot** | Community interface | [separate repo](https://github.com/uhstray-io/WisBot) | Discord voice/chat bot |
-
-The intended inference backbone is **skynet** — the local-first, policy-gated backbone exposing an OpenAI-compatible `/v1` endpoint (placement scheduling + policy gates), behind the OpenBao indirection `secret/services/inference/endpoint`. The Ollama + Open WebUI stack is **legacy, superseded by skynet**, and lives in the WisAI repo (its `infrastructure/`); this repo has only an empty `platform/services/inference/` placeholder.
-
-Each agent's `context/` directory follows the same shape:
-- `architecture/` — system docs the agent grounds itself in
-- `prompts/` — reusable system / user prompts
-- `skills/` — discrete capabilities the agent can invoke
-- `use-cases/` — worked examples
+The AI agents are the skynet agent roles (infra-agent, security-agent, o11y-agent, service-agent, network-agent, skynet-eval). The intended inference backbone is **skynet**: a local-first, policy-gated orchestration API, reached through the OpenBao indirection `secret/services/inference/endpoint` ([plan/development/06-inference-skynet.md](plan/development/06-inference-skynet.md)). As built, skynet calls models through the agentgateway inference edge, whose `/v1` fronts vLLM on DGX Spark. Per the deployment status in the root `AGENTS.md`, the skynet orchestration API is deployed in production (2026-10-30) on its own VM; its Semaphore identity has been read-only (guest) since 2026-10-31; and the gateway's `/skynet/` route is not yet live in production. This repo has only a `platform/services/inference/` placeholder (a README, no deployment).
 
 Agents *propose*; the guardrail layer *validates*; the automation layer *executes*. Agents never write secrets or push to production directly.
 
@@ -442,8 +416,6 @@ Agents *propose*; the guardrail layer *validates*; the automation layer *execute
 | Set up reverse-proxy / TLS | `plan/architecture/05-platform-infra.md` |
 | Test a feature branch end-to-end | `plan/architecture/03-testing-ci-quality.md` |
 | Find Claude Code skills worth installing | `plan/architecture/skills-recommendation.md` |
-| Build a new website inside agent-cloud | `agents/websmith/README.md` (human start) + `agents/websmith/context/AGENTS.md` (agent start) |
-| Integrate a WebSmith spec into a service | `plan/development/07-websmith-uhhcraft.md` |
 | Browse current plans | `plan/development/README.md`; `plan/archive/` is historical |
 
 ---

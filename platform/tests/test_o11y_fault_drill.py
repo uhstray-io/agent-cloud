@@ -13,6 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -98,7 +99,8 @@ def clean_copy(tmp_path_factory):
     env.update(GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@example.invalid",
                GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@example.invalid")
     for argv in (["git", "init", "-q"], ["git", "add", "-A"], ["git", "commit", "-qm", "drill"]):
-        subprocess.run(argv, cwd=root, env=env, check=True, capture_output=True)
+        subprocess.run(argv, cwd=root, env=env, check=True, capture_output=True,
+                       timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root, env=env, check=True,
                          capture_output=True, text=True).stdout.strip()
     return root, sha
@@ -525,10 +527,8 @@ def _probe_wiring(tmp_path, o11y=None, gateways=1, upstream=UPSTREAM):
     }}}
     (tmp_path / "pb.yml").write_text(yaml.safe_dump(harness))
     (tmp_path / "inv.yml").write_text(json.dumps(inventory))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default")
-    done = subprocess.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "pb.yml")],
-                          cwd=ROOT, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(tmp_path / "pb.yml", tmp_path, inventory=tmp_path / "inv.yml",
+                                        env={"ANSIBLE_STDOUT_CALLBACK": "default"})
     line = next((ln for ln in done.stdout.splitlines() if "HEALTH " in ln), None)
     got = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("HEALTH ", 1)[1]) if line else None
     return done, got
@@ -637,12 +637,10 @@ def _evaluate(tmp_path, expr, facts):
                 "vars": {**play_vars, **facts},
                 "tasks": [{"ansible.builtin.debug": {"msg": "VERDICT {{ (" + expr + ") | bool }}"}}]}]
     (tmp_path / "pb.yml").write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_LOCALHOST_WARNING="0",
-               ANSIBLE_INVENTORY_UNPARSED_WARNING="0")
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "pb.yml"),
-                           "-e", f"ansible_python_interpreter={shutil.which('python3')}"],
-                          cwd=ROOT, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(
+        tmp_path / "pb.yml", tmp_path, "-e", f"ansible_python_interpreter={shutil.which('python3')}",
+        env={"ANSIBLE_STDOUT_CALLBACK": "default", "ANSIBLE_LOCALHOST_WARNING": "0",
+             "ANSIBLE_INVENTORY_UNPARSED_WARNING": "0"})
     assert done.returncode == 0, done.stdout + done.stderr
     if "VERDICT True" in done.stdout:
         return True
@@ -805,12 +803,10 @@ def _run_tasks(tmp_path, names, facts, extra=()):
                          "local_monorepo_dir": "/srv/agent-cloud", "drill": "probe", **facts},
                 "tasks": tasks}]
     (tmp_path / "pb.yml").write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_LOCALHOST_WARNING="0",
-               ANSIBLE_INVENTORY_UNPARSED_WARNING="0")
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "pb.yml"),
-                           "-e", f"ansible_python_interpreter={shutil.which('python3')}"],
-                          cwd=ROOT, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(
+        tmp_path / "pb.yml", tmp_path, "-e", f"ansible_python_interpreter={shutil.which('python3')}",
+        env={"ANSIBLE_STDOUT_CALLBACK": "default", "ANSIBLE_LOCALHOST_WARNING": "0",
+             "ANSIBLE_INVENTORY_UNPARSED_WARNING": "0"})
     return done.returncode, done.stdout + done.stderr
 
 

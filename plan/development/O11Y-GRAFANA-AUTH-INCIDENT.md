@@ -2,6 +2,9 @@
 
 **Date:** 2026-09-30  
 **Status:** RESOLVED (2026-10-14)  
+> **Parent plan:** [Observability](05-observability.md)
+> **Historical record:** This incident record preserves the diagnosis and recovery evidence as of 2026-10-14. The original cause was not established; verify current service state independently.
+
 **Context:** Production Grafana returns to its login page after the Authentik OAuth round trip. This plan records the evidence and the controlled repair path.
 
 ## Problem

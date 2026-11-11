@@ -517,7 +517,7 @@ mod tests {
             id: id.to_string(),
             order,
             label: format!("Step {id}"),
-            owner: Some("netclaw".to_string()),
+            owner: Some("network-agent".to_string()),
             status: status.to_string(),
             key: None,
         }
@@ -609,14 +609,14 @@ mod tests {
         DetailState::Ready(Box::new(WorkDetail {
             item: WorkItem {
                 key: "sem-21".to_string(),
-                title: "Deploy tududi".to_string(),
+                title: "Deploy postiz".to_string(),
                 lane: Lane::Done,
                 status: "success".to_string(),
                 role: None,
                 launched_by: "schedule".to_string(),
                 run_id: None,
                 step: None,
-                service: Some("tududi".to_string()),
+                service: Some("postiz".to_string()),
                 created: "2026-10-26T12:00:00Z".to_string(),
                 started: None,
                 ended: None,

@@ -13,6 +13,12 @@
 #          because until the first admin signs up anyone who reaches /god-mode/ claims it.
 # Phase 3b: Get or create the workspace service token (service_token.py) and store it in
 #          OpenBao, so sync-plane-projects.yml only ever reads it.
+# Phase 3c: Activate the Pro licence from OpenBao (activate_license.py), as the workspace owner;
+#          skipped when no key is stored, and a no-op once the plan reads as licensed.
+# Phase 3d: With plane_github_app_id declared, set the GitHub App's webhook URL and signing secret
+#          (github_app_token.py set-hook-secret, on the controller) to the one Plane holds.
+# Phase 3e: Create Plane's marketplace applications (GitHub, Slack, ...) that are missing, the
+#          entries Workspace settings > Integrations lists (ensure_marketplace_apps.py).
 # Phase 4: Verify through the proxy, then record the service-deploy step result.
 #
 # Plan: plan/development/16-plane-work-management.md
@@ -103,6 +109,19 @@
       - { name: plane_machine_signature, type: random, length: 32 }
       # The first instance admin, used only by this playbook's configuration phase.
       - { name: plane_automation_password, type: random, length: 32 }
+      # Operator-owned: the Pro licence, seeded by Seed OpenBao Key and never generated here.
+      # Phase 3c activates it; absent, the workspace stays on its current plan.
+      - { name: plane_license_key, type: existing }
+      # GitHub integration (change tasks 3.3/3.4), on when the inventory declares
+      # plane_github_app_id. The App's OAuth client secret and its private key (base64 of the PEM,
+      # one line, as Plane reads GITHUB_PRIVATE_KEY) are the operator's, seeded by Seed OpenBao
+      # Key. The webhook secret is generated here once; Phase 3d sets it on the App.
+      - { name: plane_github_client_secret, type: existing }
+      - { name: plane_github_private_key, type: existing }
+      - { name: plane_github_webhook_secret, type: random, length: 40 }
+    _required_existing_secrets: >-
+      {{ ['plane_github_client_secret', 'plane_github_private_key']
+         if plane_github_app_id is defined else [] }}
     # The OIDC client secret is owned by authentik (blueprints/plane-oidc.yaml injects it from
     # the worker's env). Read it read-only, and only when sign-in through Authentik is configured
     # (plane_authentik_base), so a host without OIDC never depends on Deploy Authentik having
@@ -367,6 +386,204 @@
           ansible.builtin.debug:
             msg: "workspace service token {{ 'minted' if _plane_token_summary.created else 'already present in Plane' }}; stored in OpenBao (value never shown)"
 
+# ── Phase 3c: Licence ───────────────────────────────────────────────────────
+# Plane gates the Admin role, IdP group sync and the GitHub integration behind the licence. The
+# key is the operator's (Seed OpenBao Key -> secret/services/plane:plane_license_key); activating
+# it needs billing-manage (owner or Admin, and Admin needs the licence), so the automation account,
+# the workspace's owner, activates it and no person needs Admin first.
+- name: "Phase 3c: Licence"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _plane_license_key: "{{ _resolved.plane_license_key | default('') }}"
+
+  tasks:
+    - name: "No licence key stored: report"
+      ansible.builtin.debug:
+        msg: "no licence key at secret/services/plane:plane_license_key; the workspace stays on its current plan"
+      when: _plane_license_key | length == 0
+
+    # Even the plan read writes (Plane resyncs its licence row), so check mode only reports.
+    - name: "Dry run: report what would be checked"
+      ansible.builtin.debug:
+        msg: "would activate the stored licence unless the workspace plan reads {{ plane_license_plan | default('PRO') }}"
+      when:
+        - ansible_check_mode
+        - _plane_license_key | length > 0
+
+    - name: "Activate the licence (skipped in check mode: it writes)"
+      when:
+        - not ansible_check_mode
+        - _plane_license_key | length > 0
+      block:
+        # Credential task: the key and the admin password go to the script on stdin.
+        - name: "Activate the licence unless the plan already reads as licensed (inside plane-api)"
+          ansible.builtin.command:
+            argv:
+              - "{{ _engine }}"
+              - exec
+              - -i
+              - plane-api
+              - python
+              - -c
+              - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/plane_session.py') ~ '\n' ~ lookup('file', playbook_dir ~ '/../services/plane/deployment/activate_license.py') }}"
+            stdin: >-
+              {{ {'base': 'http://localhost:8000',
+                  'host': plane_public_url | urlsplit('hostname'),
+                  'origin': plane_public_url,
+                  'email': plane_automation_email,
+                  'password': _resolved.plane_automation_password,
+                  'workspace_slug': plane_workspace_slug,
+                  'license_key': _plane_license_key,
+                  'plan': plane_license_plan | default('PRO')} | to_json }}
+          register: _plane_license_run
+          changed_when: false  # reported from the summary below
+          failed_when: false
+          no_log: true
+
+        # The script prints one JSON line, {"changed", "product"} or {"error"}, never a credential.
+        - name: "Keep only the licence summary"
+          ansible.builtin.set_fact:
+            _plane_license_summary: >-
+              {%- set last = _plane_license_run.stdout_lines | default([''], true) | last -%}
+              {%- set d = (last | from_json) if last.startswith('{') else {'error': 'the licence script printed no summary (exit ' ~ _plane_license_run.rc ~ ')'} -%}
+              {{ {'error': d.error} if d.error is defined else {'changed': d.changed | default(false), 'product': d.product | default('')} }}
+          no_log: true
+
+        - name: "Licence active"
+          ansible.builtin.assert:
+            that:
+              - _plane_license_run.rc == 0
+              - _plane_license_summary.error is not defined
+            fail_msg: "plane licence: {{ _plane_license_summary.error | default('exit ' ~ _plane_license_run.rc) }}"
+            quiet: true
+
+        - name: "Report"
+          ansible.builtin.debug:
+            msg: "workspace plan {{ _plane_license_summary.product }} ({{ 'activated now' if _plane_license_summary.changed else 'already active' }})"
+          changed_when: _plane_license_summary.changed
+
+# ── Phase 3d: GitHub App webhook ────────────────────────────────────────────
+# Plane (silo) now holds GITHUB_WEBHOOK_SECRET; give the App the same one, with its webhook URL,
+# so GitHub signs every delivery with it (change task 3.3). Runs on the controller: the App's
+# private key never goes to the Plane VM except inside .env, which Plane itself must read. GitHub
+# never returns the secret, so it is set on every run; Phase 4 proves silo refuses an unsigned
+# delivery, and the edge's challenge skip for the webhook path rests on that.
+- name: "Phase 3d: GitHub App webhook"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  tasks:
+    - name: "Set the App's webhook URL and secret (skipped in check mode: it writes)"
+      when:
+        - plane_github_app_id is defined
+        - not ansible_check_mode
+      block:
+        # Credential task: the key and the webhook secret go to the script on stdin.
+        - name: "PATCH /app/hook/config with the stored webhook secret"  # noqa: run-once[task] — one App, one PATCH
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_playbook_python }}"
+              - "{{ playbook_dir }}/../lib/github_app_token.py"
+              - set-hook-secret
+              - --issuer
+              - "{{ plane_github_client_id }}"
+              - --hook-url
+              - "{{ plane_public_url }}/silo/api/github/github-webhook"
+            stdin: "{{ {'key_b64': _resolved.plane_github_private_key, 'secret': _resolved.plane_github_webhook_secret} | to_json }}"
+          register: _plane_hook_run
+          delegate_to: localhost
+          run_once: true
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        # The script prints {"url", "content_type", "secret_set"} or an ERROR line, never a credential.
+        - name: "Keep only the webhook summary"
+          ansible.builtin.set_fact:
+            _plane_hook_summary: >-
+              {{ (_plane_hook_run.stdout | from_json) if (_plane_hook_run.rc == 0 and _plane_hook_run.stdout.startswith('{'))
+                 else {'error': (_plane_hook_run.stderr | default('') | regex_search('ERROR: [^\n]*') or 'exit ' ~ _plane_hook_run.rc)} }}
+          no_log: true
+
+        - name: "App webhook converged"
+          ansible.builtin.assert:
+            that:
+              - _plane_hook_summary.error is not defined
+            # default(''): ansible-core 2.19+ renders fail_msg even when the assertion holds, and a
+            # successful summary has no error key (Deploy Plane (Dev) task 14711).
+            fail_msg: "plane GitHub App webhook: {{ _plane_hook_summary.error | default('') }}"
+            quiet: true
+
+        - name: "Report"
+          ansible.builtin.debug:
+            # GitHub's response may omit the secret, so this is reported, not asserted; Phase 4 proves
+            # silo's half, and a redelivered App delivery answering 202 proves GitHub's.
+            msg: >-
+              GitHub App webhook → {{ _plane_hook_summary.url }} ({{ _plane_hook_summary.content_type }});
+              secret sent{{ ', GitHub reports it set' if _plane_hook_summary.secret_set else '' }} (value never shown)
+
+# ── Phase 3e: Marketplace applications ──────────────────────────────────────
+# Workspace settings > Integrations lists Plane's own marketplace applications (GitHub, Slack,
+# GitLab, ...). Plane creates them only from a migration that skips on an empty database, the
+# add-admin endpoint, or setup_instance; our first admin signs up through the sign-up endpoint,
+# which does none of these, so production listed no GitHub after the App was configured
+# (2026-11-10). ensure_marketplace_apps.py calls Plane's own create_applications, which skips any
+# application already present, so this converges and a re-run changes nothing. No credential.
+- name: "Phase 3e: Marketplace applications"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+  tasks:
+    - name: "Dry run: report what would be ensured"
+      ansible.builtin.debug:
+        msg: "would create any of Plane's marketplace applications that are missing (GitHub, Slack, GitLab, ...)"
+      when: ansible_check_mode
+
+    - name: "Create missing marketplace applications (inside plane-api)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - plane-api
+          - python
+          - manage.py
+          - shell
+          - -c
+          - "{{ lookup('file', playbook_dir ~ '/../services/plane/deployment/ensure_marketplace_apps.py') }}"
+      register: _plane_apps_run
+      changed_when: ((_plane_apps_run.stdout_lines | select('match', '^\\{') | list | last | default('{}')) | from_json).created | default([]) | length > 0
+      failed_when: false
+      when: not ansible_check_mode
+
+    - name: "Keep the marketplace summary"
+      ansible.builtin.set_fact:
+        _plane_apps_summary: >-
+          {%- set lines = _plane_apps_run.stdout_lines | default([]) | select('match', '^\\{') | list -%}
+          {{ (lines | last | from_json) if lines else {'error': 'the script printed no summary (exit ' ~ _plane_apps_run.rc ~ ')'} }}
+      when: not ansible_check_mode
+
+    - name: "Every marketplace application exists"
+      ansible.builtin.assert:
+        that:
+          - _plane_apps_run.rc == 0
+          - _plane_apps_summary.error is not defined
+          - _plane_apps_summary.missing | default(['?']) | length == 0
+        # default(): fail_msg is rendered even when the assertion holds (MISTAKES 10.36).
+        fail_msg: >-
+          plane marketplace applications: {{ _plane_apps_summary.error | default('missing ' ~ (_plane_apps_summary.missing | default([]) | join(', '))) }}
+        quiet: true
+      when: not ansible_check_mode
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: "marketplace applications: created {{ _plane_apps_summary.created | default([]) | join(', ') or 'none' }}; already present {{ _plane_apps_summary.present | default([]) | length }}"
+      when: not ansible_check_mode
+
 # ── Phase 4: Verify ─────────────────────────────────────────────────────────
 - name: "Phase 4: Verify plane"
   hosts: plane_svc
@@ -424,6 +641,39 @@
       delay: 10
       until: _plane_verify.rc == 0
       check_mode: false
+
+    # Spike 0.16: silo answers 403 to every delivery with no App configured, 401 to an unsigned one
+    # once the App and GITHUB_WEBHOOK_SECRET are set. Anything but 401 means silo did not get the
+    # GitHub settings, and the webhook path the edge leaves unchallenged would not be verifying.
+    # Not in check mode: a dry run writes no .env and recreates nothing, so on the run that first
+    # declares the App the running silo still has none and answers 403 (PR 1025 review).
+    - name: "GitHub webhook refuses an unsigned delivery (401)"
+      ansible.builtin.command:
+        argv:
+          - "{{ _engine }}"
+          - exec
+          - plane-api
+          - python
+          - -c
+          - |
+            import urllib.error, urllib.request
+            r = urllib.request.Request('http://proxy:80/silo/api/github/github-webhook', data=b'{}', method='POST',
+                headers={'Host': '{{ plane_public_url | urlsplit('hostname') }}', 'Content-Type': 'application/json'})
+            try:
+                c = urllib.request.urlopen(r, timeout=10).status
+            except urllib.error.HTTPError as e:
+                c = e.code
+            print(c)
+            assert c == 401, f'unsigned delivery answered {c}, not 401'
+      register: _plane_webhook_probe
+      changed_when: false
+      retries: 6
+      delay: 10
+      until: _plane_webhook_probe.rc == 0
+      check_mode: false
+      when:
+        - plane_github_app_id is defined
+        - not ansible_check_mode
 
     # MISTAKES 2.34: the probe above reaches one path. This proves every container the plane's compose
     # project created is running (a declared one-shot may have exited 0) and none is restarting under

@@ -23,7 +23,7 @@ Two original assumptions were corrected against the live repo, and the open ques
 
 The branch workflow in `CLAUDE.md` ("never push directly to main, never merge before checks pass") is currently **convention, not enforcement**. Nothing on the GitHub side prevents:
 
-- A direct push to `main` (human, NemoClaw, Claude Code, or a misconfigured playbook)
+- A direct push to `main` (human, Claude Code, or a misconfigured playbook)
 - A force push that rewrites `main` history that production VMs pull from
 - Deleting `main` or merging a PR before CodeRabbit/CI complete
 - Merging with unresolved CodeRabbit findings
@@ -67,7 +67,7 @@ Plan-tier constraints originally assumed (uhstray-io was assumed to be on **GitH
 
 **CodeRabbit is a reviewer, not a status check, by default.** GitHub App reviews don't count toward required-approval counts, so CodeRabbit can't satisfy an approval rule. The enforceable hook is different: enable CodeRabbit's *request-changes workflow* (`reviews.request_changes_workflow: true` in `.coderabbit.yaml`) so it opens review threads that must be resolved, and turn on the ruleset's **required conversation resolution** rule. Result: unresolved CodeRabbit findings mechanically block the merge button. (Verify in CodeRabbit's current docs whether it also offers a commit-status/check-run mode — if so, that check can additionally be added to required status checks in Phase 2.)
 
-**Agents must have no bypass path.** NemoClaw / Claude Code / any GitHub App or PAT used by automation stays **off** the bypass list. The only bypass actor is the Repository admin role (you), reserved for break-glass. Even then, prefer flipping the ruleset to `disabled` over routinely using bypass, so bypass events stay rare and meaningful in the audit log.
+**Agents must have no bypass path.** Claude Code / any GitHub App or PAT used by automation stays **off** the bypass list. The only bypass actor is the Repository admin role (you), reserved for break-glass. Even then, prefer flipping the ruleset to `disabled` over routinely using bypass, so bypass events stay rare and meaningful in the audit log.
 
 **Deploy keys are unaffected.** The OpenBao-stored deploy key (`secret/services/github:deploy_key`) is read-only clone access; rulesets only constrain writes, so no playbook changes are needed.
 
@@ -232,7 +232,7 @@ Option 1 is recommended initially for simplicity; the gitleaks/IP-audit job shou
 | Open PR, resolve threads, checks green, merge | Succeeds |
 | Semaphore deploy from `main` post-merge | Unaffected (read-only clone) |
 
-Also confirm the agents' happy path end-to-end once: NemoClaw/Claude Code pushes a feature branch, opens a PR, and can do everything *except* merge early.
+Also confirm the agents' happy path end-to-end once: Claude Code pushes a feature branch, opens a PR, and can do everything *except* merge early.
 
 ---
 

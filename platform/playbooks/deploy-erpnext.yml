@@ -1,6 +1,6 @@
 ---
 # deploy-erpnext.yml — ERPNext deploy (composable). Same 3-phase shape as
-# deploy-n8n.yml / deploy-opa.yml; one codebase serves local dev and (later)
+# deploy-opa.yml; one codebase serves local dev and (later)
 # the prod/dev VMs via inventory vars.
 #
 # Phase 1: Place repo + manage-secrets (MariaDB root + admin passwords — locally

@@ -1,10 +1,13 @@
 # 03 — Testing, CI & Quality Gates
-> **Consolidates:** TESTING-AND-LINTING-PLAN.md, CI-TESTING-SPECIFICATION.md, LINTING-AND-TESTING.md, SECURITY-TESTING-STANDARDS.md, BRANCH-TESTING-WORKFLOW.md, OPENSSF-SCORECARD-PLAN.md (originals archived in `plan/archive/`)
+> **Consolidates:** TESTING-AND-LINTING-PLAN.md, CI-TESTING-SPECIFICATION.md, LINTING-AND-TESTING.md, SECURITY-TESTING-STANDARDS.md, BRANCH-TESTING-WORKFLOW.md, OPENSSF-SCORECARD-PLAN.md (originals archived in `plan/archive/architecture/`; OPENSSF-SCORECARD-PLAN.md in `plan/archive/development/`)
 >
 > **Depends on:** 00, 01
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
+> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs
 > merged verbatim below under provenance dividers to preserve all detail.
+
+**Date:** 2026-11-04
+**Status:** ACTIVE
 
 
 <!-- ======================= source: TESTING-AND-LINTING-PLAN.md ======================= -->
@@ -13,16 +16,27 @@
 
 **Date:** 2026-04-21
 **Updated:** 2026-05-06
-**Status:** ACTIVE — Phases 1-5 implemented for NetBox. Coverage gaps remain for 11 services and 3 agents.
+**Status:** ACTIVE — Phases 1-5 implemented for NetBox. Coverage gaps remain for 7 services.
 **Contributors:** Architecture, Automation, Security, and Testing review agents
 
 ---
 
-## Coverage Assessment (2026-05-06)
+## Current CI
+
+Source: `.github/workflows/lint-and-test.yml`. It defines these jobs and runs on `pull_request` to `main` and `dev`, with `permissions: contents: read` at the top level.
+
+- Jobs: `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python` (one matrix job, eight shards named `Python (1/8)` to `Python (8/8)`; each runs the root pytest collection with `PYTEST_SHARD=k/8`, and the root `conftest.py` skips the test files assigned to other shards, bin-packed from `platform/tests/test_durations.json`; plan 21), `bats` (files in parallel with `--jobs 4 --no-parallelize-within-files`), `rego`, `test` (Unit Tests), `rust-console`.
+- `test` (Unit Tests) runs `if: always()` and needs four jobs: `python`, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded; a matrix job's result is `failure` when any shard fails.
+- Required on `main`: `.github/rulesets/protect-main.json` (`enforcement: active`) requires the contexts `Static Analysis`, `Security Scan`, `Unit Tests` and `Promotion source (dev -> main)`. `.github/rulesets/protect-dev.json` (`enforcement: active`) defines no required status check.
+- Remote ruleset state was not queried in this review; the checked-in files are the evidence.
+
+## Coverage Assessment (2026-05-06, historical)
+
+> **Historical snapshot.** The counts and CI layout in this section are as of 2026-05-06. The *Current CI* block above is the current job list.
 
 ### What Exists
 
-The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linters on every PR to main. Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provide functional coverage for NetBox workers and shared libraries.
+The CI pipeline (`.github/workflows/lint-and-test.yml`) runs the jobs listed in *Current CI* above on every pull request to `main` and `dev`. As of 2026-05-06, Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provided functional coverage for NetBox workers and shared libraries.
 
 | Component | Test Coverage | Notes |
 |-----------|---------------|-------|
@@ -33,9 +47,7 @@ The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linte
 
 ### What Is Missing
 
-**11 services with zero tests:** caddy, inference, n8n, nextcloud, nocodb, o11y, openbao, postiz, semaphore, wikijs, a2a-registry
-
-**3 agents with zero tests:** nemoclaw, netclaw, cowork
+**7 services with zero tests:** caddy, inference, o11y, openbao, postiz, semaphore, a2a-registry
 
 **No tests exist for:**
 - Compose file validation (valid YAML, required services, no hardcoded credentials)
@@ -98,11 +110,10 @@ ignore = ["BLE001"]  # blind except is intentional in worker error handling
 
 ### 1b. Shell Linting — ShellCheck
 
-**Scope:** 28 shell scripts across the repo
+**Scope:** 47 shell scripts across the repo
 - `platform/lib/common.sh`, `platform/lib/bao-client.sh`
 - `platform/services/*/deployment/deploy.sh`
 - `platform/services/netbox/deployment/lib/common.sh`, `lib/generate-secrets.sh`
-- `agents/nemoclaw/deployment/deploy.sh`, `update.sh`, `validate.sh`
 
 **Tool:** `shellcheck` (install via `brew install shellcheck` or CI action). Scans the entire repo (excluding `netbox-docker/`).
 
@@ -145,9 +156,9 @@ exclude_paths:
 
 ### 1g. HCL Policy Validation
 
-**Scope:** 8 HCL files in `platform/services/openbao/deployment/config/`
+**Scope:** 5 HCL files in `platform/services/openbao/deployment/config/`
 - `openbao.hcl` (server config)
-- `policies/*.hcl` (7 AppRole policies: semaphore-read, semaphore-write, orb-agent, nemoclaw-read, nemoclaw-rotate, nocodb-write, n8n-write)
+- `policies/*.hcl` (AppRole policies: semaphore-read, semaphore-write, orb-agent, console)
 
 **Tool:** `openbao policy fmt -check` or `terraform fmt -check` for syntax validation. These are security-critical files — invalid policy syntax could lock out services.
 
@@ -694,8 +705,8 @@ graph TD
 #### Python core runs in parallel (2026-10-02)
 
 The `Python core` job runs pytest with `-n auto --dist worksteal` (pytest-xdist, pinned
-in `platform/requirements-test.txt`, the one test-dependency manifest every CI test job
-installs). Serially, the suite had grown to 12–20 minutes on CI, against
+in the `test` dependency group of `pyproject.toml`, locked in `uv.lock`, which every CI test job
+installs with `uv sync --locked`). Serially, the suite had grown to 12–20 minutes on CI, against
 a 20-minute job cap. Green runs reached 19.9 minutes, and run 37048305528 was cancelled
 at 20m5s. Most of that time is ansible-playbook subprocesses, which are independent, so
 spreading them across cores fixes the cause. Raising the cap only would have moved the
@@ -747,8 +758,7 @@ Add `j2lint` as a dedicated linting step:
 ```yaml
 - name: Jinja2 template lint
   run: |
-    pip install j2lint
-    find platform/services -name "*.j2" -exec j2lint {} +
+    find platform/services -name "*.j2" -exec uvx j2lint {} +
 ```
 
 #### Coverage Reporting
@@ -891,7 +901,7 @@ Every PR triggers three GitHub Actions jobs:
 ### Python (Ruff)
 
 ```bash
-pip install ruff
+uv tool install ruff
 ruff check .                    # Check all Python files
 ruff check --fix .              # Auto-fix safe issues
 ruff check --fix --unsafe-fixes .  # Fix all (review changes)
@@ -915,7 +925,7 @@ find . -name '*.sh' ! -path '*/netbox-docker/*' -exec shellcheck -S warning {} +
 ### Ansible (ansible-lint)
 
 ```bash
-pip install ansible-lint
+uv tool install ansible-lint
 ansible-lint platform/playbooks/
 ```
 
@@ -924,7 +934,7 @@ Configuration is in `.ansible-lint`. Skips `command-instead-of-module` and `no-c
 ### YAML (yamllint)
 
 ```bash
-pip install yamllint
+uv tool install yamllint
 yamllint -c .yamllint.yml .
 ```
 
@@ -1078,7 +1088,7 @@ Tests use `@pytest.mark.parametrize` for composability — each function covers 
 | `test_proxmox_helpers.py` | `_int`, `_mb_to_gb`, `_bytes_to_gb`, `_should_skip_iface`, `_iface_type`, `_prefix_len`, `_sanitize_description`, `_pick_primary_ipv4` | 66 |
 | `test_pfsense_helpers.py` | `_is_valid_ip` | 13 |
 
-**Requires:** Python 3.12+ and `pip install -r platform/requirements-test.txt`.
+**Requires:** `uv sync --locked` (installs Python 3.12 and the locked test dependencies).
 
 The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable. The real Diode SDK is installed for entity constructor validation.
 
@@ -1155,7 +1165,7 @@ Pre-commit hooks are the first line of defense. They run automatically on every 
 
 **Installation (one-time):**
 ```bash
-pip install pre-commit
+uv tool install pre-commit
 pre-commit install
 ```
 
@@ -1577,11 +1587,8 @@ Every deploy playbook reads `service_branch` with a fallback to `main`:
 Playbooks with `service_branch` support:
 - `deploy-all.yml`
 - `deploy-openbao.yml`
-- `deploy-nocodb.yml`
-- `deploy-n8n.yml`
 - `deploy-semaphore.yml`
 - `deploy-netbox.yml`
-- `deploy-nemoclaw.yml`
 - `clean-deploy-netbox.yml`
 - `deploy-orb-agent.yml`
 
@@ -1676,7 +1683,7 @@ After branch validation succeeds:
 
 **Never merge a PR before its checks have completed and passed.**
 
-On `main` these rules are codified in the `protect-main` repository ruleset (`.github/rulesets/`), not just procedurally — currently in `evaluate`/dry-run (logging would-be violations, not yet blocking) until flipped to `active`: required status checks (`Static Analysis` / `Security Scan` / `Unit Tests`) and conversation resolution block the merge button, and force-push and deletion are rejected. The rollback story above ("re-deploy from `main`") stays valid precisely because `main` history can never be rewritten.
+On `main` these rules are codified in the `protect-main` repository ruleset (`.github/rulesets/`), not just procedurally — the checked-in file declares `enforcement: active` (remote state not queried in this review): required status checks (`Static Analysis` / `Security Scan` / `Unit Tests`) and conversation resolution block the merge button, and force-push and deletion are rejected. The rollback story above ("re-deploy from `main`") stays valid precisely because `main` history can never be rewritten.
 
 <!-- ======================= source: OPENSSF-SCORECARD-PLAN.md (was in plan/development/) ======================= -->
 

@@ -2,10 +2,10 @@
 # seed-openbao-key.yml — Seed (merge) a single key/value into an OpenBao KV-v2
 # secret WITHOUT disturbing the other keys already at that path.
 #
-# Why: some shared secrets are owned by one service but read by another via a
-# manage-secrets `_shared_read` (e.g. honcho's deriver reads
-# `secret/services/nemoclaw:gemini_api_key`). When such a key is missing from
-# OpenBao, the reader's deploy fails its shared-read assertion. This playbook is
+# Why: some secrets are operator-owned credentials that a deploy reads but never
+# generates (a manage-secrets `type: existing` field, listed in
+# `_required_existing_secrets`), e.g. honcho's `secret/services/honcho:gemini_api_key`.
+# When such a key is missing from OpenBao, the owning deploy fails before any write. This playbook is
 # the code-managed, idempotent way to place that one key — the deploy automation
 # then sources it from OpenBao itself (no key ever touches a container or file
 # by hand, and it survives redeploys). It replaces the forbidden "ad-hoc curl
@@ -24,7 +24,7 @@
 # wildcard policy grants `patch` on secret/data/services/*).
 #
 # Usage (via Semaphore):
-#   -e bao_path=services/nemoclaw -e bao_key=gemini_api_key
+#   -e bao_path=services/honcho -e bao_key=gemini_api_key
 #   BAO_VALUE supplied as a Semaphore environment SECRET (encrypted at rest, not
 #   returned by the API). Do NOT pass -e bao_value=... under Semaphore: it
 #   persists the extra-var JSON and serves it back over its API. The extra-var

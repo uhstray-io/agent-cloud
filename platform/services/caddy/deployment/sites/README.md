@@ -36,5 +36,5 @@ The main Caddyfile is shared infrastructure with `{$VAR}`-driven routes for lega
 
 - [`../Caddyfile`](../Caddyfile) — main config; imports this directory.
 - [`../../../../playbooks/tasks/distribute-caddy-site.yml`](../../../../playbooks/tasks/distribute-caddy-site.yml) — the distribution task.
-- [`platform/services/uhhcraft/deployment/templates/caddy-site.j2`](../../../uhhcraft/deployment/templates/caddy-site.j2) — first concrete example.
+- [`platform/services/erpnext/deployment/templates/caddy-site.j2`](../../../erpnext/deployment/templates/caddy-site.j2) — a concrete example.
 - [`plan/architecture/05-platform-infra.md`](../../../../../plan/architecture/05-platform-infra.md) — the full convention.

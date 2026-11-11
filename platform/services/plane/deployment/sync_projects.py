@@ -240,6 +240,14 @@ try:
     repairs = []
     for p in cfg["projects"]:
         pid = known.get(p["repo"])
+        # A project this sync has not made but that already holds the declared identifier or name
+        # would refuse the create (409) on apply; name it now, so the dry run sees it too.
+        if pid is None:
+            clash = next((r for r in project_rows
+                          if r.get("identifier") == p["identifier"] or r.get("name") == p["name"]), None)
+            if clash is not None:
+                stop(f"project {p['repo']}: identifier {p['identifier']} or name {p['name']} is already "
+                     f"used by project {clash.get('identifier')} ({clash.get('name')}), which this sync did not create")
         if pid is None and not apply:
             tally("would_create", "projects")
             for d in DECLARED["states"]:

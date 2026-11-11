@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
+import harness_sandbox
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -1526,7 +1527,10 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
         return value
 
     env = Environment(undefined=StrictUndefined)
-    env.filters.update(to_json=json.dumps, bool=bool, mandatory=mandatory)
+    env.filters.update(
+        to_json=json.dumps, bool=bool, mandatory=mandatory,
+        o11y_effective_scrape_limits=BUDGET.o11y_effective_scrape_limits,
+    )
     template = ROOT / "platform/services/o11y/deployment/templates/prometheus.yml.j2"
     rendered = env.from_string(template.read_text(encoding="utf-8")).render(
         local_mode=False, o11y_scrape_limits_reviewed=True, o11y_scrape_limits=_loaded_inventory(),
@@ -1535,8 +1539,10 @@ def test_prometheus_self_source_limits_accept_exact_legacy_template_labels():
     )
     config = yaml.safe_load(rendered)
     job = next(row for row in config["scrape_configs"] if row["job_name"] == "alloy")
+    # Every source-review caller passes the effective limits (the 2000 default ceiling applies).
     SURVEY._validate_prometheus_alloy_loaded_limits(
-        _loaded_readback({"scrape_configs": [job]}), _loaded_inventory(),
+        _loaded_readback({"scrape_configs": [job]}),
+        BUDGET.o11y_effective_scrape_limits(_loaded_inventory(), 2000, False, True),
         environment="prod", cluster="prod-west",
     )
 
@@ -1735,7 +1741,7 @@ def test_root_graph_alone_does_not_claim_cross_controller_native_absence(monkeyp
         "enabled": False, "limits": {},
         "targets": [{"module_name": "health_01", "freshness_seconds": 300}],
     }
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_digest_invalid"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, availability, _loaded_inventory(), environment="prod", cluster="prod-west",
             intended_source="prometheus", now=2000, require_health_targets=True,
@@ -1772,7 +1778,10 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
     process = {
         "pid": 4101, "cmdline_sha256": hashlib.sha256(command_line).hexdigest(),
     }
-    state = {"argv": command_line, "root_bytes": config_bytes, "mount_rw": False}
+    state = {
+        "argv": command_line, "root_bytes": config_bytes, "mount_rw": False,
+        "mount_source": str(config_path), "mount_fail": False,
+    }
     provider_state = {"version": "1.3.0", "digest": "b" * 64}
     original_open = open
     original_read = SURVEY._read_bounded_regular_file
@@ -1791,8 +1800,11 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         if "{{.ImageName}}" in argv:
             return b"docker.io/grafana/alloy:v1.5.1\n"
         if "{{json .Mounts}}" in argv:
+            if state["mount_fail"]:
+                # The real helper raises the caller's refusal word for a failed inspect.
+                raise SURVEY.Refusal(_kwargs.get("refusal", "namespace_unverified"))
             return json.dumps([{
-                "Type": "bind", "Source": str(config_path),
+                "Type": "bind", "Source": state["mount_source"],
                 "Destination": "/etc/alloy/config.alloy", "RW": state["mount_rw"],
             }]).encode()
         raise AssertionError("unexpected runtime metadata query")
@@ -1814,6 +1826,33 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
         record, process, digest, availability_enabled=True, lower_bound=900,
     )
     assert re.fullmatch(r"[0-9a-f]{64}", binding)
+    # A symlink in the deployment path: podman reports the resolved bind source.
+    link = tmp_path / "deploy-link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(link))
+    assert SURVEY._verify_loaded_candidate_config(
+        record, process, digest, availability_enabled=True, lower_bound=900,
+    )
+    monkeypatch.setenv("O11Y_DEPLOYMENT_DIR", str(tmp_path))
+    # A different host file with identical bytes, and a symlink that resolves outside the
+    # deployment directory, are not the placed config: the mount source must be that file.
+    twin = tmp_path / "twin.alloy"
+    twin.write_bytes(config_bytes)
+    outside = tmp_path / "outside-link.alloy"
+    outside.symlink_to(twin)
+    for source in (str(twin), str(outside)):
+        state["mount_source"] = source
+        with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+            SURVEY._verify_loaded_candidate_config(
+                record, process, digest, availability_enabled=True, lower_bound=900,
+            )
+    state["mount_source"] = str(config_path)
+    state["mount_fail"] = True
+    with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
+        SURVEY._verify_loaded_candidate_config(
+            record, process, digest, availability_enabled=True, lower_bound=900,
+        )
+    state["mount_fail"] = False
     provider_state.update(version="1.6.0", digest="d" * 64)
     assert SURVEY._verify_loaded_candidate_config(
         record, process, digest, availability_enabled=True, lower_bound=900,
@@ -1821,24 +1860,24 @@ def test_loaded_candidate_binding_requires_exact_process_mount_and_config_bytes(
     provider_state.update(version="1.3.0", digest="b" * 64)
 
     state["argv"] = command_line.replace(b"127.0.0.1", b"0.0.0.0")
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_argv"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["argv"] = command_line
     state["mount_rw"] = True
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_mounts"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["mount_rw"] = False
     state["root_bytes"] = b'prometheus.scrape "stale" {}\n'
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_config_bytes"):
         SURVEY._verify_loaded_candidate_config(
             record, process, digest, availability_enabled=True, lower_bound=900,
         )
     state["root_bytes"] = config_bytes
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_binding_config_digest"):
         SURVEY._verify_loaded_candidate_config(
             record, process, "f" * 64, availability_enabled=True, lower_bound=900,
         )
@@ -1879,7 +1918,7 @@ def test_source_transition_requires_new_post_apply_alloy_process(monkeypatch):
     assert binding_calls
 
     binding_calls.clear()
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_source_transition_unproven"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, {"enabled": True, "targets": [{"freshness_seconds": 300}], "limits": {}},
             _loaded_inventory(), environment="prod", cluster="prod-west", intended_source="alloy",
@@ -1890,7 +1929,7 @@ def test_source_transition_requires_new_post_apply_alloy_process(monkeypatch):
     assert binding_calls == []
 
     record["started_at"] = "1970-01-01T00:14:00Z"
-    with pytest.raises(SURVEY.Refusal, match="native_source_unavailable"):
+    with pytest.raises(SURVEY.Refusal, match="native_source_transition_unproven"):
         SURVEY.collect_current_availability_source(
             b"{}", {}, {"enabled": True, "targets": [{"freshness_seconds": 300}], "limits": {}},
             _loaded_inventory(), environment="prod", cluster="prod-west", intended_source="alloy",
@@ -2107,7 +2146,7 @@ def test_effective_compose_accepts_only_narrow_otlp_short_port_forms(monkeypatch
 def test_effective_compose_refuses_admin_remaps_and_malformed_port_shapes(monkeypatch, port, enabled):
     if isinstance(port, dict):
         port = {"host_ip": "127.0.0.1", **port}
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
         _check_effective_compose_ports(monkeypatch, _effective_compose_fixture([port]), enabled=enabled)
 
 
@@ -2115,7 +2154,7 @@ def test_effective_compose_refuses_admin_remaps_and_malformed_port_shapes(monkey
 def test_effective_compose_refuses_malformed_ports_collection(monkeypatch, ports):
     config = _effective_compose_fixture()
     config["services"]["alloy"]["ports"] = ports
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
         _check_effective_compose_ports(monkeypatch, config, enabled=False)
 
 
@@ -2137,7 +2176,7 @@ def test_effective_compose_refuses_admin_publication_on_other_services(monkeypat
     config = _effective_compose_fixture([valid_alloy_otlp])
     config["services"]["synthetic"] = {"ports": [other_service_admin_port]}
 
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_ports"):
         _check_effective_compose_ports(monkeypatch, config, enabled=enabled)
 
 
@@ -2378,7 +2417,8 @@ services:
         SURVEY, "_availability_command",
         lambda argv, **_kwargs: unsafe_config if argv[-1] == "config" else command(argv, **_kwargs),
     )
-    with pytest.raises(SURVEY.Refusal, match="namespace_unverified"):
+    # The pod check runs before the alloy-spec check, so the in_pod change is named first.
+    with pytest.raises(SURVEY.Refusal, match="namespace_candidate_pod"):
         SURVEY.verify_availability_namespace(validate_candidate=True)
 
 
@@ -2839,11 +2879,12 @@ def test_candidate_equal_to_any_observed_maximum_is_incompatible(field, candidat
     }
 
 
-def test_receiver_and_host_node_use_the_stricter_sample_cap_only():
-    receipt = _budget_receipt("receiver-host", "host-node", "grafana")
+def test_receiver_host_node_and_alloy_use_the_stricter_sample_cap_only():
+    receipt = _budget_receipt("receiver-host", "host-node", "alloy", "grafana")
     receipt["jobs"][0]["max_scrape_samples_scraped_24h"] = 2000
     receipt["jobs"][1]["max_scrape_samples_scraped_24h"] = 2001
-    receipt["jobs"][2]["max_scrape_samples_scraped_24h"] = 9999
+    receipt["jobs"][2]["max_scrape_samples_scraped_24h"] = 2001
+    receipt["jobs"][3]["max_scrape_samples_scraped_24h"] = 9999
 
     result = BUDGET.o11y_scrape_budget_preview(receipt, _budget_limits(), True, 2000)
 
@@ -2851,6 +2892,7 @@ def test_receiver_and_host_node_use_the_stricter_sample_cap_only():
     assert result["jobs"] == [
         {"job": "receiver-host", "status": "incompatible"},
         {"job": "host-node", "status": "incompatible"},
+        {"job": "alloy", "status": "incompatible"},
         {"job": "grafana", "status": "compatible"},
     ]
 
@@ -3263,6 +3305,7 @@ def test_generated_curl_configs_parse_with_installed_curl(config):
         input=config,
         capture_output=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 
@@ -3872,3 +3915,94 @@ def test_alert_input_playbook_reports_only_fixed_projection_and_skips_check_mode
     assert source_report["when"] == "not ansible_check_mode"
     assert source_report["ansible.builtin.debug"]["msg"] == "{{ _scrape_availability_source_coverage | to_json }}"
     assert "_scrape_survey_result" not in str(source_report)
+
+
+@pytest.mark.parametrize(("loaded", "expected"), [(2000, "matched"), (2001, "mismatch")])
+def test_loaded_alloy_job_uses_the_stricter_sample_cap(loaded, expected):
+    alloy = _loaded_config_job("alloy", sample_limit=loaded)
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        _loaded_readback({"scrape_configs": [alloy]}, [{"pool": "alloy", "job": "alloy"}]),
+        _budget_receipt("alloy"), _loaded_inventory(), True, 2000,
+    )
+    assert result["status"] == expected
+
+
+def test_loaded_coverage_matches_every_job_the_real_template_renders():
+    """The coverage filter must agree with prometheus.yml.j2 on which jobs it caps."""
+    env = Environment(undefined=StrictUndefined)
+    env.filters.update(
+        to_json=json.dumps, bool=bool, mandatory=lambda value: value,
+        o11y_effective_scrape_limits=BUDGET.o11y_effective_scrape_limits,
+    )
+    template = ROOT / "platform/services/o11y/deployment/templates/prometheus.yml.j2"
+    rendered = env.from_string(template.read_text(encoding="utf-8")).render(
+        local_mode=False, o11y_scrape_limits=_loaded_inventory(), o11y_scrape_limits_reviewed=True,
+        o11y_scrape_sample_limit=2000, o11y_environment="prod", o11y_cluster="prod-west",
+        _o11y_forbidden_metric_label_names_regex="^private$", o11y_availability_probes_enabled=False,
+    )
+    jobs = [job["job_name"] for job in yaml.safe_load(rendered)["scrape_configs"]]
+    result = BUDGET.o11y_loaded_scrape_limit_coverage(
+        {"status": "observed", "reason": "stable_loaded_config", "config_yaml": rendered,
+         "target_pools": [{"pool": job, "job": job} for job in jobs]},
+        {"status": "observed", "jobs": [{"job": job} for job in jobs]},
+        _loaded_inventory(), True, 2000,
+    )
+    assert {row["job"]: row["status"] for row in result["jobs"]} == dict.fromkeys(jobs, "matched")
+
+
+def _rendered_enabled_alloy_config():
+    """config.alloy.j2 with availability enabled and production-shaped probe targets."""
+    policy = yaml.safe_load(
+        (ROOT / "platform/playbooks/vars/o11y-metric-labels.yml").read_text(encoding="utf-8")
+    )["_o11y_forbidden_metric_label_names_regex"]
+    env = Environment(undefined=StrictUndefined)
+    env.filters.update(to_json=json.dumps, bool=bool, mandatory=lambda value: value, string=str)
+    targets = [{
+        "module_name": f"health_0{index}", "blackbox_config": "modules: {}",
+        "target_id": f"service:svc{index}", "endpoint": f"https://svc{index}.example.test/health",
+        "service_identity": f"svc{index}", "environment": "prod", "cluster": "prod-west",
+        "interval_seconds": 60, "scrape_timeout_seconds": 5, "samples_per_scrape": 128,
+    } for index in (1, 2, 3)]
+    template = ROOT / "platform/services/o11y/deployment/templates/config.alloy.j2"
+    return env.from_string(template.read_text(encoding="utf-8")).render(
+        local_mode=False, o11y_cluster="prod-west", o11y_environment="prod",
+        o11y_availability_probes_enabled=True, _o11y_availability={"enabled": True, "targets": targets},
+        _o11y_forbidden_metric_label_names_regex=policy,
+    )
+
+
+def test_the_rendered_enabled_alloy_config_passes_the_component_binding():
+    # Semaphore task 14536: the keyword check matched the blackbox target's `module = "health_NN"`
+    # attribute, so every enabled deploy refused its post-apply readback.
+    rendered = _rendered_enabled_alloy_config()
+    assert 'module  = "health_01"' in rendered
+    SURVEY._validate_alloy_config_components(rendered.encode("utf-8"), availability_enabled=True)
+
+
+@pytest.mark.parametrize("block", [
+    'import.file "extra" {\n  filename = "/tmp/x.alloy"\n}\n',
+    'module.file "extra" {\n  filename = "/tmp/x.alloy"\n}\n',
+    'remotecfg {\n  url = "https://example.test"\n}\n',
+    'import.git "extra" {\n  repository = "https://example.test/x.git"\n}\n',
+    # A label the component regex cannot match, so only the config-loading keyword check refuses it.
+    'import.file "a/b" {\n  filename = "/tmp/x.alloy"\n}\n',
+])
+def test_config_loading_blocks_still_refuse_the_component_binding(block):
+    rendered = _rendered_enabled_alloy_config() + block
+    with pytest.raises(SURVEY.Refusal, match="native_binding_components"):
+        SURVEY._validate_alloy_config_components(rendered.encode("utf-8"), availability_enabled=True)
+
+
+def test_source_cli_prints_its_own_word_for_an_unexpected_exception(monkeypatch, capsys):
+    def explode():
+        raise RuntimeError("detail that must never be printed")
+
+    monkeypatch.setattr(SURVEY, "_availability_source_action", explode)
+    monkeypatch.setattr(SURVEY.sys, "argv", ["helper", "--verify-availability-source"])
+    assert SURVEY.main() == 2
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["reason"] == "native_source_internal_error"
+    assert "detail" not in json.dumps(printed)
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": 2, "stdout": json.dumps(printed), "stderr": ""}
+    ) == "native_source_internal_error"

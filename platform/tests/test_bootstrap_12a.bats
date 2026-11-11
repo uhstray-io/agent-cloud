@@ -207,3 +207,39 @@ setup() {
   refute_contains "$caddy_blk" 'caddy_https_port=8443'
   refute_contains "$postiz_blk" ":8443"
 }
+
+# ── Stage 4b: seed per KEY — an existing path is merged, never overwritten ───
+@test "seed: an existing path gets only its missing spec keys, through bao-merge-keys" {
+  bp="$PB/bootstrap-local-dev.yml"
+  compute=$(task_block "$bp" "Work out the seed keys each existing path is missing")
+  merge=$(task_block "$bp" "Merge the seed keys an existing path is missing")
+  [ -n "$compute" ]
+  [ -n "$merge" ]
+
+  # The absent-key filter: a spec key is merged only when the path does not already
+  # hold it with a value. Without it, a present real key is overwritten with the fake.
+  assert_contains "$compute" "rejectattr('key', 'in', _seed_held)"
+  # Only non-empty values count as held, so an empty or null key is still merged in.
+  assert_contains "$compute" "selectattr('value')"
+  assert_contains "$compute" "loop: \"{{ _seed_check.results | selectattr('status', 'equalto', 200) | list }}\""
+
+  # The write goes through the shared merge-patch task, and only for the paths
+  # that are missing something.
+  assert_contains "$merge" "ansible.builtin.include_tasks: tasks/bao-merge-keys.yml"
+  assert_contains "$merge" "_bm_on_missing: create"
+  assert_contains "$merge" "_seed_missing"
+  assert_contains "$merge" "selectattr('value')"
+  assert_contains "$merge" "when: not ansible_check_mode"
+
+  # Every task that handles a value is no_log (credential boundary only).
+  assert_contains "$compute" "no_log: true"
+  assert_contains "$merge" "no_log: true"
+}
+
+@test "seed: a path that does not exist is still created whole, on 404 only" {
+  bp="$PB/bootstrap-local-dev.yml"
+  create=$(task_block "$bp" "Seed LOCAL_FAKE secrets for absent services")
+  [ -n "$create" ]
+  assert_contains "$create" "item.status == 404"
+  assert_contains "$create" "method: POST"
+}

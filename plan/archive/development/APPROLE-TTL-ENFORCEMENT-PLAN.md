@@ -161,7 +161,7 @@ Add a new template to `platform/semaphore/templates.yml`:
 
 ### Phase 2: Apply to New AppRoles First
 
-1. Create any new per-service AppRoles (e.g., `netbox-deploy`, `nocodb-deploy`) with the new defaults
+1. Create any new per-service AppRoles (e.g., `netbox-deploy`) with the new defaults
 2. These AppRoles will have 90-day TTL from creation
 3. Validate that deployments work correctly with bounded TTLs
 

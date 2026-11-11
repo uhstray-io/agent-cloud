@@ -10,42 +10,17 @@ on:
 permissions:
   contents: read
 
-jobs:
-  # Detect which areas changed so language-specific jobs only fire when
-  # relevant. The existing lint / security / test jobs continue to run on
-  # every PR — only the new Go jobs and the Python-inference scope expansion
-  # gate on these outputs.
-  changes:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    outputs:
-      go: ${{ steps.filter.outputs.go }}
-      python_inference: ${{ steps.filter.outputs.python_inference }}
-      dockerfiles: ${{ steps.filter.outputs.dockerfiles }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
-        id: filter
-        with:
-          filters: |
-            go:
-              - 'platform/services/uhhcraft/deployment/**'
-              - '.github/workflows/lint-and-test.yml'
-            python_inference:
-              - 'platform/services/inference-comfyui/deployment/**'
-              - 'platform/services/inference-hunyuan3d/deployment/**'
-              - '.github/workflows/lint-and-test.yml'
-            dockerfiles:
-              - 'platform/services/uhhcraft/deployment/Dockerfile'
-              - 'platform/services/inference-comfyui/deployment/Dockerfile'
-              - 'platform/services/inference-hunyuan3d/deployment/Dockerfile'
+# Every job runs on ubuntu-24.04, pinned rather than ubuntu-latest: on 2026-11-10 GitHub moved
+# ubuntu-latest to 26.04, whose OpenSSL 3.5 made test_verify_service_health.py's pinned-address HTTPS
+# test fail on every pull request. Moving to 26.04 is a deliberate follow-up, not a label change.
 
+jobs:
   # Predict the version this pull request would release and fail on a title the
   # release rules cannot read (plan 20). The live title is read through the API,
   # so a re-run after a title edit sees the edit.
   version:
     name: Version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pull-requests: read
@@ -73,9 +48,13 @@ jobs:
 
   lint:
     name: Static Analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.11.17"
 
       - name: Python lint (ruff)
         uses: astral-sh/ruff-action@v3
@@ -90,33 +69,15 @@ jobs:
           ignore_paths: netbox-docker
 
       - name: Ansible lint
-        run: pip install ansible-lint && ansible-lint platform/playbooks/ platform/semaphore/
+        run: uvx ansible-lint platform/playbooks/ platform/semaphore/
 
       - name: YAML lint
-        run: pip install yamllint && yamllint -c .yamllint.yml .
+        run: uvx yamllint -c .yamllint.yml .
 
       - name: Dockerfile lint (netbox)
         uses: hadolint/hadolint-action@v3.3.0
         with:
           dockerfile: platform/services/netbox/deployment/Dockerfile-Plugins
-          failure-threshold: warning
-
-      - name: Dockerfile lint (uhhcraft)
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: platform/services/uhhcraft/deployment/Dockerfile
-          failure-threshold: warning
-
-      - name: Dockerfile lint (inference-comfyui)
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: platform/services/inference-comfyui/deployment/Dockerfile
-          failure-threshold: warning
-
-      - name: Dockerfile lint (inference-hunyuan3d)
-        uses: hadolint/hadolint-action@v3.3.0
-        with:
-          dockerfile: platform/services/inference-hunyuan3d/deployment/Dockerfile
           failure-threshold: warning
 
       - name: Dockerfile lint (console)
@@ -142,11 +103,15 @@ jobs:
 
   security:
     name: Security Scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.11.17"
 
       - name: Install pinned TruffleHog
         run: |
@@ -169,7 +134,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update
+          # uv.lock is excluded from THIS scan only: it is generated and full of package hashes,
+          # and the SentryToken detector matched the sentry-sdk wheel's hash URL. A comment
+          # marker cannot live there because `uv lock` rewrites the file. The verified scan
+          # above still reads uv.lock, so a live credential in it still fails the job.
+          trufflehog git file://. --since-commit "$BASE_SHA" --branch "$HEAD_SHA" --fail --no-update \
+            --exclude-paths .github/trufflehog-exclude-unverified.txt
 
       - name: RFC1918 IP address audit
         run: |
@@ -227,257 +197,125 @@ jobs:
 
       - name: Python security lint (bandit)
         run: |
-          pip install bandit
-          bandit -r \
+          uvx bandit -r \
             platform/services/netbox/deployment/workers/ \
             platform/services/netbox/deployment/lib/pfsense-sync.py \
-            platform/services/inference-comfyui/deployment/app/ \
-            platform/services/inference-hunyuan3d/deployment/app/ \
             -s B101,B110 -q
 
-  python-core:
-    name: Python core
-    runs-on: ubuntu-latest
-    # Backstop, not the capacity fix. The suite runs in parallel (below), which is what
-    # keeps it well under this. 20 minutes was a serial-era cap that green runs reached
-    # 19.9 minutes against before one was cancelled at 20m5s (run 37048305528).
+  # One matrix job runs the whole root pytest collection in eight shards (plan 21 phase 2, D3).
+  # The root conftest.py assigns each test file to one shard from PYTEST_SHARD=k/N, bin-packed by
+  # the recorded times in platform/tests/test_durations.json, and skips every other file before
+  # it is imported. Rebalancing is a data commit to that file, never a workflow edit.
+  # platform/tests/test_ci_python_partition.py proves the eight shards are disjoint and that
+  # together they collect exactly the root node IDs.
+  python:
+    name: Python (${{ matrix.shard }}/8)
+    runs-on: ubuntu-24.04
+    # Backstop, not the capacity fix: the shard count is. The last step warns above half of it.
     timeout-minutes: 30
+    strategy:
+      # Every shard runs to the end, so one failure does not hide another shard's result.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
-      - uses: actions/checkout@v7
+      - name: Record the shard's start time
+        run: echo "SHARD_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@v7
         with:
-          python-version: "3.12"
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          # The one declaration of the suites' dependencies, each with its reason,
-          # including the pytest-xdist pin the run step's flags rely on. The pre-push
-          # hook reads the same file, so CI and a local push agree on the version.
-          pip install -r platform/requirements-test.txt
-          # cryptography: the BATS suite signs a real App assertion with a throwaway key
-          # and verifies it, which is the only check that the credential chain's signing
-          # is correct rather than merely well-formed. Declared for the orchestrator in
-          # platform/requirements-controller.txt.
-          pip install -r platform/requirements-controller.txt
+          # The one declaration of the suites' dependencies is pyproject.toml's dependency
+          # groups (test, controller), resolved into uv.lock. `--locked` fails when the two
+          # disagree, and the pre-push hook installs the same lock, so CI and a local push
+          # run the same versions. .python-version selects the interpreter (3.12).
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           # The playbooks' collections. Tests that run a whole playbook need its modules
           # to resolve: an unresolved module (ansible.posix.authorized_key) aborts the run
           # at parse time with empty stdout, before any play or step result is printed.
-          ansible-galaxy collection install -r collections/requirements.yml
+          uv run --locked ansible-galaxy collection install -r collections/requirements.yml
 
-      # Keep pytest's configured root testpaths active so newly registered suites
-      # remain covered. Deselect only the bounded NetBox, Semaphore, playbook safety,
-      # agentgateway and playbook-runs slices; each has its own job below.
-      #
       # `-n auto`, one worker per core: the slow tests are independent ansible-playbook
       # subprocesses, so they spread across cores instead of queueing behind each other.
       # That is safe only because every test keeps its state in its own tmp_path and its
-      # own ephemeral-port fixture server — a new test must do the same. A fixture that
-      # flakes only under load fails here first: the scoped-publication server replied
-      # to a POST with its body unread, and the reset that caused failed a different
-      # test each parallel run until it was fixed. `worksteal` rebalances when one worker
-      # draws the 50-second tests; `-x` still stops at the first failure.
-      - name: Run Python core tests
+      # own ephemeral-port fixture server: a new test must do the same. `worksteal`
+      # rebalances when one worker draws the slowest tests; `-x` stops at the first failure.
+      # The xunit1 report carries each test's file, so scripts/test-durations.py can rebuild
+      # the durations file from a green run's reports.
+      - name: Run Python tests (shard ${{ matrix.shard }} of 8)
         env:
+          PYTEST_SHARD: ${{ matrix.shard }}/8
           PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
         run: >-
           pytest -v -x -n auto --dist worksteal --durations=20
-          --deselect=platform/services/netbox/deployment/tests/
-          --deselect=platform/semaphore/tests/
-          --deselect=platform/tests/test_rollback_inference_route.py
-          --deselect=platform/tests/test_executor_internal_overrides.py
-          --deselect=platform/tests/test_agw_admin_identities.py
-          --deselect=platform/tests/test_agw_apikey_entries_filter.py
-          --deselect=platform/tests/test_agw_client_tls_probe.py
-          --deselect=platform/tests/test_agw_config_previous.py
-          --deselect=platform/tests/test_agw_conformance.py
-          --deselect=platform/tests/test_agw_deploy_env.py
-          --deselect=platform/tests/test_agw_gate_probe.py
-          --deselect=platform/tests/test_agw_internal_dns_records.py
-          --deselect=platform/tests/test_agw_isolation_probe.py
-          --deselect=platform/tests/test_agw_legacy_retirement.py
-          --deselect=platform/tests/test_agw_listener_tls.py
-          --deselect=platform/tests/test_agw_mcp_client.py
-          --deselect=platform/tests/test_agw_mcp_client_key.py
-          --deselect=platform/tests/test_agw_mcp_client_templates.py
-          --deselect=platform/tests/test_agw_mcp_guard.py
-          --deselect=platform/tests/test_agw_mcp_render.py
-          --deselect=platform/tests/test_agw_mcp_verify.py
-          --deselect=platform/tests/test_agw_openrouter.py
-          --deselect=platform/tests/test_agw_stream_usage.py
-          --deselect=platform/tests/test_apply_firewall_convergence.py
-          --deselect=platform/tests/test_backup_step_ca.py
-          --deselect=platform/tests/test_clean_deploy_confirm.py
-          --deselect=platform/tests/test_instrument_host_o11y.py
-          --deselect=platform/tests/test_renew_internal_certs.py
-          --deselect=platform/tests/test_vm_lifecycle_step_results.py
+          -o junit_family=xunit1 --junitxml=junit-shard.xml
 
-  python-playbook-safety:
-    name: Python Playbook Safety
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
+      - name: Upload the shard's test report
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
         with:
-          persist-credentials: false
+          name: junit-shard-${{ matrix.shard }}
+          path: junit-shard.xml
+          retention-days: 14
+          # A re-run of a failed shard uploads under the same name; without this it fails.
+          overwrite: true
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install test dependencies
+      - name: Report the shard's duration against its timeout
+        if: always()
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
-
-      - name: Run Python Playbook Safety tests
-        run: >-
-          pytest -v -x -n auto --dist worksteal --durations=20
-          platform/tests/test_rollback_inference_route.py
-          platform/tests/test_executor_internal_overrides.py
-
-  python-agentgateway:
-    name: Python Agentgateway
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install test dependencies
-        run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
-
-      - name: Run Python Agentgateway tests
-        run: >-
-          pytest -v -x -n auto --dist worksteal --durations=20
-          platform/tests/test_agw_admin_identities.py
-          platform/tests/test_agw_apikey_entries_filter.py
-          platform/tests/test_agw_client_tls_probe.py
-          platform/tests/test_agw_config_previous.py
-          platform/tests/test_agw_conformance.py
-          platform/tests/test_agw_deploy_env.py
-          platform/tests/test_agw_gate_probe.py
-          platform/tests/test_agw_internal_dns_records.py
-          platform/tests/test_agw_isolation_probe.py
-          platform/tests/test_agw_legacy_retirement.py
-          platform/tests/test_agw_listener_tls.py
-          platform/tests/test_agw_mcp_client.py
-          platform/tests/test_agw_mcp_client_key.py
-          platform/tests/test_agw_mcp_client_templates.py
-          platform/tests/test_agw_mcp_guard.py
-          platform/tests/test_agw_mcp_render.py
-          platform/tests/test_agw_mcp_verify.py
-          platform/tests/test_agw_openrouter.py
-          platform/tests/test_agw_stream_usage.py
-
-  # The six slowest whole-playbook test files, moved out of Python core when it reached its
-  # 30-minute timeout again (docs/MISTAKES.md 5.22, 2026-10-31): about 2,300 of core's 5,900
-  # worker-seconds. Same dependencies, collections, environment and xdist options as core.
-  python-playbook-runs:
-    name: Python Playbook Runs
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install test dependencies
-        run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
-
-      - name: Run Python Playbook Runs tests
-        env:
-          PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
-        run: >-
-          pytest -v -x -n auto --dist worksteal --durations=20
-          platform/tests/test_apply_firewall_convergence.py
-          platform/tests/test_backup_step_ca.py
-          platform/tests/test_clean_deploy_confirm.py
-          platform/tests/test_instrument_host_o11y.py
-          platform/tests/test_renew_internal_certs.py
-          platform/tests/test_vm_lifecycle_step_results.py
-
-  python-semaphore:
-    name: Python Semaphore
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install test dependencies
-        run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-          ansible-galaxy collection install -r collections/requirements.yml
-
-      - name: Run Semaphore Python tests
-        run: pytest -v -x -n auto --dist worksteal --durations=20 platform/semaphore/tests/
-
-  python-netbox:
-    name: Python NetBox
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install test dependencies
-        run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
-
-      - name: Run NetBox Python tests
-        env:
-          PYTHONPATH: platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
-        run: pytest -v --durations=20 platform/services/netbox/deployment/tests
+          elapsed=$(( $(date +%s) - SHARD_STARTED ))
+          echo "Shard ${{ matrix.shard }}/8 took ${elapsed}s of its 1800s timeout"
+          if [ "$elapsed" -gt 900 ]; then
+            echo "::warning::Shard ${{ matrix.shard }}/8 took ${elapsed}s, above half its timeout: refresh platform/tests/test_durations.json or add shards"
+          fi
 
   bats:
     name: Bash Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.3.3
         with:
-          python-version: "3.12"
+          version: "0.11.17"
 
       - name: Install test dependencies
         run: |
-          pip install -r platform/requirements-test.txt
-          pip install -r platform/requirements-controller.txt
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
 
-      - name: Install BATS
-        run: sudo apt-get install -y -qq bats > /dev/null 2>&1
+      # GNU parallel runs bats files concurrently (plan 21, D4). Tests within one file keep
+      # their order (--no-parallelize-within-files), because some files share state between
+      # their own tests. bats 1.10.0 has both flags.
+      - name: Install GNU parallel
+        run: sudo apt-get install -y -qq parallel
+
+      # bats from its pinned release, not from apt: on 2026-11-11 the runner could not fetch the
+      # bats package from the Ubuntu archive for hours (its mirror did not resolve, with or
+      # without apt-get update) while parallel still installed. The clone must be the tag's
+      # commit, so a moved tag fails the job instead of running other code.
+      - name: Install BATS v1.10.0
+        run: |
+          git clone --quiet --depth 1 --branch v1.10.0 https://github.com/bats-core/bats-core.git "$RUNNER_TEMP/bats-core"
+          test "$(git -C "$RUNNER_TEMP/bats-core" rev-parse HEAD)" = f7defb94362f2053a3e73d13086a167448ea9133
+          sudo "$RUNNER_TEMP/bats-core/install.sh" /usr/local
+          bats --version
 
       - name: Run Bash tests
-        run: bats platform/tests/
+        run: bats --jobs 4 --no-parallelize-within-files platform/tests/
 
   rego:
     name: Rego Tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -504,185 +342,23 @@ jobs:
   test:
     name: Unit Tests
     if: always()
-    needs: [python-core, python-playbook-safety, python-agentgateway, python-playbook-runs, python-netbox, python-semaphore, bats, rego, rust-console]
-    runs-on: ubuntu-latest
+    needs: [python, bats, rego, rust-console]
+    runs-on: ubuntu-24.04
     steps:
       - name: Require every test group to succeed
         env:
-          PYTHON_CORE_RESULT: ${{ needs.python-core.result }}
-          PYTHON_PLAYBOOK_SAFETY_RESULT: ${{ needs.python-playbook-safety.result }}
-          PYTHON_AGENTGATEWAY_RESULT: ${{ needs.python-agentgateway.result }}
-          PYTHON_PLAYBOOK_RUNS_RESULT: ${{ needs.python-playbook-runs.result }}
-          PYTHON_NETBOX_RESULT: ${{ needs.python-netbox.result }}
-          PYTHON_SEMAPHORE_RESULT: ${{ needs.python-semaphore.result }}
+          # A matrix job's result is `failure` when any of its shards fails (checked: run 42923690480).
+          PYTHON_RESULT: ${{ needs.python.result }}
           BATS_RESULT: ${{ needs.bats.result }}
           REGO_RESULT: ${{ needs.rego.result }}
           RUST_CONSOLE_RESULT: ${{ needs.rust-console.result }}
         run: |
-          printf 'Python core: %s\nPython Playbook Safety: %s\nPython Agentgateway: %s\nPython Playbook Runs: %s\nPython NetBox: %s\nPython Semaphore: %s\nBATS: %s\nRego: %s\nRust console: %s\n' \
-            "$PYTHON_CORE_RESULT" "$PYTHON_PLAYBOOK_SAFETY_RESULT" "$PYTHON_AGENTGATEWAY_RESULT" "$PYTHON_PLAYBOOK_RUNS_RESULT" \
-            "$PYTHON_NETBOX_RESULT" "$PYTHON_SEMAPHORE_RESULT" "$BATS_RESULT" "$REGO_RESULT" "$RUST_CONSOLE_RESULT"
-          test "$PYTHON_CORE_RESULT" = success
-          test "$PYTHON_PLAYBOOK_SAFETY_RESULT" = success
-          test "$PYTHON_AGENTGATEWAY_RESULT" = success
-          test "$PYTHON_PLAYBOOK_RUNS_RESULT" = success
-          test "$PYTHON_NETBOX_RESULT" = success
-          test "$PYTHON_SEMAPHORE_RESULT" = success
+          printf 'Python: %s\nBATS: %s\nRego: %s\nRust console: %s\n' \
+            "$PYTHON_RESULT" "$BATS_RESULT" "$REGO_RESULT" "$RUST_CONSOLE_RESULT"
+          test "$PYTHON_RESULT" = success
           test "$BATS_RESULT" = success
           test "$REGO_RESULT" = success
           test "$RUST_CONSOLE_RESULT" = success
-
-  # ── Go: UhhCraft (Go + templ + sqlc) ─────────────────────────────────
-  # Path-gated: only fires when platform/services/uhhcraft/deployment/** changes.
-  go-lint:
-    name: Go lint (uhhcraft)
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: platform/services/uhhcraft/deployment
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.26"
-          cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
-
-      - name: Install templ
-        run: go install github.com/a-h/templ/cmd/templ@v0.3.1020
-
-      - name: Install sqlc
-        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
-
-      - name: Generate templ
-        run: templ generate
-
-      - name: Generate sqlc
-        run: sqlc generate
-
-      - name: Verify generated code is deterministic
-        # The generated dirs are gitignored, so `git status` can't see drift in
-        # them. Instead snapshot what the steps above produced, regenerate into
-        # the tree, and diff against the snapshot — this catches a generator
-        # whose output is non-deterministic across runs (tool/version drift).
-        run: |
-          snapshot="$(mktemp -d)"
-          cp -a web/templates "$snapshot/templates"
-          cp -a internal/db/sqlcdb "$snapshot/sqlcdb"
-          templ generate
-          sqlc generate
-          fail=0
-          diff -ru "$snapshot/templates" web/templates || fail=1
-          diff -ru "$snapshot/sqlcdb" internal/db/sqlcdb || fail=1
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::Generated code is non-deterministic — templ/sqlc produced different output on a second run."
-            exit 1
-          fi
-
-      - name: golangci-lint
-        # action v9 is required for golangci-lint v2 (v6 only runs v1).
-        uses: golangci/golangci-lint-action@v9
-        with:
-          # v2 config (.golangci.yml version: "2"). v2 has no default timeout,
-          # so the old `--timeout` arg is dropped.
-          version: v2.12.2
-          working-directory: platform/services/uhhcraft/deployment
-
-      - name: gosec
-        uses: securego/gosec@master
-        with:
-          # G104 (unchecked errors — covered by errcheck), G304 (file path from
-          # var). G704/G710 are experimental taint-analysis rules that don't
-          # honor inline //nosec and false-positive here: the only G704 sink is
-          # the healthcheck to a fixed 127.0.0.1 (app's own APP_PORT, no request
-          # input), and the only G710 redirect target is sanitized by
-          # safeNext() to same-origin relative paths.
-          args: -exclude=G104,G304,G704,G710 -exclude-dir=web/templates -exclude-dir=internal/db/sqlcdb ./...
-
-  go-test:
-    name: Go test (uhhcraft)
-    needs: changes
-    if: needs.changes.outputs.go == 'true'
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: platform/services/uhhcraft/deployment
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: uhhcraft_test
-          POSTGRES_USER: uhhcraft
-          POSTGRES_PASSWORD: ci-only-not-for-prod
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-      redis:
-        image: redis:7-alpine
-        ports: ["6379:6379"]
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://uhhcraft:ci-only-not-for-prod@localhost:5432/uhhcraft_test?sslmode=disable
-      REDIS_URL: redis://localhost:6379/0
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.26"
-          cache-dependency-path: platform/services/uhhcraft/deployment/go.sum
-
-      - name: Install templ + sqlc
-        run: |
-          go install github.com/a-h/templ/cmd/templ@v0.3.1020
-          go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
-
-      - name: Generate code
-        run: |
-          templ generate
-          sqlc generate
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: go test
-        run: go test -race -count=1 -timeout=2m ./...
-
-  go-build:
-    name: Go build (uhhcraft image)
-    needs: changes
-    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Build UhhCraft image
-        # Docker is used in CI (not Podman) — buildx is the path-of-least-resistance
-        # for cache and multi-stage builds in GitHub-hosted runners. The runtime
-        # in prod is Podman; the resulting image is OCI-compliant and works on either.
-        uses: docker/build-push-action@v7
-        with:
-          context: platform/services/uhhcraft/deployment
-          file: platform/services/uhhcraft/deployment/Dockerfile
-          push: false
-          load: true
-          tags: uhhcraft:ci
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-
-      - name: Smoke test the binary
-        run: |
-          docker run --rm --entrypoint /app/uhhcraft uhhcraft:ci version
-          docker images uhhcraft:ci --format '{{.Repository}}:{{.Tag}}  {{.Size}}'
 
   # ── Rust: Dispatch Console (Dioxus fullstack crate in app/) ──────────
   # Not path-gated on purpose. `test` (Unit Tests) below requires every job in
@@ -690,7 +366,7 @@ jobs:
   # here would fail every PR that does not touch console. It runs on every PR.
   rust-console:
     name: Rust (console)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     defaults:
       run:

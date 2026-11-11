@@ -20,17 +20,12 @@ workstation OpenBao login before work that an existing Semaphore template can
 execute. Never export the controller AppRole from the browser or use backup
 credentials to manufacture workstation access.
 
-**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)` (template retired 2026-11-07; what it showed is recorded here because the task may not survive the template's deletion),
-authenticated through the controller AppRole, read runtime secrets, checked the
-GitHub App's repository coverage and reached n8n. It stopped at an absent
-credential-visible sync workflow with `changed=0`; it did not verify task/issue
-correspondence. This proves that executor's access at the time of the run, not
-every credential's validity or ongoing AppRole health.
-
 ## The production Semaphore host (recorded 2026-09-26)
 
 Production Semaphore runs under rootful podman from a legacy standalone compose directory
-(site-config's `scripts/semaphore-upgrade.sh` is its upgrade path), not from
+(its upgrade path is `scripts/semaphore-upgrade.sh`, which lives in the private
+site-config repository — it is not tracked in this repo; clone site-config and run
+it from a workstation), not from
 `platform/services/semaphore/deployment`. Three containers: Postgres and the app, both on no
 restart policy, and the runner on `always`. `agent-cloud-boot-semaphore.service` starts the first
 two at boot (`plan/architecture/05-platform-infra.md` section 11). The root filesystem was
@@ -86,8 +81,7 @@ and the access report names each declared admin still to promote (issue #604). R
 under check mode first; the report lists the live team, admins and integrations by name. A real
 run adds declared accounts, sets declared roles, removes undeclared members and reads the team
 back; a declaration naming an account that does not exist stops it before any write. It never demotes a system admin or deletes an integration: each is named and fails the
-run for an operator decision. The NemoClaw AppRole's policy denies the path that holds the
-controller's own API token.
+run for an operator decision.
 
 ## Launching a task from outside the controller (the API path)
 
@@ -278,7 +272,7 @@ The declared **Publish Semaphore Template Surveys (Dev)** template runs
 Its required survey input is `semaphore_template_names_json`, for example:
 
 ```json
-["Store n8n API Key (Dev)"]
+["Store Postiz API Key (Dev)"]
 ```
 
 It uses the controller AppRole to read the fixed OpenBao
@@ -338,19 +332,25 @@ Retirement is declared as code too:
    the date, and one line of reason. List each published name separately. A
    `dev_variant` template's `(Dev)` twin is its own entry.
 2. Merge. Run **Retire Semaphore Templates (Dev)** with Semaphore's **Dry run**
-   option first. Dry run is `--check`. The report lists the matching templates and
-   schedules and deletes nothing.
+   option first. Dry run is `--check`. The report lists the matching templates,
+   their schedules, and each template's task history, and deletes nothing.
 3. Run it again without Dry run. It deletes each matching template's schedules,
-   then the template, and reads both back.
+   drains its task history, then deletes the template, and reads both back.
 
 Before any API call, the playbook refuses a name that `templates.yml` or
 `templates-local.yml` still declares. Before any deletion, it refuses a name that
 matches more than one live template. A name with no live template is reported as
 already absent, so a re-run converges.
 
-The playbook does not check a template's task history or running tasks before it
-deletes the template. Whether Semaphore keeps a deleted template's task history is
-**unverified**: this change does not check it.
+On a template with weeks of runs, the single template DELETE timed
+out at 30 s, then at 600 s (Semaphore tasks 14206, 14211, 14223), while smaller templates
+deleted fine. So the playbook drains the history first. It reads each template's newest
+page of tasks in both modes, and refuses before any delete while a task is running or
+queued. On a live run it then deletes that history page by page with
+[`semaphore_drain_template.py`](../playbooks/files/semaphore_drain_template.py), and only
+then deletes the template. The helper stops at the first running task it meets, and it
+sends the token only to the loopback API. The drain deletes each task through the task
+DELETE endpoint, and this playbook keeps no copy of the history.
 
 The Dev template itself is an operator step, done once. Create it through the
 scoped publisher (see [Publish selected survey fields](#publish-selected-survey-fields)),
@@ -518,7 +518,7 @@ an isolated environment. Prove each one afterwards with a check-mode run of the 
 (Destroy VM in check mode only); the seed CLI's `--verify-only` does not apply to these.
 
 **Before promoting `dev` to `main`**, run the same provisioner with `seed_variant=main` for each
-of the five. Promotion brings the guard to the `main`-bound copies, which are still bound to the
+of the six. Promotion brings the guard to the `main`-bound copies, which are still bound to the
 shared environment until then, and every one of them would then refuse to run. A full-catalog
 publication likewise creates the base templates' own environments empty and binds them: run the
 provisioner for those before using a `main`-bound copy.
@@ -564,7 +564,7 @@ Postgres restored service with nothing lost (`docs/MISTAKES.md` 1.18).
 
 Task output is stored in that database. A deploy dry run launched with `diff: true`
 records the monorepo placement's whole git diff: about 86,000 lines per task for
-Deploy honcho (Dev) and Deploy tududi (Dev) on 2026-09-26. Watch the host's disk
+two (Dev) deploys on 2026-09-26. Watch the host's disk
 when dry-running deploys whose target checkout is far behind.
 
 Report task ID, observed source revision when available, target names, failed
