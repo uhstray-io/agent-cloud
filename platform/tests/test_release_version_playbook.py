@@ -1097,3 +1097,17 @@ def test_the_overview_parts_reach_the_summaries_the_render_and_the_state():
         "state debug",
     )
     assert "overview {{ _rn_summary_state.overview }}" in debug["task"]["ansible.builtin.debug"]["msg"]
+
+
+def test_a_run_whose_inventory_did_not_parse_is_refused_before_openbao_is_reached():
+    # Task 14770 (2026-11-10) lost its inventory to the shared-file race: every group read empty, the notes
+    # took "no route" and rendered the grouped lists only, a body a real run would have published. The shared
+    # guard refuses that run instead, before OpenBao is reached; the next scheduled run retries.
+    guard = _one(
+        lambda leaf: _module(leaf["task"]) == ("include_tasks", "tasks/require-parsed-inventory.yml"),
+        "require-parsed-inventory include",
+    )
+    assert guard["task"].get("when") is None, "the guard is unconditional"
+    assert _index(guard) < _index(_registered("_rv_auth"))  # the AppRole login, found by its register
+    refresh_check = _one(lambda leaf: leaf["name"].startswith("Refuse a refresh beside a major"), "refresh/major check")
+    assert _index(refresh_check) < _index(guard)
