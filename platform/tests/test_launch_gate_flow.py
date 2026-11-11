@@ -7,16 +7,16 @@ no reply leaves an unread request body. Gate.handle is called directly; the TLS 
 the server lives.
 """
 
+import contextlib
 import dataclasses
 import importlib.util
 import json
 import sys
 import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from fake_http import DrainingHandler, refused_port
+from fake_http import DrainingHandler, refused_port, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = ROOT / "platform/services/launch-gate/deployment/app/launch_gate.py"
@@ -137,21 +137,14 @@ class Fake:
             def do_POST(self):
                 self._serve("POST")
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        # close() waits out one poll, so the default 0.5 s would be paid by every fake of every test.
-        self._thread = threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-        self._thread.start()
-
-    @property
-    def url(self):
-        return f"http://127.0.0.1:{self._server.server_address[1]}"
+        self._fixture = contextlib.ExitStack()
+        self.url = self._fixture.enter_context(serve(Handler))
 
     def calls(self):
         return [(record["method"], record["path"]) for record in self.requests]
 
     def close(self):
-        self._server.shutdown()
-        self._server.server_close()
+        self._fixture.close()
 
 
 def _config(tmp_path, opa_url, semaphore_url):
