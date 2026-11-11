@@ -114,8 +114,16 @@ of those paths. Phase 3e (`ensure_marketplace_apps.py`, inside plane-api) theref
 `create_applications`, which skips any application already present, and fails unless all of them
 exist (MISTAKES 1.33).
 
-Connecting the workspace (Workspace settings, Integrations, GitHub) and each project's repository
-is done in Plane after the deploy (change tasks 0.6 and 3.5).
+Connecting the organization is a one-time step in Plane: Workspace settings > Integrations >
+GitHub > Connect. GitHub sends the browser back to Plane only when the App has the Setup URL
+`<plane_public_url>/silo/api/github/auth/callback` and "Redirect on update" turned on. With the App
+already installed, GitHub otherwise stops on its own installation page. Each person connects their
+own GitHub account on the same page ("Connect Personal Account"); that needs the callback URL
+`<plane_public_url>/silo/api/github/auth/user/callback` on the App.
+
+Sync Plane Projects Play 3 (`link_github_repos.py`) then links every declared project that names a
+repository to it, by creating the "Project Issue Sync" record Plane's own form creates. Silo
+authenticates by session, so the script signs in as the automation account.
 
 Plane ships **working default credentials** in `variables.env` and in its Compose fallbacks,
 identical on every install. `env.j2` refuses to render if any of them comes out empty or
