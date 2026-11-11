@@ -20,17 +20,20 @@
 #                        Reload `restart` restarts the agentgateway container; `none` relies
 #                        on the gateway's file watch (task 6.3 decides which).
 #   self-reloading listener leaves  the listeners in vars/renew-listener-servers.yml: OPA on the
-#                        opa_svc host, the launch gate on launch_gate_svc. Each listener (`<prefix>_port`
-#                        on `<prefix>_bind`; 127.0.0.1 when the bind is 0.0.0.0, :: or empty) is connected
-#                        to from its own host with NO client certificate, the server verified by name
-#                        (`<prefix>_tls_server_name`, default <name_prefix>.<dns_site>.<dns_zone>) against
-#                        the bundle; the served serial must equal the issued one. Reload `none`: each
-#                        listener re-reads `current` itself (OPA: --tls-cert-refresh-period; the gate: per
-#                        connection), so the proof's retries cover that lag. Admitted only as the host's own
-#                        leaf named `<prefix>_server_leaf` (OPA: default opa-server; the gate: default
-#                        launch-gate-server), with reload none, under the deploy's certs/ directory, its name
-#                        in the SAN, and the listener's TLS switch on where the row declares one (OPA:
-#                        opa_tls).
+#                        opa_svc host, the launch gate on launch_gate_svc, the skynet API's HTTPS listener on
+#                        skynet_svc. Each listener (`<prefix>_port` on `<prefix>_bind`; 127.0.0.1 when the
+#                        bind is 0.0.0.0, :: or empty) is connected to from its own host with NO client
+#                        certificate, the server verified by name (`<prefix>_tls_server_name`, default
+#                        <name_prefix>.<dns_site>.<dns_zone>) against the bundle; the served serial must equal
+#                        the issued one. Reload `none`: each listener re-reads `current` itself (OPA:
+#                        --tls-cert-refresh-period; the gate: per connection; skynet: per new connection), so
+#                        the proof's retries cover that lag. Admitted only as the host's own leaf named
+#                        `<prefix>_server_leaf` (OPA: default opa-server; the gate: default launch-gate-server;
+#                        skynet: default skynet-server), with reload none, under the deploy's certs/ directory,
+#                        its name in the SAN, and the listener's TLS switch on where the row declares one (OPA:
+#                        opa_tls; skynet: skynet_tls). skynet's proof reads skynet_bind, which the deploy
+#                        requires declared in production: this table falls back to 127.0.0.1 where the deploy
+#                        publishes on skynet_publish_bind, so an undeclared bind would prove the wrong address.
 #   per-call client leaf `agw-verifier`, `bench`: reload `none`. One keyless /v1/models through
 #                        the gateway probe path (tasks/agw-probe.yml, gateway task 6.1a) from
 #                        the leaf's host with the new files must answer 401: the handshake

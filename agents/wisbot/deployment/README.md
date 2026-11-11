@@ -6,7 +6,7 @@ WisBot is a Discord voice/chat + LLM agent ([uhstray-io/WisBot](https://github.c
 
 Deploys run through Semaphore (template: **Deploy WisBot** → `deploy-wisbot.yml`):
 
-1. Ansible renders `templates/wisbot.env.j2` → `config/wisbot.env` (Discord token from OpenBao, guild id / WisAI endpoint from site-config inventory).
+1. Ansible renders `templates/wisbot.env.j2` → `config/wisbot.env` (Discord token from OpenBao, guild id / `wisbot_ollama_endpoint` from site-config inventory). The endpoint is an Ollama-compatible endpoint (rendered as `OLLAMA_ENDPOINT`) whose source has been WisAI; moving WisBot to agentgateway has not been done.
 2. `deploy.sh` pulls the image and starts the container.
 3. Health is verified at `GET /health` (200 once the Discord gateway is connected).
 
@@ -17,7 +17,7 @@ Never SSH to the VM and run `deploy.sh` directly — Semaphore injects the crede
 | Source | Provides |
 |--------|----------|
 | OpenBao `secret/services/wisbot` | `discord_token` |
-| site-config inventory | `wisbot_guild_id`, `wisbot_ollama_endpoint`, `container_engine`, `service_url` |
+| site-config inventory | `wisbot_guild_id`, `wisbot_ollama_endpoint` (the Ollama-compatible `OLLAMA_ENDPOINT`; WisAI is its legacy source, agentgateway wiring not done), `container_engine`, `service_url` |
 | `compose.yml` env / image tag | `WISBOT_LISTEN`, `WISBOT_IMAGE_TAG` |
 
 No secrets or site-specific IDs are committed here — see `.env.example` for the shape (placeholders only).

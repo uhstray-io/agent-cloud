@@ -503,7 +503,7 @@
       # `python3` may be a different build without the packages Ansible's interpreter has.
       #
       # `cryptography` is required and is DECLARED in
-      # platform/requirements-controller.txt. It is present on the current controller
+      # pyproject.toml's `controller` dependency group. It is present on the current controller
       # (verified: a registration succeeded through this path), but nothing declared it
       # before, and an undeclared dependency that disappears on an image rebuild fails
       # inside a no_log boundary — see the classification below, which names it.

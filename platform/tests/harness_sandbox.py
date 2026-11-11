@@ -29,6 +29,8 @@ import tempfile
 from pathlib import Path
 
 DEFAULT_TIMEOUT_SECONDS = 120
+# The repository root: run from here, Ansible loads the repository's ansible.cfg, as on the controller.
+REPO = Path(__file__).resolve().parents[2]
 
 if platform.system() == "Darwin" and shutil.which("sandbox-exec"):
     SANDBOX = "sandbox-exec"
@@ -71,7 +73,8 @@ def run(cmd: list[str], tmp_path: Path, *, cwd: Path, env: dict, denied: list[st
         timeout: float = DEFAULT_TIMEOUT_SECONDS):
     """subprocess.run(cmd) confined as described above. `denied` adds explicit denials (the
     sandbox's own proof uses one); they only bind under a kernel sandbox. A timeout raises a
-    sanitized error because captured Ansible output can contain fixture credentials."""
+    sanitized error because captured Ansible output can contain fixture credentials. The child
+    reads no stdin, so a prompt fails at once instead of waiting out the timeout."""
     denied = [os.path.realpath(d) for d in (denied or [])]
     writable = [os.path.realpath(tmp_path), temp_root(), os.path.realpath(tempfile.gettempdir())]
     if SANDBOX == "sandbox-exec":
@@ -84,8 +87,23 @@ def run(cmd: list[str], tmp_path: Path, *, cwd: Path, env: dict, denied: list[st
             binds += ["--ro-bind-try", path, path]
         cmd = ["bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", *binds, "--", *cmd]
     try:
-        return subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout)
+        return subprocess.run(cmd, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         raise RuntimeError(
             f"test command timed out after {timeout:g}s; captured output suppressed"
         ) from None
+
+
+def run_playbook(playbook, tmp_path: Path, *args, inventory="localhost,", env: dict | None = None,
+                 cwd: Path = REPO, timeout: float = DEFAULT_TIMEOUT_SECONDS):
+    """`ansible-playbook -i INVENTORY PLAYBOOK *ARGS` through run(): from the repository root, in
+    env_for's environment with `env` laid over it, bounded by `timeout`. The one way a test runs a
+    playbook (platform/tests/test_playbook_spawns_are_bounded.py holds the rest to it).
+    ANSIBLE_CONFIG is dropped even when `env` carries it (as `{**os.environ, ...}` would), so the
+    repository's ansible.cfg always applies; a test that needs another config uses run()."""
+    environment = env_for(tmp_path)
+    environment.update(env or {})
+    environment.pop("ANSIBLE_CONFIG", None)
+    return run(["ansible-playbook", "-i", str(inventory), str(playbook), *map(str, args)], tmp_path,
+               cwd=cwd, env=environment, timeout=timeout)

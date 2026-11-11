@@ -18,7 +18,6 @@ load assert_helpers
 
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
-  unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_COMMON_DIR
   T="$BATS_TEST_TMPDIR/tree"
   D="$T/deployment"
   S="$BATS_TEST_TMPDIR/state"

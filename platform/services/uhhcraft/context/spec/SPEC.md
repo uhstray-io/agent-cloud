@@ -505,7 +505,7 @@ Discounts stored as `next_order_discount_pct` on the account record. Cleared aft
 #### Shipping
 
 - **Free shipping:** Orders ≥ $50 (pre-tax).
-- **Below threshold:** Real-time USPS rate quote via USPS v3 API — fetched at checkout based on destination ZIP, weight, and dimensions. Config at `output/config/usps.toml`.
+- **Below threshold:** Real-time USPS rate quote via USPS v3 API — fetched at checkout based on destination ZIP, weight, and dimensions. Config at `output/config/usps.toml` (not in this repository).
 - **Manufacturing lead time:** 5–7 business days. Stated on product/canvas pages and at checkout.
 - US only at launch. No international.
 
@@ -629,9 +629,9 @@ GDPR, full CCPA compliance (below threshold), marketing email, reviews system, r
 | 2 | Logo wordmark | "UhhCraft" in Nunito Bold or custom lettering |
 | 3 | Material + cut-type option labels | Research: PLA variants, PETG, vinyl types, die-cut vs kiss-cut — final copy for radial selectors |
 | 4 | Static IP situation | ✅ Confirmed — static public IP available |
-| 5 | Printful vs Printify account | ✅ Printify primary — config at `output/config/printify.toml` |
-| 6 | 3D print overflow provider | ✅ Hubs (Protolabs Network) — config at `output/config/fulfillment_3d.toml`. Note: Shapeways filed for bankruptcy 2023; Hubs is the recommended alternative. |
-| 7 | Shipping | ✅ USPS API (real-time rate quotes) — replaces flat rate. Config at `output/config/usps.toml`. |
+| 5 | Printful vs Printify account | ✅ Printify primary — config at `output/config/printify.toml` (not in this repository) |
+| 6 | 3D print overflow provider | ✅ Hubs (Protolabs Network) — config at `output/config/fulfillment_3d.toml` (not in this repository). Note: Shapeways filed for bankruptcy 2023; Hubs is the recommended alternative. |
+| 7 | Shipping | ✅ USPS API (real-time rate quotes) — replaces flat rate. Config at `output/config/usps.toml` (not in this repository). |
 | 8 | Manufacturing lead time | ✅ 5–7 business days |
 
 ### Post-launch backlog (deferred, not forgotten)
@@ -684,7 +684,7 @@ When this spec was authored, UhhCraft was a standalone project. As of 2026-05-25
 
 - **Original spec:** Per-service Caddyfile on the UhhCraft host.
 - **agent-cloud alignment:** UhhCraft is fronted by the **central platform Caddy** (`platform/services/caddy/`). UhhCraft ships a Caddy fragment template (`templates/caddy-site.j2`) that is rendered into the central Caddy's `sites/` directory at deploy time. TLS, DNS-01, and HSTS are handled by central Caddy.
-- **Rationale:** One TLS surface, one DNS-01 integration, consistent security headers. Per `plan/architecture/CADDY-REVERSE-PROXY.md`.
+- **Rationale:** One TLS surface, one DNS-01 integration, consistent security headers. Per `plan/archive/architecture/CADDY-REVERSE-PROXY.md`.
 
 ### Object storage — separate MinIO instances per service
 
@@ -702,7 +702,7 @@ When this spec was authored, UhhCraft was a standalone project. As of 2026-05-25
 
 - **Original spec:** Service-local `ci.yml` (Go + Python jobs).
 - **agent-cloud alignment:** UhhCraft's CI is folded into the platform-wide `.github/workflows/lint-and-test.yml` with path filters (Go jobs fire only on `platform/services/uhhcraft/**`). Adds `golangci-lint`, `templ fmt --diff`, `sqlc verify`, `gosec` alongside the existing ruff / shellcheck / ansible-lint / yamllint / hadolint / bandit jobs.
-- **Rationale:** Single CI surface. Per `plan/architecture/CI-TESTING-SPECIFICATION.md`. Implementation lands in Phase 8 of [`WEBSMITH-INTEGRATION-PLAN.md`](../../../../../plan/development/WEBSMITH-INTEGRATION-PLAN.md).
+- **Rationale:** Single CI surface. Per `plan/archive/architecture/CI-TESTING-SPECIFICATION.md`. Implementation landed in Phase 8 of [`plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md`](../../../../../plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md).
 
 ### Generated code — generate-in-CI, not committed
 

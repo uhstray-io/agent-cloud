@@ -16,9 +16,9 @@
 **Contributors:** Network architecture review
 
 **References:**
-- [SERVICE-INTEGRATION-PLAN.md](SERVICE-INTEGRATION-PLAN.md) -- Service onboarding checklist
-- [AUTOMATION-COMPOSABILITY.md](AUTOMATION-COMPOSABILITY.md) -- Composable task library and deploy patterns
-- [CREDENTIAL-LIFECYCLE-PLAN.md](CREDENTIAL-LIFECYCLE-PLAN.md) -- Secret generation, storage, rotation
+- [02-service-onboarding.md](02-service-onboarding.md) -- Service onboarding checklist
+- [01-automation-model.md](01-automation-model.md) -- Composable task library and deploy patterns
+- [04-credentials-access.md](04-credentials-access.md) -- Secret generation, storage, rotation
 - `platform/services/caddy/deployment/` -- Templatized Caddyfile and compose stack
 
 ---
@@ -704,6 +704,8 @@ Implement Caddy automation in the next onboarding wave (alongside NocoDB and n8n
 
 **Default policy:** All platform services run plain HTTP on the internal network; Caddy terminates TLS. Do not configure HTTPS backends unless the service requires it (e.g., Proxmox's management API).
 
+Plain HTTP backends are permitted only on a host where `apply-firewall.yml`'s default-deny inbound (except Caddy and management SSH) is applied and verified ([PRINCIPLES.md §6](../../PRINCIPLES.md)). As recorded there on 2026-10-27, the firewall is applied on the DNS, internal-CA, o11y and CI-runner hosts but is not yet declared for every service host, and none is recorded for the Caddy host. The agentgateway routes are the exception to plain HTTP and re-encrypt with mutual TLS; see [Mutual-TLS Upstream Block](#mutual-tls-upstream-block).
+
 ### HSTS Policy
 
 All Caddyfile blocks include `Strict-Transport-Security`:
@@ -737,7 +739,7 @@ Evaluate per-service -- some (e.g., collaborative editors, iframe-embedded dashb
 
 ## Caddyfile Management: Public vs Private
 
-The Caddyfile in `agent-cloud/platform/services/caddy/deployment/Caddyfile` is the **public template** -- only `{$VAR}` references, no real domains or IPs.
+The Caddyfile in `platform/services/caddy/deployment/Caddyfile` is the **public template** -- only `{$VAR}` references, no real domains or IPs.
 
 The production Caddyfile with real routing lives in **site-config**, following the public/private repo boundary:
 

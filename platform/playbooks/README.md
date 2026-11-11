@@ -2,6 +2,13 @@
 
 Ansible playbooks for deploying, updating, validating, and hardening agent-cloud services via Semaphore.
 
+> **This README is a selected reference, not the catalog.** The authoritative
+> list of Semaphore templates — every task the orchestrator can launch, with its
+> survey vars, schedule and repository record — is
+> [`platform/semaphore/templates.yml`](../semaphore/templates.yml) (plus
+> `templates-local.yml` for the local instance), rendered to live templates by
+> `setup-templates.yml`. When the two disagree, `templates.yml` wins.
+
 ## Conventions
 
 ### Dry run, verify and results
@@ -338,7 +345,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 | `inspect-host-containers.yml` | Read-only: the containers on exactly one host, per engine (the connecting user's and any declared `linger_user`'s rootless podman, rootful podman, Docker), with the engine version, each container's state, restart policy and compose working directory; for onboarding a host with no service group and for finding which engine and account own a service's containers. The inspect format is passed as a `command` argv, because production Semaphore's Ansible re-templates `environment:` values |
 | `inspect-service-runtime.yml` | Read-only Semaphore diagnostic for one populated `*_svc` inventory group; reports existing container names, states, exit codes, OOM-killed flag, restart counts, health status and start/finish times (why a container restarts), including stopped containers; never environment, logs or engine error text |
 | `provision-netbox-custom-fields.yml` | Converge the workflow's NetBox custom fields to their declaration through the Django shell. Writes, and refuses to retype a field |
-| `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history (newest 1000 tasks each; a full window is reported, and marks the services it can hide) → newest result per service and step, with the status NetBox already holds merged underneath so an older result is kept everywhere → NetBox custom fields (scoped view/change-VM token) and Loki. Declared on a 15-minute schedule on its base template, which production does not have until `dev` is promoted (`main` has no collector); the `(Dev)` copy is unscheduled and launched by hand. Its dry run is the read-only failure report. A host that sets `service_conformance_tracked: false` (default true) is not mapped to a service (a group takes its service from its first tracked host), so a non-service host that borrows a `service_name` (the DGX drill hosts) never shows as a service that has not run |
+| `collect-service-conformance.yml` | The ONLY writer of workflow status: per-template Semaphore history (newest 1000 tasks each; a full window is reported, and marks the services it can hide) → newest result per service and step, with the status NetBox already holds merged underneath so an older result is kept everywhere → NetBox custom fields (scoped view/change-VM token) and Loki. The live template `Collect Service Conformance (Dev)` runs from `dev` (repository record `agent-cloud dev`) on a `*/15 * * * *` schedule declared in `platform/semaphore/templates.yml`; no `main`-bound copy is published; production runs the collector only through the `(Dev)` template until promotion. Whether the schedule is live in production is not verified from this repository. Its dry run is the read-only failure report. A host that sets `service_conformance_tracked: false` (default true) is not mapped to a service (a group takes its service from its first tracked host), so a non-service host that borrows a `service_name` (the DGX drill hosts) never shows as a service that has not run |
 
 ### Infrastructure
 | Playbook | Purpose |
@@ -441,7 +448,7 @@ Planned tasks (not yet implemented):
 | `tasks/setup-runtime-dir.yml` | Create ~/services/<name>/, symlinks to clone |
 | `tasks/run-deploy.yml` | Execute deploy.sh from runtime dir (passes CLONE_DIR) |
 | `tasks/verify-health.yml` | Health check a service endpoint with retry/backoff |
-| `tasks/write-secret-metadata.yml` | Write KV v2 custom metadata after secret store |
+| `tasks/write-secret-metadata.yml` | Not built (planned; `plan/architecture/01-automation-model.md` marks it `[PLANNED]`). Would write KV v2 custom metadata after a secret store |
 | `tasks/rotate-credential.yml` | Generic Create-Verify-Retire rotation wrapper |
 | `tasks/revoke-service-credentials.yml` | Revoke AppRole secret_id + delete Hydra clients |
 
