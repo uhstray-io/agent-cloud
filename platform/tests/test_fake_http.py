@@ -341,8 +341,10 @@ def test_serve_with_an_ssl_context_answers_over_tls(tmp_path):
     key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                            serialization.NoEncryption()))
     server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.minimum_version = ssl.TLSVersion.TLSv1_2
     server_context.load_cert_chain(cert_file, key_file)
     client_context = ssl.create_default_context(cafile=str(cert_file))
+    client_context.minimum_version = ssl.TLSVersion.TLSv1_2
     with serve(_Echo, ssl_context=server_context) as url:
         assert url.startswith("https://127.0.0.1:")
         connection = http.client.HTTPSConnection("127.0.0.1", int(url.rsplit(":", 1)[1]), timeout=5,
