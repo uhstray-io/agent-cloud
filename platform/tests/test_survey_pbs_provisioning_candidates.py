@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -231,6 +232,7 @@ print(json.dumps({"url": variables["_bao_url"], "checked": checked}))
         capture_output=True,
         check=False,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     resolved = json.loads(result.stdout)
@@ -379,6 +381,7 @@ print(json.dumps({
         check=False,
         cwd=ROOT,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     resolved = json.loads(result.stdout)

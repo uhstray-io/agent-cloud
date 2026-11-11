@@ -6,6 +6,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import harness_sandbox
+
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/recover-authentik-audit-runtime.yml"
 NAMES = (
@@ -95,6 +97,7 @@ def test_recovery_starts_only_existing_audit_dependencies():
             return subprocess.run(
                 ["ansible-playbook", "-i", str(inventory), str(playbook), *extra],
                 cwd=root, env=env, text=True, capture_output=True, check=False,
+                timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
             )
 
         preview = run([])
