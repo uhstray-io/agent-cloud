@@ -6,7 +6,8 @@ import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from fake_http import DrainingHandler
+import pytest
+from fake_http import DrainingHandler, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -251,3 +252,102 @@ def test_refused_port_refuses_at_once_and_is_never_handed_out():
                     continue
                 raise
             raise AssertionError(f"localhost address {address} accepted a connection on port {REFUSED_PORT}")
+
+
+# ---- serve(): the one way a test starts a fixture server ------------------------------------------
+
+# Files that still build their own HTTP server (a call to, or a subclass of, HTTPServer or
+# ThreadingHTTPServer) instead of fake_http.serve. Exact, and meant only to shrink: a file that
+# migrates comes off; adding one is the change review refuses (plan 21 phase 3).
+OWN_SERVERS = frozenset({
+    "platform/tests/test_agw_client_tls_probe.py",
+    "platform/tests/test_agw_isolation_probe.py",
+    "platform/tests/test_agw_mcp_verify.py",
+    "platform/tests/test_agw_openrouter.py",
+    "platform/tests/test_agw_skynet_route.py",
+    "platform/tests/test_agw_stream_usage.py",
+    "platform/tests/test_fake_http.py",
+    "platform/tests/test_instrument_host_o11y.py",
+    "platform/tests/test_probe_launch_gate.py",
+    "platform/tests/test_renew_internal_certs.py",
+    "platform/tests/test_verify_o11y_dashboard_data.py",
+})
+
+
+def _builds_own_server(tree) -> bool:
+    # Any use of the class counts, not only a direct call or a class base: an alias
+    # (`server_type = ThreadingHTTPServer`) or a type() subclass builds a server too.
+    # Import statements are alias nodes, not Name/Attribute, so an unused import is not flagged.
+    names = {"HTTPServer", "ThreadingHTTPServer"}
+    return any((isinstance(n, ast.Name) and n.id in names) or (isinstance(n, ast.Attribute) and n.attr in names)
+               for n in ast.walk(tree))
+
+
+def test_no_new_test_builds_its_own_http_server():
+    import tomllib
+    testpaths = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["testpaths"]
+    found = {p.relative_to(ROOT).as_posix() for t in testpaths for p in (ROOT / t).rglob("*.py")
+             if "__pycache__" not in p.parts and p.name != "fake_http.py"
+             and _builds_own_server(ast.parse(p.read_text(encoding="utf-8")))}
+    assert not found - OWN_SERVERS, f"start it with fake_http.serve(handler): {sorted(found - OWN_SERVERS)}"
+    assert not OWN_SERVERS - found, f"migrated: take these off OWN_SERVERS: {sorted(OWN_SERVERS - found)}"
+
+
+class _Echo(DrainingHandler):
+    def log_message(self, *_args):
+        pass
+
+    def do_POST(self):  # noqa: N802
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def test_serve_answers_on_an_ephemeral_loopback_port_and_stops_after():
+    with serve(_Echo) as url:
+        assert url.startswith("http://127.0.0.1:")
+        port = int(url.rsplit(":", 1)[1])
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request("POST", "/", body=b"ping")
+        assert connection.getresponse().read() == b"ping"
+        connection.close()
+    with pytest.raises(OSError):
+        http.client.HTTPConnection("127.0.0.1", port, timeout=2).request("GET", "/")
+
+
+def test_serve_with_an_ssl_context_answers_over_tls(tmp_path):
+    import datetime
+    import ssl
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(minutes=5))
+            .not_valid_after(now + datetime.timedelta(hours=1))
+            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(__import__("ipaddress").ip_address("127.0.0.1"))]),
+                           critical=False)
+            .sign(key, hashes.SHA256()))
+    cert_file, key_file = tmp_path / "s.crt", tmp_path / "s.key"
+    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                           serialization.NoEncryption()))
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    server_context.load_cert_chain(cert_file, key_file)
+    client_context = ssl.create_default_context(cafile=str(cert_file))
+    client_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    with serve(_Echo, ssl_context=server_context) as url:
+        assert url.startswith("https://127.0.0.1:")
+        connection = http.client.HTTPSConnection("127.0.0.1", int(url.rsplit(":", 1)[1]), timeout=5,
+                                                 context=client_context)
+        connection.request("POST", "/", body=b"over-tls")
+        assert connection.getresponse().read() == b"over-tls"
+        connection.close()

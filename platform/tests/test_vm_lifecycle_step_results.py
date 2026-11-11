@@ -11,15 +11,14 @@ import copy
 import importlib.util
 import json
 import shutil
-import threading
-from http.server import ThreadingHTTPServer
+from contextlib import ExitStack
 from pathlib import Path
 
 import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOKS = ROOT / "platform/playbooks"
@@ -121,15 +120,14 @@ class FakeProxmox:
             def log_message(self, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.url = f"http://127.0.0.1:{self.server.server_port}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self._serving = ExitStack()
+        self.url = self._serving.enter_context(serve(Handler))
 
     def writes(self):
         return [r for r in self.seen if r[0] != "GET"]
 
     def close(self):
-        self.server.shutdown()
+        self._serving.close()
 
 
 # ── vm-template ──────────────────────────────────────────────────────────────
@@ -509,7 +507,7 @@ def _provision_play(tmp_path, cfg, name="dns"):
     prov = copy.deepcopy(next(p for p in plays if p.get("name") == "Provision VM from template"))
     for task in playbook_yaml.tasks(prov["tasks"]):
         if task.get("name") == "Wait for SSH":  # the fake's port stands in for sshd
-            task["ansible.builtin.wait_for"].update(port=fake.server.server_port, timeout=10)
+            task["ansible.builtin.wait_for"].update(port=int(fake.url.rsplit(":", 1)[1]), timeout=10)
     record = next(p for p in plays if p.get("name") == "Record the provision-vm step result")
     verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
     try:
