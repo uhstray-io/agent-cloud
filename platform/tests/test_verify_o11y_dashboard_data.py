@@ -15,6 +15,7 @@ import shutil
 import socket
 import sys
 import threading
+from contextlib import ExitStack
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -24,7 +25,7 @@ import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/verify-o11y-dashboard-data.yml"
@@ -69,9 +70,11 @@ class FakePrometheus:
             def log_message(self, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self._serving = ExitStack()
+        self.url = self._serving.enter_context(serve(Handler))
+
+    def close(self):
+        self._serving.close()
 
     def answer(self, path, form):
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "data")
@@ -187,7 +190,7 @@ def loki():
 def prometheus():
     fake = FakePrometheus()
     yield fake
-    fake.server.shutdown()
+    fake.close()
 
 
 def _payload(uid, **extra):
@@ -1921,7 +1924,7 @@ def receiver(tmp_path, prometheus, loki):
         "[o11y_svc]\n"
         f"receiver ansible_connection=local ansible_python_interpreter=auto_silent "
         f"local_monorepo_dir={repo} monorepo_deploy_path=platform/services/o11y/deployment "
-        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={prometheus.server.server_address[1]} "
+        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={prometheus.url.rsplit(':', 1)[1]} "
         f"o11y_loki_bind=127.0.0.1 o11y_loki_port={loki.server.server_address[1]}\n"
     )
     return {"inventory": inventory, "prometheus": prometheus, "loki": loki}

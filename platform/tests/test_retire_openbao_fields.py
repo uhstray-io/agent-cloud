@@ -21,15 +21,13 @@ import os
 import re
 import shutil
 import subprocess
-import threading
 from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -378,14 +376,8 @@ def _handler(vault: _Vault):
 @contextmanager
 def _bao(paths: dict):
     vault = _Vault(paths)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(vault))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield vault, f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
+    with serve(_handler(vault)) as url:
+        yield vault, url
 
 
 def _tree(

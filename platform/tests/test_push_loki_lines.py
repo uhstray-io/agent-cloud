@@ -11,15 +11,13 @@ import copy
 import json
 import os
 import subprocess
-import threading
-from http.server import HTTPServer
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/push-loki-lines.yml"
@@ -114,13 +112,9 @@ class _OtlpUnknownAck(DrainingHandler):
 @pytest.fixture
 def loki():
     handler = type("Loki", (_Loki,), {"status": 204, "statuses": [], "requests": []})
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    handler.url = f"http://127.0.0.1:{server.server_address[1]}"
-    yield handler
-    server.shutdown()
-    server.server_close()
+    with serve(handler) as url:
+        handler.url = url
+        yield handler
 
 
 def _run(tmp_path: Path, tasks: list, vars_: dict, *args: str) -> subprocess.CompletedProcess:
@@ -245,11 +239,8 @@ def test_collector_publishes_receipt_separately_after_data_ack(
 @needs_ansible
 def test_unknown_otlp_data_ack_suppresses_the_separate_receipt_post(tmp_path):
     handler = type("OtlpUnknownAck", (_OtlpUnknownAck,), {"requests": []})
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        url = f"http://127.0.0.1:{server.server_address[1]}/v1/logs"
+    with serve(handler) as base:
+        url = f"{base}/v1/logs"
         tasks = _collector_tasks()
         selected = [next(t for t in tasks if t.get("name") == name) for name in (
             "Production Alloy: deliver conformance records over OTLP/HTTP",
@@ -285,9 +276,6 @@ def test_unknown_otlp_data_ack_suppresses_the_separate_receipt_post(tmp_path):
         assert handler.requests[0]["path"] == "/v1/logs"
         assert handler.requests[0]["body"] == payload
         assert "private invalid OTLP response" not in result.stdout + result.stderr
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 @needs_ansible
