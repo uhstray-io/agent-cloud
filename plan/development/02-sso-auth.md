@@ -455,7 +455,7 @@ Then Grafana OIDC at `o11y.uhstray.io` via the mechanism above.
    verify SSO login (local admin fallback intact). Gate. **DONE.**
 3. **tududi (native OIDC)** (retired as work tracker 2026-10-23; torn down 2026-11-09) **+ honcho (`/docs` forward_auth)** promoted to prod
    (`todo.uhstray.io` / `memory.uhstray.io`), guarded by the assert+verify.
-   Named platform users (`wisward` admin, `andrew.godlewsky` developer+business).
+   Named platform users (one admin, one developer+business user; real usernames live in site-config).
    **DONE.**
 4. **Prod SSO promotion — netbox, n8n, openbao (NEXT, right after tududi/honcho).**
    These three have prod environments but no prod SSO yet, and each currently
