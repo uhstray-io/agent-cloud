@@ -124,6 +124,7 @@ The release runs on Semaphore, not GitHub Actions. Both templates are declared i
 
 - **`Release Version (Dev)`** runs on the schedule `*/15 * * * *` and takes no survey. Each run tags the owed `dev` pre-releases and, when `main` has one, the next `main` release.
 - **`Release Major Version (Dev)`** is launched by the operator. Its required survey `release_major` names the exact major version expected, for example `v1.0.0`. The run refuses unless the next major it computes equals that value. The launch is the approval.
+- **`Refresh Release Notes (Dev)`** is launched by the operator. Its required survey `release_refresh_tag` names an existing release tag, for example `v0.14.0`. The run rewrites that GitHub Release's body with the notes described under [Release notes](#release-notes). It plans nothing, tags nothing, pushes nothing and creates no Release, and it refuses a tag that has no Release. Check mode prints the new notes and changes nothing.
 
 Each run does the following, in order:
 
@@ -135,14 +136,32 @@ Each run does the following, in order:
 6. Runs `python3 -I scripts/semver.py --repo <clone> release-tags --main-ref origin/main --dev-ref origin/dev`, adding `--major vN.0.0` for the major run. The command creates the owed tags locally and prints them as JSON, together with the newest release and its notes. It never sees the token.
 7. Checks every planned tag name against `vX.Y.Z` or `vX.Y.Z-dev.N` and every commit against a full SHA, and only then writes the token to a 0600 git credential-store file in the directory. Git runs with `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and `GIT_TERMINAL_PROMPT=0`, so no other credential can answer (`docs/MISTAKES.md` 2.37).
 8. Pushes those tags in one `git push --atomic`. The push never uses `--force`.
-9. Self-heals the release: when the newest release tag has no GitHub Release (a `GET` returns 404), creates one, with the pull request titles since the previous release as its notes.
+9. Self-heals the release: when the newest release tag has no GitHub Release (a `GET` returns 404), creates one, with the structured notes described under [Release notes](#release-notes).
 10. In an `always:` block, revokes the token and deletes the directory.
 
 Check mode (`--check`) runs every step except the push (step 8) and the Release `POST`. The token mint, the local tagging in the throwaway clone, the credential file, the Release `GET` and the `always:` cleanup all run, so a check-mode run mints a real token, and its output is the exact list of tags a real run would push.
 
 **Exit 3.** When a breaking change after 1.0.0 counts, `scripts/semver.py` exits 3 (the `NeedsMajor` path in `main()`). `release-tags` reaches it from either channel: the main release computation, and the `dev` pre-release computation (`dev_tags`). The tags already created in the clone are then never pushed, so a `!` pull request merged on `dev` also holds back `main`'s release tag. The scheduled run fails red until the breaking pull request is promoted to `main` and `Release Major Version (Dev)` then cuts the major. A major cut before that promotion leaves the change behind, and the next scheduled run still exits 3, so the failure message says to promote first.
 
-**Merging this change.** The guard refuses any pull request whose changed files include a `.github/workflows/` path other than `lint-and-test.yml`, and any pull request that changes a path in `RELEASE_SCRIPTS`, which lists `scripts/semver.py`, `scripts/semver-backfill.tsv` and `platform/playbooks/release-version.yml` (`changed_files()` in `scripts/merge-when-green.py`). The changed-file list includes the deleted path, so deleting `.github/workflows/release-version.yml` counts as touching that workflow path. This pull request does both: it deletes that workflow and changes files in `RELEASE_SCRIPTS`. The operator therefore merges it, not the guard. Every later pull request that touches none of those paths goes through the guard as before. At merge the guard reads the live title again and refuses one that is not in the form: the `Version` job does not run again on a title edit, so a merge outside the guard relies on the `Version` run, which a later title edit does not refresh.
+**Merging this change.** The guard refuses any pull request whose changed files include a `.github/workflows/` path other than `lint-and-test.yml`, and any pull request that changes a path in `RELEASE_SCRIPTS`, which lists `scripts/semver.py`, `scripts/semver-backfill.tsv`, `platform/playbooks/release-version.yml` and `platform/playbooks/tasks/release-notes-body.yml` (`changed_files()` in `scripts/merge-when-green.py`). The changed-file list includes the deleted path, so deleting `.github/workflows/release-version.yml` counts as touching that workflow path. This pull request does both: it deletes that workflow and changes files in `RELEASE_SCRIPTS`. The operator therefore merges it, not the guard. Every later pull request that touches none of those paths goes through the guard as before. At merge the guard reads the live title again and refuses one that is not in the form: the `Version` job does not run again on a title edit, so a merge outside the guard relies on the `Version` run, which a later title edit does not refresh.
+
+### Release notes
+
+A created Release (step 9) and a refreshed one carry the same structured notes. `scripts/semver.py release-notes` builds them from the release's pull requests, and `platform/playbooks/tasks/release-notes-body.yml` assembles the body. Every release after the first opens in this order (the first release, with no release before it, gets the one line `First release.`, and a refresh of that tag writes that line):
+
+1. **Summary**: a model summary of the release as a whole when the gateway answers, then a line counting the pull requests per section since the previous release.
+2. **Major Updates**: breaking changes first, then up to five model highlights, each citing a pull request in the release. With neither, the section says the release has no breaking changes.
+3. **Features**, **Fixes**, **Documentation Updates**: one section each, with a model summary of the category above that category's pull requests, listed in a collapsed block.
+4. **Other changes**: the remaining pull requests, in a collapsed block.
+5. **Contributors**: the git authors of the release's commits, with any `@` neutralised so the body mentions nobody.
+
+Each pull request is grouped by the Conventional Commits type of its title (`--sections` reports the grouping; it is the renderer's). A bare list of pull requests is not a release note.
+
+**Model text.** When the gateway answers, the release gets a summary per category with pull requests, and one overview with the Summary and Major Updates. Both come through agentgateway as the `release-notes` identity (`client_release-notes` in `secret/services/agentgateway`) on the one model `qwen3.8-flash-next`, with thinking off and a strict JSON schema. The renderer checks each model part again and drops any unsafe one: model text must stay within a plain-prose character allowlist (no links, `#` references, markup, `&` entities or `www.`), and each highlight must cite a non-breaking pull request in the release. Pull request titles and contributor names are escaped, so they render as text.
+
+**Fallback.** When the key or the route is absent, the release has no pull request, or the gateway fails or returns a reply without the expected shape, that part is left out and the body shows the grouped list. The notes never wait on the model.
+
+**Check mode.** The model text is requested in check mode too, because a completion is a read, and the body is printed in the run's output, so a dry run shows what a real run would publish.
 
 ## Implementation phases
 
