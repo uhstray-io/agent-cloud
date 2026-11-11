@@ -33,8 +33,8 @@ applied by automation, with a human approving every step.
    identity provider or override a safety guard.
 3. **A human approves, automation applies.** AI proposes, OPA and the launch gate validate, Semaphore
    executes.
-4. **Template, not instance.** This repository holds the mechanism; Uhstray.io's people, hostnames and
-   group assignments stay in site-config.
+4. **Template, not instance.** This repository holds the mechanism; an instance's people, hostnames and
+   group assignments stay in its private configuration (site-config).
 
 ## Where things stand (verified 2026-11-09, citations re-checked 2026-11-11)
 
@@ -74,7 +74,7 @@ flowchart LR
    equal today's name, because its upper-cased form is the env prefix of the stored password
    (`vars/platform-admins.yml:8-10`). The only other active user is the business user, a fixed block
    in `blueprints/platform-users.yaml:37-47`; no developer user is declared. That file also holds a
-   legacy retirement block (`platform-users.yaml:71-79`). Retirements are otherwise declared in
+   legacy retirement block (`platform-users.yaml:71-78`). Retirements are otherwise declared in
    `platform_retired_accounts` (`deploy-authentik.yml:117-150`), which renders one `state: absent`
    user per name (`templates/platform-retired.yaml.j2:22-23`). A retirement **deletes** the Authentik
    account, cutting the person off from every app.
@@ -164,8 +164,8 @@ sequenceDiagram
 ### Phase A — Declare members as data (agent-cloud and site-config)
 
 Plan 12's open item (`12-rbac-user-provisioning.md:80`, which calls the variable `authentik_users`).
-This plan names it `platform_members` to match `platform_admins` and `platform_retired_accounts`, and
-updates plan 12's item to point here. Without it, adding a user means writing a new blueprint block,
+This plan names it `platform_members` to match `platform_admins` and `platform_retired_accounts`.
+Without it, adding a user means writing a new blueprint block,
 which no agent should do.
 
 1. Add a `platform_members` list to site-config with `key`, `username`, `name`, `email` and `groups`,
@@ -178,6 +178,7 @@ which no agent should do.
    stay in `platform_admins`), no duplicate key or username, no name that is also in
    `platform_admins` or `platform_retired_accounts`.
 4. Tests: render the template from a fixture, and refuse each invalid shape.
+5. Update plan 12's open item to point at this phase and the `platform_members` name.
 
 **Done when** Deploy Authentik (Dev) in production reports no user change after the move, and every
 user's group set is unchanged. `verify-users.py.j2` proves present, active and in at least one group
@@ -186,8 +187,10 @@ only, so the group sets are recorded before the move and compared after.
 ### Phase B — Console access requests, structured, no skynet
 
 1. **iam-agent identity, agent-cloud side.** Add `iam-agent` to OPA's catalog with
-   `allowed_templates` exactly `Propose Access Change` and `Reconcile Plane Members` (A4), to the gate's
-   role list and to the `console` caller's map (`deploy-launch-gate.yml:89-93`), and to the tests that
+   `allowed_templates` exactly `Propose Access Change` and `Reconcile Plane Members` (A4), and give the
+   `console` caller its own entry in the gate's caller map with the five roles plus `iam-agent`
+   (`deploy-launch-gate.yml:89-93`). The shared role list stays as it is, so `skynet` does not gain the
+   identity before Phase C; this amends plan 17 D49 ("the five existing roles"). Add it to the tests that
    pin role lists (`test_launch_gate_allowlist.py`, `test_workflow_registry.py`,
    `workflow_agents_test.rego`, `test_launch_gate_playbooks.bats`).
 2. **OPA rule (A8):** deny an agent launch of `Reconcile Plane Members` unless
@@ -219,7 +222,7 @@ declaration local-dev's Deploy Authentik reads is not yet established and is set
    (`deploy-skynet.yml:94-99`) and its env line (`skynet/deployment/templates/env.j2:100-102`), and the
    tests that pin them. `git grep network-agent` lists every place a role is named.
 3. Wire `SKYNET_CONSOLE_TOKEN` in agent-cloud's skynet deploy, and add the console's client for
-   skynet's plan-only run and approve routes. Add the `skynet` caller to `iam-agent` in the gate map.
+   skynet's plan-only run and approve routes. Add `iam-agent` to the `skynet` caller's entry in the gate map.
 
 **Done when** a console request starts a plan-only `access_request` run, an admin approves it in the
 console, and the launch it makes is tagged `skynet <run> <step>` and produces the same PR as Phase B.
@@ -272,8 +275,8 @@ recorded here.
   console's proposal id format) before use, and the YAML is edited as data, never by text substitution.
 - **Push scope.** The site-config deploy key can push any branch. The playbook pushes only
   `access/<request id>` and never `main`; branch protection on site-config is the backstop.
-- **PR credential.** The PR opener needs `pull_requests: write` on site-config only (Q2). It is minted
-  per run, like the console's GitHub token, and never stored on a host.
+- **PR credential.** The PR opener needs `pull_requests: write` on site-config only (Q2). It is a short-lived
+  installation token held in OpenBao, never on a host.
 - **Stale sessions.** Console groups are fixed at login for up to 8 hours; Phase D re-reads them on
   approve.
 - **Admin membership** has no request path: `platform_admins` changes stay operator-written PRs.
@@ -304,7 +307,7 @@ recorded here.
 - [16 — Plane work management](16-plane-work-management.md) and the OpenSpec change `deploy-plane-work-management`: the member reconcile and task 2.8.
 - [17 — Dispatch Console](17-dispatch-console.md): proposals, the launch gate caller (D49), approval rules (D52, D53).
 - OpenSpec change `skynet-launch-containment`: the launch gate.
-- Root [`AGENTS.md`](../../AGENTS.md): the template-versus-instance convention, OpenBao layout, launch gate.
+- Root [`AGENTS.md`](../../AGENTS.md): OpenBao layout, launch gate, Semaphore operation.
 
 ## Revision history
 
