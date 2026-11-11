@@ -56,6 +56,10 @@ RUFF_PINNED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
 VERSIONED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-versioned.txt").read_bytes()
 
+# The workflow as it stood before every job was pinned to ubuntu-24.04 (uv, on ubuntu-latest).
+UV_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-uv.txt").read_bytes()
+
 
 def _blob_sha(source):
     return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
@@ -71,7 +75,8 @@ assert _blob_sha(RUNS_WORKFLOW) == guard.RUNS_PARTITIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(PI_MOVED_WORKFLOW) == guard.PI_MOVED_WORKFLOW_BLOB_SHA
 assert _blob_sha(RUFF_PINNED_WORKFLOW) == guard.RUFF_PINNED_WORKFLOW_BLOB_SHA
 assert _blob_sha(VERSIONED_WORKFLOW) == guard.VERSIONED_WORKFLOW_BLOB_SHA
-assert _blob_sha(CURRENT_WORKFLOW) == guard.UV_WORKFLOW_BLOB_SHA
+assert _blob_sha(UV_WORKFLOW) == guard.UV_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.RUNNER_PINNED_WORKFLOW_BLOB_SHA
 # The on-disk workflow carries exactly one Version job; the policy-drift tests below depend on it.
 assert CURRENT_WORKFLOW.count(b"\n    name: Version\n") == 1
 
@@ -251,6 +256,14 @@ class FakeGitHub:
 
     def set_uv_transition(self):
         self.workflow_sources[BASE] = VERSIONED_WORKFLOW
+        self.workflow_sources[HEAD] = UV_WORKFLOW
+        self.files = [guard.WORKFLOW]
+        for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
+            self.jobs[name]["conclusion"] = "success"
+            next(check for check in self.checks if check["name"] == name)["conclusion"] = "success"
+
+    def set_runner_pinned_transition(self):
+        self.workflow_sources[BASE] = UV_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
         for name in ("Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)"):
@@ -847,22 +860,23 @@ class MergeGuardTests(unittest.TestCase):
         cases = [
             ("versioned to uv with extra byte", lambda api: (
                 api.set_uv_transition(),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW + b"# extra\n")),
              "Workflow head is not the exact reviewed versioned workflow"),
             ("ruff-pinned base to uv head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RUFF_PINNED_WORKFLOW),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW)),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
              "Workflow head is not the exact reviewed ruff-pinned workflow"),
             ("uv base to versioned head", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(BASE, UV_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
              "Workflow head is not the exact reviewed uv workflow"),
             ("uv base with extra byte", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n"),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW)),
+                api.workflow_sources.__setitem__(BASE, UV_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
              "Workflow base is outside the exact pre-partition or reviewed partition states"),
             ("uv base to edited head", lambda api: (
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+                api.workflow_sources.__setitem__(BASE, UV_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW + b"# extra\n")),
              "Workflow head is not the exact reviewed uv workflow"),
         ]
         for label, change, message in cases:
@@ -873,13 +887,78 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_uv_workflow_unchanged_passes_the_workflow_check(self):
         api = FakeGitHub()
+        api.workflow_source = UV_WORKFLOW
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
 
     def test_uv_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = UV_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
         run_refusal(self, api, "uv workflow may only remain byte-identical")
+
+    def test_uv_to_runner_pinned_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_runner_pinned_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_uv_to_runner_pinned_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_runner_pinned_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_runner_pinned_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_runner_pinned_transition_or_baseline_is_accepted(self):
+        cases = [
+            ("uv to runner-pinned with extra byte", lambda api: (
+                api.set_runner_pinned_transition(),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed uv workflow"),
+            ("versioned base to runner-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, VERSIONED_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW)),
+             "Workflow head is not the exact reviewed versioned workflow"),
+            ("runner-pinned base to uv head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
+             "Workflow head is not the exact reviewed runner-pinned workflow"),
+            ("runner-pinned base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n"),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW)),
+             "Workflow base is outside the exact pre-partition or reviewed partition states"),
+            ("runner-pinned base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed runner-pinned workflow"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api, message)
+
+    def test_runner_pinned_workflow_unchanged_passes_the_workflow_check(self):
+        api = FakeGitHub()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_runner_pinned_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Runner-pinned workflow may only remain byte-identical")
+
+    def test_runner_pinned_workflow_pins_every_job_to_ubuntu_24_04(self):
+        text = CURRENT_WORKFLOW.decode()
+        assert text.count("\n    runs-on: ubuntu-24.04\n") == text.count("\n    runs-on: ")
+        assert "\n    runs-on: ubuntu-latest\n" not in text
 
     def test_ruff_pinned_pr_without_the_version_job_is_refused(self):
         # What happens live to a pull request opened before the transition: its workflow runs no

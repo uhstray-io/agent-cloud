@@ -5,6 +5,7 @@ Spec: change service-deployment-workflow, platform/service-onboarding-workflow
 platform/agent-orchestration ("Four least-privilege agent identities").
 """
 
+import functools
 import json
 import os
 import re
@@ -34,8 +35,11 @@ FOUNDATION = {"Deploy OpenBao", "Deploy Semaphore", "Deploy NetBox", "Deploy Git
 STEPS = yaml.safe_load(REGISTRY.read_text())["steps"]
 
 
-def _template_names() -> set[str]:
-    return {t["name"] for t in yaml.safe_load(CATALOG.read_text())["templates"]}
+# Cached: the catalog is read-only to every caller, and the parametrized checks below would
+# otherwise re-parse templates.yml once per case.
+@functools.cache
+def _template_names() -> frozenset[str]:
+    return frozenset(t["name"] for t in playbook_yaml.load(CATALOG)["templates"])
 
 
 def _drawn_labels() -> set[str]:
@@ -780,7 +784,10 @@ def test_otlp_uri_results_are_protected_at_verbose_levels(tmp_path):
         assert '"status": "failed/UNKNOWN"' in output
 
 
-def _emitted_evidence() -> dict[str, set[str]]:
+# Cached: the scan reads every top-level playbook, and the review-stamp cases (one per step)
+# each called it. Callers only read the result.
+@functools.cache
+def _emitted_evidence() -> dict[str, frozenset[str]]:
     """step id -> evidence keys, for every playbook that records a step result."""
     found: dict[str, set[str]] = {}
 
@@ -797,12 +804,12 @@ def _emitted_evidence() -> dict[str, set[str]]:
                 found.setdefault(v["step_result_step"], set()).update(v["step_result_evidence"])
 
     for path in (REPO / "platform/playbooks").glob("*.yml"):
-        doc = yaml.safe_load(path.read_text())
+        doc = playbook_yaml.load(path)
         for play in doc if isinstance(doc, list) else []:
             if isinstance(play, dict):
                 for key in ("pre_tasks", "tasks", "post_tasks"):
                     walk(play.get(key))
-    return found
+    return {step: frozenset(keys) for step, keys in found.items()}
 
 
 def test_registry_evidence_keys_match_what_the_steps_emit():
