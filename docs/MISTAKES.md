@@ -157,6 +157,7 @@ and why.
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
+| 5.23 | Merged a PR whose CI had tested its merge into an older `dev`; a ratchet test that landed 5 minutes earlier failed on the combination, and every PR into `dev` went red until #1068 | Process | 1 | Convention (re-run on a moved base; guard proposal recorded) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4691,6 +4692,38 @@ rebalance is a data commit, not another workflow transition. The partition stays
 half gains the proposal above: each shard prints its duration against its timeout and warns above half of it.
 The warning does not fail the run, so it is not enforcement and stays labelled Convention-plus-warning. First
 run: shards took 282 to 495 seconds, against 20 to 24 minutes for the old `Python core`.
+
+### 5.23 Merged a PR whose CI had tested its merge into an older `dev`
+
+**Occurrences: 1** — 2026-11-11
+
+**What happened.** PR #952 (the skynet launch probe) was merged into `dev` at 21:31:51 UTC on head `f37ea8a3`.
+All 16 checks on that head were green, and `scripts/merge-when-green.py` passed. That CI run (43101169921)
+checked out `pull/952/merge` (`a2522490`) at 21:13:15 UTC: the head merged into `dev` at `58a654ae`, the merge
+commit's first parent.
+PR #1066 merged at 21:26:47 UTC. It added `test_no_new_test_builds_its_own_http_server` to
+`platform/tests/test_fake_http.py`, a ratchet that lets the list of test files starting their own HTTP server
+(`OWN_SERVERS`) only shrink. #952's new test file starts one (`_Listener(ThreadingHTTPServer)`), and #1066 was
+not in #952's head. The combination failed on `dev`, and every PR into `dev` failed a Python shard until
+#1068 (`98a10fe1`, 21:49:50 UTC) added the file to `OWN_SERVERS`. Another session found it and fixed it. The
+reviewer of #952's final delta had noted that `dev` had moved since the branch merged it, and advised running
+the guard against the current head. The guard was run, and it passed.
+
+**Root cause.** A `pull_request` run tests the PR's merge with the base as it was when the run started. The
+merge guard checks that run's result on the exact head, and that the PR's base SHA does not change during its
+own evidence read (`merge-when-green.py`, the base comparison before the merge). It does not check whether
+`dev` moved after the CI run started, and nothing re-runs CI when `dev` moves, because `dev` has no
+required-check rule (AGENTS.md, "Feature-to-Dev pull-request merges"). Two PRs that are each green against an
+older `dev` can therefore combine red. A ratchet test, one that refuses any new instance of a pattern, makes
+this likely, because it fails on files it has never seen.
+
+**The rule.** Before merging into `dev`, compare the commit `dev` was at when the head's CI run started (the
+first parent of its `pull/<n>/merge` ref) with `dev`'s current tip. If `dev` has moved, merge it into the
+branch, or re-run the CI, and merge only on a run that includes the current `dev`.
+
+**Enforced by.** Convention. Proposal: have `merge-when-green.py` refuse when the base it reads differs from
+the base the exact-head CI run tested (that run's merge ref's first parent). That turns "re-run on a moved
+base" into a refusal.
 
 ## 6. Working from assumptions about files
 
