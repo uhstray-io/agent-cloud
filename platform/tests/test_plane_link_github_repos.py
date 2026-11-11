@@ -323,3 +323,39 @@ def test_the_play_judges_and_reports_the_link_summary(tmp_path, facts, ok, expec
     )
     assert (proc.returncode == 0) is ok, proc.stdout[-1500:]
     assert expect in proc.stdout
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "plan,skipped",
+    [
+        ('{"error": "some declared links conflict with what Plane holds", "conflicts": ["AC: x"]}', True),
+        ("Traceback", True),
+        ('{"would_link": ["AC"], "present": [], "missing_projects": [], "conflicts": []}', False),
+    ],
+    ids=["plan-refused", "plan-unreadable", "plan-clean"],
+)
+def test_the_apply_runs_only_after_a_clean_plan(tmp_path, plan, skipped):
+    # A refused plan must not go on to apply: the script creates the non-conflicting links first.
+    import yaml
+
+    play = next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if p.get("name", "").startswith("Link the declared"))
+    block = next(t for t in play["tasks"] if "block" in t)["block"]
+    apply = dict(next(t for t in block if t.get("name") == "Link what is missing"))
+    apply["ansible.builtin.command"] = {"argv": ["true"]}  # never the real exec; only the gate is under test
+    check = {
+        "name": "gate",
+        "ansible.builtin.assert": {"that": [f"_link_apply is {'skipped' if skipped else 'not skipped'}"]},
+    }
+    facts = {"_link_plan": {"rc": 0, "stdout_lines": plan.splitlines()}}
+    (tmp_path / "play.yml").write_text(
+        yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "vars": facts, "tasks": [apply, check]}])
+    )
+    proc = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout[-1500:]

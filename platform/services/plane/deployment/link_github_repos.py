@@ -96,29 +96,34 @@ PR_STATES = {
     "MR_CLOSED": "Cancelled",
 }
 _states = {}
+done, present, pr_done, pr_present, missing_projects, conflicts = [], [], [], [], [], []
 
 
-def states_of(ident, pid, done):
+def abort(message):
+    """fail() with what this run already created, both record types, so the message is complete."""
+    fail(message, linked=done, pr_linked=pr_done)
+
+
+def states_of(ident, pid):
     """The project's states by name, {id, name} each, read once; refuses a missing declared state."""
     if pid not in _states:
         status, _, states = call("GET", f"/api/workspaces/{slug}/projects/{pid}/states/")
         if status != 200 or not isinstance(states, list):
-            fail(f"{ident}: listing states answered {status}", linked=done)
+            abort(f"{ident}: listing states answered {status}")
         _states[pid] = {s["name"]: {"id": s["id"], "name": s["name"]} for s in states}
     named = _states[pid]
     missing = sorted({*ISSUE_STATES.values(), *PR_STATES.values()} - set(named))
     if missing:
-        fail(f"{ident}: the project lacks the states {', '.join(missing)} from schema.yml", linked=done)
+        abort(f"{ident}: the project lacks the states {', '.join(missing)} from schema.yml")
     return named
 
 
-def create(ident, body, done):
+def create(ident, body):
     status, _ = silo("POST", f"/api/entity-connections/{ws_id}/{conn_id}", body)
     if status != 200:
-        fail(f"{ident}: creating the {body['type']} record answered {status}", linked=done)
+        abort(f"{ident}: creating the {body['type']} record answered {status}")
 
 
-done, present, pr_done, pr_present, missing_projects, conflicts = [], [], [], [], [], []
 for p in cfg["projects"]:
     ident, name = p["identifier"], p["repo"]
     pid, repo = project_ids.get(ident), repo_by_name.get(name.lower())
@@ -135,13 +140,14 @@ for p in cfg["projects"]:
     if not mine and theirs:
         conflicts.append(f"{ident}: {name} is already linked to another project")
         continue
+    # Read even in a dry run, so a project missing a declared state is refused there too.
+    named = states_of(ident, pid) if not (mine and pid in pr_projects) else {}
     base = {"workspace_id": ws_id, "workspace_slug": slug, "project_id": pid, "workspace_connection_id": conn_id}
     if mine:
         present.append(ident)
     elif not cfg["apply"]:
         done.append(ident)
     else:
-        named = states_of(ident, pid, done)
         issue_map = {k: named[v] for k, v in ISSUE_STATES.items()}
         create(
             ident,
@@ -154,7 +160,6 @@ for p in cfg["projects"]:
                 "config": {"states": {"issueEventMapping": issue_map}, "allowBidirectionalSync": True},
                 "type": "PROJECT_ISSUE_SYNC",
             },
-            done,
         )
         done.append(ident)
     if pid in pr_projects:
@@ -162,7 +167,6 @@ for p in cfg["projects"]:
     elif not cfg["apply"]:
         pr_done.append(ident)
     else:
-        named = states_of(ident, pid, done)
         pr_map = {k: named[v] for k, v in PR_STATES.items()}
         create(
             ident,
@@ -172,7 +176,6 @@ for p in cfg["projects"]:
                 "config": {"states": {"mergeRequestEventMapping": pr_map}, "skipBackwardStateMovement": False},
                 "type": "PROJECT_PR_AUTOMATION",
             },
-            done,
         )
         pr_done.append(ident)
 

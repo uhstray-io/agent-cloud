@@ -403,7 +403,8 @@
             fail_msg: >-
               plane repository links: {{ _link_summary.error | default('exit ' ~ _link_rc) }}{{
               ('; conflicts: ' ~ (_link_summary.conflicts | join('; '))) if _link_summary.conflicts | default([]) else '' }}{{
-              ('; linked before the failure: ' ~ (_link_summary.linked | join(', '))) if _link_summary.linked | default([]) else '' }}
+              ('; linked before the failure: ' ~ (_link_summary.linked | join(', '))) if _link_summary.linked | default([]) else '' }}{{
+              ('; pull request mapping added before the failure: ' ~ (_link_summary.pr_linked | join(', '))) if _link_summary.pr_linked | default([]) else '' }}
             quiet: true
 
         - name: "Report"
