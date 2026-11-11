@@ -412,6 +412,19 @@ def _check_value(var: dict[str, Any], value: str, template: str) -> None:
     raise Refusal(502, "unsupported_field_type", f"survey field {var_name} of {template} has an unsupported type")
 
 
+# Local-dev's working-tree repository record declares HEAD: whatever the developer has checked out
+# (bootstrap-local-dev.yml, "agent-cloud worktree"). OPA allows an agent launch only from main or dev
+# (agent_actions.rego, the launch-branch rule), so a local gate would refuse every agent launch. skynet's local
+# catalog already treats local-dev as dev, and in local mode only the gate reads that record the same way.
+# Outside local mode HEAD passes through unchanged, so OPA still refuses it.
+LOCAL_WORKTREE_BRANCH = "HEAD"
+
+
+def policy_branch(repo_branch: str, local_mode: bool) -> str:
+    """The branch the gate pins and asks OPA about: the record's, with local-dev's HEAD read as dev."""
+    return "dev" if local_mode and repo_branch == LOCAL_WORKTREE_BRANCH else repo_branch
+
+
 def pin_branch(
     template: dict[str, Any], survey: dict[str, str], values: dict[str, str], repo_branch: str
 ) -> dict[str, str]:
@@ -804,7 +817,7 @@ class Gate:
         authorize_local(caller, req, self._config)
         template = self._semaphore.template(req.template)
         values = merge_survey(template, req.survey)
-        repo_branch = self._semaphore.branch(template.get("repository_id"))
+        repo_branch = policy_branch(self._semaphore.branch(template.get("repository_id")), self._config.local_mode)
         values = pin_branch(template, req.survey, values, repo_branch)
         if req.dry_run:
             version = self._semaphore.version()

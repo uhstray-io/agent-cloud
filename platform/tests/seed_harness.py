@@ -9,12 +9,9 @@ are synthetic.
 import json
 import os
 import subprocess
-import threading
-from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve  # noqa: F401 (serve is re-exported for its callers)
 
 ROOT = Path(__file__).resolve().parents[2]
 ROLE = {"bao_role_id": "synthetic-role", "bao_secret_id": "synthetic-role-secret"}
@@ -41,26 +38,6 @@ class FakeBao(DrainingHandler):
         self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(json.dumps(body).encode())
-
-
-@contextmanager
-def serve(handler):
-    """The synthetic OpenBao's address while it runs."""
-    # Default listen backlog is 5; a playbook's request bursts on a loaded machine got
-    # "Connection reset by peer" (see test_scoped_publication.py).
-    class Server(ThreadingHTTPServer):
-        request_queue_size = 128
-        daemon_threads = True
-
-    server = Server(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
 
 
 def run_seed(tmp_path, playbook, address, *, extra=None, inputs=None, declare=True, env_addr=None,

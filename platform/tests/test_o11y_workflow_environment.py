@@ -8,14 +8,13 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
-from http.server import ThreadingHTTPServer
+from contextlib import ExitStack
 from pathlib import Path
 
 import harness_sandbox
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 from fake_semaphore import template_write
 from playbook_yaml import REPO
 
@@ -304,18 +303,14 @@ def test_catalog_declares_only_the_five_explicit_dev_rows_and_wrapper_survey():
 
 @pytest.mark.parametrize("legacy_environment_ids", [False, True], ids=["array-api", "scalar-only-api"])
 def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tmp_path, legacy_environment_ids):
-    try:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), _SemaphoreAndBao)
-    except OSError:
-        pytest.skip("could not bind the synthetic loopback API")
-    server.daemon_threads = True
-    _reset_api()
-    _SemaphoreAndBao.legacy_environment_ids = legacy_environment_ids
-    api_origin = f"http://127.0.0.1:{server.server_port}"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    checkout, revision = _fixture_checkout(tmp_path, api_origin=api_origin)
-    try:
+    with ExitStack() as stack:
+        try:
+            api_origin = stack.enter_context(serve(_SemaphoreAndBao))
+        except OSError:
+            pytest.skip("could not bind the synthetic loopback API")
+        _reset_api()
+        _SemaphoreAndBao.legacy_environment_ids = legacy_environment_ids
+        checkout, revision = _fixture_checkout(tmp_path, api_origin=api_origin)
         before_shared = copy.deepcopy(_SemaphoreAndBao.environments[0])
         before_unrelated = copy.deepcopy(_SemaphoreAndBao.records[1])
         done = _run_wrapper(tmp_path, checkout, revision, bao_url=api_origin)
@@ -350,20 +345,11 @@ def test_real_wrapper_and_shared_provisioner_converge_one_direct_dev_template(tm
         assert [item["id"] for item in _SemaphoreAndBao.environments[1]["secrets"]] == encrypted_ids
         assert SECRET not in rerun.stdout + rerun.stderr
         assert TOKEN not in rerun.stdout + rerun.stderr
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
 
 
 def test_execution_context_override_refuses_before_any_command_or_api(tmp_path):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _SemaphoreAndBao)
-    server.daemon_threads = True
-    _reset_api()
-    api_origin = f"http://127.0.0.1:{server.server_port}"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with serve(_SemaphoreAndBao) as api_origin:
+        _reset_api()
         checkout, revision = _fixture_checkout(tmp_path, api_origin=api_origin)
         marker = tmp_path / "shell-used.marker"
         shell_stub = tmp_path / "marker-shell"
@@ -405,10 +391,6 @@ def test_execution_context_override_refuses_before_any_command_or_api(tmp_path):
         assert ROLE not in result.stdout + result.stderr
         assert SECRET not in result.stdout + result.stderr
         assert TOKEN not in result.stdout + result.stderr
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
 
 
 @pytest.mark.parametrize("extra,bao_url,openbao_addr,catalog_change,expected_message", [
@@ -434,16 +416,11 @@ def test_execution_context_override_refuses_before_any_command_or_api(tmp_path):
 def test_invalid_scope_revision_endpoint_or_context_refuses_before_writes(
     tmp_path, extra, bao_url, openbao_addr, catalog_change, expected_message,
 ):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _SemaphoreAndBao)
-    server.daemon_threads = True
-    _reset_api()
-    api_origin = f"http://127.0.0.1:{server.server_port}"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    checkout, revision = _fixture_checkout(
-        tmp_path, api_origin=api_origin, catalog_change=catalog_change,
-    )
-    try:
+    with serve(_SemaphoreAndBao) as api_origin:
+        _reset_api()
+        checkout, revision = _fixture_checkout(
+            tmp_path, api_origin=api_origin, catalog_change=catalog_change,
+        )
         result = _run_wrapper(tmp_path, checkout, revision, extra=extra,
                               bao_url=bao_url or api_origin, openbao_addr=openbao_addr)
         assert result.returncode != 0
@@ -454,7 +431,3 @@ def test_invalid_scope_revision_endpoint_or_context_refuses_before_writes(
         assert ROLE not in result.stdout + result.stderr
         assert SECRET not in result.stdout + result.stderr
         assert TOKEN not in result.stdout + result.stderr
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()

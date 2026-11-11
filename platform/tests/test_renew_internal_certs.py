@@ -43,7 +43,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from fake_http import DrainingHandler, refused_port
+from fake_http import DrainingHandler, refused_port, serve
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/renew-internal-certs.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
@@ -296,7 +296,7 @@ def _caddy(ca, tmp: Path, status: dict, asked: list):
     return _TLSServer(context, Handler)
 
 
-def _loki(pushes: list):
+def _loki_handler(pushes: list):
     class Handler(DrainingHandler):
         def log_message(self, *_a):
             pass
@@ -306,7 +306,7 @@ def _loki(pushes: list):
             self.send_response(204)
             self.end_headers()
 
-    return ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    return Handler
 
 
 @contextmanager
@@ -486,7 +486,7 @@ class World:
             gw = stack.enter_context(_thread(_gateway(self.ca, self.leaves["agw-server"], self.allowed,
                                                       self.tmp, frozen, cert_optional, self.gw_handshakes)))
             caddy = stack.enter_context(_thread(_caddy(self.ca, self.tmp, self.caddy_status, self.caddy_asked)))
-            loki = stack.enter_context(_thread(_loki(self.pushes)))
+            loki_url = stack.enter_context(serve(_loki_handler(self.pushes)))
             hosts = {
                 "step_ca_svc": {"ca": dict(host)},
                 "agentgateway_svc": {"gw": {**host, "_agwr_hosts_file": str(self.tmp / "hosts"),
@@ -495,7 +495,7 @@ class World:
                 "caddy_svc": {"caddy": {**host, "inference_route_address": ROUTE,
                                         "caddy_https_port": str(caddy.server_port)}},
                 "o11y_svc": {"o11y": {**host, "o11y_loki_bind": "127.0.0.1",
-                                      "o11y_loki_port": str(loki.server_port)}},
+                                      "o11y_loki_port": loki_url.rsplit(":", 1)[1]}},
             }
             for group, over in (host_over or {}).items():
                 hosts.setdefault(group, {})
