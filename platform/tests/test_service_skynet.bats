@@ -138,14 +138,17 @@ skip_unless_service_file() {
   refute_grep -qF '_skynet_semaphore_token' "$PLAYBOOK"
   refute_grep -qF 'LOCAL-DEV STOPGAP' "$PLAYBOOK"
   refute_grep -qF 'community.hashi_vault.hashi_vault' "$PLAYBOOK"
-  # Before the monorepo is placed, local_mode gates only the four production refusals (the three
-  # long-standing ones and the launch-gate IP, which is also gated on the gate being declared). Every
-  # other refusal runs in every environment.
+  # Before the monorepo is placed, local_mode gates the four production refusals (the three long-standing
+  # ones and the launch-gate IP, which is also gated on the gate being declared). Through _skynet_local it
+  # also gates the production TLS bind refusal, which is production only. The podman check is not in this
+  # block: it runs after placement installs podman, gated on local mode and skynet_tls. Every other
+  # refusal runs in every environment.
   local refusals_block
   refusals_block=$(sed -n '/^    - name: "Refuse skynet_image/,/^    - name: "Place the monorepo/p' "$PLAYBOOK")
   assert_contains "$refusals_block" 'Refuse skynet_publish_port'
   [ "$(grep -c 'local_mode' <<<"$refusals_block")" -eq 4 ]
   [ "$(grep -c 'when: not (local_mode | default(false) | bool)' <<<"$refusals_block")" -eq 3 ]
+  [ "$(grep -c 'not _skynet_local' <<<"$refusals_block")" -eq 1 ]
   if [ -f "$DEPLOY_DIR/templates/env.j2" ]; then
     refute_grep -qF '_skynet_semaphore_token' "$DEPLOY_DIR/templates/env.j2"
   fi
@@ -242,7 +245,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the fourteen refusals are present as named assert tasks, all before the repo is placed" {
+@test "skynet: the eighteen refusals are present as named assert tasks; seventeen sit before the repo is placed, and the podman refusal follows placement" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -254,7 +257,7 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 14 ]
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 18 ]
   # The launch-gate refusals: the URL is https in every mode, and its IP is checked in production.
   assert_grep -qx 'Refuse skynet_launch_gate_url unless it is https' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_launch_gate_ip unless it is one non-wildcard IPv4 address in production' <<<"$refusals"
@@ -272,6 +275,17 @@ PY
   assert_precedes "$PLAYBOOK" 'Refuse skynet_publish_bind unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_publish_port unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_semaphore_project unless' 'tasks/manage-secrets\.yml'
+  # The HTTPS listener's refusals (skynet_tls): the leaf declaration, the production bind and the port sit before the
+  # monorepo is placed. The podman version that keep-id needs is refused after placement, which installs podman.
+  assert_grep -qx 'Refuse a TLS deploy whose internal_leaves does not declare the skynet server leaf for this host' <<<"$refusals"
+  assert_grep -qx 'Refuse a TLS production skynet_bind unless it is declared as one non-wildcard, non-loopback IPv4 address' <<<"$refusals"
+  assert_grep -qx 'Refuse skynet_port unless it is a whole port number from 1024 to 65535 and not skynet_publish_port' <<<"$refusals"
+  assert_grep -qx 'Refuse a production run on a podman older than 4.3 (userns keep-id)' <<<"$refusals"
+  assert_precedes "$PLAYBOOK" 'Refuse a TLS deploy whose internal_leaves' 'tasks/place-monorepo\.yml'
+  assert_precedes "$PLAYBOOK" 'Refuse a TLS production skynet_bind unless' 'tasks/place-monorepo\.yml'
+  assert_precedes "$PLAYBOOK" 'Refuse skynet_port unless it is a whole port' 'tasks/place-monorepo\.yml'
+  assert_precedes "$PLAYBOOK" 'Place the monorepo \+ ensure podman/compose' 'Read the podman version for keep-id'
+  assert_precedes "$PLAYBOOK" 'Refuse a production run on a podman older' 'tasks/manage-secrets\.yml'
   # The svc-skynet token has no refusal here: it is an existing secret, and manage-secrets refuses
   # the run by name after the placement and before any OpenBao write (the Deploy console precedent).
   refute_grep -qiE 'semaphore (api )?token' <<<"$refusals"
@@ -314,10 +328,11 @@ tasks = [
     t for t in play1["tasks"]
     if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
-if len(tasks) != 14:
-    sys.exit(f"expected 14 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 18:
+    sys.exit(f"expected 18 refusal asserts in Phase 1, found {len(tasks)}")
+# The play's own vars come too: the TLS refusals read the _skynet_* names Phase 1 defines.
 play = [{"name": "extracted refusals", "hosts": "localhost", "connection": "local",
-         "gather_facts": False, "tasks": tasks}]
+         "gather_facts": False, "vars": play1.get("vars", {}), "tasks": tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
     yaml.safe_dump(play, fh, sort_keys=False)
 base = {
@@ -330,6 +345,8 @@ base = {
     "skynet_model": "test-model",
     # Local mode skips the production refusals, so the baseline needs no CA host and no OPA address.
     "local_mode": True,
+    # The podman version the production check reads (deploy-skynet.yml). A stub, so no test needs a podman.
+    "_skynet_podman_version": {"rc": 0, "stdout": "4.9.3"},
 }
 with open(f"{out}/base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
@@ -542,6 +559,238 @@ prod_accepted() {
   # Local mode: the baseline carries no skynet_opa_ip and no step_ca_svc group, and must pass.
   run ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
   [ "$status" -eq 0 ]
+}
+
+# ── The HTTPS listener (skynet_tls): refusals, issuance and probes ──────────
+
+# Writes tls-base.json, a valid TLS declaration for local mode (the leaf on localhost, in the deploy dir under
+# local_monorepo_dir), and one tls-leaf-<case>.json per leaf-declaration case. Each case changes one property.
+write_tls_leaf_cases() {
+  python3 - "$BATS_TEST_TMPDIR" <<'PY'
+import copy
+import json
+import sys
+
+out = sys.argv[1]
+deploy = "/work/repo/platform/services/skynet/deployment"
+leaf = {"name": "skynet-server", "host": "localhost", "profile": "server",
+        "dir": deploy + "/certs/skynet-server", "reload": "none", "sans": ["skynet.dc1.example.test"]}
+base = {"skynet_tls": True, "dns_site": "dc1", "dns_zone": "example.test", "local_mode": True,
+        "local_monorepo_dir": "/work/repo", "monorepo_deploy_path": "platform/services/skynet/deployment",
+        "internal_leaves": [leaf]}
+with open(f"{out}/tls-base.json", "w", encoding="utf-8") as fh:
+    json.dump(base, fh)
+
+
+def one_leaf(**edits):
+    entry = copy.deepcopy(leaf)
+    entry.update(edits)
+    return {"internal_leaves": [entry]}
+
+
+cases = {
+    "dir-off": one_leaf(dir="/work/repo/elsewhere/skynet-server"),
+    "reload-restart": one_leaf(reload="restart"),
+    "sans-wrong": one_leaf(sans=["skynet.other.test"]),
+    "profile-client": one_leaf(profile="client"),
+    "host-other": one_leaf(host="other-local"),
+    "leaf-name-bad": {"skynet_server_leaf": "-bad",
+                      "internal_leaves": [dict(leaf, name="-bad", dir=deploy + "/certs/-bad")]},
+    "absent": {"internal_leaves": []},
+    "duplicate": {"internal_leaves": [leaf, dict(leaf)]},
+    "tls-off": {"skynet_tls": False, "internal_leaves": []},
+}
+for name, values in cases.items():
+    with open(f"{out}/tls-leaf-{name}.json", "w", encoding="utf-8") as fh:
+        json.dump(values, fh)
+PY
+}
+
+# The refusal playbook in local mode: the TLS base, then one case file applied last (a later -e wins).
+tls_check() {
+  ansible-playbook -i localhost, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e "@$BATS_TEST_TMPDIR/tls-base.json" -e "@$BATS_TEST_TMPDIR/$1"
+}
+
+# tls_value '<json object>': the same run, with the object's keys applied last.
+tls_value() {
+  printf '%s' "$1" > "$BATS_TEST_TMPDIR/tls-value.json"
+  tls_check tls-value.json
+}
+
+# Production: local_mode false, one step_ca_svc host, the VM's LAN publish bind, and the object's keys applied last.
+tls_prod_value() {
+  prod_inventory
+  printf '%s' "$1" > "$BATS_TEST_TMPDIR/tls-prod-value.json"
+  ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e "@$BATS_TEST_TMPDIR/tls-base.json" \
+    -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10 \
+    -e "@$BATS_TEST_TMPDIR/tls-prod-value.json"
+}
+
+@test "skynet: with skynet_tls the server leaf must be declared once, for this host, in its deploy dir, reload none, its name in the SAN" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  write_tls_leaf_cases
+  run tls_check tls-base.json
+  [ "$status" -eq 0 ]
+  local case
+  for case in dir-off reload-restart sans-wrong profile-client host-other leaf-name-bad absent duplicate; do
+    run tls_check "tls-leaf-$case.json"
+    [ "$status" -ne 0 ]
+    assert_contains "$output" 'Refuse a TLS deploy whose internal_leaves does not declare the skynet server leaf for this host'
+  done
+  # Without skynet_tls nothing is declared and nothing is checked.
+  run tls_check tls-leaf-tls-off.json
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: with skynet_tls in production, skynet_bind must be declared as a non-wildcard, non-loopback IPv4 address; local mode needs none" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  write_tls_leaf_cases
+  run tls_prod_value '{}'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a TLS production skynet_bind unless it is declared'
+  run tls_prod_value '{"skynet_bind": "127.0.0.1"}'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a TLS production skynet_bind unless it is declared'
+  run tls_prod_value '{"skynet_bind": "0.0.0.0"}'
+  [ "$status" -ne 0 ]
+  run tls_prod_value '{"skynet_bind": "localhost"}'
+  [ "$status" -ne 0 ]
+  run tls_prod_value '{"skynet_bind": "203.0.113.30"}'
+  [ "$status" -eq 0 ]
+  run tls_value '{}'
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: with skynet_tls, skynet_port refuses a privileged, out-of-range, boolean or plain-API port; a port other than the plain API's is accepted" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  write_tls_leaf_cases
+  local value
+  for value in '{"skynet_port": 80}' '{"skynet_port": 1023}' '{"skynet_port": 65536}' '{"skynet_port": true}' \
+               '{"skynet_port": 8380}' '{"skynet_port": 9000, "skynet_publish_port": 9000}'; do
+    run tls_value "$value"
+    [ "$status" -ne 0 ]
+    assert_contains "$output" 'Refuse skynet_port unless it is a whole port number from 1024 to 65535'
+  done
+  run tls_value '{"skynet_port": 8443}'
+  [ "$status" -eq 0 ]
+  run tls_value '{"skynet_port": 9443, "skynet_publish_port": 8381}'
+  [ "$status" -eq 0 ]
+}
+
+# Production without the TLS listener, the object's keys applied last. Output is kept (prod_accepted discards it),
+# so a test can name the refusal that fired.
+prod_loud() {
+  prod_inventory
+  printf '%s' "$1" > "$BATS_TEST_TMPDIR/prod-loud.json"
+  ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 \
+    -e skynet_publish_bind=203.0.113.10 -e "@$BATS_TEST_TMPDIR/prod-loud.json"
+}
+
+@test "skynet: with skynet_tls in production, a podman older than 4.3 or a failed read is refused; without TLS or in local mode the version is not checked" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  extract_refusals
+  write_tls_leaf_cases
+  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
+  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 1, "stdout": ""}}'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
+  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.3.0"}}'
+  [ "$status" -eq 0 ]
+  # Without the listener the version is not checked, so a plain-API production deploy on 4.2.1 is accepted as before.
+  run prod_loud '{"_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
+  [ "$status" -eq 0 ]
+  run accepted _skynet_podman_version '{"rc": 0, "stdout": "4.2.1"}'
+  [ "$status" -eq 0 ]
+}
+
+@test "skynet: the HTTPS leaf is issued after the trust bundle and before the symlink, gated on skynet_tls; local re-issues only a leaf expiring within 7 days" {
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+play1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
+tasks = play1["tasks"]
+names = [t.get("name", "") for t in tasks]
+
+
+def index(prefix):
+    hits = [i for i, name in enumerate(names) if name.startswith(prefix)]
+    assert len(hits) == 1, (prefix, hits)
+    return hits[0]
+
+
+prod_bundle = index("Distribute the step-ca root and the public roots")
+fresh = index("Local-dev: is the skynet server leaf valid")
+mint = index("Issue the skynet server leaf")
+link = index("Create convenience symlink")
+assert prod_bundle < fresh < mint < link, names
+mint_task = tasks[mint]
+assert mint_task["ansible.builtin.include_tasks"] == "tasks/mint-internal-cert.yml", mint_task
+assert mint_task["when"] == "_skynet_tls", mint_task.get("when")
+assert mint_task["vars"]["_mint_name"] == "{{ _skynet_server_leaf }}", mint_task["vars"]
+assert mint_task["vars"]["_mint_ca_host"] == "{{ groups['step_ca_svc'] | first if not _skynet_local else inventory_hostname }}", mint_task["vars"]
+assert mint_task["vars"]["_mint_reissue"] == "{{ _skynet_local and (_skynet_leaf_fresh.rc | default(0)) != 0 }}", mint_task["vars"]
+fresh_task = tasks[fresh]
+assert fresh_task["ansible.builtin.command"]["argv"][2:4] == ["-checkend", "604800"], fresh_task
+assert fresh_task["when"] == ["_skynet_tls", "_skynet_local"], fresh_task.get("when")
+PY
+}
+
+@test "skynet: the production podman check reads the version after the monorepo is placed, gated on local mode and on skynet_tls" {
+  python3 - "$PLAYBOOK" <<'PY'
+import json
+import sys
+
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+play1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
+tasks = play1["tasks"]
+names = [t.get("name", "") for t in tasks]
+read = tasks[names.index("Read the podman version for keep-id (production)")]
+check = tasks[names.index("Refuse a production run on a podman older than 4.3 (userns keep-id)")]
+assert read["register"] == "_skynet_podman_version", read
+assert read["ansible.builtin.command"]["argv"][0] == "{{ container_engine | default('podman') }}", read
+assert read["failed_when"] is False and read["check_mode"] is False, read
+assert read["when"] == ["not _skynet_local", "_skynet_tls"], read.get("when")
+assert check["when"] == ["not _skynet_local", "_skynet_tls"], check.get("when")
+assert names.index("Place the monorepo + ensure podman/compose") < names.index("Read the podman version for keep-id (production)") < names.index(check["name"]) < names.index("Manage secrets and template env file"), names
+PY
+}
+
+@test "skynet: verify probes the HTTPS listener from this host against the step-ca bundle, gated on skynet_tls, after the in-container probes and before the report" {
+  python3 - "$PLAYBOOK" <<'PY'
+import sys
+
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+verify = next(p for p in plays if str(p.get("name", "")).startswith("Phase 3"))
+tasks = verify["tasks"]
+names = [t.get("name", "") for t in tasks]
+gate = "_skynet_tls and not ansible_check_mode"
+tls = [i for i, name in enumerate(names) if name.startswith("TLS listener:")]
+assert len(tls) == 6, names
+for i in tls:
+    assert tasks[i].get("when") == gate, (names[i], tasks[i].get("when"))
+assert names.index("Assert the launch gate accepted the caller token (400 bad_request)") < tls[0], names
+assert tls[-1] < names.index("Report") < names.index("Record the service-deploy step result"), names
+plain = tasks[tls[4]]
+assert plain["ansible.builtin.command"]["argv"][-1] == "http://{{ _skynet_plain_host }}:{{ _skynet_probe_port }}/skynet/healthz", plain
+assert tasks[tls[0]]["ansible.builtin.command"]["argv"] == "{{ _tls_args + _tls_resolve + ['https://' ~ _skynet_tls_name ~ ':' ~ _skynet_probe_port ~ '/skynet/healthz'] }}", tasks[tls[0]]
+assert verify["vars"]["_tls_args"][-2:] == ["--cacert", "{{ _deploy_dir }}/certs/step-ca-bundle.crt"], verify["vars"]["_tls_args"]
+assert verify["vars"]["_tls_resolve"] == "{{ [] if _skynet_local else ['--resolve', _skynet_tls_name ~ ':' ~ _skynet_port ~ ':' ~ _skynet_bind] }}", verify["vars"]["_tls_resolve"]
+PY
 }
 
 @test "skynet: the launch gate's token is shared-read only when skynet_launch_gate_url is declared" {
@@ -968,6 +1217,206 @@ assert set(doc["services"]["skynet"]) == {"volumes", "environment", "extra_hosts
 PY
 }
 
+@test "skynet: the production TLS overlay runs skynet as uid 10001 under keep-id, the uid the image runs as, and sets nothing else" {
+  local overlay="$DEPLOY_DIR/compose.prod-tls.yml"
+  skip_unless_service_file "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert set(doc) == {"services"}, doc.keys()
+assert list(doc["services"]) == ["skynet"], doc["services"]
+assert doc["services"]["skynet"] == {"user": "10001:10001", "userns_mode": "keep-id:uid=10001,gid=10001"}, doc["services"]["skynet"]
+PY
+}
+
+@test "skynet: the TLS overlay publishes the HTTPS port alone, its two variables defaulting to loopback:8443" {
+  local overlay="$DEPLOY_DIR/compose.tls.yml"
+  skip_unless_service_file "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+doc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+assert set(doc) == {"services"}, doc.keys()
+assert list(doc["services"]) == ["skynet"], doc["services"]
+assert doc["services"]["skynet"] == {
+    "ports": ["${SKYNET_TLS_PUBLISH_BIND:-127.0.0.1}:${SKYNET_TLS_PUBLISH_PORT:-8443}:8443"],
+}, doc["services"]["skynet"]
+PY
+}
+
+@test "skynet: the listener overlays require no variable, so a teardown without the listener can load them" {
+  # tasks/clean-service.yml passes every compose.*.yml to `down -v` (only the other mode's overlay is skipped).
+  # A required variable (:?) that .env lacks stops that teardown before it removes anything.
+  local f
+  for f in compose.tls.yml compose.prod-tls.yml; do
+    skip_unless_service_file "$DEPLOY_DIR/$f"
+    refute_grep -qF ':?' <<<"$(grep -v '^[[:space:]]*#' "$DEPLOY_DIR/$f")"
+  done
+}
+
+@test "skynet: deploy.sh loads the TLS overlay on the SKYNET_TLS_CERT_FILE marker in both modes, and only then" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  # Run the real TLS block, extracted from the file, against a .env in each directory under each LOCAL_MODE.
+  local tls="$BATS_TEST_TMPDIR/tls-overlay.sh"
+  sed -n '/^if grep -qE .*SKYNET_TLS_CERT_FILE=/,/^fi$/p' "$deploy" > "$tls"
+  [ -s "$tls" ]
+  local marked="$BATS_TEST_TMPDIR/marked" blank="$BATS_TEST_TMPDIR/blank" absent="$BATS_TEST_TMPDIR/absent"
+  mkdir -p "$marked" "$blank" "$absent"
+  printf 'SKYNET_TLS_CERT_FILE=/certs/skynet-server/current/cert.pem\n' > "$marked/.env"
+  printf 'SKYNET_TLS_CERT_FILE=\n' > "$blank/.env"
+  # overlays_for <directory holding .env> <LOCAL_MODE value, or empty for unset>
+  overlays_for() {
+    if [ -n "$2" ]; then
+      (cd "$1" && env -u COMPOSE_OVERLAYS LOCAL_MODE="$2" bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$tls")
+    else
+      (cd "$1" && env -u COMPOSE_OVERLAYS -u LOCAL_MODE bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$tls")
+    fi
+  }
+  local mode
+  for mode in "" true; do
+    assert_contains "$(overlays_for "$marked" "$mode")" 'compose.tls.yml'
+    refute_contains "$(overlays_for "$blank" "$mode")" 'compose.tls.yml'
+    refute_contains "$(overlays_for "$absent" "$mode")" 'compose.tls.yml'
+  done
+}
+
+@test "skynet: deploy.sh adds the production TLS overlay only outside LOCAL_MODE and only with SKYNET_TLS_CERT_FILE in .env" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  # Run the real block, extracted from the file, against a .env with and without the marker under each LOCAL_MODE value.
+  local gate="$BATS_TEST_TMPDIR/prod-tls-overlay.sh"
+  sed -n '/^if \[ "\${LOCAL_MODE:-}" != "true" \] && grep -qE .*SKYNET_TLS_CERT_FILE=/,/^fi$/p' "$deploy" > "$gate"
+  [ -s "$gate" ]
+  local marked="$BATS_TEST_TMPDIR/marked" blank="$BATS_TEST_TMPDIR/blank" absent="$BATS_TEST_TMPDIR/absent"
+  mkdir -p "$marked" "$blank" "$absent"
+  printf 'SKYNET_TLS_CERT_FILE=/certs/skynet-server/current/cert.pem\n' > "$marked/.env"
+  printf 'SKYNET_TLS_CERT_FILE=\n' > "$blank/.env"
+  # overlays_for <directory holding .env> <LOCAL_MODE value, or empty for unset>
+  overlays_for() {
+    if [ -n "$2" ]; then
+      (cd "$1" && env -u COMPOSE_OVERLAYS LOCAL_MODE="$2" bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+    else
+      (cd "$1" && env -u COMPOSE_OVERLAYS -u LOCAL_MODE bash -c 'set -u; source "$1"; printf "%s" "${COMPOSE_OVERLAYS:-}"' _ "$gate")
+    fi
+  }
+  assert_contains "$(overlays_for "$marked" "")" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$blank" "")" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$absent" "")" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$marked" true)" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$blank" true)" 'compose.prod-tls.yml'
+  refute_contains "$(overlays_for "$absent" true)" 'compose.prod-tls.yml'
+  # The extracted block is the only place deploy.sh adds the overlay: a second, unconditional assignment
+  # elsewhere would bypass the gate while every case above still passed.
+  [ "$(grep -c 'compose\.prod-tls\.yml \${COMPOSE_OVERLAYS' "$DEPLOY_DIR/deploy.sh")" -eq 1 ]
+}
+
+@test "skynet: deploy.sh hashes the trust bundles under certs/, never the directory, so a renewed leaf is not a change" {
+  local deploy="$DEPLOY_DIR/deploy.sh"
+  skip_unless_service_file "$deploy"
+  local step="$BATS_TEST_TMPDIR/step-start.sh"
+  sed -n '/^step_start() {/,/^}/p' "$deploy" > "$step"
+  [ -s "$step" ]
+  # The real step, extracted, with compose_up_if_changed replaced by a stub that prints its arguments.
+  # It runs under the bash of this machine (3.2 on macOS), where an empty array under set -u is an error.
+  step_args() {  # <directory to run in>
+    (cd "$1" && bash -c 'set -eu; info() { :; }; compose_up_if_changed() { printf "ARGS:%s\n" "$*"; }; source "$1"; step_start' _ "$step")
+  }
+  local bare="$BATS_TEST_TMPDIR/bare" bundled="$BATS_TEST_TMPDIR/bundled" leafed="$BATS_TEST_TMPDIR/leafed"
+  mkdir -p "$bare" "$bundled/certs" "$leafed/certs/skynet-server/current"
+  : > "$bundled/certs/step-ca-bundle.crt"
+  : > "$bundled/certs/ca-bundle-combined.crt"
+  : > "$leafed/certs/step-ca-bundle.crt"
+  : > "$leafed/certs/ca-bundle-combined.crt"
+  : > "$leafed/certs/skynet-server/current/cert.pem"
+  : > "$leafed/certs/skynet-server/current/key.pem"
+  # No certs/ at all: no arguments, the whole project is hashed from its compose files and .env.
+  [ "$(step_args "$bare")" = "ARGS:" ]
+  # Both bundles present: exactly those two, in this order.
+  [ "$(step_args "$bundled")" = "ARGS:certs/step-ca-bundle.crt certs/ca-bundle-combined.crt" ]
+  # The leaf and its key sit beside the bundles and are never passed.
+  [ "$(step_args "$leafed")" = "ARGS:certs/step-ca-bundle.crt certs/ca-bundle-combined.crt" ]
+}
+
+@test "skynet: the local overlay runs as uid 1001 gid 0 and aliases the TLS name on local-dev, defaulting to the container name" {
+  local overlay="$DEPLOY_DIR/compose.local.yml"
+  skip_unless_service_file "$overlay"
+  python3 - "$overlay" <<'PY'
+import sys
+import yaml
+
+svc = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["services"]["skynet"]
+assert svc["user"] == "1001:0", svc.get("user")
+assert svc["networks"] == {"default": None, "local-dev": {"aliases": ["${SKYNET_TLS_NAME:-skynet}"]}}, svc["networks"]
+PY
+}
+
+@test "skynet: env renders the HTTPS listener block only under skynet_tls, on the declared bind, and never SKYNET_TLS_PORT" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local env="$DEPLOY_DIR/templates/env.j2"
+  skip_unless_service_file "$env"
+  cat > "$BATS_TEST_TMPDIR/render.yml" <<'YAML'
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Render the skynet env file for this case
+      ansible.builtin.template:
+        src: "{{ env_src }}"
+        dest: "{{ env_dest }}"
+        mode: "0600"
+YAML
+  python3 - "$env" "$BATS_TEST_TMPDIR" <<'PY'
+import json
+import sys
+
+env, tmp = sys.argv[1], sys.argv[2]
+base = {
+    "env_src": env,
+    "secrets": {"api_token": "a", "db_password": "b", "read_token": "c", "semaphore_api_token": "d"},
+    "skynet_image": "ghcr.io/uhstray-io/skynet-tier2@sha256:" + "a" * 64,
+    "skynet_gateway_url": "https://inference.example.test",
+    "skynet_model": "test-model",
+    "skynet_opa_url": "https://opa.example.test:8281",
+    "skynet_opa_ip": "203.0.113.20",
+    "skynet_semaphore_url": "https://semaphore.example.test",
+    "skynet_semaphore_project": 1,
+    "skynet_semaphore_catalog": "production",
+    "skynet_publish_bind": "203.0.113.9",
+    "local_mode": False,
+}
+cases = {
+    "off": dict(base),
+    "on": {**base, "skynet_tls": True, "dns_site": "site", "dns_zone": "example.test"},
+    "declared": {**base, "skynet_tls": True, "dns_site": "site", "dns_zone": "example.test",
+                 "skynet_bind": "203.0.113.30", "skynet_port": 9443},
+}
+for name, values in cases.items():
+    values["env_dest"] = f"{tmp}/tls-{name}.env"
+    with open(f"{tmp}/tls-vars-{name}.json", "w", encoding="utf-8") as fh:
+        json.dump(values, fh)
+PY
+  local name
+  for name in off on declared; do
+    ansible-playbook "$BATS_TEST_TMPDIR/render.yml" -e "@$BATS_TEST_TMPDIR/tls-vars-$name.json" >/dev/null
+  done
+  # skynet_bind and skynet_port (the renewal row's names) win over the plain API's bind.
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_BIND=203.0.113.30' "$BATS_TEST_TMPDIR/tls-declared.env"
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_PORT=9443' "$BATS_TEST_TMPDIR/tls-declared.env"
+  refute_grep -qE '^SKYNET_TLS_' "$BATS_TEST_TMPDIR/tls-off.env"
+  assert_grep -qx 'SKYNET_TLS_CERT_FILE=/certs/skynet-server/current/cert.pem' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_KEY_FILE=/certs/skynet-server/current/key.pem' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_BIND=203.0.113.9' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_PUBLISH_PORT=8443' "$BATS_TEST_TMPDIR/tls-on.env"
+  assert_grep -qx 'SKYNET_TLS_NAME=skynet.site.example.test' "$BATS_TEST_TMPDIR/tls-on.env"
+  # The image reads SKYNET_TLS_PORT as its own listen port; rendering it here would move the listener.
+  refute_grep -qE '^SKYNET_TLS_PORT=' "$BATS_TEST_TMPDIR/tls-on.env"
+  refute_grep -qE '^SKYNET_TLS_PORT=' "$BATS_TEST_TMPDIR/tls-off.env"
+}
+
 @test "skynet: deploy.sh adds the production overlay only outside LOCAL_MODE" {
   local deploy="$DEPLOY_DIR/deploy.sh"
   skip_unless_service_file "$deploy"
@@ -1017,7 +1466,7 @@ JSON
 }
 
 @test "skynet: the two local files pin the same skynet digest" {
-  local digest="sha256:7bcd4153bb1c22462bfefad0bcaec740ea51c18249d0fc6f8a94f5d01884578a"
+  local digest="sha256:7eb9fa7b114dc51784745a19ec2a7d03f5254ad7e3cf774694d99f925f62dbe6"
   assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/inventory/local-dev.yml.example"
   assert_grep -qF "skynet-tier2@$digest" "$REPO_ROOT/platform/playbooks/bootstrap-local-dev.yml"
   refute_grep -qF 'd1460ee9eabd71f1e809a2c05fdb15873c6f6fa4e6d2f7058ccee56179f929da' "$REPO_ROOT/platform/inventory/local-dev.yml.example"
@@ -1144,19 +1593,28 @@ for ln in lines[start + 1:]:
     if ln and not ln.startswith("#"):
         section.append(ln)
 ini = dict(ln.split("=", 1) for ln in section)
+# The INI renders zones from _dev_zone, whose default bootstrap-local-dev.yml declares. Every value is compared
+# with that one variable substituted, so a key that names the zone matches the example's literal.
+raw_text = open(sys.argv[2], encoding="utf-8").read()
+zone = re.search(r"_dev_zone: \"\{\{ dev_zone \| default\('([^']+)'\) \}\}\"", raw_text).group(1)
 for key, value in host.items():
     if key in ("ansible_host", "ansible_connection", "skynet_semaphore_project"):
         continue
     assert key in ini, f"{key} missing from the INI skynet_svc:vars"
-    if key == "skynet_launch_gate_url":
-        # The INI renders its zone from _dev_zone, whose default bootstrap-local-dev.yml declares. Compare the
-        # rendered value with the example's literal, substituting only that one variable.
-        raw_text = open(sys.argv[2], encoding="utf-8").read()
-        zone = re.search(r"_dev_zone: \"\{\{ dev_zone \| default\('([^']+)'\) \}\}\"", raw_text).group(1)
-        rendered = ini[key].replace("{{ _dev_zone }}", zone)
-        assert rendered == str(value), f"{key}: INI renders {rendered!r} != example {value!r}"
+    rendered = ini[key].replace("{{ _dev_zone }}", zone)
+    if key == "internal_leaves":
+        # The INI emits the bootstrap's _skynet_leaves list (`| string`, too long for one literal INI line).
+        assert rendered == "{{ _skynet_leaves | string }}", rendered
+        play = yaml.safe_load(open(sys.argv[2], encoding="utf-8"))[0]
+        leaves = [{**leaf, "sans": [s.replace("{{ _dev_zone }}", zone) for s in leaf["sans"]]}
+                  for leaf in play["vars"]["_skynet_leaves"]]
+        assert value == leaves, f"internal_leaves: example {value!r} != bootstrap {leaves!r}"
         continue
-    assert ini[key] == str(value), f"{key}: INI {ini[key]!r} != example {value!r}"
+    if isinstance(value, bool):
+        # INI writes a boolean lowercase; Ansible reads either spelling as the same boolean.
+        assert rendered.lower() == str(value).lower(), f"{key}: INI {rendered!r} != example {value!r}"
+        continue
+    assert rendered == str(value), f"{key}: INI renders {rendered!r} != example {value!r}"
 assert "skynet_image" in ini, "the INI must carry the same pinned skynet_image as the example"
 # The project id is resolved live by name (_pid), so the INI names that lookup, not the example's literal.
 assert ini["skynet_semaphore_project"] == "{{ _pid }}", ini["skynet_semaphore_project"]

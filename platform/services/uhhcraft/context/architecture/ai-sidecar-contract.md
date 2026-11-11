@@ -152,6 +152,6 @@ Backwards-compatible additions (new optional request fields, new response fields
 
 ## Open questions tracked elsewhere
 
-- **MinIO-per-service complexity.** If three buckets prove too much operational overhead, the alternative is "shared MinIO under UhhCraft with scoped users." Revisit at the 3-month mark. (Tracked in `plan/development/WEBSMITH-INTEGRATION-PLAN.md` §4.)
-- **GPU host capacity.** If only one GPU host exists for both sidecars, scheduling matters. Tracked in `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` (added in Phase 6).
+- **MinIO-per-service complexity.** If three buckets prove too much operational overhead, the alternative is "shared MinIO under UhhCraft with scoped users." Revisit at the 3-month mark. (Tracked in `plan/archive/development/WEBSMITH-INTEGRATION-PLAN.md` §4.)
+- **GPU host capacity.** If only one GPU host exists for both sidecars, scheduling matters. Tracked in `plan/archive/development/UHHCRAFT-GPU-PASSTHROUGH.md` (added in Phase 6).
 - **CSP for worker-src.** The Three.js canvas uses WASM workers. `caddy-site.j2` includes `worker-src 'self' blob:` — verify in Phase 10.

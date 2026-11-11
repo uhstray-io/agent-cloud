@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import platform
+import posixpath
 import re
 import selectors
 import shlex
@@ -335,17 +336,48 @@ def _read_bounded_regular_file(path: str, *, proc_root_file: bool = False) -> by
         raise Refusal("native_source_unavailable") from None
 
 
+def _validate_alloy_config_components(config_bytes: bytes, *, availability_enabled: bool) -> None:
+    """Allow only known root components, and no config-loading blocks, in the loaded config."""
+    try:
+        config_text = config_bytes.decode("utf-8", "strict")
+    except UnicodeError:
+        raise Refusal("native_binding_components") from None
+    component_blocks = re.findall(
+        r'(?m)^\s*([A-Za-z][A-Za-z0-9_.]*)\s+"([A-Za-z0-9_.-]{1,64})"\s*\{', config_text,
+    )
+    # Refuse the config-loading blocks (import.*, module.*, remotecfg). A keyword followed by
+    # "=" is an attribute, not a block: the blackbox exporter's target sets `module = "health_NN"`,
+    # which every enabled-mode config carries.
+    if not component_blocks or re.search(r"(?m)^\s*(?:import|remotecfg|module)\b(?!\s*=)", config_text):
+        raise Refusal("native_binding_components")
+    component_ids: set[str] = set()
+    for name, label in component_blocks:
+        component_id = f"{name}.{label}"
+        if name not in ALLOY_ROOT_COMPONENT_NAMES or component_id in component_ids:
+            raise Refusal("native_binding_components")
+        component_ids.add(component_id)
+    if not availability_enabled and any(
+        component_id == "prometheus.scrape.alloy_self"
+        or component_id.startswith((
+            "prometheus.exporter.blackbox.", "prometheus.scrape.health_",
+            "prometheus.relabel.availability_health_",
+        ))
+        for component_id in component_ids
+    ):
+        raise Refusal("native_binding_components")
+
+
 def _verify_loaded_candidate_config(
     record: dict[str, Any], process: dict[str, Any], candidate_sha256: str,
     *, availability_enabled: bool, lower_bound: int | None = None,
 ) -> str:
     """Bind actual Alloy argv, read-only config mount and bytes to this candidate."""
     if not re.fullmatch(r"[0-9a-f]{64}", candidate_sha256):
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_digest_invalid")
     pid = record.get("pid")
     started_at = _parse_native_time(record.get("started_at"))
     if lower_bound is not None and (started_at <= lower_bound):
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_started_before_apply")
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as handle:
             command_line = handle.read(AVAILABILITY_PROCESS_BYTES + 1)
@@ -357,17 +389,17 @@ def _verify_loaded_candidate_config(
             raise ValueError
         argv = [piece.decode("utf-8", "strict") for piece in command_line[:-1].split(b"\x00")]
     except (OSError, UnicodeError, ValueError):
-        raise Refusal("native_source_unavailable") from None
+        raise Refusal("native_binding_argv") from None
     listener = "127.0.0.1:12345" if availability_enabled else "0.0.0.0:12345"
     if (
         len(argv) != 4 or os.path.basename(argv[0]) != "alloy"
         or argv[1:] != ["run", f"--server.http.listen-addr={listener}", "/etc/alloy/config.alloy"]
     ):
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_argv")
 
     deployment_dir = os.environ.get("O11Y_DEPLOYMENT_DIR", "")
     if not deployment_dir or not os.path.isabs(deployment_dir) or not os.path.isdir(deployment_dir):
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_compose")
     try:
         (
             compose_cmd, overlays, provider_version, podman_version, stable_overlays, identities,
@@ -375,61 +407,45 @@ def _verify_loaded_candidate_config(
         project = _verify_availability_effective_compose(deployment_dir, compose_cmd, overlays)
         podman_path = identities["podman"]["path"]
     except Exception:
-        raise Refusal("native_source_unavailable") from None
+        raise Refusal("native_binding_compose") from None
     if project != record.get("project"):
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_compose")
     try:
         actual_image_name = _availability_command(
             [podman_path, "inspect", "--format", "{{.ImageName}}", record["id"]], timeout=5,
         ).decode("utf-8", "strict").strip()
     except (Refusal, UnicodeError):
-        raise Refusal("native_source_unavailable") from None
+        raise Refusal("native_binding_image") from None
     if actual_image_name != "docker.io/grafana/alloy:v1.5.1":
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_image")
     config_path = os.path.join(deployment_dir, "config", "config.alloy")
-    config_bytes = _read_bounded_regular_file(config_path)
-    if hashlib.sha256(config_bytes).hexdigest() != candidate_sha256:
-        raise Refusal("native_source_unavailable")
-    actual_config = _read_bounded_regular_file(
-        f"/proc/{pid}/root/etc/alloy/config.alloy", proc_root_file=True,
-    )
-    if actual_config != config_bytes:
-        raise Refusal("native_source_unavailable")
-
     try:
-        config_text = config_bytes.decode("utf-8", "strict")
-    except UnicodeError:
-        raise Refusal("native_source_unavailable") from None
-    component_blocks = re.findall(
-        r'(?m)^\s*([A-Za-z][A-Za-z0-9_.]*)\s+"([A-Za-z0-9_.-]{1,64})"\s*\{', config_text,
-    )
-    if not component_blocks or re.search(r"(?m)^\s*(?:import|remotecfg|module)\b", config_text):
-        raise Refusal("native_source_unavailable")
-    component_ids: set[str] = set()
-    for name, label in component_blocks:
-        component_id = f"{name}.{label}"
-        if name not in ALLOY_ROOT_COMPONENT_NAMES or component_id in component_ids:
-            raise Refusal("native_source_unavailable")
-        component_ids.add(component_id)
-    if not availability_enabled and any(
-        component_id == "prometheus.scrape.alloy_self"
-        or component_id.startswith((
-            "prometheus.exporter.blackbox.", "prometheus.scrape.health_",
-            "prometheus.relabel.availability_health_",
-        ))
-        for component_id in component_ids
-    ):
-        raise Refusal("native_source_unavailable")
+        config_bytes = _read_bounded_regular_file(config_path)
+    except Refusal:
+        raise Refusal("native_binding_config_digest") from None
+    if hashlib.sha256(config_bytes).hexdigest() != candidate_sha256:
+        raise Refusal("native_binding_config_digest")
+    try:
+        actual_config = _read_bounded_regular_file(
+            f"/proc/{pid}/root/etc/alloy/config.alloy", proc_root_file=True,
+        )
+    except Refusal:
+        raise Refusal("native_binding_config_bytes") from None
+    if actual_config != config_bytes:
+        raise Refusal("native_binding_config_bytes")
+
+    _validate_alloy_config_components(config_bytes, availability_enabled=availability_enabled)
 
     mount_bytes = _availability_command(
         [podman_path, "inspect", "--format", "{{json .Mounts}}", record["id"]], timeout=5,
+        refusal="native_binding_mounts",
     )
     try:
         mounts = json.loads(mount_bytes)
     except (ValueError, TypeError, json.JSONDecodeError):
-        raise Refusal("native_source_unavailable") from None
+        raise Refusal("native_binding_mounts") from None
     if not isinstance(mounts, list) or len(mounts) > 32:
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_mounts")
     target_mounts = [
         mount for mount in mounts
         if isinstance(mount, dict) and mount.get("Destination") == "/etc/alloy/config.alloy"
@@ -437,7 +453,10 @@ def _verify_loaded_candidate_config(
     if (
         len(target_mounts) != 1
         or target_mounts[0].get("Type") != "bind"
-        or target_mounts[0].get("Source") != config_path
+        or not isinstance(target_mounts[0].get("Source"), str)
+        # Both sides resolved: podman reports the bind source it was given, and a symlink in
+        # the deployment path must not refuse an otherwise identical mount.
+        or os.path.realpath(target_mounts[0]["Source"]) != os.path.realpath(config_path)
         or target_mounts[0].get("RW") is not False
         or any(
             isinstance(mount, dict) and isinstance(mount.get("Destination"), str)
@@ -446,7 +465,7 @@ def _verify_loaded_candidate_config(
             for mount in mounts
         )
     ):
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_binding_mounts")
     provider_binding = hashlib.sha256(json.dumps({
         "compose_cmd": compose_cmd,
         "overlays": overlays,
@@ -762,7 +781,9 @@ def _validate_compose_inputs_overlay_path(path: str) -> bool:
         return False
 
 
-def _availability_inspect_all(deadline: float, podman_path: str) -> list[dict[str, Any]]:
+def _availability_inspect_all(
+    deadline: float, podman_path: str, *, allow_empty: bool = False,
+) -> list[dict[str, Any]]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise Refusal("namespace_runtime_unreadable")
@@ -774,6 +795,9 @@ def _availability_inspect_all(deadline: float, podman_path: str) -> list[dict[st
         ids = ids_raw.decode("ascii", "strict").splitlines()
     except UnicodeError:
         raise Refusal("namespace_runtime_unreadable") from None
+    if allow_empty and not ids:
+        # The producer identity read counts Alloy records itself; zero containers is a count.
+        return []
     if not 1 <= len(ids) <= MAX_AVAILABILITY_CONTAINERS or any(
         not re.fullmatch(r"[0-9a-f]{12,64}", container_id) for container_id in ids
     ) or len(ids) != len(set(ids)):
@@ -950,6 +974,49 @@ def _availability_compose_port(port: Any) -> tuple[int, int, str | None, str]:
     return target_number, published_number, host_ip, protocol
 
 
+def _availability_compose_mount(entry: Any, deployment_dir: str) -> dict[str, Any]:
+    """Normalize one effective-compose volume entry, long or short form, or refuse.
+
+    `podman-compose config` keeps the short form a compose file declares
+    ("./config/config.alloy:/etc/alloy/config.alloy:ro") where Docker Compose expands it,
+    so both forms reach this check. A relative source resolves against the deployment
+    directory, never the helper's working directory.
+    """
+    if isinstance(entry, dict):
+        mount_type, source, target = entry.get("type"), entry.get("source"), entry.get("target")
+        read_only = entry.get("read_only") is True
+    elif isinstance(entry, str) and "\x00" not in entry:
+        parts = entry.split(":")
+        if len(parts) == 1:
+            mount_type, source, target, mode = "volume", None, parts[0], ""
+        elif len(parts) in {2, 3}:
+            source, target = parts[0], parts[1]
+            mode = parts[2] if len(parts) == 3 else ""
+            mount_type = "bind" if source.startswith((".", "/", "~")) else "volume"
+        else:
+            raise Refusal("namespace_candidate_alloy_spec")
+        options = {option for option in mode.split(",") if option}
+        if {"ro", "rw"} <= options:
+            raise Refusal("namespace_candidate_alloy_spec")
+        read_only = "ro" in options
+    else:
+        raise Refusal("namespace_candidate_alloy_spec")
+    if (
+        not isinstance(target, str) or not target.startswith("/")
+        or (source is not None and not isinstance(source, str))
+    ):
+        # A container target is always absolute. Refusing anything else also refuses the
+        # ambiguous two-field "target:mode" form ("/etc/alloy:ro") instead of guessing.
+        raise Refusal("namespace_candidate_alloy_spec")
+    # normpath keeps exactly two leading slashes (POSIX), so collapse them before comparing.
+    target = "/" + posixpath.normpath(target).lstrip("/")
+    if mount_type == "bind" and isinstance(source, str):
+        source = os.path.expanduser(source)
+        if not os.path.isabs(source):
+            source = os.path.join(deployment_dir, source)
+    return {"type": mount_type, "source": source, "target": target, "read_only": read_only}
+
+
 def _verify_availability_effective_compose(
     deployment_dir: str, compose_cmd: list[str], overlays: list[str],
 ) -> str:
@@ -1026,21 +1093,18 @@ def _verify_availability_effective_compose(
         or not isinstance(volumes, list)
     ):
         raise Refusal("namespace_candidate_alloy_spec")
-    config_mounts = [
-        mount for mount in volumes
-        if isinstance(mount, dict) and mount.get("target") == "/etc/alloy/config.alloy"
-    ]
+    mounts = [_availability_compose_mount(mount, deployment_dir) for mount in volumes]
+    config_mounts = [mount for mount in mounts if mount["target"] == "/etc/alloy/config.alloy"]
     if (
         len(config_mounts) != 1
-        or config_mounts[0].get("type") != "bind"
-        or not isinstance(config_mounts[0].get("source"), str)
+        or config_mounts[0]["type"] != "bind"
+        or not isinstance(config_mounts[0]["source"], str)
         or os.path.realpath(config_mounts[0]["source"]) != expected_mount_source
-        or config_mounts[0].get("read_only") is not True
+        or config_mounts[0]["read_only"] is not True
         or any(
-            isinstance(mount, dict) and isinstance(mount.get("target"), str)
-            and mount.get("target") != "/etc/alloy/config.alloy"
-            and mount.get("target").startswith("/etc/alloy/")
-            for mount in volumes
+            mount is not config_mounts[0]
+            and (mount["target"] in {"/", "/etc", "/etc/alloy"} or mount["target"].startswith("/etc/alloy/"))
+            for mount in mounts
         )
     ):
         raise Refusal("namespace_candidate_alloy_spec")
@@ -4289,16 +4353,16 @@ def _availability_self_identity(environment: str, cluster: str) -> dict[str, str
 def _active_prometheus_self_target(
     targets_raw: bytes | str, *, environment: str, cluster: str,
 ) -> dict[str, Any]:
-    response = _json_document(targets_raw, "native_source_unavailable")
+    response = _json_document(targets_raw, "native_targets_invalid")
     data = response.get("data")
     active = data.get("activeTargets") if isinstance(data, dict) else None
     if not isinstance(active, list) or len(active) > MAX_ROWS:
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_targets_invalid")
     identity = _availability_self_identity(environment, cluster)
     matches = []
     for target in active:
         if not isinstance(target, dict) or not isinstance(target.get("labels"), dict):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_targets_invalid")
         labels = target["labels"]
         if labels.get("job") == "alloy" and labels.get("instance") == "alloy:12345":
             if labels != identity:
@@ -4435,16 +4499,16 @@ def _current_alloy_identity() -> tuple[dict[str, Any], dict[str, Any]]:
         podman_identity = identities.get("podman") if isinstance(identities, dict) else None
         podman_path = podman_identity.get("path") if isinstance(podman_identity, dict) else None
         if not isinstance(podman_path, str) or not os.path.isabs(podman_path):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_podman_unavailable")
         records = _availability_inspect_all(
-            time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
+            time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path, allow_empty=True,
         )
         candidates = [record for record in records if record.get("service") == "alloy"]
         if len(candidates) != 1:
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_alloy_count")
         record = candidates[0]
         if not record.get("running") or not record.get("started_at") or not record.get("pid"):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_alloy_not_running")
         process = _availability_process_identity(record["pid"])
     except Refusal as error:
         # The source gate accepts only native and generic reasons. A namespace category from the
@@ -4501,7 +4565,7 @@ def collect_current_availability_source(
         any(before_record.get(field) != after_record.get(field) for field in stable_fields)
         or before_process != after_process
     ):
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_source_identity_changed")
     if prometheus_present and native_present:
         raise Refusal("native_source_ambiguous")
     if not prometheus_present and not native_present:
@@ -4513,7 +4577,7 @@ def collect_current_availability_source(
         availability.get("enabled") is True or intended_source == "alloy" or previous_source == "alloy"
     ):
         if candidate_config_sha256 is None:
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_binding_digest_invalid")
         if (
             previous_source is not None and previous_source != current_source
             and (
@@ -4521,9 +4585,9 @@ def collect_current_availability_source(
                 or container_sha256 == previous_container_sha256 or started_at <= lower_bound
             )
         ):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_source_transition_unproven")
         if lower_bound is not None and started_at <= lower_bound:
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_binding_started_before_apply")
         config_binding = _verify_loaded_candidate_config(
             before_record, before_process, candidate_config_sha256,
             availability_enabled=availability.get("enabled") is True,
@@ -4537,7 +4601,7 @@ def collect_current_availability_source(
         )
         if require_health_targets and previous_source == "alloy":
             if config_binding is None or lower_bound is None or previous_container_sha256 is None:
-                raise Refusal("native_source_unavailable")
+                raise Refusal("native_source_transition_unproven")
             source_projection["native_components"] = _require_native_components_absent(availability)
         source = "prometheus"
     else:
@@ -4564,7 +4628,7 @@ def collect_current_availability_source(
                 lower_bound=lower_bound,
             ) != config_binding
         ):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_source_identity_changed")
     return {
         "status": "observed", "source": source, "intended_source": intended_source,
         "matches_intended": source == intended_source, "evidence": source_projection,
@@ -4587,28 +4651,12 @@ def _require_curl_version() -> None:
         raise Refusal("curl_unsupported")
 
 
-def collect() -> dict[str, Any]:
-    _require_curl_version()
-    targets_raw = _run_api("/api/v1/targets?state=active")
-    samples_raw = _run_api("/api/v1/query?query=max_over_time%28scrape_samples_scraped%5B24h%5D%29")
-    series_end = int(time.time())
-    baseline = summarize(
-        targets_raw,
-        samples_raw,
-        _run_probe,
-        _run_series_query,
-        series_end - 86400,
-        series_end,
-    )
-    try:
-        loaded_limits = _loaded_limit_readback(targets_raw)
-    except Refusal as error:
-        loaded_limits = {"status": "unavailable", "reason": error.category}
-    except Exception:
-        loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
+def _survey_source_result(
+    targets_raw: bytes | str, loaded_limits: Any, source_text: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The survey's current-producer read: a fixed result, never an exception or its text."""
     source_context = None
     source_result = None
-    source_text = os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON", "")
     if source_text:
         try:
             source_context = _validate_availability_source_payload(_json_input_bytes(source_text))
@@ -4632,9 +4680,34 @@ def collect() -> dict[str, Any]:
         except Exception:
             source_context = source_context or {"emit": True}
             source_result = {
-                "status": "unavailable", "reason": "native_source_unavailable",
+                "status": "unavailable", "reason": "native_source_internal_error",
                 "source": "unknown", "intended_source": "unknown", "matches_intended": False,
             }
+    return source_context, source_result
+
+
+def collect() -> dict[str, Any]:
+    _require_curl_version()
+    targets_raw = _run_api("/api/v1/targets?state=active")
+    samples_raw = _run_api("/api/v1/query?query=max_over_time%28scrape_samples_scraped%5B24h%5D%29")
+    series_end = int(time.time())
+    baseline = summarize(
+        targets_raw,
+        samples_raw,
+        _run_probe,
+        _run_series_query,
+        series_end - 86400,
+        series_end,
+    )
+    try:
+        loaded_limits = _loaded_limit_readback(targets_raw)
+    except Refusal as error:
+        loaded_limits = {"status": "unavailable", "reason": error.category}
+    except Exception:
+        loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
+    source_context, source_result = _survey_source_result(
+        targets_raw, loaded_limits, os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON", ""),
+    )
     try:
         alert_inputs = _alert_input_availability(
             targets_raw,
@@ -4797,7 +4870,7 @@ def _availability_source_action() -> dict[str, Any]:
     declaration = _json_input_bytes(source_json) if source_json is not None else _input_document()
     source_context = _validate_availability_source_payload(declaration)
     environment, cluster = source_context["environment"], source_context["cluster"]
-    targets_raw = _run_api("/api/v1/targets?state=active", "native_source_unavailable")
+    targets_raw = _run_api("/api/v1/targets?state=active", "native_targets_unavailable")
     loaded = _loaded_limit_readback(targets_raw)
     return collect_current_availability_source(
         targets_raw, loaded, source_context["availability"], source_context["shared_limits"],
@@ -4911,7 +4984,7 @@ def main() -> int:
             code = 2
         except Exception:
             result = {
-                "status": "unavailable", "reason": "native_source_unavailable",
+                "status": "unavailable", "reason": "native_source_internal_error",
                 "source": "unknown", "intended_source": "unknown",
                 "matches_intended": False,
             }

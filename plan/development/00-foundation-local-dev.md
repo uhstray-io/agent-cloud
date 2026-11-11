@@ -1,5 +1,5 @@
 # 00 — Foundation & Local-Dev Bootstrap
-> **Consolidates:** LOCAL-DEV-DEPLOYMENT.md, LOCAL-DEV-12A-IMPLEMENTATION.md, LOCAL-DEV-TLS-TRUST.md, INTERNAL-CA-DEPLOYMENT.md, DNS-SERVER-DEPLOYMENT.md (originals archived in `plan/archive/`)
+> **Consolidates:** LOCAL-DEV-DEPLOYMENT.md, LOCAL-DEV-12A-IMPLEMENTATION.md, LOCAL-DEV-TLS-TRUST.md, INTERNAL-CA-DEPLOYMENT.md, DNS-SERVER-DEPLOYMENT.md (originals archived in [`plan/archive/`](../archive/README.md))
 >
 > **Depends on:** —
 >
@@ -201,7 +201,7 @@ Loopback ports alone give services addresses, not names. A local DNS server give
 
 - [x] `make local-bootstrap` on a clean machine: OpenBao seeded → local Semaphore up → templates registered (45) → its environment carries the local AppRole *(proven: Check Secrets ran through local Semaphore with AppRole injection — 3 `LOCAL_FAKE_` keys PRESENT)*
 - [ ] `make local-deploy-uhhcraft` (cleanest composable exemplar) — runs **through the local Semaphore template** *(status 2026-06-12: pipeline proven through Phase 1 + image pulls over the mounted engine socket — postgres/redis/minio pulled; **blocked at the app image: `ghcr.io/uhstray-io/uhhcraft` is private (403)**, see §11/[16])*
-- [ ] `make local-validate` — local "Validate All" template, skip-unreachable for undeployed services
+- [ ] `make local-validate` — local "Validate All Services (Local)" template, skip-unreachable for undeployed services
 - [ ] Idempotency + reset: re-deploy no-ops; `make local-clean` then re-bootstrap recovers *(bootstrap idempotency proven across ≥6 re-runs; clean-path round-trip still to exercise)*
 
 **Gate 1:** fresh clone → healthy core in **<10 min cold / <3 min warm** and **minimal tier within the ≤4 GB RAM target** (measured, recorded in docs); the deploy demonstrably ran via local Semaphore (task visible in its UI/API) with credentials injected from local OpenBao; same playbook SHA as prod; `secrets.*` in rendered `.env` provably from local OpenBao (change a seed → redeploy → value changes).
@@ -264,7 +264,7 @@ flowchart LR
   P --> CI[Gate 3<br/>GitHub Actions CI<br/>linters, security scan, BATS, CodeRabbit]
   CI --> RC{risk class?}
   RC -->|low: docs-only| M[Gate 5<br/>merge -> redeploy from main]
-  RC -->|medium: any service code,<br/>tasks, playbooks, compose| BD[Gate 4<br/>prod branch-deploy via service_branch<br/>+ Validate All / Validate Secrets]
+  RC -->|medium: any service code,<br/>tasks, playbooks, compose| BD[Gate 4<br/>prod branch-deploy via service_branch<br/>+ Validate All Services / Validate Secrets]
   RC -->|high: secret-flow, OpenBao policies,<br/>multi-service| BDH[Gate 4 + stated rollback path in PR]
   BD --> M
   BDH --> M

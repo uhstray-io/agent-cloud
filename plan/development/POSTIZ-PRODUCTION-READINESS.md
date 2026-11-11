@@ -2,6 +2,8 @@
 
 **Date:** 2026-09-05
 **Status:** ACTIVE
+> **Parent plan:** [Postiz Social Publishing](14-postiz-social-publishing.md)
+
 **Context:** Prepare a scoped Postiz release and a reproducible provider-credential input workflow. Deployment, credential validity, account connection and social publishing are separate acceptance gates.
 
 ## Problem

@@ -41,6 +41,10 @@ CANDIDATE_FIELDS = {
     "label_value_length_limit": 20_480,
 }
 
+# Jobs whose sample limit is held to the stricter o11y_scrape_sample_limit ceiling. Must match the
+# jobs prometheus.yml.j2 and scrape-host-node.yml.j2 cap (and Alloy's own self-scrape in env.j2,
+# job "alloy"); test_o11y_scrape_budgets.py renders the templates and compares.
+CEILED_SAMPLE_JOBS = frozenset({"receiver-host", "host-node", "alloy"})
 MAX_ACTIVE_TARGETS = 10_000
 MAX_HOST_SAMPLE_LIMIT = 20_000
 MAX_CONFIG_BYTES = 16 * 1024 * 1024
@@ -118,6 +122,14 @@ NATIVE_SOURCE_REFUSAL_REASONS = frozenset({
     "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
     "native_debug_stale", "native_debug_mismatch", "native_readback_timeout", "native_target_mismatch",
     "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
+    # Decision points of the post-apply candidate binding and source transition.
+    "native_binding_digest_invalid", "native_binding_started_before_apply", "native_binding_argv",
+    "native_binding_compose", "native_binding_image", "native_binding_config_digest",
+    "native_binding_config_bytes", "native_binding_components", "native_binding_mounts",
+    "native_source_identity_changed", "native_source_transition_unproven", "native_source_internal_error",
+    # Decision points of the current-producer identity and the Prometheus targets read.
+    "native_identity_podman_unavailable", "native_identity_alloy_count", "native_identity_alloy_not_running",
+    "native_targets_invalid", "native_targets_unavailable",
 })
 SOURCE_GATE_REFUSAL_REASONS = READBACK_REASONS | SOURCE_READBACK_REASONS | NATIVE_SOURCE_REFUSAL_REASONS
 SOURCE_JOB_CATEGORIES = {
@@ -244,7 +256,7 @@ def o11y_scrape_budget_preview(
     results = []
     for item in receipt["jobs"]:
         sample_limit = limits["sample_limit"]
-        if item["job"] in {"receiver-host", "host-node"}:
+        if item["job"] in CEILED_SAMPLE_JOBS:
             sample_limit = min(sample_limit, sample_cap)
 
         comparisons = (
@@ -419,7 +431,7 @@ def _o11y_loaded_scrape_limit_coverage(
                 if loaded is None or loaded > maximum:
                     return _loaded_unavailable("invalid_loaded_limit")
                 expected = limits[candidate_key]
-                if category == "receiver-host" and config_key == "sample_limit":
+                if category in CEILED_SAMPLE_JOBS and config_key == "sample_limit":
                     expected = min(expected, sample_cap)
                 if loaded != expected:
                     category_results.setdefault(category, []).append("mismatch")
@@ -882,12 +894,56 @@ def o11y_availability_namespace_diagnostic(result: Any) -> str:
         return generic
 
 
+# Finite local-dev limits env.j2 has always applied when local inventory declares none.
+_LOCAL_SCRAPE_LIMIT_DEFAULTS = {
+    "body_size_limit_bytes": 16777216,
+    "sample_limit": 10000,
+    "label_limit": 64,
+    "label_name_length_limit": 128,
+    "label_value_length_limit": 2048,
+}
+
+
+def o11y_effective_scrape_limits(limits: Any, sample_ceiling: Any = 2000, local: Any = False,
+                                 reviewed: Any = False) -> dict[str, Any]:
+    """The scrape limits Alloy actually runs with: the one definition env.j2 renders.
+
+    Unreviewed production limits are withheld ({}), local mode falls back to finite defaults,
+    and `o11y_scrape_sample_limit` stays the stricter ceiling on `sample_limit`. Every
+    source-review caller passes this result as `shared_limits`, so the gate compares the live
+    Alloy scrape against the value it was actually given.
+    """
+    if not (local is True or reviewed is True):
+        return {}
+    if limits is None:
+        limits = _LOCAL_SCRAPE_LIMIT_DEFAULTS if local is True else {}
+    if not isinstance(limits, Mapping):
+        return {}
+    effective = dict(limits)
+    sample, ceiling = _limit_int(effective.get("sample_limit")), _limit_int(sample_ceiling)
+    if sample is not None and ceiling is not None:
+        effective["sample_limit"] = min(sample, ceiling)
+    return effective
+
+
+def _limit_int(value: Any) -> int | None:
+    """An integer limit, accepting the numeric strings the templates' `| int` always accepted."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[0-9]{1,9}", value.strip()):
+        return int(value.strip())
+    return None
+
+
 class FilterModule:
     """Expose the pure preview as an Ansible filter."""
 
     def filters(self) -> dict[str, Any]:
         return {
             "o11y_scrape_budget_preview": o11y_scrape_budget_preview,
+            "o11y_effective_scrape_limits": o11y_effective_scrape_limits,
             "o11y_loaded_scrape_limit_coverage": o11y_loaded_scrape_limit_coverage,
             "o11y_source_scrape_limit_coverage": o11y_source_scrape_limit_coverage,
             "o11y_availability_source_coverage": o11y_availability_source_coverage,

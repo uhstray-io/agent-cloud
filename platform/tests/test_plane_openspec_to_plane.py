@@ -8,6 +8,7 @@ mode.
 
 import http.server
 import importlib.util
+import itertools
 import json
 import pathlib
 import re
@@ -175,6 +176,24 @@ def test_task_id_shapes_are_exact():
         (f"{REPO}/delta/8.0b", "8.0b open after a struck id is imported"),
     ]
     assert out["skipped"] == [{"change": "delta", "line": 9, "reason": "superseded"}]
+
+
+def test_task_id_patterns_accept_exactly_what_the_ambiguous_ones_did():
+    # The patterns were rewritten to remove polynomial backtracking (CodeQL py/redos). Every string up to length 7
+    # over an alphabet that exercises each branch must get the same answer from the old and the new pattern.
+    old_task = re.compile(r"^(\d+[A-Z]?(?:\.\d+[a-z0-9]*)+)(?=\s|$)")
+    old_struck = re.compile(r"^~~(\d+[A-Z]?(?:\.\d+[a-z0-9]*)+)~~(?=\s|$)")
+    alphabet = "0a1Z. "
+    for length in range(1, 8):
+        for chars in itertools.product(alphabet, repeat=length):
+            text = "".join(chars)
+            for old, new in ((old_task, lib.TASK_ID), (old_struck, lib.STRUCK_ID)):
+                subject = f"~~{text}" if old is old_struck else text
+                got_old, got_new = old.match(subject), new.match(subject)
+                assert (got_old and got_old.group(1)) == (got_new and got_new.group(1)), subject
+            struck_subject = f"~~{text}~~ x"
+            got_old, got_new = old_struck.match(struck_subject), lib.STRUCK_ID.match(struck_subject)
+            assert (got_old and got_old.group(1)) == (got_new and got_new.group(1)), struck_subject
 
 
 def test_continuation_nesting_and_stops_are_exact():

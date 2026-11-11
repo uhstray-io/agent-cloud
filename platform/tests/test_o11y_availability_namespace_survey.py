@@ -9,6 +9,7 @@ are checked as playbook structure, and the report is also run under ansible-play
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -725,15 +726,50 @@ def test_producer_refusal_from_provider_inspect_or_process_is_the_generic_source
 
 
 def test_native_only_producer_refusal_keeps_its_native_reason(monkeypatch, capsys, tmp_path):
-    # No single Alloy record is a native refusal; the gate's reason set must not widen for it.
+    # No single Alloy record is a native refusal with its own word, not a namespace one.
     _provider_mocks(monkeypatch, tmp_path)
     loki = f"{PRODUCER_ID}\tsha256:loki\ttrue\t4101\t2026-10-28T00:00:00Z\to11y\t{{}}\to11y\tloki\t/o11y-loki\n"
     monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=loki))
     code, readback = _source_cli(monkeypatch, capsys)
-    assert code == 2 and readback["reason"] == "native_source_unavailable"
+    assert code == 2 and readback["reason"] == "native_identity_alloy_count"
     assert BUDGET.o11y_availability_source_gate_diagnostic(
         {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
-    ) == "native_source_unavailable"
+    ) == "native_identity_alloy_count"
+
+
+def test_a_stopped_alloy_record_names_the_not_running_decision(monkeypatch, capsys, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    stopped = f"{PRODUCER_ID}\tsha256:alloy\tfalse\t0\t\to11y\t{{}}\to11y\talloy\t/o11y-alloy\n"
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row=stopped))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2 and readback["reason"] == "native_identity_alloy_not_running"
+    assert BUDGET.o11y_availability_source_gate_diagnostic(
+        {"rc": code, "stdout": json.dumps(readback), "stderr": ""}
+    ) == "native_identity_alloy_not_running"
+
+
+@pytest.mark.parametrize("targets_raw", [
+    b"not json", b'{"status":"success","data":{"activeTargets":{}}}',
+    b'{"status":"success","data":{"activeTargets":["not-a-mapping"]}}',
+])
+def test_a_malformed_prometheus_targets_response_names_the_targets_decision(targets_raw):
+    with pytest.raises(GATE.Refusal, match="native_targets_invalid"):
+        GATE._active_prometheus_self_target(targets_raw, environment="prod", cluster="prod-west")
+
+
+def test_a_failed_targets_fetch_names_the_targets_fetch_decision(monkeypatch, capsys):
+    def refused(_path, reason="query_unavailable", **_kwargs):
+        raise GATE.Refusal(reason)
+
+    monkeypatch.setattr(GATE, "_validate_availability_source_payload", lambda _payload: {
+        "environment": "prod", "cluster": "prod-west",
+    })
+    monkeypatch.setattr(GATE, "_input_document", dict)
+    monkeypatch.delenv("O11Y_AVAILABILITY_SOURCE_JSON", raising=False)
+    monkeypatch.setattr(GATE, "_run_api", refused)
+    monkeypatch.setattr(GATE.sys, "argv", ["summarize-o11y-scrape-baseline.py", "--verify-availability-source"])
+    assert GATE.main() == 2
+    assert json.loads(capsys.readouterr().out)["reason"] == "native_targets_unavailable"
 
 
 def _candidate_cli(monkeypatch, capsys, tmp_path):
@@ -863,6 +899,14 @@ ALLOY_SPEC_DECISIONS = [
     lambda c: _alloy(c)["volumes"].append(
         {"type": "bind", "source": "/tmp", "target": "/etc/alloy/extra.alloy", "read_only": True}
     ),
+    lambda c: _alloy(c)["volumes"].append({"type": "volume", "target": "/etc/alloy", "read_only": True}),
+    lambda c: _alloy(c)["volumes"].append({"type": "bind", "source": "/tmp", "target": "/etc", "read_only": True}),
+    lambda c: _alloy(c)["volumes"].append(
+        {"type": "bind", "source": "/tmp", "target": "/etc/alloy/", "read_only": True}
+    ),
+    lambda c: _alloy(c)["volumes"].append(
+        {"type": "bind", "source": "/tmp", "target": "//etc/alloy", "read_only": True}
+    ),
 ]
 PORT_DECISIONS = [
     lambda c: _alloy(c).update(ports="4317:4317"),
@@ -920,6 +964,80 @@ def test_candidate_pod_refusals_name_the_pod_decision(monkeypatch, tmp_path, mut
 @pytest.mark.parametrize("mutate", ALLOY_SPEC_DECISIONS)
 def test_candidate_alloy_spec_refusals_name_the_alloy_spec_decision(monkeypatch, tmp_path, mutate):
     assert _mutated_refusal(monkeypatch, tmp_path, mutate) == "namespace_candidate_alloy_spec"
+
+
+# ---- the shape `podman-compose config` actually emits --------------------------------------
+# Captured from `podman-compose` 1.6.0 `config` over compose.yml + compose.prod.yml +
+# compose.availability.yml on 2026-11-10. Unlike Docker Compose it keeps the short volume and
+# port forms the compose file declares. The long-form fixture above alone hid this: the first
+# real enabled deploy (Semaphore task 14401) refused with namespace_candidate_alloy_spec.
+PODMAN_COMPOSE_ALLOY_VOLUMES = ["./config/config.alloy:/etc/alloy/config.alloy:ro"]
+PODMAN_COMPOSE_ALLOY_PORTS = ["127.0.0.1:4317:4317", "127.0.0.1:4318:4318"]
+
+
+def _podman_compose_config(deployment_dir):
+    config = _candidate_config(deployment_dir)
+    _alloy(config)["volumes"] = list(PODMAN_COMPOSE_ALLOY_VOLUMES)
+    _alloy(config)["ports"] = list(PODMAN_COMPOSE_ALLOY_PORTS)
+    return config
+
+
+def test_candidate_accepts_the_short_forms_podman_compose_emits(monkeypatch, tmp_path):
+    assert _candidate(monkeypatch, tmp_path, _podman_compose_config(str(tmp_path))) == "o11y"
+
+
+def test_candidate_reads_a_double_slash_config_target_as_the_config_mount(monkeypatch, tmp_path):
+    config = _podman_compose_config(str(tmp_path))
+    _alloy(config)["volumes"] = ["./config/config.alloy://etc/alloy/config.alloy:ro"]
+    assert _candidate(monkeypatch, tmp_path, config) == "o11y"
+
+
+def test_candidate_resolves_a_relative_source_against_the_deployment_dir(monkeypatch, tmp_path):
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert _candidate(monkeypatch, tmp_path, _podman_compose_config(str(tmp_path))) == "o11y"
+    config = _candidate_config(str(tmp_path))
+    _alloy(config)["volumes"][0]["source"] = "./config/config.alloy"
+    assert _candidate(monkeypatch, tmp_path, config) == "o11y"
+
+
+SHORT_FORM_ALLOY_SPEC_DECISIONS = [
+    ["./config/config.alloy:/etc/alloy/config.alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:rw"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro,rw"],
+    ["/etc/passwd:/etc/alloy/config.alloy:ro"],
+    ["alloy-config:/etc/alloy/config.alloy:ro"],
+    ["/etc/alloy/config.alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro:extra"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "./config/config.alloy:/etc/alloy/config.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/extra.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/conf.d"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", 7],
+    ["./config/config.alloy::ro"],
+    # Shadowing or ambiguous targets: a mount at /etc/alloy or an ancestor, or a relative target.
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/etc/alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/etc/alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/alloy/../alloy/x:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc//alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:/etc/./alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc/alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp://etc/alloy/extra.alloy:ro"],
+    ["./config/config.alloy:/etc/alloy/config.alloy:ro", "/tmp:etc/alloy:ro"],
+    ["./config/config.alloy:etc/alloy/config.alloy:ro"],
+]
+
+
+@pytest.mark.parametrize("volumes", SHORT_FORM_ALLOY_SPEC_DECISIONS)
+def test_candidate_short_form_mount_refusals_name_the_alloy_spec_decision(monkeypatch, tmp_path, volumes):
+    config = _podman_compose_config(str(tmp_path))
+    _alloy(config)["volumes"] = volumes
+    assert _refusal_category(lambda: _candidate(monkeypatch, tmp_path, config)) == "namespace_candidate_alloy_spec"
 
 
 @pytest.mark.parametrize("mutate", PORT_DECISIONS)
@@ -1059,3 +1177,60 @@ def test_producer_source_gate_folds_each_candidate_word_to_the_generic_reason(mo
         "status": "unavailable", "reason": "namespace_unverified",
         "source": "unknown", "intended_source": "unknown", "matches_intended": False,
     }
+
+
+
+def test_every_native_word_the_helper_raises_reaches_the_gate_diagnostic():
+    """A word the helper raises but the filter drops would be reported as producer_evidence_invalid."""
+    source = (ROOT / "platform/playbooks/files/summarize-o11y-scrape-baseline.py").read_text(encoding="utf-8")
+    raised = set(re.findall(r'Refusal\("(native_[a-z_]+)"\)', source))
+    raised |= set(re.findall(r'_run_api\([^)]*?"(native_[a-z_]+)"', source))
+    raised |= set(re.findall(r'"status": "unavailable", "reason": "(native_[a-z_]+)"', source))
+    assert raised, "no native refusal words found"
+    missing = raised - BUDGET.SOURCE_GATE_REFUSAL_REASONS
+    assert not missing, f"raised but dropped by the diagnostic filter: {sorted(missing)}"
+    for word in raised:
+        readback = {"status": "unavailable", "reason": word, "source": "unknown",
+                    "intended_source": "unknown", "matches_intended": False}
+        assert BUDGET.o11y_availability_source_gate_diagnostic(
+            {"rc": 2, "stdout": json.dumps(readback), "stderr": ""}
+        ) == word
+
+
+def test_an_unusable_podman_path_names_the_podman_identity_decision(monkeypatch):
+    monkeypatch.setattr(GATE, "_availability_provider_context", lambda: (
+        ["podman-compose"], [], "1.3.0", "4.9.3", [], {"podman": {"path": "podman"}},
+    ))
+    with pytest.raises(GATE.Refusal, match="native_identity_podman_unavailable"):
+        GATE._current_alloy_identity()
+
+
+def test_the_survey_source_read_turns_an_unexpected_exception_into_its_own_word(monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("detail that must never be printed")
+
+    monkeypatch.setattr(GATE, "_validate_availability_source_payload", lambda _payload: {
+        "availability": {}, "shared_limits": {}, "environment": "prod", "cluster": "prod-west",
+        "intended_source": "alloy", "lower_bound": None, "freshness_seconds": 300,
+        "require_health_targets": True, "candidate_config_sha256": None,
+        "previous_source": None, "previous_container_sha256": None,
+    })
+    monkeypatch.setattr(GATE, "collect_current_availability_source", explode)
+    _context, result = GATE._survey_source_result(b"{}", {}, json.dumps({"reviewed": True}))
+    assert result["reason"] == "native_source_internal_error"
+    assert "detail" not in json.dumps(result)
+
+
+
+def test_zero_containers_is_an_alloy_count_for_the_producer_identity(monkeypatch, capsys, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row="", ids=""))
+    code, readback = _source_cli(monkeypatch, capsys)
+    assert code == 2 and readback["reason"] == "native_identity_alloy_count"
+
+
+def test_zero_containers_still_refuses_the_namespace_inspect(monkeypatch, tmp_path):
+    _provider_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr(GATE, "_availability_command", _producer_command(row="", ids=""))
+    with pytest.raises(GATE.Refusal, match="namespace_runtime_unreadable"):
+        GATE._availability_inspect_all(GATE.time.monotonic() + 5, "/usr/bin/podman")

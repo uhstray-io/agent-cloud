@@ -478,10 +478,10 @@ all:
           service_name: skynet
           monorepo_deploy_path: platform/services/skynet/deployment
           container_engine: podman
-          # skynet main 73bcbafc (publish-tier2 run 42554401870, 2026-11-09: launches only through the launch
-          # gate, skynet#14); bump to the digest skynet CI
-          # prints in its publish job, never a tag. The deploy refuses a tag or any non-digest value.
-          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:7bcd4153bb1c22462bfefad0bcaec740ea51c18249d0fc6f8a94f5d01884578a
+          # skynet main 031863d (publish-tier2 run 42712964432, 2026-11-09: HTTPS listener skynet#17, questions
+          # route skynet#16); bump to the digest skynet CI prints in its publish job, never a tag. The deploy
+          # refuses a tag or any non-digest value.
+          skynet_image: ghcr.io/uhstray-io/skynet-tier2@sha256:7eb9fa7b114dc51784745a19ec2a7d03f5254ad7e3cf774694d99f925f62dbe6
           skynet_gateway_url: https://inference.agent-cloud.test
           skynet_model: qwen3.8-flash-next
           skynet_opa_url: https://opa.agent-cloud.test
@@ -493,6 +493,21 @@ all:
           # local-dev network, so skynet reaches the container port 8443 by name. Deploy the gate first:
           # skynet's deploy reads its caller token from the gate's OpenBao path.
           skynet_launch_gate_url: https://launch-gate.local.agent-cloud.test:8443
+          # HTTPS: skynet serves on container 8443, published on loopback 18444 (18443 is the launch gate's).
+          # Local probes reach it by its local-dev alias skynet.local.agent-cloud.test on 8443. The leaf's dir is
+          # <local_monorepo_dir>/<monorepo_deploy_path>/certs/<name>, as for launch_gate_svc above.
+          skynet_tls: true
+          skynet_bind: 127.0.0.1
+          skynet_port: 18444
+          dns_site: local
+          dns_zone: agent-cloud.test
+          internal_leaves:
+            - name: skynet-server
+              host: skynet-local
+              profile: server
+              dir: /var/lib/agent-cloud-deploy/agent-cloud/platform/services/skynet/deployment/certs/skynet-server
+              sans: [skynet.local.agent-cloud.test]
+              reload: none
 
     # postiz — social-media scheduling and publishing. Five containers: the app
     # (the only one publishing), its own Postgres + Redis, and the Temporal

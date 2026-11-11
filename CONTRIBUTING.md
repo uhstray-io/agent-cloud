@@ -83,8 +83,8 @@ cd platform/services/netbox/deployment
 PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.12 -m pytest tests/ -v
 cd -
 
-# Bash tests
-bats platform/tests/
+# Bash tests (CI runs files in parallel; `--jobs` needs GNU parallel, in the Brewfile)
+bats --jobs 4 --no-parallelize-within-files platform/tests/
 
 # Go (required for the full Python test/pre-push suite; Go 1.26+)
 # The native Podman-template regression in the Python suite executes Go's text/template.
@@ -108,20 +108,21 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 
 ```bash
 # macOS
-pip install ruff ansible-lint yamllint bandit
-brew install shellcheck bats-core hadolint
+brew install uv              # Python dependencies and tools are managed with uv
+uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
+brew install shellcheck bats-core parallel hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
 
-# Python 3.12 (required for tests)
-brew install python@3.12
-# The test suites' dependencies, declared once and installed by CI from the same file.
-# It includes pytest-xdist, which the pre-push hook uses to run the suite in parallel.
-pip3.12 install -r platform/requirements-test.txt
-
-# Controller packages — cryptography is needed by the BATS suite, which signs a real
-# GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
-# with a reason rather than failing, but they are then not verifying anything.
-pip3.12 install -r platform/requirements-controller.txt
+# The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
+# `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,
+# exactly as CI does; the pre-push hook runs the same command itself. The `controller`
+# group's cryptography is needed by the BATS suite, which signs a real GitHub App
+# assertion with a throwaway key; without it those tests SKIP rather than verify.
+uv sync --locked
+# To run a suite by hand on the locked versions (the playbook tests find ansible-playbook
+# on PATH, so swapping the interpreter alone is not enough):
+#   PATH="$PWD/.venv/bin:$PATH" pytest -q
+#   PATH="$PWD/.venv/bin:$PATH" bats platform/tests/
 
 # The complete BATS suite also requires a usable existing Podman or Docker engine
 # for its native PromQL test; do not start a daemon or VM just for the test.
@@ -161,9 +162,12 @@ it is collectable, with the same test paths, working directory and `PYTHONPATH` 
 via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
 so you do not need to remember them.
 
-`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
-3.12 and installs the test dependencies, while the hook uses whatever `python3` is on your
-`PATH`.
+`bats platform/tests/` runs the same files as CI, serially; CI runs them with `--jobs 4
+--no-parallelize-within-files` (plan 21, D4). Both suites run on the locked environment
+when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
+`PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
+outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
+tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
@@ -184,7 +188,7 @@ and a lock left by a push that has exited is reclaimed automatically (`docs/MIST
 
 ## Adding a New Service
 
-Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN.md) for the complete onboarding checklist. At minimum:
+Follow the [Service Integration Plan](plan/architecture/02-service-onboarding.md) for the complete onboarding checklist. At minimum:
 
 1. Create `platform/services/<name>/deployment/` with `deploy.sh`, `compose.yml`, and Jinja2 templates
 2. `deploy.sh` handles container lifecycle only — no secret generation or OpenBao interaction
@@ -247,6 +251,31 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 `assert_grep`/`refute_grep`) and of `<assertion> || true`, and fails on any new one
 ("no new grep -v -q or || true assertions outside the ratchet").
 
+## Writing Python Tests
+
+Most of the Python suite's time is spent starting `ansible-playbook`, about a second per
+run in CI (plan 21). Four rules keep that cost and its failure modes down:
+
+1. **Run a playbook with `harness_sandbox.run_playbook(playbook, tmp_path, *args)`**, never
+   your own `subprocess.run(["ansible-playbook", ...])`. It runs from the repository root, so
+   the repository `ansible.cfg` applies. It keeps Ansible's state inside `tmp_path`, gives the
+   child no stdin, and stops it after 120 seconds (pass `timeout=` for a longer play). Where
+   `sandbox-exec` or `bwrap` exists, it also confines writes to `tmp_path`. CI has neither, so
+   a test that writes outside `tmp_path` fails only on a sandboxed workstation.
+   `test_playbook_spawns_are_bounded.py` refuses a new direct spawn and a new unbounded one. Its
+   lists must match exactly, and adding to them is the change review refuses.
+2. **Pick the forgery spellings by what the refusal reads.** A refusal by the run-start guard
+   reads names only, so one spelling proves it: `forgeries.by_name(name, honest, forged)`,
+   with an assert of the guard's own message. A refusal that reads the value, a gate run
+   without the guard, and a connection variable keep all three:
+   `forgeries.templated_forgeries(name, honest, forged)`.
+   `test_extra_var_refusal_tests.py` enforces which one a test may use.
+3. **A playbook wait a test must sit through gets a public knob** with the production default,
+   for example `ih_wait_retries` in `instrument-host-o11y.yml`. A shorter wait can only fail
+   sooner, so it adds no forgery risk. Underscore names stay internal.
+4. **A fixture server takes its delays as parameters**, so a test can shorten them without a
+   copy of the server.
+
 ## Code Standards
 
 ### Python
@@ -291,10 +320,10 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 | -------- | ------- |
 | `CLAUDE.md` | AI agent guidance (conventions, deployment rules, secrets management) |
 | `plan/architecture/01-automation-model.md` | Composable Ansible task architecture |
-| `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation |
-| `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | New service onboarding checklist |
-| `plan/architecture/TESTING-AND-LINTING-PLAN.md` | Testing strategy and implementation status |
-| `plan/architecture/BRANCH-TESTING-WORKFLOW.md` | Branch deploy and validation workflow |
+| `plan/architecture/04-credentials-access.md` | Secret generation, storage, rotation |
+| `plan/architecture/02-service-onboarding.md` | New service onboarding checklist |
+| `plan/architecture/03-testing-ci-quality.md` | Testing strategy and implementation status |
+| `plan/architecture/03-testing-ci-quality.md` (section "Branch Testing Workflow") | Branch deploy and validation workflow |
 
 ---
 

@@ -22,8 +22,8 @@ If you discover a security vulnerability in this repository, please report it re
 
 ### What to Expect
 
-- **Acknowledgment** within 48 hours of your report
-- **Assessment** within 7 days, including severity classification
+- **Acknowledgment** as soon as we see your report, usually within a few days
+- **Assessment** after that, including severity classification
 - **Resolution timeline** communicated after assessment
 - **Credit** in the fix commit (if desired) once the vulnerability is resolved
 

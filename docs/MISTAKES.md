@@ -44,8 +44,8 @@ and why.
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
 | 1.14 | **x2** — Told the user the approved OpenBao address is the inventory's `all.vars`, from the public template; production declares it under a group `localhost` is not in | Unverified claim | 2 | Test (`test_inventory_template_banner.py` + banners); reading habit Convention |
-| 1.15 | **x3** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars | Unverified claim | 3 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries) |
-| 1.16 | **x3** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven) | Unverified claim | 3 | Convention; mechanical check proposed (count ≥ 3) |
+| 1.15 | **x4** — Said a run-time check closed extra-var overrides; a templated extra var bypasses it, and any launcher may set extra vars (x4: a plan generalised "the guard renders no value" from one name; the guard references three) | Unverified claim | 4 | Test (`test_extra_var_refusal_tests.py`: refusal tests must try templated forgeries, or use `forgeries.by_name` with an assertion of the run-start guard's message; the guard's own test proves it never renders a forged value) |
+| 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
@@ -58,10 +58,11 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) | Unverified claim | 8 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) | Unverified claim | 11 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
-| 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) | Unverified claim | 1 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
+| 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
+| 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -75,7 +76,7 @@ and why.
 | 2.11 | Asserted a property of one random draw; ~0.5% of runs failed on unrelated PRs | Flaky test | 1 | Test (deterministic) |
 | 2.12 | Refuted forbidden verbs, then forbidden modules, instead of asserting a closed set — **x2** | False green on a safety check | 2 | Test (closed allow-list) |
 | 2.13 | Tested that an ordering fix was present, on a config where fact gathering ran before it | False green on a fix | 1 | Test (mutation-proven) |
-| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied | Correctness | 1 | Test + **repo-wide normalisation outstanding** |
+| 2.14 | Added a 6th rule for resolving one address; the gate and resolver disagreed and the verdict lied — **x2** (2026-11-10: the o11y availability source gate expected the raw scrape sample limit while Alloy ran the stricter ceiling) | Correctness | 2 | Test + **repo-wide normalisation outstanding**; scrape limits: one filter (`o11y_effective_scrape_limits`) |
 | 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
@@ -83,13 +84,13 @@ and why.
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
-| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x2** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back) | False-green fixture | 2 | Shared filter test + playbook fixture |
+| 2.22 | The controller fixture returned `secrets: []` where live Semaphore omits an empty secret list — **x4** (2026-11-08: positions fixtures wrote only Alloy's one-cursor file; a fresh journal source writes `positions: {}`, and the first production cohort apply rolled back; 2026-11-10: the availability candidate fixture used Docker Compose's long volume form, `podman-compose config` keeps the short form, and the first real enabled o11y deploy refused; 2026-11-10: the post-apply Alloy binding was tested on a hand-written config, and the rendered enabled config's `module = ...` attribute refused every enabled deploy) | False-green fixture | 4 | Shared filter test + playbook fixture + real `podman-compose` output fixture + rendered Alloy config in the binding test; class guard proposed (CI runs pinned `podman-compose config`) |
 | 2.23 | Tightened the check under test and left its fixtures alone; three negative cases passed whatever the filters did | Vacuous test | 1 | Convention (this instance: mutation-checked) |
 | 2.24 | A local run proved a playbook the production controller or host could not run — **x3** (widened by 2.31) | Wrong-reason pass | 3 | Image references: `test_compose_image_qualified.py`; class: proposal in 2.31 |
 | 2.25 | The zero-hosts pre-flight rule named deploy playbooks only; 60 other group-targeting playbooks lack it (widens 2.21) | Wrong-reason pass | 1 | Test (`mount-caddy-certs.yml`); fleet-wide allow-list proposed |
 | 2.26 | A fixture placed an inventory variable where production does not; the planning play saw it in tests and nothing in prod (widens 2.22) | False-green fixture | 1 | Test (one playbook); class Convention |
 | 2.27 | A run that matched its hosts, found nothing to do, and reported success (widens 2.21) | Wrong-reason pass | 1 | Test (one playbook); class Convention, lint proposed |
-| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
+| 2.28 | A clean-copy test passed only where the copy carried bytecode caches; refusal tests matched text every refusal prints (widened by 2.38) | Wrong-reason pass | 1 | Test (`test_o11y_fault_drill.py`) |
 | 2.29 | A deploy proved rootless podman from a sudo session while every job, under a `NoNewPrivileges=true` unit, failed in `newuidmap`; a test had pinned the breaking directive | Wrong-reason pass | 1 | Playbook checks in the service context + test (`test_service_github_runner.bats`) |
 | 2.30 | A deploy task mapped template vars back to the defaulted copies defined from them; ansible-core failed the render with a recursive loop, and no test rendered the step | Unrunnable playbook, green suite | 1 | Test (`test_no_recursive_task_vars.py`) |
 | 2.31 | Production host configuration (podman short-name policy) was assumed from a local proof (widens 2.24) | Wrong-reason pass | 2 | Test (`test_compose_image_qualified.py`) for images; CI host-parity job proposed |
@@ -97,7 +98,9 @@ and why.
 | 2.33 | Eight tests aimed a request at a port they had just freed (a stopped stub, a closed probe socket); a parallel worker's bind to port 0 was handed one, and the isolation probe's request failed the conformance test on a docs-only PR | Flaky test (cross-talk) | 1 | Test (`test_fake_http.py`: no test aims at a port it freed; `refused_port()` refuses at once and is never handed out) |
 | 2.34 | Deploy Plane's verify recorded `pass` and "healthy" while a container crash-looped 453 times; it probed the API only | False green | 1 | Test (`test_assert_containers_stable.py`, mutation-checked) + shared task (Plane only so far) |
 | 2.35 | A "random" 48K base64 fixture built with a fresh `Random(0)` per character was one repeated letter, so the classifier's random-base64 linearity case re-tested the letters case; found by a grounding `/simplify` pass | False-green fixture | 1 | Test (fixture asserts it spans the whole alphabet; mutation-checked) |
-| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) | Wrong-reason pass | 1 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category); class Convention |
+| 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
+| 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
+| 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -117,8 +120,9 @@ and why.
 | 3.17 | A dry-run-then-real shell loop launched the real Semaphore run after the dry run failed (local; the real run failed at the same check and changed nothing) | Process | 1 | Convention |
 | 3.18 | Knew the Semaphore root was at its limit and routed the guest grow through a review cycle; the root filled and Postgres crashed about 1.5h before an operator-side grow was authorized | Live state | 1 | Convention (root-disk alert proposed, plan 18 Phase 4) |
 | 3.19 | Grew the down Semaphore root, then ran an unbounded diagnostic before restarting it; the restart came ~11.5h later | Live state | 1 | Convention |
-| 3.20 | Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) | Live state | 1 | Convention (launch away from schedule slots); per-task inventory proposed |
+| 3.20 | **x2** — Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) (x2: three more launches in forbidden minutes, no failure) | Live state | 2 | Convention (launch away from schedule slots); per-task inventory proposed; widened by 3.22 |
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
+| 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -151,7 +155,7 @@ and why.
 | 5.19 | **x2** — A worker killed other sessions' test runs and the lead's watchers with `pkill -f` by process-name pattern on the shared machine (x2: a reviewer agent pattern-killed its own test run, 2026-11-07) | Process | 2 | Convention (PreToolUse hook proposed) |
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
-| 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth itself Convention |
+| 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -188,7 +192,7 @@ and why.
 | 10.18 | Dry runs of five production playbooks could never pass; a register from a task check mode skips was read later, and nothing had ever run them — **x3** (a dry run reading state it never creates, twice more) | Mechanism never exercised | 3 | Test for #308/#313/#314/#319 and for each later fix; class Convention, **a guard is now owed** (count 3) |
 | 10.19 | Harden SSH's password-rejection probe used BatchMode with public keys off, so it exited non-zero whatever the server allowed | Test that cannot fail | 1 | Test (`test_harden_password_probe.py`) |
 | 10.20 | Recorded "no leaf declared, nothing is issued" for the CA; an empty or absent step-ca policy issues any name, and the probe retirement would have removed the only restriction | Assumed runtime semantics | 1 | Test (`test_step_ca_deploy.py`, mutation-checked) |
-| 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | Convention (scheduled live-vs-JSON check proposed) |
+| 10.21 | Checked-in ruleset declared `active`; the live one was `evaluate` and `main` was unprotected | Config drift | 1 | CI (`ruleset-drift.yml`, daily live-vs-JSON check; two fields not compared, see the 2026-11-09 status) |
 | 10.22 | A dashboard panel was renamed and the deploy's verify kept the old title; only a production run compared them | Mechanism never exercised | 1 | Test (`test_o11y_dashboard_asserts.py`, mutation-checked) |
 | 10.23 | The main-to-dev sync failed on every workflow-file change from 2026-08-28; a promotion would have reverted two action bumps on `main` | Mechanism never exercised | 1 | CI (`Promotion source (dev -> main)` ancestry step; `test_promotion_source_guard.py`, mutation-checked) |
 | 10.24 | Shipped container jobs on rootless podman with Docker's mount semantics assumed; every `container:` job failed on a missing bind source and on a socket link to root's podman, while the deploy's uid-map check passed | Mechanism never exercised | 1 | Playbook probe (hook-shaped `docker create` in the user manager) + test (`test_service_github_runner.bats`) |
@@ -202,6 +206,8 @@ and why.
 | 10.32 | The restore-target guard, proven only with an isolated environment, was attached to five VM writers bound to the shared one; every production launch failed (widens 10.17) | Mechanism never exercised | 1 | Test (`test_restore_guard_environment.py`) |
 | 10.33 | Production OPA loaded its policies as a plain path; any caller the firewall admits could rewrite or delete the running policy through the REST API, because a read-only mount was taken for an immutable policy | Mechanism never exercised | 1 | Test (`test_service_opa.bats`) + deploy verify (each Deploy OPA sends one write and requires the refusal) + a test refusing data files bundle mode would skip |
 | 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
+| 10.35 | Merged a tag-pushing workflow whose push path no run had exercised; GitHub refused its first tag because the job token lacked the `workflows` permission | Mechanism never exercised | 1 | Convention (pre-merge write probe with the real credential) |
+| 10.36 | An assert's `fail_msg` read a key only a failed summary carries; ansible-core renders `fail_msg` even when the assertion holds, so a successful Deploy Plane run failed after recreating the stack | Mechanism never exercised | 1 | Test (`test_the_webhook_assert_renders_with_and_without_an_error` runs the task through ansible-playbook both ways); the general form Convention |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -767,7 +773,7 @@ environments) before it is stated.
 
 ### 1.15 A security check's guarantee stated past what its tests exercised
 
-**Occurrences: 3** — 2026-09-25, 2026-09-26, 2026-10-05
+**Occurrences: 4** — 2026-09-25, 2026-09-26, 2026-10-05, 2026-11-10
 
 **What happened.** #256 added a run-time check that the seed run's OpenBao address is the one
 the inventory declares. After Codex showed forged helper variables bypassed the first version,
@@ -817,9 +823,33 @@ shipped. Building the guard showed it is not: the context and stateful templates
 covered because each opens with the by-name refusal; the lifted-section tests that exercise it
 alone are listed as plain-value limits.
 
+**Occurrence 4 — 2026-11-10.** Plan 21 (PR #1004, test suite runtime) proposed cutting the
+guard-class forgery tests from three spellings to one, on the claim that the run-start guard
+`refuse-internal-extra-vars.yml` renders no forged value. I had checked one name: a stateful
+forgery of `_forged_by_launch` sent to `deploy-opa.yml` was refused and its render counter never
+written. The plan stated it for every name. Review round 1 reproduced that the guard's own `when:`
+reads `_extra_var_guard_nested is defined` (`:110`, `:159`) and that a stateful forgery of that name
+writes the counter; its second task also computes `_conn_names` and `_conn_forged`. The reduction
+would have dropped the only templated-forgery coverage of the names the guard itself reads. Caught
+before merge; the plan now excludes every name the guard references, derived from the guard file,
+and requires a counter assertion and a negative meta-test fixture. Why the rule did not fire:
+`test_extra_var_refusal_tests.py` checks test code, and this was prose in a plan proposing to
+change those tests; the one experiment felt like proof of the class. The rule covers it: the
+guarantee was stated for inputs the experiment did not exercise.
+
+**Enforcement note — 2026-11-10.** A refusal test whose refusal comes from the run-start guard,
+which refuses an underscore name by its presence and never renders its value, may use
+`forgeries.by_name` (the plain spelling only; plan 21 D1). Three checks hold that boundary:
+`test_executor_internal_overrides.py::test_the_guard_ends_the_run_before_any_other_play` still sends all three spellings to the guard
+and asserts the stateful forgery is never rendered; `by_name` refuses a name without the
+underscore prefix and any name the guard file itself references (`_extra_var_guard_nested` is
+read by its own `when:`); and `test_extra_var_refusal_tests.py` accepts `by_name` only where the test
+positively asserts the guard's own message (naming the forged name when that name is a literal; a computed name is not cross-checked). A value-reading refusal, a gate run without the guard, and a connection
+variable keep all three spellings.
+
 ### 1.16 A count written into a committed plan without running the count
 
-**Occurrences: 3** — 2026-09-25, 2026-10-03, 2026-11-02
+**Occurrences: 4** — 2026-09-25, 2026-10-03, 2026-11-02, 2026-11-10
 
 **What happened.** Recording the launch-permission gap for #264, I wrote into
 `plan/development/01-secrets-credentials.md` that "44 playbook and task files log in to
@@ -872,6 +902,18 @@ is each conversation comment's). The check would refuse a body whose Evidence se
 claim on a bullet that names no command in backticks, so every such claim carries the command
 that produced it. Not built: it would refuse prose that states counts honestly in other ways,
 and its wording needs the operator's decision before it gates merges.
+
+**Occurrence 4 — 2026-11-10.** Plan 21 (merged as PR #1004) said `harness_sandbox.run` is
+used by "only 12 runners", and that the CI partition test collects the suite four times. Both came
+from a scout's report, which counted runner helpers by name rather than files calling the helper,
+and neither was re-run before writing. The post-merge grounding review counted 41 test files
+calling it (`grep -l 'harness_sandbox.run(' platform/tests/*.py | wc -l`, 40 of them also start
+`ansible-playbook`) and seven collections (`_node_ids` called for the root and six shards,
+`test_ci_python_partition.py:134`, `:136`). Re-counting while fixing #1023's review findings turned up a third relayed figure: "48 of the 65" runners setting no timeout, which an AST scan of the test files (helpers named `_run`, `run`, `_play`, `_plays` or `_ansible` that start `ansible-playbook`) puts at 19 of 66. The low runner count ("only 12") steered phase 3 toward a new runner module
+instead of extending the existing one. Corrected in PR #1023 (open when this was recorded). Why the rule did not fire: the number
+arrived from a subagent with `file:line` citations, so it read as measured (the 1.25 pattern), and
+the rule's own wording, "run at the time of writing", was not applied to a relayed count. The rule
+covers it: a relayed count is re-run before it is written. The proposed mechanical check above would not have caught it: it reads a pull request's Evidence section, and this count sat in a plan bullet that carried a `file:line` citation.
 
 ### 1.17 Explained a 401 as the token's scope; the service's database had just gone down
 
@@ -1264,7 +1306,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 8** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09
+**Occurrences: 11** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1360,6 +1402,40 @@ not the policy that consumes the same field.
 
 **Occurrence 8 — 2026-11-09.** Briefing the Dispatch Console's proposal store and its JSON contract, I fixed a proposal's survey value as `target_service: "<service>_svc"`, the service's NetBox VM name with `_svc` appended, from the naming of groups such as `honcho_svc`. I did not read how the repository maps a service to its group. The service workflow names a service from its group and never the reverse "by string surgery" (`platform/workflows/service-onboarding/lib/step_results.py:52-54`); where it must go from a name to a group it replaces `-` with `_` (`:315`). OPA requires `^[a-z][a-z0-9_]*_svc$` (`agent_actions.rego`, the target_service bound). So `step-ca` became `step-ca_svc`, every hyphenated service's preview would have been an OPA deny, and the proposal could never be approved. The independent review of PR #934 caught it before merge. Why the rule did not fire: the value looked like a format, not a rule, and the earlier occurrence 2 was the same class (a `target_service` rule from a naming convention), which shows the convention-only rule is not being recalled at brief-writing time. The guard proposed at occurrence 4 (a dispatch hook requiring a read of each referenced path) would not catch it either, because the brief cited no path for the mapping; a stronger proposal: a brief that states an identifier's format must cite the `file:line` that defines it.
 
+**Occurrence 9 — 2026-11-10.** Answering the third review round on PR #993 (skynet's HTTPS listener), I
+posted a comment declining a low finding: a missing `compose.tls.yml` makes the new teardown test skip before it
+checks `compose.prod-tls.yml`. My reason was that "other tests in the file fail outright if either overlay
+disappears (the TLS overlay shape test and the keep-id overlay test assert their contents)". I had read what those
+two tests assert, not how they start. Both begin with `skip_unless_service_file`
+(`platform/tests/test_service_skynet.bats:40-42`), which skips when the file is absent: deleting one overlay skips
+two of the three tests (its own shape test and the teardown test) and fails none. I checked within a minute of
+posting and corrected the comment in place (issuecomment 6759971706), saying in it that the earlier version was
+wrong. Why the rule did not fire: the claim was a reason for not changing code, written in a reply to a reviewer,
+and it read as a summary of tests already seen in the session rather than as a claim about their behaviour.
+
+**Occurrence 10 — 2026-11-10.** Later the same day, opening #1002 (the shared Clean Deploy teardown loads overlays the
+deploy never loaded), I wrote that `platform/lib/common.sh` "already computes that set (`compose_files`, `:147`),
+from the service's `deploy.sh` overlay choices and `.env`", without reading the function. It reads neither: it
+prints `compose.yml`, `compose.local.yml` in local mode, and whatever `COMPOSE_OVERLAYS` holds (`:146-151`); a
+service's `deploy.sh` sets that variable from its own conditions (skynet's from `LOCAL_MODE` and `.env` markers).
+I read the function before anyone acted on the issue and corrected the paragraph. Why the rule did not fire: the
+description extended a reviewer subagent's one-line summary of the function from #993's second review round (a report to the session, not posted), and
+outward text such as issues and PR comments passes through neither check that caught earlier occurrences: no
+worker reads it against the code under a DEVIATION RULE (occurrences 1, 6 and 7), and no reviewer reads it before
+it is public (occurrences 2, 4 and 8). Relaying a reviewer's claim is 1.28's class; it is recorded here because
+the broken rule is this entry's, a description of what a function does written without reading its body.
+
+**Guard status after occurrence 10.** Occurrence 10 cited the path and line it described (`common.sh`, `:147`).
+The dispatch hook proposed at occurrence 6 (each referenced path read before an Agent dispatch) would have
+targeted exactly that path, but it watches Agent dispatches, not `gh` commands, so it would not have run.
+Occurrence 9's false claim cited no path, so neither that hook nor occurrence 8's proposal (a brief stating an identifier's
+format cites the `file:line` that defines it) would have caught it. Proposed guard for outward text: the same
+read check, on `gh pr comment`, `gh issue create`, `gh issue edit` and `gh api .../comments`, refusing a body
+that cites a repository path not read in the session. It covers occurrence 10's shape. Occurrence 9's shape, a
+behavioural claim with no citation, has no mechanical detector; it stays Convention.
+
+
+**Occurrence 11 — 2026-11-10.** Launching check-mode runs of the `main`-bound `Provision VM` and `Resize VM` templates for the OPA host, I passed `target_service=opa_svc`, the group name, taken from another template's default (`Probe launch-gate (Dev)`'s `probe_target_service` defaults to `opa_svc`) without reading these templates' own survey descriptions ("Service whose <name>_svc group holds the declaration (e.g. github_runner)", "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)"). Both playbooks append `_svc` (`provision-vm.yml:112`, `resize-vm.yml:168`), so Semaphore tasks 14728 and 14729 refused before touching Proxmox, naming the group `opa_svc_svc`; the relaunch with `target_service=opa` passed (14731, 14734). This is occurrence 2's slip again, on the same field and the same two templates. Why the rule did not fire: it was not recalled; a survey value set on a launcher command line felt like an input, not a claim about what the template does. Guard proposal: the launcher (`scripts/semaphore-launch.py`) refuses a `target_service` ending in `_svc` for every template on OPA's existing `bare_service_name_templates` list (`platform/services/opa/deployment/policies/agentcloud/data.json`), and OPA's own bare-name check refuses the same suffix, so one list guards both the operator launcher and the launch gate.
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -1419,6 +1495,8 @@ it).
 
 ### 1.32 Diagnosed a refusal from code its path never reaches, after the fix had merged (widens 1.18)
 
+**Occurrences: 2** — 2026-11-10, 2026-11-10
+
 **What happened.** See 1.18, occurrence 3. Issue #949 explained an o11y survey refusal by
 counting the places a helper raises the refusal's category, without tracing which of them the
 survey's call path runs and without reading the exception handler that produced it. The correct
@@ -1437,6 +1515,26 @@ history (`git log origin/dev -- <file>`, linked PRs): a fix may already be there
 **Enforced by.** Convention. For one helper, `platform/tests/test_o11y_availability_namespace_survey.py`
 keeps a crash out of the decision categories; the class guard proposed under 1.18 would extend that
 to every fixed-category helper.
+
+**Occurrence 2 — 2026-11-10.** The real enabled `Deploy o11y (Dev)` (Semaphore task 14536) failed its post-apply
+readback with `native_source_unavailable`. The read-only `Survey o11y Scrape Baseline (Dev)` (task 14552)
+printed the same word, and I reported to the operator, wrote into PR #1005 and recorded under 2.22 that the
+survey reproduced the deploy refusal. It did not: the survey failed at "Require one fresh and unambiguous
+current self-metrics producer", its pre-placement source read, not at the post-apply binding. The next survey (task 14570)
+failed at the same step after #1005 merged, which is how the mismatch surfaced. Why the rule did not fire:
+the shared word was read as the same branch, and the task that printed it was not checked. The rule above
+already covers this; the matching category was the whole of the evidence. The remaining shared-word sites in
+the producer identity and Prometheus targets read now have their own words, so the next run names its step.
+
+### 1.33 Called an integration working end to end from one half of it
+
+**What happened.** On 2026-11-10, after the GitHub settings reached production Plane (Deploy Plane (Dev) task 14711), I told Joseph the integration was "working end to end". My evidence was GitHub's last ten App deliveries answering 202 and an unsigned delivery answering 401 through the edge. Joseph then found that Workspace settings > Integrations listed no GitHub, so the connect step he had to take was impossible. Reading the page in the built-in browser showed the cause. Silo listed GITHUB as supported, the plan flag GITHUB_INTEGRATION was on, and the workspace's enabled integrations and applications held no GitHub application.
+
+**Root cause.** Plane v3.3.3 creates its marketplace applications (GitHub, Slack, GitLab, ...) only from migration silo 0002, which skips on an empty database, from the add-admin endpoint, or from setup_instance. Our first admin signs up through the sign-up endpoint, which does none of these. The claim was built on the webhook path, which works without that application record, and the user-facing path was never looked at.
+
+**The rule.** An integration is "working" only once every leg a person uses has been exercised, the in-app setup page included. Name the legs that were proven and the ones that were not.
+
+**Enforced by.** For this integration, a test: Deploy Plane Phase 3e creates the missing applications and fails unless every one exists (`test_the_marketplace_phase_judges_the_script_summary`). The general rule is Convention.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -1826,6 +1924,8 @@ here instead of being called done.
 
 ### 2.14 One value, five resolution rules, and a verdict that lied because of it
 
+**Occurrences: 2** — (first undated), 2026-11-10
+
 **What happened.** A review found that the access gate reported `NO-GO` while the
 secrets it needed were available. The gate resolved the secret-store address as
 `openbao_addr | default('')`; the shared resolver I had just added used
@@ -1857,6 +1957,23 @@ reverting the gate to the no-fallback form.
 reconciled. Normalising the address across every playbook — including retiring the
 localhost-defaulting variant, which is the dangerous one — is a separate change,
 recorded here so it is not mistaken for done.
+
+**Occurrence 2 — 2026-11-10.** The o11y Alloy self-scrape sample limit had two definitions. The receiver's
+`env.j2` gave Alloy `min(o11y_scrape_sample_limit, o11y_scrape_limits.sample_limit)`, 2000 in production, as the
+o11y README says the older ceiling should. The availability source gate's five callers handed it the raw
+`o11y_scrape_limits`, so it expected 8192. Before availability was enabled, Prometheus produced Alloy's
+self-metrics and the native-limits comparison never ran. The first real enabled `Deploy o11y (Dev)` (Semaphore
+task 14414) applied the stack, and its post-apply readback refused. The deploy step did not print the category; a
+read-only dry run (14417) named it, `native_limits_mismatch`. Why the rule did not fire: the source gate was
+written against the declared limits, not against what the template renders, and no test rendered the two with
+the ceiling below the declared limit. One filter, `o11y_effective_scrape_limits`, now defines the effective
+sample limit for both producers of Alloy's self-metrics: `env.j2` (Alloy's own scrape), Prometheus's `alloy`
+job in `prometheus.yml.j2`, and every source-review caller. The first version of this fix changed only the
+gate's input and Alloy's side, which moved the disagreement to the Prometheus producer; review caught it
+before merge. Tests render both templates with production-shaped limits, require each producer's sample
+limit to equal the gate's input, and run the real Prometheus-producer validator on the rendered config; another
+requires every caller to pass the filter (all mutation-checked). The post-apply readback now prints its fixed
+category.
 ### 2.15 An anchor-less allow-list, inside the fix that replaced a verb blacklist
 
 **Occurrences: 4** — 2026-08-25, 2026-08-25, 2026-11-02, 2026-11-04
@@ -2177,7 +2294,7 @@ Widened in 2.25.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
-**Occurrences: 2** — (first undated), 2026-11-08
+**Occurrences: 4** — (first undated), 2026-11-08, 2026-11-10, 2026-11-10
 
 **What happened.** Local Semaphore task 1709 ran the reviewed seed-environment
 provisioner from `dev`, then refused its newly created isolated environment as
@@ -2217,6 +2334,39 @@ not fire: the fixture was written against the shape the helper already parsed, a
 what the pinned provider writes before its first read. The helper now accepts exactly those
 bytes for any declared non-alloy component, as it already accepted an absent file (`o11y_alloy` stays strict), and the test fixture is
 the reproduced bytes, with both halves mutation-checked.
+
+**Occurrence 3 — 2026-11-10.** The o11y availability candidate check (`deploy.sh --candidate`, effective
+compose verification in `summarize-o11y-scrape-baseline.py`) was tested only against a crafted `compose config`
+result in Docker Compose's normalized long form: Alloy's config mount as a `{type, source, target, read_only}`
+mapping. `podman-compose config`, the provider the gate pins (1.0.6, 1.3.0 or 1.6.0), keeps the short form the
+compose file declares, `./config/config.alloy:/etc/alloy/config.alloy:ro`. The check counted only mapping
+entries, found no config mount, and the first real enabled `Deploy o11y (Dev)` (Semaphore task 14401) refused
+with `namespace_candidate_alloy_spec` before starting anything. The same filter also skipped short-form
+entries in the "no other mount under `/etc/alloy/`" rule, so it failed open for that form. Reproduced locally by
+running the real check over real `podman-compose` 1.6.0 output. Why the rule did not fire: the fixture was
+written from the compose specification's long form, and nobody ran the pinned provider to see what it emits.
+The check now normalizes both forms, resolving a relative source against the deployment directory, and the test
+fixture is the captured `podman-compose` output (mutation-checked three ways).
+
+**Count 3: proposed mechanical guard.** A CI job installs each `podman-compose` version the gate accepts and
+runs `config` over the repo's o11y compose files with the enabled overlays, then feeds the output through the
+real effective-compose check, so a fixture can no longer drift from the provider. It needs `podman-compose`
+added to CI, a new dependency awaiting the operator's decision.
+
+**Occurrence 4 — 2026-11-10.** The post-apply binding of the running Alloy to its reviewed config
+(`_verify_loaded_candidate_config`) refuses any config-loading block with a line-start keyword match on
+`import`, `module` or `remotecfg`. Its test fed it a hand-written one-line config. Every enabled-mode config
+rendered from `config.alloy.j2` carries the blackbox target attribute `module = "health_NN"`, so the check
+refused every real enabled deploy (Semaphore task 14536). The pre-placement reads never reach the binding
+(`require_health_targets: false`), so it first ran after a production apply. Found offline by rendering the
+template with production-shaped probe targets and running the check; the read-only `Survey o11y Scrape
+Baseline (Dev)` (task 14552) reproduced it. Why the rule did not fire: the input under test was our own
+template, and the test did not render it. The check now matches block syntax only, and its test renders
+`config.alloy.j2` with availability enabled (mutation-checked).
+
+**Correction — 2026-11-10.** The sentence above saying task 14552 reproduced the refusal is wrong: 14552 failed at the
+pre-placement source read, not at the binding (recorded as 1.32 occurrence 2). The binding bug itself stands; it
+was found offline by rendering the template.
 
 ### 2.23 Tightened the check under test, left the fixtures, and three negative cases went vacuous
 
@@ -2379,6 +2529,8 @@ run's output that "Controller checkout has uncommitted files" is absent unless t
 `test_dirty_checkout_is_refused_before_any_fault` (`:282`) covers the clean-checkout gate
 itself. The refusal-path cases still assert only the shared "no fault was induced" text; the
 every-run assertion is what stops a clean-checkout refusal from passing them.
+
+Widened by 2.38 (2026-11-10): a mutation check that restores a file can leave stale bytecode in place too.
 
 ### 2.29 The rootless-podman check ran outside the context jobs run in
 
@@ -2569,6 +2721,8 @@ per-character seed fails collection (mutation-checked). The class rule stays `Co
 
 ### 2.36 A test stubbed the one OS read whose permission decided the outcome (widens 2.22)
 
+**Occurrences: 2** — 2026-11-09, 2026-11-10
+
 **What happened.** The o11y availability namespace gate compares the Alloy container's network namespace with
 the host's. It read the host's from `os.stat("/proc/1/ns/net")` (`summarize-o11y-scrape-baseline.py`,
 `_availability_runtime_pass`). The namespace tests replaced `os.stat` with a stub that answered that exact path
@@ -2600,6 +2754,72 @@ refusal uses.
 **Enforced by.** Test (`test_o11y_availability_namespace_survey.py`: the stub refuses `/proc/1/ns/net` with
 errno 13 and the runtime pass must stat `/proc/self/ns/net`; the catch-all must print
 `namespace_internal_error`). Mutation-checked. The class-wide rule for other stubbed OS reads: Convention.
+
+**Occurrence 2 — 2026-11-10.** The rule's second half, "an unexpected exception gets its own fixed category,
+never the word a real refusal uses", was applied to the namespace command only. The source command
+(`--verify-availability-source`) still printed `native_source_unavailable` for any exception, and about twenty
+checks in the post-apply candidate binding raised that same word. When the first real enabled deploys refused
+there (Semaphore tasks 14414, 14536), the category could not say which check failed. Why the rule did not fire:
+it was written against the one command that had just failed, and the sibling command was not audited. The
+binding checks and the source catch-all now have their own fixed words, which the deploy's diagnostic filter
+passes through.
+
+### 2.37 A credential probe passed on the operator's own git login
+
+**What happened.** On 2026-11-09, to prove that the new release GitHub App could push a tag the
+job token had been refused, a probe minted an App installation token, wrote it into a git
+credential-store file in a throwaway clone, and pushed `probe/workflows-<timestamp>` at
+`v0.1.0`'s backfill commit. The mint had failed: `uv run` read the working directory's
+`pyproject.toml` and exited 2, so the stored password was empty. The push succeeded anyway.
+Git also consulted the helpers configured outside the clone: a github.com-scoped
+`gh auth git-credential` in the global config and Apple git's built-in `osxkeychain`. One of them
+answered with the operator's login; which one is not established. The probe tag was pushed under
+the operator's identity and deleted in the same command (no `probe/*` tag remained). The result
+read as "the App can push" until the mint's exit code was read.
+
+**Root cause.** The probe added one credential helper without removing the others, and did not
+stop on an empty token.
+
+**The rule.** A test of one credential first removes every other path to authentication, shows
+what is left, and refuses an empty credential. For git: `GIT_CONFIG_GLOBAL=/dev/null`,
+`GIT_CONFIG_NOSYSTEM=1`, `GIT_TERMINAL_PROMPT=0`, then
+`git config --show-origin --get-all credential.helper` must list only the helper under test. The
+rerun did all three: the helper list showed the clone's own file only, the App token pushed and
+deleted the probe tag, and the token was revoked (204).
+
+**Enforced by.** Test (`platform/tests/test_release_version_playbook.py`): every git command in
+the release playbook carries the three variables. Workstation probes: Convention.
+
+### 2.38 A restored mutation left the mutant's bytecode in place (widens 2.28)
+
+**What happened.** On 2026-11-10, while fixing two backtracking regexes in
+`platform/services/plane/lib/openspec_to_plane.py` (PR #1009), a mutation check changed one character
+of the new pattern (`+` to `?`), ran the equivalence test (it failed, as intended), and restored the
+file with `cp` from a saved copy. The sha256 matched the original, so the restore was reported as
+byte-exact. But the test run had written `__pycache__/openspec_to_plane.cpython-312.pyc` for the
+mutant. The swap kept the file the same size, and the restore landed in the same second, so the source
+kept the size and modification time that pyc header records. Python 3.12 therefore kept loading the
+mutant's bytecode. The reviewer's first test run in that worktree failed two tests, including the new
+equivalence test, against code that was correct on disk. The reviewer traced it to the stale pyc,
+showing that the system Python 3.9 (with no 3.12 bytecode to load) compiled the correct pattern. The
+author's own passing run had come before the mutation, so no wrong result was reported. The stale file
+was deleted and the suite passed (25).
+
+**Root cause.** By default (timestamp-based pycs), Python decides whether a cached `.pyc` is current by
+the source's modification time (whole seconds) and size recorded in its header, not by content. A same-length edit and its restore in
+the same second leave both unchanged, so a byte-exact restore does not invalidate the cache. Checking
+the source's hash proves the file, not what the interpreter will load.
+
+**The rule.** Give every run in a mutation check (the mutant run, and the run after the restore) its
+own fresh, empty `PYTHONPYCACHEPREFIX` directory. Python then neither reads nor leaves bytecode from
+another version of the file. The alternative is to delete the module's `__pycache__` entry both before
+the mutant run and after the restore. `PYTHONDONTWRITEBYTECODE=1` alone is not enough, because it stops
+writes, not reads. In the review of #1016 on CPython 3.12.13, a mutant run under it still loaded the
+original's stale bytecode. The mutation was then never tested, and the check would have reported that
+the test cannot catch it. Never trust a byte-exact source restore to reset what Python imports. This
+widens 2.28 ("disable bytecode writes") from clean-copy tests to mutation checks.
+
+**Enforced by.** Convention.
 
 ## 3. Acting on live state
 
@@ -3238,6 +3458,8 @@ every remote command in a recovery with `timeout`.
 
 ### 3.20 Launched production tasks into the scheduled burst and broke the shared inventory
 
+**Occurrences: 2** — 2026-11-07, 2026-11-10
+
 **What happened.** On 2026-11-07, running the journal collector rollout (2.3b.5), I launched
 `Deploy o11y Journal Collector (Dev)` at 21:00:10 UTC (task 13410) and its dry-run apply at 22:00:36
 UTC (task 13433). Both failed at the pre-flight with "The inventory could not be parsed or contained
@@ -3269,6 +3491,15 @@ inventory, re-run it alone, and check whether scheduled tasks started in the sam
 minute of a schedule declared in `templates.yml`, and the foundational fix is a per-task copy of
 the inventory so no task can remove another's.
 
+**Occurrence 2 — 2026-11-10.** Running the check-mode VM-writer runs on `main` (Create VM Template, Provision VM,
+Resize VM), I launched at 23:03:54 UTC (task 14727, under five minutes after the :00 slot), at 23:10:49 UTC (task
+14731, under a minute after the :10 slot) and at 23:15:26 UTC (task 14734, 26 seconds after the :15 slot), all in
+minutes the rule forbids. None of them failed, and the scheduled tasks at 23:15 (14732, 14733) did not fail either.
+The rule did not fire because it was not recalled: the launches were sequenced by when the previous one finished, not
+by the clock. Two other launches, in minutes the rule allows, ran into the next slot, and the scheduled task that
+started there failed on an empty inventory; that the two are linked is inferred from timing, not proven. The rule does
+not cover that case, and 3.22 widens it.
+
 ### 3.21 Shared-inventory switches merged and synced before any run had read them
 
 **What happened.** For observability task 2.3c (endpoint availability probes), site-config PR 157
@@ -3298,6 +3529,38 @@ a disabled-mode dry run ready to confirm the revert path.
 **Enforced by.** Convention. Proposed: a read-only template that runs the enabled-mode pre-placement
 gates against the declared cohort without the switch, with fixed-category refusal reasons, so the
 switch can be proven before it is merged. Related: 3.15 (unproven `dev` changes reaching a real run).
+
+### 3.22 A launch in an allowed minute ran into the next schedule slot; the liveness check there failed on the shared inventory (link inferred)
+
+**Occurrences: 1** — 2026-11-10
+
+**What happened.** On 2026-11-10 I launched `Provision VM` at 23:08:00 UTC (task 14728) and `Resize VM` at
+23:09:41 UTC (task 14729), both in check mode, both in minutes 3.20's rule allows (:05 to :09). Each ran past
+23:10:00, when the scheduled `Check o11y Liveness (Dev)` started (task 14730). 14730 failed in its pre-flight:
+"The inventory could not be parsed or contained no hosts ... A known cause on Semaphore is concurrent tasks sharing
+one inventory file, which the first task to finish removes before another has parsed it". The watcher reported
+nothing about o11y for that slot.
+
+**Root cause.** 3.20's rule constrains when a manual task starts, but the race happens when a task finishes: the
+task that finishes first removes the shared inventory file (`platform/playbooks/tasks/require-parsed-inventory.yml`).
+A manual task that starts in an allowed minute and is still running at the next slot can finish while a scheduled
+task is parsing. That 14730's failure came from 14728 or 14729 finishing is inferred from the timing; it was not
+proven. Another task scheduled every ten minutes (`Stock GitHub Runner JIT (Dev)`, `platform/semaphore/templates.yml`)
+also starts at 23:10, and its finish could equally have removed the file.
+
+**The rule.** Keeps 3.20's rule (launch on a minute no declared schedule uses, at least five minutes after the last
+slot) and adds: the task should also finish before the next declared slot (`platform/semaphore/templates.yml`), with
+at least one minute of margin. With today's slots the longest gap is ten minutes, so a task that runs longer than
+about four minutes has no window that satisfies both. For such a task, launch five minutes after the start of a
+ten-minute gap, accept that the race can hit the next slot, and afterwards read every scheduled task that started
+while it ran: one that failed on an empty inventory is left to its next slot and checked to pass there. Run manual
+launches one after another, each checked against the clock, never sequenced only by the previous one finishing. The
+real fix is a per-task inventory copy, below.
+
+**Enforced by.** Convention. Proposed, extending 3.20's proposal: `scripts/semaphore-launch.py` warns when a launch
+falls within a template's recorded typical duration of the next declared slot, and proceeds only with an explicit
+accept-the-risk flag, matching the rule above. The foundational fix is unchanged: a per-task copy of the inventory, so
+no task can remove another's.
 
 ## 4. Data handling
 
@@ -4409,6 +4672,14 @@ about two minutes of its timeout when it passes at all. Why the rule did not fir
 looks at the shard's duration, and nothing reports it, which is exactly the Convention gap above. Another
 split is due. It is a workflow change, so it also needs a reviewed transition in `scripts/merge-when-green.py`,
 which pins the workflow's exact bytes.
+
+**Enforcement note — 2026-11-10.** Plan 21 phase 2 replaced the named Python jobs with one matrix job of eight
+shards whose test files are bin-packed from recorded durations (`platform/tests/test_durations.json`), so a
+rebalance is a data commit, not another workflow transition. The partition stays a test:
+`platform/tests/test_ci_python_partition.py::test_the_shards_partition_exactly_the_root_collection`. The runtime
+half gains the proposal above: each shard prints its duration against its timeout and warns above half of it.
+The warning does not fail the run, so it is not enforcement and stays labelled Convention-plus-warning. First
+run: shards took 282 to 495 seconds, against 20 to 24 minutes for the old `Python core`.
 
 ## 6. Working from assumptions about files
 
@@ -5707,6 +5978,17 @@ back and matches it. A claim of enforcement cites that read, not the file.
 **Enforced by.** Convention. Proposed: a scheduled CI job that reads the live ruleset with a
 read-only token (`gh api`) and fails when it differs from `protect-main.json`.
 
+**Status 2026-11-09.** The proposed job exists: `.github/workflows/ruleset-drift.yml` (commits
+`b20b5746c` and `088405c8c`, 2026-10-03) runs `.github/rulesets/check-drift.sh` daily and
+fails when any live ruleset differs from its JSON in `.github/rulesets/`. Run 42574182015
+(2026-11-09, `main`) passed: `protect-main` and `protect-dev` both match. Limits: two fields are
+reported as not compared, not checked. `bypass_actors` is returned only to a caller with
+write (Administration) access to the ruleset (`compare.py`), and the repository has no
+`RULESET_READ_TOKEN` secret, so the job runs on `GITHUB_TOKEN`, which is not shown it; a
+read-only token would not change that. And on `protect-main`,
+`require_extra_approval_for_unattributed_changes` is live `true` but not settable through the
+documented API. The Index now reads CI.
+
 ### 10.22 A renamed dashboard panel reached production with the verify still naming the old title
 
 **What happened.** The change that made the o11y stack scrape agentgateway renamed the
@@ -6127,6 +6409,43 @@ previous playbook. `compose.yml` sets `GF_DATABASE_WAL=true` and
 drop is a production measurement, recorded in the o11y README against this baseline. A drop
 would be consistent with the suspected cause, not proof of it; only Grafana's own error log
 would confirm it.
+
+### 10.35 Merged a tag-pushing workflow whose push path had never run
+
+**What happened.** PR #935 (plan 20) added `.github/workflows/release-version.yml`, which tagged
+merges into `dev` and `main` and pushed the tags with the job's `GITHUB_TOKEN` at
+`contents: write`. Its triggers were pushes to `dev` and `main` and a manual dispatch, so no pull
+request run could execute it. Three review rounds and CI exercised `scripts/semver.py`, never a
+push. The first two runs after the merge (Actions runs 42692977437 and 42693944852, 2026-11-09)
+both failed on the first backfill push:
+`! [remote rejected] v0.1.0 -> v0.1.0 (refusing to allow a GitHub App to create or update workflow .github/workflows/lint-and-test.yml without workflows permission)`.
+No `v*` tag reached the remote. The workflow was disabled the same day.
+
+**Root cause.** The design took `contents: write` to cover any tag push. GitHub refused a tag at
+a commit whose `.github/workflows/lint-and-test.yml` it counts as a workflow change, because the
+job token did not hold the `workflows` permission. Which comparison GitHub makes is not stated in
+the refusal; the refusal itself is the established fact. Nothing before the merge performed the
+write the workflow existed to perform.
+
+**The rule.** A mechanism whose only trigger is post-merge is proven before the merge by running
+its exact write with its real credential against the real remote: here, a disposable tag outside
+the `v*` namespace at one of the commits it must tag, pushed and then deleted. The pull request
+records that probe.
+
+**Enforced by.** Convention. The replacement, the Semaphore `Release Version (Dev)` template
+(`platform/playbooks/release-version.yml`), had that probe first (2.37 records the run that
+proved nothing and its valid rerun), and its check mode mints the real token and builds every tag
+in a throwaway clone before any push.
+
+### 10.36 An assert's `fail_msg` dereferenced a key that only exists on failure
+
+**What happened.** Deploy Plane (Dev) task 14711 (2026-11-10) recreated the production Plane stack with the new GitHub settings and set the App's webhook secret. It then failed at `App webhook converged` (`platform/playbooks/deploy-plane.yml`): "Finalization of task args for 'ansible.builtin.assert' failed: Error while resolving value for 'fail_msg': object of type 'dict' has no attribute 'error'". The webhook step had succeeded, so its summary had no `error` key, and `fail_msg` read `_plane_hook_summary.error` with no default. The verify phase, with its unsigned-delivery probe, never ran. Plane stayed healthy.
+
+**Root cause.** ansible-core 2.19+ finalizes every task argument before the module runs, and that includes an assert's `fail_msg` when the assertion would pass. A `fail_msg` written as if it were evaluated only on failure breaks the success path. No test ran the task: the playbook's tests were structural, and the render test covered `env.j2` only. The sibling licence and token asserts in the same playbook already used `| default(...)`, so they did not break.
+
+**The rule.** Treat `fail_msg` and `success_msg` as rendered on every run. Any key that only one outcome carries is read with `| default(...)`. A new assert on a result summary gets a test that runs the task through `ansible-playbook` with both a passing and a failing input.
+
+**Enforced by.** Test for this task: `test_the_webhook_assert_renders_with_and_without_an_error` in `platform/tests/test_plane_env_github.py`. The general form is Convention. A lint that flags a `fail_msg` dereferencing an attribute without `default` is the mechanical guard to build if this recurs.
 
 ## 11. The largest one
 

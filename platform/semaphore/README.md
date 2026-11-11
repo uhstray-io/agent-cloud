@@ -30,7 +30,9 @@ every credential's validity or ongoing AppRole health.
 ## The production Semaphore host (recorded 2026-09-26)
 
 Production Semaphore runs under rootful podman from a legacy standalone compose directory
-(site-config's `scripts/semaphore-upgrade.sh` is its upgrade path), not from
+(its upgrade path is `scripts/semaphore-upgrade.sh`, which lives in the private
+site-config repository — it is not tracked in this repo; clone site-config and run
+it from a workstation), not from
 `platform/services/semaphore/deployment`. Three containers: Postgres and the app, both on no
 restart policy, and the runner on `always`. `agent-cloud-boot-semaphore.service` starts the first
 two at boot (`plan/architecture/05-platform-infra.md` section 11). The root filesystem was
@@ -524,7 +526,7 @@ an isolated environment. Prove each one afterwards with a check-mode run of the 
 (Destroy VM in check mode only); the seed CLI's `--verify-only` does not apply to these.
 
 **Before promoting `dev` to `main`**, run the same provisioner with `seed_variant=main` for each
-of the five. Promotion brings the guard to the `main`-bound copies, which are still bound to the
+of the six. Promotion brings the guard to the `main`-bound copies, which are still bound to the
 shared environment until then, and every one of them would then refuse to run. A full-catalog
 publication likewise creates the base templates' own environments empty and binds them: run the
 provisioner for those before using a `main`-bound copy.
