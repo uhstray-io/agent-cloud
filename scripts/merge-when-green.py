@@ -26,6 +26,7 @@ VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
 UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
+BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
@@ -511,11 +512,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Runner-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == BATS_PINNED_WORKFLOW_BLOB_SHA:
+            # Same job set as sharded: Bash Tests installs bats from its pinned release, not apt.
+            check_workflow_policy(base, sharded=True)
+            check_workflow_policy(candidate, sharded=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != SHARDED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed sharded workflow")
         check_workflow_policy(base, sharded=True)
         if base != candidate or workflow_records:
             raise Refusal("Sharded workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == BATS_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != BATS_PINNED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed bats-pinned workflow")
+        check_workflow_policy(base, sharded=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Bats-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
