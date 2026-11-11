@@ -157,8 +157,8 @@ and why.
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
-| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes | Process | 1 | Convention (merge-guard check proposed) |
-| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) | Process | 2 | Convention (PR-template checkbox or merge-guard attestation proposed) |
+| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) | Process | 2 | Convention (PR-template checkboxes and a merge-guard check of the PR body proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4497,6 +4497,7 @@ main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can b
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
 
 Widened by 5.20 (2026-10-14): the same pin applies to promotions.
+Widened by 5.23 (2026-11-11): exact-head CI does not cover a base that moved after the run.
 
 ### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
 
@@ -4694,27 +4695,28 @@ half gains the proposal above: each shard prints its duration against its timeou
 The warning does not fail the run, so it is not enforcement and stays labelled Convention-plus-warning. First
 run: shards took 282 to 495 seconds, against 20 to 24 minutes for the old `Python core`.
 
-### 5.23 A repo-wide guard and a PR that adds an offender merged minutes apart; `dev` went red
+### 5.23 A repo-wide guard and a PR that adds an offender merged minutes apart; `dev` went red (widens 5.16)
 
 **What happened.** On 2026-11-11, #1066 added `test_no_new_test_builds_its_own_http_server`
 (`platform/tests/test_fake_http.py`), which refuses any test file that builds its own HTTP server
-unless the file is on an exact list. It merged at 21:26:47 UTC with all 15 checks green. #952,
+unless the file is on an exact list. It merged at 21:26:47 UTC with the 15 checks the merge guard expects green (CodeRabbit neutral). #952,
 from another session, added `platform/tests/test_probe_skynet_launch.py`, whose listener subclasses
 `ThreadingHTTPServer`. Its Python CI finished at 21:20:44 UTC, before #1066 existed on `dev`, and
 it merged at 21:31:51 UTC with its head not containing #1066. The combination failed the guard on
-`dev`, so one Python shard of every open PR into `dev` went red. A peer session reported it; #1068
-added the file to the list and merged at 21:49:50 UTC.
+`dev`: a PR CI run in that window failed the guard (run 43104746466), and `dev` itself runs no push
+CI, so its state is read from PR merge-ref runs. A peer session reported it; #1068 added the file to the
+list and merged at 21:49:50 UTC.
 
 **Root cause.** The merge guard (`scripts/merge-when-green.py`) proves CI on the PR's head, not on
 the result of merging that head into the current `dev`. `dev` has no up-to-date-branch rule,
 because the main-to-dev sync pushes to it directly. A repo-wide check is exactly the kind of
 change whose result depends on files other PRs add, so two heads that are each green can merge
-into a red branch.
+into a red branch. 5.16's exact-head pin was met here (#952's own head had green CI), so this widens it:
+an exact head is not enough when the base moved after its CI ran.
 
-**The rule.** Immediately before merging, when `origin/dev` holds commits the PR's head does not,
-run the repository-wide guard tests (the exact-list and "no new X" scans) on the head merged with
-current `origin/dev`, or merge `dev` into the branch and let CI run again. A PR that adds such a
-guard runs it against the `dev` tip once more right after it merges.
+**The rule.** Immediately before merging, when `origin/dev` holds commits the PR's head does not
+and any of them touches a test file, merge `dev` into the branch and let CI run again on the new
+head.
 
 **Enforced by.** Convention. Proposal: `merge-when-green.py` reports how many commits `origin/dev`
 holds that the head lacks, and refuses when any of them touches a test file until the operator
@@ -4744,9 +4746,11 @@ put one line for each in the PR body: what it found, and what was fixed or defer
 **Enforced by.** Convention. Proposal: a PR-template checkbox for each pass, and a
 `merge-when-green.py` check that the PR body names both.
 
-**Occurrence 1 — 2026-10-29.** Recorded at the time only as a cause in 10.33: the skipped
-`/security-review` for #778 would have caught production OPA's open write API before it went
-live. This entry gives the rule its own place, so the count is visible.
+**Occurrence 1 — 2026-10-29.** Recorded in 10.33 (found 2026-10-31) only as a cause: the
+`/security-review` skipped for #778 would have read OPA's command line with the write-surface
+question in mind. This entry gives the rule its own place, so the count is visible. 2.23 and 2.35
+were also found by `/simplify` passes after their PRs merged; whether step 4 ran on those PRs is
+not recorded, so they are not counted.
 
 ## 6. Working from assumptions about files
 
