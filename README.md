@@ -107,7 +107,6 @@ For current service purposes, status, and owning records, see the
 [service architecture catalog](plan/architecture/service-architecture.md#2-service-catalog).
 It is the single catalog; verify the selected environment before relying on live
 health.
-
 ## Repository Structure
 
 The tree below shows representative paths; it is not an exhaustive inventory.
