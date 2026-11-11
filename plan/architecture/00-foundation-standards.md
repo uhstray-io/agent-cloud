@@ -187,7 +187,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [18-semaphore-task-retention.md](../development/18-semaphore-task-retention.md) | PROPOSED | Semaphore task history kept 30 days via a daily API prune (paged /tasks/last, 400 re-check, floor/skew/cap guards); storage measured first; VACUUM FULL conditional and operator-side; orchestrator root-disk alert. |
 | [19-proxmox-ca-pinning.md](../development/19-proxmox-ca-pinning.md) | PROPOSED | Pin the Proxmox cluster root CA for every Ansible Proxmox API call: one `proxmox_ca_pem` in site-config, a shared runner-scratch trust task, a read-only canary before the switch, no off switch, `curl -k` fallback replaced |
 | [20-semantic-versioning.md](../development/20-semantic-versioning.md) | PROPOSED | Semantic versioning from pull request titles: a `Version` check on every pull request, `vX.Y.Z-dev.N` tags on `dev` and `vX.Y.Z` tags plus Releases on `main`, starting at v0.13.0 (16 tags backfilled from past promotions); 1.0.0 and every later major only through an approved manual release. |
-| [21-console-access-requests.md](../development/21-console-access-requests.md) | DRAFT | Console access requests and the skynet iam-agent: requests become site-config pull requests, Plane membership follows Authentik groups, decisions A1–A7 and questions Q1–Q5 pending the operator |
+| [22-console-access-requests.md](../development/22-console-access-requests.md) | DRAFT | Console access requests and the skynet iam-agent: requests become site-config pull requests, Plane membership follows Authentik groups, decisions A1–A7 and questions Q1–Q5 pending the operator |
 
 ### Archived Plans
 
