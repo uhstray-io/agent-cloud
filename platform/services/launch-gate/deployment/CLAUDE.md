@@ -30,9 +30,10 @@ has run it since 2026-11-09: `Deploy launch-gate (Dev)` task 14113 proved that O
 (`plan/development/openspec/changes/add-dispatch-console/tasks.md`; decisions D49 and D51 in
 `plan/development/17-dispatch-console.md`). That change deploys nothing. The console's own deploy, which shared-reads
 `caller_console_token`, is built in `deploy-console.yml` (read when `console_launch_gate_url` is declared). The `skynet-launch-containment` change
-(`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) records skynet's shared read and route (3.6),
-the production host, firewall rules, the `svc-launch-gate` team member and the rollout (5.1 to 5.5) as done. Its one
-open task is 4.4, the end-to-end proof of a skynet-tagged task through the locally deployed gate.
+(`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) records every task as done: skynet's shared read and route (3.6), the production host, firewall
+rules, the `svc-launch-gate` team member and the rollout (5.1 to 5.5), and 4.4, the end-to-end proof of a
+skynet-tagged task through the locally deployed gate (`Probe skynet Launch (Local)`, local task 14202). Its archive is
+scheduled for Release 2 (`plan/development/23-release-train.md`).
 
 ## Files
 

@@ -311,8 +311,9 @@ Notable edges, each recorded where it lives:
   svc-skynet became `guest`, so its Semaphore launches are refused [19]. skynet's own client asks OPA before
   each launch it makes, and Semaphore does not ask OPA. skynet's launch path is the launch gate, which asks
   OPA itself and creates the Semaphore task only on an allow. The gate has been live in production since
-  2026-11-09, and skynet's wiring to it is deployed, but no skynet-initiated launch through it is recorded
-  yet (OpenSpec change `skynet-launch-containment`, task 4.4 open) [39].
+  2026-11-09, and skynet's wiring to it is deployed. A skynet-initiated launch through the gate is
+  proven in local-dev (OpenSpec change `skynet-launch-containment`, task 4.4, local task 14202) but not
+  yet in production [39].
 - **agentgateway to OpenRouter.** A model declared with `provider: openrouter` is served through the
   gateway with a key only the gateway holds; it is optional and absent unless declared [16].
 - **Semaphore to NetBox.** A device creation proposed by skynet and allowed by OPA is executed by
@@ -357,8 +358,9 @@ and the launch probe expects HTTP 403 (`platform/playbooks/provision-skynet-sema
 through the launch gate use a different identity, svc-launch-gate, which holds `task_runner` [39], so that refusal
 does not apply to them. The gate's allow path was probed by `Probe launch-gate (Dev)` task 14117 [39]. The
 server-side gate that asks OPA
-before each agent launch has been live in production since 2026-11-09; no skynet-initiated launch through it
-is recorded yet (OpenSpec change `skynet-launch-containment`, task 4.4 open) [39].
+before each agent launch has been live in production since 2026-11-09. A skynet-initiated launch through it is
+proven in local-dev (OpenSpec change `skynet-launch-containment`, task 4.4, local task 14202) but not yet in
+production [39].
 
 ### 8. The service deployment workflow
 

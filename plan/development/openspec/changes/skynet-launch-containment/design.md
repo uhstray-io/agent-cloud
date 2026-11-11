@@ -88,6 +88,14 @@ See proposal.md (Why). Facts that shape the approach:
 11. **Placement** (Joseph, 2026-10-31): own VM `launch_gate_svc`, 2 vCPU / 2 GB, firewall admits the
     API port from `skynet_svc` and `console_svc` only; the gate's VM is added to OPA's
     `firewall_allow_groups`.
+12. **Local-dev's working-tree branch** (Joseph, 2026-11-09): local-dev's repository record declares `HEAD`,
+    the developer's checked-out tree, and OPA allows agent launches only from `main` or `dev`, so a local gate
+    refused every agent launch (found by the local skynet launch probe, local task 14161). In local mode only,
+    the gate reads `HEAD` as `dev` before pinning `service_branch` and asking OPA, which matches skynet's local
+    catalog. Rejected: declaring the local record as `dev`, because Semaphore might then check out `dev` in the
+    read-only in-place mount and stop running the working tree; and proving 4.4 in production instead, which
+    would leave local-dev unable to launch any agent task. Outside local mode `HEAD` still reaches OPA and is
+    refused.
 
 ## Risks / Trade-offs
 

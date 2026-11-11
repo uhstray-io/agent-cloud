@@ -31,7 +31,10 @@
 - [x] 4.1 Semaphore client: `launch()` calls the gate when `SKYNET_LAUNCH_GATE_URL` is set, refuses to launch otherwise; reads (`task`, `wait`, `output`) keep using skynet's guest token (skynet#14, merged 2026-11-09 as `73bcbafc`; the call site forwards the feeding step's proposal and context so the gate's OPA input carries them)
 - [x] 4.2 Tests with a fake gate: request shape, error mapping (403/409/400/503 recorded as step `fail`), no direct-launch fallback (skynet#14: `tests/test_semaphore.py` and a graph-level test in `tests/orchestrator/test_service_onboarding.py`)
 - [x] 4.3 Publish the image, record its digest (publish-tier2 run 42554401870 on skynet `main` `73bcbafc`: `ghcr.io/uhstray-io/skynet-tier2@sha256:7bcd4153bb1c22462bfefad0bcaec740ea51c18249d0fc6f8a94f5d01884578a`, pinned in production by site-config #164)
-- [ ] 4.4 Validation gate: scenario "Task message for skynet" holds end to end: skynet's client, launching through the locally deployed gate, creates a task tagged `skynet <workflow_id> <step_id>`
+- [x] 4.4 Validation gate: scenario "Task message for skynet" holds end to end: skynet's client, launching through the locally deployed gate, creates a task tagged `skynet <workflow_id> <step_id>`
+  - **Done 2026-11-09, local-dev**, with `Probe skynet Launch (Local)` (#952): from inside skynet's container it starts one check-mode `service_onboarding` run bounded to registry step `service-validate`, then requires exactly one Semaphore task tagged `skynet <run_id> service-validate`. Local stack: OPA task 14129, launch gate 14131, skynet 14133 (image from skynet#14, pinned locally by #939).
+    - First run, local task 14161: skynet's request reached the local gate intact, and OPA refused it with "an agent task may run only from main or dev", because local-dev's working-tree repository record declares `HEAD`. Fixed by #951: in local mode only, the gate reads `HEAD` as `dev` (design decision 12).
+    - After the local gate was redeployed with that fix (local task 14201), local task 14202 passed. OPA answered "allowed by agent policy", and the gate created task 14203, the one task tagged `skynet service_onboarding:62a20720-7001-4217-8ae8-aefc08645d8b service-validate`. Task 14203 itself errored on a missing local `opa-local` health URL (#950, fixed by #945), which does not bear on the launch path.
 
 ## 5. Production rollout
 

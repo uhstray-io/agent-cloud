@@ -71,6 +71,13 @@ deliberation behind them is retained in the Hindsight bank.
 > is not built. Read each statement in this document that OPA gates a launch as the target state until
 > that gate lands.
 
+> **2026-11-11 update.** The gate has landed. It was deployed in production on 2026-11-09 and is the only
+> launch-capable identity for agent launches. It asks OPA before every launch, on the values the run will
+> receive. skynet launches only through it. Every task of the change is done; its requirements are in the
+> change's delta spec (`specs/platform/agent-launch-gate/spec.md`), and its archive is scheduled for Release 2.
+> A skynet-initiated launch through the gate is proven in local-dev. In production it is not proven yet:
+> `Probe skynet Launch (Dev)` has not run there.
+
 ## Design Principles
 
 1. **AI proposes, OPA validates, Semaphore executes** (`PRINCIPLES.md` §4;

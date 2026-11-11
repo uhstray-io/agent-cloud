@@ -64,7 +64,9 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 
 ### Requirement: The code that runs is the branch OPA judged
 The launch gate SHALL take the branch from the template's repository record and MUST refuse a template
-that carries its own different branch. When the template declares a `service_branch` survey field (the
+that carries its own different branch. In local mode only, a record that declares `HEAD` (local-dev's
+working tree) SHALL be read as `dev`, the branch OPA is asked about and the one `service_branch` is set to;
+outside local mode `HEAD` SHALL reach OPA unchanged. When the template declares a `service_branch` survey field (the
 branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
 whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
 values and integer fields ASCII digits with at most one leading minus.
@@ -78,6 +80,11 @@ values and integer fields ASCII digits with at most one leading minus.
 - **WHEN** a request omits `service_branch` for a template that declares it
 - **THEN** the created task's environment sets `service_branch` to the repository record's branch, the
   same branch OPA was asked about
+
+#### Scenario: Local-dev working tree
+- **WHEN** the gate runs in local mode and a template's repository record declares `HEAD`
+- **THEN** OPA is asked about `dev`, a declared `service_branch` is set to `dev`, and a gate outside local
+  mode given the same record asks OPA about `HEAD`
 
 ### Requirement: OPA decides server-side before every launch
 For every request that passes validation, the launch gate SHALL query OPA's decision endpoint itself,
