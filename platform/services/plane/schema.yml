@@ -32,6 +32,37 @@ labels:
     color: "#3B82F6"
     description: "Created from an OpenSpec tasks.md by sync-plane-projects; the task is the source of truth for what the item is."
 
+# Work item TYPE labels: exactly one per work item, chosen by whoever works the item. The first four
+# mirror GitHub's default labels (name, colour and description), so the two label sets do not drift
+# into near-duplicates. Area labels are per project and are not declared here.
+  - name: bug
+    color: "#D73A4A"
+    description: "Something isn't working"
+  - name: enhancement
+    color: "#A2EEEF"
+    description: "New feature or request"
+  - name: documentation
+    color: "#0075CA"
+    description: "Improvements or additions to documentation"
+  - name: dependencies
+    color: "#0366D6"
+    description: "Pull requests that update a dependency file"
+  - name: refactor
+    color: "#FBCA04"
+    description: "Restructures code without changing behaviour"
+  - name: chore
+    color: "#C5DEF5"
+    description: "Maintenance with no product change"
+  - name: test
+    color: "#BFD4F2"
+    description: "Adds or fixes tests"
+  - name: ci
+    color: "#0E8A16"
+    description: "Continuous integration and automation"
+  - name: security
+    color: "#B60205"
+    description: "Security fix or hardening"
+
 # Labels every NEW work item the sync creates gets at creation. Never re-applied: removing one in
 # Plane sticks. Each name must be declared under labels above.
 item_labels:
