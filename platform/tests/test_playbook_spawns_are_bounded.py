@@ -268,6 +268,13 @@ def test_the_scan_does_not_count_other_programs_or_decorators():
               "@pytest.mark.skipif(not shutil.which('ansible-playbook'), reason='x')\n"
               "def test_f():\n    subprocess.run(['git', 'status'])\n")
     assert _kinds(skipif) == [("git", False)]
+    # A Popen is bounded by a wait or communicate with a timeout in the same function, and only so.
+    popen = "import subprocess\ndef f(p):\n    proc = subprocess.Popen(['ansible-playbook', p])\n    proc.{}\n"
+    assert _kinds(popen.format("wait(timeout=5)")) == [(PB, True)]
+    assert _kinds(popen.format("communicate(timeout=5)")) == [(PB, True)]
+    assert _kinds(popen.format("wait()")) == [(PB, False)]
+    returned = "import subprocess\ndef f(p):\n    return subprocess.Popen(['ansible-playbook', p])\n"
+    assert _kinds(returned) == [(PB, False)]  # its caller's wait is not visible here
     # A program passed in cannot be named: it is DYNAMIC, and it must be bounded too.
     assert _kinds("import subprocess\ndef f(binary, p):\n    subprocess.run([binary, p])\n") == [(DYN, False)]
     # The shared runner is the one spawner the scan skips, by function name only.

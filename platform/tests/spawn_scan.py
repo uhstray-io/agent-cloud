@@ -104,9 +104,10 @@ def _own_nodes(function):
             stack.extend(node.body)
 
 
-def _subprocess_names(tree) -> tuple[set[str], set[str]]:
-    """Names that mean the subprocess module, and names imported from it that spawn."""
-    modules, functions = {"subprocess"}, set()
+def _subprocess_names(tree) -> tuple[set[str], dict[str, str]]:
+    """Names that mean the subprocess module, and names imported from it that spawn (local name ->
+    subprocess's own name)."""
+    modules, functions = {"subprocess"}, {}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
@@ -115,7 +116,7 @@ def _subprocess_names(tree) -> tuple[set[str], set[str]]:
         elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
             for alias in node.names:
                 if alias.name in SPAWNERS:
-                    functions.add(alias.asname or alias.name)
+                    functions[alias.asname or alias.name] = alias.name
     return modules, functions
 
 
@@ -123,7 +124,20 @@ def _bounded(call: ast.Call) -> bool:
     for keyword in call.keywords:
         if keyword.arg == "timeout":
             return not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
-    return False  # Popen takes no timeout; **kwargs cannot be read, so it counts as unbounded
+    return False  # **kwargs cannot be read, so it counts as unbounded; a Popen: see _waits_with_timeout
+
+
+def _waits_with_timeout(scope) -> bool:
+    """A function that waits on its process with a timeout (`.wait(timeout=...)` or
+    `.communicate(timeout=...)`) bounds the Popen it starts, which takes no timeout itself."""
+    if isinstance(scope, ast.Module):
+        return False
+    for node in _own_nodes(scope):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr in ("wait", "communicate")
+                and any(k.arg == "timeout" for k in node.keywords)):
+            return True
+    return False
 
 
 def _command(call: ast.Call):
@@ -147,6 +161,7 @@ def spawns(tree, skip_functions=()):
 
     collect(tree, [_assignments(tree)])
     for scope, chain in scopes:
+        waits = _waits_with_timeout(scope)
         stack = list(scope.body)
         while stack:
             node = stack.pop()
@@ -162,7 +177,8 @@ def spawns(tree, skip_functions=()):
             if direct or via_module:
                 command = _command(node)
                 kind = _program(command, chain) if command is not None else DYNAMIC
-                yield kind, _bounded(node), node.lineno
+                popen = (functions[func.id] if direct else func.attr) == "Popen"
+                yield kind, _bounded(node) or (popen and waits), node.lineno
 
 
 def scan() -> tuple[set[str], set[str], set[str]]:
