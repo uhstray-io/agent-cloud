@@ -13,8 +13,12 @@
 # verifying a tag proves nothing about what is pulled next; the caller pulls the same digests.
 #
 # cosign runs as a container on the target host, from an image pinned by digest, so the check
-# happens on the machine that pulls and needs nothing installed there but podman. The deploy
-# user's registry login (tasks/registry-login.yml) is mounted read-only for private packages.
+# happens on the machine that pulls and needs nothing installed there but podman. It runs as root,
+# from root's image store: a rootless user's store is writable by anything that holds that user's
+# podman socket, and podman does not re-verify the layers of a digest-pinned image it already
+# has, so a verifier run from it could be a tampered one. The caller must be able to escalate.
+# The deploy user's registry login (tasks/registry-login.yml) is mounted read-only for private
+# packages.
 #
 # Caller passes:
 #   _cosign_refs        list of <registry>/<repo>@sha256:<64 hex>
@@ -64,6 +68,7 @@
             item] }}
   loop: "{{ _cosign_refs }}"
   register: _cosign_results
+  become: true
   changed_when: false
   when: not ansible_check_mode
 

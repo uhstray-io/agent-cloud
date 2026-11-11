@@ -65,27 +65,29 @@
     _weft_auth_file: "/run/user/{{ _weft_uid.stdout }}/containers/auth.json"
     _weft_release_repo: "{{ _weft_registry }}/weft-release"
 
+# The verifiers (oras here, cosign in verify-cosign.yml) run as root, from root's image store. The
+# deploy user's rootless store is one a compromised orchestrator can write through its podman
+# socket, and podman does not re-verify the layers of a digest-pinned image already stored, so a
+# verifier run from it could be one that lies. And oras is not trusted even so: what it fetches is
+# hashed here, on the controller, against the digest asked for. Both come back base64-encoded,
+# because the command module strips a trailing newline from stdout and the hash is over the
+# exact bytes.
 - name: "Resolve release.json to a digest for {{ weft_release }}"
   ansible.builtin.command:
-    argv:
-      - "{{ container_engine | default('podman') }}"
-      - run
-      - --rm
-      - --user=0
-      - -v
-      - "{{ _weft_auth_file }}:/auth/config.json:ro"
-      - "{{ _weft_oras_image }}"
-      - resolve
-      - --registry-config
-      - /auth/config.json
-      - "{{ _weft_release_repo }}:{{ weft_release }}"
+    argv: >-
+      {{ [container_engine | default('podman'), 'run', '--rm', '--user=0',
+           '-v', _weft_auth_file ~ ':/auth/config.json:ro', _weft_oras_image]
+         + ['resolve', '--registry-config', '/auth/config.json', _weft_release_repo ~ ':' ~ weft_release] }}
   register: _weft_resolved
+  become: true
   changed_when: false
   failed_when: >-
     _weft_resolved.rc != 0
     or not (_weft_resolved.stdout | trim is match('^sha256:[0-9a-f]{64}$'))
   when: not ansible_check_mode
 
+# A resolve that lies can only name another digest: cosign checks that digest's signature, the
+# manifest is hashed against it, and release.json must name the commit or version asked for.
 - name: "Verify release.json was signed by weft's images.yml on main"
   ansible.builtin.include_tasks: verify-cosign.yml
   vars:
@@ -95,24 +97,27 @@
     _cosign_auth_file: "{{ _weft_auth_file }}"
   when: not ansible_check_mode
 
-# By the digest cosign just verified; oras checks what it fetched against that digest.
 - name: "Fetch the verified manifest by its digest"
-  ansible.builtin.command:
-    argv:
-      - "{{ container_engine | default('podman') }}"
-      - run
-      - --rm
-      - --user=0
-      - -v
-      - "{{ _weft_auth_file }}:/auth/config.json:ro"
-      - "{{ _weft_oras_image }}"
-      - manifest
-      - fetch
-      - --registry-config
-      - /auth/config.json
-      - "{{ _weft_release_repo }}@{{ _weft_resolved.stdout | trim }}"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ ([container_engine | default('podman'), 'run', '--rm', '--user=0',
+           '-v', _weft_auth_file ~ ':/auth/config.json:ro', _weft_oras_image]
+          + ['manifest', 'fetch', '--registry-config', '/auth/config.json',
+             _weft_release_repo ~ '@' ~ (_weft_resolved.stdout | trim)]) | map('quote') | join(' ') }} | base64 -w0
+    executable: /bin/bash
   register: _weft_manifest
+  become: true
   changed_when: false
+  when: not ansible_check_mode
+
+- name: "Refuse a manifest that is not the digest cosign verified"
+  ansible.builtin.assert:
+    that:
+      - ('sha256:' ~ (_weft_manifest.stdout | b64decode | hash('sha256'))) == (_weft_resolved.stdout | trim)
+    fail_msg: >-
+      The manifest fetched for {{ weft_release }} does not hash to {{ _weft_resolved.stdout | trim }},
+      the digest whose signature was verified. Nothing has changed on this host.
   when: not ansible_check_mode
 
 # The manifest is the one cosign verified, so its layers are trusted; the layer is chosen by
@@ -120,7 +125,7 @@
 - name: "Take the layer titled release.json"
   ansible.builtin.set_fact:
     _weft_release_blob: >-
-      {{ (_weft_manifest.stdout | from_json).layers | default([])
+      {{ (_weft_manifest.stdout | b64decode | from_json).layers | default([])
          | map('to_json')
          | select('search', '"org\.opencontainers\.image\.title": "release\.json"')
          | map('from_json') | map(attribute='digest') | list }}
@@ -137,29 +142,31 @@
   when: not ansible_check_mode
 
 - name: "Fetch release.json by its digest, to stdout"
-  ansible.builtin.command:
-    argv:
-      - "{{ container_engine | default('podman') }}"
-      - run
-      - --rm
-      - --user=0
-      - -v
-      - "{{ _weft_auth_file }}:/auth/config.json:ro"
-      - "{{ _weft_oras_image }}"
-      - blob
-      - fetch
-      - --registry-config
-      - /auth/config.json
-      - --output
-      - "-"
-      - "{{ _weft_release_repo }}@{{ _weft_release_blob[0] }}"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ ([container_engine | default('podman'), 'run', '--rm', '--user=0',
+           '-v', _weft_auth_file ~ ':/auth/config.json:ro', _weft_oras_image]
+          + ['blob', 'fetch', '--registry-config', '/auth/config.json', '--output', '-',
+             _weft_release_repo ~ '@' ~ _weft_release_blob[0]]) | map('quote') | join(' ') }} | base64 -w0
+    executable: /bin/bash
   register: _weft_release_raw
+  become: true
   changed_when: false
+  when: not ansible_check_mode
+
+- name: "Refuse a release.json that is not the blob the manifest names"
+  ansible.builtin.assert:
+    that:
+      - ('sha256:' ~ (_weft_release_raw.stdout | b64decode | hash('sha256'))) == _weft_release_blob[0]
+    fail_msg: >-
+      release.json fetched for {{ weft_release }} does not hash to {{ _weft_release_blob[0] }}, the
+      layer the verified manifest names. Nothing has changed on this host.
   when: not ansible_check_mode
 
 - name: "Parse release.json"
   ansible.builtin.set_fact:
-    _weft_release_json: "{{ _weft_release_raw.stdout | from_json }}"
+    _weft_release_json: "{{ _weft_release_raw.stdout | b64decode | from_json }}"
   when: not ansible_check_mode
 
 - name: "Refuse a release.json that is not the one asked for"

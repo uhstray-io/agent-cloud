@@ -381,9 +381,10 @@ def test_every_write_to_the_state_directory_escalates_and_leaves_it_root_s():
             if module != "ansible.builtin.command" and body.get("state") != "absent":
                 if body.get("owner") != "{{ _weft_state_owner }}":
                     bad.append(f"{f.name}: {task.get('name')} does not set the state owner")
-                if str(body.get("mode")) not in ("0644", "0755"):
+                # A recursive chown takes ownership of what is there and leaves modes alone.
+                if not body.get("recurse") and str(body.get("mode")) not in ("0644", "0755"):
                     bad.append(f"{f.name}: {task.get('name')} mode {body.get('mode')}")
-    assert writes >= 8, writes
+    assert writes >= 10, writes
     assert not bad, bad
     weft_vars = yaml.safe_load((PLAYBOOKS / "vars/weft.yml").read_text())
     assert weft_vars["_weft_state_owner"] == "root" and weft_vars["_weft_state_group"] == "root"
@@ -416,3 +417,89 @@ def test_a_state_directory_inside_the_mounted_workspace_directory_is_refused(tmp
 def test_a_state_directory_beside_the_mounted_workspace_directory_is_accepted(tmp_path):
     proc = _release_guard(tmp_path, str(tmp_path / "srv/weft-state/workspaces/ws1"))
     assert proc.returncode == 0, proc.stdout[-3000:]
+
+
+# ---------------------------------------------------------------------------------------------
+# The verifiers (agent-cloud#743 second review, H1). cosign and oras run from root's image store,
+# and what oras fetches is hashed on the controller against the digest it was asked for, so a
+# tampered oras, or one in a store the orchestrator can write, cannot hand the deploy a different
+# release.json than the one whose signature was verified.
+
+FAKE_ORAS_PODMAN = """#!/bin/bash
+echo "$*" >> "{log}"
+case "$*" in
+  *" resolve "*) cat "{resolved}" ;;
+  *" manifest fetch "*) cat "{manifest}" ;;
+  *" blob fetch "*) cat "{blob}" ;;
+esac
+exit 0
+"""
+
+
+def _registry(tmp_path: Path, *, manifest_tamper: bool = False, blob_tamper: bool = False) -> Path:
+    """A fake registry behind a fake podman: the honest release.json, its manifest, and the digest
+    resolve returns. Tampering changes what is served after the digests were taken."""
+    blob = json.dumps(_release(NEW, "a")).encode()
+    manifest = json.dumps({"schemaVersion": 2, "layers": [{
+        "mediaType": "application/json", "digest": "sha256:" + hashlib.sha256(blob).hexdigest(),
+        "size": len(blob), "annotations": {"org.opencontainers.image.title": "release.json"}}]}).encode()
+    (tmp_path / "resolved").write_text("sha256:" + hashlib.sha256(manifest).hexdigest() + "\n")
+    # A newline after the JSON is the change the command module would strip; it must still be caught.
+    (tmp_path / "manifest").write_bytes(manifest + (b"\n" if manifest_tamper else b""))
+    (tmp_path / "blob").write_bytes(blob.replace(b"weft-builder", b"weft-builderX") if blob_tamper else blob)
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "podman").write_text(FAKE_ORAS_PODMAN.format(
+        log=tmp_path / "engine.log", resolved=tmp_path / "resolved",
+        manifest=tmp_path / "manifest", blob=tmp_path / "blob"))
+    (bindir / "podman").chmod(0o755)
+    return bindir
+
+
+def _fetch(tmp_path: Path, bindir: Path):
+    """tasks/weft-release.yml for real, against the fake registry."""
+    play = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
+        "vars": {"weft_release": NEW, "local_mode": True, "_weft_role": "workspace",
+                 "_weft_workspace_dir": str(tmp_path / "srv/weft/ws1"),
+                 "_weft_state_dir": str(tmp_path / "srv/weft-state/workspaces/ws1")},
+        "tasks": [{"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-release.yml")},
+                  {"ansible.builtin.debug": {"msg": "COMMIT {{ _weft_release_json.commit }}"}}],
+    }]
+    playbook = tmp_path / "fetch.yml"
+    playbook.write_text(yaml.safe_dump(play, width=10**6))
+    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    env.update(PATH=f"{bindir}{os.pathsep}{env['PATH']}", ANSIBLE_NOCOLOR="1",
+               ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
+    return subprocess.run(["ansible-playbook", "-i", "localhost,", "-e", json.dumps({"ansible_become": False}),
+                           str(playbook)], cwd=REPO, env=env, text=True, capture_output=True, check=False,
+                          timeout=120)
+
+
+def test_a_release_json_that_matches_its_digests_is_read(tmp_path):
+    proc = _fetch(tmp_path, _registry(tmp_path))
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert f"COMMIT {NEW}" in proc.stdout
+
+
+@pytest.mark.parametrize("tamper", ["manifest", "blob"])
+def test_oras_output_that_does_not_match_its_digest_is_refused(tmp_path, tamper):
+    proc = _fetch(tmp_path, _registry(tmp_path, manifest_tamper=tamper == "manifest", blob_tamper=tamper == "blob"))
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "does not hash to" in proc.stdout, proc.stdout[-4000:]
+    assert "COMMIT" not in proc.stdout
+    log = (tmp_path / "engine.log").read_text()
+    assert " pull " not in log, "an image was pulled on the strength of an unverified release.json:\n" + log
+
+
+def test_every_verifier_runs_as_root_from_root_s_image_store():
+    # A rootless store is writable by anything holding that user's podman socket, and podman does
+    # not re-verify a stored digest's layers: a verifier from it could lie.
+    cosign = yaml.safe_load((PLAYBOOKS / "tasks/verify-cosign.yml").read_text())
+    (verify,) = [t for t in cosign if t.get("name") == "Verify each signature against the pinned identity"]
+    assert verify.get("become") is True
+    release = yaml.safe_load((PLAYBOOKS / "tasks/weft-release.yml").read_text())
+    oras = [t for t in release if "_weft_oras_image" in json.dumps(t)]
+    assert len(oras) == 3, [t.get("name") for t in oras]
+    assert all(t.get("become") is True for t in oras), [t.get("name") for t in oras if t.get("become") is not True]

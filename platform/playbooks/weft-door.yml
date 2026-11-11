@@ -84,6 +84,23 @@
         mode: "0755"
       become: true
 
+    # Anything an earlier layout or a person left in it becomes root's, and the old download
+    # directory goes: release.json is fetched to stdout now.
+    - name: "Take ownership of what is in the state directory"
+      ansible.builtin.file:
+        path: "{{ _weft_door_state_dir }}"
+        state: directory
+        owner: "{{ _weft_state_owner }}"
+        group: "{{ _weft_state_group }}"
+        recurse: true
+      become: true
+
+    - name: "Remove a leftover release-incoming directory"
+      ansible.builtin.file:
+        path: "{{ _weft_door_state_dir }}/release-incoming"
+        state: absent
+      become: true
+
     - name: "The signing key (generated once, reused forever) as a 0600 file"
       # Generated once: a new key makes every workspace's [front_door] public_key wrong, and
       # every sign-in fails at once.

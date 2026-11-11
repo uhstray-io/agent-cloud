@@ -1,11 +1,12 @@
 {#- One workspace's deployment file — rendered by deploy-weft-workspace.yml into the deploy's
     root-owned state directory (never the workspace directory, which the board can write) and
-    mounted read-only into the containers that read it, for the release being deployed (its agent images, by digest) and again for the
-    previous release when a deploy rolls back. NO CREDENTIAL GOES IN THIS FILE, and none names an
-    environment variable either: a workspace's model keys and forge token are entered by its admin
-    on Settings > Credentials and kept sealed in its catalog (weft's D539), so no provider or
-    tracker here names a variable to read one from. weft refuses a key it does not know, so every key here is one its
-    loader lists (weft's crates/catalog-types/deployment-file-keys.txt).
+    mounted read-only into the containers that read it, for the release being deployed (its
+    agent images, by digest) and again for the previous release when a deploy rolls back.
+    NO CREDENTIAL GOES IN THIS FILE, and none names an environment variable either: a
+    workspace's model keys and forge token are entered by its admin on Settings > Credentials
+    and kept sealed in its catalog (weft's D539), so no provider or tracker here names a variable
+    to read one from. weft refuses a key it does not know, so every key here is one its loader
+    lists (weft's crates/catalog-types/deployment-file-keys.txt).
 
     Every path weft writes through starts with the workspace directory, because one file is one
     workspace and two workspaces must never share a clone, a backup directory or a socket.

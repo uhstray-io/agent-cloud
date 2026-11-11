@@ -135,6 +135,23 @@
         mode: "0755"
       become: true
 
+    # Anything an earlier layout or a person left in it becomes root's, and the old download
+    # directory goes: release.json is fetched to stdout now.
+    - name: "Take ownership of what is in the state directory"
+      ansible.builtin.file:
+        path: "{{ _weft_state_dir }}"
+        state: directory
+        owner: "{{ _weft_state_owner }}"
+        group: "{{ _weft_state_group }}"
+        recurse: true
+      become: true
+
+    - name: "Remove a leftover release-incoming directory"
+      ansible.builtin.file:
+        path: "{{ _weft_state_dir }}/release-incoming"
+        state: absent
+      become: true
+
     - name: "Read the deploy user's id"
       ansible.builtin.command: id -u
       register: _weft_uid
