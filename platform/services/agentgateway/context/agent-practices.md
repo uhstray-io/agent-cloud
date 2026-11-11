@@ -167,11 +167,11 @@ the catalog says, not what Semaphore enforces today:
 - **Manage agentgateway Client Key** and **Rollback Inference Route.** Neither is on any
   workflow role's `allowed_templates` or `service_deploy_templates` (`data.json`), so OPA's
   decision denies them to `infra-agent`, `security-agent`, `o11y-agent`, `service-agent` and `network-agent`. Note: the
-  legacy `skynet` and `nemoclaw` catalog entries declare no `allowed_templates`
-  (`data.json:3`, `data.json:62`), so they are not role-scoped (`agent_actions.rego:74`): OPA
-  limits their `run_task` by template only through the destructive rule
+  legacy `skynet` catalog entry declares no `allowed_templates`
+  (`data.json`), so it is not role-scoped (`agent_actions.rego:74`): OPA
+  limits its `run_task` by template only through the destructive rule
   (`agent_actions.rego:68-70`), and by branch through the `main`|`dev` gate that applies to
-  every agent launch OPA is asked about (`agent_actions.rego:258-267`). Neither stops them launching
+  every agent launch OPA is asked about (`agent_actions.rego:258-267`). That does not stop it launching
   these two templates from `main` or `dev`. Whether any of this binds depends on the caller asking OPA:
   skynet's client does, Semaphore does not, and the planned launch gate will (OpenSpec change
   `skynet-launch-containment`). This file forbids those two templates to any agent by

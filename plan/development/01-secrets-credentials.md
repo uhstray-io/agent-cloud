@@ -17,7 +17,7 @@
 > **Location:** `plan/development/01-secrets-credentials.md`
 > **Date:** 2026-06-14 · **Status:** ACTIVE (Phase A1 landed 2026-06-14; local-dev OpenBao uses the `file` storage backend, `platform/playbooks/bootstrap-local-dev.yml:237`, checked 2026-11-09) · **Owner:** uhstray-io
 >
-> **Context:** OpenBao is the platform's root of trust — every deploy, every AppRole login, and every service `.env` flows from it (root `CLAUDE.md` → Secrets Management). Yet it is today the least-resilient component in the stack. Local-dev *was* in-memory (a `podman machine` restart wiped all secrets and bricked every stateful volume — see [[local-openbao-is-in-memory-vm-restart-resets-all-secrets]]); that is now fixed with a persistent file backend (Track A, Phase A1 — landed). Production runs a **single-node Raft** vault with **manual Shamir unseal** (sealed after every reboot — a standing "High" risk in `IMPLEMENTATION_PLAN.md:1616` and a manual SSH operation in `ACCESS-BOUNDARIES.md:57`), **no TLS** (`tls_disable = 1`), **no snapshots**, and a **legacy bash `deploy.sh`** that generates secrets + writes policies + creates AppRoles itself — a direct violation of Critical Rules #2/#4. This plan makes local-dev resilient for testing and brings production to a convenient, self-healing HA cluster.
+> **Context:** OpenBao is the platform's root of trust — every deploy, every AppRole login, and every service `.env` flows from it (root `CLAUDE.md` → Secrets Management). Yet it is today the least-resilient component in the stack. Local-dev *was* in-memory (a `podman machine` restart wiped all secrets and bricked every stateful volume — see [[local-openbao-is-in-memory-vm-restart-resets-all-secrets]]); that is now fixed with a persistent file backend (Track A, Phase A1 — landed). Production runs a **single-node Raft** vault with **manual Shamir unseal** (sealed after every reboot — a manual SSH operation in `ACCESS-BOUNDARIES.md:57`), **no TLS** (`tls_disable = 1`), **no snapshots**, and a **legacy bash `deploy.sh`** that generates secrets + writes policies + creates AppRoles itself — a direct violation of Critical Rules #2/#4. This plan makes local-dev resilient for testing and brings production to a convenient, self-healing HA cluster.
 >
 > **For agentic workers:** Execute phase-by-phase; every phase ends at a validation gate. The root/recovery keys and unseal material are the crown jewels — `no_log` every task that touches them, escrow them to site-config, never commit them. Real domains/IPs stay in site-config. TLS (Phase B0) is a hard prerequisite for Raft HA — do not reorder it.
 
@@ -34,12 +34,12 @@
 | # | Gap | Evidence | Impact |
 |---|-----|----------|--------|
 | 1 | **Single-node Raft, no quorum/failover** | prod `config/openbao.hcl`: `node_id="node1"`, `cluster_addr=http://127.0.0.1:8201` (loopback) | OpenBao VM loss = total platform credential outage |
-| 2 | **Manual Shamir unseal, no auto-unseal** | `site-config/CLAUDE.md:95` "OpenBao starts sealed"; `IMPLEMENTATION_PLAN.md:1616` ("High"), `:1664` ("Auto-unseal — deferred"); `ACCESS-BOUNDARIES.md:57` | Every reboot needs a manual SSH unseal; a **sealed standby cannot fail over** [4] |
+| 2 | **Manual Shamir unseal, no auto-unseal** | `site-config/CLAUDE.md:95` "OpenBao starts sealed"; `ACCESS-BOUNDARIES.md:57` | Every reboot needs a manual SSH unseal; a **sealed standby cannot fail over** [4] |
 | 3 | **No snapshot/backup** | no `bao operator raft snapshot` anywhere in repo; DR Scenario 3 is an unchecked stub | No recovery path for storage corruption / lost quorum |
 | 4 | **TLS disabled** | `tls_disable = 1` in prod + local HCL; `openbao_addr: http://192.168.1.164:8200` | Secrets cross the LAN in plaintext; **TLS is a hard prerequisite for Raft cluster traffic** [1][4] |
 | 5 | **No OpenBao Agent** | clients use bespoke curl/`uri` (`bao-client.sh`, `manage-secrets.yml`) | Token lifecycle hand-rolled; no caching/renewal sidecar |
 | 6 | **Legacy non-composable deploy** | `deploy.sh` generates secrets + writes policies + creates AppRoles + seeds (violates Rules #2/#4); "Deploy OpenBao" template wraps it; no `clean-deploy-openbao.yml` | Unauditable, non-idempotent, contradicts every other service |
-| 7 | **Init/secret escrow gaps** | root token never revoked (`IMPLEMENTATION_PLAN.md:1666`); `site-config/secrets/openbao/` referenced but **absent**; no audit device (`:1670`) | Long-lived root token on VM; no audit trail; manual key backup |
+| 7 | **Init/secret escrow gaps** | root token never revoked; `site-config/secrets/openbao/` referenced but **absent**; no audit device | Long-lived root token on VM; no audit trail; manual key backup |
 | 8 | **Storage-backend fork local↔prod** | local-dev = `file`; prod = `raft` | Local never exercises the Raft path prod runs (init/unseal/snapshot untested) |
 
 ### Operator-held secrets reach OpenBao through isolated seed environments
@@ -126,7 +126,7 @@ Four identities can put keys into a task's environment (read from the v2.17.31 s
 |------|-------|---------------------------|
 | System admin | `api/projects/project.go` | Bypasses project membership and every permission check |
 | Project member whose role can run tasks | `db/ProjectUser.go` | `owner`, `manager`, `task_runner` and any custom role granting `CanRunProjectTasks`; `task_runner` is meant to be launch-only |
-| A user's API token | `/api/user/tokens` | Carries its user's rights; the controller's token is at `secret/services/semaphore:api_token`, which the NemoClaw AppRole's `services/*` read grant also covers |
+| A user's API token | `/api/user/tokens` | Carries its user's rights; the controller's token is at `secret/services/semaphore:api_token` |
 | Integration (incoming webhook) | `api/integration.go` | Copies header or payload values into the task environment |
 
 ### Decision: every identity that can launch is runner-trusted, and held to a declaration
@@ -135,11 +135,7 @@ Nothing a playbook checks at run time can stop this (Ansible exposes no list of 
 it was given, and any referenced variable can be replaced by a template), so the fix is who
 can launch:
 
-1. **NemoClaw cannot read the Semaphore token.** `nemoclaw-read.hcl` gains a `deny` on
-   `secret/data/services/semaphore` and `secret/metadata/services/semaphore`. `deny` always
-   wins and the exact path outranks the `services/*` glob (openbao.org/docs/concepts/policies).
-   Applied by `apply-policy-nemoclaw.yml`.
-2. **Membership as code: `manage-semaphore-access.yml`** (template "Manage Semaphore Access").
+1. **Membership as code: `manage-semaphore-access.yml`** (template "Manage Semaphore Access").
    It reads the project's members, the system admins and the project's integrations through
    the controller's loopback API, and compares them with two private inventory declarations:
    `semaphore_project_members` (username to role) and the existing `semaphore_admin_users`.
@@ -149,10 +145,10 @@ can launch:
    member's role and removes an undeclared member. An undeclared system admin or any
    integration fails the run by name; each needs an operator decision, not a silent delete.
    The comparison is one filter (`filter_plugins/semaphore_access.py`), tested directly.
-3. **Documented as a trust boundary.** The Semaphore operating guide and `AGENTS.md` state
+2. **Documented as a trust boundary.** The Semaphore operating guide and `AGENTS.md` state
    that launch rights are runner rights, so `task_runner` is granted only to someone trusted
    with the controller.
-4. **Admins derived from the administrator list (issue #604, 2026-10-18).** The admin
+3. **Admins derived from the administrator list (issue #604, 2026-10-18).** The admin
    declaration is the filter `semaphore_admin_roster`: every `platform_admins` entry (the
    list the Authentik deploy renders into `platform-admins`) except the service account, plus
    `semaphore_admin_users` for Semaphore-only admins. Both access plays use it; Promote
@@ -168,7 +164,7 @@ survey (a fork, and upstream is unchanged through v2.19.12); an OPA-gated launch
 machine callers (deferred by operator decision 2026-09-26; it is the next step if an automated
 caller needs to launch).
 
-Live order after merge: `apply-policy-nemoclaw.yml` → `Manage Semaphore Access` under
+Live order after merge: `Manage Semaphore Access` under
 `--check` to read the current roster → declare `semaphore_project_members` in site-config →
 a real run. Each live step is operator-approved.
 
@@ -379,7 +375,7 @@ flowchart LR
 #### Phase B5 — OpenBao Agent rollout
 
 - **Files:** Agent config per service host (`auto_auth` approle reading a **response-wrapped** secret_id, `cache { persist }`, `template`/`env_template` rendering `.env` or injecting env vars), incrementally replacing `bao-client.sh` runtime calls [2].
-- Start with one service (e.g. n8n), prove auto-renew across token expiry, then fan out.
+- Start with one service, prove auto-renew across token expiry, then fan out.
 - **Acceptance:** a service's secrets refresh without a redeploy when rotated in OpenBao; no service-side login/renew code.
 
 #### Phase B6 — Hardening
@@ -412,7 +408,7 @@ flowchart LR
 - **Seal-service SPOF** — auto-unseal makes the Transit seal vault a hard dependency: its permanent loss makes the cluster unrecoverable *even from backups* [seal-concept]. Mitigations: the seal vault is itself snapshotted (B4), and **recovery keys** provide break-glass root-token generation / seal migration.
 - **TLS everywhere (B0)** closes the current plaintext-secret-on-LAN exposure (Problem #4) and is mandatory for Raft cluster traffic.
 - **Least privilege** — `config/policies/*.hcl` applied in **both** environments (A6); the `semaphore-read` super-policy (`sys/policies/acl/*` + `auth/approle/role/*`) stays scoped to the orchestrator only.
-- **Audit + root revocation (B6)** — given read-all policies exist (`nemoclaw-read`, `semaphore-read`), an audit device and a revoked genesis root token are required to bound blast radius.
+- **Audit + root revocation (B6)** — given read-all policies exist (`semaphore-read`), an audit device and a revoked genesis root token are required to bound blast radius.
 - **Break-glass genesis** — OpenBao's own deploy can't fetch its GitHub deploy key from itself; the documented `-e github_deploy_key=` extra-var is the *only* sanctioned manual injection, scoped to first deploy.
 
 ---
@@ -425,7 +421,6 @@ flowchart LR
 - `plan/development/00-foundation-local-dev.md` — step-ca, the TLS issuer for Phase B0
 - `plan/development/00-foundation-local-dev.md` — local control-plane bootstrap (Track A host)
 - `plan/development/10-infra-resilience.md` — Scenarios 2/3/7 fulfilled by B4
-- `plan/archive/development/IMPLEMENTATION_PLAN.md` — `:1616` (sealed-after-reboot risk), `:1664–1672` (auto-unseal/audit/root-revoke deferred), `:1813`/`:1827` (3-node Raft, snapshots)
 - `plan/architecture/04-credentials-access.md` — `:57` (manual unseal as standing SSH op, retired by B2)
 - site-config — `inventory/production.yml` (`openbao_svc`, `openbao_addr`), `CLAUDE.md:95` (sealed-on-boot known issue), `secrets/openbao/` (to be created in B2)
 
@@ -479,7 +474,7 @@ Today the mount name `secret` is hardcoded in ~33 files across five categories (
 |----------|-------|--------|
 | KV v2 API paths | `tasks/manage-secrets.yml` (3 sites), ~15 playbooks, `lib/bao-client.sh`, service `deploy.sh`, `scripts/local-dev.sh` | `secret/data/services/*`, `secret/metadata/services/*` — safe string substitution |
 | KV engine enable | `bootstrap-local-dev.yml` (`sys/mounts/secret`), `services/openbao/deployment/deploy.sh` (`secrets enable -path=secret`) | **migration-sensitive** — creates the mount |
-| OpenBao policies | 9 `.hcl` files in `services/openbao/deployment/config/policies/` | `path "secret/data/services/*"` — must template |
+| OpenBao policies | `.hcl` files in `services/openbao/deployment/config/policies/` | `path "secret/data/services/*"` — must template |
 | `hashi_vault` lookups | `distribute-ssh-keys.yml`, `harden-ssh.yml`, `proxmox-validate.yml`, `provision-vm.yml` | `secret=secret/data/…` lookup args |
 | Documentation | `CLAUDE.md` (layout table) + several `plan/` docs | reference only |
 
@@ -490,7 +485,7 @@ Today the mount name `secret` is hardcoded in ~33 files across five categories (
 1. **Variable + default.** `bao_kv_mount` (Ansible) and `BAO_KV_MOUNT` (bash), default `secret`. Reference it **inline with the default at every site** — `{{ bao_kv_mount | default('secret') }}` / `${BAO_KV_MOUNT:-secret}` — rather than relying on a single group_vars definition. This guarantees that any playbook run without the variable set behaves exactly as today, even outside the normal inventory.
 2. **KV-v2 infix preserved.** API paths are `<mount>/data/<path>` (read/write) and `<mount>/metadata/<path>` (metadata/list). Only the leading `<mount>` token is parameterized; `data`/`metadata`/`services` are unchanged.
 3. **Non-breaking, no migration.** Default `secret` keeps the existing mount. A *new* instance setting `bao_kv_mount: agent-cloud-b` gets a fresh empty mount created by the KV-enable step. **Renaming an existing instance's mount is out of scope** (would require `bao secrets move`); we only parameterize for new instances.
-4. **Policies become templates.** The 9 static `.hcl` files become `.hcl.j2`, rendered with `bao_kv_mount` at apply time. `apply-openbao-policy.yml` switches `lookup('file', …)` → `lookup('template', …)`. Non-secret paths in the policies (`sys/policies/acl/*`, `auth/approle/*`) stay literal.
+4. **Policies become templates.** The static `.hcl` files become `.hcl.j2`, rendered with `bao_kv_mount` at apply time. `apply-openbao-policy.yml` switches `lookup('file', …)` → `lookup('template', …)`. Non-secret paths in the policies (`sys/policies/acl/*`, `auth/approle/*`) stay literal.
 5. **Semaphore env.** Semaphore must export `BAO_KV_MOUNT` into the deploy environment (alongside `BAO_ROLE_ID`/`BAO_SECRET_ID`) so `bao-client.sh` and service `deploy.sh` resolve the same mount.
 
 ---
@@ -621,7 +616,6 @@ bao_kv_put() {
 
 **Files (each contains one or more `/v1/secret/data/services/…` or `/secret/metadata/…` references — substitute the same pattern as Task 4):**
 - `platform/playbooks/bootstrap-local-dev.yml` (the OpenBao OIDC client-secret read + any KV reads)
-- `platform/playbooks/seed-n8n-secrets.yml`
 - `platform/playbooks/sync-secrets-to-openbao.yml`
 - `platform/playbooks/check-secrets.yml`, `validate-secrets.yml`
 - `platform/playbooks/deploy-*.yml` and `clean-deploy-*.yml` that read/write KV directly (audit with the grep in Step 2)
@@ -661,10 +655,10 @@ grep -rn "v1/secret/data\|v1/secret/metadata\|/secret/data/services\|/secret/met
 ## Task 7: Template the OpenBao policies
 
 **Files:**
-- Rename: 9 files `platform/services/openbao/deployment/config/policies/*.hcl` → `*.hcl.j2`
-  (`inference-comfyui`, `inference-hunyuan3d`, `n8n-write`, `nemoclaw-read`, `nemoclaw-rotate`, `nocodb-write`, `orb-agent`, `semaphore-read`, `semaphore-write`)
+- Rename: the `.hcl` policy files `platform/services/openbao/deployment/config/policies/*.hcl` → `*.hcl.j2`
+  (`console`, `orb-agent`, `semaphore-read`, `semaphore-write`)
 - Modify: `platform/playbooks/tasks/apply-openbao-policy.yml` (file → template lookup)
-- Modify: `platform/playbooks/apply-policy-*.yml` (7 files) + `apply-openbao-policies.yml` — update `_policy_file` extension to `.hcl.j2`
+- Modify: `platform/playbooks/apply-policy-*.yml` + `apply-openbao-policies.yml` — update `_policy_file` extension to `.hcl.j2`
 
 - [ ] **Step 1: In each policy, parameterize only the KV paths**
 
@@ -703,7 +697,7 @@ path "{{ bao_kv_mount | default('secret') }}/metadata/services/*" {
 ## Task 8: Parameterize `scripts/local-dev.sh`
 
 **Files:**
-- Modify: `scripts/local-dev.sh` (the `creds()` reads of `secret/data/services/authentik`, `…/n8n`, etc.)
+- Modify: `scripts/local-dev.sh` (the `creds()` reads of `secret/data/services/authentik`, etc.)
 
 - [ ] **Step 1: Resolve the mount once + use it** — add near the top of `creds()` (and any other KV read):
 
@@ -1125,7 +1119,7 @@ Add a new template to `platform/semaphore/templates.yml`:
 
 ### Phase 2: Apply to New AppRoles First
 
-1. Create any new per-service AppRoles (e.g., `netbox-deploy`, `nocodb-deploy`) with the new defaults
+1. Create any new per-service AppRoles (e.g., `netbox-deploy`) with the new defaults
 2. These AppRoles will have 90-day TTL from creation
 3. Validate that deployments work correctly with bounded TTLs
 

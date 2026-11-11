@@ -115,16 +115,8 @@ setup() {
   grep -q 'opa_svc:' "$INVENTORY"
 }
 
-@test "inventory example: defines n8n_svc group" {
-  grep -q 'n8n_svc:' "$INVENTORY"
-}
-
 @test "inventory example: defines erpnext_svc group" {
   grep -q 'erpnext_svc:' "$INVENTORY"
-}
-
-@test "inventory example: defines uhhcraft_svc group" {
-  grep -q 'uhhcraft_svc:' "$INVENTORY"
 }
 
 # ── Required per-host fields ────────────────────────────────────────────────────

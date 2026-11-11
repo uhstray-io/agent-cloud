@@ -105,7 +105,7 @@ def test_health_url_alone_is_a_declared_contract(tmp_path):
 
 
 def test_health_probe_on_host_runs_the_probe_on_the_target(tmp_path):
-    # Production tududi/honcho/n8n publish on loopback or firewall the port to Caddy, so the
+    # Production honcho publishes on loopback or firewalls the port to Caddy, so the
     # executor's probe answered -1 for healthy services. The target here has no usable Python:
     # a probe delegated to the executor still passes, one that runs on the target cannot.
     broken = "ansible_python_interpreter=/nonexistent/python"

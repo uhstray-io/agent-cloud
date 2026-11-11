@@ -36,9 +36,9 @@ def _names(tmp_path, clients):
 
 
 def test_client_keys_join_the_declaration_as_entries(tmp_path):
-    defs = _names(tmp_path, ["skynet", "openhands"])
+    defs = _names(tmp_path, ["skynet", "console"])
     assert [d["name"] for d in defs] == [
-        "vllm_api_key", "agw_db_password", "agw_oidc_cookie_seed", "client_skynet", "client_openhands"]
+        "vllm_api_key", "agw_db_password", "agw_oidc_cookie_seed", "client_skynet", "client_console"]
     assert all(d["type"] == "random" and d["length"] == 48 for d in defs[3:])
 
 

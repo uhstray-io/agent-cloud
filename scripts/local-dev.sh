@@ -206,7 +206,7 @@ validate() {
 
 # Run ANY registered template by playbook name via LOCAL Semaphore — the same
 # worktree-bound dispatch deploy/validate use, so one-off operational playbooks
-# (backup-n8n-db, restore-n8n-db, store-*-api-key, ...) never need hand-crafted
+# (backup-plane-db, restore-plane-db, store-postiz-api-key, ...) never need hand-crafted
 # curl against the API. Extra vars ride as a JSON object.
 run_playbook() {
   local name="${1:-}" extra="${2:-}"
@@ -280,11 +280,6 @@ creds() {
   admin_pw=$(printf '%s' "$secret" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('agent_cloud_admin_password',''))" 2>/dev/null) || true
   boot_pw=$(printf '%s' "$secret" | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('bootstrap_password',''))" 2>/dev/null) || true
   [ -n "${boot_pw:-}" ] || die "authentik secrets not in OpenBao — is authentik deployed? (make local-deploy-authentik)"
-  # n8n is community edition (no SSO): forward_auth gates ACCESS, then n8n has its
-  # OWN owner login. Fetch that password too (best-effort — empty if n8n absent).
-  local n8n_pw
-  n8n_pw=$(curl -sf -H "X-Vault-Token: ${tok}" "${BAO_ADDR}/v1/secret/data/services/n8n" 2>/dev/null \
-          | python3 -c "import json,sys;print(json.load(sys.stdin)['data']['data'].get('owner_password',''))" 2>/dev/null) || true
   cat <<EOF
 
   =====================================================================
@@ -304,12 +299,6 @@ creds() {
                    ERPNext    https://erp.${zone}:8443/
      forward_auth: NetBox     https://netbox.${zone}:8443/
                    OpenBao    https://openbao.${zone}:8443/   (then pick "OIDC" login)
-                   n8n        https://n8n.${zone}:8443/
-  ---------------------------------------------------------------------
-   n8n is community edition (no SSO): pass forward_auth as agent-cloud-admin,
-   then log in to n8n itself with its OWNER account:
-     Email:     agent-cloud-admin@${zone}
-     Password:  ${n8n_pw:-<not seeded yet — re-run make local-deploy-n8n>}
   =====================================================================
    (resolves + trusts TLS after: make local-dns-resolver  make local-tls-trust)
 EOF

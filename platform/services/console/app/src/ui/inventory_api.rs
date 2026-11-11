@@ -368,13 +368,13 @@ mod tests {
                         "nodes": [{"name": "pve-01", "status": "online", "cpu": 0.12, "maxcpu": 16,
                                    "mem": 8589934592u64, "maxmem": 68719476736u64, "uptime": 123456}],
                         "vms": [{
-                            "name": "tududi", "vmid": 101, "status": "active", "live_status": "running",
+                            "name": "postiz", "vmid": 101, "status": "active", "live_status": "running",
                             "vcpus": 2.0, "memory_mb": 4096, "disk_mb": 40960,
-                            "primary_ip": "198.51.100.5/24", "tags": ["tududi-sync"],
+                            "primary_ip": "198.51.100.5/24", "tags": ["postiz-sync"],
                             "workflow": {"steps": {"step-a": "pass", "step-b": "fail"},
                                          "failed": ["step-b"], "last_run": "2026-10-26T12:00:00Z"},
                             "rag": "red",
-                            "grafana_url": "https://grafana.example.test/d/service-overview/service-overview?var-service=tududi&var-log_service=tududi"
+                            "grafana_url": "https://grafana.example.test/d/service-overview/service-overview?var-service=postiz&var-log_service=postiz"
                         }]
                     }],
                     "devices": [{"name": "pve-01", "role": "Hypervisor", "status": "active"},
@@ -453,7 +453,7 @@ mod tests {
             "updated_at": {"netbox": "2026-10-26T12:01:00Z", "proxmox": "2026-10-26T11:00:00Z"},
             "links": {"grafana": null, "grafana_conformance": null},
             "services": [{
-                "name": "tududi", "grafana_url": null, "site": "dc1", "cluster": "pve-prod",
+                "name": "postiz", "grafana_url": null, "site": "dc1", "cluster": "pve-prod",
                 "live_status": null, "rag": "amber", "failed_steps": ["step-b"],
                 "last_run": "2026-10-26T12:00:00Z", "tags": ["Products"],
                 "domains": ["domain-products"]
@@ -474,13 +474,13 @@ mod tests {
 
         let single = json!({
             "source": {"netbox": "ok"}, "stale": false,
-            "service": {"name": "tududi", "site": "dc1", "cluster": "pve-prod", "rag": "amber"},
-            "vm": {"name": "tududi", "status": "active", "rag": "amber"}
+            "service": {"name": "postiz", "site": "dc1", "cluster": "pve-prod", "rag": "amber"},
+            "vm": {"name": "postiz", "status": "active", "rag": "amber"}
         });
         let Read::Ok(detail) = classify::<ServiceBody>(&reply(200, single)) else {
             panic!("expected Ok");
         };
-        assert_eq!(detail.service.name, "tududi");
+        assert_eq!(detail.service.name, "postiz");
         assert_eq!(detail.vm.status, "active");
     }
 

@@ -647,7 +647,7 @@ mod tests {
             "/v1/work/sem-1",
             "/v1/tenants/acme/inventory",
             "/v1/tenants/acme/services",
-            "/v1/tenants/acme/services/tududi",
+            "/v1/tenants/acme/services/postiz",
             "/v1/network",
             "/v1/flows",
             "/v1/gateway",
@@ -1209,15 +1209,15 @@ mod tests {
     const WORK_TASKS: &str = r#"[
         {"id": 20, "status": "success", "created": "2026-10-26T12:00:00Z", "template_id": 1,
          "message": "skynet run-1 step-a", "tpl_alias": "Plan onboarding", "user_name": "svc-console",
-         "environment": "{\"target_service\":\"tududi\",\"SECRET_TOKEN\":\"hunter2\"}"},
+         "environment": "{\"target_service\":\"postiz\",\"SECRET_TOKEN\":\"hunter2\"}"},
         {"id": 21, "status": "running", "created": "2026-10-26T12:01:00Z", "template_id": 2,
-         "message": "skynet run-1 step-b", "tpl_alias": "Deploy tududi", "user_name": null,
-         "environment": "{\"target_service\":\"tududi\"}"},
+         "message": "skynet run-1 step-b", "tpl_alias": "Deploy postiz", "user_name": null,
+         "environment": "{\"target_service\":\"postiz\"}"},
         {"id": 22, "status": "error", "created": "2026-10-26T12:02:00Z", "template_id": 3,
          "message": null, "tpl_alias": "Check Secrets", "user_name": "stray", "environment": null},
         {"id": 23, "status": "error", "created": "2026-10-26T12:03:00Z", "template_id": 2,
-         "message": null, "tpl_alias": "Deploy tududi", "user_name": null, "schedule_id": 9,
-         "environment": "{\"target_service\":\"tududi\"}"}
+         "message": null, "tpl_alias": "Deploy postiz", "user_name": null, "schedule_id": 9,
+         "environment": "{\"target_service\":\"postiz\"}"}
     ]"#;
 
     const WORKFLOW: &str = r#"[
@@ -1326,7 +1326,7 @@ mod tests {
                 .expect("item")
                 .clone()
         };
-        assert_eq!(stream_of("sem-23")["stream"], "tpl-2:tududi");
+        assert_eq!(stream_of("sem-23")["stream"], "tpl-2:postiz");
         assert_eq!(stream_of("sem-23")["latest_in_stream"], true);
         assert_eq!(stream_of("sem-23")["stream_runs"], 2);
         assert_eq!(stream_of("sem-23")["launched_by"], "schedule");
@@ -1352,7 +1352,7 @@ mod tests {
         );
         assert_eq!(detail["stream_history"][0]["lane"], "failed");
         assert_eq!(detail["stream_history"][1]["lane"], "running");
-        assert_eq!(detail["item"]["title"], "Deploy tududi — tududi");
+        assert_eq!(detail["item"]["title"], "Deploy postiz — postiz");
         assert_eq!(detail["item"]["lane"], "running");
         assert_eq!(detail["item"]["role"], "service-agent");
         assert_eq!(detail["item"]["launched_by"], "skynet");
@@ -1361,7 +1361,7 @@ mod tests {
             "https://semaphore.test:8443/project/1/history?t=21"
         );
         assert_eq!(detail["run"]["run_id"], "run-1");
-        assert_eq!(detail["run"]["service"], "tududi");
+        assert_eq!(detail["run"]["service"], "postiz");
         let steps = detail["run"]["steps"].as_array().expect("steps");
         assert_eq!(steps[0]["id"], "step-a");
         assert_eq!(steps[0]["status"], "done");

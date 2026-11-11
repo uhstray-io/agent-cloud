@@ -708,7 +708,7 @@ pub mod fixtures {
     /// `domainx`, `domain` and `not-domain-x` look close and must not be. The list is out of
     /// name order on purpose, so the sort is read.
     pub const TAGS_ALL: &str = r#"{"count":7,"next":null,"previous":null,"results":[
-        {"id":1,"name":"tududi-sync","slug":"tududi-sync","color":"9e9e9e"},
+        {"id":1,"name":"postiz-sync","slug":"postiz-sync","color":"9e9e9e"},
         {"id":2,"name":"Products","slug":"domain-products","color":"2196f3"},
         {"id":3,"name":"IT","slug":"domain-it","color":"4caf50"},
         {"id":4,"name":"Professional Services","slug":"domain-professional-services","color":"ff9800"},
@@ -717,16 +717,16 @@ pub mod fixtures {
         {"id":7,"name":"Not a domain","slug":"not-domain-x","color":""}
     ]}"#;
 
-    /// Five VMs of cluster 7, covering every RAG rule: `tududi` has a failed step, `gateway`
-    /// is stopped while NetBox says active, `planned-vm` is planned, `wiki` is clean and
+    /// Five VMs of cluster 7, covering every RAG rule: `postiz` has a failed step, `gateway`
+    /// is stopped while NetBox says active, `planned-vm` is planned, `plane` is clean and
     /// running, `ghost` has no live match. `vault_note` must never leave the console.
-    /// `tududi` carries the IT domain tag; `wiki` carries two; `planned-vm` carries a
+    /// `postiz` carries the IT domain tag; `plane` carries two; `planned-vm` carries a
     /// `domain-ghost` tag that NetBox's tag list does not hold, so it is no domain.
     pub const VMS_CLUSTER7: &str = r#"{"count":5,"next":null,"previous":null,"results":[
-        {"id":101,"name":"tududi","status":{"value":"active","label":"Active","id":1},
+        {"id":101,"name":"postiz","status":{"value":"active","label":"Active","id":1},
          "vcpus":2.0,"memory":4096,"disk":40960,
          "primary_ip":{"id":9,"address":"198.51.100.5/24","family":{"value":4,"label":"IPv4"}},
-         "tags":[{"id":1,"name":"tududi-sync","slug":"tududi-sync"},{"id":3,"name":"IT","slug":"domain-it"}],
+         "tags":[{"id":1,"name":"postiz-sync","slug":"postiz-sync"},{"id":3,"name":"IT","slug":"domain-it"}],
          "cluster":{"id":7,"name":"pve-prod"},
          "custom_fields":{"ac_workflow_status":{"step-a":"pass","step-b":"fail"},
                           "ac_failed_steps":"step-b","ac_last_run":"2026-10-26T12:00:00Z",
@@ -736,7 +736,7 @@ pub mod fixtures {
         {"id":103,"name":"planned-vm","status":{"value":"planned"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[{"id":8,"name":"Ghost","slug":"domain-ghost"}],"cluster":{"id":7,"name":"pve-prod"},
          "custom_fields":{"ac_workflow_status":{"step-a":"pass"},"ac_failed_steps":"","ac_last_run":null}},
-        {"id":104,"name":"wiki","status":{"value":"active"},"vcpus":2.0,"memory":4096,"disk":30720,
+        {"id":104,"name":"plane","status":{"value":"active"},"vcpus":2.0,"memory":4096,"disk":30720,
          "primary_ip":{"id":10,"address":"198.51.100.8/24"},
          "tags":[{"id":2,"name":"Products","slug":"domain-products"},
                  {"id":4,"name":"Professional Services","slug":"domain-professional-services"}],
@@ -747,16 +747,16 @@ pub mod fixtures {
 
     /// The lab cluster's VM: a name no Proxmox guest carries, so it never joins.
     pub const VMS_CLUSTER8: &str = r#"{"count":1,"next":null,"previous":null,"results":[
-        {"id":201,"name":"lab-wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
+        {"id":201,"name":"lab-plane","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[],"cluster":{"id":8,"name":"pve-lab"},"custom_fields":{}}
     ]}"#;
 
-    /// The lab cluster with a second VM named `wiki`, the same name as a prod VM, so the name
+    /// The lab cluster with a second VM named `plane`, the same name as a prod VM, so the name
     /// is held twice across tenants.
     pub const VMS_CLUSTER8_DUP: &str = r#"{"count":2,"next":null,"previous":null,"results":[
-        {"id":201,"name":"lab-wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
+        {"id":201,"name":"lab-plane","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[],"cluster":{"id":8,"name":"pve-lab"},"custom_fields":{}},
-        {"id":202,"name":"wiki","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
+        {"id":202,"name":"plane","status":{"value":"active"},"vcpus":1.0,"memory":1024,"disk":10240,
          "primary_ip":null,"tags":[],"cluster":{"id":8,"name":"pve-lab"},"custom_fields":{}}
     ]}"#;
 
@@ -784,8 +784,8 @@ pub mod fixtures {
         /// Answer every list with every fixture row, ignoring the query, as a NetBox that
         /// dropped a filter would.
         pub ignore_filters: Arc<AtomicBool>,
-        /// Give the lab cluster a second VM named `wiki`.
-        pub lab_wiki_duplicate: Arc<AtomicBool>,
+        /// Give the lab cluster a second VM named `plane`.
+        pub lab_plane_duplicate: Arc<AtomicBool>,
         /// Give the lab site a second cluster named `pve-prod`, the prod cluster's name.
         pub lab_prod_cluster_duplicate: Arc<AtomicBool>,
         /// When non-zero, the prefix list is this many synthetic rows, paged by `offset`.
@@ -842,9 +842,9 @@ pub mod fixtures {
             .to_string()
     }
 
-    /// The lab cluster's VMs, with or without the duplicate `wiki`.
+    /// The lab cluster's VMs, with or without the duplicate `plane`.
     fn lab_vms(mock: &Mock) -> &'static str {
-        if mock.lab_wiki_duplicate.load(Ordering::SeqCst) {
+        if mock.lab_plane_duplicate.load(Ordering::SeqCst) {
             VMS_CLUSTER8_DUP
         } else {
             VMS_CLUSTER8
@@ -1074,17 +1074,17 @@ mod tests {
             .iter()
             .map(|vm| vm.name.as_str())
             .collect();
-        assert_eq!(names, ["tududi", "gateway", "planned-vm", "wiki", "ghost"]);
+        assert_eq!(names, ["postiz", "gateway", "planned-vm", "plane", "ghost"]);
 
-        let tududi = &site.clusters[0].vms[0];
-        assert_eq!(tududi.status, "active");
-        assert_eq!(tududi.vcpus, Some(2.0));
-        assert_eq!(tududi.memory_mb, Some(4096));
-        assert_eq!(tududi.disk_mb, Some(40960));
-        assert_eq!(tududi.primary_ip.as_deref(), Some("198.51.100.5/24"));
-        assert_eq!(tududi.tags, ["tududi-sync", "IT"]);
-        assert_eq!(tududi.tag_slugs, ["tududi-sync", "domain-it"]);
-        let workflow = tududi.workflow.as_ref().expect("workflow");
+        let postiz = &site.clusters[0].vms[0];
+        assert_eq!(postiz.status, "active");
+        assert_eq!(postiz.vcpus, Some(2.0));
+        assert_eq!(postiz.memory_mb, Some(4096));
+        assert_eq!(postiz.disk_mb, Some(40960));
+        assert_eq!(postiz.primary_ip.as_deref(), Some("198.51.100.5/24"));
+        assert_eq!(postiz.tags, ["postiz-sync", "IT"]);
+        assert_eq!(postiz.tag_slugs, ["postiz-sync", "domain-it"]);
+        let workflow = postiz.workflow.as_ref().expect("workflow");
         assert_eq!(
             workflow.steps.get("step-b").map(String::as_str),
             Some("fail")
@@ -1151,7 +1151,7 @@ mod tests {
         let site = &data.sites["dc-1"];
         assert_eq!(site.clusters.len(), 1, "only the site's own cluster");
         assert_eq!(site.clusters[0].name, "pve-prod");
-        assert!(site.clusters[0].vms.iter().all(|vm| vm.name != "lab-wiki"));
+        assert!(site.clusters[0].vms.iter().all(|vm| vm.name != "lab-plane"));
         assert_eq!(site.clusters[0].vms.len(), 5);
         assert_eq!(site.devices.len(), 2);
         assert!(site
@@ -1163,7 +1163,7 @@ mod tests {
     #[tokio::test]
     async fn a_name_held_twice_across_declared_sites_is_ambiguous() {
         let mock = Mock::default();
-        mock.lab_wiki_duplicate.store(true, Ordering::SeqCst);
+        mock.lab_plane_duplicate.store(true, Ordering::SeqCst);
         let addr = serve(router(mock)).await;
         let data = fetch_all(
             &reqwest::Client::new(),
@@ -1172,8 +1172,8 @@ mod tests {
         )
         .await
         .expect("fetch");
-        assert!(data.ambiguous_vm_names.contains("wiki"));
-        assert!(!data.ambiguous_vm_names.contains("tududi"));
+        assert!(data.ambiguous_vm_names.contains("plane"));
+        assert!(!data.ambiguous_vm_names.contains("postiz"));
     }
 
     #[tokio::test]
@@ -1325,7 +1325,7 @@ mod tests {
         assert!(!is_domain_slug("domainx"), "no hyphen, no domain");
         assert!(!is_domain_slug("domain"), "the bare word is no domain");
         assert!(!is_domain_slug("not-domain-x"), "the prefix must lead");
-        assert!(!is_domain_slug("tududi-sync"));
+        assert!(!is_domain_slug("postiz-sync"));
     }
 
     #[tokio::test]

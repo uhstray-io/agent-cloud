@@ -8,6 +8,7 @@ the server lives.
 """
 
 import contextlib
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -610,6 +611,51 @@ def test_caller_branch_equal_to_the_record_launches(world):
     status, _ = world.launch(_request(survey={"service_name": SURVEY_VALUE, "service_branch": "dev"}))
     assert status == 201
     assert json.loads(_posts(world)[0]["body"]["environment"])["service_branch"] == "dev"
+
+
+def _record_declares(world, branch):
+    world.semaphore.routes[("GET", f"{SEMA_BASE}/repositories")] = (
+        200,
+        [{"id": 4, "git_branch": "main"}, {"id": REPO_ID, "git_branch": branch}],
+        {},
+    )
+
+
+def test_local_mode_reads_the_worktree_record_head_as_dev_for_opa_and_the_pin(world):
+    # Local-dev's working-tree record says HEAD; OPA allows agent launches only from main or dev.
+    _serve_template(world)
+    _record_declares(world, "HEAD")
+    status, _ = world.launch()
+    assert status == 201
+    opa_input = world.opa.requests[0]["body"]["input"]
+    assert opa_input["git_branch"] == "dev"
+    assert json.loads(_posts(world)[0]["body"]["environment"])["service_branch"] == "dev"
+
+
+def test_outside_local_mode_head_reaches_opa_unchanged(world):
+    _serve_template(world)
+    _record_declares(world, "HEAD")
+    # load_config refuses http:// outside local mode, and the fakes serve http, so only the flag is switched.
+    cfg = dataclasses.replace(_config(world.tmp_path, world.opa.url, world.semaphore.url), local_mode=False)
+    semaphore = lg.SemaphoreClient(cfg.semaphore_url, cfg.semaphore_project, cfg.semaphore_token)
+    gate = lg.Gate(cfg, semaphore, lg.OPAClient(cfg.opa_url), log=world.events.append)
+    world.launch(gate=gate)
+    assert world.opa.requests[0]["body"]["input"]["git_branch"] == "HEAD"
+
+
+@pytest.mark.parametrize(
+    ("branch", "local_mode", "expected"),
+    [
+        ("HEAD", True, "dev"),
+        ("HEAD", False, "HEAD"),
+        ("main", True, "main"),
+        ("dev", True, "dev"),
+        ("feature-x", True, "feature-x"),
+        ("head", True, "head"),
+    ],
+)
+def test_policy_branch_maps_only_head_and_only_in_local_mode(branch, local_mode, expected):
+    assert lg.policy_branch(branch, local_mode) == expected
 
 
 def test_template_with_its_own_different_branch_is_502_and_asks_opa_nothing(world):

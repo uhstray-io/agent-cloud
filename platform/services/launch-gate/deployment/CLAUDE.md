@@ -188,6 +188,14 @@ default). So the deploy itself checks it: in local-dev, `openssl x509 -checkend 
 leaf with under 7 days left, or none yet, is issued again (`_mint_reissue`). Re-run `Deploy launch-gate (Local)` at
 least weekly, or after a long break, to keep it current. Production keeps an issued leaf; Renew Internal Certs renews it.
 
+**The working-tree branch.** On both routes (`/v1/launch` and `/v1/decide`, through `Gate._judge`) the branch the
+gate pins and asks OPA about is the template's repository record's, read from Semaphore and never from the caller.
+Local-dev's working-tree record declares `HEAD` (whatever the developer has checked out), and OPA allows agent
+launches only from `main` or `dev`, so in local mode only the gate reads that `HEAD` as `dev` (`policy_branch`), as
+skynet's local catalog already does. Outside local mode `HEAD` reaches OPA unchanged and is refused. Found by the
+local skynet launch probe on 2026-11-09 (local task 14161): every agent launch through the local gate was denied "an
+agent task may run only from main or dev".
+
 ## Allowlist
 
 `launch_gate_allowlist(catalog_doc, templates_doc, agents, local_templates_doc=None)` renders the list at deploy
@@ -217,7 +225,7 @@ repo is placed.
 - Do not put a token in `config.json`, in a template outside the `secrets` namespace, or in any committed file.
   Templates use `secrets.*` and `_`-prefixed variables only. `test_credential_leaks.bats` is meant to check
   that, but its regex does not match `{{ name` written with a space. CI's GNU grep shows the same miss: run
-  38731550214 (head 66c18f5b) passes that test while `n8n.env.j2` at that head has `{{ n8n_bind |`.
+  38731550214 (head 66c18f5b) passes that test while a template at that head has `{{ <variable> |`.
   `test_launch_gate_allowlist.py` therefore checks the parsed templates instead.
 - Do not add a template to the gate by hand. The list comes from OPA's catalog, and a template the catalog
   does not name never reaches the gate.

@@ -24,7 +24,7 @@ The capability is grouped under the `platform/` domain with a kebab-case leaf na
 
 ### Modified Capabilities
 
-None. The existing specs in this store are `platform/inference-edge` and `platform/n8n-automation`. Neither one covers the console, so this change alters no existing requirement.
+None. The existing spec in this store is `platform/inference-edge`. It does not cover the console, so this change alters no existing requirement.
 
 ## Impact
 

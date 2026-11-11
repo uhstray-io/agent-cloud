@@ -59,10 +59,6 @@ authentik_app_catalog:
     provider: grafana
     prod_required: [grafana_redirect_uri, grafana_launch_url]
     verify_redirect: grafana_redirect_uri
-  n8n:
-    file: n8n-forward-auth.yaml
-    type: forward_auth
-    tier: member
   netbox:
     file: netbox-forward-auth.yaml
     type: forward_auth
@@ -89,10 +85,6 @@ authentik_app_catalog:
     provider: agentgateway
     prod_required: [agentgateway_redirect_uri, agentgateway_launch_url]
     verify_redirect: agentgateway_redirect_uri
-  openhands:
-    file: openhands-forward-auth.yaml
-    type: forward_auth
-    tier: member
   plane:
     file: plane-oidc.yaml
     type: oidc

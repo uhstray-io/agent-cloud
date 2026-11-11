@@ -3,9 +3,7 @@
 # This is the main playbook Semaphore runs for a full deployment.
 #
 # Phase 1: OpenBao (secrets backbone — must be first)
-# Phase 2: NocoDB + n8n (parallel, both depend on OpenBao)
-# Phase 3: NetBox (infrastructure modeling)
-# Phase 4: NemoClaw (AI agent — depends on all services)
+# Phase 2: NetBox (infrastructure modeling)
 #
 # Each phase clones the agent-cloud monorepo and runs the service deploy.sh.
 # GitHub deploy key fetched once from OpenBao, reused across phases.
@@ -24,33 +22,12 @@
     # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
     preflight_group_expected: openbao_svc
 
-- name: "Pre-flight: nocodb_svc is real"
-  ansible.builtin.import_playbook: preflight-target-group.yml
-  vars:
-    preflight_group: nocodb_svc
-    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
-    preflight_group_expected: nocodb_svc
-
-- name: "Pre-flight: n8n_svc is real"
-  ansible.builtin.import_playbook: preflight-target-group.yml
-  vars:
-    preflight_group: n8n_svc
-    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
-    preflight_group_expected: n8n_svc
-
 - name: "Pre-flight: netbox_svc is real"
   ansible.builtin.import_playbook: preflight-target-group.yml
   vars:
     preflight_group: netbox_svc
     # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
     preflight_group_expected: netbox_svc
-
-- name: "Pre-flight: nemoclaw_svc is real"
-  ansible.builtin.import_playbook: preflight-target-group.yml
-  vars:
-    preflight_group: nemoclaw_svc
-    # Paired so one `-e preflight_group=` cannot redirect the guard (MISTAKES 2.21).
-    preflight_group_expected: nemoclaw_svc
 
 # ── Phase 1: OpenBao ────────────────────────────────────────────────────
 - name: "Phase 1: Deploy OpenBao (secrets backbone)"
@@ -66,23 +43,8 @@
     - name: "Deploy OpenBao"
       ansible.builtin.include_tasks: tasks/clone-and-deploy.yml
 
-# ── Phase 2: NocoDB + n8n (parallel) ────────────────────────────────────
-- name: "Phase 2: Deploy data & automation services"
-  hosts: nocodb_svc:n8n_svc
-  gather_facts: false
-  strategy: linear
-  vars:
-    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
-    _branch: "{{ service_branch | default('main') }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-  tasks:
-    - name: "Deploy service — {{ service_name }}"
-      ansible.builtin.include_tasks: tasks/clone-and-deploy.yml
-
-# ── Phase 3: NetBox ─────────────────────────────────────────────────────
-- name: "Phase 3: Deploy NetBox"
+# ── Phase 2: NetBox ─────────────────────────────────────────────────────
+- name: "Phase 2: Deploy NetBox"
   hosts: netbox_svc
   gather_facts: false
   vars:
@@ -93,18 +55,4 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
   tasks:
     - name: "Deploy NetBox"
-      ansible.builtin.include_tasks: tasks/clone-and-deploy.yml
-
-# ── Phase 4: NemoClaw ───────────────────────────────────────────────────
-- name: "Phase 4: Deploy NemoClaw"
-  hosts: nemoclaw_svc
-  gather_facts: false
-  vars:
-    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud', true) }}"
-    _branch: "{{ service_branch | default('main') }}"
-    _bao_url: "{{ openbao_addr | default('') }}"
-    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
-    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
-  tasks:
-    - name: "Deploy NemoClaw"
       ansible.builtin.include_tasks: tasks/clone-and-deploy.yml

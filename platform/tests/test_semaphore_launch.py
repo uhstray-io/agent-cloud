@@ -38,7 +38,7 @@ class FakeAPI:
         if path == "/info" and not project_scoped:
             return {"version": self.version}
         if path == "/templates":
-            return [{"id": 220, "name": self.template["name"]}, {"id": 5, "name": "Deploy n8n"}]
+            return [{"id": 220, "name": self.template["name"]}, {"id": 5, "name": "Deploy Postiz"}]
         if path == "/templates/220":
             return copy.deepcopy(self.template)
         if path == "/tasks/last":

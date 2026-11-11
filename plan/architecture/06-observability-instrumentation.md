@@ -406,12 +406,12 @@ Querying Prometheus (metrics) and Loki (logs) via their datasource UIDs (`promet
 
 - Replace `prometheus.yml`'s static job with the `docker_sd_configs` + relabel job above; wire a Prometheus reload (`POST /-/reload`) into `deploy-o11y.yml`.
 - Document the two opt-in labels in the service contract; add them to the "Adding a New Service" checklist.
-- Pilot on one service that already exposes metrics (e.g. Caddy's metrics listener, n8n).
+- Pilot on one service that already exposes metrics (e.g. Caddy's metrics listener).
 - **Acceptance:** adding the two labels to a service makes it appear as a Prometheus target with **no `prometheus.yml` change**.
 
 ### Phase 2 — Exporters for datastores
 
-- Add exporter sidecars (postgres/redis/mariadb) + the two labels to stateful services (authentik PG, erpnext MariaDB, netbox PG, n8n PG). Deploy `node-exporter` + `cadvisor` platform-wide once.
+- Add exporter sidecars (postgres/redis/mariadb) + the two labels to stateful services (authentik PG, erpnext MariaDB, netbox PG). Deploy `node-exporter` + `cadvisor` platform-wide once.
 - **Acceptance:** DB/cache metrics + host/container resource metrics visible in Grafana.
 
 ### Phase 3 — Dashboards + alerts as code

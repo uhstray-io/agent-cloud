@@ -51,8 +51,6 @@ With `vault_secret_prefix: "services"`, paths remain exactly as they are today:
 secret/
   services/                            # vault_secret_prefix = "services"
     netbox                             # All NetBox secrets
-    nocodb                             # NocoDB secrets
-    n8n                                # n8n secrets
     ssh/management                     # Central SSH key
     ssh/<service>                      # Per-service SSH keys
     approles/semaphore                 # Platform orchestrator credentials
