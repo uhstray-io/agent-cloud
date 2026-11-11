@@ -15,7 +15,8 @@ import shutil
 from pathlib import Path
 
 import pytest
-from seed_harness import FakeBao, run_seed, serve, writes
+from fake_http import serve
+from seed_harness import FakeBao, run_seed, writes
 
 PLAYBOOK = "platform/playbooks/seed-openbao-key.yml"
 PATH = "services/agentgateway"

@@ -9,7 +9,8 @@ values are synthetic.
 import shutil
 
 import pytest
-from seed_harness import FakeBao, run_seed, serve, writes
+from fake_http import serve
+from seed_harness import FakeBao, run_seed, writes
 
 PLAYBOOK = "platform/playbooks/seed-postiz-secrets.yml"
 PROVIDER = "synthetic-provider-value"
