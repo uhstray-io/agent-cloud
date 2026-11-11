@@ -111,13 +111,20 @@ def test_the_shards_partition_exactly_the_root_collection(root_node_ids):
 
 def test_the_hook_collects_only_its_own_shard():
     # A directory, not file paths: paths named on the command line bypass pytest_ignore_collect.
+    # The smallest directory the assignment splits between shards, so a durations refresh that moves
+    # files cannot leave the test without a case.
     n = _shard_count()
-    directory = "platform/semaphore/tests"
-    _, assignment = _assignment(n)
-    mine = {f for f in assignment if f.startswith(directory + "/")}
-    k = next(k for k in range(1, n + 1) if 0 < sum(assignment[f] == k for f in mine) < len(mine))
+    files, assignment = _assignment(n)
+    directories = {str(Path(f).parent) for f in files}
+    split = sorted((sum(f.startswith(d + "/") for f in files), d) for d in directories
+                   if len({assignment[f] for f in files if f.startswith(d + "/")}) > 1)
+    assert split, "no test directory is split between shards"
+    directory = split[0][1]
+    mine = {f for f in files if f.startswith(directory + "/")}
+    k = assignment[min(mine)]
     collected = {node.split("::", 1)[0] for node in _collect({"PYTEST_SHARD": f"{k}/{n}"}, directory)}
     assert collected == {f for f in mine if assignment[f] == k}
+    assert collected and collected != mine
 
 
 def test_no_job_runs_the_pi_provider_that_moved_to_the_harness_repository():

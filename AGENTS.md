@@ -706,7 +706,7 @@ Every PR into `dev` or `main` is gated by GitHub Actions CI (`.github/workflows/
 
 - **Static Analysis**: ruff (Python), shellcheck (Bash, warning severity), ansible-lint (playbooks), yamllint (YAML), hadolint (Dockerfiles), terraform fmt (HCL policies)
 - **Security Scan**: trufflehog (secrets), bandit (Python security), IP/credential grep
-- **Unit Tests**: pytest (Python 3.12 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there), BATS (Bash — `bats -c platform/tests/*.bats` prints the current count; the number is deliberately not written here, because a hardcoded count conflicted on every branch merge), and the Dispatch Console's Rust crate (`Rust (console)` job: `cargo fmt --check`, clippy for the server and wasm builds, `cargo test`, all `--locked`)
+- **Unit Tests**: pytest (Python 3.12 — collected from `testpaths` in `pyproject.toml`, run from the repo root so adding a suite is one line there; CI runs it as one matrix job of eight shards, `Python (1/8)` to `Python (8/8)`, each skipping the test files the root `conftest.py` assigns to another shard from `platform/tests/test_durations.json`, which is rebuilt from a green run's shard reports with `scripts/test-durations.py` when the shards drift apart; plan 21), BATS (Bash, files run in parallel in CI with GNU `parallel` — `bats -c platform/tests/*.bats` prints the current count; the number is deliberately not written here, because a hardcoded count conflicted on every branch merge), and the Dispatch Console's Rust crate (`Rust (console)` job: `cargo fmt --check`, clippy for the server and wasm builds, `cargo test`, all `--locked`)
 
 Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 

@@ -83,8 +83,8 @@ cd platform/services/netbox/deployment
 PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.12 -m pytest tests/ -v
 cd -
 
-# Bash tests
-bats platform/tests/
+# Bash tests (CI runs files in parallel; `--jobs` needs GNU parallel, in the Brewfile)
+bats --jobs 4 --no-parallelize-within-files platform/tests/
 
 # Go (required for the full Python test/pre-push suite; Go 1.26+)
 # The native Podman-template regression in the Python suite executes Go's text/template.
@@ -110,7 +110,7 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 # macOS
 brew install uv              # Python dependencies and tools are managed with uv
 uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
-brew install shellcheck bats-core hadolint
+brew install shellcheck bats-core parallel hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
 
 # The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.

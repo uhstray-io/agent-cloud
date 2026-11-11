@@ -314,6 +314,8 @@ jobs:
           name: junit-shard-${{ matrix.shard }}
           path: junit-shard.xml
           retention-days: 14
+          # A re-run of a failed shard uploads under the same name; without this it fails.
+          overwrite: true
 
       - name: Report the shard's duration against its timeout
         if: always()
