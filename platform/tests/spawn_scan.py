@@ -124,20 +124,33 @@ def _bounded(call: ast.Call) -> bool:
     for keyword in call.keywords:
         if keyword.arg == "timeout":
             return not (isinstance(keyword.value, ast.Constant) and keyword.value.value is None)
-    return False  # **kwargs cannot be read, so it counts as unbounded; a Popen: see _waits_with_timeout
+    return False  # **kwargs cannot be read, so it counts as unbounded; a Popen: see _waited_names
 
 
-def _waits_with_timeout(scope) -> bool:
-    """A function that waits on its process with a timeout (`.wait(timeout=...)` or
-    `.communicate(timeout=...)`) bounds the Popen it starts, which takes no timeout itself."""
+def _waited_names(scope) -> set[str]:
+    """Names in a function that it waits on with a real timeout: `name.wait(timeout=...)` or
+    `name.communicate(timeout=...)`, the timeout not None. A function that starts a Popen into one
+    of these names bounds it; Popen itself takes no timeout."""
     if isinstance(scope, ast.Module):
-        return False
+        return set()
+    waited = set()
     for node in _own_nodes(scope):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr in ("wait", "communicate")
-                and any(k.arg == "timeout" for k in node.keywords)):
-            return True
-    return False
+                and node.func.attr in ("wait", "communicate") and isinstance(node.func.value, ast.Name)
+                and any(k.arg == "timeout" and not (isinstance(k.value, ast.Constant) and k.value.value is None)
+                        for k in node.keywords)):
+            waited.add(node.func.value.id)
+    return waited
+
+
+def _assigned_names(scope) -> dict[int, str]:
+    """id(call) -> the name a call's result is assigned to (`proc = subprocess.Popen(...)`)."""
+    names = {}
+    for node in (_own_nodes(scope) if not isinstance(scope, ast.Module) else scope.body):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)):
+            names[id(node.value)] = node.targets[0].id
+    return names
 
 
 def _command(call: ast.Call):
@@ -161,7 +174,7 @@ def spawns(tree, skip_functions=()):
 
     collect(tree, [_assignments(tree)])
     for scope, chain in scopes:
-        waits = _waits_with_timeout(scope)
+        waited, assigned = _waited_names(scope), _assigned_names(scope)
         stack = list(scope.body)
         while stack:
             node = stack.pop()
@@ -178,7 +191,7 @@ def spawns(tree, skip_functions=()):
                 command = _command(node)
                 kind = _program(command, chain) if command is not None else DYNAMIC
                 popen = (functions[func.id] if direct else func.attr) == "Popen"
-                yield kind, _bounded(node) or (popen and waits), node.lineno
+                yield kind, _bounded(node) or (popen and assigned.get(id(node)) in waited), node.lineno
 
 
 def scan() -> tuple[set[str], set[str], set[str]]:

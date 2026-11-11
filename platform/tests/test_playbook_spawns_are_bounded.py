@@ -83,9 +83,7 @@ DIRECT = frozenset({
     "platform/tests/test_workflow_registry.py",
 })
 
-UNBOUNDED = frozenset({
-
-})
+UNBOUNDED = frozenset()
 
 UNBOUNDED_DYNAMIC = frozenset({
     "platform/tests/test_semaphore_inventory_sync.py",
@@ -159,6 +157,11 @@ def test_the_scan_does_not_count_other_programs_or_decorators():
     assert _kinds(popen.format("wait(timeout=5)")) == [(PB, True)]
     assert _kinds(popen.format("communicate(timeout=5)")) == [(PB, True)]
     assert _kinds(popen.format("wait()")) == [(PB, False)]
+    assert _kinds(popen.format("wait(timeout=None)")) == [(PB, False)]
+    # The wait must be on the process just started, not on any other object.
+    other = ("import subprocess, threading\ndef f(p):\n    proc = subprocess.Popen(['ansible-playbook', p])\n"
+             "    threading.Event().wait(timeout=5)\n")
+    assert _kinds(other) == [(PB, False)]
     returned = "import subprocess\ndef f(p):\n    return subprocess.Popen(['ansible-playbook', p])\n"
     assert _kinds(returned) == [(PB, False)]  # its caller's wait is not visible here
     # A program passed in cannot be named: it is DYNAMIC, and it must be bounded too.

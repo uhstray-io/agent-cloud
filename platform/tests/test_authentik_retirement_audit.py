@@ -10,7 +10,7 @@ from pathlib import Path
 
 import harness_sandbox
 
-MODULE =Path(__file__).resolve().parents[1] / "services/authentik/deployment/audit-users.py"
+MODULE = Path(__file__).resolve().parents[1] / "services/authentik/deployment/audit-users.py"
 spec = importlib.util.spec_from_file_location("authentik_retirement_audit", MODULE)
 audit_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit_module)
