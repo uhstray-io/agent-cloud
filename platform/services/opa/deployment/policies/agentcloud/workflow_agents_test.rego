@@ -506,6 +506,13 @@ test_unstamped_fw_assess_still_denies_the_base_snapshot_on_main if {
 	contains(d.reason, "an unreviewed step cannot run from main")
 }
 
+# The same agent the console launches as: service-agent also owns access-assess.
+test_unstamped_access_assess_still_denies_the_base_snapshot_on_main if {
+	d := agentcloud.decision with input as object.union(_run("service-agent", "Snapshot Access", "access-assess"), {"template_name": "Snapshot Access", "git_branch": "main"})
+	not d.allowed
+	contains(d.reason, "an unreviewed step cannot run from main")
+}
+
 # PR 203 Codex review: a base template runs from main even when the caller claims dev.
 test_a_base_template_is_main_whatever_branch_is_claimed if {
 	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "dev"})
