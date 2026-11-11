@@ -33,7 +33,7 @@ names stay in site-config (plan 12, D5).
 A dry run of `Reconcile Plane Members` on 2026-11-09 planned no changes. Each person joins the
 workspace by signing in to Plane through Authentik and accepting the invitation. Plane's sign-in is
 admitted for `platform-admins`, `platform-developers` and `platform-business`
-(`app-catalog.yml:86-89` tier `member`, `zz-sso-bindings.yaml.j2:25`).
+(`app-catalog.yml:96-99` tier `member`, `zz-sso-bindings.yaml.j2:25`).
 
 Unverified: whether Plane honours the `owner` role on an invitation at acceptance. If the admin lands
 as Member, the next hourly reconcile run sets the Owner role. The production sign-in check is open as
@@ -77,7 +77,7 @@ flowchart LR
 - Groups are read once at login and kept in the session for 8 hours of inactivity
   (`server/auth.rs:199`, `server/mod.rs:269-277`). A revoked admin keeps console rights until the
   session ends.
-- The console's own sign-in is tier `member` (`app-catalog.yml:114-117`), so developers and business
+- The console's own sign-in is tier `member` (`app-catalog.yml:117-120`), so developers and business
   users can sign in. Only admins can make proposals.
 
 ### What skynet has (origin/main, `031863d`)
