@@ -33,6 +33,7 @@ import threading
 from contextlib import ExitStack, contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import harness_sandbox
 import playbook_yaml
@@ -201,7 +202,7 @@ else:
 
 @contextmanager
 def _thread(server):
-    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     t.start()
     try:
         yield server
@@ -340,7 +341,7 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
             result.extend(chunk)
         return bytes(result)
 
-    def serve():
+    def _accept_loop():
         for behavior, frame in zip(behaviors, frames, strict=True):
             while not stop.is_set():
                 try:
@@ -401,7 +402,7 @@ def _o11y_tls_receiver(ca, server_leaf, scratch: Path, client_behaviors=None, se
                 raw.close()
         listener.close()
 
-    thread = threading.Thread(target=serve, daemon=True)
+    thread = threading.Thread(target=_accept_loop, daemon=True)
     thread.start()
     try:
         yield port
@@ -495,7 +496,7 @@ class World:
                 "caddy_svc": {"caddy": {**host, "inference_route_address": ROUTE,
                                         "caddy_https_port": str(caddy.server_port)}},
                 "o11y_svc": {"o11y": {**host, "o11y_loki_bind": "127.0.0.1",
-                                      "o11y_loki_port": loki_url.rsplit(":", 1)[1]}},
+                                      "o11y_loki_port": str(urlsplit(loki_url).port)}},
             }
             for group, over in (host_over or {}).items():
                 hosts.setdefault(group, {})

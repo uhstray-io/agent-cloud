@@ -164,7 +164,7 @@ def gateway():
 
     def start(mode, call="ok"):
         gw = Gateway(mode, call)
-        threading.Thread(target=gw.serve_forever, daemon=True).start()
+        threading.Thread(target=gw.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         made.append(gw)
         return gw
 

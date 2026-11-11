@@ -21,7 +21,7 @@ import playbook_yaml
 import pytest
 import seed_harness
 import yaml
-from fake_http import DrainingHandler, refused_port
+from fake_http import DrainingHandler, refused_port, serve
 
 REPO = playbook_yaml.REPO
 PLAYBOOK = REPO / "platform/playbooks/probe-agentgateway-isolation.yml"
@@ -67,7 +67,7 @@ class Gateway(ThreadingHTTPServer):
         self.budgets, self.refuse, self.status, self.never = dict(budgets or {}), refuse, status or {}, never
         self.seen: list[dict] = []
         self.url = f"http://127.0.0.1:{self.server_port}"
-        threading.Thread(target=self.serve_forever, daemon=True).start()
+        threading.Thread(target=self.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
 
     def stop(self):
         self.shutdown()
@@ -128,7 +128,7 @@ def _run(tmp: Path, gw: Gateway, *, extra=None, host=None, check=False, store=No
     """Run the playbook once; returns (returncode, output, bao requests)."""
     Bao.requests = []
     Bao.store = dict(KEYS if store is None else store)
-    with seed_harness.serve(Bao) as address:
+    with serve(Bao) as address:
         host_vars = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
                      "service_name": "agentgateway", "agw_clients": [BURST, CONTROL],
                      "agw_models": [{"name": "m"}], "agw_verify_base_url": gw.url,
