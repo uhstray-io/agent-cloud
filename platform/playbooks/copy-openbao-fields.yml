@@ -9,7 +9,8 @@
 #   1. Extra vars that set internal names are refused (refuse-internal-extra-vars.yml).
 #   2. The declaration is checked for shape before OpenBao is reached: at least one entry; each path as
 #      services/<name>; each field a lowercase name; no entry that copies a field onto itself; no target
-#      (path, field) named by two entries. A refusal names the entry and changes nothing.
+#      (path, field) named by two entries; no entry whose source (path, field) is another entry's target (a
+#      chained copy, whose source is read before that write). A refusal names the entry and changes nothing.
 #   3. The transport guard, then the AppRole login. The login is a credential task (no_log).
 #   4. Each source path and each target path is read. The reads also run in check mode. Every entry is
 #      then planned into exactly one state, from the live values:
@@ -29,6 +30,11 @@
 #
 # Check mode is a dry run: the plan is printed; the merge, the read-back and its comparison are skipped.
 # Run the Dev template in Semaphore's Dry run first, and read the plan.
+#
+# Known limit: the value written is the one read at plan time (step 4). A source rotated between that read
+# and the write is copied at its earlier value. The read-back in step 7 compares each target with that same
+# plan-time read, so it proves the copy matches the plan, not that it matches the source as it stands when
+# the run ends. A run that must carry a rotated value runs again after the rotation.
 #
 # OpenBao is reached at openbao_addr, as the shared-environment playbooks read it, else at the single host
 # of the openbao_svc group. The AppRole comes from BAO_ROLE_ID / BAO_SECRET_ID, or the bao_role_id /
@@ -61,8 +67,9 @@
           - _problems | length == 0
         fail_msg: >-
           platform/playbooks/vars/copied-secret-fields.yml must list at least one copy, each path as
-          services/<name>, each field a lowercase name, no entry that copies a field onto itself, and no
-          target named by two entries. Nothing was changed: {{ _problems | to_json }}
+          services/<name>, each field a lowercase name, no entry that copies a field onto itself, no
+          target named by two entries, and no copy from a field another entry writes (a chained copy).
+          Nothing was changed: {{ _problems | to_json }}
       vars:
         _field_names: "{{ (_copied | map(attribute='from_field') | list) + (_copied | map(attribute='to_field') | list) }}"
         _problems: "{{ _problems_json | from_json }}"
@@ -71,13 +78,22 @@
           {% set targets = [] %}
           {% for entry in _copied %}
           {% set target = entry.to_path ~ '/' ~ entry.to_field %}
-          {% if entry.from_path == entry.to_path and entry.from_field == entry.to_field %}
-          {% set _ = problems.append('copies ' ~ target ~ ' onto itself') %}
-          {% endif %}
           {% if target in targets %}
           {% set _ = problems.append('target ' ~ target ~ ' is named by two entries') %}
           {% endif %}
           {% set _ = targets.append(target) %}
+          {% endfor %}
+          {% for entry in _copied %}
+          {% set source = entry.from_path ~ '/' ~ entry.from_field %}
+          {% set target = entry.to_path ~ '/' ~ entry.to_field %}
+          {% if source == target %}
+          {% set _ = problems.append('copies ' ~ target ~ ' onto itself') %}
+          {% endif %}
+          {# A chained copy reads a source that another entry writes. The plan reads every source before any write, so that
+             entry would copy the value the field held before the run, not the one written here. Refused, not ordered. #}
+          {% if source != target and source in targets %}
+          {% set _ = problems.append('copies ' ~ source ~ ', which another entry writes (chained copy)') %}
+          {% endif %}
           {% endfor %}
           {{ problems | to_json }}
 
@@ -219,6 +235,9 @@
       ansible.builtin.set_fact:
         _copy_unequal: "{{ _copy_unequal_json | from_json }}"
       vars:
+        # Second line of defence, behind tasks/bao-merge-keys.yml, which already reads back the keys it merged in
+        # the same run. This comparison is against the source as read at plan time (the known limit in the
+        # header), so it catches a write that landed on the wrong value, not a source rotated after the plan.
         # Indexed by loop position over the same pending list the read-back looped over.
         _copy_unequal_json: >-
           {% set bad = [] %}

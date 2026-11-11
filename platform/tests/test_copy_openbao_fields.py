@@ -18,15 +18,14 @@ These tests read the declaration and the playbook, and run the playbook against 
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
-import subprocess
 import threading
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -58,6 +57,7 @@ TARGET = "services/dst"
 HELD = "held-value-5c1e77"
 KEPT = "KEPTVALUE-9a2d04"
 OTHER = "OTHERVALUE-3f8b21"
+SECOND = "SECONDVALUE-7d4e19"
 # The registered results of the playbook's reads, and the login's. A visible task may not print or loop over
 # them (test_no_request_in_loop_items.py has the same rule across the repository).
 PROTECTED = ("_bao_auth", "_src_reads", "_dst_reads", "_dst_readback")
@@ -179,12 +179,15 @@ def test_the_declaration_is_checked_before_the_transport_guard_and_every_openbao
     assert shape < guard < min(requests), "the shape check must run before the guard and every request"
 
 
-def test_the_shape_check_refuses_a_self_copy_and_a_shared_target():
+def test_the_shape_check_refuses_a_self_copy_a_shared_target_and_a_chained_copy():
     tasks = _tasks()
     shape = tasks[_named(tasks, "Require a well-formed declaration")]
     assert "_problems" in shape["vars"]
     text = " ".join(playbook_yaml.strings(shape["vars"]))
     assert "onto itself" in text and "named by two entries" in text
+    # Pin the statement that appends the chained refusal, not the comment that describes it (which also says
+    # "chained copy"): the statement is what the refusal is.
+    assert "problems.append('copies ' ~ source ~ ', which another entry writes (chained copy)')" in text
 
 
 def test_the_plan_precedes_the_refusal_then_the_write_then_the_read_back_and_comparison():
@@ -255,7 +258,8 @@ def test_the_merge_is_live_only_planned_per_pending_entry_and_creates_or_guards_
     assert args["_bm_path"] == "{{ item.to_path }}"
     assert args["_bm_on_missing"] == "create", "an absent target path is created, not refused"
     assert args["_bm_guard_absent_keys"] == ["{{ item.to_field }}"], "a target field that appeared is refused"
-    assert not {"_bm_remove", "_bm_guard_values", "_bm_guard_key"} & set(args), "the merge sets, it does not guard others"
+    guards = {"_bm_remove", "_bm_guard_values", "_bm_guard_key"}
+    assert not guards & set(args), "the merge sets, it does not guard others"
     assert "_src_reads.results[item.index]" in args["_bm_data"] and "item.from_field" in args["_bm_data"]
     assert "item.to_field" in args["_bm_data"]
 
@@ -309,11 +313,17 @@ requires_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, 
 
 
 class _Vault:
-    """A KV-v2 double: path -> data (None when the path is absent), with a version per present path."""
+    """A KV-v2 double: path -> data (None when the path is absent), with a version per present path.
 
-    def __init__(self, paths: dict):
+    `interleave` maps a path to (n, field, value): before the n-th GET of that path, a concurrent writer sets
+    `field` to `value` and bumps the version. It stands in for a write that lands between the playbook's plan
+    read and the merge's own fresh read (the merge's guard must then refuse)."""
+
+    def __init__(self, paths: dict, interleave: dict | None = None):
         self.paths = {path: (dict(data) if data is not None else None) for path, data in paths.items()}
         self.versions = {path: 1 for path, data in paths.items() if data is not None}
+        self.interleave = dict(interleave or {})
+        self.gets: dict[str, int] = {}
         self.requests: list[tuple[str, str, object]] = []
 
     def writes(self) -> list[tuple[str, str, object]]:
@@ -360,6 +370,11 @@ def _handler(vault: _Vault):
         def do_GET(self):
             vault.requests.append(("GET", self.path, None))
             path = self._path()
+            vault.gets[path] = vault.gets.get(path, 0) + 1
+            if path in vault.interleave and vault.interleave[path][0] == vault.gets[path]:
+                _, field, value = vault.interleave[path]
+                vault.paths[path][field] = value
+                vault.versions[path] += 1
             data = vault.paths.get(path)
             if data is None:
                 self._reply(404, {"errors": []})
@@ -386,8 +401,8 @@ def _handler(vault: _Vault):
 
 
 @contextmanager
-def _bao(paths: dict):
-    vault = _Vault(paths)
+def _bao(paths: dict, interleave: dict | None = None):
+    vault = _Vault(paths, interleave)
     server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(vault))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -427,19 +442,19 @@ def _inventory(tmp_path: Path, url: str) -> Path:
     return inventory
 
 
-def _run(root: Path, inventory: Path, *, check: bool) -> subprocess.CompletedProcess:
-    env = {key: value for key, value in os.environ.items() if key != "ANSIBLE_CONFIG"}
-    env.update({"ANSIBLE_NOCOLOR": "1", "BAO_ROLE_ID": "fixture-role", "BAO_SECRET_ID": "fixture-secret"})
-    argv = ["ansible-playbook", "-i", str(inventory), str(root / PLAYBOOK.name)]
-    if check:
-        argv.append("--check")
-    # cwd is the repository: its ansible.cfg supplies the filter plugins and the redacting callback.
-    return subprocess.run(
-        argv, cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=300
+def _run(root: Path, inventory: Path, *, check: bool):
+    # The shared runner: bounded, sandboxed to the test's directory, no stdin, run from the repository root so
+    # its ansible.cfg applies. root is tmp_path/playbooks, so its parent is the test's own directory.
+    return harness_sandbox.run_playbook(
+        root / PLAYBOOK.name,
+        root.parent,
+        *(["--check"] if check else []),
+        inventory=inventory,
+        env={"BAO_ROLE_ID": "fixture-role", "BAO_SECRET_ID": "fixture-secret"},
     )
 
 
-def _out(done: subprocess.CompletedProcess) -> str:
+def _out(done) -> str:
     return done.stdout + done.stderr
 
 
@@ -477,6 +492,46 @@ def test_an_absent_target_path_is_created_with_a_compare_and_swap_of_zero(tmp_pa
     ]
     assert vault.paths[TARGET] == {"token": HELD}
     assert HELD not in out
+
+
+@requires_ansible
+def test_two_pending_fields_of_one_target_both_land_at_bumped_versions(tmp_path):
+    # Two declared copies write different fields of one existing target. The second merge reads the version the
+    # first one left, so its compare-and-swap is at the bumped version, and neither write drops the other field.
+    declaration = [_copy(), _copy(from_field="secret", to_field="second_key")]
+    paths = {SOURCE: {"token": HELD, "secret": SECOND}, TARGET: {"keep": KEPT}}
+    with _bao(paths) as (vault, url):
+        done = _run(_tree(tmp_path, declaration), _inventory(tmp_path, url), check=False)
+    out = _out(done)
+    assert done.returncode == 0, out[-2000:]
+    assert vault.writes() == [
+        ("POST", f"/v1/secret/data/{TARGET}", {"data": {"keep": KEPT, "token": HELD}, "options": {"cas": 1}}),
+        (
+            "POST",
+            f"/v1/secret/data/{TARGET}",
+            {"data": {"keep": KEPT, "token": HELD, "second_key": SECOND}, "options": {"cas": 2}},
+        ),
+    ]
+    assert vault.paths[TARGET] == {"keep": KEPT, "token": HELD, "second_key": SECOND}
+    assert vault.versions[TARGET] == 3, "one version per write, from the initial version 1"
+    assert f"Written: {TARGET}/token, {TARGET}/second_key" in out, out[-2000:]
+    assert HELD not in out and SECOND not in out and KEPT not in out
+
+
+@requires_ansible
+def test_a_field_written_between_the_plan_read_and_the_write_is_refused_and_not_written(tmp_path):
+    # The plan reads the target once (its GET 1). Before the merge's own fresh read (GET 2), a concurrent writer sets
+    # the target field. The shared merge's guard (_bm_guard_absent_keys) then refuses, so nothing is written over the
+    # concurrent value. The refusal is the shared task's guard, reached after this playbook's plan said "pending".
+    paths = {SOURCE: {"token": HELD}, TARGET: {"keep": KEPT}}
+    interleave = {TARGET: (2, "token", OTHER)}
+    with _bao(paths, interleave) as (vault, url):
+        done = _run(_tree(tmp_path, [_copy()]), _inventory(tmp_path, url), check=False)
+    out = _out(done)
+    assert done.returncode != 0, out[-2000:]
+    assert vault.writes() == [], "a write landed over a field that appeared after the plan"
+    assert vault.paths[TARGET] == {"keep": KEPT, "token": OTHER}
+    assert HELD not in out and OTHER not in out and KEPT not in out
 
 
 @requires_ansible
@@ -575,8 +630,13 @@ def test_a_refused_entry_stops_a_pending_entry_beside_it_from_being_written(tmp_
         ([_copy(from_path="services/Bad_Name")], "must list at least one copy"),
         ([_copy(to_field="Token")], "must list at least one copy"),
         ([], "must list at least one copy"),
+        # The second entry's source is the first entry's target: a chained copy, refused before any read.
+        (
+            [_copy(), _copy(from_path=TARGET, from_field="token", to_path="services/dst3", to_field="token")],
+            "chained copy",
+        ),
     ],
-    ids=["self-copy", "shared-target", "bad-path", "bad-field", "empty"],
+    ids=["self-copy", "shared-target", "bad-path", "bad-field", "empty", "chained"],
 )
 def test_a_malformed_declaration_refuses_before_any_openbao_request(tmp_path, declaration, reason):
     with _bao({SOURCE: {"token": HELD}}) as (vault, url):
