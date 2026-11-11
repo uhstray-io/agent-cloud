@@ -46,8 +46,8 @@
 # way changes which tests run.
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
-# evidence they pass in CI, and CI remains the authority. `bats platform/tests/` is the
-# one command that is byte-identical to CI's.
+# evidence they pass in CI, and CI remains the authority. `bats platform/tests/` runs the
+# same files as CI, serially; CI adds `--jobs 4 --no-parallelize-within-files` (plan 21).
 #
 # ONE RUN PER BRANCH AT A TIME. A second push of a branch whose first push is still
 # inside this hook is REFUSED at once, naming the push that holds the branch

@@ -245,7 +245,8 @@ CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check
 
 `.githooks/pre-push` **attempts** the same suites before a push, with the same test paths,
 working directory and `PYTHONPATH` as CI. Live via the repo's `core.hooksPath` after
-`make git-setup`, no install step. `bats platform/tests/` is byte-identical to CI's. Both
+`make git-setup`, no install step. `bats platform/tests/` runs the same files as CI, serially;
+CI runs them with `--jobs 4 --no-parallelize-within-files`. Both
 suites run on the locked environment when `uv` is installed: the hook runs `uv sync --locked`
 and puts `.venv/bin` first on `PATH`, as CI does. Without uv, when the sync fails, or when
 `UV_PROJECT_ENVIRONMENT` points outside the checkout's `.venv`, it falls back, with a

@@ -86,15 +86,16 @@ def test_fallback_weight_is_def_test_count_times_the_median(tmp_path):
         "async def test_b():\n    pass\n\n"
         "class TestC:\n    def test_c(self):\n        pass\n"
     )
+    entry = {"max": 1.0, "skipped": False, "tests": []}
     durations = {
-        "x/test_known.py::test_one": {"time": 1.0, "skipped": False},
-        "x/test_known.py::test_two": {"time": 2.0, "skipped": False},
-        "x/test_known.py::test_three": {"time": 9.0, "skipped": False},
-    }  # median 2.0, mean 4.0: the two must not be confused
+        "x/test_known.py": {**entry, "time": 12.0, "nodes": 3},  # mean 4.0 per test
+        "x/test_other.py": {**entry, "time": 2.0, "nodes": 1},  # mean 2.0
+        "x/test_third.py": {**entry, "time": 18.0, "nodes": 2},  # mean 9.0
+    }  # median of the means 4.0; the mean over every test is 32/6: the two must not be confused
     files = ["x/test_known.py", "x/test_new.py"]
     weights = shards.file_weights(files, durations, tmp_path)
-    assert weights["x/test_known.py"] == 12.0  # the recorded times summed
-    assert weights["x/test_new.py"] == 3 * 2.0  # three def test_ lines (one nested) times the median 2.0
+    assert weights["x/test_known.py"] == 12.0  # the recorded time
+    assert weights["x/test_new.py"] == 3 * 4.0  # three def test_ lines (one nested) times the median 4.0
     assert shards.file_weights(files, {}, tmp_path)["x/test_new.py"] == 3 * 1.0  # nothing recorded: median 1.0
 
 
@@ -123,20 +124,25 @@ JUNIT = """<?xml version="1.0" encoding="utf-8"?>
  file="platform/tests/test_demo.py" line="15" time="0.0">
 <skipped type="pytest.skip" message="needs a sandbox">needs a sandbox</skipped>
 </testcase>
-<testcase classname="platform.tests.test_demo" name="test_mixed"
- file="platform/tests/test_demo.py" line="20" time="0.125"/>
-<testcase classname="platform.tests.test_demo" name="test_mixed"
- file="platform/tests/test_demo.py" line="20" time="0.5">
+<testcase classname="platform.tests.test_other" name="test_mixed"
+ file="platform/tests/test_other.py" line="20" time="0.125"/>
+<testcase classname="platform.tests.test_other" name="test_mixed"
+ file="platform/tests/test_other.py" line="20" time="0.5">
 <skipped type="pytest.skip" message="needs a sandbox">needs a sandbox</skipped>
 </testcase>
+<testcase classname="platform.tests.test_other" name="test_ipv6[fe80::1]"
+ file="platform/tests/test_other.py" line="30" time="0.25"/>
 </testsuite>
 """
 
 EXPECTED = {
-    "platform/tests/test_demo.py::TestThing::test_method[one]": {"time": 0.5, "skipped": False},
-    "platform/tests/test_demo.py::test_function": {"time": 0.75, "skipped": False},
-    "platform/tests/test_demo.py::test_skipped": {"time": 0.0, "skipped": True},
-    "platform/tests/test_demo.py::test_mixed": {"time": 0.625, "skipped": False},  # skipped in one run, not the other
+    # test_function's two runs summed (0.75) is the slowest node; one node skipped marks the file.
+    "platform/tests/test_demo.py": {"time": 1.25, "max": 0.75, "nodes": 3, "skipped": True,
+                                    "tests": ["test_function", "test_method", "test_skipped"]},
+    # Skipped in one run, not the other: the node, and so the file, is not skipped.
+    # A parameter holding "::" (an IPv6 address) does not split the test name.
+    "platform/tests/test_other.py": {"time": 0.875, "max": 0.625, "nodes": 2, "skipped": False,
+                                     "tests": ["test_ipv6", "test_mixed"]},
 }
 
 
@@ -154,7 +160,7 @@ def _run_builder(tmp_path, xml_text):
     return proc, out
 
 
-def test_builder_maps_xunit1_testcases_to_node_ids_and_sums_duplicates(tmp_path):
+def test_builder_sums_xunit1_testcases_per_node_and_records_each_file(tmp_path):
     proc, out = _run_builder(tmp_path, JUNIT)
     assert proc.returncode == 0, proc.stderr
     assert json.loads(out.read_text(encoding="utf-8")) == EXPECTED

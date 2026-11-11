@@ -25,9 +25,9 @@
 
 Source: `.github/workflows/lint-and-test.yml`. It defines these jobs and runs on `pull_request` to `main` and `dev`, with `permissions: contents: read` at the top level.
 
-- Jobs: `changes`, `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python-core`, `python-playbook-safety`, `python-agentgateway`, `python-playbook-runs`, `python-semaphore`, `python-netbox`, `bats`, `rego`, `test` (Unit Tests), `go-lint`, `go-test`, `go-build`, `rust-console`.
+- Jobs: `changes`, `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python` (one matrix job, eight shards named `Python (1/8)` to `Python (8/8)`; each runs the root pytest collection with `PYTEST_SHARD=k/8`, and the root `conftest.py` skips the test files assigned to other shards, bin-packed from `platform/tests/test_durations.json`; plan 21), `bats` (files in parallel with `--jobs 4 --no-parallelize-within-files`), `rego`, `test` (Unit Tests), `go-lint`, `go-test`, `go-build`, `rust-console`.
 - `changes` gates the Go jobs: `go-lint` and `go-test` run only on Go changes, and `go-build` runs on Go or Dockerfile changes.
-- `test` (Unit Tests) runs `if: always()` and needs nine jobs: the six Python groups, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded.
+- `test` (Unit Tests) runs `if: always()` and needs four jobs: `python`, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded; a matrix job's result is `failure` when any shard fails.
 - Required on `main`: `.github/rulesets/protect-main.json` (`enforcement: active`) requires the contexts `Static Analysis`, `Security Scan`, `Unit Tests` and `Promotion source (dev -> main)`. `.github/rulesets/protect-dev.json` (`enforcement: active`) defines no required status check.
 - Remote ruleset state was not queried in this review; the checked-in files are the evidence.
 
