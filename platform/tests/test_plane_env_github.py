@@ -279,3 +279,98 @@ def test_every_org_action_refuses_a_missing_org_before_any_call(action):
     ):
         gat.main()
     assert exc.value.code == 2 and calls == []
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "summary,ok",
+    [
+        ({"url": "https://x.test/h", "content_type": "json", "secret_set": False}, True),
+        ({"error": "ERROR: set-hook-secret: boom"}, False),
+    ],
+)
+def test_the_webhook_assert_renders_with_and_without_an_error(tmp_path, summary, ok):
+    # ansible-core 2.19+ renders fail_msg even when the assertion holds (Deploy Plane task 14711).
+    import yaml
+
+    play = next(p for p in _plays() if p.get("name") == "Phase 3d: GitHub App webhook")
+    block = next(t for t in play["tasks"] if "block" in t)
+    task = next(t for t in block["block"] if t.get("name") == "App webhook converged")
+    (tmp_path / "play.yml").write_text(
+        yaml.safe_dump(
+            [{"hosts": "localhost", "gather_facts": False, "vars": {"_plane_hook_summary": summary}, "tasks": [task]}]
+        )
+    )
+    proc = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert (proc.returncode == 0) is ok, proc.stdout[-1500:]
+    if not ok:
+        assert "boom" in proc.stdout
+
+
+APPS_SCRIPT = REPO / "platform/services/plane/deployment/ensure_marketplace_apps.py"
+
+
+def test_the_marketplace_script_creates_without_resetting_secrets():
+    src = APPS_SCRIPT.read_text()
+    compile(src, str(APPS_SCRIPT), "exec")
+    assert "create_applications(admin.user.id)" in src
+    # reset deletes the secrets connected integrations depend on; it must never run on a deploy.
+    assert "reset_marketplace" not in src.split('"""', 2)[2]
+    # Secrets are generated inside the call: its output is discarded, an error reported by type only.
+    assert "redirect_stdout" in src and "redirect_stderr" in src and "type(exc).__name__" in src
+    # Plane's log handlers hold the real stderr from start-up; a redirect alone does not silence them.
+    assert "logging.disable(logging.CRITICAL)" in src and "logging.disable(logging.NOTSET)" in src
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "stdout,rc,ok",
+    [
+        ('Creating application for github\n{"created": ["github"], "present": ["slack"], "missing": []}', 0, True),
+        ('{"created": [], "present": ["github", "slack"], "missing": []}', 0, True),
+        # Output after the summary: only the JSON line may be read.
+        ('{"created": ["github"], "present": [], "missing": []}\nshutting down', 0, True),
+        ('{"created": [], "present": ["slack"], "missing": ["github"]}', 0, False),
+        ('{"error": "no instance admin yet; first-run setup has not completed"}', 0, False),
+        ("Traceback (most recent call last):", 1, False),
+    ],
+)
+def test_the_marketplace_phase_judges_the_script_summary(tmp_path, stdout, rc, ok):
+    import yaml
+
+    play = next(p for p in _plays() if p.get("name") == "Phase 3e: Marketplace applications")
+    keep = [
+        t
+        for t in play["tasks"]
+        if t.get("name") in ("Keep the marketplace summary", "Every marketplace application exists")
+    ]
+    assert len(keep) == 2
+    fake = {"rc": rc, "stdout_lines": stdout.splitlines()}
+    (tmp_path / "play.yml").write_text(
+        yaml.safe_dump(
+            [{"hosts": "localhost", "gather_facts": False, "vars": {"_plane_apps_run": fake}, "tasks": keep}]
+        )
+    )
+    proc = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert (proc.returncode == 0) is ok, proc.stdout[-1500:]
+
+
+def test_the_marketplace_phase_runs_before_verify_and_never_in_check_mode():
+    names = [p.get("name", "") for p in _plays()]
+    assert names.index("Phase 3e: Marketplace applications") < names.index("Phase 4: Verify plane")
+    play = next(p for p in _plays() if p.get("name") == "Phase 3e: Marketplace applications")
+    run = next(t for t in play["tasks"] if t.get("name", "").startswith("Create missing"))
+    assert run["when"] == "not ansible_check_mode"
+    assert run["ansible.builtin.command"]["argv"][3:7] == ["python", "manage.py", "shell", "-c"]
