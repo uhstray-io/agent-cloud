@@ -157,6 +157,8 @@ and why.
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
+| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes | Process | 1 | Convention (merge-guard check proposed) |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) | Process | 2 | Convention (PR-template checkbox or merge-guard attestation proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4691,6 +4693,60 @@ rebalance is a data commit, not another workflow transition. The partition stays
 half gains the proposal above: each shard prints its duration against its timeout and warns above half of it.
 The warning does not fail the run, so it is not enforcement and stays labelled Convention-plus-warning. First
 run: shards took 282 to 495 seconds, against 20 to 24 minutes for the old `Python core`.
+
+### 5.23 A repo-wide guard and a PR that adds an offender merged minutes apart; `dev` went red
+
+**What happened.** On 2026-11-11, #1066 added `test_no_new_test_builds_its_own_http_server`
+(`platform/tests/test_fake_http.py`), which refuses any test file that builds its own HTTP server
+unless the file is on an exact list. It merged at 21:26:47 UTC with all 15 checks green. #952,
+from another session, added `platform/tests/test_probe_skynet_launch.py`, whose listener subclasses
+`ThreadingHTTPServer`. Its Python CI finished at 21:20:44 UTC, before #1066 existed on `dev`, and
+it merged at 21:31:51 UTC with its head not containing #1066. The combination failed the guard on
+`dev`, so one Python shard of every open PR into `dev` went red. A peer session reported it; #1068
+added the file to the list and merged at 21:49:50 UTC.
+
+**Root cause.** The merge guard (`scripts/merge-when-green.py`) proves CI on the PR's head, not on
+the result of merging that head into the current `dev`. `dev` has no up-to-date-branch rule,
+because the main-to-dev sync pushes to it directly. A repo-wide check is exactly the kind of
+change whose result depends on files other PRs add, so two heads that are each green can merge
+into a red branch.
+
+**The rule.** Immediately before merging, when `origin/dev` holds commits the PR's head does not,
+run the repository-wide guard tests (the exact-list and "no new X" scans) on the head merged with
+current `origin/dev`, or merge `dev` into the branch and let CI run again. A PR that adds such a
+guard runs it against the `dev` tip once more right after it merges.
+
+**Enforced by.** Convention. Proposal: `merge-when-green.py` reports how many commits `origin/dev`
+holds that the head lacks, and refuses when any of them touches a test file until the operator
+passes an explicit acknowledgement.
+
+### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
+
+**Occurrences: 2** — 2026-10-29, 2026-11-11
+
+**What happened.** The branch workflow (`AGENTS.md:568`, step 4) runs `/simplify` and
+`/security-review` on the branch changes before a PR is opened. #1066 (fixture servers onto
+`fake_http.serve`) was opened, reviewed by `pr-reviewer` and merged on 2026-11-11 without either.
+The grounding checkpoint ran them after the merge. `/security-review` found nothing reportable,
+but `/simplify` found that `serve` wraps the listening socket for TLS
+(`platform/tests/fake_http.py:91`), so the handshake runs on the accept thread and one silent
+client hangs every request and the teardown; a reviewer reproduced it. It also found that small
+parameters on `serve` would retire most of the files still on the guard's list. Those went to a
+follow-up rather than into the PR.
+
+**Root cause.** The step lives only in prose, and nothing between `git push` and the merge asks
+for it. The independent PR review covers correctness. It does not stand in for the two passes,
+which look for different things (reuse and altitude; a security-only threat model).
+
+**The rule.** Before `gh pr create`, run `/simplify` and `/security-review` on the branch diff and
+put one line for each in the PR body: what it found, and what was fixed or deferred.
+
+**Enforced by.** Convention. Proposal: a PR-template checkbox for each pass, and a
+`merge-when-green.py` check that the PR body names both.
+
+**Occurrence 1 — 2026-10-29.** Recorded at the time only as a cause in 10.33: the skipped
+`/security-review` for #778 would have caught production OPA's open write API before it went
+live. This entry gives the rule its own place, so the count is visible.
 
 ## 6. Working from assumptions about files
 
