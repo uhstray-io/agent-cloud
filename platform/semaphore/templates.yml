@@ -1252,12 +1252,19 @@ templates:
   # deployed to the staging front door and workspace, recorded as a GitHub deployment that
   # weft's release.yml requires before it releases that commit. Does nothing until staging is
   # declared, so the timer may exist first. Directly Dev-bound like Check o11y Liveness (Dev): a
-  # schedule on a main-bound base would run main, which has no weft code until promotion. No
-  # survey, because a scheduled task answers none: the playbook places the branch its own
-  # checkout is on.
+  # schedule on a main-bound base would run main, which has no weft code until promotion. The
+  # survey's default serves a launch from the web form only; a scheduled task answers no survey,
+  # so the playbook places the branch its own checkout is on.
   - name: Follow weft main (Dev)
     playbook: platform/playbooks/follow-weft-main.yml
     repository: agent-cloud dev
+    survey_vars:
+      - name: service_branch
+        title: "Target branch"
+        description: "The agent-cloud branch placed on staging (dev until promotion)"
+        type: string
+        required: false
+        default_value: "dev"
     schedule:
       cron: "*/5 * * * *"
 
