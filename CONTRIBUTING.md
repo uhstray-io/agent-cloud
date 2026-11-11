@@ -251,6 +251,31 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 `assert_grep`/`refute_grep`) and of `<assertion> || true`, and fails on any new one
 ("no new grep -v -q or || true assertions outside the ratchet").
 
+## Writing Python Tests
+
+Most of the Python suite's time is spent starting `ansible-playbook`, about a second per
+run in CI (plan 21). Four rules keep that cost and its failure modes down:
+
+1. **Run a playbook with `harness_sandbox.run_playbook(playbook, tmp_path, *args)`**, never
+   your own `subprocess.run(["ansible-playbook", ...])`. It runs from the repository root, so
+   the repository `ansible.cfg` applies. It keeps Ansible's state inside `tmp_path`, gives the
+   child no stdin, and stops it after 120 seconds (pass `timeout=` for a longer play). Where
+   `sandbox-exec` or `bwrap` exists, it also confines writes to `tmp_path`. CI has neither, so
+   a test that writes outside `tmp_path` fails only on a sandboxed workstation.
+   `test_playbook_spawns_are_bounded.py` refuses a new direct spawn and a new unbounded one. Its
+   lists must match exactly, and adding to them is the change review refuses.
+2. **Pick the forgery spellings by what the refusal reads.** A refusal by the run-start guard
+   reads names only, so one spelling proves it: `forgeries.by_name(name, honest, forged)`,
+   with an assert of the guard's own message. A refusal that reads the value, a gate run
+   without the guard, and a connection variable keep all three:
+   `forgeries.templated_forgeries(name, honest, forged)`.
+   `test_extra_var_refusal_tests.py` enforces which one a test may use.
+3. **A playbook wait a test must sit through gets a public knob** with the production default,
+   for example `ih_wait_retries` in `instrument-host-o11y.yml`. A shorter wait can only fail
+   sooner, so it adds no forgery risk. Underscore names stay internal.
+4. **A fixture server takes its delays as parameters**, so a test can shorten them without a
+   copy of the server.
+
 ## Code Standards
 
 ### Python
