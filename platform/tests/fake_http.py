@@ -89,7 +89,8 @@ def serve(handler, *, ssl_context=None):
     server = Server(("127.0.0.1", 0), handler)
     if ssl_context is not None:
         server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    # shutdown() waits out one select poll; the stdlib's 0.5 s would be paid on every exit.
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
         yield f"{'https' if ssl_context is not None else 'http'}://127.0.0.1:{server.server_port}"
