@@ -17,6 +17,8 @@ what they were told. `podman` is a script that logs its arguments and answers `i
 of a `health` one-off fails for one chosen digest, which is how a release is made unhealthy.
 """
 
+import grp
+import hashlib
 import json
 import os
 import shutil
@@ -57,6 +59,10 @@ case "$1" in
     # A health one-off of the image named in {fail} fails: that is the unhealthy release.
     if [ -s "{fail}" ] && [[ "$*" == *"$(cat "{fail}")"* ]] && [[ "$*" == *" health"* ]]; then
       exit 1
+    fi
+    # A cosign verify of the image named in {unsigned} fails: that release's signature does not hold.
+    if [ -s "{unsigned}" ] && [[ "$*" == *"$(cat "{unsigned}")"* ]] && [[ "$*" == *" verify "* ]]; then
+      exit 1
     fi ;;
 esac
 exit 0
@@ -75,7 +81,6 @@ STUBS = {
          "ansible.builtin.set_fact": {"_weft_images": "{{ _weft_release_json.images }}"}},
     ],
     "weft-seal.yml": [{"name": "Stub: the seal", "ansible.builtin.debug": {"msg": "seal"}}],
-    "weft-workspace-files.yml": [{"name": "Stub: the workspace's files", "ansible.builtin.debug": {"msg": "files"}}],
     "weft-github-deployment.yml": [{"name": "Stub: GitHub", "ansible.builtin.debug": {"msg": "github"}}],
     "notify-discord.yml": [{"name": "Stub: Discord", "ansible.builtin.shell": 'printf "%s\\n" "$MSG" >> "$LOG"',
                             "environment": {"MSG": "{{ _discord_message }}", "LOG": "{{ test_discord_log }}"},
@@ -88,7 +93,8 @@ def host(tmp_path):
     """A fresh workspace host: no .env, no record, nothing running, and a UDP port bound for calls."""
     pb = tmp_path / "pb"
     (pb / "tasks").mkdir(parents=True)
-    for name in ("weft-deploy.yml", "weft-rollback.yml", "weft-verify-images.yml", "verify-cosign.yml"):
+    for name in ("weft-deploy.yml", "weft-rollback.yml", "weft-verify-images.yml", "verify-cosign.yml",
+                 "weft-workspace-files.yml"):
         shutil.copy(PLAYBOOKS / "tasks" / name, pb / "tasks" / name)
     for name, tasks in STUBS.items():
         (pb / "tasks" / name).write_text(yaml.safe_dump(tasks))
@@ -100,7 +106,8 @@ def host(tmp_path):
     (clone / "lib").symlink_to(REPO / "platform/lib")
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    (bindir / "podman").write_text(FAKE_PODMAN.format(log=tmp_path / "engine.log", fail=tmp_path / "unhealthy"))
+    (bindir / "podman").write_text(FAKE_PODMAN.format(
+        log=tmp_path / "engine.log", fail=tmp_path / "unhealthy", unsigned=tmp_path / "unsigned"))
     (bindir / "podman").chmod(0o755)
     # The deploy's health checks that the workspace's calls port is bound; this socket is it.
     udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -110,8 +117,25 @@ def host(tmp_path):
     udp.close()
 
 
+def _with_model(tmp_path: Path, release: dict) -> dict:
+    """The release with the whisper model it pins, served from a file and checked against its sum by
+    the real weft-workspace-files.yml, which also renders weft.toml."""
+    model = tmp_path / "model.bin"
+    model.write_bytes(b"not a real model")
+    return {**release, "whisper": {"default": "tiny", "models": {"tiny": {
+        "url": model.as_uri(), "file": "model.bin", "sha256": hashlib.sha256(model.read_bytes()).hexdigest()}}}}
+
+
+def _record(tmp_path: Path, previous: dict) -> None:
+    """A host whose record says it runs `previous`."""
+    _state(tmp_path).mkdir(parents=True)
+    (_state(tmp_path) / "deployed.json").write_text(
+        json.dumps({"release": _with_model(tmp_path, previous), "deployed_at": None, "refused": []}))
+
+
 def _deploy(tmp_path: Path, release: dict, udp_port: int):
     srv = tmp_path / "srv"
+    release = _with_model(tmp_path, release)
     play = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
@@ -127,10 +151,16 @@ def _deploy(tmp_path: Path, release: dict, udp_port: int):
             "_weft_deploy_env": {"CONTAINER_ENGINE": "podman", "COMPOSE_CMD": "podman compose", "LOCAL_MODE": ""},
             "_weft_health_argv": ["bash", "deploy.sh", "workspace", "health"],
             "test_release": release, "test_discord_log": str(tmp_path / "discord.log"),
+            # What weft.toml.j2 reads.
+            "weft_domain": "weft.example.test", "weft_public_address": "127.0.0.1",
+            "weft_default_provider": "p", "weft_daily_tokens": 1000, "weft_tracker_bot_login": "bot",
+            "weft_providers": {"p": {"name": "p", "endpoint": "https://p.example.test", "wire": "openai",
+                                     "budget": 1, "models": {"standard": "m"}}},
+            "_shared": {"public_key": "0" * 64},
         },
         "tasks": [
             {"name": "The directories weft-workspace.yml makes", "ansible.builtin.file": {
-                "path": "{{ item }}", "state": "directory", "mode": "0700"},
+                "path": "{{ item }}", "state": "directory", "mode": "0755"},
              "loop": ["{{ _weft_workspace_dir }}", "{{ _weft_state_dir }}"]},
             {"name": "One deploy", "ansible.builtin.include_tasks": "tasks/weft-deploy.yml"},
         ],
@@ -140,8 +170,13 @@ def _deploy(tmp_path: Path, release: dict, udp_port: int):
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env.update(PATH=f"{tmp_path / 'bin'}{os.pathsep}{env['PATH']}", ANSIBLE_NOCOLOR="1",
                ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
-    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(playbook)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False, timeout=180)
+    # The state directory is root's on a VM, written with become. Here the run is a user's: the owner
+    # is this user and escalation is off, which a launch cannot do (both are internal names, refused
+    # as extra vars by refuse-internal-extra-vars.yml, or connection variables).
+    me = {"_weft_state_owner": os.environ.get("USER") or str(os.getuid()),
+          "_weft_state_group": grp.getgrgid(os.getgid()).gr_name, "ansible_become": False}
+    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", "-e", json.dumps(me), str(playbook)],
+                          cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=180)
     log = tmp_path / "engine.log"
     discord = tmp_path / "discord.log"
     return proc, (log.read_text() if log.exists() else ""), (discord.read_text() if discord.exists() else "")
@@ -174,6 +209,13 @@ def test_the_first_deploy_to_a_host_with_no_env_and_no_record_reaches_up(host):
     record = json.loads((_state(host) / "deployed.json").read_text())
     assert record["release"]["commit"] == NEW and record["refused"] == [], record
     assert "is on" in discord, discord
+    # weft.toml names the agent images and the commands the orchestrator runs: it is rendered into
+    # the state directory, and nothing of it lands where the board can write (agent-cloud#890 B2).
+    toml = (_state(host) / "weft.toml").read_text()
+    assert f"{REGISTRY}/weft-builder@sha256:{'a' * 64}" in toml, toml
+    assert not list(_workspace(host).rglob("weft.toml")), "weft.toml is under the mounted workspace directory"
+    env = (host / "clone/platform/services/weft/deployment/.env").read_text()
+    assert f"WEFT_WORKSPACE_CONFIG={_state(host) / 'weft.toml'}" in env, env
 
 
 def test_a_deploy_writes_nothing_of_its_record_into_the_mounted_workspace_directory(host):
@@ -181,7 +223,7 @@ def test_a_deploy_writes_nothing_of_its_record_into_the_mounted_workspace_direct
     assert proc.returncode == 0, proc.stdout[-4000:]
     # The board mounts the workspace directory read-write. Whatever is in it, a compromised board
     # could have written; none of it may decide which image runs (agent-cloud#890 B2).
-    for name in ("deployed.json", "release.replaced.json", "release-incoming", "deploying"):
+    for name in ("deployed.json", "release.replaced.json", "deploying", "weft.toml"):
         assert not list(_workspace(host).rglob(name)), f"{name} is under the mounted workspace directory"
     assert (_state(host) / "deployed.json").is_file()
 
@@ -191,8 +233,7 @@ def test_a_rollback_refuses_a_previous_image_from_outside_weft_s_registry(host):
     # the record would have written before B2.
     forged = _release(OLD, "b")
     forged["images"]["weft-workspace"] = f"docker.io/attacker/weft-workspace@sha256:{'c' * 64}"
-    _state(host).mkdir(parents=True)
-    (_state(host) / "deployed.json").write_text(json.dumps({"release": forged, "deployed_at": None, "refused": []}))
+    _record(host, forged)
     (host / "unhealthy").write_text(f"sha256:{'a' * 64}")
 
     proc, log, discord = _deploy(host, _release(NEW, "a"), _udp_port(host))
@@ -206,10 +247,28 @@ def test_a_rollback_refuses_a_previous_image_from_outside_weft_s_registry(host):
     assert NEW in record["refused"], record
 
 
+def test_a_rollback_refuses_a_previous_release_whose_signature_does_not_verify(host):
+    # Shape alone is not enough: an image in weft's registry, by digest, that weft's images.yml did
+    # not sign (an older release re-tagged, or a record forged before B2) must not run.
+    previous = _release(OLD, "b")
+    _record(host, previous)
+    (host / "unhealthy").write_text(f"sha256:{'a' * 64}")
+    (host / "unsigned").write_text(previous["images"]["weft-workspace"])
+
+    proc, log, discord = _deploy(host, _release(NEW, "a"), _udp_port(host))
+
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    env = (host / "clone/platform/services/weft/deployment/.env").read_text()
+    assert previous["images"]["weft-workspace"] not in env, "an unverified image was rendered:\n" + env
+    toml = (_state(host) / "weft.toml").read_text()
+    assert f"sha256:{'b' * 64}" not in toml, "weft.toml was rendered for an unverified release:\n" + toml
+    assert len(_ups(log)) == 1, "only the new release may have been started:\n" + log
+    assert "is down" in discord, discord
+
+
 def test_a_rollback_verifies_the_previous_release_then_runs_it_again(host):
     previous = _release(OLD, "b")
-    _state(host).mkdir(parents=True)
-    (_state(host) / "deployed.json").write_text(json.dumps({"release": previous, "deployed_at": None, "refused": []}))
+    _record(host, previous)
     (host / "unhealthy").write_text(f"sha256:{'a' * 64}")
 
     proc, log, discord = _deploy(host, _release(NEW, "a"), _udp_port(host))
@@ -265,14 +324,69 @@ def test_every_play_that_deploys_or_rolls_back_keeps_its_record_outside_the_moun
     assert not state.startswith(data), f"{playbook}: the deploy record {state} is inside {data}"
 
 
-def test_the_containers_mount_nothing_but_the_data_directory_the_socket_and_the_door_key():
+def test_the_containers_mount_nothing_but_the_data_directory_the_socket_the_key_and_weft_toml():
     # The other half of the B2 property: the state directory is safe only because no service
-    # mounts anything that could contain it.
-    allowed = {"${WEFT_WORKSPACE_DIR}", "${WEFT_PODMAN_SOCKET}", "${WEFT_DOOR_DIR}", "./door.key"}
+    # mounts anything that could contain it, and the one file of it a service needs is read-only.
+    allowed = {"${WEFT_WORKSPACE_DIR}", "${WEFT_PODMAN_SOCKET}", "${WEFT_DOOR_DIR}", "./door.key",
+               "${WEFT_WORKSPACE_CONFIG}"}
     for compose in ("compose.workspace.yml", "compose.door.yml"):
         services = yaml.safe_load((DEPLOY_DIR / compose).read_text())["services"]
         sources = {v.split(":", 1)[0] for svc in services.values() for v in svc.get("volumes", [])}
         assert sources <= allowed, f"{compose} mounts {sorted(sources - allowed)}"
+        for name, svc in services.items():
+            for v in svc.get("volumes", []):
+                if v.startswith("${WEFT_WORKSPACE_CONFIG}"):
+                    assert v.endswith(":ro"), f"{compose}: {name} mounts weft.toml writable"
+            if (svc.get("environment") or {}).get("WEFT_CONFIG"):
+                assert svc["environment"]["WEFT_CONFIG"] == "${WEFT_WORKSPACE_CONFIG}", name
+    deploy_sh = (DEPLOY_DIR / "deploy.sh").read_text()
+    assert '-v "${WEFT_WORKSPACE_CONFIG}:${WEFT_WORKSPACE_CONFIG}:ro"' in deploy_sh
+    assert "WEFT_WORKSPACE_CONFIG" in deploy_sh.split("REQUIRED=(WEFT_WORKSPACE_IMAGE", 1)[1].split(")", 1)[0]
+
+
+STATE_NAMES = ("_weft_state_dir", "_weft_door_state_dir", "_weft_workspace_config")
+WRITERS = ("ansible.builtin.copy", "ansible.builtin.template", "ansible.builtin.file", "ansible.builtin.command")
+
+
+def _tasks(items):
+    for t in items or []:
+        yield t
+        for key in ("block", "rescue", "always", "tasks"):
+            yield from _tasks(t.get(key))
+
+
+def test_every_write_to_the_state_directory_escalates_and_leaves_it_root_s():
+    # The orchestrator holds the deploy user's podman socket, so a file the deploy user can write is
+    # one the orchestrator can forge: skip a security release, add to `refused`, hold the lock, or
+    # name an older signed release for the rollback. Every write into the state directory runs as
+    # root and sets root's ownership (agent-cloud#890 review).
+    files = [*sorted(PLAYBOOKS.glob("tasks/weft-*.yml")), PLAYBOOKS / "weft-workspace.yml",
+             PLAYBOOKS / "weft-door.yml", PLAYBOOKS / "rollback-weft-workspace.yml"]
+    writes, bad = 0, []
+    for f in files:
+        for task in _tasks(yaml.safe_load(f.read_text())):
+            module = next((m for m in WRITERS if m in task), None)
+            if module is None:
+                continue
+            body = task[module]
+            target = json.dumps(body)
+            if not any(name in target for name in STATE_NAMES):
+                continue
+            # A command writes there only to take the lock; deploy.sh's backup only reads from it.
+            if module == "ansible.builtin.command" and "mkdir" not in target:
+                continue
+            writes += 1
+            if task.get("become") is not True:
+                bad.append(f"{f.name}: {task.get('name')} does not escalate")
+            if module != "ansible.builtin.command" and body.get("state") != "absent":
+                if body.get("owner") != "{{ _weft_state_owner }}":
+                    bad.append(f"{f.name}: {task.get('name')} does not set the state owner")
+                if str(body.get("mode")) not in ("0644", "0755"):
+                    bad.append(f"{f.name}: {task.get('name')} mode {body.get('mode')}")
+    assert writes >= 8, writes
+    assert not bad, bad
+    weft_vars = yaml.safe_load((PLAYBOOKS / "vars/weft.yml").read_text())
+    assert weft_vars["_weft_state_owner"] == "root" and weft_vars["_weft_state_group"] == "root"
 
 
 def _release_guard(tmp_path: Path, state_dir: str):

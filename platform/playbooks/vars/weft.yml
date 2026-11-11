@@ -31,16 +31,26 @@ _weft_images_by_role:
 _weft_root: "{{ weft_root | default('/srv/weft') }}"
 _weft_door_dir: "{{ weft_door_dir | default('/srv/weft-door') }}"
 
-# The deploy's own record, per role: deployed.json (what runs, what was refused), the replaced
-# release.json, the fetched release-incoming/ and the deploying/ lock. It decides which image
-# runs, so it lives where NO container mounts it: the workspace directory is mounted read-write
-# into the board, which faces the internet, and a record there was one a compromised board could
-# rewrite to name its own digest as "the previous release" (agent-cloud#890 B2).
+# What decides what runs, per role: deployed.json (what runs, what was refused), the replaced
+# release.json, the deploying/ lock and, for a workspace, weft.toml (the agent images, the
+# orchestrator's command, the checkout and clone paths). It lives where NO container can write
+# it (agent-cloud#890 B2):
+#   - no container mounts the directory: the workspace directory is mounted read-write into the
+#     board, which faces the internet, and a record there was one a compromised board could
+#     rewrite to name its own digest as "the previous release";
+#   - root owns it (0755, files 0644, written with become): the orchestrator holds the deploy
+#     user's podman socket, so anything the deploy user can write, it can too. Nothing in it is
+#     a credential (weft D539), so the deploy user and the containers may read it.
+# weft.toml alone is bind-mounted, read-only, into the containers that read it.
 # tasks/weft-release.yml, which every deploy and rollback reaches first, refuses a state
 # directory that is a mounted directory or inside one.
 _weft_state_root: "{{ weft_state_root | default('/srv/weft-state') }}"
 _weft_workspace_state_dir: "{{ _weft_state_root }}/workspaces/{{ weft_workspace_id | default('') }}"
 _weft_door_state_dir: "{{ _weft_state_root }}/door"
+_weft_workspace_config: "{{ _weft_workspace_state_dir }}/weft.toml"
+# Who owns it. Internal: a launch cannot set an underscore name (refuse-internal-extra-vars.yml).
+_weft_state_owner: root
+_weft_state_group: root
 
 # The directory a role's containers mount and its database lives in: the data, as opposed to the
 # deploy's record about it. Read only where _weft_role is set.

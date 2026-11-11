@@ -106,11 +106,16 @@
       {{ _weft_data.stat.size | default(0) }}-byte database: not enough for the backup copy.
       Nothing was stopped.
 
+# Written as root (become): the state directory is root's, so neither the board nor the
+# orchestrator, which can act as the deploy user through its podman socket, can rewrite it.
 - name: "Keep the replaced version's release.json for the backup set"
   ansible.builtin.copy:
     content: "{{ _weft_deployed.release | to_nice_json }}"
     dest: "{{ _weft_state_dir }}/release.replaced.json"
-    mode: "0600"
+    owner: "{{ _weft_state_owner }}"
+    group: "{{ _weft_state_group }}"
+    mode: "0644"
+  become: true
   when: (_weft_deployed.release | default(none)) is not none
 
 - name: "Check the seal before anything stops"
@@ -127,6 +132,7 @@
       ansible.builtin.command:
         argv: [mkdir, "{{ _weft_state_dir }}/deploying"]
       changed_when: true
+      become: true
       when: not ansible_check_mode
 
     - name: "This run holds the lock"
@@ -292,7 +298,10 @@
               {{ {'release': _weft_release_json, 'deployed_at': _weft_started.stdout,
                   'refused': _weft_refused} | to_nice_json }}
             dest: "{{ _weft_state_dir }}/deployed.json"
-            mode: "0600"
+            owner: "{{ _weft_state_owner }}"
+            group: "{{ _weft_state_group }}"
+            mode: "0644"
+          become: true
 
         - name: "Tell Discord"
           ansible.builtin.include_tasks: notify-discord.yml
@@ -315,4 +324,5 @@
       ansible.builtin.file:
         path: "{{ _weft_state_dir }}/deploying"
         state: absent
+      become: true
       when: _weft_lock_held | default(false) | bool

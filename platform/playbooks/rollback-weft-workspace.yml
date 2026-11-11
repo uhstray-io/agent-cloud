@@ -76,6 +76,11 @@
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
+    # The state directory is root's (vars/weft.yml), so every deploy escalates; on a host not yet
+    # hardened that needs the sudo password, read from OpenBao as every escalating play does.
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
     - name: "Read the Discord webhook"
       ansible.builtin.include_tasks: tasks/weft-credentials.yml
 

@@ -12,7 +12,7 @@ browser ──> Caddy (edge: TLS, hostname routing) ─┬─ <domain>        �
 browser ──(UDP, calls)──> rack firewall ──────────────────────────────> workspace VM   :<udp> weft-board (weft-voice)
 
 workspace VM:  weft-board ─┐
-               weft-orchestrator ─┼─ /srv/weft/<id>/ (weft.db, seal.key, weft.toml, models, checkouts)
+               weft-orchestrator ─┼─ /srv/weft/<id>/ (weft.db, seal.key, models, checkouts)
                weft-capture ─┘     │
                weft-orchestrator ──┴─ podman socket ──> agent + egress-proxy containers (never the directory)
 ```
@@ -44,12 +44,13 @@ Each deploy (`platform/playbooks/tasks/weft-deploy.yml`), for a workspace or a f
 5. **Watch** 15 minutes: no container restarts, health still passes.
 6. **Passed**: record the release in `deployed.json` on the VM; Discord.
 
-The deploy's own record (`deployed.json`, the replaced `release.json`, the fetched
-`release-incoming/` and the `deploying/` lock) is in `/srv/weft-state/workspaces/<id>/` or
-`/srv/weft-state/door/`, a directory no container mounts. It decides which image runs, so the
-board, which faces the internet and mounts the workspace directory, must not be able to write
-it; a rollback also re-verifies the previous release's images before running them
-(agent-cloud#890 B2).
+What decides what runs (`deployed.json`, the replaced `release.json`, the `deploying/` lock and a
+workspace's `weft.toml`) is in `/srv/weft-state/workspaces/<id>/` or `/srv/weft-state/door/`:
+root's, written with `become`, and mounted by no container except `weft.toml`, read-only. The
+board faces the internet and mounts the workspace directory, and the orchestrator can act as the
+deploy user through its podman socket, so neither may write it. `release.json` is fetched to
+stdout, never to a file, and a rollback re-verifies the previous release's images before running
+them (agent-cloud#890 B2).
 
 A failure in 4 or 5 rolls back (`tasks/weft-rollback.yml`): stop, restore the deploy's own backup
 with the previous image (the current database is set aside as `weft.db.failed-<version>-<time>`,
@@ -70,6 +71,7 @@ deployment/
     ├── door.env.j2         .env for a front door (no secret)
     ├── door.key.j2         the front door's signing key (0600)
     ├── weft.toml.j2        the workspace's deployment file: agent images by digest, paths
+    │                       (rendered into /srv/weft-state/, mounted read-only)
     └── caddy-site.j2       <domain> -> front door, <name>.<domain> -> each workspace
 ```
 

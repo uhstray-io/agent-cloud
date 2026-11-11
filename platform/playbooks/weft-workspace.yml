@@ -109,18 +109,30 @@
       vars:
         _weft_need_github: "{{ _weft_github_deployment_id | string | length > 0 }}"
 
+    # The state directory is root's (vars/weft.yml), so every deploy escalates; on a host not yet
+    # hardened that needs the sudo password, read from OpenBao as every escalating play does.
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
-    # Two directories: the workspace's own, which its containers mount, and the deploy's record,
-    # which none does (vars/weft.yml, _weft_state_root).
-    - name: "Make the workspace directory and the deploy's state directory on the VM's own disk"
+    - name: "Make the workspace directory on the VM's own disk"
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ _weft_workspace_dir }}"
         state: directory
         owner: "{{ ansible_user }}"
         mode: "0700"
-      loop: ["{{ _weft_workspace_dir }}", "{{ _weft_state_dir }}"]
+      become: true
+
+    # The deploy's record and weft.toml: root's, mounted by no container (vars/weft.yml).
+    - name: "Make the deploy's state directory, root's"
+      ansible.builtin.file:
+        path: "{{ _weft_state_dir }}"
+        state: directory
+        owner: "{{ _weft_state_owner }}"
+        group: "{{ _weft_state_group }}"
+        mode: "0755"
       become: true
 
     - name: "Read the deploy user's id"

@@ -11,8 +11,12 @@
 # and rendered into .env. deploy.sh refuses a reference that is not a digest. `:?` makes compose
 # itself refuse an unset one: there is no default image, because any default would be a tag.
 #
+# weft.toml is NOT in it: it names the agent images and the commands the orchestrator runs, so it
+# lives in the deploy's root-owned state directory and is mounted read-only into the board and the
+# orchestrator, the two that read it (capture reads no deployment file) (agent-cloud#890 B2).
+#
 # THE WORKSPACE DIRECTORY IS MOUNTED INTO THESE THREE CONTAINERS AND NO OTHER. It holds the
-# catalog (weft.db), its seal, weft.toml, the whisper models and the checkouts, and it is a bind
+# catalog (weft.db), its seal, the whisper models and the checkouts, and it is a bind
 # mount from the VM's own disk at the same path inside and out. Same path, because the
 # orchestrator mounts checkouts into agent containers through the VM's podman, which resolves
 # paths on the VM. Own disk, because the catalog's WAL index is coherent only between processes
@@ -44,9 +48,10 @@ services:
     command: ["weft-board"]
     environment:
       WEFT_DB: ${WEFT_WORKSPACE_DIR}/weft.db
-      WEFT_CONFIG: ${WEFT_WORKSPACE_DIR}/weft.toml
+      WEFT_CONFIG: ${WEFT_WORKSPACE_CONFIG}
     volumes:
       - ${WEFT_WORKSPACE_DIR}:${WEFT_WORKSPACE_DIR}
+      - ${WEFT_WORKSPACE_CONFIG}:${WEFT_WORKSPACE_CONFIG}:ro
     ports:
       - "${WEFT_BOARD_BIND}:${WEFT_BOARD_PORT}:8080"
       - "${WEFT_VOICE_UDP}:${WEFT_VOICE_UDP}/udp"
@@ -70,10 +75,11 @@ services:
     # entered by the workspace's admin on Settings > Credentials and kept sealed in the catalog.
     environment:
       WEFT_DB: ${WEFT_WORKSPACE_DIR}/weft.db
-      WEFT_CONFIG: ${WEFT_WORKSPACE_DIR}/weft.toml
+      WEFT_CONFIG: ${WEFT_WORKSPACE_CONFIG}
       CONTAINER_HOST: unix:///run/podman/podman.sock
     volumes:
       - ${WEFT_WORKSPACE_DIR}:${WEFT_WORKSPACE_DIR}
+      - ${WEFT_WORKSPACE_CONFIG}:${WEFT_WORKSPACE_CONFIG}:ro
       - ${WEFT_PODMAN_SOCKET}:/run/podman/podman.sock
     networks: [weft]
 

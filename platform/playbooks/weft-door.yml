@@ -58,18 +58,30 @@
       vars:
         _assert_bao_url: "{{ _bao_url }}"
 
+    # The state directory is root's (vars/weft.yml), so every deploy escalates; on a host not yet
+    # hardened that needs the sudo password, read from OpenBao as every escalating play does.
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
-    # Two directories: the records', which the front door's container mounts, and the deploy's
-    # record, which none does (vars/weft.yml, _weft_state_root).
-    - name: "Make the records' directory and the deploy's state directory on the VM's own disk"
+    - name: "Make the records' directory on the VM's own disk"
       ansible.builtin.file:
-        path: "{{ item }}"
+        path: "{{ _weft_door_dir }}"
         state: directory
         owner: "{{ ansible_user }}"
         mode: "0700"
-      loop: ["{{ _weft_door_dir }}", "{{ _weft_door_state_dir }}"]
+      become: true
+
+    # The deploy's record: root's, mounted by no container (vars/weft.yml).
+    - name: "Make the deploy's state directory, root's"
+      ansible.builtin.file:
+        path: "{{ _weft_door_state_dir }}"
+        state: directory
+        owner: "{{ _weft_state_owner }}"
+        group: "{{ _weft_state_group }}"
+        mode: "0755"
       become: true
 
     - name: "The signing key (generated once, reused forever) as a 0600 file"

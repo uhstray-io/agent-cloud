@@ -54,7 +54,7 @@ case "$ROLE" in
     # migrates it, and nothing else may race that.
     SERVICES=(board orchestrator capture)
     CONTAINERS=(weft-board weft-orchestrator weft-capture)
-    REQUIRED=(WEFT_WORKSPACE_IMAGE WEFT_WORKSPACE_DIR WEFT_BOARD_BIND WEFT_BOARD_PORT WEFT_VOICE_UDP WEFT_PODMAN_SOCKET)
+    REQUIRED=(WEFT_WORKSPACE_IMAGE WEFT_WORKSPACE_DIR WEFT_WORKSPACE_CONFIG WEFT_BOARD_BIND WEFT_BOARD_PORT WEFT_VOICE_UDP WEFT_PODMAN_SOCKET)
     ;;
   door)
     export COMPOSE_BASE=compose.door.yml
@@ -111,7 +111,9 @@ oneoff() {
   fi
   if [ "$ROLE" = workspace ]; then
     dir="$WEFT_WORKSPACE_DIR"
-    args+=(-v "${dir}:${dir}" -e "WEFT_DB=${dir}/weft.db" -e "WEFT_CONFIG=${dir}/weft.toml" "$(image)" orchestrator)
+    # weft.toml is outside the workspace directory and read-only (agent-cloud#890 B2).
+    args+=(-v "${dir}:${dir}" -v "${WEFT_WORKSPACE_CONFIG}:${WEFT_WORKSPACE_CONFIG}:ro"
+      -e "WEFT_DB=${dir}/weft.db" -e "WEFT_CONFIG=${WEFT_WORKSPACE_CONFIG}" "$(image)" orchestrator)
   else
     dir="$WEFT_DOOR_DIR"
     # The door image's entrypoint is front-door. No key is mounted: none of its deploy commands

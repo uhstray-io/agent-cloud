@@ -7,6 +7,11 @@
 # The model is fetched by the deploy rather than baked into the image (148 MB per model, and the
 # workspace chooses which) and checked against the sha256 in the SIGNED release.json, so the
 # release pins the model as it pins the code. A file already present is re-checked, not trusted.
+#
+# The model stays in the workspace directory, which the board can write: a declared cost
+# (openspec add-weft-service, design.md D3). Between deploys a compromised board could swap it,
+# and weft-whisper would parse the swapped file; it chooses no image and no command, and every
+# deploy and rollback checks it against the signed sum again.
 
 - name: "Choose the whisper model"
   ansible.builtin.set_fact:
@@ -32,8 +37,17 @@
     checksum: "sha256:{{ _weft_release_json.whisper.models[_weft_whisper_model].sha256 }}"
     mode: "0600"
 
+# weft.toml names the agent images, the orchestrator's command and the checkout and clone paths
+# the orchestrator runs through the podman socket, so it decides what runs as surely as
+# deployed.json does. It is rendered into the root-owned state directory, never the workspace
+# directory the board mounts read-write, and bind-mounted read-only into the containers that read
+# it (agent-cloud#890 B2; vars/weft.yml). 0644: it holds no credential (weft D539), and the
+# containers' mapped user must read it.
 - name: "Render weft.toml for this release"
   ansible.builtin.template:
     src: "{{ playbook_dir }}/../services/weft/deployment/templates/weft.toml.j2"
-    dest: "{{ _weft_workspace_dir }}/weft.toml"
-    mode: "0600"
+    dest: "{{ _weft_workspace_config }}"
+    owner: "{{ _weft_state_owner }}"
+    group: "{{ _weft_state_group }}"
+    mode: "0644"
+  become: true

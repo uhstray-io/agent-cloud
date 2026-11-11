@@ -7,10 +7,14 @@
 # for a release, what staging ran. The file itself is fetched by digest and verified before a
 # single field of it is believed, because a deploy must not trust a file it cannot verify.
 #
+# It is never written to disk: the manifest and the release.json blob are fetched by digest to
+# stdout. A file on the VM between the fetch and the read could be swapped by anything that
+# can act as the deploy user, which the orchestrator can through its podman socket.
+#
 # Caller passes:
 #   weft_release     a full 40-hex commit (staging follows main) or vX.Y.Z (a release)
 #   _weft_role       workspace | door
-#   _weft_state_dir  the role's deploy state directory on the VM (release.json is fetched under it)
+#   _weft_state_dir  the role's deploy state directory on the VM
 #   _weft_workspace_dir  (a workspace) the directory its containers mount
 # with vars/weft.yml loaded. Sets:
 #   _weft_release_json   the verified release.json
@@ -59,15 +63,7 @@
 - name: "Locate the registry login the containers below borrow"
   ansible.builtin.set_fact:
     _weft_auth_file: "/run/user/{{ _weft_uid.stdout }}/containers/auth.json"
-    _weft_incoming: "{{ _weft_state_dir }}/release-incoming"
     _weft_release_repo: "{{ _weft_registry }}/weft-release"
-
-- name: "Make an empty directory for the fetched release.json"
-  ansible.builtin.file:
-    path: "{{ _weft_incoming }}"
-    state: "{{ item }}"
-    mode: "0700"
-  loop: [absent, directory]
 
 - name: "Resolve release.json to a digest for {{ weft_release }}"
   ansible.builtin.command:
@@ -99,7 +95,8 @@
     _cosign_auth_file: "{{ _weft_auth_file }}"
   when: not ansible_check_mode
 
-- name: "Fetch the verified release.json by its digest"
+# By the digest cosign just verified; oras checks what it fetched against that digest.
+- name: "Fetch the verified manifest by its digest"
   ansible.builtin.command:
     argv:
       - "{{ container_engine | default('podman') }}"
@@ -108,27 +105,61 @@
       - --user=0
       - -v
       - "{{ _weft_auth_file }}:/auth/config.json:ro"
-      - -v
-      - "{{ _weft_incoming }}:/out"
       - "{{ _weft_oras_image }}"
-      - pull
+      - manifest
+      - fetch
       - --registry-config
       - /auth/config.json
-      - -o
-      - /out
       - "{{ _weft_release_repo }}@{{ _weft_resolved.stdout | trim }}"
+  register: _weft_manifest
   changed_when: false
   when: not ansible_check_mode
 
-- name: "Read release.json"
-  ansible.builtin.slurp:
-    src: "{{ _weft_incoming }}/release.json"
+# The manifest is the one cosign verified, so its layers are trusted; the layer is chosen by
+# the title oras gives a pushed file, and only by digest after that.
+- name: "Take the layer titled release.json"
+  ansible.builtin.set_fact:
+    _weft_release_blob: >-
+      {{ (_weft_manifest.stdout | from_json).layers | default([])
+         | map('to_json')
+         | select('search', '"org\.opencontainers\.image\.title": "release\.json"')
+         | map('from_json') | map(attribute='digest') | list }}
+  when: not ansible_check_mode
+
+- name: "Require exactly one release.json layer, by digest"
+  ansible.builtin.assert:
+    that:
+      - _weft_release_blob | length == 1
+      - _weft_release_blob[0] is match('^sha256:[0-9a-f]{64}$')
+    fail_msg: >-
+      The verified weft-release artifact for {{ weft_release }} does not hold exactly one layer
+      titled release.json. Nothing has changed on this host.
+  when: not ansible_check_mode
+
+- name: "Fetch release.json by its digest, to stdout"
+  ansible.builtin.command:
+    argv:
+      - "{{ container_engine | default('podman') }}"
+      - run
+      - --rm
+      - --user=0
+      - -v
+      - "{{ _weft_auth_file }}:/auth/config.json:ro"
+      - "{{ _weft_oras_image }}"
+      - blob
+      - fetch
+      - --registry-config
+      - /auth/config.json
+      - --output
+      - "-"
+      - "{{ _weft_release_repo }}@{{ _weft_release_blob[0] }}"
   register: _weft_release_raw
+  changed_when: false
   when: not ansible_check_mode
 
 - name: "Parse release.json"
   ansible.builtin.set_fact:
-    _weft_release_json: "{{ _weft_release_raw.content | b64decode | from_json }}"
+    _weft_release_json: "{{ _weft_release_raw.stdout | from_json }}"
   when: not ansible_check_mode
 
 - name: "Refuse a release.json that is not the one asked for"

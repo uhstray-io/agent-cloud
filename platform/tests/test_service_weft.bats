@@ -109,11 +109,13 @@ PY
   # One check for both a fetched release and the release a rollback goes back to (#890 B2).
   assert_grep -qF 'include_tasks: weft-verify-images.yml' "$PB/tasks/weft-release.yml"
   assert_grep -qF 'include_tasks: weft-verify-images.yml' "$PB/tasks/weft-rollback.yml"
-  # release.json is verified before it is read.
-  local verify read
+  # release.json is verified before it is fetched, and fetched to stdout, never to a file the
+  # deploy user (so the orchestrator, through its socket) could swap before it is read.
+  local verify fetch
   verify=$(grep -n 'name: "Verify release.json was signed' "$PB/tasks/weft-release.yml" | cut -d: -f1)
-  read=$(grep -n 'name: "Read release.json"' "$PB/tasks/weft-release.yml" | cut -d: -f1)
-  [ -n "$verify" ] && [ -n "$read" ] && [ "$verify" -lt "$read" ]
+  fetch=$(grep -n 'name: "Fetch release.json by its digest, to stdout"' "$PB/tasks/weft-release.yml" | cut -d: -f1)
+  [ -n "$verify" ] && [ -n "$fetch" ] && [ "$verify" -lt "$fetch" ]
+  refute_grep -qE 'slurp:|release-incoming|_weft_incoming' "$PB/tasks/weft-release.yml"
 }
 
 @test "weft: the front door's key is a 0600 file, never an environment variable" {
@@ -176,7 +178,7 @@ PY
   local rb="$PB/tasks/weft-rollback.yml"
   assert_grep -qF 'restore, --from, "{{ _weft_backup_set }}", --label, "failed-{{ _weft_to }}"' "$rb"
   refute_grep -rqE '\b(rm|unlink)\b.*(weft\.db|front-door\.db)' "$PB"/*weft*.yml "$PB"/tasks/weft-*.yml "$DEPLOY_DIR/deploy.sh"
-  # The only things a weft task removes are its own lock and its download directory.
+  # The only thing a weft task removes is its own lock.
   command -v python3 >/dev/null || skip "python3 not installed"
   python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
   run python3 - "$PB"/tasks/weft-*.yml <<'PY'
@@ -191,7 +193,7 @@ for f in sys.argv[1:]:
     for t in tasks(yaml.safe_load(open(f))):
         body = t.get('ansible.builtin.file') or t.get('file')
         if isinstance(body, dict) and 'absent' in str(body.get('state', '')) + str(t.get('loop', '')):
-            if 'deploying' not in body['path'] and '_weft_incoming' not in body['path']:
+            if 'deploying' not in body['path']:
                 bad.append(f + ': ' + body['path'])
 print('\n'.join(bad))
 sys.exit(1 if bad else 0)

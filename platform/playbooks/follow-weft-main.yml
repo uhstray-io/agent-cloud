@@ -62,6 +62,11 @@
       ansible.builtin.set_fact:
         _weft_follow_branch: "{{ service_branch | default(_weft_checkout.stdout | default('') | trim) }}"
 
+    # Stricter than tasks/assert-placement-branch.yml, which lets a detached checkout through
+    # because it only refuses a disagreement and a detached HEAD has no branch to disagree with.
+    # Here the checkout's branch is not checked against a choice, it IS the choice: with no survey
+    # value and no branch there is nothing to place, and guessing main (refused from dev) or dev
+    # (wrong after promotion) would be a silent wrong deploy on staging.
     - name: "Require a branch to place"
       ansible.builtin.assert:
         that: _weft_follow_branch not in ['', 'HEAD']

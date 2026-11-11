@@ -34,14 +34,15 @@
 - name: "Say where a rollout stopped"
   # In a rollout, the hosts before this one run the new release and the ones after it never
   # started it: a person reading Discord needs both lists, not only this host's.
+  vars:
+    _wr_hosts: "{{ (_weft_rollout | default({})).hosts | default([]) }}"
   ansible.builtin.set_fact:
     _weft_rollout_line: >-
-      {%- set hosts = (_weft_rollout | default({})).hosts | default([]) -%}
-      {%- if inventory_hostname in hosts -%}
-      {%- set at = hosts.index(inventory_hostname) -%}
-      {{ ' ' }}The rollout of {{ _weft_rollout.version }} stopped here. On {{ _weft_rollout.version }}:
-      {{ hosts[:at] | join(', ') or 'none' }}. Still on the release they ran: {{ hosts[at + 1:] | join(', ') or 'none' }}.
-      {%- endif -%}
+      {{ (' The rollout of ' ~ _weft_rollout.version ~ ' stopped here. On ' ~ _weft_rollout.version ~ ': '
+          ~ (_wr_hosts[:_wr_hosts.index(inventory_hostname)] | join(', ') or 'none')
+          ~ '. Still on the release they ran: '
+          ~ (_wr_hosts[_wr_hosts.index(inventory_hostname) + 1:] | join(', ') or 'none') ~ '.')
+         if _wr_hosts is contains(inventory_hostname) else '' }}
 
 - name: "Report the failure"
   ansible.builtin.debug:
@@ -149,19 +150,22 @@
       {{ {'release': _weft_previous, 'deployed_at': _weft_deployed.deployed_at | default(none),
           'refused': (_weft_refused + [_weft_failed_commit]) | unique} | to_nice_json }}
     dest: "{{ _weft_state_dir }}/deployed.json"
-    mode: "0600"
+    owner: "{{ _weft_state_owner }}"
+    group: "{{ _weft_state_group }}"
+    mode: "0644"
+  become: true
 
 - name: "Tell Discord it rolled back"
   ansible.builtin.include_tasks: notify-discord.yml
   vars:
     _discord_webhook_url: "{{ _weft_discord_webhook }}"
+    _weft_kept_line: >-
+      {{ (' What was written between ' ~ _weft_started.stdout ~ ' and ' ~ _weft_rollback_ended.stdout
+          ~ ' is kept in ' ~ _weft_data_dir ~ '/' ~ _weft_db_name ~ '.failed-' ~ _weft_to ~ '-*.')
+         if (_weft_backup_set | default('') | length > 0) else '' }}
     _discord_message: >-
       {{ _weft_environment }}: {{ _weft_label }} rolled back to {{ _weft_from }}: {{ _weft_to }}
-      failed '{{ _weft_failed_check }}'.
-      {%- if _weft_backup_set | default('') | length > 0 %} What was written between
-      {{ _weft_started.stdout }} and {{ _weft_rollback_ended.stdout }} is kept in
-      {{ _weft_data_dir }}/{{ _weft_db_name }}.failed-{{ _weft_to }}-*.{% endif %}
-      {{- _weft_rollout_line }}
+      failed '{{ _weft_failed_check }}'.{{ _weft_kept_line }}{{ _weft_rollout_line }}
   when: _weft_rolled_back | default(false) | bool
 
 - name: "Ask a person: the rollback failed too"
@@ -170,13 +174,15 @@
   ansible.builtin.include_tasks: notify-discord.yml
   vars:
     _discord_webhook_url: "{{ _weft_discord_webhook }}"
+    _weft_backup_line: >-
+      {{ (' The backup this deploy took is ' ~ _weft_backup_set ~ '.')
+         if (_weft_backup_set | default('') | length > 0) else '' }}
     _discord_message: >-
       **{{ _weft_environment }}: {{ _weft_label }} is down. What should happen to it?**
       Background: {{ _weft_to }} failed '{{ _weft_failed_check }}', and going back to
       {{ _weft_from }} failed '{{ _weft_rollback_failed_at | default('unknown step') }}'.
-      Context: every container of it is stopped and no file was deleted.
-      {%- if _weft_backup_set | default('') | length > 0 %} The backup this deploy took is
-      {{ _weft_backup_set }}.{% endif %} Nothing will try again.
+      Context: every container of it is stopped and no file was deleted.{{ _weft_backup_line }}
+      Nothing will try again.
       Options: A) restore that backup by hand with the {{ _weft_from }} image and start it;
       B) roll the VM back to its last Proxmox snapshot; C) leave it stopped and look at the
       containers' logs first; D) release a fix and redeploy with weft_force_redeploy.

@@ -12,11 +12,12 @@ repository; this directory is its slice 11.
 | VM | Containers (one image each, by digest) | Its directory on the VM's own disk |
 |---|---|---|
 | front door | `weft-door` (`weft-door` image) | `/srv/weft-door/` (`front-door.db`) |
-| workspace `<id>` (reached at `<name>.<domain>`) | `weft-board`, `weft-orchestrator`, `weft-capture` (all `weft-workspace`) | `/srv/weft/<id>/` (`weft.db`, `seal.key`, `weft.toml`, models, checkouts, backups) |
+| workspace `<id>` (reached at `<name>.<domain>`) | `weft-board`, `weft-orchestrator`, `weft-capture` (all `weft-workspace`) | `/srv/weft/<id>/` (`weft.db`, `seal.key`, models, checkouts, backups) |
 
-The deploy's own record for each host is in `/srv/weft-state/` (`workspaces/<id>/` or `door/`),
-which no container mounts: `deployed.json`, the replaced `release.json`, `release-incoming/`
-and the `deploying/` lock.
+What decides what runs on each host is in `/srv/weft-state/` (`workspaces/<id>/` or `door/`):
+`deployed.json`, the replaced `release.json`, the `deploying/` lock and a workspace's `weft.toml`.
+Root owns it and no container mounts it; `weft.toml` alone is bind-mounted read-only into the
+board and the orchestrator.
 
 The orchestrator starts agent and egress-proxy containers (`weft-builder`, `weft-proxy`,
 `weft-harness-*`) through the deploy user's rootless podman socket; the deploy pulls and verifies
@@ -38,10 +39,12 @@ those images too.
   commands. Its `backup`, `restore` and `health` run the release's own binary in a one-off
   container.
 - **What decides which image runs is outside every container mount** (agent-cloud#890 B2). The
-  board faces the internet and mounts the workspace directory read-write, so the deploy record
-  lives in `/srv/weft-state/`, `tasks/weft-release.yml` refuses a state directory inside a
-  mounted one, and a rollback re-verifies the previous release's images
-  (`tasks/weft-verify-images.yml`) before it renders them.
+  board faces the internet and mounts the workspace directory read-write, and the orchestrator
+  can act as the deploy user through its podman socket. So the deploy record and `weft.toml` live
+  in `/srv/weft-state/`, root's and written with `become`; `tasks/weft-release.yml` refuses a
+  state directory inside a mounted one and fetches `release.json` to stdout, never to a file; and a
+  rollback re-verifies the previous release's images (`tasks/weft-verify-images.yml`) before it
+  renders them.
 - **A restore never deletes.** `restore --label failed-<version>` sets the current database aside;
   what people wrote while a failed version ran is kept there.
 - **Automatic rollback only inside a deploy's watch window**, with the copy that deploy took
@@ -66,6 +69,8 @@ those images too.
 - Don't put a credential in `weft.toml.j2`, or a variable name for one, or a key in OpenBao for
   a workspace: they belong to the company and live in its catalog.
 - Don't make a restore automatic outside `tasks/weft-deploy.yml`'s rescue.
+- Don't put `weft.toml` or the deploy record back in the workspace directory, or let the deploy
+  user write `/srv/weft-state/`: the orchestrator can act as that user.
 - Don't edit `.env`, `door.key` or `weft.toml` on a VM; they are re-rendered on
   every deploy.
 
