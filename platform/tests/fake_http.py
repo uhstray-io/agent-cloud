@@ -75,25 +75,54 @@ class DrainingHandler(BaseHTTPRequestHandler):
                 self.rfile = sock
 
 
+# How long a TLS client gets to finish its handshake before its connection is dropped.
+TLS_HANDSHAKE_TIMEOUT = 10
+
+# A wildcard bind is reached on loopback, so the URL names loopback.
+_LOOPBACK_FOR = {"0.0.0.0": "127.0.0.1", "::": "::1"}
+
+
 @contextmanager
-def serve(handler, *, ssl_context=None):
-    """A fixture server for `handler` on an ephemeral loopback port, while the with-block runs; yields
-    its URL ("http://127.0.0.1:<port>", or "https://..." when `ssl_context` is given, which then wraps
-    the listening socket). Threaded, with daemon request threads, and stopped and closed on exit."""
-    # Default listen backlog is 5; a playbook's request bursts on a loaded machine got
-    # "Connection reset by peer" (see test_scoped_publication.py).
+def serve(handler, *, host="127.0.0.1", ssl_context=None):
+    """A fixture server for `handler` on an ephemeral port of `host`, while the with-block runs; yields
+    its URL ("http://127.0.0.1:<port>", or "https://..." when `ssl_context` is given). `host` may be a
+    wildcard ("0.0.0.0", for a container that reaches the host) or IPv6 ("::1"). Threaded, with daemon
+    request threads, and stopped and closed on exit. Each TLS connection does its handshake on its own
+    request thread, so a client that connects and stalls holds up only itself."""
     class Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        # Default listen backlog is 5; a playbook's request bursts on a loaded machine got
+        # "Connection reset by peer" (see test_scoped_publication.py).
         request_queue_size = 128
         daemon_threads = True
 
-    server = Server(("127.0.0.1", 0), handler)
-    if ssl_context is not None:
-        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
+        def get_request(self):
+            sock, address = self.socket.accept()
+            if ssl_context is None:
+                return sock, address
+            # Wrapping the listening socket would run every handshake inside accept(), on the one
+            # serve_forever thread: a silent client would block all requests and shutdown().
+            sock.settimeout(TLS_HANDSHAKE_TIMEOUT)
+            return ssl_context.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), address
+
+        def finish_request(self, request, client_address):
+            if ssl_context is not None:
+                try:
+                    request.do_handshake()
+                except OSError:  # ssl.SSLError and timeouts are OSError: a failed client, not a fixture error
+                    return
+                request.settimeout(None)  # the timeout bounds the handshake only
+            super().finish_request(request, client_address)
+
+    server = Server((host, 0), handler)
+    url_host = _LOOPBACK_FOR.get(host, host)
+    if ":" in url_host:
+        url_host = f"[{url_host}]"
     # shutdown() waits out one select poll; the stdlib's 0.5 s would be paid on every exit.
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     thread.start()
     try:
-        yield f"{'https' if ssl_context is not None else 'http'}://127.0.0.1:{server.server_port}"
+        yield f"{'https' if ssl_context is not None else 'http'}://{url_host}:{server.server_port}"
     finally:
         server.shutdown()
         server.server_close()
