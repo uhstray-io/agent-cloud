@@ -8,13 +8,16 @@ so it cannot be left to each fake remembering. This base reads the whole declare
 before the do_* method runs, on every path, and serves it back from memory: handlers
 keep calling self.rfile.read(...) exactly as before.
 
-It also holds `refused_port()`, the one port a test aims at when it needs "nothing listens here".
+It also holds `refused_port()`, the one port a test aims at when it needs "nothing listens here",
+and `serve()`, the one way a test starts a fixture server.
 """
 
 import errno
 import io
 import socket
-from http.server import BaseHTTPRequestHandler
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Below every ephemeral range (Linux 32768-60999, macOS 49152-65535), so a bind to port 0 never
 # returns it, and nothing listens on it: a connection is refused at once on both.
@@ -70,3 +73,27 @@ class DrainingHandler(BaseHTTPRequestHandler):
             sock = self.__dict__.pop("_socket_rfile", None)
             if sock is not None:
                 self.rfile = sock
+
+
+@contextmanager
+def serve(handler, *, ssl_context=None):
+    """A fixture server for `handler` on an ephemeral loopback port, while the with-block runs; yields
+    its URL ("http://127.0.0.1:<port>", or "https://..." when `ssl_context` is given, which then wraps
+    the listening socket). Threaded, with daemon request threads, and stopped and closed on exit."""
+    # Default listen backlog is 5; a playbook's request bursts on a loaded machine got
+    # "Connection reset by peer" (see test_scoped_publication.py).
+    class Server(ThreadingHTTPServer):
+        request_queue_size = 128
+        daemon_threads = True
+
+    server = Server(("127.0.0.1", 0), handler)
+    if ssl_context is not None:
+        server.socket = ssl_context.wrap_socket(server.socket, server_side=True)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"{'https' if ssl_context is not None else 'http'}://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
