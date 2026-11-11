@@ -82,7 +82,7 @@ PR #10) to GHCR as `ghcr.io/uhstray-io/skynet-tier2`. The inventory pins that di
 
 skynet calls OPA, the gateway and Semaphore over HTTPS. `SSL_CERT_FILE` replaces the process's
 whole trust store, so each overlay names a bundle that holds everything skynet must verify. The
-base `compose.yml` never sets `SSL_CERT_FILE`.
+base `compose.yml` never sets `SSL_CERT_FILE`. Which of the two bullets applies is decided by the hosts, not by a variable: local mode holds only when every host of the play is named `<service>-local` (`_skynet_local` in `deploy-skynet.yml`), and a `local_mode` that disagrees with them is refused before anything changes.
 
 - **Local-dev** (`compose.local.yml`, loaded when LOCAL_MODE=true): every local endpoint is a
   step-ca leaf. The bundle is `./certs/step-ca-bundle.crt`, the root and intermediate, written by

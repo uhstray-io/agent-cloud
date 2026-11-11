@@ -113,10 +113,13 @@
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
     _skynet_server_leaf: "{{ skynet_server_leaf | default('skynet-server') | string }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
-    # Local-dev only when the inventory says so AND the host is a local-dev host (<name>-local), as
-    # tasks/clean-service.yml derives it: an extra var `-e local_mode=true` on a production launch cannot
-    # lift the production refusals below.
-    _skynet_local: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    # Local mode follows the hosts of this play, not a variable: it holds only when every host is named
+    # <name>-local. ansible_play_hosts_all is set by the run and -e cannot set it (tasks/clean-service.yml:85-89
+    # relies on the same rule). inventory_hostname is not used: -e can set it. The mode check, the first
+    # refusal in Phase 1, refuses a local_mode that disagrees with the hosts.
+    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    # The public variable, read once: only the mode check below compares it with the hosts.
+    _skynet_mode_set: "{{ local_mode | default('unset') }}"
 
   tasks:
     # Read-only check of the credential path before anything is written: a refused
@@ -125,6 +128,18 @@
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
+
+    # The hosts decide local mode (_skynet_local), so a local_mode that disagrees with them is refused first:
+    # nothing below runs, so nothing is placed or written.
+    - name: "Refuse a local_mode that disagrees with the hosts' identity"
+      ansible.builtin.assert:
+        that:
+          - _skynet_mode_set == 'unset' or (_skynet_mode_set | bool) == _skynet_local
+        fail_msg: >-
+          Refusing: local_mode is {{ _skynet_mode_set }}, but the hosts of this play are
+          {{ 'all' if _skynet_local else 'not all' }} local-dev hosts (named <service>-local).
+          The mode follows the hosts, not the variable. Nothing changed.
+        quiet: true
 
     # Inputs are refused BEFORE the repo is placed or any OpenBao write happens. Each
     # refusal names its variable and the fix, so a bad inventory reads as a bad input,
@@ -422,7 +437,7 @@
     # Same resolution as Phase 1, so the guard checks the endpoint the play actually uses.
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     # Same definition as Phase 1 (_skynet_local): deploy.sh's LOCAL_MODE is set from it.
-    _skynet_local: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
 
   tasks:
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
@@ -509,7 +524,7 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
     # Same definition as Phase 1 (_skynet_local): the probes take the local endpoints only for a -local host.
-    _skynet_local: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
     _skynet_bind: "{{ skynet_bind | default('127.0.0.1') | string }}"
     _skynet_port: "{{ skynet_port | default(8443) | string }}"

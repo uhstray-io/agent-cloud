@@ -245,7 +245,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the eighteen refusals are present as named assert tasks; seventeen sit before the repo is placed, and the podman refusal follows placement" {
+@test "skynet: the nineteen refusals are present as named assert tasks; eighteen sit before the repo is placed, and the podman refusal follows placement" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -257,7 +257,10 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 18 ]
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 19 ]
+  # The mode check is the first refusal: it compares the public local_mode with the hosts before any other input is checked.
+  assert_grep -qx "Refuse a local_mode that disagrees with the hosts' identity" <<<"$refusals"
+  assert_precedes "$PLAYBOOK" 'Refuse a local_mode that disagrees' 'Refuse skynet_image unless'
   # The launch-gate refusals: the URL is https in every mode, and its IP is checked in production.
   assert_grep -qx 'Refuse skynet_launch_gate_url unless it is https' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_launch_gate_ip unless it is one non-wildcard IPv4 address in production' <<<"$refusals"
@@ -328,8 +331,8 @@ tasks = [
     t for t in play1["tasks"]
     if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
-if len(tasks) != 18:
-    sys.exit(f"expected 18 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 19:
+    sys.exit(f"expected 19 refusal asserts in Phase 1, found {len(tasks)}")
 # The play's own vars come too: the TLS refusals read the _skynet_* names Phase 1 defines.
 # "all", not "localhost": the -i host is the one the run uses (skynet-local for local mode; MISTAKES 2.21).
 play = [{"name": "extracted refusals", "hosts": "all", "connection": "local",
@@ -365,6 +368,8 @@ accepted() {
   extract_refusals
   run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base.json"
   [ "$status" -eq 0 ]
+  # The -local host is the one that ran: its recap names it, so a run that matched no host cannot pass for this one.
+  assert_contains "$output" 'skynet-local'
 }
 
 @test "skynet: skynet_image refuses a tag, a 63-hex digest, another repo and an empty value" {
@@ -562,40 +567,39 @@ prod_accepted() {
   [ "$status" -eq 0 ]
 }
 
-# Local mode is decided by the host, as the launch gate decides it: `-e local_mode=true` on a production host is not
-# local mode. The production refusals must still fire there, and the same variables on the -local host must pass.
-@test "skynet: a forged local_mode on a production host keeps the production refusals; on skynet-local it passes" {
+# Local mode follows the hosts, as tasks/clean-service.yml decides it: `-e local_mode=true` on a production host is not
+# local mode, and `-e inventory_hostname=` cannot make a production host read as a -local one. A local_mode that
+# disagrees with the hosts is refused by the first Phase 1 check, so no production refusal is reached.
+@test "skynet: a local_mode that disagrees with the hosts is refused first; -e inventory_hostname cannot forge a -local host" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
-  # The inventory and skynet_opa_ip satisfy every other production refusal, so the bind refusal is the only one
-  # left that can fail the run. The assertion reads its failure message, which Ansible prints only when it fails
-  # (the task name is printed for a skipped task too).
-  printf 'skynet-prod ansible_connection=local\n\n[step_ca_svc]\nskynet-prod\n' > "$BATS_TEST_TMPDIR/forged-prod.ini"
+  printf 'skynet-prod ansible_connection=local\n' > "$BATS_TEST_TMPDIR/forged-prod.ini"
+  # (a) local_mode=true on a production host: the hosts are not all local-dev, so the mode check refuses it.
   run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_opa_ip=203.0.113.20
-  [ "$status" -ne 0 ]
-  assert_contains "$output" "Production skynet must publish on the VM's own LAN address"
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=127.0.0.1
-  [ "$status" -ne 0 ]
-  assert_contains "$output" "Production skynet must publish on the VM's own LAN address"
-  # A declared LAN bind on the same forged host passes: the run above failed on the bind and nothing else.
-  run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10
-  [ "$status" -eq 0 ]
-  # The -local host passes. Its recap must name that host, so a run that matched no host cannot pass for this one.
-  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true
-  [ "$status" -eq 0 ]
-  assert_contains "$output" 'skynet-local'
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "The mode follows the hosts"
+  # (b) the same run with inventory_hostname forged to a -local name: the play's hosts still decide, so it is refused the same way.
+  run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e inventory_hostname=skynet-local
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "The mode follows the hosts"
+  # (c) a -local host with local_mode=false: the hosts are local-dev, so the false disagrees and is refused.
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
+    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "The mode follows the hosts"
 }
 
-@test "skynet: local mode is read only through the three _skynet_local definitions, each with the -local host check" {
-  # Phase 1 (refusals, secrets, env), Phase 2 (deploy.sh LOCAL_MODE) and Phase 3 (probe endpoints). Any other read of
-  # local_mode in this playbook would skip the host check.
+@test "skynet: local mode follows the play's hosts: three _skynet_local definitions read ansible_play_hosts_all, and only the mode check reads local_mode" {
+  # Phase 1 (refusals, secrets, env), Phase 2 (deploy.sh LOCAL_MODE) and Phase 3 (probe endpoints). The hosts' identity is
+  # ansible_play_hosts_all, which -e cannot set. inventory_hostname can be forged with -e, so it must not decide the mode.
   [ "$(grep -c '^ *_skynet_local: ' "$PLAYBOOK")" -eq 3 ]
-  [ "$(grep -c 'local_mode | default(false) | bool' "$PLAYBOOK")" -eq 3 ]
-  [ "$(grep -cF "inventory_hostname is match('^[A-Za-z0-9._-]+-local\\\\Z')" "$PLAYBOOK")" -eq 3 ]
+  [ "$(grep -cF "(ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\\\Z') | list | length == 0)" "$PLAYBOOK")" -eq 3 ]
+  refute_grep -qF 'inventory_hostname is match' "$PLAYBOOK"
+  # local_mode is read once, by the mode check: a second read could disagree with it.
+  [ "$(grep -cF 'local_mode | default(' "$PLAYBOOK")" -eq 1 ]
+  assert_grep -qF "_skynet_mode_set: \"{{ local_mode | default('unset') }}\"" "$PLAYBOOK"
   refute_grep -q 'when:.*local_mode' "$PLAYBOOK"
   refute_grep -q 'LOCAL_MODE: .*local_mode' "$PLAYBOOK"
 }
@@ -626,8 +630,9 @@ base = {"skynet_tls": True, "dns_site": "dc1", "dns_zone": "example.test", "loca
         "internal_leaves": [leaf]}
 with open(f"{out}/tls-base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
-# Production: the same declaration on the production inventory host (localhost, prod_inventory), whose leaf must name it.
-prod = dict(base, internal_leaves=[dict(leaf, host="localhost")])
+# Production: the same declaration on the production inventory host (localhost, prod_inventory), whose leaf must name it,
+# and local_mode false: the mode follows the hosts, and localhost is not a -local host.
+prod = dict(base, local_mode=False, internal_leaves=[dict(leaf, host="localhost")])
 with open(f"{out}/tls-prod-base.json", "w", encoding="utf-8") as fh:
     json.dump(prod, fh)
 
@@ -674,7 +679,7 @@ tls_prod_value() {
   printf '%s' "$1" > "$BATS_TEST_TMPDIR/tls-prod-value.json"
   ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e "@$BATS_TEST_TMPDIR/tls-prod-base.json" \
-    -e local_mode=false -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10 \
+    -e skynet_opa_ip=203.0.113.20 -e skynet_publish_bind=203.0.113.10 \
     -e "@$BATS_TEST_TMPDIR/tls-prod-value.json"
 }
 
