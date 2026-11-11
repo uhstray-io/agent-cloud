@@ -895,8 +895,10 @@ def test_templates_targeting_a_group_ask_for_it():
 
 
 # D10 (tasks 7.1): `reviewed` is stamped only for a step whose executor records its result and
-# whose undo is named; an unreviewed executor step says why in `review_gap`.
-@pytest.mark.parametrize("step", [s for s in STEPS if not s.get("schema")], ids=lambda s: s["id"])
+# whose undo is named; an unreviewed executor step says why in `review_gap`. A reasoning step is
+# held to the same rule once stamped: its snapshot is the template the console launches for it
+# (add-dispatch-console 10.4a).
+@pytest.mark.parametrize("step", STEPS, ids=lambda s: s["id"])
 def test_review_stamp_requires_a_recorded_result_and_a_named_undo(step):
     passed = str(step.get("review_gap", "")).startswith("none in the executor")
     if passed:
