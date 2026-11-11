@@ -22,6 +22,7 @@ PYTEST_FLAGS = ("-v", "-x", "-n", "auto", "--dist", "worksteal", "--durations=20
 RUN_STEP = re.compile(r"Run Python tests \(shard \$\{\{ matrix\.shard \}\} of (\d+)\)")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import harness_sandbox  # noqa: E402
 import shards  # noqa: E402
 
 
@@ -47,6 +48,7 @@ def _collect(env, *args):
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *args],
         cwd=REPO, env={**environment, **env}, text=True, capture_output=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, f"pytest collection failed:\n{result.stdout}\n{result.stderr}"
     return {line.strip() for line in result.stdout.splitlines() if "::" in line}

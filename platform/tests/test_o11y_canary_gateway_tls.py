@@ -14,6 +14,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -126,6 +127,7 @@ def _safe_preflight_harness(tmp_path, *, receiver_vars=None, receiver_count=1,
         text=True,
         capture_output=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 
@@ -247,10 +249,8 @@ def _canary_url(tmp_path, host_vars):
     }]
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=True)
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    assert done.returncode == 0, done.stdout + done.stderr
     line = next(ln for ln in done.stdout.splitlines() if '"msg": "URL ' in ln)
     return json.loads(line.split('"msg": ', 1)[1]).split("URL ", 1)[1]
 

@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -278,6 +279,7 @@ print(json.dumps({"refused": not templar.evaluate_conditional(trust_as_template(
         capture_output=True,
         check=False,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     resolved = json.loads(result.stdout)

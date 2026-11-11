@@ -6,13 +6,13 @@ criterion is 200 and must not inherit that (PR 203 Codex review). Requires ansib
 """
 
 import http.server
-import os
 import shutil
 import ssl
 import subprocess
 import threading
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 from fake_http import DrainingHandler
 from strict_chain import assert_strict_chain
@@ -78,12 +78,8 @@ def _run(tmp_path, status: int, health_path: str = "/health", via_health_url: bo
             f"[demo_svc]\ndemo ansible_connection=local {host_vars}\n\n[demo_svc:vars]\n"
             f"service_name=demo\n{where}health_status_codes=[200, 503]\n"
         )
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        return subprocess.run(
-            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-        )
+        return harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc",
+                                            inventory=inventory)
     finally:
         server.shutdown()
 
@@ -137,12 +133,7 @@ def test_a_target_group_with_no_hosts_fails(tmp_path):
     # PR 203 Codex review: a play whose hosts: matched nothing exited 0 with no step result.
     inventory = tmp_path / "inventory.ini"
     inventory.write_text("[demo_svc]\ndemo ansible_connection=local\n")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=typo_svc"],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-    )
+    done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=typo_svc", inventory=inventory)
     assert done.returncode != 0
     assert "matches no hosts in this inventory" in done.stdout
 
@@ -159,12 +150,8 @@ def test_one_failing_host_fails_the_recorded_result(tmp_path):
             f"demo2 ansible_connection=local health_url=http://127.0.0.1:{bad.server_port}/health\n"
             "\n[demo_svc:vars]\nservice_name=demo\n"
         )
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        done = subprocess.run(
-            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-        )
+        done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc",
+                                            inventory=inventory)
     finally:
         good.shutdown()
         bad.shutdown()
@@ -180,7 +167,8 @@ def _tls_material(directory: Path):
     (directory / "leaf.cnf").write_text(LEAF_CNF)
 
     def run(*args):
-        subprocess.run([openssl, *args], cwd=directory, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        subprocess.run([openssl, *args], cwd=directory, check=True, capture_output=True, stdin=subprocess.DEVNULL,
+                       timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
 
     run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2",
         "-config", "ca.cnf", "-extensions", "ca")
@@ -227,12 +215,8 @@ def _run_tls(tmp_path, status: int, host_vars: str = "", *, trust: bool = True, 
             f"[demo_svc]\ndemo ansible_connection=local {host_vars}\n\n[demo_svc:vars]\n"
             f"service_name=demo\n" + "\n".join(declared) + "\n"
         )
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        done = subprocess.run(
-            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-        )
+        done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc",
+                                            inventory=inventory)
         return done, url
     finally:
         server.shutdown()
@@ -288,12 +272,7 @@ def test_a_pinned_address_needs_an_http_url_with_a_host(tmp_path):
         "[demo_svc]\ndemo ansible_connection=local\n\n[demo_svc:vars]\nservice_name=demo\n"
         "health_url=/health\nhealth_resolve_address=127.0.0.1\n"
     )
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-    )
+    done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc", inventory=inventory)
     assert done.returncode != 0
     assert "health_resolve_address needs an http or https health URL with a host, not /health" in done.stdout
     # The contract error is the whole verdict: no probe ran, so there is no "answered" line.

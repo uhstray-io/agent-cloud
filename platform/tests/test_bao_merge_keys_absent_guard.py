@@ -1,13 +1,12 @@
 """Exercise bao-merge-keys against a local KV-v2 HTTP double."""
 
 import json
-import os
 import shutil
-import subprocess
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 from fake_http import DrainingHandler
 
@@ -113,17 +112,7 @@ def _run(tmp_path, vault, *, data=None, guard_absent=None, guard_values=None, gu
             + "\n".join(f"        {key}: {json.dumps(value)}" for key, value in vars_.items())
             + "\n"
         )
-        env = {key: value for key, value in os.environ.items() if key != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        result = subprocess.run(
-            ["ansible-playbook", "-i", "localhost,", str(playbook)],
-            cwd=REPO,
-            env=env,
-            text=True,
-            capture_output=True,
-            stdin=subprocess.DEVNULL,
-        )
-        return result
+        return harness_sandbox.run_playbook(playbook, tmp_path)
     finally:
         server.shutdown()
         server.server_close()
