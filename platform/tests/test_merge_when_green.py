@@ -81,7 +81,7 @@ assert _blob_sha(RUFF_PINNED_WORKFLOW) == guard.RUFF_PINNED_WORKFLOW_BLOB_SHA
 assert _blob_sha(VERSIONED_WORKFLOW) == guard.VERSIONED_WORKFLOW_BLOB_SHA
 assert _blob_sha(UV_WORKFLOW) == guard.UV_WORKFLOW_BLOB_SHA
 assert _blob_sha(RUNNER_PINNED_WORKFLOW) == guard.RUNNER_PINNED_WORKFLOW_BLOB_SHA
-assert _blob_sha(CURRENT_WORKFLOW) == guard.NEW_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.RETIRED_WORKFLOW_BLOB_SHA
 # The on-disk workflow carries exactly one Version job; the policy-drift tests below depend on it.
 assert CURRENT_WORKFLOW.count(b"\n    name: Version\n") == 1
 
@@ -893,6 +893,9 @@ class MergeGuardTests(unittest.TestCase):
              "Workflow head is not the exact reviewed current workflow"),
             ("current base to versioned head", lambda api: (
                 api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
+             "Workflow head is not the exact reviewed current workflow"),
+            ("current base to runner-pinned head", lambda api: (
+                api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW)),
              "Workflow head is not the exact reviewed current workflow"),
         ]
         for label, change, message in cases:

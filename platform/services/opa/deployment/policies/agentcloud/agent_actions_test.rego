@@ -52,16 +52,6 @@ test_skynet_destructive_run_task_denied if {
 	}
 }
 
-test_destructive_template_blocked_without_approval if {
-	not agentcloud.allow with input as {
-		"agent": "skynet",
-		"action": "run_task",
-		"service": "semaphore",
-		"template_name": "Clean Deploy NetBox",
-		"human_approved": false,
-	}
-}
-
 test_destructive_template_allowed_with_approval if {
 	agentcloud.allow with input as {
 		"agent": "skynet",

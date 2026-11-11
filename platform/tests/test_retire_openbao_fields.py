@@ -85,7 +85,6 @@ SEEDED = {
     ("services/inference-hunyuan3d", "minio_root_password"),
     ("services/inference-hunyuan3d", "url"),
     ("services/wisbot", "discord_token"),
-    ("services/nemoclaw", "gemini_api_key"),
 }
 # The playbook's refusal matches a field as a whole word. The same pattern is used here, so the real-tree
 # scan and the playbook agree.

@@ -26,7 +26,7 @@ VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
 UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 # The runner-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
-NEW_WORKFLOW_BLOB_SHA = "338ba8352d8c3aeba2a6c331363dac2930c31115"
+RETIRED_WORKFLOW_BLOB_SHA = "338ba8352d8c3aeba2a6c331363dac2930c31115"
 EXPECTED = {
     "Static Analysis", "Security Scan", "Python core",
     "Python Playbook Safety", "Python Agentgateway",
@@ -483,7 +483,7 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("uv workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
-        if candidate_blob_sha == NEW_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
             # Same jobs as runner-pinned minus the change detector and the retired jobs.
             check_workflow_policy(base, versioned=True)
             check_workflow_policy(candidate, versioned=True, retired=True)
@@ -498,8 +498,8 @@ def check_workflow_change(api, base_sha, head_sha, files):
         if base != candidate or workflow_records:
             raise Refusal("Runner-pinned workflow may only remain byte-identical on subsequent PRs")
         return
-    if base_blob_sha == NEW_WORKFLOW_BLOB_SHA:
-        if candidate_blob_sha != NEW_WORKFLOW_BLOB_SHA:
+    if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed current workflow")
         check_workflow_policy(base, versioned=True, retired=True)
         if base != candidate or workflow_records:
