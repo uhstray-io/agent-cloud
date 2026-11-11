@@ -8,7 +8,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-MODULE = Path(__file__).resolve().parents[1] / "services/authentik/deployment/audit-users.py"
+import harness_sandbox
+
+MODULE =Path(__file__).resolve().parents[1] / "services/authentik/deployment/audit-users.py"
 spec = importlib.util.spec_from_file_location("authentik_retirement_audit", MODULE)
 audit_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit_module)
@@ -41,6 +43,7 @@ def test_static_runtime_probe_loads_script_without_querying_accounts():
         [sys.executable, "-c", MODULE.read_text()], input="audit-probe", text=True,
         capture_output=True, check=False,
         env={**os.environ, "AUTHENTIK_BOOTSTRAP_TOKEN": "fixture-token"},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0
     assert result.stdout.strip() == "authentik_retirement_audit_ready"
@@ -51,6 +54,7 @@ def test_static_runtime_probe_loads_script_without_querying_accounts():
         capture_output=True, check=False,
         env={key: value for key, value in os.environ.items()
              if key != "AUTHENTIK_BOOTSTRAP_TOKEN"},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert absent_token.returncode == 2
     assert absent_token.stdout.strip() == (
