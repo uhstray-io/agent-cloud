@@ -540,6 +540,25 @@ environment before operations; a checked-in deploy path is not proof it is runni
 - **No instance details** in new docs, skills or guides: Uhstray.io's hostnames, workspace names and contacts go to site-config, with placeholders here (see "Standing convention" under Repository Overview)
 - IPs and real credentials belong exclusively in site-config (private)
 
+### Plane work tracking
+
+This repository's work is tracked in Plane, project `AC`. Plane's GitHub integration links
+the two, and it acts only on what these rules mark:
+
+- **An issue reaches Plane only with the `plane` label.** Adding the label imports the issue as a
+  `AC` work item, and the Plane app comments on the issue with its key. After that, edits and
+  comments sync both ways. An unlabelled issue is never imported, and existing issues are not
+  backfilled, so label every issue you want tracked. A Plane work item reaches GitHub only with
+  the `github` label.
+- **Every pull request names its work item.** Put exactly one Plane key in brackets in the pull
+  request title, for example `fix(scope): short description [AC-12]`. Plane links the pull
+  request to that item and moves the item with it: draft to Backlog, opened to Todo, review
+  requested or ready to merge to In Progress, merged to Done, closed without merging to
+  Cancelled. Mention any other item without brackets (`AC-34`): that links the pull request
+  without moving the item. Plane reads the title and description when a pull request is opened,
+  edited, reviewed or closed, so a key added later is picked up on the next edit.
+- **A brief for any agent that may open a pull request names the work item's key.**
+
 ### Branch Workflow
 
 > **NEVER push, open a pull request, or merge one unless the user explicitly authorizes that
