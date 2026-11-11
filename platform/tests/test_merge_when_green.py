@@ -1349,7 +1349,7 @@ class MergeGuardTests(unittest.TestCase):
         api.checks = api.checks + [config_check]
         self.assertTrue(guard.validate(api, PR, HEAD, None))
         for override in ({"conclusion": "failure"}, {"conclusion": "neutral"},
-                         {"status": "in_progress", "conclusion": None},
+                         {"status": "in_progress", "conclusion": None}, {"status": "in_progress"},
                          {"name": "Dependabot updates"}, {"app": {"slug": "dependabot-preview"}},
                          {"app": None}, {"app": "dependabot"}):
             api.checks[-1] = dict(config_check, **override)
