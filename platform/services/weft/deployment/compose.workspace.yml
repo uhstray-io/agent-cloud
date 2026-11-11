@@ -8,7 +8,8 @@
 #   capture        capture-discord   reads the rooms an admin enrolled on the board
 #
 # The image is pinned by the digest deploy-weft-workspace.yml read from the signed release.json
-# and rendered into .env. deploy.sh refuses a reference that is not a digest.
+# and rendered into .env. deploy.sh refuses a reference that is not a digest. `:?` makes compose
+# itself refuse an unset one: there is no default image, because any default would be a tag.
 #
 # THE WORKSPACE DIRECTORY IS MOUNTED INTO THESE THREE CONTAINERS AND NO OTHER. It holds the
 # catalog (weft.db), its seal, weft.toml, the whisper models and the checkouts, and it is a bind
@@ -36,7 +37,7 @@ name: weft-workspace
 
 services:
   board:
-    image: ${WEFT_WORKSPACE_IMAGE}
+    image: ${WEFT_WORKSPACE_IMAGE:?the digest release.json names, rendered into .env}
     container_name: weft-board
     restart: always
     userns_mode: "keep-id:uid=10001,gid=10001"
@@ -60,7 +61,7 @@ services:
     networks: [weft]
 
   orchestrator:
-    image: ${WEFT_WORKSPACE_IMAGE}
+    image: ${WEFT_WORKSPACE_IMAGE:?the digest release.json names, rendered into .env}
     container_name: weft-orchestrator
     restart: always
     userns_mode: "keep-id:uid=10001,gid=10001"
@@ -77,7 +78,7 @@ services:
     networks: [weft]
 
   capture:
-    image: ${WEFT_WORKSPACE_IMAGE}
+    image: ${WEFT_WORKSPACE_IMAGE:?the digest release.json names, rendered into .env}
     container_name: weft-capture
     restart: always
     userns_mode: "keep-id:uid=10001,gid=10001"

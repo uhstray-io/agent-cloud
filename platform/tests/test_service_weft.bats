@@ -82,8 +82,10 @@ PY
   # compose files take the image only from .env, and .env takes it only from release.json.
   assert_grep -qF 'require_digest' "$DEPLOY_DIR/deploy.sh"
   assert_grep -qE '@sha256:\[0-9a-f\]\{64\}' "$DEPLOY_DIR/deploy.sh"
-  assert_grep -qE '^\s+image: \$\{WEFT_WORKSPACE_IMAGE\}$' "$DEPLOY_DIR/compose.workspace.yml"
-  assert_grep -qE '^\s+image: \$\{WEFT_DOOR_IMAGE\}$' "$DEPLOY_DIR/compose.door.yml"
+  # A required variable, never a default: any default would be a tag.
+  assert_grep -qE '^\s+image: \$\{WEFT_WORKSPACE_IMAGE:\?[^}]+\}$' "$DEPLOY_DIR/compose.workspace.yml"
+  assert_grep -qE '^\s+image: \$\{WEFT_DOOR_IMAGE:\?[^}]+\}$' "$DEPLOY_DIR/compose.door.yml"
+  refute_grep -qE '^\s+image: .*:-' "$DEPLOY_DIR"/compose.*.yml
   assert_grep -qF "_weft_images['weft-workspace']" "$DEPLOY_DIR/templates/workspace.env.j2"
   assert_grep -qF "_weft_images['weft-door']" "$DEPLOY_DIR/templates/door.env.j2"
   refute_grep -rqE ':latest|localhost/weft' "$DEPLOY_DIR/templates" "$DEPLOY_DIR"/compose.*.yml

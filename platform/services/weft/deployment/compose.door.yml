@@ -3,7 +3,8 @@
 # in here, is handed a signed one-minute assertion, and from then on talks to its workspace
 # directly. So this holds the least of anything on the rack, and it holds no workspace's data.
 #
-# The image is pinned by the digest deploy-weft-door.yml read from the signed release.json.
+# The image is pinned by the digest deploy-weft-door.yml read from the signed release.json, and
+# `:?` makes compose refuse an unset one: any default would be a tag.
 #
 # The records (front-door.db) are on the VM's own disk, in the door directory, at the same path
 # inside and out, for the reason the workspace's catalog is: SQLite's WAL needs one kernel.
@@ -17,7 +18,7 @@ name: weft-door
 
 services:
   door:
-    image: ${WEFT_DOOR_IMAGE}
+    image: ${WEFT_DOOR_IMAGE:?the digest release.json names, rendered into .env}
     container_name: weft-door
     restart: always
     userns_mode: "keep-id:uid=10001,gid=10001"
