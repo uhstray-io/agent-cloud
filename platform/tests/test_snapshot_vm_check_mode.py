@@ -12,8 +12,7 @@ import datetime
 import json
 import shutil
 import ssl
-import threading
-from http.server import ThreadingHTTPServer
+from contextlib import ExitStack
 
 import harness_sandbox
 import pytest
@@ -22,7 +21,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 from playbook_yaml import REPO
 
 PLAYBOOK = REPO / "platform/playbooks/snapshot-vm.yml"
@@ -81,17 +80,14 @@ class FakeProxmoxTLS:
                     return self._reply(UPID)
                 return self._reply(None, 404)
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(*_self_signed(tmp_path))
-        self.server.socket = ctx.wrap_socket(self.server.socket, server_side=True)
-        self.url = f"https://127.0.0.1:{self.server.server_port}"
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self._serving = ExitStack()
+        self.url = self._serving.enter_context(serve(Handler, ssl_context=ctx))
 
     def close(self):
-        self.server.shutdown()
-        self.server.server_close()
+        self._serving.close()
 
 
 def _snapshot(tmp_path, check):
@@ -116,28 +112,24 @@ def _snapshot(tmp_path, check):
         def do_GET(self):  # noqa: N802
             return self._reply({"errors": ["synthetic coordination record absent"]}, 404)
 
-    openbao = ThreadingHTTPServer(("127.0.0.1", 0), OpenBaoHandler)
-    openbao_url = f"http://127.0.0.1:{openbao.server_port}"
-    threading.Thread(target=openbao.serve_forever, daemon=True).start()
-    extra = {"pve_api_host": fake.url, "pve_node": "n1", "pve_vmid": 100, "snapshot_name": SNAP,
-             "pve_token_id": "automation@pve!fixture"}
-    env = {"PVE_TOKEN_SECRET": "synthetic-pve-secret", "BAO_ROLE_ID": "synthetic-role",
-           "BAO_SECRET_ID": "synthetic-secret"}
-    inventory = tmp_path / "inventory.yml"
-    inventory.write_text(yaml.safe_dump({
-        "all": {
-            "hosts": {"localhost": {"ansible_connection": "local"}},
-            "vars": {"openbao_addr": openbao_url},
-            "children": {"openbao_svc": {"hosts": {"openbao-test": {"service_url": openbao_url}}}},
-        }
-    }))
-    try:
-        done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", json.dumps(extra),
-                                            *(["--check"] if check else []), inventory=inventory, env=env)
-    finally:
-        fake.close()
-        openbao.shutdown()
-        openbao.server_close()
+    with serve(OpenBaoHandler) as openbao_url:
+        extra = {"pve_api_host": fake.url, "pve_node": "n1", "pve_vmid": 100, "snapshot_name": SNAP,
+                 "pve_token_id": "automation@pve!fixture"}
+        env = {"PVE_TOKEN_SECRET": "synthetic-pve-secret", "BAO_ROLE_ID": "synthetic-role",
+               "BAO_SECRET_ID": "synthetic-secret"}
+        inventory = tmp_path / "inventory.yml"
+        inventory.write_text(yaml.safe_dump({
+            "all": {
+                "hosts": {"localhost": {"ansible_connection": "local"}},
+                "vars": {"openbao_addr": openbao_url},
+                "children": {"openbao_svc": {"hosts": {"openbao-test": {"service_url": openbao_url}}}},
+            }
+        }))
+        try:
+            done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", json.dumps(extra),
+                                                *(["--check"] if check else []), inventory=inventory, env=env)
+        finally:
+            fake.close()
     assert "synthetic-pve-secret" not in done.stdout + done.stderr
     return done, fake
 

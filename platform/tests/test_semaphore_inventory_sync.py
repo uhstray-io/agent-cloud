@@ -12,12 +12,11 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import harness_sandbox
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "semaphore-sync-inventory.py"
@@ -115,17 +114,12 @@ def fake_api():
         "bao_logins": 0, "bao_reads": 0, "hold_collection_get": False,
         "request_held": threading.Event(), "release_request": threading.Event(),
     }
-    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeSemaphore)
-    # A short poll keeps shutdown from waiting out the default half-second select interval.
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}", FakeSemaphore.state
-    finally:
-        FakeSemaphore.state["release_request"].set()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    with serve(FakeSemaphore) as url:
+        try:
+            yield url, FakeSemaphore.state
+        finally:
+            # A held request must be released before serve() shuts the server down.
+            FakeSemaphore.state["release_request"].set()
 
 
 VALID = f"""\

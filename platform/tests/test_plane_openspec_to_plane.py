@@ -6,7 +6,6 @@ bytes, and the CLI output must equal parse_repo's output for them, plus the comm
 mode.
 """
 
-import http.server
 import importlib.util
 import itertools
 import json
@@ -14,11 +13,10 @@ import pathlib
 import re
 import subprocess
 import sys
-import threading
 import urllib.parse
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 LIB_PATH = REPO_ROOT / "platform/services/plane/lib/openspec_to_plane.py"
@@ -360,11 +358,8 @@ def github():
     StubGitHub.state = {"tree": [], "truncated": False, "tree_status": 200, "commit_status": 200,
                         "commit_body": json.dumps({"sha": SHA}).encode(), "raw": {}, "raw_fail": {},
                         "redirects": {}, "seen": []}
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubGitHub)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield StubGitHub.state, f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
-    server.server_close()
+    with serve(StubGitHub) as base:
+        yield StubGitHub.state, base
 
 
 def publish(state, files):
