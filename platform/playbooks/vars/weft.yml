@@ -31,6 +31,21 @@ _weft_images_by_role:
 _weft_root: "{{ weft_root | default('/srv/weft') }}"
 _weft_door_dir: "{{ weft_door_dir | default('/srv/weft-door') }}"
 
+# The deploy's own record, per role: deployed.json (what runs, what was refused), the replaced
+# release.json, the fetched release-incoming/ and the deploying/ lock. It decides which image
+# runs, so it lives where NO container mounts it: the workspace directory is mounted read-write
+# into the board, which faces the internet, and a record there was one a compromised board could
+# rewrite to name its own digest as "the previous release" (agent-cloud#890 B2).
+# tasks/weft-release.yml, which every deploy and rollback reaches first, refuses a state
+# directory that is a mounted directory or inside one.
+_weft_state_root: "{{ weft_state_root | default('/srv/weft-state') }}"
+_weft_workspace_state_dir: "{{ _weft_state_root }}/workspaces/{{ weft_workspace_id | default('') }}"
+_weft_door_state_dir: "{{ _weft_state_root }}/door"
+
+# The directory a role's containers mount and its database lives in: the data, as opposed to the
+# deploy's record about it. Read only where _weft_role is set.
+_weft_data_dir: "{{ _weft_workspace_dir if _weft_role == 'workspace' else _weft_door_dir }}"
+
 # The OpenBao subtree for this environment: weft (the rack) or weft-staging. It holds what each
 # environment keeps apart, the front door's signing key and each workspace's seal. The Discord
 # webhook and the GitHub token are one per platform and stay at services/weft/ for both

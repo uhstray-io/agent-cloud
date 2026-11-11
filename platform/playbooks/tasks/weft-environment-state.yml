@@ -1,7 +1,8 @@
 ---
 # weft-environment-state.yml — on the controller: what every weft host of one environment runs,
 # what it has refused, and whether a deploy holds it right now. Read from each host's
-# deployed.json and deploy lock, which the deploys write; the version a weft host runs is recorded
+# deployed.json and deploy lock in its state directory (vars/weft.yml, _weft_state_root), which
+# the deploys write and no container mounts; the version a weft host runs is recorded
 # on the VM (and on GitHub), not in site-config, because the pipeline changes it and a person
 # does not.
 #
@@ -13,8 +14,8 @@
 - name: "Read each host's deployed.json"
   ansible.builtin.slurp:
     src: >-
-      {{ (_weft_root ~ '/' ~ hostvars[item].weft_workspace_id) if hostvars[item].weft_workspace_id is defined
-         else _weft_door_dir }}/deployed.json
+      {{ (_weft_state_root ~ '/workspaces/' ~ hostvars[item].weft_workspace_id) if hostvars[item].weft_workspace_id is defined
+         else _weft_door_state_dir }}/deployed.json
   loop: "{{ _wes_hosts }}"
   register: _wes_deployed
   delegate_to: "{{ item | default(inventory_hostname) }}"
@@ -23,8 +24,8 @@
 - name: "Read each host's deploy lock"
   ansible.builtin.stat:
     path: >-
-      {{ (_weft_root ~ '/' ~ hostvars[item].weft_workspace_id) if hostvars[item].weft_workspace_id is defined
-         else _weft_door_dir }}/deploying
+      {{ (_weft_state_root ~ '/workspaces/' ~ hostvars[item].weft_workspace_id) if hostvars[item].weft_workspace_id is defined
+         else _weft_door_state_dir }}/deploying
   loop: "{{ _wes_hosts }}"
   register: _wes_lock
   delegate_to: "{{ item | default(inventory_hostname) }}"

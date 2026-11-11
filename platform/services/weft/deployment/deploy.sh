@@ -12,9 +12,12 @@
 #   pull                       pull every image .env names
 #   up                         start: the board first (opening the catalog migrates it), then the
 #                              orchestrator, then capture. A front door is one container.
-#   stop                       stop: the orchestrator first, then capture, then the board
+#   stop                       stop: the orchestrator first, then capture, then the board. With no
+#                              .env nothing was ever started here, so there is nothing to stop
 #   backup --from V --to V [--release FILE]
-#                              the binary's own `backup --before-deploy`; prints the set's path
+#                              the binary's own `backup --before-deploy`; prints the set's path.
+#                              FILE (the replaced release.json) is in the deploy's state directory,
+#                              which no service mounts, so it alone is mounted, read-only
 #   restore --from SET [--label WORD]
 #                              the binary's own `restore`, which refuses while the catalog is open
 #                              and sets the current file aside rather than deleting it
@@ -85,10 +88,27 @@ image() {
   if [ "$ROLE" = workspace ]; then echo "$WEFT_WORKSPACE_IMAGE"; else echo "$WEFT_DOOR_IMAGE"; fi
 }
 
+# The value after --release in the arguments, or nothing.
+release_file() {
+  while [ $# -gt 0 ]; do
+    if [ "$1" = --release ] && [ $# -ge 2 ]; then
+      printf '%s' "$2"
+      return
+    fi
+    shift
+  done
+}
+
 # One-off run of the role's binary against its directory. Same user mapping as the services, so
 # files it writes belong to the deploy user on the VM, as the running containers' files do.
 oneoff() {
-  local dir args=(--rm --userns "keep-id:uid=10001,gid=10001")
+  local dir release args=(--rm --userns "keep-id:uid=10001,gid=10001")
+  release=$(release_file "$@")
+  if [ -n "$release" ]; then
+    # Outside the role's directory by design (agent-cloud#890 B2): the one file, read-only.
+    [ -f "$release" ] || error "--release names ${release}, which does not exist"
+    args+=(-v "${release}:${release}:ro")
+  fi
   if [ "$ROLE" = workspace ]; then
     dir="$WEFT_WORKSPACE_DIR"
     args+=(-v "${dir}:${dir}" -e "WEFT_DB=${dir}/weft.db" -e "WEFT_CONFIG=${dir}/weft.toml" "$(image)" orchestrator)
@@ -145,6 +165,13 @@ cmd_restarts() {
 
 main() {
   detect_runtime
+  # Every weft container is started from a rendered .env, so a host without one runs none of
+  # them. A deploy stops before it renders .env, and on a fresh host that stop used to fail here
+  # and abort the first deploy (agent-cloud#890 B1).
+  if [ "$COMMAND" = stop ] && [ ! -f .env ]; then
+    info "No .env here: no ${ROLE} container was started from this directory, so there is nothing to stop."
+    exit 0
+  fi
   read_env
   case "$COMMAND" in
     pull) cmd_pull ;;

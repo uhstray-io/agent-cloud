@@ -120,7 +120,7 @@
       ansible.builtin.debug:
         msg: >-
           {{ ('A deploy holds ' ~ (_weft_locked | join(', ')) ~ '; if none is running, remove its '
-              ~ 'deploying/ directory after looking at the host.') if _weft_locked | length > 0
+              ~ 'deploying/ directory (under /srv/weft-state/) after looking at the host.') if _weft_locked | length > 0
              else (('The rollout of ' ~ _weft_version ~ ' stopped at ' ~ (_weft_refused_by | join(', '))
                     ~ ', which rolled it back. Release a fix.') if _weft_refused_by | length > 0
              else ('The rack already runs ' ~ _weft_version ~ '.')) }}

@@ -10,13 +10,33 @@
 # Caller passes:
 #   weft_release     a full 40-hex commit (staging follows main) or vX.Y.Z (a release)
 #   _weft_role       workspace | door
-#   _weft_state_dir  the role's directory on the VM (release.json is fetched under it)
+#   _weft_state_dir  the role's deploy state directory on the VM (release.json is fetched under it)
+#   _weft_workspace_dir  (a workspace) the directory its containers mount
 # with vars/weft.yml loaded. Sets:
 #   _weft_release_json   the verified release.json
 #   _weft_images         {image name: <registry>/<image>@sha256:...} from it
+#   _weft_role_refs      this role's images (tasks/weft-verify-images.yml)
 #
 # Under --check nothing is fetched or pulled (each step runs a container); the caller reports
 # what it would deploy and stops.
+
+# Every deploy and every rollback reaches this first, so the rule lives here once: the directory
+# that holds the deploy's record must not be one a container can write (agent-cloud#890 B2), so
+# it may be neither the directory the role's containers mount nor anywhere inside it.
+- name: "Refuse a state directory a container mounts"
+  vars:
+    _mounted: "{{ _weft_data_dir | regex_replace('/+$', '') }}"
+    _state: "{{ _weft_state_dir | regex_replace('/+$', '') }}"
+  ansible.builtin.assert:
+    that:
+      - _state is match('^/')
+      - "'..' not in _state.split('/')"
+      - not (_state ~ '/').startswith(_mounted ~ '/')
+    fail_msg: >-
+      The deploy's state directory {{ _state }} is {{ _mounted }} or inside it, and the
+      {{ _weft_role }}'s containers mount that directory. The deploy record decides which image
+      runs, so no container may write it: set weft_state_root apart from weft_root and
+      weft_door_dir. Nothing was changed.
 
 - name: "Require a commit or a release version"
   ansible.builtin.assert:
@@ -120,35 +140,22 @@
       - _weft_release_json.format == 1
       - _weft_release_json.commit is match('^[0-9a-f]{40}$')
       - (weft_release == _weft_release_json.commit) if (weft_release | length == 40) else (weft_release == _weft_release_json.version)
-      - _weft_release_json.signed_by.identity == _weft_signer
-      - _weft_images_by_role[_weft_role] | difference(_weft_release_json.images.keys() | list) | length == 0
     fail_msg: >-
-      release.json for {{ weft_release }} does not describe it: format, commit, version, signer or
-      a {{ _weft_role }} image is not what this deploy expects. Nothing has changed on this host.
+      release.json for {{ weft_release }} does not describe it: its format, commit or version is
+      not what this deploy asked for. Nothing has changed on this host.
   when: not ansible_check_mode
 
-- name: "Take this role's images from release.json"
+# The signer, the role's images, the registry and every image's signature: the same check a
+# rollback runs on the release it goes back to.
+- name: "Verify the release's images for this role"
+  ansible.builtin.include_tasks: weft-verify-images.yml
+  vars:
+    _wvi_release: "{{ _weft_release_json }}"
+  when: not ansible_check_mode
+
+- name: "Take the release's images"
   ansible.builtin.set_fact:
     _weft_images: "{{ _weft_release_json.images }}"
-    _weft_role_refs: >-
-      {{ _weft_images_by_role[_weft_role] | map('extract', _weft_release_json.images) | list }}
-  when: not ansible_check_mode
-
-- name: "Refuse an image that is not weft's, by digest, in weft's registry"
-  ansible.builtin.assert:
-    that:
-      - item is match('^' ~ (_weft_registry | regex_escape) ~ '/weft-[a-z-]+@sha256:[0-9a-f]{64}$')
-    fail_msg: "release.json names {{ item }}, which is not a weft image in {{ _weft_registry }} pinned by digest."
-  loop: "{{ _weft_role_refs }}"
-  when: not ansible_check_mode
-
-- name: "Verify every image this role runs"
-  ansible.builtin.include_tasks: verify-cosign.yml
-  vars:
-    _cosign_refs: "{{ _weft_role_refs }}"
-    _cosign_identity: "{{ _weft_signer }}"
-    _cosign_issuer: "{{ _weft_issuer }}"
-    _cosign_auth_file: "{{ _weft_auth_file }}"
   when: not ansible_check_mode
 
 - name: "Pull the verified images by digest"

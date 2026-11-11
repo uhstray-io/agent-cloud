@@ -4,13 +4,15 @@
 # by rollback-weft-workspace.yml when a person decides to roll one back.
 #
 #   1. stop every container of the host
-#   2. restore the backup this deploy took, with the PREVIOUS image: `restore` refuses while
+#   2. verify the PREVIOUS release's images as a deploy verifies a fetched one
+#      (tasks/weft-verify-images.yml): its record is read from the host
+#   3. restore the backup this deploy took, with the PREVIOUS image: `restore` refuses while
 #      anything has the database open, checks the copy's schema is one that image supports, and
 #      moves the current file aside as <db>.failed-<version>-<time> with its -wal and -shm. It
 #      never deletes it: what people wrote while the new version ran is kept there.
-#   3. render .env (and weft.toml) for the previous digests and start them
-#   4. run the health check against the previous version
-#   5. healthy: Discord says which check failed and where the minutes of writes are kept
+#   4. render .env (and weft.toml) for the previous digests and start them
+#   5. run the health check against the previous version
+#   6. healthy: Discord says which check failed and where the minutes of writes are kept
 #      not healthy: stop everything, leave every file where it is, and ask a person in Discord.
 #      Nothing tries a third time.
 #
@@ -59,6 +61,14 @@
       ansible.builtin.assert:
         that: _weft_previous is not none
         fail_msg: "{{ _weft_label }} ran nothing before {{ _weft_to }}, so there is no version to roll back to."
+
+    # The previous release comes from the host's record, which is a claim, not a proof: it is held
+    # to the rule a fetched release is, before a single digest of it is rendered (agent-cloud#890
+    # B2). A refusal lands in the rescue below: everything stopped, nothing deleted, a person asked.
+    - name: "Verify the previous release's images before running them again"
+      ansible.builtin.include_tasks: weft-verify-images.yml
+      vars:
+        _wvi_release: "{{ _weft_previous }}"
 
     - name: "Take the previous release's images"
       ansible.builtin.set_fact:
@@ -133,6 +143,7 @@
 - name: "Record the failed release as refused on this host: {{ _weft_to }}"
   # The previous release stays recorded as what this host should run, healthy or not, and the
   # failed one is never deployed here again by a timer.
+  # In the state directory, where no container can write it (vars/weft.yml, _weft_state_root).
   ansible.builtin.copy:
     content: >-
       {{ {'release': _weft_previous, 'deployed_at': _weft_deployed.deployed_at | default(none),
@@ -149,7 +160,7 @@
       failed '{{ _weft_failed_check }}'.
       {%- if _weft_backup_set | default('') | length > 0 %} What was written between
       {{ _weft_started.stdout }} and {{ _weft_rollback_ended.stdout }} is kept in
-      {{ _weft_state_dir }}/{{ _weft_db_name }}.failed-{{ _weft_to }}-*.{% endif %}
+      {{ _weft_data_dir }}/{{ _weft_db_name }}.failed-{{ _weft_to }}-*.{% endif %}
       {{- _weft_rollout_line }}
   when: _weft_rolled_back | default(false) | bool
 

@@ -22,7 +22,9 @@
 # Caller passes (and loads vars/weft.yml):
 #   weft_release          a full commit or vX.Y.Z
 #   _weft_role            workspace | door
-#   _weft_state_dir       the role's directory on the VM
+#   _weft_state_dir       the role's deploy state directory on the VM: deployed.json, the replaced
+#                         release.json, release-incoming/ and the deploying/ lock. No container
+#                         mounts it (vars/weft.yml, _weft_state_root; agent-cloud#890 B2)
 #   _weft_deploy_dir      platform/services/weft/deployment in the monorepo clone on the VM
 #   _weft_label           how the messages name this host ("workspace <id>" / "front door")
 #   _weft_environment     staging | rack
@@ -85,12 +87,12 @@
 
 - name: "Find the data a backup must copy"
   ansible.builtin.stat:
-    path: "{{ _weft_state_dir }}/{{ 'weft.db' if _weft_role == 'workspace' else 'front-door.db' }}"
+    path: "{{ _weft_data_dir }}/{{ 'weft.db' if _weft_role == 'workspace' else 'front-door.db' }}"
   register: _weft_data
 
 - name: "Read the free space beside it"
   ansible.builtin.command:
-    argv: [df, --output=avail, -B1, "{{ _weft_state_dir }}"]
+    argv: [df, --output=avail, -B1, "{{ _weft_data_dir }}"]
   register: _weft_df
   changed_when: false
   check_mode: false
@@ -133,6 +135,10 @@
 
     - name: "Stop and back up"
       block:
+        # Unconditional, and safe on a fresh host: .env is rendered further down, and
+        # `deploy.sh stop` with no .env says nothing runs and exits 0 (agent-cloud#890 B1). Keyed on
+        # the file rather than on deployed.json, so a host whose first deploy died after `up` but
+        # before its record was written is still stopped.
         - name: "Stop {{ _weft_label }}"
           ansible.builtin.command:
             argv: [bash, deploy.sh, "{{ _weft_role }}", stop]

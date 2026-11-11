@@ -46,7 +46,7 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _weft_role: workspace
     _weft_workspace_dir: "{{ _weft_root }}/{{ weft_workspace_id }}"
-    _weft_state_dir: "{{ _weft_workspace_dir }}"
+    _weft_state_dir: "{{ _weft_workspace_state_dir }}"
     _weft_deploy_dir: "{{ _monorepo_dir }}/platform/services/weft/deployment"
     _weft_label: "workspace {{ weft_workspace_id }}"
     _weft_environment: "{{ weft_environment }}"
@@ -112,12 +112,15 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
-    - name: "Make the workspace directory on the VM's own disk"
+    # Two directories: the workspace's own, which its containers mount, and the deploy's record,
+    # which none does (vars/weft.yml, _weft_state_root).
+    - name: "Make the workspace directory and the deploy's state directory on the VM's own disk"
       ansible.builtin.file:
-        path: "{{ _weft_workspace_dir }}"
+        path: "{{ item }}"
         state: directory
         owner: "{{ ansible_user }}"
         mode: "0700"
+      loop: ["{{ _weft_workspace_dir }}", "{{ _weft_state_dir }}"]
       become: true
 
     - name: "Read the deploy user's id"

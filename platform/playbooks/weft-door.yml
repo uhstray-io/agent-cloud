@@ -61,12 +61,15 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
-    - name: "Make the records' directory on the VM's own disk"
+    # Two directories: the records', which the front door's container mounts, and the deploy's
+    # record, which none does (vars/weft.yml, _weft_state_root).
+    - name: "Make the records' directory and the deploy's state directory on the VM's own disk"
       ansible.builtin.file:
-        path: "{{ _weft_door_dir }}"
+        path: "{{ item }}"
         state: directory
         owner: "{{ ansible_user }}"
         mode: "0700"
+      loop: ["{{ _weft_door_dir }}", "{{ _weft_door_state_dir }}"]
       become: true
 
     - name: "The signing key (generated once, reused forever) as a 0600 file"
@@ -144,7 +147,7 @@
     _bao_url: "{{ openbao_addr | default('') }}"
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _weft_role: door
-    _weft_state_dir: "{{ _weft_door_dir }}"
+    _weft_state_dir: "{{ _weft_door_state_dir }}"
     _weft_deploy_dir: "{{ _monorepo_dir }}/platform/services/weft/deployment"
     _weft_label: front door
     _weft_environment: "{{ weft_environment }}"

@@ -105,7 +105,10 @@ PY
   assert_grep -qF "reject('match', '^[^@\\\\s]+@sha256:[0-9a-f]{64}\$')" "$cosign"
   # The pinned signer is images.yml on refs/heads/main, and release.json must say the same.
   assert_grep -qF "/.github/workflows/images.yml@refs/heads/main" "$PB/vars/weft.yml"
-  assert_grep -qF "_weft_release_json.signed_by.identity == _weft_signer" "$PB/tasks/weft-release.yml"
+  assert_grep -qF "(_wvi_release.signed_by | default({})).identity | default('') == _weft_signer" "$PB/tasks/weft-verify-images.yml"
+  # One check for both a fetched release and the release a rollback goes back to (#890 B2).
+  assert_grep -qF 'include_tasks: weft-verify-images.yml' "$PB/tasks/weft-release.yml"
+  assert_grep -qF 'include_tasks: weft-verify-images.yml' "$PB/tasks/weft-rollback.yml"
   # release.json is verified before it is read.
   local verify read
   verify=$(grep -n 'name: "Verify release.json was signed' "$PB/tasks/weft-release.yml" | cut -d: -f1)

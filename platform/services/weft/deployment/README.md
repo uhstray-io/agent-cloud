@@ -44,6 +44,13 @@ Each deploy (`platform/playbooks/tasks/weft-deploy.yml`), for a workspace or a f
 5. **Watch** 15 minutes: no container restarts, health still passes.
 6. **Passed**: record the release in `deployed.json` on the VM; Discord.
 
+The deploy's own record (`deployed.json`, the replaced `release.json`, the fetched
+`release-incoming/` and the `deploying/` lock) is in `/srv/weft-state/workspaces/<id>/` or
+`/srv/weft-state/door/`, a directory no container mounts. It decides which image runs, so the
+board, which faces the internet and mounts the workspace directory, must not be able to write
+it; a rollback also re-verifies the previous release's images before running them
+(agent-cloud#890 B2).
+
 A failure in 4 or 5 rolls back (`tasks/weft-rollback.yml`): stop, restore the deploy's own backup
 with the previous image (the current database is set aside as `weft.db.failed-<version>-<time>`,
 never deleted), start the previous digests, health again, Discord. If that fails too, everything is

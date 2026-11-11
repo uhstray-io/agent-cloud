@@ -1,0 +1,52 @@
+---
+# weft-verify-images.yml — on the target VM: refuse a release whose images for this role are not
+# weft's, by digest, in weft's registry, signed by weft's images.yml on main. The one place that
+# decides whether a release's images may run, so the release a deploy fetches and the release a
+# rollback goes back to are held to the same rule.
+#
+# A rollback needs it as much as a deploy does. The previous release comes from the host's own
+# record, and a record is a claim: before agent-cloud#890 B2 it lived in a directory the board
+# could write, and a board that named its own digest there would have had it run by the
+# orchestrator, with the podman socket, on the next failed deploy. The record now lives where no
+# container mounts it, and is still checked here before anything is rendered from it.
+#
+# Caller passes:
+#   _wvi_release   a parsed release.json (the one fetched, or the host's previous one)
+#   _weft_role     workspace | door
+#   _weft_auth_file  the deploy user's registry login (set by weft-release.yml)
+# with vars/weft.yml loaded. Sets _weft_role_refs: this role's image references, in order.
+#
+# Under --check the signature check is skipped (it runs a container), as verify-cosign.yml says;
+# the shape checks still run.
+
+- name: "Refuse a release not signed by weft's images.yml on main, or missing an image this role runs"
+  ansible.builtin.assert:
+    that:
+      - (_wvi_release.signed_by | default({})).identity | default('') == _weft_signer
+      - _weft_images_by_role[_weft_role] | difference((_wvi_release.images | default({})).keys() | list) | length == 0
+    fail_msg: >-
+      The release {{ _wvi_release.version | default(none) or (_wvi_release.commit | default('?'))[:12] }}
+      is not signed by {{ _weft_signer }}, or names no image for one of this {{ _weft_role }}'s
+      containers ({{ _weft_images_by_role[_weft_role] | join(', ') }}). Nothing was rendered from it.
+
+- name: "Take this role's images from the release"
+  ansible.builtin.set_fact:
+    _weft_role_refs: >-
+      {{ _weft_images_by_role[_weft_role] | map('extract', _wvi_release.images) | list }}
+
+- name: "Refuse an image that is not weft's, by digest, in weft's registry"
+  ansible.builtin.assert:
+    that:
+      - item is string
+      - item is match('^' ~ (_weft_registry | regex_escape) ~ '/weft-[a-z-]+@sha256:[0-9a-f]{64}$')
+    fail_msg: "The release names {{ item }}, which is not a weft image in {{ _weft_registry }} pinned by digest."
+  loop: "{{ _weft_role_refs }}"
+
+- name: "Verify every image this role runs"
+  ansible.builtin.include_tasks: verify-cosign.yml
+  vars:
+    _cosign_refs: "{{ _weft_role_refs }}"
+    _cosign_identity: "{{ _weft_signer }}"
+    _cosign_issuer: "{{ _weft_issuer }}"
+    _cosign_auth_file: "{{ _weft_auth_file }}"
+  when: not ansible_check_mode

@@ -93,7 +93,7 @@
       ansible.builtin.debug:
         msg: >-
           {{ ('A deploy holds ' ~ (_weft_locked | join(', ')) ~ '; if none is running, remove its '
-              ~ 'deploying/ directory after looking at the host.') if _weft_locked | length > 0
+              ~ 'deploying/ directory (under /srv/weft-state/) after looking at the host.') if _weft_locked | length > 0
              else (('Staging rolled ' ~ _weft_newest[:12] ~ ' back already; waiting for the next merge.')
                    if _weft_refused_by | length > 0
              else ('Staging already runs ' ~ _weft_newest[:12] ~ '.')) }}
