@@ -603,8 +603,8 @@ def check_job_evidence(api, number, sha, files):
         by_id[str(run["id"])] = run
     for run in external:
         # CodeRabbit posts a review check run beside its commit status: `success` when it
-        # reviewed, `neutral` when its review limit skipped the PR (#749), `skipped` when the PR
-        # has more files than it reviews (#1043). None is CI evidence; the approval is enforced
+        # reviewed, `neutral` when its review limit skipped the PR (#749), `skipped` when it skips
+        # the review for any reason, a PR over its file limit among them (#1043). None is CI evidence; the approval is enforced
         # separately below. Identified by the GitHub-assigned
         # app slug, which another app cannot claim; any other state still refuses.
         if (isinstance(run, dict) and isinstance(run.get("app"), dict)
