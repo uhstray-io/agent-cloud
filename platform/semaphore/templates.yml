@@ -1042,6 +1042,16 @@ templates:
         type: string
         required: false
 
+  - name: Probe skynet Launch (Dev)
+    playbook: platform/playbooks/probe-skynet-launch.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_service
+        title: "Service"
+        description: "skynet service_name whose service-validate step the run launches (blank for opa)"
+        type: string
+        required: false
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
