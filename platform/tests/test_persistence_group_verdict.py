@@ -7,11 +7,11 @@ playbook through ansible-playbook with a fake container engine (a script answeri
 """
 
 import importlib.util
-import os
 import shutil
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -44,11 +44,8 @@ def _run(tmp_path, hosts: dict[str, str], *extra) -> subprocess.CompletedProcess
     ] + ["", "[demo_svc:vars]", "service_name=demo", "local_mode=true", f"container_engine={engine}"]
     inventory = tmp_path / "inventory.ini"
     inventory.write_text("\n".join(lines) + "\n")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc", *extra],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False,
+    return harness_sandbox.run_playbook(
+        PLAYBOOK, tmp_path, "-e", "target_service=demo_svc", *extra, inventory=inventory,
     )
 
 

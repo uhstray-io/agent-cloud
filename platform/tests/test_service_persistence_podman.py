@@ -8,12 +8,12 @@ outside the monorepo; podman's boot unit starts only `always` containers. The ro
 test_workflow_credential_boundaries.py instead. Requires ansible-playbook and a working podman.
 """
 
-import os
 import shutil
 import subprocess
 import uuid
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -42,11 +42,8 @@ def _playbook(tmp_path, name, workdir, *extra):
         # No monorepo_deploy_path: a legacy service may declare only its working dir (PR 284 review).
         f"service_name=demo\nlocal_mode=true\ncontainer_engine=podman\ncompose_working_dir={workdir}\n"
     )
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOKS / name), "-e", "target_service=demo_svc", *extra],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+    return harness_sandbox.run_playbook(
+        PLAYBOOKS / name, tmp_path, "-e", "target_service=demo_svc", *extra, inventory=inventory,
     )
 
 

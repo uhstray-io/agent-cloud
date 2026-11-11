@@ -5,6 +5,7 @@ import importlib.util
 import json
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts/semaphore-launch.py"
@@ -295,6 +296,7 @@ def test_the_launcher_needs_only_the_standard_library():
     import sys
     code = ("import sys; sys.modules['yaml'] = None; sys.argv = ['semaphore-launch.py', '--help']; "
             f"import runpy; runpy.run_path({str(SCRIPT)!r}, run_name='__main__')")
-    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     assert result.returncode == 0, result.stderr
     assert "--template" in result.stdout

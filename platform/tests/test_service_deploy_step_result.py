@@ -17,12 +17,11 @@ reads, not inferred from the YAML.
 
 import importlib.util
 import json
-import os
 import re
-import subprocess
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -188,12 +187,8 @@ def _run_shared(tmp_path, hosts: dict, *extra, var="_deploy", before=(), fail_ho
     base = {"ansible_connection": "local", "service_name": "demo"}
     inventory = {"all": {"children": {"svc": {"hosts": {h: {**base, **v} for h, v in hosts.items()}}}}}
     (tmp_path / "inv.yml").write_text(json.dumps(inventory))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(
-        ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"),
-         *(["--check"] if check else []), *extra],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False,
+    proc = harness_sandbox.run_playbook(
+        tmp_path / "play.yml", tmp_path, *(["--check"] if check else []), *extra, inventory=tmp_path / "inv.yml",
     )
     return proc, step_results.results_in(proc.stdout.splitlines())
 

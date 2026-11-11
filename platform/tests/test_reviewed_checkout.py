@@ -9,6 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -19,7 +20,7 @@ CHECKOUT = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(CHECKOUT)
 
 
-def _git(checkout, *arguments, **kwargs):
+def _git(checkout, *arguments, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS, **kwargs):
     environment = {
         **os.environ,
         "GIT_AUTHOR_NAME": "test",
@@ -30,7 +31,7 @@ def _git(checkout, *arguments, **kwargs):
         "GIT_CONFIG_NOSYSTEM": "1",
     }
     return subprocess.run(
-        [CHECKOUT.GIT, "-C", str(checkout), *arguments], env=environment, **kwargs,
+        [CHECKOUT.GIT, "-C", str(checkout), *arguments], env=environment, timeout=timeout, **kwargs,
     )
 
 
