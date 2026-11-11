@@ -251,7 +251,7 @@
         method: POST
         path: /v1/data/agentcloud/decision?explain=full
         body:
-          input: {agent: nemoclaw, action: read, service: nocodb}
+          input: {agent: infra-agent, action: read, service: netbox}
     # The TLS probes' curl argv: the same list without --fail (see the TLS refusal task).
     _opa_tls_probe_args: "{{ _opa_tls_args | reject('equalto', '--fail') | list }}"
 
@@ -268,13 +268,13 @@
       check_mode: false
       when: not _opa_tls
 
-    - name: "Sample decision: nemoclaw read nocodb -> allow"
+    - name: "Sample decision: infra-agent read netbox -> allow"
       ansible.builtin.uri:
         url: "{{ _opa_url }}/v1/data/agentcloud/decision"
         method: POST
         body_format: json
         body:
-          input: {agent: nemoclaw, action: read, service: nocodb}
+          input: {agent: infra-agent, action: read, service: netbox}
         status_code: [200]
       register: _opa_allow
       failed_when: not (_opa_allow.json.result.allowed | default(false) | bool)
@@ -286,7 +286,7 @@
         method: POST
         body_format: json
         body:
-          input: {agent: rogue-agent, action: read, service: nocodb}
+          input: {agent: rogue-agent, action: read, service: netbox}
         status_code: [200]
       register: _opa_deny
       failed_when: _opa_deny.json.result.allowed | default(true) | bool
@@ -358,11 +358,11 @@
         quiet: true
       when: _opa_tls
 
-    - name: "Sample decision over TLS: nemoclaw read nocodb -> allow"
+    - name: "Sample decision over TLS: infra-agent read netbox -> allow"
       ansible.builtin.command:
         argv: >-
           {{ _opa_tls_args + ['--header', 'Content-Type: application/json',
-             '--data', ({'input': {'agent': 'nemoclaw', 'action': 'read', 'service': 'nocodb'}} | to_json),
+             '--data', ({'input': {'agent': 'infra-agent', 'action': 'read', 'service': 'netbox'}} | to_json),
              _opa_url ~ '/v1/data/agentcloud/decision'] }}
       register: _opa_allow_tls
       changed_when: false
@@ -373,7 +373,7 @@
       ansible.builtin.command:
         argv: >-
           {{ _opa_tls_args + ['--header', 'Content-Type: application/json',
-             '--data', ({'input': {'agent': 'rogue-agent', 'action': 'read', 'service': 'nocodb'}} | to_json),
+             '--data', ({'input': {'agent': 'rogue-agent', 'action': 'read', 'service': 'netbox'}} | to_json),
              _opa_url ~ '/v1/data/agentcloud/decision'] }}
       register: _opa_deny_tls
       changed_when: false

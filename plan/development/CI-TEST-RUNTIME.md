@@ -42,7 +42,7 @@ flowchart LR
 
 | Check | Pass condition |
 |---|---|
-| Python collection | `platform/tests/test_ci_python_partition.py` reruns pytest collection from the workflow's root/core/safety/NetBox/Semaphore commands; collection errors fail, the four shard node-ID sets are pairwise disjoint, their union equals root exactly, and safety is nonempty |
+| Python collection | Superseded by plan 21 ([`21-test-suite-runtime.md`](21-test-suite-runtime.md)): CI runs one eight-shard matrix job, and `platform/tests/test_ci_python_partition.py` proves from one root collection that the shard hook's assignment covers every root node exactly once. Originally: `platform/tests/test_ci_python_partition.py` reruns pytest collection from the workflow's root/core/safety/NetBox/Semaphore commands; collection errors fail, the four shard node-ID sets are pairwise disjoint, their union equals root exactly, and safety is nonempty |
 | BATS | Existing `bats platform/tests/` command remains covered |
 | Rego | The official OPA 1.0.0 Linux amd64 static binary passes the pinned SHA-256 check before execution; both `check --strict` and `test -v` remain covered |
 | Gate | Aggregate fails for any non-success dependency |

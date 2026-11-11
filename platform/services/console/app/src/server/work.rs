@@ -581,7 +581,7 @@ mod tests {
             "status": status,
             "created": "2026-10-26T12:00:00Z",
             "message": message,
-            "tpl_alias": "Deploy tududi",
+            "tpl_alias": "Deploy postiz",
             "user_name": "svc-console",
             "environment": env,
         }))
@@ -649,7 +649,7 @@ mod tests {
             "consoles p42 step",
             "console p42 ",
             "infra-agent p42 step",
-            "netclaw run step",
+            "network-agent run step",
         ] {
             assert_eq!(parse_agent_message(bad), None, "{bad:?}");
         }
@@ -657,8 +657,8 @@ mod tests {
 
     #[test]
     fn target_service_reads_only_that_key() {
-        let env = r#"{"SECRET_TOKEN":"hunter2","target_service":"tududi","password":"p"}"#;
-        assert_eq!(target_service(env).as_deref(), Some("tududi"));
+        let env = r#"{"SECRET_TOKEN":"hunter2","target_service":"postiz","password":"p"}"#;
+        assert_eq!(target_service(env).as_deref(), Some("postiz"));
         assert_eq!(target_service(r#"{"secret_target_service":"x"}"#), None);
         assert_eq!(target_service(r#"{"target_service":""}"#), None);
         assert_eq!(target_service(r#"{"target_service":null}"#), None);
@@ -673,17 +673,17 @@ mod tests {
             40,
             "running",
             Some("skynet service_onboarding:abc step-b"),
-            Some(r#"{"target_service":"tududi"}"#),
+            Some(r#"{"target_service":"postiz"}"#),
         );
         let item = build_item(&t, &registry(), "https://semaphore.test:8443/", 7);
         assert_eq!(item.key, "sem-40");
-        assert_eq!(item.title, "Deploy tududi — tududi");
+        assert_eq!(item.title, "Deploy postiz — postiz");
         assert_eq!(item.lane, "running");
         assert_eq!(item.launched_by, "skynet");
         assert_eq!(item.run_id.as_deref(), Some("service_onboarding:abc"));
         assert_eq!(item.step.as_deref(), Some("step-b"));
         assert_eq!(item.role.as_deref(), Some("service-agent"));
-        assert_eq!(item.service.as_deref(), Some("tududi"));
+        assert_eq!(item.service.as_deref(), Some("postiz"));
         assert_eq!(
             item.receipt_url,
             "https://semaphore.test:8443/project/7/history?t=40"
@@ -694,7 +694,7 @@ mod tests {
     fn human_task_has_no_run_role_or_service_and_shows_the_user() {
         let t = task(9, "success", None, None);
         let item = build_item(&t, &registry(), "https://ui.test", 1);
-        assert_eq!(item.title, "Deploy tududi");
+        assert_eq!(item.title, "Deploy postiz");
         assert_eq!(item.launched_by, "svc-console");
         assert_eq!(item.run_id, None);
         assert_eq!(item.step, None);
@@ -746,7 +746,7 @@ mod tests {
                 id,
                 status,
                 Some(message.as_str()),
-                Some(r#"{"target_service":"tududi"}"#),
+                Some(r#"{"target_service":"postiz"}"#),
             ),
             &registry(),
             "https://ui.test",
@@ -763,7 +763,7 @@ mod tests {
         ];
         let run = run_detail(&items, "run-1", &registry());
         assert_eq!(run.run_id, "run-1");
-        assert_eq!(run.service.as_deref(), Some("tududi"));
+        assert_eq!(run.service.as_deref(), Some("postiz"));
         let ids: Vec<&str> = run.steps.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, ["step-a", "step-b", "step-c"]);
         assert_eq!(run.steps[0].status, "done");
@@ -800,7 +800,7 @@ mod tests {
         let items = vec![item_for(20, "success", "run-1", "step-a")];
         let run = run_detail(&items, "run-1", &[]);
         assert!(run.steps.is_empty());
-        assert_eq!(run.service.as_deref(), Some("tududi"));
+        assert_eq!(run.service.as_deref(), Some("postiz"));
     }
 
     /// A failed task of one template, for the stream tests. No skynet message.
@@ -819,9 +819,9 @@ mod tests {
 
     #[test]
     fn stream_key_is_template_and_service_and_a_lone_task_without_a_template() {
-        assert_eq!(stream_key(Some(3), Some("tududi"), 9), "tpl-3:tududi");
+        assert_eq!(stream_key(Some(3), Some("postiz"), 9), "tpl-3:postiz");
         assert_eq!(stream_key(Some(3), None, 9), "tpl-3");
-        assert_eq!(stream_key(None, Some("tududi"), 9), "task-9");
+        assert_eq!(stream_key(None, Some("postiz"), 9), "task-9");
         assert_eq!(stream_key(None, None, 9), "task-9");
     }
 
@@ -852,7 +852,7 @@ mod tests {
             41,
             "waiting",
             Some("console p42 step-b"),
-            Some(r#"{"target_service":"tududi"}"#),
+            Some(r#"{"target_service":"postiz"}"#),
         );
         let item = build_item(&t, &registry(), "https://semaphore.test:8443/", 7);
         assert_eq!(item.launched_by, "console");
@@ -887,7 +887,7 @@ mod tests {
             templated(40, 6, None),
             templated(7, 5, None),
             templated(31, 5, None),
-            templated(22, 6, Some(r#"{"target_service":"tududi"}"#)),
+            templated(22, 6, Some(r#"{"target_service":"postiz"}"#)),
         ];
         mark_streams(&mut items);
         let by = |key: &str| items.iter().find(|item| item.key == key).expect("item");
@@ -901,7 +901,7 @@ mod tests {
         assert_eq!(by("sem-40").stream_runs, 1);
         assert_eq!(
             by("sem-22").stream,
-            "tpl-6:tududi",
+            "tpl-6:postiz",
             "a service splits one template's stream"
         );
         assert!(by("sem-22").latest_in_stream);

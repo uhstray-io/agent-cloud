@@ -99,7 +99,7 @@ flowchart TB
             CADDY["Caddy<br/>TLS termination + routing"]
         end
         subgraph SVC["Service VMs (Proxmox), one service each"]
-            APPS["Platform services<br/>Authentik, n8n, Grafana, NetBox, ..."]
+            APPS["Platform services<br/>Authentik, Grafana, NetBox, ..."]
             AGW["agentgateway<br/>inference edge gateway"]
         end
         subgraph CTRL["Control plane"]
@@ -254,8 +254,8 @@ sequenceDiagram
     participant B as Browser
     participant C as Caddy
     participant O as Authentik outpost
-    participant S as Service (e.g. n8n)
-    B->>C: GET / on the n8n hostname
+    participant S as Service (e.g. NetBox)
+    B->>C: GET / on the NetBox hostname
     C->>C: delete client-sent X-authentik-* headers
     C->>O: forward_auth subrequest
     alt no session
@@ -344,7 +344,8 @@ stateDiagram-v2
 ```
 
 **Shared-key retirement.** Before the gateway, every client sent vLLM's one key. The gateway
-admits that key as a `legacy-shared` identity until **2026-11-13**; a deploy on or after that date
+admits that key as a `legacy-shared` identity until **2026-12-11** (moved from 2026-11-13 by
+site-config #183 while dgx-spark#43 automates the rotation); a deploy on or after that date
 drops the identity and fails until dgx-spark rotates the vLLM key [24].
 
 **skynet's route.** agentgateway can carry a `/skynet/` route to the skynet orchestration API,
@@ -465,7 +466,7 @@ Where the firewall is recorded as applied:
 | OPA host | Port 8281 from the callers' inventory groups only (`firewall_allow_groups`) | LIVE 2026-10-29 | [52][53] |
 | o11y receiver | Grafana from the Caddy host; Loki push from the GPU node addresses | LIVE 2026-10-02 | [36] |
 | Internal CA host | Default deny; CA API on loopback only | LIVE (group 3.1 done) | [9] |
-| Services probed from their own host (honcho, n8n, o11y; tududi until its retirement on 2026-11-09) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
+| Services probed from their own host (honcho, o11y) | Service ports loopback-only or firewalled to the Caddy host | LIVE 2026-09-26 | [37] |
 | CI runner hosts | **Egress deny** to the secret store, orchestrator and hypervisors (inbound shape not recorded) | LIVE, verified from inside a job | [11] |
 | Caddy host | No firewall declaration found in this repository | UNVERIFIED | — |
 | Every other service host | Per-host declaration in site-config | UNVERIFIED | — |
@@ -618,10 +619,10 @@ This is a current-state map, so its "phases" are the network work in flight. Eac
 change or plan named, and each acceptance criterion is what would let this document move the item's
 status forward.
 
-### Phase A: retire the shared inference key (due 2026-11-13)
+### Phase A: retire the shared inference key (due 2026-12-11)
 
 **Owner:** `inference-gateway-agentgateway` task 5.1, with dgx-spark rotating the vLLM key [24].
-**Acceptance:** a deploy after 2026-11-13 passes with no `legacy-shared` identity; rollback
+**Acceptance:** a deploy after 2026-12-11 passes with no `legacy-shared` identity; rollback
 `restore` completes and withdraws every `direct_` copy.
 
 ### Phase B: TLS from the gateway to vLLM

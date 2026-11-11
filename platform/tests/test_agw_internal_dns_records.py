@@ -12,6 +12,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -52,7 +53,8 @@ def _run(tmp_path, tasks, inventory, extra=None, check=False):
     cmd = ["ansible-playbook", "-i", str(inv), str(pb), "-e", json.dumps(extra or {})]
     if check:
         cmd.append("--check")
-    return subprocess.run(cmd, capture_output=True, text=True, cwd=REPO / "platform/playbooks")
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=REPO / "platform/playbooks",
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
 
 
 def _inventory(gateways, dns_vars=None):

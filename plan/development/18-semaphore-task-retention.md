@@ -39,8 +39,7 @@ without bound, and it adds the disk alert that 1.18 proposed and nobody built.
    | Renew Internal Certs (Dev) | `17 4 * * *` | 949 | 1 |
    | Stock GitHub Runner JIT (Dev) | `*/10 * * * *` | 3166 | 144 |
 
-   Without the JIT template the rows total 241 a day, and with it 385. The tududi refresh row (48 a day)
-   was removed 2026-11-07 with the tududi sync. Production task history for 2026-10-26 and 2026-10-27
+   Without the JIT template the rows total 241 a day, and with it 385. Production task history for 2026-10-26 and 2026-10-27
    shows about 288 tasks a day, with no JIT runs. Phase 0 measures the real count.
    measures the real count.
 

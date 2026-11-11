@@ -210,7 +210,7 @@ def test_deletes_accept_already_gone_and_the_read_back_still_proves_it():
 
 def test_template_delete_allows_for_a_long_task_history():
     """Deleting a template removes its task history; the uri default (30 s) timed out on the
-    tududi refresher's (Semaphore tasks 14206, 14211)."""
+    45-minute refresher's (Semaphore tasks 14206, 14211)."""
     deletes = [
         args for _, args in _uri_tasks()
         if str(args.get("method", "")).upper() == "DELETE" and "/templates/" in str(args.get("url", ""))

@@ -306,7 +306,7 @@ mod tests {
             agent: "service-agent".into(),
             workflow_id: "p42".into(),
             step: "service-assess".into(),
-            survey: BTreeMap::from([("service".to_string(), "tududi".to_string())]),
+            survey: BTreeMap::from([("service".to_string(), "postiz".to_string())]),
             dry_run: false,
         }
     }
@@ -725,7 +725,7 @@ mod tests {
                     "agent": "service-agent",
                     "workflow_id": "p42",
                     "step": "service-assess",
-                    "survey": {"service": "tududi"},
+                    "survey": {"service": "postiz"},
                     "dry_run": false,
                 }),
             }]

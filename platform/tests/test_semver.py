@@ -12,6 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -109,7 +110,10 @@ class Repo:
 
 
 def _cli(*args):
-    return subprocess.run([sys.executable, str(SCRIPT), *args], text=True, capture_output=True, check=False)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), *args], text=True, capture_output=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
+    )
 
 
 def _run(repo, *args):
@@ -672,3 +676,669 @@ def test_merge_guard_operator_merges_every_file_the_release_tagging_runs_from():
     assert "scripts/semver.py" in guard.RELEASE_SCRIPTS
     assert "scripts/semver-backfill.tsv" in guard.RELEASE_SCRIPTS
     assert "platform/playbooks/release-version.yml" in guard.RELEASE_SCRIPTS
+    assert "platform/playbooks/tasks/release-notes-body.yml" in guard.RELEASE_SCRIPTS
+
+
+# --- release-notes: one release's categorised notes, as JSON sections or Markdown with optional summaries ----------
+
+
+def _run_stdin(repo, stdin, *args):
+    """_run with stdin given: --render reads stdin, and an inherited terminal would block the test."""
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--repo", str(repo.root), *args],
+        input=stdin,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+def _commit_as(repo, author, subject):
+    """A commit on the current branch under another author name, so contributor counts can tell authors apart."""
+    env = {**repo._stamped(), "GIT_AUTHOR_NAME": author, "GIT_AUTHOR_EMAIL": "author@example.invalid"}
+    (repo.root / f"by-{repo.clock}.txt").write_text(subject + "\n")
+    repo.git("add", "-A")
+    repo.git("commit", "-q", "-m", subject, env=env)
+
+
+def _pr_as(repo, author, branch, number, title):
+    """A pull request whose one commit is by author, merged with a merge commit that the merge title names."""
+    here = repo.branch_name()
+    repo.branch(branch)
+    _commit_as(repo, author, title)
+    repo.checkout(here)
+    repo.merge_pr(branch, number, title)
+
+
+def _release_pr(repo, number, title, tag):
+    """A pull request merged on main, then tag on the merge: one release (or dev tag) per call."""
+    repo.feature(f"pr-{number}", title)
+    repo.merge_pr(f"pr-{number}", number, title)
+    repo.tag(tag)
+
+
+def _three_sections_repo(tmp_path):
+    """v0.1.0, then v0.2.0 with pull requests in three sections and no documentation update."""
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-30", 30, "feat: add a template")
+    _pr_as(repo, "Cal", "pr-31", 31, "fix: stop the crash")
+    _pr_as(repo, "Ada", "pr-32", 32, "fix(api): keep the route")
+    _pr_as(repo, "Dana", "pr-33", 33, "test: cover the parser")
+    repo.tag("v0.2.0")
+    return repo
+
+
+def _describe(repo, tag, *mode):
+    return _run(repo, "release-notes", "--tag", tag, *mode)
+
+
+def test_sections_file_each_pull_request_under_its_category_oldest_first(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    for number, title in [
+        (10, "feat: add a template"),
+        (11, "perf: cache the inventory"),
+        (12, "fix: stop the crash"),
+        (13, "security: pin the image"),
+        (14, "docs: explain the flag"),
+        (15, "test: cover the parser"),
+        (16, "Update stuff"),
+        (17, "revert: undo the change"),
+        (18, "feat(api)!: drop the old route"),
+    ]:
+        repo.feature(f"pr-{number}", title)
+        repo.merge_pr(f"pr-{number}", number, title)
+    repo.feature("pr-19", "fix: squashed")
+    repo.squash_pr("pr-19", 19, "fix: squashed")
+    repo.commit("chore: a direct commit on main")  # not a pull request, so in no section
+    repo.tag("v0.2.0")
+    result = _describe(repo, "v0.2.0", "--sections")
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert (payload["tag"], payload["previous"]) == ("v0.2.0", "v0.1.0")
+    assert payload["counts"] == {"features": 3, "fixes": 3, "documentation": 1, "other": 3}
+    assert {key: [item["number"] for item in items] for key, items in payload["sections"].items()} == {
+        "features": [10, 11, 18],
+        "fixes": [12, 13, 19],
+        "documentation": [14],
+        "other": [15, 16, 17],
+    }
+    assert payload["sections"]["features"][0] == {"number": 10, "title": "feat: add a template"}
+    assert payload["sections"]["other"][1] == {"number": 16, "title": "Update stuff"}
+
+
+def test_contributors_count_non_merge_commits_most_first_then_by_name_and_never_emails(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    for subject in ("chore: one", "chore: two", "chore: three"):
+        _commit_as(repo, "Dana", subject)
+    _commit_as(repo, "Ada", "chore: direct")
+    _pr_as(repo, "Ada", "pr-20", 20, "fix: ada pull request")
+    _pr_as(repo, "Cal", "pr-21", 21, "fix: cal pull request")
+    _pr_as(repo, "Bea", "pr-22", 22, "fix: bea pull request")
+    repo.tag("v0.2.0")
+    result = _describe(repo, "v0.2.0", "--sections")
+    assert result.returncode == 0
+    # Three merge commits are authored by the repository's own identity: none of them may be counted.
+    assert json.loads(result.stdout)["contributors"] == [
+        {"name": "Dana", "commits": 3},
+        {"name": "Ada", "commits": 2},
+        {"name": "Bea", "commits": 1},
+        {"name": "Cal", "commits": 1},
+    ]
+    assert "example.invalid" not in result.stdout  # names only, never an email address
+
+
+def test_render_without_summaries_is_exact_and_omits_the_empty_documentation_section(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    result = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert result.stdout == (
+        "## Summary\n"
+        "\n"
+        "4 pull requests since v0.1.0: 1 feature, 2 fixes, 0 documentation updates, 1 other change.\n"
+        "\n"
+        "## Major Updates\n"
+        "\n"
+        "No breaking changes in this release.\n"
+        "\n"
+        "## Features\n"
+        "\n"
+        "<details><summary>1 pull request</summary>\n"
+        "\n"
+        "- #30 feat: add a template\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "## Fixes\n"
+        "\n"
+        "<details><summary>2 pull requests</summary>\n"
+        "\n"
+        "- #31 fix: stop the crash\n"
+        "- #32 fix(api): keep the route\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "## Other changes\n"
+        "\n"
+        "<details><summary>1 pull request</summary>\n"
+        "\n"
+        "- #33 test: cover the parser\n"
+        "\n"
+        "</details>\n"
+        "\n"
+        "## Contributors\n"
+        "\n"
+        "- Ada (2 commits)\n"
+        "- Cal (1 commit)\n"
+        "- Dana (1 commit)\n"
+    )
+
+
+def test_accepted_summaries_sit_under_their_heading_with_newlines_collapsed(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    summaries = {"features": "Adds the template.\nIt works\n   across lines.", "fixes": "Fixes two crashes."}
+    result = _run_stdin(repo, json.dumps(summaries), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert "## Features\n\nAdds the template. It works across lines.\n\n<details>" in result.stdout
+    assert "## Fixes\n\nFixes two crashes.\n\n<details>" in result.stdout
+    assert "## Other changes\n\n<details>" in result.stdout  # no summary was given for it
+
+
+@pytest.mark.parametrize(
+    ("bad", "rule"),
+    [
+        ("Thanks @someone for it.", "contains '@'"),
+        ("See http://example.invalid/page.", "contains 'http://'"),
+        ("See https://example.invalid/page.", "contains 'https://'"),
+        ("A [link](example-target) here.", "contains ']('"),
+        ("Uses <b>bold</b> text.", "contains '<'"),
+        ("Compare x > y here.", "contains '>'"),
+        ("Run `make test` now.", "contains '`'"),
+        ("Intro line.\n# A heading", "a line starts with '#'"),
+        ("  ## Indented heading", "a line starts with '#'"),
+        ("", "not 1 to 800 characters after strip"),
+        ("   \n\t ", "not 1 to 800 characters after strip"),
+        ("x" * 801, "not 1 to 800 characters after strip"),
+    ],
+)
+def test_each_rejection_rule_drops_only_its_summary_and_names_the_rule_not_the_text(tmp_path, bad, rule):
+    repo = _three_sections_repo(tmp_path)
+    summaries = {"features": bad, "fixes": "Fixes two crashes."}
+    result = _run_stdin(repo, json.dumps(summaries), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"features summary dropped: {rule}"])
+    assert "## Features\n\n<details>" in result.stdout  # the section stays, its summary does not
+    assert "## Fixes\n\nFixes two crashes.\n\n<details>" in result.stdout  # the other summary is kept
+    stripped = bad.strip()
+    assert not stripped or stripped not in result.stdout
+
+
+ALLOWLIST = "contains a character outside the allowed set"
+
+
+@pytest.mark.parametrize(
+    ("bad", "rule"),
+    [
+        ("HTTPS://evil.example now", ALLOWLIST),  # an uppercase scheme passes the banned marks; the slash fails here
+        ("see www.Evil.example today", "contains 'www.'"),  # GitHub links www. in any letter case
+        ("[x]: //evil.example", ALLOWLIST),  # the first half of a reference-style link
+        ("~~~", ALLOWLIST),  # a tilde fence would swallow the rest of the body
+        ("ping &#64;octocat", ALLOWLIST),  # an encoded mention
+        ("Fixes #9999 quickly", ALLOWLIST),  # a free-text reference to a pull request outside the release
+        ("see other-org/repo#1 too", ALLOWLIST),  # a cross-repository reference
+        ("see GH-9999 now", "contains a GH- reference"),  # GH-N links to a pull request even without a hash sign
+        ("gh-1 fixed", "contains a GH- reference"),  # in any letter case
+        ("Fixes _GH-12_ today.", "contains a GH- reference"),  # \b misses it: _ is a word character
+        ("Fixes __GH-15__ today.", "contains a GH- reference"),
+        ("Fixes \u00e9GH-19 today.", "contains a GH- reference"),  # a non-ASCII letter before GH
+        ("Fixes \u017fGH-1 today.", "contains a GH- reference"),  # long s: (?i)[a-z] would match it
+        ("Fixes \u212aGH-1 today.", "contains a GH- reference"),  # Kelvin sign
+        ("Fixes \u0131GH-1 today.", "contains a GH- reference"),  # dotless i
+        ("Fixes \u0130GH-1 today.", "contains a GH- reference"),  # dotted capital I
+    ],
+)
+def test_model_text_outside_the_allowlist_is_dropped_under_the_rule_it_breaks(tmp_path, bad, rule):
+    repo = _three_sections_repo(tmp_path)
+    summaries = {"features": bad, "fixes": "Fixes two crashes."}
+    result = _run_stdin(repo, json.dumps(summaries), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"features summary dropped: {rule}"])
+    assert "## Features\n\n<details>" in result.stdout  # the section stays, its summary does not
+    assert "## Fixes\n\nFixes two crashes.\n\n<details>" in result.stdout  # the other summary is kept
+    assert bad not in result.stdout
+
+
+def test_curly_quotes_dashes_and_percent_signs_stay_in_model_text(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    text = "The gateway’s limits — “now” enforced, 100% of the time."
+    result = _run_stdin(repo, json.dumps({"features": text}), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert f"## Features\n\n{text}\n\n<details>" in result.stdout
+
+
+def test_a_decoded_straight_quote_in_a_summary_is_rendered(tmp_path):
+    # The notes task decodes the reply's JSON, so the renderer receives a real double quote, never a backslash
+    # (CodeRabbit on #1021). This is the render half of that path.
+    repo = _three_sections_repo(tmp_path)
+    text = 'Adds a "quoted" change.'
+    assert json.loads(json.dumps({"summary": text}))["summary"] == text
+    result = _run_stdin(repo, json.dumps({"features": text}), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert f"## Features\n\n{text}\n\n<details>" in result.stdout
+    assert "\\" not in result.stdout.split("<details>")[0]
+
+
+def test_a_hyphenated_word_that_ends_in_gh_is_not_a_gh_reference(tmp_path):
+    repo = _three_sections_repo(tmp_path)  # \bgh- must not match inside High-5
+    text = "High-5 rated the release."
+    result = _run_stdin(repo, json.dumps({"features": text}), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert f"## Features\n\n{text}\n\n<details>" in result.stdout
+
+
+def test_a_summary_of_exactly_800_characters_is_accepted(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    result = _run_stdin(repo, json.dumps({"features": "x" * 800}), "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert "## Features\n\n" + "x" * 800 + "\n\n<details>" in result.stdout
+
+
+def test_a_non_string_summary_is_dropped_under_the_not_a_string_rule(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    result = _run_stdin(
+        repo, json.dumps({"features": 3, "fixes": None}), "release-notes", "--tag", "v0.2.0", "--render"
+    )
+    assert result.returncode == 0
+    assert result.stderr.splitlines() == [
+        "features summary dropped: not a string",
+        "fixes summary dropped: not a string",
+    ]
+    assert "## Features\n\n<details>" in result.stdout
+    assert "## Fixes\n\n<details>" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ['not json', '["features"]', "null", '{"other": "x"}', '{"features": "Fine.", "other": "x"}'],
+)
+def test_unreadable_or_unknown_summary_input_is_ignored_whole_with_one_stderr_line(tmp_path, raw):
+    repo = _three_sections_repo(tmp_path)
+    plain = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render")
+    result = _run_stdin(repo, raw, "release-notes", "--tag", "v0.2.0", "--render")
+    assert result.returncode == 0
+    assert result.stdout == plain.stdout
+    assert result.stderr.splitlines() == [
+        "release-notes: summaries ignored: want a JSON object with keys "
+        "features, fixes, documentation, overview, highlights"
+    ]
+
+
+def test_whitespace_only_stdin_means_no_summaries_and_no_warning(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    plain = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render")
+    result = _run_stdin(repo, "  \n\t\n", "release-notes", "--tag", "v0.2.0", "--render")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert result.stdout == plain.stdout
+
+
+def test_at_signs_are_neutralised_in_rendered_titles_and_names_but_raw_in_the_json(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Cat@Work", "pr-40", 40, "fix: ping @team about the route")
+    repo.tag("v0.2.0")
+    payload = json.loads(_describe(repo, "v0.2.0", "--sections").stdout)
+    assert payload["sections"]["fixes"] == [{"number": 40, "title": "fix: ping @team about the route"}]
+    assert payload["contributors"] == [{"name": "Cat@Work", "commits": 1}]
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- #40 fix: ping @​team about the route\n" in rendered
+    assert "- Cat@​Work (1 commit)\n" in rendered
+    assert "@" not in rendered.replace("@​", "")
+
+
+def test_a_contributor_name_that_is_a_link_renders_as_plain_text(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "[n](https://e.example)", "pr-70", 70, "fix: a plain title")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    line = rendered.split("## Contributors\n\n")[1].splitlines()[0]
+    assert line == "- \\[n\\](https:​//e.example) (1 commit)"  # the scheme separator is broken, so no autolink
+    assert "https://" not in line and "www." not in line
+    assert "[n](" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("name", "line"),
+    [
+        ("www.e.example", "- www​.e.example (1 commit)"),  # a bare www. is autolinked too
+        ("WWW.E.example", "- WWW​.E.example (1 commit)"),
+        ("# H", "- #​ H (1 commit)"),  # a heading inside the item, not a list item with # H
+        ("1. x", "- 1\\. x (1 commit)"),  # an ordered list inside the item
+        ("2) x", "- 2\\) x (1 commit)"),
+        ("- x", "- \\- x (1 commit)"),  # a nested bullet
+        ("+ x", "- \\+ x (1 commit)"),
+        ("Eve #1", "- Eve #​1 (1 commit)"),  # a pull request link
+        ("$a$", "- <span>$</span>a<span>$</span> (1 commit)"),  # a math span, not a formula
+    ],
+)
+def test_a_contributor_name_cannot_start_a_block_link_a_pull_request_or_a_formula(tmp_path, name, line):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, name, "pr-90", 90, "fix: a plain title")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert rendered.split("## Contributors\n\n")[1].splitlines()[0] == line
+
+
+def test_a_title_keeps_its_pull_request_references_but_breaks_its_links_and_formulas(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-83", 83, "fix: see https://x.example and www.x.example, $a$, closes #12")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- #83 fix: see https:​//x.example and www​.x.example, <span>$</span>a<span>$</span>, closes #12\n" in rendered
+    assert "https://" not in rendered and "www." not in rendered and "$" not in rendered.replace("<span>$</span>", "")
+
+
+def test_a_title_cannot_format_a_link_or_close_its_block(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-71", 71, "fix: close </details> early")
+    _pr_as(repo, "Ada", "pr-72", 72, "fix: keep crash_loop *bold* ~gone~ a|b c\\d [x](y) R&D `make`")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- #71 fix: close &lt;/details&gt; early\n" in rendered
+    assert "- #72 fix: keep crash\\_loop \\*bold\\* \\~gone\\~ a\\|b c\\\\d \\[x\\](y) R&amp;D \\`make\\`\n" in rendered
+    assert rendered.count("<details>") == rendered.count("</details>") == 1
+
+
+def test_a_breaking_title_is_escaped_like_a_section_title(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-73", 73, "fix(api)!: drop <b>old_route</b>")
+    repo.tag("v0.2.0")
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render").stdout
+    assert "- #73 fix(api)!: drop &lt;b&gt;old\\_route&lt;/b&gt; (breaking change)\n" in rendered
+
+
+def test_previous_is_the_highest_lower_release_tag_by_version_number_and_never_a_dev_tag(tmp_path):
+    repo = Repo(tmp_path / "repo")  # v0.1.0 at the first commit
+    _release_pr(repo, 50, "fix: a", "v0.1.1")
+    _release_pr(repo, 51, "feat: b", "v0.2.0")
+    _release_pr(repo, 52, "fix: c", "v0.2.1-dev.1")
+    _release_pr(repo, 53, "feat: d", "v0.3.0")
+    _release_pr(repo, 54, "fix: e", "v0.9.0")
+    _release_pr(repo, 55, "fix: f", "v0.10.0")
+
+    def described(tag):
+        return json.loads(_describe(repo, tag, "--sections").stdout)
+
+    third = described("v0.3.0")
+    assert third["previous"] == "v0.2.0"  # v0.2.1-dev.1 is not a release, so it is not the previous one
+    assert (third["counts"]["features"], third["counts"]["fixes"]) == (1, 1)  # PRs 52 and 53 both count
+    assert described("v0.2.0")["previous"] == "v0.1.1"
+    assert described("v0.1.1")["previous"] == "v0.1.0"
+    tenth = described("v0.10.0")
+    assert tenth["previous"] == "v0.9.0"  # a text comparison would pick v0.1.1
+    assert [item["number"] for item in tenth["sections"]["fixes"]] == [55]
+
+
+def test_the_first_release_has_no_previous_no_sections_and_renders_one_line(tmp_path):
+    repo = Repo(tmp_path / "repo")  # v0.1.0 is the only release
+    assert json.loads(_describe(repo, "v0.1.0", "--sections").stdout) == {
+        "tag": "v0.1.0",
+        "previous": None,
+        "counts": {"features": 0, "fixes": 0, "documentation": 0, "other": 0},
+        "breaking": [],
+        "sections": {"features": [], "fixes": [], "documentation": [], "other": []},
+        "contributors": [],
+    }
+    rendered = _run_stdin(repo, "", "release-notes", "--tag", "v0.1.0", "--render")
+    assert (rendered.returncode, rendered.stdout) == (0, "First release.\n")
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (("--tag", "v9.9.9", "--sections"), "no release tag v9.9.9 in this repository"),
+        (("--tag", "0.2.0", "--sections"), "--tag wants vX.Y.Z"),
+        (("--tag", "v0.2.1-dev.1", "--sections"), "--tag wants vX.Y.Z"),  # a dev tag is not a release
+        (("--tag", "v0.1.0\n", "--sections"), "--tag wants vX.Y.Z"),  # the newline is no part of a tag name
+        (("--sections",), "--tag is required"),
+        (("--tag", "v0.1.0"), "give exactly one of --sections or --render"),
+        (("--tag", "v0.1.0", "--sections", "--render"), "give exactly one of --sections or --render"),
+    ],
+)
+def test_a_bad_tag_or_mode_refuses_with_exit_one_and_names_the_refusal(tmp_path, args, message):
+    repo = Repo(tmp_path / "repo")  # v0.1.0 exists
+    repo.tag("v0.2.1-dev.1")
+    result = _run_stdin(repo, "", "release-notes", *args)
+    assert (result.returncode, result.stdout) == (1, "")
+    assert result.stderr.startswith("release-notes: ")
+    assert message in result.stderr
+
+
+# --- release-notes: the Summary and Major Updates sections, the overview and the highlights ---------------------------
+
+BREAKING_LINE = "- #32 fix(api)!: drop the old route (breaking change)"
+
+
+def _major_repo(tmp_path):
+    """v0.1.0, then v0.2.0 with eight pull requests. 32 carries the breaking mark; the others are ordinary."""
+    repo = Repo(tmp_path / "repo")
+    for number, title in [
+        (30, "feat: add a template"),
+        (31, "fix: stop the crash"),
+        (32, "fix(api)!: drop the old route"),
+        (33, "test: cover the parser"),
+        (34, "docs: explain the flag"),
+        (35, "perf: cache the inventory"),
+        (36, "chore: tidy the module"),
+        (37, "feat: add a metric"),
+    ]:
+        _pr_as(repo, "Ada", f"pr-{number}", number, title)
+    repo.tag("v0.2.0")
+    return repo
+
+
+def _render_with(repo, model):
+    """The Markdown render of v0.2.0 with one model input given on stdin."""
+    return _run_stdin(repo, json.dumps(model), "release-notes", "--tag", "v0.2.0", "--render")
+
+
+def test_breaking_lists_every_bang_title_on_any_type_and_keeps_its_category(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    _pr_as(repo, "Ada", "pr-60", 60, "feat!: drop the old endpoint")
+    _pr_as(repo, "Ada", "pr-61", 61, "frobnicate!: rename the thing")
+    _pr_as(repo, "Ada", "pr-62", 62, "Update stuff!")  # no title form, so not breaking
+    _pr_as(repo, "Ada", "pr-63", 63, "fix: ordinary")
+    repo.tag("v0.2.0")
+    payload = json.loads(_describe(repo, "v0.2.0", "--sections").stdout)
+    assert payload["breaking"] == [
+        {"number": 60, "title": "feat!: drop the old endpoint"},
+        {"number": 61, "title": "frobnicate!: rename the thing"},
+    ]
+    assert [item["number"] for item in payload["sections"]["features"]] == [60]
+    assert [item["number"] for item in payload["sections"]["other"]] == [61, 62]
+    assert [item["number"] for item in payload["sections"]["fixes"]] == [63]
+
+
+def test_the_counts_line_is_plain_text_opening_the_summary_after_the_heading(tmp_path):
+    repo = _major_repo(tmp_path)
+    out = _render_with(repo, {}).stdout
+    assert out.startswith(
+        "## Summary\n\n8 pull requests since v0.1.0: 3 features, 2 fixes, 1 documentation update, 2 other changes.\n\n"
+        "## Major Updates\n\n"
+    )
+    assert "**" not in out
+
+
+def test_sections_render_summary_then_major_updates_then_the_categories_then_contributors(tmp_path):
+    repo = _major_repo(tmp_path)
+    result = _render_with(
+        repo, {"overview": "Eight changes.", "highlights": [{"number": 30, "text": "Templates arrive."}]}
+    )
+    assert result.returncode == 0
+    assert [line for line in result.stdout.splitlines() if line.startswith("## ")] == [
+        "## Summary",
+        "## Major Updates",
+        "## Features",
+        "## Fixes",
+        "## Documentation Updates",
+        "## Other changes",
+        "## Contributors",
+    ]
+    assert result.stdout.startswith(
+        "## Summary\n\nEight changes.\n\n8 pull requests since v0.1.0: 3 features, 2 fixes, 1 documentation update, "
+        "2 other changes.\n\n## Major Updates\n\n"
+    )
+
+
+def test_an_accepted_overview_opens_the_summary_with_whitespace_collapsed(tmp_path):
+    repo = _major_repo(tmp_path)
+    result = _render_with(repo, {"overview": "This release adds a template.\nIt also fixes\n   the crash."})
+    assert (result.returncode, result.stderr) == (0, "")
+    assert result.stdout.startswith(
+        "## Summary\n\nThis release adds a template. It also fixes the crash.\n\n8 pull requests since v0.1.0: "
+    )
+
+
+@pytest.mark.parametrize(
+    ("bad", "rule"),
+    [
+        ("Ships <b>things</b>.", "contains '<'"),
+        ("See https://example.invalid/x.", "contains 'https://'"),
+        ("Intro.\n# Heading", "a line starts with '#'"),
+        ("", "not 1 to 800 characters after strip"),
+        ("y" * 801, "not 1 to 800 characters after strip"),
+    ],
+)
+def test_a_rejected_overview_is_dropped_and_the_summary_still_opens_with_the_counts(tmp_path, bad, rule):
+    repo = _major_repo(tmp_path)
+    result = _render_with(repo, {"overview": bad})
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"overview summary dropped: {rule}"])
+    assert result.stdout.startswith("## Summary\n\n8 pull requests since v0.1.0: ")
+    stripped = bad.strip()
+    assert not stripped or stripped not in result.stdout
+
+
+def test_a_highlight_for_a_number_outside_the_release_is_dropped(tmp_path):
+    repo = _major_repo(tmp_path)
+    highlights = [{"number": 999, "text": "Not in this release."}, {"number": 30, "text": "Templates arrive."}]
+    result = _render_with(repo, {"highlights": highlights})
+    assert (result.returncode, result.stderr.splitlines()) == (
+        0,
+        ["highlight 1 dropped: number is not a pull request in this release"],
+    )
+    assert f"{BREAKING_LINE}\n- #30 Templates arrive.\n\n## Features\n" in result.stdout
+    assert "Not in this release." not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("text", "rule"),
+    [
+        ("z" * 201, "not 1 to 200 characters after strip"),
+        ("   ", "not 1 to 200 characters after strip"),
+        ("Mentions @someone here.", "contains '@'"),
+        ("Links [x](y) here.", "contains ']('"),
+        ("Uses <b>tags</b>.", "contains '<'"),
+    ],
+)
+def test_a_highlight_whose_text_breaks_a_rule_is_dropped_and_the_rest_kept(tmp_path, text, rule):
+    repo = _major_repo(tmp_path)
+    result = _render_with(repo, {"highlights": [{"number": 30, "text": text}, {"number": 31, "text": "Crash fixed."}]})
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"highlight 1 dropped: {rule}"])
+    assert f"{BREAKING_LINE}\n- #31 Crash fixed.\n\n## Features\n" in result.stdout
+    stripped = text.strip()
+    assert not stripped or stripped not in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("text", "rule"),
+    [
+        ("www.evil.example", "contains 'www.'"),  # no banned mark, so only the www. rule catches it
+        ("See WWW.Evil.example.", "contains 'www.'"),
+        ("Closes #9999.", ALLOWLIST),
+        ("gh-1 fixed", "contains a GH- reference"),
+        ("Closes GH-9999.", "contains a GH- reference"),
+        ("Fixes _GH-12_.", "contains a GH- reference"),
+        ("Fixes \u00e9GH-19.", "contains a GH- reference"),
+    ],
+)
+def test_a_highlight_outside_the_allowlist_is_dropped_and_the_rest_kept(tmp_path, text, rule):
+    repo = _major_repo(tmp_path)
+    highlights = [{"number": 30, "text": text}, {"number": 31, "text": "Crash fixed."}]
+    result = _render_with(repo, {"highlights": highlights})
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"highlight 1 dropped: {rule}"])
+    assert f"{BREAKING_LINE}\n- #31 Crash fixed.\n\n## Features\n" in result.stdout
+    assert text not in result.stdout
+
+
+def test_a_highlight_of_exactly_200_characters_is_shown_and_its_newlines_collapsed(tmp_path):
+    repo = _major_repo(tmp_path)
+    text = "z" * 200
+    highlights = [{"number": 30, "text": text}, {"number": 31, "text": "Templates\narrive   now."}]
+    result = _render_with(repo, {"highlights": highlights})
+    assert (result.returncode, result.stderr) == (0, "")
+    assert f"{BREAKING_LINE}\n- #30 {text}\n- #31 Templates arrive now.\n\n## Features\n" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("item", "rule"),
+    [
+        ("not an object", "not an object"),
+        ({"number": "30", "text": "Quoted number."}, "number is not an integer"),
+        ({"number": True, "text": "A boolean number."}, "number is not an integer"),
+        ({"text": "No number."}, "number is not an integer"),
+        ({"number": 30, "text": 7}, "text is not a string"),
+    ],
+)
+def test_a_highlight_of_the_wrong_shape_is_dropped_under_the_rule_it_breaks(tmp_path, item, rule):
+    repo = _major_repo(tmp_path)
+    result = _render_with(repo, {"highlights": [item]})
+    assert (result.returncode, result.stderr.splitlines()) == (0, [f"highlight 1 dropped: {rule}"])
+    assert f"{BREAKING_LINE}\n\n## Features\n" in result.stdout
+
+
+def test_at_most_five_highlights_are_shown_in_input_order_and_the_rest_are_counted(tmp_path):
+    repo = _major_repo(tmp_path)  # seven valid numbers besides the breaking 32
+    highlights = [{"number": n, "text": f"Note {n}."} for n in (30, 31, 33, 34, 35, 36, 37)]
+    result = _render_with(repo, {"highlights": highlights})
+    assert result.stderr.splitlines() == ["highlights: 2 valid beyond the first 5 not shown"]
+    assert (
+        f"## Major Updates\n\n{BREAKING_LINE}\n- #30 Note 30.\n- #31 Note 31.\n- #33 Note 33.\n"
+        "- #34 Note 34.\n- #35 Note 35.\n\n## Features\n"
+    ) in result.stdout
+    assert "Note 36." not in result.stdout and "Note 37." not in result.stdout
+
+
+def test_a_duplicate_highlight_number_is_dropped_and_the_first_is_kept(tmp_path):
+    repo = _major_repo(tmp_path)
+    highlights = [{"number": 30, "text": "First."}, {"number": 30, "text": "Second."}]
+    result = _render_with(repo, {"highlights": highlights})
+    assert result.stderr.splitlines() == ["highlight 2 dropped: a duplicate of an earlier highlight"]
+    assert f"{BREAKING_LINE}\n- #30 First.\n\n## Features\n" in result.stdout
+    assert "Second." not in result.stdout
+
+
+def test_a_duplicate_is_judged_only_against_highlights_that_were_accepted(tmp_path):
+    repo = _major_repo(tmp_path)
+    highlights = [{"number": 30, "text": "z" * 201}, {"number": 30, "text": "Fine."}]
+    result = _render_with(repo, {"highlights": highlights})
+    assert result.stderr.splitlines() == ["highlight 1 dropped: not 1 to 200 characters after strip"]
+    assert f"{BREAKING_LINE}\n- #30 Fine.\n\n## Features\n" in result.stdout
+
+
+def test_a_breaking_change_is_not_repeated_as_a_highlight(tmp_path):
+    repo = _major_repo(tmp_path)
+    result = _render_with(repo, {"highlights": [{"number": 32, "text": "Old route removed."}]})
+    assert result.stderr.splitlines() == ["highlight 1 dropped: a breaking change, already under Major Updates"]
+    assert f"## Major Updates\n\n{BREAKING_LINE}\n\n## Features\n" in result.stdout
+    assert "Old route removed." not in result.stdout
+
+
+def test_major_updates_lists_breaking_changes_first_then_the_accepted_highlights(tmp_path):
+    repo = _major_repo(tmp_path)
+    result = _render_with(repo, {"highlights": [{"number": 30, "text": "Templates arrive."}]})
+    assert result.stderr == ""
+    assert f"## Major Updates\n\n{BREAKING_LINE}\n- #30 Templates arrive.\n\n## Features\n" in result.stdout
+
+
+def test_major_updates_says_so_when_there_is_no_breaking_change_and_no_accepted_highlight(tmp_path):
+    repo = _three_sections_repo(tmp_path)
+    plain = _run_stdin(repo, "", "release-notes", "--tag", "v0.2.0", "--render")
+    assert "## Major Updates\n\nNo breaking changes in this release.\n\n## Features\n" in plain.stdout
+    rejected = _render_with(repo, {"highlights": [{"number": 999, "text": "Not here."}]})
+    assert "## Major Updates\n\nNo breaking changes in this release.\n\n## Features\n" in rejected.stdout

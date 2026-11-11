@@ -10,11 +10,9 @@ import hashlib
 import importlib.util
 import io
 import json
-import os
 import re
 import shutil
 import socket
-import subprocess
 import sys
 import threading
 from http.server import ThreadingHTTPServer
@@ -22,6 +20,7 @@ from pathlib import Path
 from urllib.parse import parse_qs
 
 import forgeries
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -1929,16 +1928,9 @@ def receiver(tmp_path, prometheus, loki):
 
 
 def _run(receiver, *extra):
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(
-        ["ansible-playbook", "-i", str(receiver["inventory"]), str(PLAYBOOK), *extra],
-        cwd=REPO,
-        env=env,
-        text=True,
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
+    # The receiver's inventory sits in the test's own temporary directory, which is the run's tmp_path.
+    return harness_sandbox.run_playbook(
+        PLAYBOOK, receiver["inventory"].parent, *extra, inventory=receiver["inventory"],
     )
 
 

@@ -217,7 +217,7 @@ repo is placed.
 - Do not put a token in `config.json`, in a template outside the `secrets` namespace, or in any committed file.
   Templates use `secrets.*` and `_`-prefixed variables only. `test_credential_leaks.bats` is meant to check
   that, but its regex does not match `{{ name` written with a space. CI's GNU grep shows the same miss: run
-  38731550214 (head 66c18f5b) passes that test while `n8n.env.j2` at that head has `{{ n8n_bind |`.
+  38731550214 (head 66c18f5b) passes that test while a template at that head has `{{ <variable> |`.
   `test_launch_gate_allowlist.py` therefore checks the parsed templates instead.
 - Do not add a template to the gate by hand. The list comes from OPA's catalog, and a template the catalog
   does not name never reaches the gate.

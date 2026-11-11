@@ -14,6 +14,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -42,11 +43,14 @@ def _playbook(tmp_path, name, workdir, *extra):
         # No monorepo_deploy_path: a legacy service may declare only its working dir (PR 284 review).
         f"service_name=demo\nlocal_mode=true\ncontainer_engine=podman\ncompose_working_dir={workdir}\n"
     )
+    # Not run_playbook: under bwrap the rootless Podman store, outside tmp_path, would be read-only,
+    # and podman needs to write there (#1055 review). Bounded here instead.
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     return subprocess.run(
         ["ansible-playbook", "-i", str(inventory), str(PLAYBOOKS / name), "-e", "target_service=demo_svc", *extra],
         cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 

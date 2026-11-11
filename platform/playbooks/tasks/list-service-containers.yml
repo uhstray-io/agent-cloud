@@ -2,8 +2,8 @@
 # list-service-containers.yml — the containers one service's compose project created.
 #
 # Selected by the compose label com.docker.compose.project.working_dir == the service's deploy
-# directory, because compose project names are not stable per service (n8n's project is
-# literally "deployment"). Both Docker Compose and podman-compose set that label.
+# directory, because compose project names are not stable per service. Both Docker Compose
+# and podman-compose set that label.
 #
 # A read: runs in check mode too, and never fails the play; an empty result is the caller's
 # to judge (verify-service-persistence.yml fails on it, the snapshots record it).

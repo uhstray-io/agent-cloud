@@ -22,6 +22,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -67,10 +68,7 @@ def _named(path: Path, name: str) -> dict:
 def _run(tmp_path: Path, playbook: dict) -> subprocess.CompletedProcess:
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump([playbook]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    return harness_sandbox.run_playbook(path, tmp_path)
 
 
 def _render(tmp_path: Path, src: Path, variables: dict) -> str:
@@ -218,11 +216,7 @@ def _writes() -> list[dict]:
 def _run_env(tmp_path: Path, playbook: dict, extra_env: dict) -> subprocess.CompletedProcess:
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump([playbook]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    env.update(extra_env)
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    return harness_sandbox.run_playbook(path, tmp_path, env=extra_env)
 
 
 def test_proxmox_play_is_local_and_imports_the_extra_var_guard_first():
@@ -440,10 +434,7 @@ def test_the_proof_is_skipped_on_a_check_mode_mint_and_never_proves_a_replaced_s
 def _run_check(tmp_path: Path, playbook: dict) -> subprocess.CompletedProcess:
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump([playbook]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "--check", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    return harness_sandbox.run_playbook(path, tmp_path, "--check")
 
 
 @NEEDS_ANSIBLE
@@ -678,10 +669,7 @@ def _run_with_inventory(tmp_path: Path, inventory: dict, playbook: dict) -> subp
     inv.write_text(yaml.safe_dump(inventory))
     path = tmp_path / "harness.yml"
     path.write_text(yaml.safe_dump([playbook]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", str(inv), str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    return harness_sandbox.run_playbook(path, tmp_path, inventory=inv)
 
 
 def _ca_gate_harness(hosts: dict | None) -> tuple[dict, dict]:
@@ -1134,10 +1122,7 @@ def _gw_render(tmp_path: Path, gateway: dict | None) -> tuple[str, list[str]]:
     inv.write_text(yaml.safe_dump(inventory))
     path = case / "plays.yml"
     path.write_text(yaml.safe_dump(plays))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(["ansible-playbook", "-i", str(inv), str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    proc = harness_sandbox.run_playbook(path, case, inventory=inv)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     admins = [a["name"] for a in json.loads(admins_out.read_text())] if gateway is not None else []
     return out.read_text(), admins
@@ -1368,10 +1353,7 @@ def test_the_console_file_agrees_with_the_gateways_own_render(tmp_path):
     inv.write_text(yaml.safe_dump(inventory))
     path = case / "plays.yml"
     path.write_text(yaml.safe_dump([play]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(["ansible-playbook", "-i", str(inv), str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    proc = harness_sandbox.run_playbook(path, case, inventory=inv)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     keys = {k["metadata"]["name"]: k for k in yaml.safe_load(out.read_text())["llm"]["policies"]["apiKey"]["keys"]}
 
@@ -1667,6 +1649,7 @@ def test_the_gate_probe_passes_on_401_and_fails_naming_the_status_otherwise(tmp_
                                         "_console_gate_probe_argv")}
     variables.update({"_deploy_dir": str(tmp_path), "console_launch_gate_url": GATE_URL,
                       "console_launch_gate_ip": GATE_IP, "local_mode": False,
+                      "console_gate_probe_delay": 0,
                       GATE_DECLARED: _deploy_vars()[GATE_DECLARED]})
     tasks = [_named(DEPLOY, GATE_PROBE), _named(DEPLOY, GATE_PROBE_ASSERT)]
 

@@ -25,42 +25,6 @@
       ansible.builtin.debug:
         msg: "OpenBao: {{ 'HEALTHY' if _bao_health is succeeded else 'UNHEALTHY' }}"
 
-- name: "Validate NocoDB"
-  hosts: nocodb_svc
-  gather_facts: false
-  tasks:
-    - name: Check NocoDB health
-      ansible.builtin.uri:
-        url: "{{ service_url }}/api/v1/health"
-        method: GET
-        status_code: [200]
-        timeout: 10
-      register: _nocodb_health
-      ignore_errors: true
-      check_mode: false
-
-    - name: Report NocoDB status
-      ansible.builtin.debug:
-        msg: "NocoDB: {{ 'HEALTHY' if _nocodb_health is succeeded else 'UNHEALTHY' }}"
-
-- name: "Validate n8n"
-  hosts: n8n_svc
-  gather_facts: false
-  tasks:
-    - name: Check n8n health
-      ansible.builtin.uri:
-        url: "{{ service_url }}/healthz"
-        method: GET
-        status_code: [200]
-        timeout: 10
-      register: _n8n_health
-      ignore_errors: true
-      check_mode: false
-
-    - name: Report n8n status
-      ansible.builtin.debug:
-        msg: "n8n: {{ 'HEALTHY' if _n8n_health is succeeded else 'UNHEALTHY' }}"
-
 - name: "Validate Semaphore"
   hosts: semaphore_svc
   gather_facts: false
@@ -96,24 +60,6 @@
     - name: Report NetBox status
       ansible.builtin.debug:
         msg: "NetBox: {{ 'HEALTHY' if _netbox_health is succeeded else 'UNHEALTHY' }}"
-
-- name: "Validate WisBot"
-  hosts: wisbot_svc
-  gather_facts: false
-  tasks:
-    - name: Check WisBot health
-      ansible.builtin.uri:
-        url: "{{ service_url }}/health"
-        method: GET
-        status_code: [200]
-        timeout: 10
-      register: _wisbot_health
-      ignore_errors: true
-      check_mode: false
-
-    - name: Report WisBot status
-      ansible.builtin.debug:
-        msg: "WisBot: {{ 'HEALTHY' if _wisbot_health is succeeded else 'UNHEALTHY' }}"
 
 - name: "Validate console"
   hosts: console_svc

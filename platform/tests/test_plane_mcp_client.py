@@ -19,6 +19,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -102,7 +103,8 @@ class Env:
 
     def run(self, *args):
         return subprocess.run(
-            [sys.executable, str(INSTALLER), *args], env=self.env, capture_output=True, text=True, check=False
+            [sys.executable, str(INSTALLER), *args], env=self.env, capture_output=True, text=True, check=False,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
 
     def install(self, *extra, host=HOST):

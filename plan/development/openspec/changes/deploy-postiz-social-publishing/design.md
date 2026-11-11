@@ -34,8 +34,7 @@ in the migration plan is therefore load-bearing, not stylistic.
 reproducible from code; keep the credential surface entirely inside the secret store;
 and reach the hardened host state without ever losing access to the host.
 
-**Non-Goals.** No n8n implementation — this change produces the integration contract
-only. No migration of data from the developer-machine instance; the deployment is
+**Non-Goals.** No migration of data from the developer-machine instance; the deployment is
 greenfield by decision, which is what allows a strong generated datastore password
 instead of inheriting the upstream default. No object-storage backend for media. No
 Kubernetes path; this service targets the Compose/Podman single-site tier like its peers.

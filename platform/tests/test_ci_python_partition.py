@@ -1,153 +1,132 @@
-"""Keep CI's Python test shards complete, disjoint, and mandatory."""
+"""Keep CI's Python test shards complete, disjoint, and mandatory (plan 21 phase 2).
+
+CI runs the whole root pytest collection as one matrix job of N shards. The root conftest.py skips,
+at collection time, every test file that platform/tests/shards.py does not assign to the shard named
+by PYTEST_SHARD=k/N. These tests prove the assignment covers exactly the root collection, that the
+hook really applies it, and that the workflow and the Unit Tests aggregate agree on the matrix.
+"""
 
 import os
-import shlex
+import re
 import subprocess
 import sys
 import tomllib
-from itertools import combinations
 from pathlib import Path
 
+import pytest
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO / ".github/workflows/lint-and-test.yml"
-SAFETY_FILES = {
-    "platform/tests/test_rollback_inference_route.py",
-    "platform/tests/test_executor_internal_overrides.py",
-}
 PYTEST_FLAGS = ("-v", "-x", "-n", "auto", "--dist", "worksteal", "--durations=20")
-PYTHON_SHARDS = {
-    "python-core": "Run Python core tests",
-    "python-playbook-safety": "Run Python Playbook Safety tests",
-    "python-agentgateway": "Run Python Agentgateway tests",
-    "python-playbook-runs": "Run Python Playbook Runs tests",
-    "python-netbox": "Run NetBox Python tests",
-    "python-semaphore": "Run Semaphore Python tests",
-}
+RUN_STEP = re.compile(r"Run Python tests \(shard \$\{\{ matrix\.shard \}\} of (\d+)\)")
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import harness_sandbox  # noqa: E402
+import shards  # noqa: E402
 
 
 def _jobs():
     return yaml.safe_load(WORKFLOW.read_text())["jobs"]
 
 
-def _pytest_step(job, step_name):
-    step = next(step for step in job["steps"] if step.get("name") == step_name)
-    return step["run"], step.get("env", {})
+def _run_step(job):
+    return next(step for step in job["steps"] if RUN_STEP.fullmatch(step.get("name", "")))
 
 
-def _node_ids(command, env, *, root=False):
-    args = shlex.split(command)
-    assert args[0] == "pytest", command
-    args = args[1:]
-    collected_args = []
-    skip_value = False
-    for arg in args:
-        if skip_value:
-            skip_value = False
-            continue
-        if arg in {"-v", "-x"}:
-            continue
-        if arg in {"-n", "--dist", "--durations"}:
-            skip_value = True
-            continue
-        if root and arg == "--deselect":
-            skip_value = True
-            continue
-        if arg.startswith("--durations=") or (root and arg.startswith("--deselect=")):
-            continue
-        collected_args.append(arg)
+def _shard_count():
+    return int(RUN_STEP.fullmatch(_run_step(_jobs()["python"])["name"]).group(1))
 
+
+def _testpaths():
+    return tomllib.loads((REPO / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["testpaths"]
+
+
+def _collect(env, *args):
+    """Node IDs pytest collects from the repository root with the shard job's environment."""
+    environment = {key: value for key, value in os.environ.items() if key != "PYTEST_SHARD"}
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", *collected_args, "--collect-only", "-q"],
-        cwd=REPO,
-        env={**os.environ, **env},
-        text=True,
-        capture_output=True,
-        check=False,
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *args],
+        cwd=REPO, env={**environment, **env}, text=True, capture_output=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
-    assert result.returncode == 0, (
-        f"pytest collection failed for {command!r}:\n{result.stdout}\n{result.stderr}"
-    )
-    node_ids = {line.strip() for line in result.stdout.splitlines() if "::" in line}
-    assert node_ids, f"pytest collected no node IDs for {command!r}:\n{result.stdout}"
-    return node_ids
+    assert result.returncode == 0, f"pytest collection failed:\n{result.stdout}\n{result.stderr}"
+    return {line.strip() for line in result.stdout.splitlines() if "::" in line}
 
 
-def test_python_shards_keep_root_discovery_and_select_whole_safety_files():
-    jobs = _jobs()
-    core = jobs["python-core"]
-    safety = jobs["python-playbook-safety"]
-    core_run, _ = _pytest_step(core, PYTHON_SHARDS["python-core"])
-    safety_run, _ = _pytest_step(safety, PYTHON_SHARDS["python-playbook-safety"])
-    checkout = next(step for step in safety["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+def _assignment(n):
+    files = shards.enumerate_files(REPO, _testpaths())
+    weights = shards.file_weights(files, shards.load_durations(REPO / "platform/tests/test_durations.json"), REPO)
+    return files, shards.assign(files, weights, n)
 
-    pytest_config = tomllib.loads((REPO / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]
+
+@pytest.fixture(scope="module")
+def root_node_ids():
+    env = _run_step(_jobs()["python"])["env"]
+    ids = _collect({key: value for key, value in env.items() if key != "PYTEST_SHARD"})
+    assert ids, "the root collection is empty"
+    return ids
+
+
+def test_the_python_matrix_runs_the_root_collection_in_n_shards():
+    job = _jobs()["python"]
+    n = _shard_count()
+    assert job["name"] == f"Python (${{{{ matrix.shard }}}}/{n})"
+    assert job["strategy"]["matrix"]["shard"] == list(range(1, n + 1))
+    assert job["strategy"]["fail-fast"] is False
+    assert job["timeout-minutes"] == 30
+    checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
     assert checkout.get("with", {}).get("persist-credentials") is False
-    assert "platform/tests" in pytest_config["testpaths"]
-    assert not any(flag.startswith("--ignore") for flag in core_run.split())
-    agw = jobs["python-agentgateway"]
-    agw_run, _ = _pytest_step(agw, PYTHON_SHARDS["python-agentgateway"])
-    agw_files = {arg for arg in agw_run.split() if arg.startswith("platform/tests/")}
-    assert agw_files, "the Python Agentgateway shard names no test files"
-    assert all(Path(name).name.startswith("test_agw_") and (REPO / name).is_file() for name in agw_files)
-    runs = jobs["python-playbook-runs"]
-    runs_run, runs_env = _pytest_step(runs, PYTHON_SHARDS["python-playbook-runs"])
-    runs_files = {arg for arg in runs_run.split() if arg.startswith("platform/tests/")}
-    assert runs_files, "the Python Playbook Runs shard names no test files"
-    assert all((REPO / name).is_file() for name in runs_files)
-    assert all(flag in runs_run for flag in PYTEST_FLAGS)
-    assert runs["timeout-minutes"] == 30
-    _, core_env = _pytest_step(core, PYTHON_SHARDS["python-core"])
-    assert runs_env == core_env, "the Playbook Runs shard must run with core's environment"
-    runs_checkout = next(step for step in runs["steps"] if step.get("uses", "").startswith("actions/checkout@"))
-    assert runs_checkout.get("with", {}).get("persist-credentials") is False
-    runs_dependencies = next(step["run"] for step in runs["steps"] if step.get("name") == "Install test dependencies")
-    assert "uv sync --locked" in runs_dependencies
-    assert "collections/requirements.yml" in runs_dependencies
-    assert {arg.split("=", 1)[1] for arg in core_run.split() if arg.startswith("--deselect=")} == {
-        "platform/services/netbox/deployment/tests/", "platform/semaphore/tests/", *SAFETY_FILES, *agw_files,
-        *runs_files,
-    }
-    assert all(flag in agw_run for flag in PYTEST_FLAGS)
-    assert agw["timeout-minutes"] == 30
-    agw_checkout = next(step for step in agw["steps"] if step.get("uses", "").startswith("actions/checkout@"))
-    assert agw_checkout.get("with", {}).get("persist-credentials") is False
-    agw_dependencies = next(step["run"] for step in agw["steps"] if step.get("name") == "Install test dependencies")
-    assert "uv sync --locked" in agw_dependencies
-    assert "collections/requirements.yml" in agw_dependencies
-    assert {arg for arg in safety_run.split() if arg.startswith("platform/tests/")} == SAFETY_FILES
-    assert all(flag in core_run and flag in safety_run for flag in PYTEST_FLAGS)
-    assert safety["timeout-minutes"] == 30
-    dependencies = next(step["run"] for step in safety["steps"] if step.get("name") == "Install test dependencies")
+    dependencies = next(step["run"] for step in job["steps"] if step.get("name") == "Install test dependencies")
     assert "uv sync --locked" in dependencies
     assert "collections/requirements.yml" in dependencies
 
+    step = _run_step(job)
+    assert step["env"]["PYTEST_SHARD"] == f"${{{{ matrix.shard }}}}/{n}"
+    assert step["env"]["PYTHONPATH"] == (
+        "platform/services/netbox/deployment/workers/proxmox_discovery:"
+        "platform/services/netbox/deployment/workers/pfsense_sync")
+    args = step["run"].split()
+    assert args[0] == "pytest"
+    assert all(flag in args for flag in PYTEST_FLAGS)
+    assert "junit_family=xunit1" in args
+    # Root discovery only: a path, --deselect or --ignore would make the shards miss tests.
+    assert not [arg for arg in args[1:] if not arg.startswith("-") and arg not in {
+        "auto", "worksteal", "junit_family=xunit1"}]
+    assert not [arg for arg in args if arg.startswith(("--deselect", "--ignore", "-k", "-m"))]
+    assert "platform/tests" in _testpaths()
 
-def test_python_shards_collect_exactly_the_root_node_ids():
-    jobs = _jobs()
-    runs = {
-        name: _pytest_step(jobs[name], step_name)
-        for name, step_name in PYTHON_SHARDS.items()
-    }
-    core_run, core_env = runs["python-core"]
-    root = _node_ids(core_run, core_env, root=True)
-    shards = {
-        name: _node_ids(command, env)
-        for name, (command, env) in runs.items()
-    }
 
-    assert shards["python-playbook-safety"], "the Python Playbook Safety shard is empty"
-    assert shards["python-agentgateway"], "the Python Agentgateway shard is empty"
-    assert shards["python-playbook-runs"], "the Python Playbook Runs shard is empty"
-    for (left_name, left), (right_name, right) in combinations(shards.items(), 2):
-        overlap = left & right
-        assert not overlap, f"{left_name} and {right_name} overlap: {sorted(overlap)[:10]}"
-    union = set().union(*shards.values())
-    assert union == root, (
-        f"shard union differs from root: missing={sorted(root - union)[:10]}, "
-        f"extra={sorted(union - root)[:10]}"
-    )
+def test_the_shards_partition_exactly_the_root_collection(root_node_ids):
+    # The hook enumerates files itself; every file the root collects must be one it enumerated, or
+    # that file would fall to shard 1 by default instead of by assignment.
+    n = _shard_count()
+    files, assignment = _assignment(n)
+    collected_files = {node.split("::", 1)[0] for node in root_node_ids}
+    assert collected_files <= set(files), sorted(collected_files - set(files))[:10]
+    by_shard = {k: {node for node in root_node_ids if assignment[node.split("::", 1)[0]] == k}
+                for k in range(1, n + 1)}
+    assert all(by_shard.values()), {k: len(v) for k, v in by_shard.items()}
+    assert sum(len(v) for v in by_shard.values()) == len(root_node_ids)
+    assert set().union(*by_shard.values()) == root_node_ids
+
+
+def test_the_hook_collects_only_its_own_shard():
+    # A directory, not file paths: paths named on the command line bypass pytest_ignore_collect.
+    # The smallest directory the assignment splits between shards, so a durations refresh that moves
+    # files cannot leave the test without a case.
+    n = _shard_count()
+    files, assignment = _assignment(n)
+    directories = {str(Path(f).parent) for f in files}
+    split = sorted((sum(f.startswith(d + "/") for f in files), d) for d in directories
+                   if len({assignment[f] for f in files if f.startswith(d + "/")}) > 1)
+    assert split, "no test directory is split between shards"
+    directory = split[0][1]
+    mine = {f for f in files if f.startswith(directory + "/")}
+    k = assignment[min(mine)]
+    collected = {node.split("::", 1)[0] for node in _collect({"PYTEST_SHARD": f"{k}/{n}"}, directory)}
+    assert collected == {f for f in mine if assignment[f] == k}
+    assert collected and collected != mine
 
 
 def test_no_job_runs_the_pi_provider_that_moved_to_the_harness_repository():
@@ -158,20 +137,14 @@ def test_no_job_runs_the_pi_provider_that_moved_to_the_harness_repository():
     assert not (REPO / "platform/services/agentgateway/context/clients/pi-provider").exists()
 
 
-def test_unit_tests_aggregate_requires_playbook_safety_success_for_every_result():
+def test_unit_tests_aggregate_requires_every_test_group_to_succeed():
     aggregate = _jobs()["test"]
     assert aggregate["if"] == "always()"
-    assert "python-playbook-safety" in aggregate["needs"]
-    assert "python-agentgateway" in aggregate["needs"]
-    assert "python-playbook-runs" in aggregate["needs"]
-    assert "rust-console" in aggregate["needs"]
+    assert aggregate["needs"] == ["python", "bats", "rego", "rust-console"]
     gate = aggregate["steps"][0]
-    required = {
-        "PYTHON_CORE_RESULT", "PYTHON_PLAYBOOK_SAFETY_RESULT", "PYTHON_AGENTGATEWAY_RESULT",
-        "PYTHON_PLAYBOOK_RUNS_RESULT", "PYTHON_NETBOX_RESULT", "PYTHON_SEMAPHORE_RESULT",
-        "BATS_RESULT", "REGO_RESULT", "RUST_CONSOLE_RESULT",
-    }
+    required = {"PYTHON_RESULT", "BATS_RESULT", "REGO_RESULT", "RUST_CONSOLE_RESULT"}
     assert set(gate["env"]) == required
+    assert gate["env"]["PYTHON_RESULT"] == "${{ needs.python.result }}"
     for name in required:
         assert "${{ needs." in gate["env"][name]
     script = gate["run"]

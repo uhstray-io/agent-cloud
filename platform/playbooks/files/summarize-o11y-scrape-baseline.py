@@ -781,7 +781,9 @@ def _validate_compose_inputs_overlay_path(path: str) -> bool:
         return False
 
 
-def _availability_inspect_all(deadline: float, podman_path: str) -> list[dict[str, Any]]:
+def _availability_inspect_all(
+    deadline: float, podman_path: str, *, allow_empty: bool = False,
+) -> list[dict[str, Any]]:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise Refusal("namespace_runtime_unreadable")
@@ -793,6 +795,9 @@ def _availability_inspect_all(deadline: float, podman_path: str) -> list[dict[st
         ids = ids_raw.decode("ascii", "strict").splitlines()
     except UnicodeError:
         raise Refusal("namespace_runtime_unreadable") from None
+    if allow_empty and not ids:
+        # The producer identity read counts Alloy records itself; zero containers is a count.
+        return []
     if not 1 <= len(ids) <= MAX_AVAILABILITY_CONTAINERS or any(
         not re.fullmatch(r"[0-9a-f]{12,64}", container_id) for container_id in ids
     ) or len(ids) != len(set(ids)):
@@ -4348,16 +4353,16 @@ def _availability_self_identity(environment: str, cluster: str) -> dict[str, str
 def _active_prometheus_self_target(
     targets_raw: bytes | str, *, environment: str, cluster: str,
 ) -> dict[str, Any]:
-    response = _json_document(targets_raw, "native_source_unavailable")
+    response = _json_document(targets_raw, "native_targets_invalid")
     data = response.get("data")
     active = data.get("activeTargets") if isinstance(data, dict) else None
     if not isinstance(active, list) or len(active) > MAX_ROWS:
-        raise Refusal("native_source_unavailable")
+        raise Refusal("native_targets_invalid")
     identity = _availability_self_identity(environment, cluster)
     matches = []
     for target in active:
         if not isinstance(target, dict) or not isinstance(target.get("labels"), dict):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_targets_invalid")
         labels = target["labels"]
         if labels.get("job") == "alloy" and labels.get("instance") == "alloy:12345":
             if labels != identity:
@@ -4494,16 +4499,16 @@ def _current_alloy_identity() -> tuple[dict[str, Any], dict[str, Any]]:
         podman_identity = identities.get("podman") if isinstance(identities, dict) else None
         podman_path = podman_identity.get("path") if isinstance(podman_identity, dict) else None
         if not isinstance(podman_path, str) or not os.path.isabs(podman_path):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_podman_unavailable")
         records = _availability_inspect_all(
-            time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path,
+            time.monotonic() + MAX_AVAILABILITY_INSPECT_SECONDS, podman_path, allow_empty=True,
         )
         candidates = [record for record in records if record.get("service") == "alloy"]
         if len(candidates) != 1:
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_alloy_count")
         record = candidates[0]
         if not record.get("running") or not record.get("started_at") or not record.get("pid"):
-            raise Refusal("native_source_unavailable")
+            raise Refusal("native_identity_alloy_not_running")
         process = _availability_process_identity(record["pid"])
     except Refusal as error:
         # The source gate accepts only native and generic reasons. A namespace category from the
@@ -4646,28 +4651,12 @@ def _require_curl_version() -> None:
         raise Refusal("curl_unsupported")
 
 
-def collect() -> dict[str, Any]:
-    _require_curl_version()
-    targets_raw = _run_api("/api/v1/targets?state=active")
-    samples_raw = _run_api("/api/v1/query?query=max_over_time%28scrape_samples_scraped%5B24h%5D%29")
-    series_end = int(time.time())
-    baseline = summarize(
-        targets_raw,
-        samples_raw,
-        _run_probe,
-        _run_series_query,
-        series_end - 86400,
-        series_end,
-    )
-    try:
-        loaded_limits = _loaded_limit_readback(targets_raw)
-    except Refusal as error:
-        loaded_limits = {"status": "unavailable", "reason": error.category}
-    except Exception:
-        loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
+def _survey_source_result(
+    targets_raw: bytes | str, loaded_limits: Any, source_text: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The survey's current-producer read: a fixed result, never an exception or its text."""
     source_context = None
     source_result = None
-    source_text = os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON", "")
     if source_text:
         try:
             source_context = _validate_availability_source_payload(_json_input_bytes(source_text))
@@ -4691,9 +4680,34 @@ def collect() -> dict[str, Any]:
         except Exception:
             source_context = source_context or {"emit": True}
             source_result = {
-                "status": "unavailable", "reason": "native_source_unavailable",
+                "status": "unavailable", "reason": "native_source_internal_error",
                 "source": "unknown", "intended_source": "unknown", "matches_intended": False,
             }
+    return source_context, source_result
+
+
+def collect() -> dict[str, Any]:
+    _require_curl_version()
+    targets_raw = _run_api("/api/v1/targets?state=active")
+    samples_raw = _run_api("/api/v1/query?query=max_over_time%28scrape_samples_scraped%5B24h%5D%29")
+    series_end = int(time.time())
+    baseline = summarize(
+        targets_raw,
+        samples_raw,
+        _run_probe,
+        _run_series_query,
+        series_end - 86400,
+        series_end,
+    )
+    try:
+        loaded_limits = _loaded_limit_readback(targets_raw)
+    except Refusal as error:
+        loaded_limits = {"status": "unavailable", "reason": error.category}
+    except Exception:
+        loaded_limits = {"status": "unavailable", "reason": "loaded_readback_unavailable"}
+    source_context, source_result = _survey_source_result(
+        targets_raw, loaded_limits, os.environ.get("O11Y_AVAILABILITY_SOURCE_JSON", ""),
+    )
     try:
         alert_inputs = _alert_input_availability(
             targets_raw,
@@ -4856,7 +4870,7 @@ def _availability_source_action() -> dict[str, Any]:
     declaration = _json_input_bytes(source_json) if source_json is not None else _input_document()
     source_context = _validate_availability_source_payload(declaration)
     environment, cluster = source_context["environment"], source_context["cluster"]
-    targets_raw = _run_api("/api/v1/targets?state=active", "native_source_unavailable")
+    targets_raw = _run_api("/api/v1/targets?state=active", "native_targets_unavailable")
     loaded = _loaded_limit_readback(targets_raw)
     return collect_current_availability_source(
         targets_raw, loaded, source_context["availability"], source_context["shared_limits"],

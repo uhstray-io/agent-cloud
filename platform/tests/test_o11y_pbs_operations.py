@@ -9,6 +9,7 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -73,6 +74,7 @@ def test_backup_window_epoch_commands_remain_correct_under_non_utc_timezone():
             check=False,
             env=environment,
             text=True,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert result.returncode == 0
         observed_epoch = int(result.stdout.strip())
@@ -88,6 +90,7 @@ def test_backup_window_epoch_commands_remain_correct_under_non_utc_timezone():
             check=True,
             env=environment,
             text=True,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert abs(observed_epoch - int(legacy.stdout.strip())) >= 7 * 60 * 60
 
@@ -130,6 +133,7 @@ def test_destination_restore_locator_is_derived_from_authenticated_snapshot_and_
     result = subprocess.run(
         [sys.executable, str(FILES / "o11y_pbs_operations.py")],
         input=json.dumps(request), capture_output=True, check=False, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0
     assert json.loads(result.stdout) == {**expected, "storage_id": "pbs-o11y"}

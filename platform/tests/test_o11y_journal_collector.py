@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -1036,6 +1037,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -1168,6 +1170,7 @@ def _embedded_run(root, *args):
     return subprocess.run(
         [sys.executable, "-c", code, str(root), *args],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 
@@ -1697,6 +1700,7 @@ def test_live_positions_debug_rescues_malformed_nested_diagnostic_before_renderi
         done = subprocess.run(
             [ansible_python(), "-c", _EVALUATE], input=json.dumps(job), text=True,
             capture_output=True,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert done.returncode == 0, done.stderr
         return [tuple(result) for result in json.loads(done.stdout)]
@@ -2053,6 +2057,7 @@ def test_survey_assertion_accepts_helper_and_check_mode_schemas(monkeypatch):
         input=json.dumps({"conditions": assertion["that"], "reports": reports}),
         text=True, capture_output=True, check=False,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     outcomes = json.loads(result.stdout)
@@ -3035,6 +3040,7 @@ os.listxattr=lambda *_args,**_kwargs: []
     result = subprocess.run(
         [sys.executable, "-c", script, str(root), json.dumps(expected), str(0o700)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0
@@ -3085,6 +3091,7 @@ os.fchmod=partial_fchmod
     result = subprocess.run(
         [sys.executable, "-c", script, str(root), json.dumps(expected), str(0o700)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0
@@ -3151,6 +3158,7 @@ def record_mutation(*_args,**_kwargs):
     result = subprocess.run(
         [sys.executable, "-c", script, str(root), json.dumps(expected), *arguments, str(marker)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0
@@ -3197,6 +3205,7 @@ def record_mutation(*_args,**_kwargs):
     result = subprocess.run(
         [sys.executable, "-c", script, str(root), json.dumps(expected), *arguments, str(marker)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0
@@ -3269,6 +3278,7 @@ def record_mutation(*_args,**_kwargs):
     result = subprocess.run(
         [sys.executable, "-c", script, str(root), json.dumps(expected), *arguments, str(marker)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0
@@ -3976,6 +3986,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         result = subprocess.run(
             [sys.executable, "-c", prelude, str(root)],
             check=False, capture_output=True, text=True,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
@@ -4056,6 +4067,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     metadata = json.loads(result.stdout)
@@ -4077,6 +4089,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     metadata = json.loads(result.stdout)
@@ -4089,6 +4102,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     metadata = json.loads(result.stdout)
@@ -4104,6 +4118,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     metadata = json.loads(result.stdout)
@@ -4123,6 +4138,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})''',
     result = subprocess.run(
         [sys.executable, "-c", unreadable_prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     metadata = json.loads(result.stdout)
@@ -4152,6 +4168,7 @@ def test_embedded_positions_metadata_aggregates_roles_without_emitting_names_or_
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -4277,6 +4294,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         result = subprocess.run(
             [sys.executable, "-c", prelude, str(root)],
             check=False, capture_output=True, text=True,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout), result.stdout
@@ -4382,6 +4400,7 @@ def test_embedded_metadata_reports_three_entry_layout_with_anonymous_unknown_dir
     )
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)], check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
     assert result.returncode == 0, result.stderr
@@ -4430,6 +4449,7 @@ def test_unmatched_directory_categories_count_zero_multiple_and_nonempty(tmp_pat
     )
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)], check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     diagnostic = json.loads(result.stdout)["unmatched_directories"]
@@ -4443,6 +4463,7 @@ def test_unmatched_directory_categories_count_zero_multiple_and_nonempty(tmp_pat
     zero_prelude = prelude.replace(mountinfo, zero_mountinfo)
     zero = subprocess.run(
         [sys.executable, "-c", zero_prelude, str(empty_root)], check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert zero.returncode == 0, zero.stderr
     diagnostic = json.loads(zero.stdout)["unmatched_directories"]
@@ -4499,6 +4520,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
 '''
         result = subprocess.run(
             [sys.executable, "-c", prelude, str(root)], check=False, capture_output=True, text=True,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)["unmatched_directories"]
@@ -4554,6 +4576,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
     result = subprocess.run(
         [sys.executable, "-c", prelude, str(root)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     metadata = json.loads(result.stdout)
@@ -4592,6 +4615,7 @@ exec({POSITIONS._METADATA_SCRIPT!r})
         result = subprocess.run(
             [sys.executable, "-c", prelude, str(root)],
             check=False, capture_output=True, text=True,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert result.returncode == 0, result.stderr
         return json.loads(result.stdout)
@@ -4704,6 +4728,7 @@ os.open=race_open
     result = subprocess.run(
         [sys.executable, "-c", script, str(root), expected, str(stat.st_uid), str(stat.st_gid), str(marker)],
         check=False, capture_output=True, text=True,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0
     assert json.loads(result.stdout) == {"status": "refused"}
@@ -5131,10 +5156,9 @@ def test_o11y_tls_preflight_accepts_synthetic_pairs_and_refuses_invalid_identity
     def run(inventory):
         path = tmp_path / "inventory.yml"
         path.write_text(yaml.safe_dump(inventory), encoding="utf-8")
-        return subprocess.run(
-            ["ansible-playbook", "--check", "-i", str(path), str(playbook)],
-            check=False, capture_output=True, text=True,
-            env=os.environ | {"ANSIBLE_LOCAL_TEMP": str(local_tmp)},
+        return harness_sandbox.run_playbook(
+            playbook, tmp_path, "--check", inventory=path,
+            env={"ANSIBLE_LOCAL_TEMP": str(local_tmp)},
         )
 
     valid = run(inventory_base)
@@ -6667,6 +6691,7 @@ print(json.dumps({
             capture_output=True,
             text=True,
             check=False,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
 
     assert result.returncode == 0, result.stderr
@@ -7464,6 +7489,7 @@ def test_content_gate_admits_only_declared_clear_or_empty_containers_on_an_obser
         [ansible_python(), "-c", _CONTENT_GATE_EVALUATE],
         input=json.dumps(job), text=True, capture_output=True, check=False,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     outcomes = dict(zip((name for name, *_ in cases), json.loads(result.stdout), strict=True))
@@ -7607,6 +7633,7 @@ def test_observed_gate_names_only_a_fixed_survey_reason_and_never_free_text():
         [ansible_python(), "-c", _SURVEY_REASON_EVALUATE],
         input=json.dumps(job), text=True, capture_output=True, check=False,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": tempfile.gettempdir()},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     messages = json.loads(result.stdout)

@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
 
+import harness_sandbox
 import pytest
 import yaml
 from jinja2 import Environment, StrictUndefined
@@ -3304,6 +3305,7 @@ def test_generated_curl_configs_parse_with_installed_curl(config):
         input=config,
         capture_output=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr.decode(errors="replace")
 

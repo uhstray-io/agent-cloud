@@ -39,7 +39,7 @@ marked as such.
   reach the shell (lines 39-43).
 - `platform/playbooks/tasks/distribute-ca-root.yml`: same-host only (lines 11-12); builds
   `certs/step-ca-bundle.crt` as root plus intermediate, mode 0644, because the served
-  chain needs both (lines 41-56). Used by the ERPNext, Postiz, tududi and agentgateway
+  chain needs both (lines 41-56). Used by the ERPNext, Postiz and agentgateway
   deploys in local mode only.
 - Local-dev inventory: `step_ca_svc` with `stepca_bind: 127.0.0.1`, port 9000
   (`platform/inventory/local-dev.yml.example` lines 53-64). Local templates only
