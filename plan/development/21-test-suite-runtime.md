@@ -95,7 +95,7 @@ Few tests are dead. The sweep found **no** test referencing a path that no longe
 | `test_netbox_business_domains.bats:3-21` (template entry, preflight order) | **Not redundant, kept.** `test_ensure_netbox_business_domains.py:269-277` and `:115` cover the entry and the preflight, but nothing else checks the template's position right after `Ensure NetBox Prefix` (`:14`) |
 | `test_netbox_business_domains.bats:23-35` (no delete, no secret path) | `test_ensure_netbox_business_domains.py:122-126`, `:186`; kept with the file, since the file stays and the check costs milliseconds |
 | `test_mistakes_doc.bats:120-143` (four named tests exist; non-exhaustive by its own comment) | **Not redundant, kept.** `test_ledger_test_citations.py:169-174` checks that cited names exist, not that each name appears in the ledger (`:139`) |
-| `test_a_forged_internal_name_is_refused_by_the_real_executor` | Overlaps `test_every_launchable_playbook_refuses_a_forged_internal_name` (same guard), but forges each executor's own internal name and checks `CUSTOM STATS` (`:285`); kept, to be reduced to the plain spelling by item 1.1 (#1041) |
+| `test_a_forged_internal_name_is_refused_by_the_real_executor` | Overlaps `test_every_launchable_playbook_refuses_a_forged_internal_name` (same guard), but forges each executor's own internal name and checks `CUSTOM STATS` (`:289`); kept, and reduced to the plain spelling by item 1.1 (#1041) |
 
 Retired services: tududi's code and tests were removed together (`e6214688b`). NocoDB is retired by decision but its code is still present (`platform/services/nocodb/`, `deploy-nocodb.yml`); no test is specific to it (`test_service_opa.bats:170`, `:226` and `test_caddyfile_sites.py:38`, `:90` use the name as sample data). The generic catalog tests include its templates, `Deploy NocoDB` and `Update NocoDB`, as cases, and drop them when the templates go.
 
@@ -149,14 +149,15 @@ What has landed against the phases below. Counts and timings are from each pull 
 
 | Item | Pull request | Outcome |
 |---|---|---|
-| 1.1 by-name forgeries | #1041 (open) | `forgeries.by_name` for guard-class refusals, with the counter proof and a meta-test rule. The real-executor test is reduced to the plain spelling rather than folded into the per-playbook test. About 700 fewer runs per CI pass |
-| 1.1b clean-deploy gate | #1040 (open) | Full matrix on `o11y`, `step-ca` and `agentgateway`; plain on the other 16. 399 → 111 runs |
+| 1.1 by-name forgeries | #1041 (merged) | `forgeries.by_name` for guard-class refusals, with the counter proof and a meta-test rule. The real-executor test is reduced to the plain spelling rather than folded into the per-playbook test. About 700 fewer runs per CI pass |
+| 1.1b clean-deploy gate | #1040 (merged) | Full matrix on `o11y`, `step-ca` and `agentgateway`; plain on the other 16. 399 → 111 runs |
 | 1.2 fixed waits | #1026, #1031 (merged) | `RUNNER_KILL_WAIT_SECONDS` in the runner's `deploy.sh`; `ih_wait_*` and `console_gate_probe_*` playbook knobs. The two runner quiesce tests went from about 30 s to 1.5 s each |
 | 1.3 stub delays | none (dropped) | Measured 2026-11-10 on the shared workstation: `pytest -n 12 platform/tests/test_agw_conformance.py --junitxml`, `time` summed over its 172 testcases, 910.5 s with the stub's defaults at 0.4/0.1 and 890.9 s at 0.04/0.01. The cost is process start-up, not the stub's sleeps, so the estimate above was wrong and the change was not worth carrying |
 | 1.4 single-test floors | #1030 (merged) | 21 generated per-template tests (22 before tududi's removal). `test_authentik_audit_recovery.py` is not split yet |
 | 1.5 parse caching | #1028 (merged) | `test_workflow_registry.py` only: 178 s to 44.5 s locally. The other `templates.yml` readers are not migrated |
 | 1.6 BATS | #1027, #1029 (merged) | Loud shellcheck skip; one shared git-environment unset in `assert_helpers.bash`, held equal to the pre-push hook's list by a test. The redundancy deletions were not made (F7). The `test_credential_leaks.bats` batching is not done |
-| Phase 2 steps 1-2 | #1032 (open) | The shard hook, `shards.py`, the durations builder and their tests, inert until `PYTEST_SHARD` is set |
+| Phase 2 steps 1-2 | #1032 (merged) | The shard hook, `shards.py`, the durations builder and their tests, inert until `PYTEST_SHARD` is set |
+| Phase 2 steps 3-5 | #1048 (merged) | One `python` matrix job of eight shards replaces the six named Python jobs (merge-guard transition 11, runner-pinned to sharded); BATS runs files in parallel (`--jobs 4 --no-parallelize-within-files`). The durations file holds one entry per test file, not per node (a per-node file was 1.8 MB, over the 500 KB limit, and its parametrized IDs carried private addresses), rebuilt from the shards' own CI reports. Measured by each shard's own timer (its last step prints it): 282 to 495 s on the first run (run 42931485014, local seed) and 311 to 473 s after the rebuild (run 42935841698; shard 3 from its second attempt, the first having failed on an Ansible Galaxy HTTP 502 before any test), against 18 to 24 minutes for the `Python core` job (baseline above); Bash Tests 295 s and 286 s of job time |
 
 ## Implementation Phases
 
