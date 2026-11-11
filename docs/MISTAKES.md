@@ -135,7 +135,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips) | Process | 12 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips; 2026-11-11: a new test file past the spawn guard) | Process | 13 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -4125,6 +4125,15 @@ subset excluded it, although this test only reads `templates.yml`. Fixed before 
 (`6aaa6476`). Why the rule did not fire: the subset is chosen per file, and a file that runs playbooks can still
 hold text-only tests about shared files. **Refines the proposed guard:** select the always-run scans per test (a
 marker on tests that launch nothing), not per file.
+
+**Occurrence 2026-11-11 (a new test file past the spawn guard).** PR #1064's head `9e104291` added
+`platform/tests/test_release_notes_from_task.py`, whose helper call used `subprocess.run` with no `timeout=`,
+and was pushed under `SKIP_TESTS=1` after the suites it touched passed locally (934 tests). CI's Python (1/8)
+failed on `test_playbook_spawns_are_bounded.py::test_no_new_unbounded_spawn`, which refuses any test file
+that starts a process without a timeout (1 failed, 1857 passed). Fixed before merge by passing
+`harness_sandbox.DEFAULT_TIMEOUT_SECONDS`. Why the rule did not fire: the suites were again chosen by the
+files the change touched, and this guard scans every test file without naming any of them. The proposed
+fast subset of scans that launch nothing includes it and would have stopped the push.
 
 ### 5.3 Merging while the review was rate-limited
 

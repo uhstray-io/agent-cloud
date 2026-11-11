@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import harness_sandbox
 import pytest
 
 HELPER = Path(__file__).resolve().parents[1] / "playbooks/files/release_notes_from_task.py"
@@ -76,6 +77,7 @@ def send(text: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 
