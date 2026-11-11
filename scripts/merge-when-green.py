@@ -612,6 +612,15 @@ def check_job_evidence(api, number, sha, files):
                 and run.get("status") == "completed"
                 and run.get("conclusion") in ("success", "neutral", "skipped")):
             continue
+        # Dependabot validates its own config on any commit that changes .github/dependabot.yml
+        # (so on every head that merges such a dev change in). Only its successful config check is
+        # accepted; a failed validation, or any other Dependabot run, still refuses.
+        if (isinstance(run, dict) and isinstance(run.get("app"), dict)
+                and run["app"].get("slug") == "dependabot"
+                and run.get("name") == ".github/dependabot.yml"
+                and run.get("status") == "completed"
+                and run.get("conclusion") == "success"):
+            continue
         name = run.get("name", "<unnamed>") if isinstance(run, dict) else "<unnamed>"
         raise Refusal(f"Unknown external check policy: {name}")
     latest = workflow_runs(api, sha, number)
