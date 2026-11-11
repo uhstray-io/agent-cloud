@@ -157,7 +157,8 @@ def test_the_licence_play_runs_after_the_service_token_and_before_verify():
     names = [p.get("name", "") for p in _plays()]
     lic = names.index("Phase 3c: Licence")
     assert names[lic - 1] == "Phase 3b: Workspace service token"
-    assert names[lic + 1].startswith("Phase 4")
+    # Before verify; later phases (3d, the GitHub App webhook) may sit between them.
+    assert next(i for i, n in enumerate(names) if n.startswith("Phase 4")) > lic
 
 
 def test_activation_is_skipped_in_check_mode_and_without_a_key_and_the_key_task_is_no_log():

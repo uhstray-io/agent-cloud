@@ -24,6 +24,7 @@ PI_MOVED_WORKFLOW_BLOB_SHA = "15a15a96bad6b35ee53d36ac7a37deea9cf298d0"
 RUFF_PINNED_WORKFLOW_BLOB_SHA = "98e7aca96851979464f36bffc48444eba93d39f0"
 VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
 UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
+RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 EXPECTED = {
     "Detect changes", "Static Analysis", "Security Scan", "Python core",
     "Python Playbook Safety", "Python Agentgateway",
@@ -45,8 +46,14 @@ _semver_spec = importlib.util.spec_from_file_location("semver_for_merge_guard", 
 semver = importlib.util.module_from_spec(_semver_spec)
 _semver_spec.loader.exec_module(semver)
 # The Semaphore Release Version templates run these with a GitHub App token that can push tags (plan 20), so a
-# pull request that changes any of them is merged by the operator, never through this gate.
-RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv", "platform/playbooks/release-version.yml")
+# pull request that changes any of them is merged by the operator, never through this gate. The release playbook
+# and the notes task it includes both run inside that token's block, so the task is listed with the playbook.
+RELEASE_SCRIPTS = (
+    "scripts/semver.py",
+    "scripts/semver-backfill.tsv",
+    "platform/playbooks/release-version.yml",
+    "platform/playbooks/tasks/release-notes-body.yml",
+)
 
 
 class Refusal(Exception):
@@ -465,11 +472,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Versioned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == UV_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+            # Same job set as uv: every job runs on ubuntu-24.04 instead of ubuntu-latest.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, versioned=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != UV_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed uv workflow")
         check_workflow_policy(base, versioned=True)
         if base != candidate or workflow_records:
             raise Refusal("uv workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed runner-pinned workflow")
+        check_workflow_policy(base, versioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Runner-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
