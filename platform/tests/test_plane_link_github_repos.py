@@ -25,7 +25,13 @@ REPOS = [
     {"id": 11, "name": "agent-cloud", "full_name": "uhstray-io/agent-cloud"},
     {"id": 22, "name": "huhhb", "full_name": "uhstray-io/huhhb"},
 ]
-STATES = [{"id": "s-b", "name": "Backlog", "group": "backlog"}, {"id": "s-d", "name": "Done", "group": "completed"}]
+STATES = [
+    {"id": "s-b", "name": "Backlog", "group": "backlog"},
+    {"id": "s-t", "name": "Todo", "group": "unstarted"},
+    {"id": "s-p", "name": "In Progress", "group": "started"},
+    {"id": "s-d", "name": "Done", "group": "completed"},
+    {"id": "s-c", "name": "Cancelled", "group": "cancelled"},
+]
 
 
 class Stub(DrainingHandler):
@@ -122,7 +128,8 @@ def run(base, apply, projects=None):
 def test_dry_run_reports_and_writes_nothing(stub):
     state, base = stub
     rc, out = run(base, apply=False)
-    assert rc == 0 and out["would_link"] == ["AC", "HUHHB"] and state["created"] == []
+    assert rc == 0 and out["would_link"] == ["AC", "HUHHB"] and out["pr_would_link"] == ["AC", "HUHHB"]
+    assert state["created"] == []
 
 
 def test_apply_creates_the_record_plane_s_form_creates(stub):
@@ -142,7 +149,7 @@ def test_apply_creates_the_record_plane_s_form_creates(stub):
         "config": {
             "states": {
                 "issueEventMapping": {
-                    "ISSUE_OPEN": {"id": "s-b", "name": "Backlog"},
+                    "ISSUE_OPEN": {"id": "s-t", "name": "Todo"},
                     "ISSUE_CLOSED": {"id": "s-d", "name": "Done"},
                 }
             },
@@ -150,16 +157,54 @@ def test_apply_creates_the_record_plane_s_form_creates(stub):
         },
         "type": "PROJECT_ISSUE_SYNC",
     }
+    # The pull request mapping Joseph chose by hand for the first eight projects (2026-11-10).
+    assert state["created"][1] == {
+        "workspace_id": W,
+        "workspace_slug": "uhstray",
+        "project_id": "p-ac",
+        "workspace_connection_id": C,
+        "entity_type": "GITHUB",
+        "config": {
+            "states": {
+                "mergeRequestEventMapping": {
+                    "DRAFT_MR_OPENED": {"id": "s-b", "name": "Backlog"},
+                    "MR_OPENED": {"id": "s-t", "name": "Todo"},
+                    "MR_REVIEW_REQUESTED": {"id": "s-p", "name": "In Progress"},
+                    "MR_READY_FOR_MERGE": {"id": "s-p", "name": "In Progress"},
+                    "MR_MERGED": {"id": "s-d", "name": "Done"},
+                    "MR_CLOSED": {"id": "s-c", "name": "Cancelled"},
+                }
+            },
+            "skipBackwardStateMovement": False,
+        },
+        "type": "PROJECT_PR_AUTOMATION",
+    }
+    assert out["pr_linked"] == ["AC", "HUHHB"] and len(state["created"]) == 4
     # Silo authenticates by forwarding the session cookie, so every silo call must carry it.
     assert state["silo_cookies"] and all("session-id=sess" in c for c in state["silo_cookies"])
 
 
 def test_an_existing_link_to_the_declared_repo_is_left_alone(stub):
     state, base = stub
-    state["existing"] = [{"type": "PROJECT_ISSUE_SYNC", "project_id": "p-ac", "entity_id": "11"}]
+    state["existing"] = [
+        {"type": "PROJECT_ISSUE_SYNC", "project_id": "p-ac", "entity_id": "11"},
+        {"type": "PROJECT_PR_AUTOMATION", "project_id": "p-ac"},
+    ]
     rc, out = run(base, apply=True)
     assert rc == 0 and out["present"] == ["AC"] and out["linked"] == ["HUHHB"]
-    assert [c["project_id"] for c in state["created"]] == ["p-hu"]
+    assert out["pr_present"] == ["AC"] and out["pr_linked"] == ["HUHHB"]
+    assert [(c["type"], c["project_id"]) for c in state["created"]] == [
+        ("PROJECT_ISSUE_SYNC", "p-hu"),
+        ("PROJECT_PR_AUTOMATION", "p-hu"),
+    ]
+
+
+def test_a_missing_pr_mapping_is_added_beside_an_existing_link(stub):
+    state, base = stub
+    state["existing"] = [{"type": "PROJECT_ISSUE_SYNC", "project_id": "p-ac", "entity_id": "11"}]
+    rc, out = run(base, apply=True, projects=[{"identifier": "AC", "repo": "uhstray-io/agent-cloud"}])
+    assert rc == 0 and out["present"] == ["AC"] and out["pr_linked"] == ["AC"]
+    assert [c["type"] for c in state["created"]] == ["PROJECT_PR_AUTOMATION"]
 
 
 @pytest.mark.parametrize(
@@ -231,7 +276,7 @@ def _result(stdout, rc=0):
                 ),
             },
             True,
-            "Linked: AC; already linked HUHHB",
+            "Linked: AC; already linked HUHHB; pull request automation added for none, already set none",
         ),
         (
             {
@@ -241,7 +286,7 @@ def _result(stdout, rc=0):
                 "_link_apply": {"skipped": True},
             },
             True,
-            "already linked none; not yet in Plane: X",
+            "already set none; not yet in Plane: X",
         ),
         (
             {

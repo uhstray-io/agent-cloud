@@ -122,7 +122,11 @@ own GitHub account on the same page ("Connect Personal Account"); that needs the
 `<plane_public_url>/silo/api/github/auth/user/callback` on the App.
 
 Sync Plane Projects Play 3 (`link_github_repos.py`) then links every declared project that names a
-repository to it, by creating the "Project Issue Sync" record Plane's own form creates. Silo
+repository to it, by creating the two records Plane's own GitHub settings create: the "Project
+Issue Sync" link, and the "Pull Request State Mapping". The states match the choices Joseph made by
+hand for the first eight projects. Open issues go to Todo and closed ones to Done. Pull requests go
+Backlog (draft), then Todo (opened), then In Progress (review requested or ready for merge), then Done (merged);
+a closed pull request goes to Cancelled. Silo
 authenticates by session, so the script signs in as the automation account.
 
 Plane ships **working default credentials** in `variables.env` and in its Compose fallbacks,

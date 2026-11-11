@@ -306,9 +306,10 @@
           {{ hostvars['localhost']._skipped_count }} task lines not imported (done, superseded or unnumbered).
 
 # ── Play 3: link each project to its GitHub repository ───────────────────────
-# Every declared project that names a repository gets the link Plane's own "Project Issue Sync" form
-# creates (link_github_repos.py), so a GitHub issue labelled `plane` reaches its project and a work
-# item labelled `github` reaches its repository. Only with the GitHub integration declared
+# Every declared project that names a repository gets the two records Plane's own GitHub settings
+# create (link_github_repos.py): the "Project Issue Sync" link, so a GitHub issue labelled `plane`
+# reaches its project and a work item labelled `github` reaches its repository, and the "Pull
+# Request State Mapping", so a pull request naming a work item moves it. Only with the GitHub integration declared
 # (plane_github_app_id) and its organization connected in Plane. Create-only: an existing link is
 # left alone, and one that points elsewhere is reported and refused, never re-pointed. Silo
 # authenticates by session, so this signs in as the automation account with the password Play 2
@@ -374,7 +375,8 @@
           register: _link_apply
           changed_when: >-
             (_link_apply.stdout_lines | default([''], true) | last).startswith('{')
-            and ((_link_apply.stdout_lines | last) | from_json).linked | default([]) | length > 0
+            and ((((_link_apply.stdout_lines | last) | from_json).linked | default([]))
+                 + (((_link_apply.stdout_lines | last) | from_json).pr_linked | default([]))) | length > 0
           failed_when: false
           no_log: true
           when:
@@ -409,5 +411,8 @@
             msg: >-
               {{ 'DRY RUN (--check), would link' if ansible_check_mode else 'Linked' }}:
               {{ (_link_summary.would_link if ansible_check_mode else _link_summary.linked) | default([]) | join(', ') or 'none' }};
-              already linked {{ _link_summary.present | default([]) | join(', ') or 'none' }}{{
+              already linked {{ _link_summary.present | default([]) | join(', ') or 'none' }};
+              pull request automation {{ 'would be added for' if ansible_check_mode else 'added for' }}
+              {{ (_link_summary.pr_would_link if ansible_check_mode else _link_summary.pr_linked) | default([]) | join(', ') or 'none' }},
+              already set {{ _link_summary.pr_present | default([]) | join(', ') or 'none' }}{{
               ('; not yet in Plane: ' ~ (_link_summary.missing_projects | join(', '))) if _link_summary.missing_projects | default([]) else '' }}
