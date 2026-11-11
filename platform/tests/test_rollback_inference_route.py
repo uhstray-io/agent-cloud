@@ -295,7 +295,7 @@ def env(tmp_path, route):
     Bao.rotate_on_get, Bao.bump_before_cas = 0, False
     Bao.store = {"vllm_api_key": LIVE, "client_workstation": "synthetic-client-workstation",
                  "client_pi": "synthetic-client-pi", "agw_db_password": "synthetic-db"}
-    with seed_harness.serve(Bao) as address:
+    with fake_http.serve(Bao) as address:
         yield tmp_path, address, route
 
 

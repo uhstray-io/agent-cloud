@@ -10,7 +10,8 @@ import subprocess
 from urllib.parse import urlsplit
 
 import pytest
-from seed_harness import ROLE, ROOT, FakeBao, serve
+from fake_http import serve
+from seed_harness import ROLE, ROOT, FakeBao
 
 PLAYBOOK = "platform/playbooks/provision-o11y-watcher-token.yml"
 STORED = "synthetic-stored-token"

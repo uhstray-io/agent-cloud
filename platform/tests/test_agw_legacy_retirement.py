@@ -23,6 +23,7 @@ import playbook_yaml
 import pytest
 import seed_harness
 import yaml
+from fake_http import serve
 
 REPO = playbook_yaml.REPO
 DEPLOY = REPO / "platform/playbooks/deploy-agentgateway.yml"
@@ -87,7 +88,7 @@ class Bao(seed_harness.FakeBao):
 def bao():
     Bao.requests = []
     Bao.version = 1
-    with seed_harness.serve(Bao) as url:
+    with serve(Bao) as url:
         yield url
 
 
@@ -281,7 +282,7 @@ class Gateway(seed_harness.FakeBao):
 def gateway():
     Gateway.requests = []
     Gateway.admitted = ""
-    with seed_harness.serve(Gateway) as url:
+    with serve(Gateway) as url:
         yield url
 
 
