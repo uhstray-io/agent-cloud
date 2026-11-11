@@ -25,9 +25,9 @@
 
 Source: `.github/workflows/lint-and-test.yml`. It defines these jobs and runs on `pull_request` to `main` and `dev`, with `permissions: contents: read` at the top level.
 
-- Jobs: `changes`, `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python-core`, `python-playbook-safety`, `python-agentgateway`, `python-playbook-runs`, `python-semaphore`, `python-netbox`, `bats`, `rego`, `test` (Unit Tests), `go-lint`, `go-test`, `go-build`, `rust-console`.
+- Jobs: `changes`, `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python` (one matrix job, eight shards named `Python (1/8)` to `Python (8/8)`; each runs the root pytest collection with `PYTEST_SHARD=k/8`, and the root `conftest.py` skips the test files assigned to other shards, bin-packed from `platform/tests/test_durations.json`; plan 21), `bats` (files in parallel with `--jobs 4 --no-parallelize-within-files`), `rego`, `test` (Unit Tests), `go-lint`, `go-test`, `go-build`, `rust-console`.
 - `changes` gates the Go jobs: `go-lint` and `go-test` run only on Go changes, and `go-build` runs on Go or Dockerfile changes.
-- `test` (Unit Tests) runs `if: always()` and needs nine jobs: the six Python groups, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded.
+- `test` (Unit Tests) runs `if: always()` and needs four jobs: `python`, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded; a matrix job's result is `failure` when any shard fails.
 - Required on `main`: `.github/rulesets/protect-main.json` (`enforcement: active`) requires the contexts `Static Analysis`, `Security Scan`, `Unit Tests` and `Promotion source (dev -> main)`. `.github/rulesets/protect-dev.json` (`enforcement: active`) defines no required status check.
 - Remote ruleset state was not queried in this review; the checked-in files are the evidence.
 
@@ -709,8 +709,8 @@ graph TD
 #### Python core runs in parallel (2026-10-02)
 
 The `Python core` job runs pytest with `-n auto --dist worksteal` (pytest-xdist, pinned
-in `platform/requirements-test.txt`, the one test-dependency manifest every CI test job
-installs). Serially, the suite had grown to 12–20 minutes on CI, against
+in the `test` dependency group of `pyproject.toml`, locked in `uv.lock`, which every CI test job
+installs with `uv sync --locked`). Serially, the suite had grown to 12–20 minutes on CI, against
 a 20-minute job cap. Green runs reached 19.9 minutes, and run 37048305528 was cancelled
 at 20m5s. Most of that time is ansible-playbook subprocesses, which are independent, so
 spreading them across cores fixes the cause. Raising the cap only would have moved the
@@ -762,8 +762,7 @@ Add `j2lint` as a dedicated linting step:
 ```yaml
 - name: Jinja2 template lint
   run: |
-    pip install j2lint
-    find platform/services -name "*.j2" -exec j2lint {} +
+    find platform/services -name "*.j2" -exec uvx j2lint {} +
 ```
 
 #### Coverage Reporting
@@ -906,7 +905,7 @@ Every PR triggers three GitHub Actions jobs:
 ### Python (Ruff)
 
 ```bash
-pip install ruff
+uv tool install ruff
 ruff check .                    # Check all Python files
 ruff check --fix .              # Auto-fix safe issues
 ruff check --fix --unsafe-fixes .  # Fix all (review changes)
@@ -930,7 +929,7 @@ find . -name '*.sh' ! -path '*/netbox-docker/*' -exec shellcheck -S warning {} +
 ### Ansible (ansible-lint)
 
 ```bash
-pip install ansible-lint
+uv tool install ansible-lint
 ansible-lint platform/playbooks/
 ```
 
@@ -939,7 +938,7 @@ Configuration is in `.ansible-lint`. Skips `command-instead-of-module` and `no-c
 ### YAML (yamllint)
 
 ```bash
-pip install yamllint
+uv tool install yamllint
 yamllint -c .yamllint.yml .
 ```
 
@@ -1093,7 +1092,7 @@ Tests use `@pytest.mark.parametrize` for composability — each function covers 
 | `test_proxmox_helpers.py` | `_int`, `_mb_to_gb`, `_bytes_to_gb`, `_should_skip_iface`, `_iface_type`, `_prefix_len`, `_sanitize_description`, `_pick_primary_ipv4` | 66 |
 | `test_pfsense_helpers.py` | `_is_valid_ip` | 13 |
 
-**Requires:** Python 3.12+ and `pip install -r platform/requirements-test.txt`.
+**Requires:** `uv sync --locked` (installs Python 3.12 and the locked test dependencies).
 
 The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable. The real Diode SDK is installed for entity constructor validation.
 
@@ -1170,7 +1169,7 @@ Pre-commit hooks are the first line of defense. They run automatically on every 
 
 **Installation (one-time):**
 ```bash
-pip install pre-commit
+uv tool install pre-commit
 pre-commit install
 ```
 

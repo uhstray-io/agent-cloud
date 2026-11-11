@@ -526,7 +526,7 @@ an isolated environment. Prove each one afterwards with a check-mode run of the 
 (Destroy VM in check mode only); the seed CLI's `--verify-only` does not apply to these.
 
 **Before promoting `dev` to `main`**, run the same provisioner with `seed_variant=main` for each
-of the five. Promotion brings the guard to the `main`-bound copies, which are still bound to the
+of the six. Promotion brings the guard to the `main`-bound copies, which are still bound to the
 shared environment until then, and every one of them would then refuse to run. A full-catalog
 publication likewise creates the base templates' own environments empty and binds them: run the
 provisioner for those before using a `main`-bound copy.

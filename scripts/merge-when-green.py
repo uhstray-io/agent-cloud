@@ -23,12 +23,16 @@ RUNS_PARTITIONED_WORKFLOW_BLOB_SHA = "466828e11b7bf29958d7de7a505dad908ae8b3cd"
 PI_MOVED_WORKFLOW_BLOB_SHA = "15a15a96bad6b35ee53d36ac7a37deea9cf298d0"
 RUFF_PINNED_WORKFLOW_BLOB_SHA = "98e7aca96851979464f36bffc48444eba93d39f0"
 VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
+UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
+RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
+SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
+# The eight legs of the one `python` matrix job; each is its own check run under this name.
+PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
-    "Detect changes", "Static Analysis", "Security Scan", "Python core",
-    "Python Playbook Safety", "Python Agentgateway",
-    "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
+    "Detect changes", "Static Analysis", "Security Scan", *PYTHON_SHARDS,
+    "Bash Tests", "Rego Tests", "Unit Tests",
     "Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)", "Rust (console)",
-    "Python Playbook Runs", "Version",
+    "Version",
 }
 GO_PATH = "platform/services/uhhcraft/deployment/"
 GO_WORKFLOW = WORKFLOW
@@ -44,8 +48,14 @@ _semver_spec = importlib.util.spec_from_file_location("semver_for_merge_guard", 
 semver = importlib.util.module_from_spec(_semver_spec)
 _semver_spec.loader.exec_module(semver)
 # The Semaphore Release Version templates run these with a GitHub App token that can push tags (plan 20), so a
-# pull request that changes any of them is merged by the operator, never through this gate.
-RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv", "platform/playbooks/release-version.yml")
+# pull request that changes any of them is merged by the operator, never through this gate. The release playbook
+# and the notes task it includes both run inside that token's block, so the task is listed with the playbook.
+RELEASE_SCRIPTS = (
+    "scripts/semver.py",
+    "scripts/semver-backfill.tsv",
+    "platform/playbooks/release-version.yml",
+    "platform/playbooks/tasks/release-notes-body.yml",
+)
 
 
 class Refusal(Exception):
@@ -171,10 +181,9 @@ def required_jobs(files):
     go_build = go or any(p in DOCKERFILES for p in files)
     return {
         "Detect changes": True, "Static Analysis": True, "Security Scan": True,
-        "Python core": True, "Python Playbook Safety": True, "Python Agentgateway": True,
-        "Python Semaphore": True, "Python NetBox": True,
+        **dict.fromkeys(PYTHON_SHARDS, True),
         "Bash Tests": True, "Rego Tests": True, "Unit Tests": True, "Rust (console)": True,
-        "Python Playbook Runs": True, "Version": True,
+        "Version": True,
         "Go lint (uhhcraft)": go, "Go test (uhhcraft)": go,
         "Go build (uhhcraft image)": go_build,
     }
@@ -220,7 +229,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False, versioned=False):
+                          pi_moved=False, versioned=False, sharded=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -238,12 +247,17 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         expected["python-agentgateway"] = "Python Agentgateway"
     if node or console or runs:
         expected["node-pi-provider"] = "Node pi provider"
-    if console or runs or pi_moved or versioned:
+    if console or runs or pi_moved or versioned or sharded:
         expected["rust-console"] = "Rust (console)"
     if runs or pi_moved or versioned:
         expected["python-playbook-runs"] = "Python Playbook Runs"
-    if versioned:
+    if versioned or sharded:
         expected["version"] = "Version"
+    if sharded:
+        # The six named Python jobs become one matrix job, its name templated per shard.
+        for job in ("python-core", "python-semaphore", "python-netbox"):
+            del expected[job]
+        expected["python"] = "Python (${{ matrix.shard }}/8)"
     jobs = {}
     current = None
     in_jobs = False
@@ -448,11 +462,60 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Ruff-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == VERSIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == UV_WORKFLOW_BLOB_SHA:
+            # Same job set as versioned: the Python jobs install the uv lock instead of pip.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, versioned=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != VERSIONED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed versioned workflow")
         check_workflow_policy(base, versioned=True)
         if base != candidate or workflow_records:
             raise Refusal("Versioned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == UV_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+            # Same job set as uv: every job runs on ubuntu-24.04 instead of ubuntu-latest.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, versioned=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != UV_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed uv workflow")
+        check_workflow_policy(base, versioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("uv workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
+            # The six Python jobs become one eight-shard matrix job (plan 21 phase 2); each side is
+            # checked against its own job set.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, sharded=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed runner-pinned workflow")
+        check_workflow_policy(base, versioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Runner-pinned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != SHARDED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed sharded workflow")
+        check_workflow_policy(base, sharded=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Sharded workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 

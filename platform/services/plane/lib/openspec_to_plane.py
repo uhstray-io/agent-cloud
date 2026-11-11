@@ -61,8 +61,11 @@ USER_AGENT = "agent-cloud-openspec-to-plane"
 EXTERNAL_SOURCE = "openspec"
 
 CHECKBOX = re.compile(r"^(\s*)[-*+]\s+\[([ xX])\](?:\s+(.*))?$")
-TASK_ID = re.compile(r"^(\d+[A-Z]?(?:\.\d+[a-z0-9]*)+)(?=\s|$)")
-STRUCK_ID = re.compile(r"^~~(\d+[A-Z]?(?:\.\d+[a-z0-9]*)+)~~(?=\s|$)")
+# Each id segment is digits, then an optional suffix that starts with a letter. That is the same language as
+# `\d+[a-z0-9]*` without its ambiguity: there, a run of digits could be split between the two parts, so a long
+# digit run that then failed to match backtracked through every split (CodeQL py/redos, promotion #1003).
+TASK_ID = re.compile(r"^(\d+[A-Z]?(?:\.\d+(?:[a-z][a-z0-9]*)?)+)(?=\s|$)")
+STRUCK_ID = re.compile(r"^~~(\d+[A-Z]?(?:\.\d+(?:[a-z][a-z0-9]*)?)+)~~(?=\s|$)")
 LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 HEADING = re.compile(r"^\s*#{1,6}\s")
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")

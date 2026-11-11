@@ -1667,6 +1667,7 @@ def test_the_gate_probe_passes_on_401_and_fails_naming_the_status_otherwise(tmp_
                                         "_console_gate_probe_argv")}
     variables.update({"_deploy_dir": str(tmp_path), "console_launch_gate_url": GATE_URL,
                       "console_launch_gate_ip": GATE_IP, "local_mode": False,
+                      "console_gate_probe_delay": 0,
                       GATE_DECLARED: _deploy_vars()[GATE_DECLARED]})
     tasks = [_named(DEPLOY, GATE_PROBE), _named(DEPLOY, GATE_PROBE_ASSERT)]
 
