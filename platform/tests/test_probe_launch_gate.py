@@ -115,7 +115,7 @@ def gate(pki):
 
     def start(script: list[str]) -> Gate:
         server = Gate(pki, script)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         started.append(server)
         return server
 

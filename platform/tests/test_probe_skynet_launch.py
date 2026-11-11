@@ -66,7 +66,7 @@ class _Listener(ThreadingHTTPServer):
             self.context.minimum_version = ssl.TLSVersion.TLSv1_2
             self.context.load_cert_chain(pki / "leaves/server/current/cert.pem", pki / "leaves/server/current/key.pem")
         # Serving starts here: a listener that is bound but never served leaves the probe's request to time out.
-        threading.Thread(target=self.serve_forever, daemon=True).start()
+        threading.Thread(target=self.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
 
     def server_close(self):
         self.shutdown()  # ends serve_forever before the socket is closed

@@ -150,7 +150,7 @@ def listener(pki):
 
     def start(mode="san-first", ca="ca", require_cert=True):
         server = Listener(pki, mode, ca, require_cert)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
         started.append(server)
         return server
 

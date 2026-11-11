@@ -15,15 +15,15 @@ import json
 import shutil
 import socket
 import subprocess
-import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
+from contextlib import ExitStack
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 from test_agw_listener_tls import _render
 
 IMAGE = "cr.agentgateway.dev/agentgateway:v1.5.0"
@@ -107,14 +107,11 @@ class Upstream:
                 except OSError:
                     pass  # the gateway closed the upstream after the client left
 
-        self.server = ThreadingHTTPServer(("0.0.0.0", 0), H)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        self._serving = ExitStack()
+        self.url = self._serving.enter_context(serve(H, host="0.0.0.0"))
 
     def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(5)
+        self._serving.close()
 
 
 def _live_config(tmp_path, upstream_url, transformation, budget):
@@ -157,7 +154,7 @@ def gateway(tmp_path):
     started = []
 
     def start(up, transformation=True, budget=False):
-        url = f"http://host.containers.internal:{up.server.server_port}/v1"
+        url = f"http://host.containers.internal:{urlsplit(up.url).port}/v1"
         path = tmp_path / f"live-{len(started)}.yaml"
         path.write_text(yaml.safe_dump(_live_config(tmp_path, url, transformation, budget)))
         port, name = _free_port(), f"agw-stream-usage-{_free_port()}"
