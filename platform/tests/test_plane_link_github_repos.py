@@ -15,6 +15,7 @@ import threading
 import urllib.parse
 
 import pytest
+from ansible_python import needs_ansible
 from fake_http import DrainingHandler
 
 DEPLOY = pathlib.Path(__file__).resolve().parents[1] / "services/plane/deployment"
@@ -200,3 +201,80 @@ def test_a_project_not_yet_in_plane_is_reported_not_failed(stub):
     state["projects"] = [{"identifier": "AC", "id": "p-ac"}]
     rc, out = run(base, apply=True)
     assert rc == 0 and out["missing_projects"] == ["HUHHB"] and out["linked"] == ["AC"]
+
+
+PLAYBOOK = pathlib.Path(__file__).resolve().parents[1] / "playbooks/sync-plane-projects.yml"
+
+
+def _judging_tasks():
+    import yaml
+
+    play = next(p for p in yaml.safe_load(PLAYBOOK.read_text()) if p.get("name", "").startswith("Link the declared"))
+    block = next(t for t in play["tasks"] if "block" in t)["block"]
+    keep = ("Keep only the link summary", "Links converged", "Report")
+    return [t for t in block if t.get("name") in keep]
+
+
+def _result(stdout, rc=0):
+    return {"rc": rc, "stdout_lines": stdout.splitlines()}
+
+
+@needs_ansible
+@pytest.mark.parametrize(
+    "facts,ok,expect",
+    [
+        (
+            {
+                "_link_plan": _result('{"would_link": ["AC"], "present": [], "missing_projects": [], "conflicts": []}'),
+                "_link_apply": _result(
+                    '{"linked": ["AC"], "present": ["HUHHB"], "missing_projects": [], "conflicts": []}'
+                ),
+            },
+            True,
+            "Linked: AC; already linked HUHHB",
+        ),
+        (
+            {
+                "_link_plan": _result(
+                    '{"would_link": ["AC"], "present": [], "missing_projects": ["X"], "conflicts": []}'
+                ),
+                "_link_apply": {"skipped": True},
+            },
+            True,
+            "already linked none; not yet in Plane: X",
+        ),
+        (
+            {
+                "_link_plan": _result('{"would_link": [], "present": [], "missing_projects": [], "conflicts": []}'),
+                "_link_apply": _result(
+                    '{"error": "some declared links conflict with what Plane holds", "linked": ["AC"], '
+                    '"conflicts": ["HUHHB: x is already linked to another project"]}',
+                    rc=1,
+                ),
+            },
+            False,
+            "conflicts: HUHHB: x is already linked to another project; linked before the failure: AC",
+        ),
+        (
+            {"_link_plan": _result("Traceback", rc=1), "_link_apply": {"skipped": True}},
+            False,
+            "printed no summary (exit 1)",
+        ),
+    ],
+    ids=["applied", "planned-only", "conflict", "no-summary"],
+)
+def test_the_play_judges_and_reports_the_link_summary(tmp_path, facts, ok, expect):
+    import yaml
+
+    (tmp_path / "play.yml").write_text(
+        yaml.safe_dump([{"hosts": "localhost", "gather_facts": False, "vars": facts, "tasks": _judging_tasks()}])
+    )
+    proc = subprocess.run(
+        ["ansible-playbook", "-i", "localhost,", "-c", "local", str(tmp_path / "play.yml")],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        check=False,
+    )
+    assert (proc.returncode == 0) is ok, proc.stdout[-1500:]
+    assert expect in proc.stdout

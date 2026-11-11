@@ -340,7 +340,6 @@
               password: "{{ _plane_secret.json.data.data.plane_automation_password }}"
               workspace_slug: "{{ plane_workspace_slug }}"
               silo_base: http://proxy:80/silo
-              apply: "{{ not ansible_check_mode }}"
               projects: >-
                 {%- set out = [] -%}
                 {%- for p in hostvars['localhost']._desired_projects if not p.repo.startswith('project:') -%}
@@ -349,11 +348,11 @@
                 {{ out }}
           no_log: true
 
-        # Credential task: the automation password goes to the script on stdin; the script prints
-        # identifiers and counts only, judged below so a refusal is visible while this stays no_log.
-        - name: "Link what is missing (read-only under --check)"
+        # Credential tasks: the automation password goes to the script on stdin; the script prints
+        # identifiers and counts only, judged below so a refusal is visible while these stay no_log.
+        - name: "Count what is missing (read-only; also the dry run)"
           ansible.builtin.command:
-            argv:
+            argv: &link_argv
               - "{{ _engine }}"
               - exec
               - -i
@@ -361,22 +360,36 @@
               - python
               - -c
               - "{{ lookup('file', _session_src) ~ '\n' ~ lookup('file', _link_src) }}"
-            stdin: "{{ _link_input | to_json }}"
-          register: _link_run
-          changed_when: >-
-            (_link_run.stdout_lines | default([''], true) | last).startswith('{')
-            and ((_link_run.stdout_lines | last) | from_json).linked | default([]) | length > 0
+            stdin: "{{ _link_input | combine({'apply': false}) | to_json }}"
+          register: _link_plan
+          changed_when: false
           failed_when: false
           no_log: true
           check_mode: false
 
+        - name: "Link what is missing"
+          ansible.builtin.command:
+            argv: *link_argv
+            stdin: "{{ _link_input | combine({'apply': true}) | to_json }}"
+          register: _link_apply
+          changed_when: >-
+            (_link_apply.stdout_lines | default([''], true) | last).startswith('{')
+            and ((_link_apply.stdout_lines | last) | from_json).linked | default([]) | length > 0
+          failed_when: false
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - (_link_plan.stdout_lines | default([''], true) | last).startswith('{')
+            - ((_link_plan.stdout_lines | last) | from_json).error is not defined
+
         - name: "Keep only the link summary"
           ansible.builtin.set_fact:
             # The exit code only: a command result carries its stdin (the password) under invocation.
-            _link_rc: "{{ _link_run.rc }}"
+            _link_rc: "{{ (_link_apply if (_link_apply is defined and _link_apply is not skipped) else _link_plan).rc }}"
             _link_summary: >-
-              {%- set last = _link_run.stdout_lines | default([''], true) | last -%}
-              {{ (last | from_json) if last.startswith('{') else {'error': 'the link script printed no summary (exit ' ~ _link_run.rc ~ ')'} }}
+              {%- set r = _link_apply if (_link_apply is defined and _link_apply is not skipped) else _link_plan -%}
+              {%- set last = r.stdout_lines | default([''], true) | last -%}
+              {{ (last | from_json) if last.startswith('{') else {'error': 'the link script printed no summary (exit ' ~ r.rc ~ ')'} }}
           no_log: true
 
         - name: "Links converged"
