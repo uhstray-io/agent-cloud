@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -45,7 +46,8 @@ def _task(tid, status, template_id, output="", service="tududi", **extra):
 def _call(payload: dict) -> dict:
     """Run the parser as the collector does: one JSON object on stdin, JSON on stdout."""
     done = subprocess.run([sys.executable, str(REPO / "platform/workflows/service-onboarding/lib/step_results.py")],
-                          input=json.dumps(payload), text=True, capture_output=True, check=True)
+                          input=json.dumps(payload), text=True, capture_output=True, check=True,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     return json.loads(done.stdout)
 
 

@@ -7,11 +7,10 @@ verify tag so a verify-only run keeps it. The static test pins the order; the ru
 playbook against an inventory that lacks the group. Requires ansible-playbook for the runtime test.
 """
 
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 
@@ -47,12 +46,7 @@ def test_the_populated_group_guard_is_a_localhost_play_before_the_snapshot():
 def test_an_unpopulated_target_is_refused_before_anything_is_snapshotted(tmp_path):
     inventory = tmp_path / "inventory.ini"
     inventory.write_text("[demo_svc]\ndemo ansible_connection=local\n")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=nope_svc"],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-    )
+    done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=nope_svc", inventory=inventory)
     # Without the guard, the empty play is skipped ("skipping: no hosts matched") and the run exits 0.
     assert done.returncode != 0, done.stdout[-2000:]
     assert "matches no hosts in this inventory" in done.stdout, done.stdout[-2000:]

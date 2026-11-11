@@ -20,6 +20,7 @@ import sys
 import threading
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
@@ -60,7 +61,7 @@ def _generate_leaf(directory: Path) -> _Leaf:
             [openssl, "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
              "-keyout", str(key_path), "-out", str(cert_path), "-days", "1", "-subj", "/CN=127.0.0.1",
              "-addext", "subjectAltName=IP:127.0.0.1"],
-            check=True, capture_output=True,
+            check=True, capture_output=True, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         return _Leaf(cert_path, key_path)
 
