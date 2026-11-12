@@ -1463,6 +1463,13 @@ class MergeGuardTests(unittest.TestCase):
                 api.statuses[0]["description"] = description
                 run_refusal(self, api, "carries no finding")
 
+    def test_the_newest_review_pass_status_decides(self):
+        api = FakeGitHub()
+        newer = dict(api.statuses[0], description="<one line: what it found, fixed or deferred>",
+                     created_at="2026-10-10T13:00:00Z")
+        api.statuses = [newer] + api.statuses
+        run_refusal(self, api, "carries no finding")
+
     def test_commit_statuses_are_paginated_and_latest_state_wins(self):
         api = FakeGitHub()
         api.status_pages = [

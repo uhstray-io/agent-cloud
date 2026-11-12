@@ -568,7 +568,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 4. Run `/simplify` and `/security-review` on the branch changes, and commit any fixes they make
 5. Push the branch (`git push -u origin <type>/<description>`), then post each pass as a commit status on the
    pushed head, which GitHub must already hold: `gh api repos/uhstray-io/agent-cloud/statuses/<head sha>
-   -f state=success -f context=<simplify|security-review> -f description='<what it found; fixed or deferred>'`.
+   -f state=success -f context=<simplify|security-review> -f description='<one line: what it found, fixed or deferred>'`.
    `scripts/merge-when-green.py` refuses a head without both, so every later push (review fixes, a `dev`
    merge) needs both passes again on the new head (`docs/MISTAKES.md` 5.25)
 6. Create a PR **into `dev`**: `gh pr create --base dev`
