@@ -57,7 +57,7 @@ and why.
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
-| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) | Unverified claim | 2 | Convention |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) | Unverified claim | 3 | Convention; guard proposed (count 3) |
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
@@ -1292,7 +1292,7 @@ its merge date, or say the origin is unverified.
 
 ### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
 
-**Occurrences: 2** — 2026-10-31, 2026-11-11
+**Occurrences: 3** — 2026-10-31, 2026-11-11, 2026-11-12
 
 **What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
 `[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
@@ -1328,6 +1328,33 @@ against GitHub's live `dev` ref (#1093), and plan 23 records the change. Why the
 the claim came as a review fix, phrased as a constraint to add, so I read it as a design decision and
 not as a statement about how GitHub's API behaves. A reviewer's fix that rests on an API field's
 behaviour is a subagent claim like any other, and is checked before it goes into a plan.
+
+**Occurrence 3 — 2026-11-12.** Round 2 of the v0.15.0 promotion review (#1112) reported that
+the 26 template names the promotion drops from `platform/semaphore/templates.yml` were live
+`main`-bound templates that would point at deleted playbooks after the merge, and should be
+retired. I posted that on #1112 as an after-merge checklist item. The reviewer had compared
+`templates.yml` at `main` and at the head; it had not read Semaphore. After the merge I read the
+live catalog (`GET /api/project/1/templates`): 243 templates, none with any of the 26 names. The
+promotion's own pre-merge check, taken from the live API the same day, already said so (7
+templates with missing playbooks, all already missing on `main`). I corrected the comment within
+the hour, before anyone acted on it. Why the rule did not fire: the claim was about live state but
+arrived as a reading of a file, so it looked like a repository fact I could relay. A statement
+about what is deployed or registered is a live-state claim, whatever file it was inferred from.
+
+**Proposed guard (count 3 retires `Convention`).** One contract and one mechanism.
+1. Contract (not a mechanism): the `pr-reviewer` agent's report labels every finding's evidence
+   `repo:` (a file at a ref), `live:` (a command against the running system, quoted) or
+   `inferred:`. A claim about deployed state with no `live:` command is `inferred:`.
+2. Mechanism, failing closed: a PreToolUse hook on `gh pr comment`, `gh pr review` and
+   `gh api …/comments` refuses any body without an `Evidence` section in which every line starts
+   `repo:` or `live:`, and refuses a body that contains `inferred:` anywhere. A reworded finding
+   posted with no `Evidence` section (as happened here) is refused rather than let through. Limit:
+   the hook checks that every evidence line names a source, not that every claim has one, nor that
+   the source says what the line claims.
+
+The hook does not replace the recheck in The rule: a `repo:` line names a file at a ref, not
+proof that the lead re-read it against the claim, so the recheck stays required with the hook in
+place. Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
