@@ -347,8 +347,9 @@ pub fn api_router(state: SharedState) -> Router {
 }
 
 /// D53: a state-changing request under `/v1/` is refused 403 `origin_refused` unless its `Origin` is the console's own
-/// base URL and its body is JSON. The session cookie is SameSite=Lax, which another `uhstray.io` subdomain passes, so
-/// this check carries the protection. GET and HEAD, and every path outside `/v1/` (the `/auth/*` routes), pass through.
+/// base URL and its `Content-Type` is `application/json`. The session cookie is SameSite=Lax, which another
+/// `uhstray.io` subdomain passes, so this check carries the protection. GET and HEAD, and every path outside `/v1/`
+/// (the `/auth/*` routes), pass through.
 async fn require_console_origin(
     State(app): State<SharedState>,
     request: Request,
@@ -1063,8 +1064,8 @@ mod tests {
         );
     }
 
-    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its body is JSON.
-    /// A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
+    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its `Content-Type` is
+    /// `application/json`. A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
     #[tokio::test]
     async fn state_changing_v1_requests_need_the_console_origin_and_a_json_body() {
         let (addr, cookie) = signed_in(&["ops"]).await;
@@ -1173,6 +1174,70 @@ mod tests {
         .await;
         assert_ne!(logout.status, 403, "/auth/* is outside the rule");
         assert_ne!(logout.body, r#"{"error":"origin_refused"}"#);
+    }
+
+    /// D53 without a session: the origin rule runs before the session check, so a write from another origin, with no
+    /// `Origin`, or with a `Content-Type` other than `application/json`, is refused 403 although the caller is not
+    /// signed in. The console's own origin and an `application/json` `Content-Type` reach the handler, which answers 401
+    /// for the missing session.
+    #[tokio::test]
+    async fn a_write_without_a_session_is_origin_checked_first() {
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
+        const BODY: &str = r#"{"preferences":{"theme":"dark"}}"#;
+
+        let cross_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(cross_origin.status, 403, "{}", cross_origin.body);
+        assert_eq!(cross_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let no_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Content-Type", "application/json")],
+            BODY,
+        )
+        .await;
+        assert_eq!(no_origin.status, 403, "{}", no_origin.body);
+        assert_eq!(no_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let text_body = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Origin", CONSOLE_ORIGIN), ("Content-Type", "text/plain")],
+            BODY,
+        )
+        .await;
+        assert_eq!(text_body.status, 403, "{}", text_body.body);
+        assert_eq!(text_body.body, r#"{"error":"origin_refused"}"#);
+
+        let own_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(own_origin.status, 401, "{}", own_origin.body);
+        assert_eq!(own_origin.body, r#"{"error":"unauthenticated"}"#);
     }
 
     #[tokio::test]
