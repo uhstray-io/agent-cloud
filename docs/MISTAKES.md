@@ -66,7 +66,8 @@ and why.
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, no detector |
-| 1.37 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
+| 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
+| 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -161,7 +162,7 @@ and why.
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
-| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
+| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
@@ -1664,7 +1665,35 @@ brief or outward text names, not the paths a comment in those files cites. A sha
 instance's need to cite another file: the launch gate's comment still cites `tasks/clean-service.yml:85-89`, where
 the derivation itself is at `:70`.
 
-### 1.37 "Never overridden" checked in the caller, not in the library that overrides it
+### 1.37 Called a fix impossible from a true fact stretched past its scope, then built around it (widens 1.19)
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** AC-743: GNU parallel starts every job with SIGALRM ignored
+(`$SIG{ALRM} = 'IGNORE'`, line 6352 of the installed 20261022 script), so ansible-core refused task
+timeouts under `bats --jobs 4`. I wrote "a wrapper cannot repair that: parallel sets the disposition
+itself", from the true POSIX fact that a shell cannot reset a signal it inherited as ignored, and
+never tried a wrapper. On that claim I built a probe that detected the condition and fell back to
+serial BATS, and repeated the claim in the hook comment, `AGENTS.md`, the commit body, the PR #1114
+body and the Plane item. The review round approved it. The `/simplify` altitude reviewer then ran
+`PARALLEL_SHELL` (GNU parallel runs each job as `$PARALLEL_SHELL -c cmd` after the fork) with a
+three-line perl job shell: the job saw SIGALRM at default (`0`, against `1` without it), and
+`test_provision_vm.bats` under `--jobs 4` passed with the wrapper and failed without it.
+
+**Root cause.** The fact was about shells; the claim was about every wrapper. A negative claim ("X
+cannot fix this") was made from evidence that only rules out one kind of X, and the one cheap
+experiment that would have tested it (a non-shell job wrapper) was never run.
+
+**The rule.** Supersedes 1.19's scope to claims about what cannot work. A statement that a fix is
+impossible is made only after the cheapest counter-experiment has failed, or from a source that
+states the impossibility for the general case. A true fact about one mechanism is reported as
+exactly that ("a shell cannot reset it"), never widened to every mechanism.
+
+**Enforced by.** The instance: `platform/tests/test_pre_push_parallel_sigalrm.bats` "parallel-job-shell: a job
+started with SIGALRM ignored runs with it at default" proves the wrapper, with a control that the job
+really starts with SIGALRM ignored. The class: Convention, with no detector.
+
+### 1.38 "Never overridden" checked in the caller, not in the library that overrides it
 
 **Occurrences: 1** — 2026-11-12
 
@@ -4892,9 +4921,12 @@ an exact head is not enough when the base moved after its CI ran.
 and any of them touches a test file, merge `dev` into the branch and let CI run again on the new
 head.
 
-**Enforced by.** Convention. Proposal: `merge-when-green.py` reports how many commits `origin/dev`
-holds that the head lacks, and refuses when any of them touches a test file until the operator
-passes an explicit acknowledgement.
+**Enforced by.** Since 2026-11-12, `scripts/merge-when-green.py` (`check_dev_drift`): it reports how many
+commits `origin/dev` holds that the head lacks and refuses when any of them changes a test path, unless the
+operator passes `--dev-drift-acknowledged`; tested in `platform/tests/test_merge_when_green.py`
+(`test_dev_drift_into_test_paths_refuses`, `DevDriftGitTests`). Limits: only `dev`'s side is read, so a head
+that adds a repo-wide test still merges when `dev` changed no test path; and it binds only merges that go
+through the script.
 
 ### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
 

@@ -31,7 +31,9 @@ setup() {
   LOG="$T/python.log"
   mkdir -p "$T/fakebin" "$T/nouv" "$T/tmp"
   git init -q "$REPO"
-  mkdir -p "$REPO/platform/tests"
+  mkdir -p "$REPO/platform/tests/bin"
+  # The hook runs BATS in parallel only with this job shell in the checkout (AC-743).
+  cp "$REPO_ROOT/platform/tests/bin/parallel-job-shell" "$REPO/platform/tests/bin/"
   : > "$REPO/pyproject.toml"
   : > "$REPO/uv.lock"
 
