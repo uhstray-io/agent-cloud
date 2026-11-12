@@ -25,6 +25,9 @@ SQUASH_RE = re.compile(r"^(.+) \(#(\d+)\)$")
 RELEASE_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 DEV_RE = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-dev\.([1-9]\d*)$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
+LIMIT_PRS = 100  # policy 10 R2: at most 100 pull requests per release
+LIMIT_FILES = 120  # policy 10 R3: at most 120 files changed per release
+TRANSITION_TAG = "v0.15.0"  # policy 10 R12: the limits start once this carry-over release tag exists
 LEVELS = ("none", "patch", "minor", "major")
 BUMP = {
     "feat": "minor",
@@ -132,6 +135,16 @@ def last_release(repo):
     return found[-1] if found else (Version(0, 0, 0), None)
 
 
+def _last_release_on(repo, ref):
+    """The highest release tag merged into ref, by name, or None. Dev tags never count; see release_budget."""
+    found = [
+        (_release_version(tag), tag)
+        for tag in _git(repo, "tag", "--list", "v*", "--merged", ref).stdout.split()
+        if RELEASE_RE.match(tag) is not None
+    ]
+    return max(found)[1] if found else None
+
+
 def _next_major(base):
     """The next major version after base: v1.0.0 from 0.x, otherwise one above base's major."""
     return "v1.0.0" if base.major == 0 else f"v{base.major + 1}.0.0"
@@ -177,6 +190,33 @@ def _pull_requests(repo, rev_range, first_parent):
 def pr_titles(repo, rev_range, first_parent):
     """(number, title) for each pull request in rev_range, oldest first."""
     return [(number, title) for _sha, number, title in _pull_requests(repo, rev_range, first_parent)]
+
+
+def release_budget(repo, main_ref, dev_ref, extra_prs=0, extra_files=()):
+    """What the release dev_ref would make on main_ref counts against the limits (policy 10 R2, R3, R6, R12).
+
+    The release starts at the highest release tag merged into main_ref, so a pinned ref counts from its own
+    release. extra_prs and extra_files add a pull request not yet merged, for the merge guard. Computes only.
+    """
+    start = _last_release_on(repo, main_ref)
+    rev_range = f"{start}..{dev_ref}" if start else dev_ref
+    prs = len(pr_titles(repo, rev_range, first_parent=False)) + extra_prs
+    # -M is passed, not left to diff.renames, so user config cannot change how a rename is counted (R3).
+    changed = _git(repo, "diff", "--name-only", "-M", "-z", f"{main_ref}...{dev_ref}").stdout
+    files = len({path for path in changed.split("\0") if path} | set(extra_files))
+    probe = _git(repo, "rev-parse", "-q", "--verify", f"refs/tags/{TRANSITION_TAG}", check=False)
+    return {
+        "from": start,
+        "main_ref": main_ref,
+        "dev_ref": dev_ref,
+        "prs": prs,
+        "files": files,
+        "limits": {"prs": LIMIT_PRS, "files": LIMIT_FILES},
+        "remaining": {"prs": LIMIT_PRS - prs, "files": LIMIT_FILES - files},
+        "warn": prs * 5 >= LIMIT_PRS * 4 or files * 5 >= LIMIT_FILES * 4,  # R6: warn at 80% of a limit
+        "full": prs > LIMIT_PRS or files > LIMIT_FILES,
+        "transition": probe.returncode != 0,  # R12: no limit applies until the carry-over tag exists
+    }
 
 
 def _notes(repo, start, end):
@@ -305,6 +345,12 @@ def cmd_dev_tags(repo, args):
 
 def cmd_notes(repo, args):
     print(_notes(repo, args.start, args.end), end="")
+    return 0
+
+
+def cmd_release_budget(repo, args):
+    """The release budget as one JSON object. A readout: the gates decide, so this exits 0 whatever it counts."""
+    print(json.dumps(release_budget(repo, args.main_ref, args.dev_ref)))
     return 0
 
 
@@ -709,6 +755,7 @@ HANDLERS = {
     "next": cmd_next,
     "dev-tags": cmd_dev_tags,
     "notes": cmd_notes,
+    "release-budget": cmd_release_budget,
     "release-notes": cmd_release_notes,
     "backfill": cmd_backfill,
     "release-tags": cmd_release_tags,
@@ -731,6 +778,9 @@ def _parser():
     notes = commands.add_parser("notes", help="pull request titles in a range, as a Markdown list")
     notes.add_argument("--from", dest="start", required=True, metavar="TAG")
     notes.add_argument("--to", dest="end", required=True, metavar="REF")
+    budget = commands.add_parser("release-budget", help="pull requests and files a release counts against its limits")
+    budget.add_argument("--main-ref", default="origin/main", help="the main ref the release starts from")
+    budget.add_argument("--dev-ref", default="origin/dev", help="the dev ref the release would promote")
     release_notes = commands.add_parser(
         "release-notes",
         help="categorised notes for one release: JSON sections, or Markdown with summaries on stdin",

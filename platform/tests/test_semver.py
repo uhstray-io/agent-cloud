@@ -1342,3 +1342,132 @@ def test_major_updates_says_so_when_there_is_no_breaking_change_and_no_accepted_
     assert "## Major Updates\n\nNo breaking changes in this release.\n\n## Features\n" in plain.stdout
     rejected = _render_with(repo, {"highlights": [{"number": 999, "text": "Not here."}]})
     assert "## Major Updates\n\nNo breaking changes in this release.\n\n## Features\n" in rejected.stdout
+
+
+# --- release-budget: the pull requests and files a release counts against its limits (policy 10) ------------------
+
+
+def test_release_budget_counts_match_notes_and_git_diff_and_skip_sync_and_promotion(tmp_path):
+    repo = _dev_repo(tmp_path)
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 12, "feat: a")
+    repo.feature("fix-b", "fix: b")
+    repo.squash_pr("fix-b", 13, "fix: b")
+    repo.checkout("main")
+    repo.commit("docs: main only")
+    repo.checkout("dev")
+    repo.merge_raw("Merge remote-tracking branch 'origin/main' into dev", "feat: sync title", "main")
+    repo.feature("promote-src", "chore: promoted work")
+    repo.merge_raw("Merge pull request #50 from uhstray-io/dev", "feat: promoted", "promote-src")
+    budget = semver.release_budget(repo.root, "main", "dev")
+    notes = _run(repo, "notes", "--from", "v0.1.0", "--to", "dev").stdout.splitlines()
+    diff = repo.git("diff", "--name-only", "main...dev").splitlines()
+    assert budget["prs"] == 2 == len(notes)
+    assert budget["files"] == 3 == len(diff)
+
+
+def test_release_budget_starts_from_the_release_merged_into_main_ref(tmp_path):
+    repo = _dev_repo(tmp_path)
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 12, "feat: a")
+    repo.checkout("main")
+    repo.merge_raw("Merge pull request #50 from uhstray-io/dev", "feat: promoted", "dev")
+    repo.tag("v0.2.0")
+    repo.checkout("dev")
+    repo.feature("fix-c", "fix: c")
+    repo.merge_pr("fix-c", 14, "fix: c")
+    on_main = semver.release_budget(repo.root, "main", "dev")
+    pinned = semver.release_budget(repo.root, "v0.1.0", "dev")
+    assert (on_main["from"], on_main["prs"]) == ("v0.2.0", 1)
+    assert (pinned["from"], pinned["prs"]) == ("v0.1.0", 2)
+
+
+@pytest.mark.parametrize(
+    ("kind", "count", "warn", "full"),
+    [
+        ("prs", 79, False, False),
+        ("prs", 80, True, False),
+        ("prs", 100, True, False),
+        ("prs", 101, True, True),
+        ("files", 95, False, False),
+        ("files", 96, True, False),
+        ("files", 120, True, False),
+        ("files", 121, True, True),
+    ],
+)
+def test_release_budget_warns_at_80_percent_and_is_full_past_each_limit(tmp_path, kind, count, warn, full):
+    repo = _dev_repo(tmp_path)
+    extra = {"extra_prs": count} if kind == "prs" else {"extra_files": [f"x/{i}" for i in range(count)]}
+    budget = semver.release_budget(repo.root, "main", "dev", **extra)
+    assert budget[kind] == count
+    assert (budget["warn"], budget["full"]) == (warn, full)
+    assert budget["limits"] == {"prs": 100, "files": 120}
+    assert budget["remaining"] == {"prs": 100 - budget["prs"], "files": 120 - budget["files"]}
+
+
+def test_release_budget_extra_files_already_in_the_diff_are_not_counted_twice(tmp_path):
+    repo = _dev_repo(tmp_path)
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 12, "feat: a")
+    existing = repo.git("diff", "--name-only", "main...dev").split()
+    assert len(existing) == 1
+    assert semver.release_budget(repo.root, "main", "dev", extra_files=existing)["files"] == 1
+    assert semver.release_budget(repo.root, "main", "dev", extra_files=["new/path.txt"])["files"] == 2
+
+
+def test_release_budget_counts_a_rename_once_under_its_new_path(tmp_path):
+    repo = _dev_repo(tmp_path)
+    # Rename detection is pinned by the count itself (-M); this config would turn it off for a plain git diff.
+    repo.git("config", "diff.renames", "false")
+    repo.branch("rename-a")
+    repo.git("mv", "file-1.txt", "renamed.txt")
+    repo.git("commit", "-q", "-m", "refactor: move the file", env=repo._stamped())
+    repo.checkout("dev")
+    repo.merge_pr("rename-a", 20, "refactor: move the file")
+    assert semver.release_budget(repo.root, "main", "dev")["files"] == 1
+    assert semver.release_budget(repo.root, "main", "dev", extra_files=["renamed.txt"])["files"] == 1
+    assert semver.release_budget(repo.root, "main", "dev", extra_files=["file-1.txt"])["files"] == 2
+
+
+def test_release_budget_counts_a_deleted_file_once(tmp_path):
+    repo = Repo(tmp_path / "repo")
+    repo.commit("docs: second file")  # file-2.txt on main, before dev branches
+    repo.branch("dev")
+    repo.branch("drop-a")
+    repo.git("rm", "-q", "file-2.txt")
+    repo.git("commit", "-q", "-m", "chore: drop the file", env=repo._stamped())
+    repo.checkout("dev")
+    repo.merge_pr("drop-a", 21, "chore: drop the file")
+    assert semver.release_budget(repo.root, "main", "dev")["files"] == 1
+    assert semver.release_budget(repo.root, "main", "dev", extra_files=["file-2.txt"])["files"] == 1
+
+
+def test_release_budget_transition_holds_until_the_v015_tag_exists(tmp_path):
+    repo = _dev_repo(tmp_path)
+    assert semver.release_budget(repo.root, "main", "dev")["transition"] is True
+    repo.tag("v0.15.0", "dev")
+    assert semver.release_budget(repo.root, "main", "dev")["transition"] is False
+
+
+def test_release_budget_cli_prints_one_json_object_with_the_policy_keys(tmp_path):
+    repo = _dev_repo(tmp_path)
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 12, "feat: a")
+    result = _run(repo, "release-budget", "--main-ref", "main", "--dev-ref", "dev")
+    assert (result.returncode, result.stderr) == (0, "")
+    assert result.stdout.count("\n") == 1
+    payload = json.loads(result.stdout)
+    assert set(payload) == {
+        "from",
+        "main_ref",
+        "dev_ref",
+        "prs",
+        "files",
+        "limits",
+        "remaining",
+        "warn",
+        "full",
+        "transition",
+    }
+    assert payload == semver.release_budget(repo.root, "main", "dev")
+    assert payload["from"] == "v0.1.0"
