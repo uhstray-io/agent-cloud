@@ -66,6 +66,13 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    # keep-id (compose.tls.yml): tasks/assert-podman-keep-id.yml.
+    - name: "Refuse a podman older than 4.3 for userns keep-id"
+      ansible.builtin.include_tasks: tasks/assert-podman-keep-id.yml
+      vars:
+        _apk_for: "opa_tls (compose.tls.yml)"
+      when: _opa_tls
+
     # ── Listener TLS (opa_tls, production) ─────────────────────────────────────
     # Every declaration check runs before the leaf is issued, so a bad declaration issues nothing.
     - name: "Refuse opa_tls outside production"
@@ -110,27 +117,6 @@
         quiet: true
       vars:
         _opa_leaf_decl: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _opa_server_leaf) | list }}"
-      when: _opa_tls
-
-    # keep-id (compose.tls.yml) needs podman 4.3 or later, and the older podman refuses the flag.
-    - name: "Read the podman version for keep-id"
-      ansible.builtin.command:
-        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
-      register: _opa_podman_version
-      changed_when: false
-      check_mode: false
-      when: _opa_tls
-
-    - name: "Refuse keep-id on a podman older than 4.3"
-      ansible.builtin.assert:
-        that:
-          # keep-id is a podman option: another engine's version number would pass the comparison.
-          - (container_engine | default('podman')) == 'podman'
-          - _opa_podman_version.stdout is version('4.3', '>=')
-        fail_msg: >-
-          opa_tls needs podman 4.3 or later for userns keep-id; this host runs
-          {{ container_engine | default('podman') }} {{ _opa_podman_version.stdout }}.
-        quiet: true
       when: _opa_tls
 
     # The server leaf: key generated on this host, signed by the one step_ca_svc host. An issued
