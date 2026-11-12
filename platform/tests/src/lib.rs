@@ -6,6 +6,8 @@
 //!   anchors, aliases, `<<` merge keys);
 //! - [`process`]: a bounded child process with a scrubbed environment (03 Part 1, rule 11).
 
+pub mod lanes;
+
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
     //!

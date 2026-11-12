@@ -1,0 +1,52 @@
+# Lane selection for the Rust suite (plan 24, D3). Read by src/lanes.rs; `testsel` prints the
+# nextest filterset a lane runs for the paths a change touches.
+#
+# Each changed path is classified in this order:
+#   1. it matches `full`: the change selects everything (see src/lanes.rs for what each lane runs);
+#   2. it matches the paths of one or more areas: those areas are selected;
+#   3. it matches `ignore`: it selects nothing;
+#   4. otherwise it is unclassified: the push and CI lanes run everything.
+#
+# Every test module in suite/main.rs must appear in exactly one list below, under an area's tiers
+# or under `always`. The repository test every_suite_module_is_in_exactly_one_list_of_areas_yml
+# enforces it.
+
+# Paths whose change runs every test.
+full:
+  - "platform/tests/**"
+  - "platform/playbooks/tasks/**"
+  - ".github/workflows/**"
+
+# Paths that select no tests on their own.
+ignore:
+  - "**/*.md"
+  - "plan/**"
+  - "docs/**"
+
+# The security set: selected in every lane (static modules only in the commit lane).
+always: {}
+
+# Tiers: static, unit, cli, http, playbook. Each lists suite module names.
+areas:
+  restart_policy:
+    paths:
+      - "platform/**/*compose*.yml"
+      - "platform/**/*compose*.yaml"
+      - "agents/**/*compose*.yml"
+      - "agents/**/*compose*.yaml"
+      - "platform/playbooks/tasks/enable-linger.yml"
+      - "platform/playbooks/tasks/place-monorepo.yml"
+    tiers:
+      static: [restart_policy]
+
+  common_sh:
+    paths:
+      - "platform/lib/common.sh"
+    tiers:
+      cli: [common_sh]
+
+  test_platform:
+    paths:
+      - "platform/tests/**"
+    tiers:
+      static: [lanes]

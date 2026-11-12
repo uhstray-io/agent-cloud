@@ -101,7 +101,7 @@ The full testing principles are 03 Part 1. This plan applies them as follows.
 
 ```mermaid
 flowchart LR
-    CHG["changed paths<br/>(commit, push, PR)"] --> SEL["testsel<br/>areas.toml"]
+    CHG["changed paths<br/>(commit, push, PR)"] --> SEL["testsel<br/>areas.yml"]
     SEL --> FS["nextest filterset"]
     FS --> NX["cargo nextest run<br/>-P lane"]
     NX --> ST["static tier<br/>parse repo files"]
@@ -118,7 +118,7 @@ flowchart LR
 platform/tests/
   Cargo.toml            agent-cloud-tests, its own [workspace]; Cargo.lock committed
   .config/nextest.toml  lanes as profiles, the ansible test-group
-  areas.toml            area -> path globs (D3)
+  areas.yml             area -> path globs (D3)
   src/lib.rs            shared support: repo root, YAML 1.1 loader, task walker, process runner
   src/bin/testsel.rs    changed paths -> nextest filterset (Phase 2)
   suite/main.rs         the one test binary; one module per area
@@ -135,7 +135,7 @@ unaffected.
 |---|---|---|
 | D1 | **Runner: `cargo-nextest` 0.9.151.** Profiles are lanes. A `playbook` test-group caps concurrent `ansible-playbook` runs. `slow-timeout` bounds every test, which is plan 21 F5's missing timeout | `cargo test` runs one binary's tests on threads in one process, so a hung child holds the run and per-test timeouts need custom code. `rustest` 0.3.1 replaces the libtest harness (`harness = false`), was last released 2025-06-04 and has 82 downloads a month (lib.rs, read 2026-11-12) |
 | D2 | **Libraries.** `assert_cmd` + `predicates` (process tests), `insta` with `yaml` and `json` (snapshots of rendered output and refusal messages), `proptest` (properties of parsers and resolvers), `wiremock` + `tokio` (HTTP fakes, replacing the 31 hand-rolled servers of plan 21 F5), `yaml-rust2` (YAML), `tempfile`, `globset`, `serde_json`. Approved by the operator on 2026-11-12 | `quickcheck` duplicates `proptest`, and `proptest` keeps failing cases in `proptest-regressions/`. `trybuild` tests compile errors of macros and types, and the repository has none. `serde_yaml` is deprecated (`0.9.34+deprecated` on crates.io) |
-| D3 | **Lanes from `areas.toml`.** Each area names its path globs. `testsel` maps changed paths to areas and emits `-E` filtersets over module paths (`test(/^<area>::/)`). The security set and the static tier of the touched areas are always added. A change to the test crate, `areas.toml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
+| D3 | **Lanes from `areas.yml`.** Each area names its path globs. The file is YAML, read with the suite's own loader, so no TOML dependency. `testsel` maps changed paths to areas and emits `-E` filtersets over module paths (`test(/^<area>::/)`). The security set and the static tier of the touched areas are always added. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
 | D4 | **Port Python where the runtime is ours.** Controller-side helpers (`scripts/*.py`, `platform/lib/*.py`, `platform/playbooks/files/*.py` run on the controller) become subcommands of one Rust CLI. Host-side helpers follow once D6 is decided. Operator decision, 2026-11-12 | Keeping a thin pytest lane was the recommended option. Shim tests (`python3 -c` per case) are slower than in-process pytest |
 | D5 | **Framework-bound Python stays Python, kept thin.** Filter and callback plugins are loaded by Ansible. Plane, NetBox and Authentik scripts run in their Django shells. NetBox workers and configuration run in NetBox. Each keeps its logic in a pure function, and the function's cases run through the tier that can load it: playbook tier for plugins, a fake-module `python3` run for Django scripts. One test per behaviour, cases looped inside one run | A Rust port of these is impossible: the host only loads Python |
 | D6 | **Host-side binary distribution: OPEN, operator decision.** Proposed: CI builds static musl binaries for `x86_64` and `aarch64` and publishes them on the release. Deploys fetch them by pinned sha256, the pattern Deploy Plane uses for Plane's Compose files, and copy them instead of `script:` | Building on the controller needs a Rust toolchain in the Semaphore image. A host has no toolchain |
@@ -168,7 +168,7 @@ split into one sub-item per area when it starts.
 |---|---|---|---|
 | 0 | This plan, and 03 Part 1 (testing principles) | none | Merged into `dev` |
 | 1 | Crate, nextest `default` and `ci` profiles, shared support library (YAML 1.1 loader, task walker, scrubbed bounded runner). Pilot: `test_restart_policy.bats` (static) and `test_common.bats` (cli) ported **additively**; the BATS files stay until Phase 3. The `Rust (tests)` CI job and the merge guard's new workflow state are a separate operator-merged pull request (AC-744). The `playbook` test-group arrives with the first playbook-tier test (Phase 6) | 0 | `cargo nextest run --profile ci` passes in CI (after AC-744); both pilots fail when their guarded code is mutated |
-| 2 | Lanes: `areas.toml`, `testsel`, the `commit` and `push` hooks, selection in the CI job | 1 | A docs-only pull request runs only the static tier and the security set; a playbook change runs its area's playbook tier |
+| 2 | Lanes: `areas.yml`, `testsel`, the `commit` and `push` hooks, selection in the CI job | 1 | A docs-only pull request runs only the static tier and the security set; a playbook change runs its area's playbook tier |
 | 3 | Ledger citation check ported to Rust and taught `.rs` (D9); pilot BATS files deleted | 1 | The ledger check is green with both pilots cited by their Rust paths |
 | 4 | Port BATS (82 files) by area; delete the `bats` job | 2, 3 | `bats` gone from the workflow; every deleted test mapped |
 | 5 | Port the static and subprocess Python tests (93 files) | 2, 3 | Those files deleted, every test mapped |
@@ -197,7 +197,7 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 | Nothing lost | Every deleted pytest or BATS test appears in its port's map with a replacement or a reason |
 | Guards still bite | Each ported security test is mutated once and goes red (03 Part 1, rule 9) |
 | Ledger honest | The Rust citation check is green, and no "Enforced by" names a test that does not exist |
-| Selection safe | A change to the crate, `areas.toml` or a shared task runs `full`; the security set runs in every lane |
+| Selection safe | A change to the crate, `areas.yml` or a shared task runs `full`; the security set runs in every lane |
 
 ---
 

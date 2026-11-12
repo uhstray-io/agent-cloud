@@ -255,6 +255,9 @@ The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
 `plan/architecture/03-testing-ci-quality.md` Part 1. In short:
 
 - One module per area in `platform/tests/suite/`, declared in `suite/main.rs`.
+- List each new module once in `platform/tests/areas.yml`: under an area's tier, or under `always`
+  for the security set. The tier decides which lanes run it (plan 24, D3). The repository test
+  `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
 - Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
   bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
   anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.

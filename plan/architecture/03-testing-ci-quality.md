@@ -103,14 +103,14 @@ refuse proves the same property 244 times, at about a second each.
 ## Lanes: run what the change can break
 
 A lane is a nextest profile plus a selection. Each test belongs to an **area**, whose path globs are in
-`platform/tests/areas.toml`. A change selects the areas its paths touch, plus the security set.
+`platform/tests/areas.yml`. A change selects the areas its paths touch, plus the security set.
 
 | Lane | When | Runs |
 |---|---|---|
 | `commit` | every commit (pre-commit hook) | static tier of touched areas, plus the security set's static tests |
 | `push` | every push (pre-push hook) | all tiers of touched areas, plus the security set |
 | `ci` | every pull request into `dev` | as `push`, against the pull request base |
-| `full` | nightly on `dev`, every promotion into `main`, any change to the test crate, `areas.toml` or a shared task | everything |
+| `full` | nightly on `dev`, every promotion into `main`, any change to the test crate, `areas.yml` or a shared task | everything |
 
 Selection is never a reason to skip the security set, and a change the selector cannot classify runs
 `full`. The lane budgets and their measurement are in plan 24.
