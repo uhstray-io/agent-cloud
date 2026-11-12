@@ -551,17 +551,17 @@ environment before operations; a checked-in deploy path is not proof it is runni
 >
 > - An agent may push a feature branch and open a pull request into `dev` without asking, then
 >   carry it through review: fix or answer every finding, push the fixes, and request review again.
-> - It merges a pull request into `dev` through `scripts/merge-when-green.py` once one completed
->   review round covers the final head (CodeRabbit, or an independent Claude review recorded with
->   `--review-receipt` when CodeRabbit posts none), every finding is fixed or answered on the pull
->   request, and every required check passes on that head. A receipt and `--feedback-addressed`
+> - It merges a pull request into `dev` through `scripts/merge-when-green.py` once every gate listed
+>   under "Feature-to-Dev pull-request merges" holds, after one completed review round of the final
+>   head (a non-author approval on GitHub, or a review receipt when none is posted) with every
+>   finding fixed or answered on the pull request. A receipt and `--feedback-addressed`
 >   are self-attested: the guard checks their fields, not that the review ran or the feedback was
 >   handled, so writing one is a claim the agent must be able to back.
 > - A `dev` → `main` promotion merges with `gh pr merge --merge` after two completed review rounds,
 >   with every finding fixed or answered and the `Promotion source (dev -> main)` check passing.
 >   The two rounds are a convention: no check counts them.
-> - Still asked every time: a push straight to `main` or `dev`, any force push, passing
->   `--dev-drift-acknowledged`, and a push or pull request in a repository outside this
+> - Still asked every time: a push straight to `main` or `dev`, any force push, any squash merge,
+>   passing `--dev-drift-acknowledged`, and a push or pull request in a repository outside this
 >   organisation. An approval for one of these covers exactly the action it names, on the branch or
 >   pull request it names (`docs/MISTAKES.md` §5.7).
 
