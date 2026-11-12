@@ -36,7 +36,7 @@ config-as-code**. Do the work *through* those mechanisms — not around them:
 
 ### Feature-to-Dev pull-request merges
 
-Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from. Merge only after one independent final-head approval, all final-head CI jobs pass, review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. With explicit authorization for that PR/head, use `--feedback-addressed --merge`; the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
+Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch and let CI run on the new head, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). Merge only after one independent final-head approval, all final-head CI jobs pass, review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. With explicit authorization for that PR/head, use `--feedback-addressed --merge`; the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
 
 `dev` intentionally has no required-check rule because the main-to-Dev sync workflow pushes directly to it. The CLI is therefore an operator gate, not GitHub-enforced protection; do not substitute `gh pr merge --auto`, `--admin`, or a direct merge command.
 
@@ -608,9 +608,11 @@ every test file the push changes against `<remote>/dev`, every file holding a te
 durations file (`platform/tests/test_durations.json`) does not record, and every file whose
 recorded tests all ran under 0.25 s in CI with none skipped (`PYTEST_FAST=1`, selected in
 the root `conftest.py`). BATS runs in full, beside pytest, with `--jobs 4
---no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it) and
-serially otherwise. When the pushed commit has no merge base with `<remote>/dev`, the hook
-runs the full Python suite and says why. A change to a playbook or helper therefore runs only
+--no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it), each
+job run through `platform/tests/bin/parallel-job-shell` (GNU parallel starts its jobs with
+SIGALRM ignored, which breaks Ansible task timeouts; the wrapper restores it), and serially
+otherwise. When the pushed commit has no merge base with
+`<remote>/dev`, the hook runs the full Python suite and says why. A change to a playbook or helper therefore runs only
 the fast and changed test files here; CI runs everything. Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
