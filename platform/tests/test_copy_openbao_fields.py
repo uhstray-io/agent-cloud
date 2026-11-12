@@ -12,7 +12,9 @@ These tests read the declaration and the playbook, and run the playbook against 
   its neighbour;
 - behaviour: a pending target is written beside its siblings and then equals its source; a value never
   reaches the output; a second run writes nothing; a conflict, a missing source or a malformed declaration
-  refuses before any write.
+  refuses before any write; a retired source that is gone is a no-op while its target holds a value, and refuses
+  before any write while it does not; a retired source that still holds a value is planned by the normal rules
+  (a differing target is a conflict that refuses, an equal one is copied, an absent one is written).
 """
 
 from __future__ import annotations
@@ -60,6 +62,8 @@ SECOND = "SECONDVALUE-7d4e19"
 # The registered results of the playbook's reads, and the login's. A visible task may not print or loop over
 # them (test_no_request_in_loop_items.py has the same rule across the repository).
 PROTECTED = ("_bao_auth", "_src_reads", "_dst_reads", "_dst_readback")
+# SOURCE/token retired from the store, as vars/retired-secret-fields.yml lists it.
+RETIRED_TOKEN = {"path": SOURCE, "fields": ["token"], "retired": "2026-11-11", "reason": "fixture"}
 
 
 def _copy(**overrides) -> dict:
@@ -306,6 +310,30 @@ def test_agents_md_lists_the_playbook_directly_after_the_retire_row():
     assert "`copy-openbao-fields.yml`" in rows[names.index("Copy OpenBao Fields")]
 
 
+def test_the_playbook_loads_the_retired_fields_and_decides_only_a_missing_retired_source():
+    assert "vars/retired-secret-fields.yml" in _play()["vars"]["_retired_file"]
+    tasks = _tasks()
+    plan = tasks[_named(tasks, "Plan each copy")]["vars"]["_plan_json"]
+    assert "'source-retired-target-missing'" in plan and "'source-retired'" in plan
+    # The retired check sits inside the missing-source branch, so a retired source that still holds a value reaches the
+    # pending, copied and conflict checks like any other source.
+    assert plan.index("src_value is none") < plan.index("in _retired_sources") < plan.index("'pending'")
+    assert plan.index("'pending'") < plan.index("'copied'") < plan.index("'conflict'")
+
+
+def test_the_refusal_names_a_retired_source_with_no_target_value():
+    tasks = _tasks()
+    refusal = tasks[_named(tasks, "Refuse a copy whose source")]
+    assert "'source-retired-target-missing'" in refusal["vars"]["_blocked"]
+    assert "Nothing was written" in refusal["ansible.builtin.assert"]["fail_msg"]
+
+
+def test_the_summary_prints_a_retired_source_held_on_its_own_line():
+    tasks = _tasks()
+    summary = tasks[_named(tasks, "Summarise the copy")]
+    assert "Source retired, target held (no-op):" in " ".join(playbook_yaml.strings(summary))
+
+
 # ── (c) behaviour: the real playbook against a local KV-v2 double ───────────────
 
 requires_ansible = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
@@ -406,13 +434,17 @@ def _bao(paths: dict, interleave: dict | None = None):
         yield vault, url
 
 
-def _tree(tmp_path: Path, declaration: list[dict]) -> Path:
+def _tree(
+    tmp_path: Path, declaration: list[dict], retired: list[dict] | None = None, *, with_retired_file: bool = True
+) -> Path:
     root = tmp_path / "playbooks"
     (root / "vars").mkdir(parents=True)
     shutil.copy(PLAYBOOK, root / PLAYBOOK.name)
     shutil.copy(REFUSE, root / REFUSE.name)
     shutil.copytree(TASKS, root / "tasks")
     (root / "vars/copied-secret-fields.yml").write_text(yaml.safe_dump({"copied_secret_fields": declaration}))
+    if with_retired_file:
+        (root / "vars/retired-secret-fields.yml").write_text(yaml.safe_dump({"retired_secret_fields": retired or []}))
     return root
 
 
@@ -639,3 +671,111 @@ def test_a_malformed_declaration_refuses_before_any_openbao_request(tmp_path, de
     assert reason in out, out[-2000:]
     assert vault.requests == [], "the shape check ran after OpenBao was reached"
     assert HELD not in out
+
+
+@requires_ansible
+@pytest.mark.parametrize("check", [True, False], ids=["check", "live"])
+@pytest.mark.parametrize("source", [None, {"other": OTHER}], ids=["path-absent", "field-absent"])
+def test_a_retired_source_with_its_target_held_is_a_no_op(tmp_path, check, source):
+    # The retirement removed the source field, so nothing is compared: the target keeps its value, nothing is written.
+    paths = {SOURCE: source, TARGET: {"token": HELD, "keep": KEPT}}
+    with _bao(paths) as (vault, url):
+        done = _run(_tree(tmp_path, [_copy()], [RETIRED_TOKEN]), _inventory(tmp_path, url), check=check)
+    out = _out(done)
+    assert done.returncode == 0, out[-2000:]
+    assert f"{TARGET}/token from {SOURCE}/token: source-retired" in out, out[-2000:]
+    assert "source-retired-target-missing" not in out, out[-2000:]
+    assert f"Source retired, target held (no-op): {TARGET}/token" in out, out[-2000:]
+    assert HELD not in out and KEPT not in out
+    assert vault.writes() == [], "a retired source's copy was written"
+    assert vault.paths == paths
+
+
+@requires_ansible
+@pytest.mark.parametrize("check", [True, False], ids=["check", "live"])
+@pytest.mark.parametrize("source", [None, {"other": OTHER}], ids=["path-absent", "field-absent"])
+@pytest.mark.parametrize("target", [{"keep": KEPT}, {"token": "", "keep": KEPT}], ids=["field-absent", "field-empty"])
+def test_a_gone_retired_source_with_its_target_not_held_refuses_before_any_write(tmp_path, check, source, target):
+    # The source is gone and the target holds no value, so the copy cannot converge: the run refuses before any write.
+    paths = {SOURCE: source, TARGET: target}
+    with _bao(paths) as (vault, url):
+        done = _run(_tree(tmp_path, [_copy()], [RETIRED_TOKEN]), _inventory(tmp_path, url), check=check)
+    out = _out(done)
+    assert done.returncode != 0, out[-2000:]
+    plan_line = f"{TARGET}/token from {SOURCE}/token"
+    assert f"{plan_line}: source-retired-target-missing" in out, out[-2000:]
+    assert "Nothing was written" in out, out[-2000:]
+    assert HELD not in out and KEPT not in out
+    assert vault.writes() == [], "a retired copy with no target value was written"
+    assert vault.paths == paths
+
+
+@requires_ansible
+@pytest.mark.parametrize("check", [True, False], ids=["check", "live"])
+@pytest.mark.parametrize("held", [OTHER, ""], ids=["different", "empty"])
+def test_a_retired_source_still_held_refuses_a_target_that_differs_before_any_write(tmp_path, check, held):
+    # The source still holds its value, so the retirement does not decide the entry: the normal rules plan a target that
+    # differs as a conflict, and the run refuses before any write.
+    paths = {SOURCE: {"token": HELD}, TARGET: {"token": held, "keep": KEPT}}
+    with _bao(paths) as (vault, url):
+        done = _run(_tree(tmp_path, [_copy()], [RETIRED_TOKEN]), _inventory(tmp_path, url), check=check)
+    out = _out(done)
+    assert done.returncode != 0, out[-2000:]
+    plan_line = f"{TARGET}/token from {SOURCE}/token"
+    assert f"{plan_line}: conflict" in out, out[-2000:]
+    assert "source-retired" not in out, out[-2000:]
+    assert "Nothing was written" in out, out[-2000:]
+    assert HELD not in out and OTHER not in out and KEPT not in out
+    assert vault.writes() == [], "a conflicting target was written"
+    assert vault.paths == paths
+
+
+@requires_ansible
+@pytest.mark.parametrize("check", [True, False], ids=["check", "live"])
+def test_a_retired_source_still_held_and_its_target_equal_is_copied(tmp_path, check):
+    paths = {SOURCE: {"token": HELD}, TARGET: {"token": HELD, "keep": KEPT}}
+    with _bao(paths) as (vault, url):
+        done = _run(_tree(tmp_path, [_copy()], [RETIRED_TOKEN]), _inventory(tmp_path, url), check=check)
+    out = _out(done)
+    assert done.returncode == 0, out[-2000:]
+    plan_line = f"{TARGET}/token from {SOURCE}/token"
+    assert f"{plan_line}: copied" in out, out[-2000:]
+    assert f"Already copied (no-op): {TARGET}/token" in out, out[-2000:]
+    assert "source-retired" not in out, out[-2000:]
+    assert HELD not in out and KEPT not in out
+    assert vault.writes() == [], "an equal target was written"
+    assert vault.paths == paths
+
+
+@requires_ansible
+@pytest.mark.parametrize("check", [True, False], ids=["check", "live"])
+def test_a_retired_source_still_held_and_its_target_absent_is_written_by_the_normal_rule(tmp_path, check):
+    # Planned as any other source while it holds a value: the target field is absent, so the copy writes it.
+    paths = {SOURCE: {"token": HELD}, TARGET: {"keep": KEPT}}
+    with _bao(paths) as (vault, url):
+        done = _run(_tree(tmp_path, [_copy()], [RETIRED_TOKEN]), _inventory(tmp_path, url), check=check)
+    out = _out(done)
+    assert done.returncode == 0, out[-2000:]
+    assert f"{TARGET}/token from {SOURCE}/token: pending" in out, out[-2000:]
+    assert "source-retired" not in out, out[-2000:]
+    assert HELD not in out and KEPT not in out
+    if check:
+        assert vault.writes() == [], "check mode wrote"
+        assert vault.paths == paths
+    else:
+        assert vault.writes() == [
+            ("POST", f"/v1/secret/data/{TARGET}", {"data": {"keep": KEPT, "token": HELD}, "options": {"cas": 1}})
+        ]
+        assert vault.paths == {SOURCE: {"token": HELD}, TARGET: {"keep": KEPT, "token": HELD}}
+
+
+@requires_ansible
+def test_without_a_retirement_file_a_missing_source_still_refuses(tmp_path):
+    # A missing retired-fields file reads as nothing retired, so a copy from an absent source plans source-missing.
+    paths = {SOURCE: None, TARGET: {"keep": KEPT}}
+    with _bao(paths) as (vault, url):
+        done = _run(_tree(tmp_path, [_copy()], with_retired_file=False), _inventory(tmp_path, url), check=False)
+    out = _out(done)
+    assert done.returncode != 0, out[-2000:]
+    assert f"{TARGET}/token from {SOURCE}/token: source-missing" in out, out[-2000:]
+    assert vault.writes() == [], "a copy with no source was written"
