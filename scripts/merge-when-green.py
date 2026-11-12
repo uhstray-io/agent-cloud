@@ -820,7 +820,8 @@ def live_dev_sha(api):
 def check_release_budget(api, file_records):
     # Policy 10 R4, R5: a merge may not take its release past 100 pull requests, or past 120 changed files when it
     # adds a path; R12 suspends both until the carry-over tag exists. The count is taken at the dev tip GitHub
-    # reports now. The pull request's base.sha is not that tip: it was stale on 8 of 8 open pull requests (2026-11-12).
+    # reports now. The pull request's base.sha is not that tip: it was stale on each of the 8 most
+    # recently updated open pull requests checked (2026-11-12).
     live_sha = live_dev_sha(api)
     # The post-change path of each file: a rename counts once, under its new name; a deletion under its old one.
     dev_sha, before, after = api.release_budget([f["filename"] for f in file_records])
