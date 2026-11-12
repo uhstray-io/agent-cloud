@@ -734,6 +734,12 @@ When the forecast lacks headroom, the wave SHALL wait for a reviewed, non-destru
 - **AND** earlier Alloy ExtraMetrics hypotheses do not become a current diagnosis or authorize a native-body workaround; native positive body evidence and all native gates remain unchanged
 - **AND** a receiver checkout HEAD remains separate from loaded revision/configuration and image identity; merged source validation closes only its source child, not representative seven-day baseline, calibration/forecast, backup/immutable isolated restore, retention expansion or growth acceptance
 
+#### Scenario: Drop counter created only on its first drop is absent
+- **WHEN** the baseline reads `otelcol_exporter_enqueue_failed_spans_total` (job `alloy`) or `loki_discarded_samples_total` (job `loki`), whose pinned upstream sources create a series only on the first drop, and the family returns no samples
+- **THEN** the family reports `absent_lazy_counter` with reason `liveness_series_present` only when a fresh liveness series is present for every expected target of the same job: `otelcol_exporter_queue_size{data_type="traces"}` for Alloy, `loki_distributor_lines_received_total` for Loki
+- **AND** without that liveness series, or when the liveness read fails, the family stays `missing_or_stale`
+- **AND** `absent_lazy_counter` never counts as `observed_zero`; it means no drop since that process last started, and the rule that missing data is unavailable is unchanged for every other family
+
 #### Scenario: Wave exceeds capacity
 - **WHEN** the forecasted wave exceeds a declared capacity or retention budget
 - **THEN** rollout stops before enabling new collection and reports the limiting resource and proposed VM-spec change

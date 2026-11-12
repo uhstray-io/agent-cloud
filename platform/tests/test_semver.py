@@ -677,6 +677,8 @@ def test_merge_guard_operator_merges_every_file_the_release_tagging_runs_from():
     assert "scripts/semver-backfill.tsv" in guard.RELEASE_SCRIPTS
     assert "platform/playbooks/release-version.yml" in guard.RELEASE_SCRIPTS
     assert "platform/playbooks/tasks/release-notes-body.yml" in guard.RELEASE_SCRIPTS
+    assert "platform/playbooks/tasks/release-notes-from-task.yml" in guard.RELEASE_SCRIPTS
+    assert "platform/playbooks/files/release_notes_from_task.py" in guard.RELEASE_SCRIPTS
 
 
 # --- release-notes: one release's categorised notes, as JSON sections or Markdown with optional summaries ----------

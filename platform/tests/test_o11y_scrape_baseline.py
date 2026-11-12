@@ -3800,6 +3800,10 @@ def test_alert_input_availability_uses_lookback_and_empty_vector_for_missing_or_
         families[4]: b'{"status":"success","private_payload":"API-BODY-SENTINEL"}',
         families[5]: SURVEY.Refusal("alert_query_unavailable"),
     }
+    # The enqueue counter is lazy, so its liveness query runs; the queue series is absent too,
+    # so the family stays missing_or_stale.
+    liveness_name = SURVEY.LAZY_ALERT_INPUT_LIVENESS[families[2]][0]
+    results[liveness_name] = []
     queries = []
     lookbacks = []
 
@@ -3808,7 +3812,7 @@ def test_alert_input_availability_uses_lookback_and_empty_vector_for_missing_or_
         query = params["query"][0]
         queries.append(query)
         lookbacks.append(params["lookback_delta"])
-        family = next(name for name in families if query.startswith(name + "{"))
+        family = next(name for name in results if query.startswith(name + "{"))
         assert "or vector(0)" not in query
         result = results[family]
         if isinstance(result, Exception):
@@ -3829,12 +3833,203 @@ def test_alert_input_availability_uses_lookback_and_empty_vector_for_missing_or_
         {"family": families[4], "status": "unavailable", "reason": "malformed_response"},
         {"family": families[5], "status": "unavailable", "reason": "api_unavailable"},
     ]
-    assert len(queries) == 6
-    assert lookbacks == [["5m"]] * 6
+    assert len(queries) == 7
+    assert f'{liveness_name}{{job="alloy",data_type="traces"}}' in queries
+    assert lookbacks == [["5m"]] * 7
     assert all("or%20vector" not in query for query in queries)
     public = json.dumps(receipt)
     for sentinel in ("alloy-private", "loki-private", "tempo-private", "private-reason", "API-BODY-SENTINEL"):
         assert sentinel not in public
+
+
+def _alert_series(name, job, instance, value="1", timestamp=1000, **labels):
+    return {
+        "metric": {"__name__": name, "job": job, "instance": instance, **labels},
+        "value": [timestamp, value],
+    }
+
+
+def _route_alert_queries(monkeypatch, results):
+    """Serve each alert query by metric name; a metric not listed has no series. Returns the query log."""
+    queries = []
+
+    def run_api(path, _reason="query_unavailable"):
+        params = parse_qs(urlsplit("http://prometheus" + path).query)
+        query = params["query"][0]
+        queries.append(query)
+        assert params["lookback_delta"] == ["5m"]
+        assert "or vector(0)" not in query
+        name = next((name for name in results if query.startswith(name + "{")), None)
+        result = [] if name is None else results[name]
+        if isinstance(result, Exception):
+            raise result
+        if isinstance(result, bytes):
+            return result
+        return _vector(result).encode()
+
+    monkeypatch.setattr(SURVEY, "_run_api", run_api)
+    return queries
+
+
+def test_lazy_enqueue_counter_with_live_traces_queue_is_absent_lazy_counter(monkeypatch):
+    enqueue = SURVEY.ALERT_INPUTS[2][0]
+    queue = SURVEY.LAZY_ALERT_INPUT_LIVENESS[enqueue][0]
+    queries = _route_alert_queries(monkeypatch, {
+        queue: [_alert_series(queue, "alloy", "alloy-private:4317", value="3", data_type="traces")],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("alloy", "alloy-private:4317")]))
+    assert receipt["families"][2] == {
+        "family": enqueue, "status": "absent_lazy_counter", "reason": "liveness_series_present",
+    }
+    assert f'{queue}{{job="alloy",data_type="traces"}}' in queries
+
+
+def test_lazy_loki_counter_with_live_distributor_is_absent_lazy_counter(monkeypatch):
+    loki = SURVEY.ALERT_INPUTS[4][0]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[loki][0]
+    queries = _route_alert_queries(monkeypatch, {
+        liveness: [
+            _alert_series(liveness, "loki", "loki-private:3100", tenant="tenant-private-a"),
+            _alert_series(liveness, "loki", "loki-private:3100", tenant="tenant-private-b"),
+        ],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("loki", "loki-private:3100")]))
+    assert receipt["families"][4] == {
+        "family": loki, "status": "absent_lazy_counter", "reason": "liveness_series_present",
+    }
+    assert f'{liveness}{{job="loki"}}' in queries
+
+
+@pytest.mark.parametrize("index", [2, 4])
+def test_lazy_counter_liveness_from_a_foreign_target_stays_missing_or_stale(index, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    _route_alert_queries(monkeypatch, {
+        liveness: [_alert_series(liveness, job, "foreign-private:9")],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+
+
+@pytest.mark.parametrize("index", [2, 4])
+def test_lazy_counter_without_liveness_series_stays_missing_or_stale(index, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    queries = _route_alert_queries(monkeypatch, {})
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+    assert any(query.startswith(liveness + "{") for query in queries)
+
+
+@pytest.mark.parametrize("index", [2, 4])
+@pytest.mark.parametrize(
+    "failure",
+    [SURVEY.Refusal("alert_query_unavailable"), RuntimeError("LIVENESS-ERROR-SENTINEL")],
+)
+def test_lazy_counter_liveness_query_failure_stays_missing_or_stale(index, failure, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    _route_alert_queries(monkeypatch, {liveness: failure})
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+    assert "LIVENESS-ERROR-SENTINEL" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("index", [2, 4])
+@pytest.mark.parametrize("malformed", ["not-json", "matrix", "nan-sample", "negative-sample"])
+def test_lazy_counter_malformed_liveness_response_stays_missing_or_stale(index, malformed, monkeypatch):
+    family, job = SURVEY.ALERT_INPUTS[index]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[family][0]
+    responses = {
+        "not-json": b"not json",
+        "matrix": b'{"status":"success","data":{"resultType":"matrix","result":[]}}',
+        "nan-sample": _vector([_alert_series(liveness, job, f"{job}-private:9", value="NaN")]).encode(),
+        "negative-sample": _vector([_alert_series(liveness, job, f"{job}-private:9", value="-1")]).encode(),
+    }
+    _route_alert_queries(monkeypatch, {liveness: responses[malformed]})
+    receipt = SURVEY._alert_input_availability(_targets([_target(job, f"{job}-private:9")]))
+    assert receipt["families"][index] == {"family": family, "status": "missing_or_stale", "reason": "no_samples"}
+
+
+def test_absent_family_without_a_liveness_mapping_issues_no_liveness_query(monkeypatch):
+    tempo = SURVEY.ALERT_INPUTS[5][0]
+    queries = _route_alert_queries(monkeypatch, {})
+    receipt = SURVEY._alert_input_availability(_targets([_target("tempo", "tempo-private:3200")]))
+    assert receipt["families"][5] == {"family": tempo, "status": "missing_or_stale", "reason": "no_samples"}
+    assert queries == [f'{tempo}{{job="tempo"}}']
+
+
+def test_lazy_counter_with_samples_is_observed_and_issues_no_liveness_query(monkeypatch):
+    enqueue = SURVEY.ALERT_INPUTS[2][0]
+    queries = _route_alert_queries(monkeypatch, {
+        enqueue: [_alert_series(enqueue, "alloy", "alloy-private:4317", value="0")],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("alloy", "alloy-private:4317")]))
+    assert receipt["families"][2] == {"family": enqueue, "status": "observed_zero", "reason": "samples_present"}
+    assert queries == [f'{name}{{job="alloy"}}' for name, job in SURVEY.ALERT_INPUTS if job == "alloy"]
+
+
+def test_lazy_counter_liveness_labels_and_values_never_reach_the_receipt(monkeypatch):
+    loki = SURVEY.ALERT_INPUTS[4][0]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[loki][0]
+    _route_alert_queries(monkeypatch, {
+        liveness: [_alert_series(
+            liveness, "loki", "loki-private:3100", value="4242", tenant="TENANT-LABEL-SENTINEL",
+            private_label="PRIVATE-LABEL-SENTINEL",
+        )],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([_target("loki", "loki-private:3100")]))
+    assert receipt["families"][4]["status"] == "absent_lazy_counter"
+    public = json.dumps(receipt)
+    for sentinel in ("TENANT-LABEL-SENTINEL", "PRIVATE-LABEL-SENTINEL", "loki-private", "4242"):
+        assert sentinel not in public
+
+
+@pytest.mark.parametrize(
+    "live_instances,expected",
+    [
+        (["loki-a-private:3100"], {"status": "missing_or_stale", "reason": "no_samples"}),
+        (["loki-b-private:3100"], {"status": "missing_or_stale", "reason": "no_samples"}),
+        (
+            ["loki-a-private:3100", "loki-b-private:3100"],
+            {"status": "absent_lazy_counter", "reason": "liveness_series_present"},
+        ),
+    ],
+)
+def test_lazy_counter_needs_liveness_from_every_expected_target(live_instances, expected, monkeypatch):
+    loki = SURVEY.ALERT_INPUTS[4][0]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[loki][0]
+    _route_alert_queries(monkeypatch, {
+        liveness: [_alert_series(liveness, "loki", instance) for instance in live_instances],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([
+        _target("loki", "loki-a-private:3100"),
+        _target("loki", "loki-b-private:3100"),
+    ]))
+    assert receipt["families"][4] == {"family": loki, **expected}
+
+
+@pytest.mark.parametrize(
+    "live_instance,expected_status,expected_reason",
+    [
+        ("alloy:12345", "absent_lazy_counter", "liveness_series_present"),
+        ("alloy-private:4317", "missing_or_stale", "no_samples"),
+    ],
+)
+def test_native_alloy_lazy_counter_liveness_is_judged_at_the_native_instance(
+    live_instance, expected_status, expected_reason, monkeypatch,
+):
+    enqueue = SURVEY.ALERT_INPUTS[2][0]
+    queue = SURVEY.LAZY_ALERT_INPUT_LIVENESS[enqueue][0]
+    queries = _route_alert_queries(monkeypatch, {
+        queue: [_alert_series(queue, "alloy", live_instance, value="3", data_type="traces")],
+    })
+    receipt = SURVEY._alert_input_availability(
+        _targets([_target("alloy", "alloy:12345"), _target("alloy", "alloy-private:4317")]),
+        native_alloy_verified=True,
+    )
+    assert receipt["families"][2] == {"family": enqueue, "status": expected_status, "reason": expected_reason}
+    assert f'{queue}{{job="alloy",data_type="traces"}}' in queries
 
 
 @pytest.mark.parametrize(
@@ -3915,6 +4110,20 @@ def test_alert_input_playbook_reports_only_fixed_projection_and_skips_check_mode
     assert source_report["when"] == "not ansible_check_mode"
     assert source_report["ansible.builtin.debug"]["msg"] == "{{ _scrape_availability_source_coverage | to_json }}"
     assert "_scrape_survey_result" not in str(source_report)
+
+
+def test_alert_input_playbook_admits_the_lazy_counter_vocabulary():
+    playbook = yaml.safe_load((ROOT / "platform/playbooks/survey-o11y-scrape-baseline.yml").read_text())
+    receiver = next(play for play in playbook if play.get("name") == "Read and reduce the production scrape baseline")
+    validate = next(
+        task for task in receiver["tasks"]
+        if task.get("name") == "Validate the fixed alert-input availability projection"
+    )
+    expressions = validate["ansible.builtin.assert"]["that"]
+    statuses = next(expression for expression in expressions if "selectattr('status', 'in'" in expression)
+    reasons = next(expression for expression in expressions if "selectattr('reason', 'in'" in expression)
+    assert "'absent_lazy_counter'" in statuses
+    assert "'liveness_series_present'" in reasons
 
 
 @pytest.mark.parametrize(("loaded", "expected"), [(2000, "matched"), (2001, "mismatch")])

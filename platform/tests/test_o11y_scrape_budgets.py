@@ -512,6 +512,41 @@ def test_availability_source_gate_diagnostic_accepts_only_bounded_valid_helper_r
         assert sentinel not in category
 
 
+@pytest.mark.parametrize(("stderr", "expected"), [
+    ("Shared connection to o11y closed.\r\n", "producer_observed"),
+    ("Shared connection to 192.0.2.10 closed.\r\n", "producer_observed"),
+    ("Shared connection to host.example closed.\n", "producer_observed"),
+    ("Shared connection to [2001:db8::1] closed.\r\n", "producer_observed"),
+    ("Shared connection to o11y closed.\r\nShared connection to o11y closed.\r\n", "producer_stderr_present"),
+    ("Shared connection to o11y closed.\r\nwarning\n", "producer_stderr_present"),
+    ("  Shared connection to o11y closed.\r\n", "producer_stderr_present"),
+    ("Shared connection to o11y closed. extra\r\n", "producer_stderr_present"),
+    ("Shared connection to  closed.\r\n", "producer_stderr_present"),
+    ("Shared connection to " + "a" * 300 + " closed.\r\n", "producer_stderr_present"),
+    (None, "producer_stderr_present"),
+    (b"bytes", "producer_stderr_present"),
+    (b"Shared connection to o11y closed.\r\n", "producer_stderr_present"),
+])
+def test_availability_source_gate_diagnostic_ignores_only_the_ssh_mux_close_line(stderr, expected):
+    observed = {
+        "status": "observed", "source": "prometheus", "intended_source": "prometheus",
+        "matches_intended": True,
+        "evidence": {
+            "status": "observed", "source": "prometheus",
+            "alloy_self": {"up": 1, "scrape_samples_scraped": 415},
+            "scrape_body_size_bytes": {
+                "status": "unavailable", "reason": "legacy_extra_scrape_metrics_not_enabled",
+            },
+        },
+    }
+    result = {"rc": 0, "stdout": json.dumps(observed), "stderr": stderr}
+
+    category = BUDGET.o11y_availability_source_gate_diagnostic(result)
+    assert category == expected
+    if isinstance(stderr, str):
+        assert stderr not in category
+
+
 @pytest.mark.parametrize("stderr", ["", "PRIVATE-TIMEOUT-STDERR-SENTINEL"])
 def test_native_readback_timeout_remains_a_bounded_unavailable_refusal(stderr):
     envelope = {
