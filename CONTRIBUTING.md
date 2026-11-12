@@ -19,7 +19,8 @@ All changes go through feature branches and pull requests — never push directl
 2. Make your changes            edit files, add tests
 3. Update documentation         README.md, relevant CLAUDE.md, sub-READMEs
 4. Run linters locally          see "Pre-PR Checklist" below
-5. Run /simplify + /security-review  (commit any fixes they make)
+5. Run /simplify + /security-review  (commit any fixes they make, then run both again until a
+                                round changes nothing)
 6. Push the branch              git push -u origin feat/<description>, then post each pass as a
                                 commit status on the pushed head (AGENTS.md, Branch Workflow step 5)
 7. Create a PR                  gh pr create
