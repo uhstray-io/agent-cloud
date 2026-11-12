@@ -124,7 +124,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/service-architecture.md` — Current-state service map: services by layer, identity, shared secrets, runtime dependencies, deploy and AI paths; status per service
 - `plan/architecture/04-credentials-access.md` — Semaphore vs SSH access rules; Secret generation, storage, rotation, and retirement
 - `plan/architecture/05-platform-infra.md` — Caddy reverse proxy architecture, TLS/DNS-01 integration, routing patterns, automation gaps; Container runtime considerations
-- `plan/architecture/03-testing-ci-quality.md` — Security testing requirements; Testing standards for new services; Full testing strategy and implementation status; Branch deploy and validation workflow
+- `plan/architecture/03-testing-ci-quality.md` — Part 1: the testing principles (what earns a test, rules for writing one, tiers, lanes); Part 2: Security testing requirements; Testing standards for new services; Full testing strategy and implementation status; Branch deploy and validation workflow
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 - `LOCAL-DEV-README.md` — Local-dev front door: architecture, quickstart, DNS+TLS access, promotion (user-facing). Operate/triage in `docs/LOCAL-DEV.md`; full design in the plan below
 - `plan/development/00-foundation-local-dev.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; **genesis (`make local-bootstrap`) brings up the secure foundation (OpenBao→dns→step-ca→caddy→authentik) directly, then Semaphore LAST already OIDC-secured — §12A**; see also `docs/LOCAL-DEV.md` and `plan/development/00-foundation-local-dev.md`; hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
@@ -139,6 +139,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/21-test-suite-runtime.md` — Test suite runtime and redundancy: measured CI baseline, the forged-extra-var matrix reduced where the guard reads names only, fixed waits given public knobs, self-balancing pytest shards from a committed durations file, a shared playbook runner with timeouts, GNU parallel for BATS, a pre-push fast lane
 - `plan/development/22-console-access-requests.md` — Console access requests and the skynet iam-agent (PROPOSED handoff plan): the site-config declaration stays the authority, a request becomes a reviewed site-config PR, Plane follows the Authentik groups
 - `plan/architecture/10-release-policy.md` — Release policy: one `dev` → `main` promotion per release, hard limits of 100 PRs and 120 changed files, checked when work enters `dev`. `plan/development/23-release-train.md` builds the gates and orders the active work into releases
+- `plan/development/24-rust-test-platform.md` — Rust test platform (PROPOSED): one `cargo-nextest` crate in `platform/tests/` replaces pytest and BATS, tests run by lane (commit, push, ci, full) selected from `areas.toml`, Python product code ported to Rust where the runtime is ours
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 

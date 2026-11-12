@@ -3,11 +3,156 @@
 >
 > **Depends on:** 00, 01
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–09). Source docs
-> merged verbatim below under provenance dividers to preserve all detail.
+> Part of the dependency-ordered `plan/architecture/` set (00–09). **Part 1** below is the
+> authoritative statement of how this repository tests. **Part 2** is the consolidated record:
+> the source docs, merged verbatim under provenance dividers. Where Part 2 conflicts with Part 1,
+> Part 1 wins. Part 2's BATS and pytest guidance applies to the existing suites until
+> [plan 24](../development/24-rust-test-platform.md) retires them.
 
-**Date:** 2026-11-04
+**Date:** 2026-11-12 (Part 1 rewritten); 2026-11-04 (Part 2)
 **Status:** ACTIVE
+**Author:** Joseph A. Wisneski IV
+
+---
+
+# Part 1 — Testing principles
+
+A test exists to fail when the behaviour it names breaks, quickly enough that someone runs it. Every
+rule below serves one of those two halves. The suite is Rust, run by `cargo-nextest`
+([plan 24](../development/24-rust-test-platform.md)). The rules are written for that suite, and apply to the
+pytest and BATS files until they are ported.
+
+## What earns a test
+
+Testing effort goes where a defect is expensive, silent or irreversible. In priority order:
+
+1. **Security invariants.** Secret handling (`no_log` scope, the redaction callback, no protected result
+   in a visible loop), the extra-var guard, transport guards, destructive-action confirmations, and
+   credential-leak scans. A regression here leaks a credential or destroys state, so these tests form the
+   **security set**, which runs in every lane.
+2. **Rules the mistakes ledger enforces.** Every `docs/MISTAKES.md` entry whose "Enforced by" names a test.
+   That test is the rule; deleting or weakening it reopens the mistake.
+3. **Release and promotion logic.** Version computation, release notes, the merge guard and the release
+   budget. They run unattended and publish.
+4. **Parsers, resolvers and renderers with many inputs.** Caddyfile parsing, extra-var name resolution,
+   compose overlay merging, YAML scalar resolution. These get property tests (`proptest`), not a
+   hand-picked handful of cases.
+5. **Shared building blocks.** The composable task library and shared libraries, where one defect
+   reaches every caller. Test the contract once, at the shared piece, never per caller.
+
+Write these **test-first**: the failing test lands before, or with, the fix or feature. For anything
+else, a test is written when it would catch a defect a reader cannot see in review.
+
+**What does not earn a test:**
+
+- A line of a playbook, README or doc, matched as text. Assert the parsed structure or the behaviour.
+  The one exception is a deny-list: a forbidden string anywhere, such as `--restart unless-stopped`.
+- A property another test or a static proof already establishes. Prove it once, at the cheapest tier.
+- An implementation detail a refactor would change while behaviour stays the same (over-specification).
+- A live service's health. That is Semaphore's job (`Verify Service Health`, the probes), not CI's.
+
+## Rules for writing a test
+
+1. **One behaviour per test, named for it.** The name states the behaviour and the expectation:
+   `refuses_a_forged_internal_name`, not `test_guard_3`. A reader learns what broke from the name alone.
+2. **Arrange, Act, Assert.** Three visible blocks, in that order, with one Act. Setup that two tests share
+   moves into a support function. Hidden ordering between tests does not exist: every test runs alone and
+   in parallel (nextest starts one process per test).
+3. **Parametrize, do not copy.** The same logic over many inputs is one test over a table of cases, each
+   case named, so a failure names its row. Over a generated input space, use a `proptest` strategy.
+4. **Test the edges.** Empty, missing, maximum, one-past-maximum, the wrong type, and the value that is
+   almost valid. The happy path is one case among them, not the test.
+5. **Fast and deterministic.** A unit test runs in milliseconds. It touches no network, uses no wall
+   clock it does not control, and has no randomness it does not seed. Never assert a property of a random
+   value: assert the generator's deterministic properties instead (`docs/MISTAKES.md` §2).
+6. **No fixed waits.** Wait on a condition with a bound, never `sleep`. A retry or deadline in the code
+   under test is a public knob the test sets low, as `renew_proof_retries` and `renew_proof_delay` are.
+7. **Isolate only what is external.** Fake the network, OpenBao, Semaphore and the container engine: an
+   HTTP fake (`wiremock`) or a fake executable on `PATH`. Never mock the code under test or the
+   repository's own files. A test that mocks so much that it can only pass is worse than no test.
+8. **Scope every assertion to its construct.** Parse the playbook and select the task. Assert on that
+   task, never on the whole file, where a comment or an unrelated task can satisfy the match.
+9. **Watch it fail once.** Before a test is merged, break the code it guards and see it go red. A test
+   never seen failing is indistinguishable from a comment. For the security set, this is a review
+   requirement.
+10. **Snapshots for output, not for logic.** `insta` snapshots pin a rendered file, a refusal message or a
+    report shape, where the whole output is the contract. Review every snapshot change as code.
+11. **Bound every process.** A test that starts `ansible-playbook`, bash or Python goes through the
+    support library's runner. That runner scrubs the environment, keeps state in the test's temporary
+    directory and enforces a timeout. Never call `Command::new("ansible-playbook")` directly.
+12. **Tests are code.** They are reviewed and refactored with the code they test. A test whose code under
+    test was deleted is deleted with it.
+
+## Tiers: the cheapest test that can fail
+
+Each test belongs to exactly one tier. Choose the cheapest tier at which the behaviour can break.
+
+| Tier | Reaches | Cost per test (target; playbook measured in plan 21) | Use for |
+|---|---|---|---|
+| `static` | Repository files, parsed | under 10 ms | Structure and policy of playbooks, compose files, templates, the Semaphore catalog, inventory templates |
+| `unit` | Rust functions, in-process | under 10 ms | Ported helper logic, parsers, resolvers (property tests) |
+| `cli` | One process: bash, a Rust CLI, a framework-bound Python script | 10 to 200 ms | Scripts' contracts: arguments, exit status, output, files written. Fake executables on `PATH` stand in for engines |
+| `http` | A process against `wiremock` | 50 to 500 ms | Clients of OpenBao, Semaphore, NetBox, GitHub, Plane |
+| `playbook` | `ansible-playbook` | about 1 s to 10 s | Behaviour that exists only when Ansible runs: guards, check-mode semantics, rendered results, plugin behaviour. One run per behaviour, with cases looped inside it |
+| `live` | Real services, through Semaphore | minutes | Health and readiness. Not in CI |
+
+A static proof replaces a process proof wherever the property is in the file. "Every launchable playbook
+imports the guard first" is a static test over 244 playbooks. Starting each playbook to see the guard
+refuse proves the same property 244 times, at about a second each.
+
+## Lanes: run what the change can break
+
+A lane is a nextest profile plus a selection. Each test belongs to an **area**, whose path globs are in
+`platform/tests/areas.toml`. A change selects the areas its paths touch, plus the security set.
+
+| Lane | When | Runs |
+|---|---|---|
+| `commit` | every commit (pre-commit hook) | static tier of touched areas, plus the security set's static tests |
+| `push` | every push (pre-push hook) | all tiers of touched areas, plus the security set |
+| `ci` | every pull request into `dev` | as `push`, against the pull request base |
+| `full` | nightly on `dev`, every promotion into `main`, any change to the test crate, `areas.toml` or a shared task | everything |
+
+Selection is never a reason to skip the security set, and a change the selector cannot classify runs
+`full`. The lane budgets and their measurement are in plan 24.
+
+## Where tests live and how they run
+
+- One crate, `platform/tests/`, one test binary, one module per area: `platform/tests/suite/<area>.rs`.
+- Run everything: `cargo nextest run -P full` from `platform/tests/`. Run one area:
+  `cargo nextest run -E 'test(/^<area>::/)'`.
+- The Dispatch Console crate (`platform/services/console/app/`) keeps its own tests, under these rules.
+- Rego policies keep `opa test` (Rego Tests job); Rego is the policy language, not a test harness choice.
+- Linters and scanners (ruff, shellcheck, ansible-lint, yamllint, hadolint, trufflehog, bandit) are not
+  tests and stay in Static Analysis and Security Scan.
+
+## Coverage is a map, not a percentage
+
+The suite's coverage is the map from each item in "What earns a test" to the tests that guard it. A port
+or deletion pull request lists every removed test and its replacement, or the reason it was dropped. Line
+coverage is not a merge gate. A line-coverage number rewards tests that execute code without asserting
+anything, which rule 9 exists to prevent.
+
+## Sources
+
+The rules above adapt the repository's own incident record (`docs/MISTAKES.md` §2, the BATS rules in
+`CONTRIBUTING.md`) and these references, read 2026-11-12:
+
+- Codacy, "7 best practices for writing great software tests": independence and parallelism, refactoring
+  tests with code, condition waits over sleeps, boundary testing.
+  <https://blog.codacy.com/7-best-practices-for-writing-great-software-tests>
+- TestRail, "Test optimization": small focused suites, parametrization, prioritisation, replacing fixed
+  sleeps, investigating flaky tests rather than deleting them, choosing the right test level and time.
+  <https://www.testrail.com/blog/test-optimization/>
+- The wethinkapp article on unit-testing efficiency could not be read (HTTP 403 on 2026-11-12) and is not
+  a source here.
+
+---
+
+# Part 2 — Consolidated record
+
+The sections below are the source documents as merged on 2026-11-04. They record the history of the
+suite and its security standards. Their testing-practice guidance is superseded by Part 1 where the two
+differ.
 
 
 <!-- ======================= source: TESTING-AND-LINTING-PLAN.md ======================= -->
