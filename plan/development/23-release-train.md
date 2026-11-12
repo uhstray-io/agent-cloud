@@ -1,7 +1,7 @@
 # 23 — Release train: iterative releases in dependency order
 
 **Date:** 2026-11-10
-**Status:** PROPOSED (not started; nothing in this plan has been executed)
+**Status:** ACTIVE (Part A built 2026-11-12: #1081, #1093, #1083 and the docs; Release 1 in progress; Part B and Releases 2–8 not started)
 **Author:** Joseph A. Wisneski IV
 **Context:** [`plan/architecture/10-release-policy.md`](../architecture/10-release-policy.md)
 caps a release, one `dev` → `main` promotion, at 100 pull requests and 120 changed files.
@@ -90,10 +90,10 @@ flowchart TD
 |---|---|---|
 | Where the counts live | A new `release-budget` subcommand in `scripts/semver.py`, printing JSON: `prs`, `files`, both limits, remaining, `warn` (≥ 80%), `full` | Plan 20 keeps every release rule in one script. The guard already imports `semver` (`scripts/merge-when-green.py`, `check_title`) |
 | The limits' source | Constants in `scripts/semver.py`, 100 and 120 | One value, one place. Policy R2/R3 cite the script |
-| How intake counts the PR being merged | PRs: `prs + 1`. Files: the union of `git diff --name-only origin/main...<base>` and the PR's changed files, which the guard already reads (`changed_files()`); a rename counts once, under its new path (R3) | A union is conservative: a PR that restores a file to `main`'s content is still counted |
-| Where intake reads git | The guard calls only the GitHub API today (`gh api`, `gh pr merge`). The count needs git history with tags, so the guard runs `release-budget` in the checkout it is run from, after `git fetch`, and refuses unless that checkout's `origin/dev` equals the pull request's pinned base SHA (`check_pr`). The count is then taken at exactly the commit being merged into | Counting a stale or different `dev` would measure the wrong release. The compare API was not chosen: its file-list cap is unverified |
+| How intake counts the PR being merged | PRs: `prs + 1`. Files: the union of `git diff --name-only origin/main...origin/dev` (the fetched `dev` tip, see the next row) and the PR's changed files, which the guard already reads (`changed_files()`); a rename counts once, under its new path (R3) | A union is conservative: a PR that restores a file to `main`'s content is still counted |
+| Where intake reads git | The guard calls only the GitHub API today (`gh api`, `gh pr merge`). The count needs git history with tags, so the guard fetches `main`, `dev` and the `v*` tags into the checkout it is run from and counts at the fetched `origin/dev`. It refuses unless that commit equals GitHub's live `dev` ref (`repos/{REPO}/git/ref/heads/dev`); the pull request's `base.sha` is not the reference (`check_release_budget`) | `base.sha` does not track `dev`'s tip: on 2026-11-12, 8 of 8 open pull requests had a stale `base.sha`, so comparing against it would refuse almost every pull request. Checking against the live ref is what makes the local count the release GitHub will merge into. The compare API was not chosen: its file-list cap is unverified |
 | The transition (R12) | The start tag, `v0.15.0`, is a constant beside the limits. Until that tag exists, `release-budget` reports `transition: true`, and neither gate refuses | One place encodes R12, so phases 2 and 3 can land in Release 1 without refusing the carry-over release itself |
-| What intake does when over | Refuses the merge, naming both counts, both limits and "release full: promote first" | Policy R4/R5 |
+| What intake does when over | Refuses the merge, naming the exceeded count, its limit and "promote the release first"; the `BUDGET:` line printed just before names both counts and both limits | Policy R4/R5 |
 | Backstop | A `Release size` step in the existing `Promotion source (dev -> main)` job | That job is already a required check on `protect-main`, so no ruleset change is needed |
 | Merges outside the guard | Operator merges (those that change `RELEASE_SCRIPTS` or other workflow files) run the guard read-only first, as the budget readout | The guard refuses those merges by design (plan 20, "Merging this change"). The readout keeps the budget honest anyway |
 
@@ -104,7 +104,7 @@ flowchart TD
 | # | Phase | Files (est.) | Merge path | Acceptance |
 |---|---|---|---|---|
 | 1 | `release-budget` in `scripts/semver.py`, tests in `platform/tests/test_semver.py` | 2 | **Operator merge** (`scripts/semver.py` is in `RELEASE_SCRIPTS`) | On throwaway repositories, the tests cover: counts that match `notes` and `git diff`, the 80% warn flag, `full` at 101 PRs and at 121 files, and exclusion of promotion and sync merges. Pinned to fixed refs: `release-budget --main-ref v0.13.0 --dev-ref v0.14.0` prints 278 pull requests and 876 files, and it reports `transition: true` while `v0.15.0` does not exist |
-| 2 | Intake refusal in `scripts/merge-when-green.py` for base `dev`, its tests, `plan/development/dev-merge-guard.md` | 3 | Guard (no `RELEASE_SCRIPTS` path) | Guard tests prove the refusal at the limit, the union count, the +1, a rename counted once, the refusal when the checkout's `origin/dev` is not the pinned base, no refusal during the transition, and the readout in a read-only run. A real read-only run prints the budget |
+| 2 | Intake refusal in `scripts/merge-when-green.py` for base `dev`, its tests, `plan/development/dev-merge-guard.md` | 3 | Guard (no `RELEASE_SCRIPTS` path) | Guard tests prove the refusal at the limit, the union count, the +1, a rename counted once, the refusal when the local dev is not GitHub's dev, no refusal during the transition, and the readout in a read-only run. A real read-only run prints the budget |
 | 3 | `Release size` step in `.github/workflows/enforce-promotion-source.yml`, tests in `platform/tests/test_promotion_source_guard.py` | 2 | **Operator merge** (workflow path) | The step fails a promotion over either limit after the transition, and passes the v0.15.0 carry-over promotion as `transition` |
 | 4 | `AGENTS.md` "Branch Workflow" points to policy 10, and the policy's enforcement table is marked built | 2 | Guard | Docs name the gates and the interim commands are retired |
 
@@ -202,3 +202,4 @@ scope is re-sized from the real diff when each release is planned.
 |---|---|
 | 2026-11-10 | Initial plan: enforcement phases, iteration loop, eight-release roadmap from the 24 active OpenSpec changes and the open PR queue. |
 | 2026-11-11 | The shared-key grace period moved to 2026-12-11 (site-config #183), recorded under Problem and in the release table. Review fixes: renumbered 22 → 23 (#998 took 22); Release 1 re-baselined as v0.15.0, the carry-over release (policy 10, R12, operator decision), after #1043 put `dev` at 661 files; intake reads git at the pinned base SHA, the transition is encoded once, and Phase 1's acceptance is pinned to fixed refs; disk citation corrected; task totals recounted on current `dev`. |
+| 2026-11-12 | Part A built: phase 1 #1081, phase 2 #1093, phase 3 #1083, phase 4 this documentation. Intake reads git at the fetched `origin/dev`, verified against GitHub's live `dev` ref, not the pull request's `base.sha`: `base.sha` does not track `dev` (8 of 8 open pull requests stale on 2026-11-12). Phase 2's acceptance follows. |
