@@ -1597,8 +1597,8 @@ the cited lines before a brief, commit or reply repeats the guarantee.
 
 **Enforced by.** The instance: `platform/tests/test_launch_gate_playbooks.bats:590-591` and
 `platform/tests/test_service_skynet.bats:602` pin each playbook's `ansible_play_hosts_all` expression in all three
-plays. The class: Convention, with no detector; 1.29's proposed guards check the paths a brief or outward text
-names, not the paths a comment in those files cites. A shared local-mode derivation (AC-702) would remove this
+plays. The class: Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a
+brief or outward text names, not the paths a comment in those files cites. A shared local-mode derivation (AC-702) would remove this
 instance's need to cite another file: the launch gate's comment still cites `tasks/clean-service.yml:85-89`, where
 the derivation itself is at `:70`.
 
