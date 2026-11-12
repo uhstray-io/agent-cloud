@@ -7,7 +7,7 @@
 //! 2026-09-19 reboot this way (docs/MISTAKES.md 10.15). Docker honours `always` too, so one
 //! policy is correct on both engines.
 //!
-//! Ported from `platform/tests/test_restart_policy.bats` (plan 24, Phase 1 pilot).
+//! Replaces `platform/tests/test_restart_policy.bats` (plan 24, Phase 1 pilot).
 
 use std::collections::BTreeMap;
 
@@ -138,14 +138,13 @@ fn every_services_effective_policy_is_always_or_a_labelled_one_shot_no() {
 
 #[test]
 fn no_container_is_started_with_restart_unless_stopped() {
-    // This file and the BATS original name the flag, so both exclude themselves.
+    // This file names the flag, so it excludes itself.
     let hits = repo::grep(
         "--restart[= ]+unless-stopped",
         &[
             "platform",
             "agents",
             "scripts",
-            ":!platform/tests/test_restart_policy.bats",
             ":!platform/tests/suite/restart_policy.rs",
         ],
     );
