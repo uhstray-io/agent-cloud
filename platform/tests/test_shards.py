@@ -1,4 +1,5 @@
-"""Guards for the pytest shard hook (plan 21 phase 2, D3): the assignment, the durations builder and the wiring."""
+"""Guards for the pytest shard hook (plan 21 phase 2, D3) and the pre-push fast lane (plan 21 phase 4, D6):
+the assignment, the durations builder, the wiring and the lane's selection."""
 
 import importlib.util
 import json
@@ -310,3 +311,225 @@ def test_the_hook_refuses_an_invalid_spec(root_conftest, monkeypatch):
         root_conftest.pytest_ignore_collect(
             collection_path=REPO / "platform/tests/test_shards.py", config=_Config(REPO)
         )
+
+
+# ---- the pre-push fast lane (plan 21 phase 4, D6) -----------------------------------------------------
+
+LANE_ENV_NAMES = ("PYTEST_FAST", "PYTEST_FAST_CHANGED", "PYTEST_SHARD")
+
+
+@pytest.fixture(autouse=True)
+def _no_lane_or_shard_in_the_environment(monkeypatch):
+    """A pre-push run exports PYTEST_FAST and a CI shard exports PYTEST_SHARD. Neither may reach these tests,
+    in process or in the subprocesses they start, whose environments are copied from os.environ."""
+    for name in LANE_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+
+ONE_TEST = "def test_a():\n    pass\n"
+TWO_TESTS = "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"
+
+
+def _entry(seconds, *, skipped=False, tests=("test_a",)):
+    """One durations entry as scripts/test-durations.py writes it."""
+    return {"time": seconds, "max": seconds, "nodes": len(tests), "skipped": skipped, "tests": list(tests)}
+
+
+def _write(root, rel, text):
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return rel
+
+
+@pytest.mark.parametrize("has_entry", [True, False], ids=["recorded-slow", "no-entry"])
+def test_fast_lane_keeps_a_changed_file_whatever_its_timing(tmp_path, has_entry):
+    rel = _write(tmp_path, "a.py", ONE_TEST)
+    durations = {rel: _entry(9.0)} if has_entry else {}
+    assert shards.fast_lane([rel], durations, tmp_path, {rel}) == {rel}
+
+
+def test_fast_lane_drops_a_slow_recorded_file_that_did_not_change(tmp_path):
+    rel = _write(tmp_path, "a.py", ONE_TEST)
+    assert shards.fast_lane([rel], {rel: _entry(9.0)}, tmp_path, set()) == set()
+
+
+def test_fast_lane_keeps_a_file_with_no_durations_entry(tmp_path):
+    rel = _write(tmp_path, "new.py", ONE_TEST)
+    assert shards.fast_lane([rel], {}, tmp_path, set()) == {rel}
+
+
+@pytest.mark.parametrize("seconds, kept", [(0.0, True), (0.1, True), (0.2499, True), (0.25, False), (2.0, False)])
+def test_fast_lane_cuts_at_a_quarter_second(tmp_path, seconds, kept):
+    rel = _write(tmp_path, "a.py", ONE_TEST)
+    assert (shards.fast_lane([rel], {rel: _entry(seconds)}, tmp_path, set()) == {rel}) is kept
+
+
+def test_fast_lane_excludes_a_file_ci_skipped_unless_it_changed(tmp_path):
+    rel = _write(tmp_path, "a.py", ONE_TEST)
+    durations = {rel: _entry(0.1, skipped=True)}
+    assert shards.fast_lane([rel], durations, tmp_path, set()) == set()
+    assert shards.fast_lane([rel], durations, tmp_path, {rel}) == {rel}
+
+
+def test_fast_lane_keeps_a_file_with_a_test_the_durations_file_lacks(tmp_path):
+    rel = _write(tmp_path, "a.py", TWO_TESTS)
+    assert shards.fast_lane([rel], {rel: _entry(2.0)}, tmp_path, set()) == {rel}  # slow, test_b unrecorded
+    assert shards.fast_lane([rel], {rel: _entry(0.1)}, tmp_path, set()) == {rel}  # fast, test_b unrecorded
+    assert shards.fast_lane([rel], {rel: _entry(2.0, tests=("test_a", "test_b"))}, tmp_path, set()) == set()
+
+
+def test_fast_lane_keeps_a_file_that_does_not_parse(tmp_path):
+    rel = _write(tmp_path, "a.py", "def test_a(:\n")
+    assert shards.fast_lane([rel], {rel: _entry(2.0)}, tmp_path, set()) == {rel}
+
+
+NAME_SOURCE = (
+    "import unittest\n\nimport pytest\n\n\n"
+    "def helper():\n    def test_in_a_helper():\n        pass\n\n\n"
+    "def test_module_level():\n    def test_in_a_test():\n        pass\n\n\n"
+    "def testprefixed():\n    pass\n\n\n"
+    "if True:\n    def test_in_a_branch():\n        pass\n\n\n"
+    "class TestCollected:\n    def test_method(self):\n        pass\n\n"
+    "    def helper_method(self):\n        pass\n\n"
+    "    @pytest.mark.parametrize('value', [1, 2])\n    def test_parametrized(self, value):\n        pass\n\n"
+    "    class TestNested:\n        def test_deep(self):\n            pass\n\n\n"
+    "class Plain:\n    def test_not_collected(self):\n        pass\n\n\n"
+    "class CaseBase(unittest.TestCase):\n    def test_unittest_method(self):\n        pass\n"
+)
+
+
+def test_name_extraction_matches_what_pytest_collects(tmp_path):
+    _write(tmp_path, "pytest.ini", "[pytest]\n")
+    _write(tmp_path, "test_collected.py", NAME_SOURCE)
+    proc = _pytest_collect(tmp_path, {}, "test_collected.py")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    collected = {node.rsplit("::", 1)[-1].split("[", 1)[0] for node in _node_ids(proc)}
+    assert collected == shards.collected_test_names(NAME_SOURCE)
+    assert collected == {"test_module_level", "testprefixed", "test_in_a_branch", "test_method",
+                         "test_parametrized", "test_deep", "test_unittest_method"}
+
+
+def test_name_extraction_ignores_a_string_and_an_async_name_is_collected():
+    assert shards.collected_test_names('TEXT = """\ndef test_in_a_string():\n    pass\n"""\n') == set()
+    assert shards.collected_test_names("async def test_async():\n    pass\n") == {"test_async"}
+
+
+def test_name_extraction_reads_a_class_with_a_base_as_a_candidate():
+    assert shards.collected_test_names("class Mixin(object):\n    def test_mixin(self):\n        pass\n") == {
+        "test_mixin"
+    }
+
+
+# A scratch repository: each file's durations entry, or none, decides what the lane keeps.
+LANE_TREE = {
+    "suite/test_quick.py": (ONE_TEST, _entry(0.1)),  # fast: kept
+    "suite/test_just_under.py": (ONE_TEST, _entry(0.2499)),  # kept
+    "suite/test_edge.py": (ONE_TEST, _entry(0.25)),  # at the cutoff: dropped
+    "suite/test_skipped.py": (ONE_TEST, _entry(0.1, skipped=True)),  # dropped
+    "suite/test_slow.py": (ONE_TEST, _entry(2.0)),  # dropped
+    "suite/test_changed.py": (ONE_TEST, _entry(2.0)),  # kept when named in the changed file
+    "suite/test_missing.py": (TWO_TESTS, _entry(2.0)),  # kept: test_b is not recorded
+    "suite/test_unknown.py": (ONE_TEST, None),  # kept: no entry
+}
+LANE_ALL = {f"{rel}::test_a" for rel in LANE_TREE} | {"suite/test_missing.py::test_b"}
+LANE_KEPT = {
+    "suite/test_quick.py::test_a",
+    "suite/test_just_under.py::test_a",
+    "suite/test_missing.py::test_a",
+    "suite/test_missing.py::test_b",
+    "suite/test_unknown.py::test_a",
+}
+
+
+def _lane_tree(tmp_path):
+    """A scratch repository with the root conftest.py and shards.py as in REPO, testpaths = suite, the LANE_TREE
+    files, an unlisted test file under outside/, and a durations file holding the entries."""
+    _write(tmp_path, "conftest.py", (REPO / "conftest.py").read_text(encoding="utf-8"))
+    _write(tmp_path, "platform/tests/shards.py", (REPO / "platform/tests/shards.py").read_text(encoding="utf-8"))
+    _write(tmp_path, "pytest.ini", "[pytest]\ntestpaths = suite\n")
+    _write(tmp_path, "outside/test_outside.py", ONE_TEST)
+    durations = {}
+    for rel, (text, entry) in LANE_TREE.items():
+        _write(tmp_path, rel, text)
+        if entry is not None:
+            durations[rel] = entry
+    _write(tmp_path, "platform/tests/test_durations.json", json.dumps(durations))
+    return tmp_path
+
+
+def _node_ids(proc):
+    return {line.strip() for line in proc.stdout.splitlines() if "::" in line}
+
+
+def _pytest_collect(cwd, env_extra, *args):
+    """``pytest --collect-only`` in ``cwd``, in a fresh process, with the lane's and the shard's variables unset
+    unless ``env_extra`` sets them."""
+    env = {key: value for key, value in os.environ.items() if key not in LANE_ENV_NAMES}
+    env.update(env_extra)
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *args],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
+    )
+
+
+def test_the_lane_collects_exactly_the_files_its_selection_keeps(tmp_path):
+    tree = _lane_tree(tmp_path)
+    changed = _write(tree, "changed.txt", "suite/test_changed.py\n\n")
+    proc = _pytest_collect(tree, {"PYTEST_FAST": "1", "PYTEST_FAST_CHANGED": str(tree / changed)})
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _node_ids(proc) == LANE_KEPT | {"suite/test_changed.py::test_a"}
+
+
+@pytest.mark.parametrize(
+    "env_extra",
+    [
+        {"PYTEST_FAST": "1"},
+        {"PYTEST_FAST": "1", "PYTEST_FAST_CHANGED": "missing.txt"},
+        {"PYTEST_FAST": "1", "PYTEST_FAST_CHANGED": ""},
+    ],
+    ids=["unset", "missing-file", "empty"],
+)
+def test_without_a_changed_file_the_lane_selects_by_timing_alone(tmp_path, env_extra):
+    proc = _pytest_collect(_lane_tree(tmp_path), env_extra)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _node_ids(proc) == LANE_KEPT
+
+
+@pytest.mark.parametrize("env_extra", [{}, {"PYTEST_FAST": ""}], ids=["unset", "empty"])
+def test_without_the_lane_every_file_in_the_testpaths_is_collected(tmp_path, env_extra):
+    proc = _pytest_collect(_lane_tree(tmp_path), env_extra)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _node_ids(proc) == LANE_ALL
+
+
+def test_a_file_outside_the_testpaths_is_never_ignored_by_the_lane(tmp_path):
+    proc = _pytest_collect(_lane_tree(tmp_path), {"PYTEST_FAST": "1"}, "outside")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _node_ids(proc) == {"outside/test_outside.py::test_a"}
+
+
+def test_pytest_does_not_consult_the_hook_for_a_file_named_on_the_command_line(tmp_path):
+    proc = _pytest_collect(_lane_tree(tmp_path), {"PYTEST_FAST": "1"}, "suite/test_slow.py")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert _node_ids(proc) == {"suite/test_slow.py::test_a"}
+
+
+@pytest.mark.parametrize(
+    "env_extra, message",
+    [
+        ({"PYTEST_FAST": "0"}, "PYTEST_FAST='0'"),
+        ({"PYTEST_FAST": "true"}, "PYTEST_FAST='true'"),
+        ({"PYTEST_FAST": "1", "PYTEST_SHARD": "1/2"}, "one or the other"),
+    ],
+    ids=["zero", "word", "with-a-shard"],
+)
+def test_the_lane_refuses_a_bad_value_and_a_shard_spec(tmp_path, env_extra, message):
+    proc = _pytest_collect(_lane_tree(tmp_path), env_extra)
+    assert proc.returncode == pytest.ExitCode.USAGE_ERROR, proc.stdout + proc.stderr
+    assert message in proc.stdout + proc.stderr
