@@ -600,7 +600,7 @@ prod_accepted() {
   # Phase 1 (refusals, secrets, env), Phase 2 (deploy.sh LOCAL_MODE) and Phase 3 (probe endpoints). The hosts' identity is
   # ansible_play_hosts_all, which -e cannot set. inventory_hostname can be forged with -e, so it must not decide the mode.
   [ "$(grep -c '^ *_skynet_local: ' "$PLAYBOOK")" -eq 3 ]
-  [ "$(grep -cF "(ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\\\Z') | list | length == 0)" "$PLAYBOOK")" -eq 3 ]
+  [ "$(grep -cF "_skynet_local: \"{{ ansible_play_hosts_all | local_dev_inventory }}\"" "$PLAYBOOK")" -eq 3 ]
   refute_grep -qF 'inventory_hostname is match' "$PLAYBOOK"
   # local_mode is read once, by the mode check: a second read could disagree with it.
   [ "$(grep -cF 'local_mode | default(' "$PLAYBOOK")" -eq 1 ]

@@ -113,11 +113,11 @@
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
     _skynet_server_leaf: "{{ skynet_server_leaf | default('skynet-server') | string }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
-    # Local mode follows the hosts of this play, not a variable: it holds only when every host is named
-    # <name>-local. ansible_play_hosts_all is set by the run and -e cannot set it (tasks/clean-service.yml:85-89
-    # relies on the same rule). inventory_hostname is not used: -e can set it. The mode check, the first
+    # Local mode follows the hosts of this play, not a variable: it holds only when every host but localhost is
+    # named <name>-local (filter_plugins/local_dev.py, the rule the shared tasks use). ansible_play_hosts_all is
+    # set by the run and -e cannot set it. inventory_hostname is not used: -e can set it. The mode check, the first
     # refusal in Phase 1, refuses a local_mode that disagrees with the hosts.
-    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _skynet_local: "{{ ansible_play_hosts_all | local_dev_inventory }}"
     # The public variable, read once: only the mode check below compares it with the hosts.
     _skynet_mode_set: "{{ local_mode | default('unset') }}"
 
@@ -417,7 +417,7 @@
     # Same resolution as Phase 1, so the guard checks the endpoint the play actually uses.
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     # Same definition as Phase 1 (_skynet_local): deploy.sh's LOCAL_MODE is set from it.
-    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _skynet_local: "{{ ansible_play_hosts_all | local_dev_inventory }}"
 
   tasks:
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
@@ -504,7 +504,7 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
     # Same definition as Phase 1 (_skynet_local): the probes take the local endpoints only for a -local host.
-    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _skynet_local: "{{ ansible_play_hosts_all | local_dev_inventory }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
     _skynet_bind: "{{ skynet_bind | default('127.0.0.1') | string }}"
     _skynet_port: "{{ skynet_port | default(8443) | string }}"

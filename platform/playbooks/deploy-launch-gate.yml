@@ -68,10 +68,10 @@
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _engine: "{{ container_engine | default('podman') }}"
     # Local-dev is decided by the hosts of this play, never by the public `local_mode` or by `inventory_hostname`,
-    # which an extra var can set: local only when every host is named <name>-local, as tasks/clean-service.yml:85-89
-    # derives it. `-e local_mode=` cannot lift the bind, URL and step-ca refusals below, and a value that disagrees
+    # which an extra var can set: local only when every host but localhost is named <name>-local
+    # (filter_plugins/local_dev.py, the rule the shared tasks use). `-e local_mode=` cannot lift the bind, URL and step-ca refusals below, and a value that disagrees
     # with the hosts is refused first, not used.
-    _launch_gate_local_mode: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _launch_gate_local_mode: "{{ ansible_play_hosts_all | local_dev_inventory }}"
     _launch_gate_mode_set: "{{ local_mode | default('unset') }}"
     # The rendered values. Each `_launch_gate_*` is read by env.j2 or config.json.j2 under that name.
     # The listener's bind, port, leaf and name use a plain default(), as renew-internal-certs.yml's
@@ -404,7 +404,7 @@
     _engine: "{{ container_engine | default('podman') }}"
     # The same derivation as Phase 1, from the same hosts, so -e local_mode or -e inventory_hostname cannot change it
     # here either. (-e of this internal name is refused by the guard play, which --start-at-task skips.)
-    _launch_gate_local_mode: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _launch_gate_local_mode: "{{ ansible_play_hosts_all | local_dev_inventory }}"
 
   tasks:
     - name: "Run deploy.sh (container lifecycle)"
@@ -447,7 +447,7 @@
     # port is published on the Mac's loopback, which that container cannot reach. So a local probe dials the TLS
     # name on the container's own port (8443: config.json.j2 listen_port) through the local-dev network alias
     # (compose.local.yml), and sends no --resolve. Production keeps --resolve to the declared bind and port.
-    _launch_gate_local_mode: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _launch_gate_local_mode: "{{ ansible_play_hosts_all | local_dev_inventory }}"
     _launch_gate_probe_port: "{{ '8443' if _launch_gate_local_mode else _launch_gate_port }}"
     _launch_gate_plain_host: "{{ _launch_gate_tls_name if _launch_gate_local_mode else _launch_gate_bind }}"
     # curl, not uri: --resolve (production only) sends the declared name to the bind address, while the certificate

@@ -587,7 +587,7 @@ INV
 import sys, yaml
 text = open(sys.argv[1], encoding="utf-8").read()
 plays = [p for p in yaml.safe_load(text) if "hosts" in p]
-want = r"{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\Z') | list | length == 0) }}"
+want = "{{ ansible_play_hosts_all | local_dev_inventory }}"
 assert all(p["vars"]["_launch_gate_local_mode"] == want for p in plays), [p["vars"].get("_launch_gate_local_mode") for p in plays]
 assert "inventory_hostname is match" not in text
 assert plays[0]["vars"]["_launch_gate_mode_set"] == "{{ local_mode | default('unset') }}", plays[0]["vars"]
