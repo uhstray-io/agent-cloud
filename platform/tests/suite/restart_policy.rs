@@ -33,7 +33,8 @@ const BASE_NAMES: [&str; 4] = [
 struct Effective {
     restart: Option<Node>,
     file: String,
-    labels: BTreeMap<String, String>,
+    /// Values kept as YAML nodes: a bare `true` is a boolean, not the string "true".
+    labels: BTreeMap<String, Node>,
 }
 
 /// Compose merges a directory's overlays over its base file. A service with no `restart`
@@ -74,13 +75,15 @@ fn effective_services() -> BTreeMap<(String, String), Effective> {
                 match svc.get("labels") {
                     Some(Node::Map(pairs)) => {
                         for (k, v) in pairs {
-                            entry.labels.insert(scalar_text(k), scalar_text(v));
+                            if let Some(k) = k.as_str() {
+                                entry.labels.insert(k.to_owned(), v.clone());
+                            }
                         }
                     }
                     Some(Node::Seq(items)) => {
                         for item in items {
                             if let Some((k, v)) = item.as_str().and_then(|s| s.split_once('=')) {
-                                entry.labels.insert(k.to_owned(), v.to_owned());
+                                entry.labels.insert(k.to_owned(), Node::Str(v.to_owned()));
                             }
                         }
                     }
@@ -90,16 +93,6 @@ fn effective_services() -> BTreeMap<(String, String), Effective> {
         }
     }
     out
-}
-
-/// A label value as Compose writes it into the container: `true` and `"true"` are the same.
-fn scalar_text(node: &Node) -> String {
-    match node {
-        Node::Str(s) => s.clone(),
-        Node::Bool(b) => b.to_string(),
-        Node::Null => String::new(),
-        other => format!("{other:?}"),
-    }
 }
 
 #[test]
@@ -116,12 +109,15 @@ fn every_services_effective_policy_is_always_or_a_labelled_one_shot_no() {
     let bad: Vec<String> = services
         .iter()
         .filter_map(|((_, name), eff)| {
-            let label = eff.labels.get("agent-cloud.one-shot").map(String::as_str);
+            // Exactly the string "true", as the BATS original required (`str(v) != 'true'`): a
+            // bare `true` is a YAML 1.1 boolean and is refused, like a bare `no` below.
+            let labelled =
+                eff.labels.get("agent-cloud.one-shot") == Some(&Node::Str("true".into()));
             match &eff.restart {
                 Some(Node::Str(p)) if p == "always" => None,
                 // "no" is for one-shot init containers, which must declare themselves: the
                 // persistence check accepts "no" only from a labelled container that exited 0.
-                Some(Node::Str(p)) if p == "no" && label == Some("true") => None,
+                Some(Node::Str(p)) if p == "no" && labelled => None,
                 Some(Node::Str(p)) if p == "no" => Some(format!(
                     "{}: service {name}: restart 'no' without label agent-cloud.one-shot: \"true\"",
                     eff.file
