@@ -75,6 +75,10 @@ class DrainingHandler(BaseHTTPRequestHandler):
                 self.rfile = sock
 
 
+# serve_forever's select timeout: shutdown() waits out one poll, so the stdlib's 0.5 s would be paid on
+# every server exit. Servers a test builds itself pass it too.
+SHUTDOWN_POLL_SECONDS = 0.01
+
 # How long a TLS client gets to finish its handshake before its connection is dropped.
 TLS_HANDSHAKE_TIMEOUT = 10
 
@@ -118,8 +122,7 @@ def serve(handler, *, host="127.0.0.1", ssl_context=None):
     url_host = _LOOPBACK_FOR.get(host, host)
     if ":" in url_host:
         url_host = f"[{url_host}]"
-    # shutdown() waits out one select poll; the stdlib's 0.5 s would be paid on every exit.
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS}, daemon=True)
     thread.start()
     try:
         yield f"{'https' if ssl_context is not None else 'http'}://{url_host}:{server.server_port}"

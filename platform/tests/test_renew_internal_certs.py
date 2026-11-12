@@ -44,7 +44,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from fake_http import DrainingHandler, refused_port, serve
+from fake_http import SHUTDOWN_POLL_SECONDS, DrainingHandler, refused_port, serve
 
 PLAYBOOK = playbook_yaml.REPO / "platform/playbooks/renew-internal-certs.yml"
 TEMPLATES = playbook_yaml.REPO / "platform/semaphore/templates.yml"
@@ -202,7 +202,7 @@ else:
 
 @contextmanager
 def _thread(server):
-    t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS}, daemon=True)
     t.start()
     try:
         yield server

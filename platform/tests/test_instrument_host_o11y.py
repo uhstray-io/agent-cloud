@@ -24,7 +24,7 @@ import playbook_yaml
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import SHUTDOWN_POLL_SECONDS, DrainingHandler
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/instrument-host-o11y.yml"
@@ -59,7 +59,7 @@ state.write_text(json.dumps(containers))
 
 def _serve(handler) -> ThreadingHTTPServer:
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS}, daemon=True).start()
     return server
 
 

@@ -52,7 +52,10 @@ def test_every_fake_server_derives_from_the_draining_base():
         if path.name == "fake_http.py":
             continue
         rel = str(path.relative_to(ROOT))
-        for node in ast.walk(ast.parse(path.read_text(), str(path))):
+        text = path.read_text()
+        if "BaseHTTPRequestHandler" not in text:  # exact: a base the walk below finds spells this name
+            continue
+        for node in ast.walk(ast.parse(text, str(path))):
             if isinstance(node, ast.ClassDef) and any(
                 "BaseHTTPRequestHandler" in ast.unparse(base) for base in node.bases
             ):
