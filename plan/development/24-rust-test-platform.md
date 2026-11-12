@@ -119,7 +119,7 @@ platform/tests/
   Cargo.toml            agent-cloud-tests, its own [workspace]; Cargo.lock committed
   .config/nextest.toml  lanes as profiles, the ansible test-group
   areas.toml            area -> path globs (D3)
-  src/lib.rs            shared support: repo root, YAML cache, fake PATH, process runner
+  src/lib.rs            shared support: repo root, YAML 1.1 loader, task walker, process runner
   src/bin/testsel.rs    changed paths -> nextest filterset (Phase 2)
   suite/main.rs         the one test binary; one module per area
   suite/<area>.rs
@@ -160,13 +160,14 @@ it reports the overrun in the job summary, as the shards do today.
 
 ## Implementation Phases
 
-One Plane work item per phase, in module `rust-test-platform`, milestone `v0.15.0`. A port phase is
+One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (operator decisions,
+2026-11-12: Phases 4 to 10 move to v0.16.0, and nothing merges into `dev` until v0.15.0 is released). A port phase is
 split into one sub-item per area when it starts.
 
 | Phase | Work | Blocked by | Done when |
 |---|---|---|---|
 | 0 | This plan, and 03 Part 1 (testing principles) | none | Merged into `dev` |
-| 1 | Crate, nextest profiles and test-group, shared support library, `Rust (tests)` CI job added to `Unit Tests`. Pilot: `test_restart_policy.bats` (static) and `test_common.bats` (cli) ported **additively**; the BATS files stay until Phase 3 | 0 | `cargo nextest run -P ci` passes in CI; both pilots fail when their guarded code is mutated |
+| 1 | Crate, nextest `default` and `ci` profiles, shared support library (YAML 1.1 loader, task walker, scrubbed bounded runner). Pilot: `test_restart_policy.bats` (static) and `test_common.bats` (cli) ported **additively**; the BATS files stay until Phase 3. The `Rust (tests)` CI job and the merge guard's new workflow state are a separate operator-merged pull request (AC-744). The `playbook` test-group arrives with the first playbook-tier test (Phase 6) | 0 | `cargo nextest run --profile ci` passes in CI (after AC-744); both pilots fail when their guarded code is mutated |
 | 2 | Lanes: `areas.toml`, `testsel`, the `commit` and `push` hooks, selection in the CI job | 1 | A docs-only pull request runs only the static tier and the security set; a playbook change runs its area's playbook tier |
 | 3 | Ledger citation check ported to Rust and taught `.rs` (D9); pilot BATS files deleted | 1 | The ledger check is green with both pilots cited by their Rust paths |
 | 4 | Port BATS (82 files) by area; delete the `bats` job | 2, 3 | `bats` gone from the workflow; every deleted test mapped |
@@ -180,10 +181,11 @@ split into one sub-item per area when it starts.
 The workflow changes in Phases 1, 2, 4 and 10 touch `.github/workflows/`, so they are operator merges
 (plan 23, Part A). The main-to-dev sync cannot carry them.
 
-**Release fit.** The operator placed this module in v0.15.0, the carry-over release that policy 10 R12
-exempts from the size limits. Phases 0 to 3 fit it. Phases 4 to 10 port about 140,000 lines of tests and
-42,000 lines of product code. They are not expected to finish before v0.15.0 is promoted. Moving them to a
-later milestone is the operator's call; it is not decided here.
+**Release fit.** The whole module ships from v0.16.0. Phases 0 to 3 were built during the v0.15.0
+carry-over promotion and are held until v0.15.0 is released, since nothing merges into `dev` before then
+(operator decision, 2026-11-12). Phases 4 to 10 port about 140,000 lines of tests and 42,000 lines of
+product code. The release limits apply from v0.16.0, so each port phase is cut into area pull requests that
+fit the 100-PR and 120-file budget, and phases may spread over later releases.
 
 ---
 
@@ -229,4 +231,6 @@ later milestone is the operator's call; it is not decided here.
 
 | Date | Change |
 |---|---|
+| 2026-11-12 | Phases 0 to 3 also move to v0.16.0: no merges into `dev` until v0.15.0 is released (operator decision). |
+| 2026-11-12 | Phases 4 to 10 moved to milestone v0.16.0 (operator decision). |
 | 2026-11-12 | Created. Operator decisions the same day: Rust replaces pytest and BATS; Python product code is ported to Rust where the runtime is ours (D4); the six support dependencies and `cargo-nextest` are approved (D1, D2) |
