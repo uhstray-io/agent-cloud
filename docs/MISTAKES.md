@@ -58,13 +58,14 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-11: briefed the launch gate's local-mode check as the fix for a forged `local_mode`, from its comment; `-e` can set the `inventory_hostname` it keys on) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) | Unverified claim | 12 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
+| 1.36 | Briefed a fix's guarantee (a forged `local_mode` cannot lift production refusals) from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, shared derivation proposed |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1310,7 +1311,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 13** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-11
+**Occurrences: 12** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1443,23 +1444,6 @@ behavioural claim with no citation, has no mechanical detector; it stays Convent
 
 **Occurrence 12 — 2026-11-11.** Answering a review finding on PR #1082 (the Plane mobile app's OIDC callback), I wrote that a `plane_redirect_uri` missing `/auth/oidc/callback/` is harmless because "the existing promotion verify fails it on the web redirect". It does not: `platform/services/authentik/deployment/templates/verify-oidc.py.j2` compares the live `redirect_uris` against the inventory value itself (`want not in got`), so a wrong inventory value is applied and then found present, and the check passes. I had read that template earlier in the same session, for a different question, and stated its coverage from its purpose ("live OIDC config diverged from intent") rather than its comparison. The pr-reviewer agent caught it in its review round on head `3e4e4791`; the PR comment was then corrected in place. Why the rule did not fire: like occurrence 9, a behavioural claim about a check's coverage in outward text, written while composing a reply rather than a brief, so the "read the logic before describing it" habit was not triggered; having read the file earlier made the claim feel verified. No new guard: occurrence 9's analysis holds (no mechanical detector for an uncited behavioural claim); the independent review is what caught it.
 
-**Occurrence 13 — 2026-11-11.** Briefing the first fix for AC-695 (skynet decided local mode from `local_mode`
-alone, so `-e local_mode=true` on a production launch skipped its production refusals), I told the worker to use
-the launch gate's expression, `local_mode` and `inventory_hostname` matching `<name>-local`
-(`deploy-launch-gate.yml:73` at `b7e11937`). I took it on the strength of its comment (`:70-72`): "as
-tasks/clean-service.yml derives it: an extra var `-e local_mode=true` on a production launch cannot lift the ...
-refusals below". I did not read the lines it cites. `tasks/clean-service.yml:85-89` says the opposite of what the
-copy relied on: `-e` can set `inventory_hostname`, and the checks key on `ansible_play_hosts_all`, which it cannot;
-`AGENTS.md` records the same property for `tasks/assert-reset-confirmed.yml`. The commit went out as `59c97fb7`,
-subject "a forged local_mode cannot lift production refusals", which is false as written: on ansible-core 2.21.0,
-`-e local_mode=true -e inventory_hostname=skynet-local` on host `skynet-prod` made local mode true. The grounding
-checkpoint's `/simplify` altitude reviewer and `/security-review` both found it before a PR was opened; #1078
-replaced it with the `ansible_play_hosts_all` rule (`5a37a00e`, `867957aa`). `59c97fb7` is on `dev` with that
-subject. Why the rule did not fire: the claim was read, but from a comment that cited its source, and the comment
-read as the source. None of the guards proposed above (occurrences 6, 8 and 10) would catch it: the brief named a
-file I had read, and the error was in the file the comment pointed to. A comment that cites another file for a behaviour is a pointer to read,
-not evidence of the behaviour.
-
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -1585,6 +1569,35 @@ The alert outcome was also unchecked when I offered it. Traced afterwards, it ho
 **The rule.** A claim that a mechanism exists, or does not, needs the whole file or an exhaustive search (for example `git grep` over `platform/playbooks` and `platform/semaphore/templates.yml`), never a truncated header. An option offered to an operator names the playbook that carries it out and the alert expression it will fire. If either is missing, the option is "build X first", with that work named.
 
 **Enforced by.** Convention.
+
+### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
+
+**Occurrences: 1** — 2026-11-11
+
+**What happened.** The first fix for AC-695 (skynet decided local mode from `local_mode` alone, so `-e
+local_mode=true` on a production launch skipped its production refusals) copied the launch gate's expression,
+`local_mode` and `inventory_hostname` matching `<name>-local` (`deploy-launch-gate.yml:73` at `b7e11937`), on the
+strength of its comment (`:70-72`), which said the rule was derived "as tasks/clean-service.yml derives it" and
+that `-e local_mode=true` "cannot lift the ... refusals below". I read the expression, not the file the comment
+cited. `tasks/clean-service.yml:85-89` says `-e` can set `inventory_hostname` and that its checks key on
+`ansible_play_hosts_all` instead, the property `AGENTS.md:262` also records. The commit went out as `59c97fb7`,
+subject "a forged local_mode cannot lift production refusals", false as written: `-e local_mode=true -e
+inventory_hostname=skynet-local` on host `skynet-prod` made local mode true (ansible-core 2.21.0, scratch play).
+The grounding checkpoint caught it before a PR was opened; the redesign and its passes are in 5.24 occurrence 4.
+`59c97fb7` is on `dev` with that subject.
+
+**Root cause.** 1.29's rule was met literally: the body of the expression was read. The claim was a guarantee
+(what an extra var cannot do), and no expression can show that; the proof lived in the file the comment cited.
+
+**The rule.** A guarantee about what a mechanism prevents is unverified until the code or document that enforces
+it is read, whatever pointed to it: a name (1.29), a subagent (1.25, 1.28) or a comment's citation. Follow the
+citation and read the cited lines before a brief, commit or reply repeats the guarantee. Widens 1.29.
+
+**Enforced by.** The instance: `platform/tests/test_launch_gate_playbooks.bats:590-591` and
+`platform/tests/test_service_skynet.bats:602` pin each playbook's `ansible_play_hosts_all` expression in all three
+plays. The class: Convention. Proposal: one shared local-mode derivation the playbooks include (AC-702), so no
+playbook comment has to cite another file for the rule; the launch gate's comment still cites
+`tasks/clean-service.yml:85-89`, where the derivation itself is at `:70`.
 
 ## 2. Tests that would have passed for the wrong reason
 
