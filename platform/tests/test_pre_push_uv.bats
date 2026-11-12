@@ -397,3 +397,15 @@ out_collection_and_failure() {
   [ -z "$(ls -A "$T/tmp")" ] || { echo "left behind: $(ls -A "$T/tmp")"; false; }
   [ -z "$(ls -A "$REPO/.git/pre-push-locks" 2>/dev/null)" ] || { echo "lock left behind"; false; }
 }
+
+@test "pre-push uv: a push to a URL with credentials never prints the URL" {
+  # git passes the URL itself as the remote name when a push names a URL, and that URL can
+  # carry a token. The fallback message must name the remote without it.
+  run bash -c 'printf "refs/heads/feat 1111111111111111111111111111111111111111 refs/heads/feat 0000000000000000000000000000000000000000\n" \
+    | (cd "$1" && env FAKE_PY_LOG="$2" FAKE_BATS_LOG="$3" FAKE_UV_LOG="$4" TMPDIR="$5" PATH="$6:$PATH" \
+       "$7" "$8" "https://user:SECRET-TOKEN@example.invalid/repo.git" "https://user:SECRET-TOKEN@example.invalid/repo.git")' \
+    _ "$REPO" "$LOG" "$T/bats.log" "$T/uv.log" "$T/tmp" "$T/fakebin" "$HOOK_SH" "$HOOK"
+  assert_contains "$output" 'full Python suite, not the fast lane'
+  assert_contains "$output" 'refs/remotes/<url>/dev'
+  refute_contains "$output" 'SECRET-TOKEN'
+}

@@ -389,13 +389,16 @@ if [ -f pyproject.toml ]; then
   # full run (the same names as SELECTION_ENV in platform/tests/shards.py).
   unset PYTEST_FAST PYTEST_FAST_CHANGED PYTEST_SHARD
   pp_fast_why=""
+  # A push to a URL passes the URL as the remote name, and it can carry credentials, so a message
+  # names the remote only when it is a configured one.
+  if git remote 2>/dev/null | grep -qxF -- "$remote_name"; then pp_remote_label=$remote_name; else pp_remote_label="<url>"; fi
   if ! git rev-parse --verify -q "refs/remotes/$remote_name/dev^{commit}" >/dev/null 2>&1; then
-    pp_fast_why="there is no refs/remotes/$remote_name/dev to measure the push against"
+    pp_fast_why="there is no refs/remotes/$pp_remote_label/dev to measure the push against"
   else
     for _sha in $push_shas; do
       _base=$(git merge-base "$_sha" "refs/remotes/$remote_name/dev" 2>/dev/null) || _base=""
       if [ -z "$_base" ]; then
-        pp_fast_why="$_sha has no merge base with $remote_name/dev"
+        pp_fast_why="$_sha has no merge base with $pp_remote_label/dev"
         break
       fi
       if ! git diff --name-only "$_base" "$_sha" >> "$changed_file" 2>/dev/null; then
@@ -410,7 +413,7 @@ if [ -f pyproject.toml ]; then
     PYTEST_FAST_CHANGED=$changed_file
     export PYTEST_FAST PYTEST_FAST_CHANGED
     _n=$(grep -c . "$changed_file")
-    printf 'pre-push: FAST LANE (PYTEST_FAST=1): the %s changed path(s) against %s/dev, plus the files\n' "$_n" "$remote_name" >&2
+    printf 'pre-push: FAST LANE (PYTEST_FAST=1): the %s changed path(s) against %s/dev, plus the files\n' "$_n" "$pp_remote_label" >&2
     printf '  whose recorded tests are fast or unrecorded. CI runs the full suite. A change to a playbook\n' >&2
     printf '  or helper runs only its fast or changed tests here (plan 21, D6).\n' >&2
   else
