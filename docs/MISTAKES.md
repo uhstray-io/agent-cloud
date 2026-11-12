@@ -65,7 +65,7 @@ and why.
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
-| 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
+| 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered two configs) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
@@ -1638,7 +1638,7 @@ The alert outcome was also unchecked when I offered it. Traced afterwards, it ho
 
 ### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
 
-**Occurrences: 1** — 2026-11-11
+**Occurrences: 2** — 2026-11-11, 2026-11-12
 
 **What happened.** The first fix for AC-695 had to stop `-e local_mode=true` from skipping skynet's production
 refusals. I briefed a worker to copy the launch gate's expression: `local_mode` and `inventory_hostname` matching
@@ -1664,6 +1664,8 @@ the cited lines before a brief, commit or reply repeats the guarantee.
 `platform/tests/test_launch_gate_playbooks.bats:590-591` and `platform/tests/test_service_skynet.bats:602`. The class:
 Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a brief or outward
 text names, not the paths a comment in those files cites.
+
+**Occurrence 2 — 2026-11-12.** Recording the absent endpoint drill (task 15623) in PR #1124, and in my report to Joseph, I wrote that the restoring deploy "refused before changing anything". I took that from the refusing assert's message, "no secrets or containers were changed", and widened it, without reading the tasks above it. `deploy-o11y.yml:597-610` places the monorepo with `force: true` and re-renders the Alloy and Prometheus configs before the assert at `:625-628`, so the checkout and two config files had changed. The PR review caught it before merge. Why the rule did not fire: it names a comment's citation; an assertion's own message is the same kind of pointer, a description of what the code does, and needs the same read of the code it describes.
 
 ### 1.37 Called a fix impossible from a true fact stretched past its scope, then built around it (widens 1.19)
 
@@ -3769,11 +3771,11 @@ no task can remove another's.
 
 ### 3.23 A long drill pinned a SHA at launch but cloned the moving branch for its restore
 
-**What happened.** On 2026-11-12 I launched `Drill o11y Endpoint Availability (Dev)` in absent mode (task 15623, `service:authentik`), pinned to the `dev` head read at launch (`432c137a`). The drill has two deploys, with the alert proof between them (task 15623 ran from 20:35 to about 20:53 UTC). Both clone `service_branch` (`dev`), and both refuse unless the receiver checkout equals `expected_repository_sha`. The `dev` freeze had just been lifted, and three PRs merged between 20:39 and 20:46 UTC. The drilled deploy and its proof ran (the missing-data alert fired, and Discord confirmed it). The restoring deploy then cloned the new head, found it differed from the pin, and refused before changing anything. That left authentik's probe removed and its missing alert firing, under the drill marker, until `Recover o11y Endpoint Drill (Dev)` (task 15629, pinned to the then-current head) restored it, finishing at 21:06 UTC. I asked the active PM sessions to hold `dev` merges during the recovery.
+**What happened.** On 2026-11-12 I launched `Drill o11y Endpoint Availability (Dev)` in absent mode (task 15623, `service:authentik`), pinned to the `dev` head read at launch (`432c137a`). The drill has two deploys, with the alert proof between them (task 15623 ran from 20:35 to about 20:53 UTC). Both clone `service_branch` (`dev`), and both refuse unless the receiver checkout equals `expected_repository_sha`. The `dev` freeze had just been lifted, and three PRs merged between 20:39 and 20:46 UTC. The drilled deploy and its proof ran (the missing-data alert fired, and Discord confirmed it). The restoring deploy then moved the receiver checkout to the new head and re-rendered the Alloy and Prometheus configs (`deploy-o11y.yml:597-610`, `tasks/place-monorepo.yml` with `force: true`). Only then did its checkout assert (`:625-628`) find the checkout differed from the pin, and it refused before changing any secret or container. That left authentik's probe removed and its missing alert firing, under the drill marker, until `Recover o11y Endpoint Drill (Dev)` (task 15629, pinned to the then-current head) restored it, finishing at 21:06 UTC. I asked the active PM sessions to hold `dev` merges during the recovery.
 
-**Root cause.** The drill pins one SHA for its whole run, but places the checkout from a branch name, so its correctness depends on nobody merging for the length of the run. The same exposure was already known for single launches: a launch pinned to a head read too early refuses. A multi-deploy run widens it from seconds to the drill's full duration. Nothing on the controller holds the branch still, and I did not ask for a hold before launching.
+**Root cause.** The drill pins one SHA for its whole run, but places the checkout from a branch name, so its correctness depends on nobody merging for the length of the run. The same exposure was already known for single launches: a launch pinned to a head read too early refuses. A multi-deploy run widens it from seconds to the drill's full duration. Nothing on the controller holds the branch still, and I did not ask for a hold before launching. The deploy's checkout guard also runs after the placement and render steps, so a refusal leaves files on the receiver that differ from what is running: from 20:53 to 21:06 the checkout was at the new head and the rendered configs did not match the running, drilled containers.
 
-**The rule.** A run that deploys more than once against one pinned SHA must place that SHA, not a branch. Until the drill does, launch it only with `dev` merges held for its duration, agreed with the sessions that merge, and have the matching Recover template ready to run against the current head.
+**The rule.** A run that deploys more than once against one pinned SHA must place that SHA, not a branch, and a revision guard runs before anything is placed or rendered. Until the drill does, launch it only with `dev` merges held for its duration, agreed with the sessions that merge, and have the matching Recover template ready to run against the current head.
 
 **Enforced by.** Convention. The fix is tracked in Plane (the drill places the reviewed SHA for both deploys).
 
