@@ -44,13 +44,14 @@ main() {
   info "=== OPA deployment (container lifecycle) ==="
   detect_runtime
   info "Container engine: ${CONTAINER_ENGINE}"
+  # Before the pull: compose.yml takes the image from OPA_IMAGE, which .env also carries.
+  write_env
   if [ "$SKIP_PULL" = true ]; then info "Skipping image pull (--no-pull)."; else compose pull; fi
   # OPA reads ./policies once, at startup (--bundle, no --watch). Plain `up -d` leaves a running
   # container alone when only the bind-mounted files changed, so a deploy that placed new policies
   # left the server answering from the old ones: production served its 2026-11-01 policies until
   # 2026-11-12 (docs/MISTAKES.md 3.11). compose_up_if_changed hashes the policy tree, the compose
   # files and .env into the container label and recreates OPA when any of them differs.
-  write_env
   compose_up_if_changed policies
   # The OPA image is distroless (no shell/wget for a compose healthcheck), so
   # poll the container is running; the playbook gates on GET /health.

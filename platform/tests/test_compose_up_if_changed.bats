@@ -504,6 +504,17 @@ PY
 opa_setup() {
   svc_setup opa opa=opa
   rm -f "$D/.env"
+  unset OPA_IMAGE OPA_LOG_LEVEL OPA_BIND OPA_PORT OPA_SERVER_LEAF
+}
+
+@test "opa: write_env carries every variable the compose files substitute" {
+  # A substitution left out of write_env would change OPA's config without recreating it.
+  local used listed
+  used=$(cat "$REPO_ROOT"/platform/services/opa/deployment/compose*.yml \
+    | grep -o '\${OPA_[A-Z_]*' | tr -d '${' | sort -u)
+  listed=$(sed -n 's/^  for v in \(.*\); do$/\1/p' "$REPO_ROOT/platform/services/opa/deployment/deploy.sh" \
+    | tr ' ' '\n' | sort -u)
+  [ -n "$used" ] && [ "$used" = "$listed" ] || { echo "compose: $used"; echo "write_env: $listed"; false; }
 }
 
 @test "opa: a deploy with no .env runs, writes only the set substitutions and labels OPA" {

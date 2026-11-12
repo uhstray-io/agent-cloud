@@ -177,8 +177,8 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        # Compose substitution for the published host port (no .env — OPA has no
-        # secrets). Inventory opa_bind/opa_port flow straight into compose.
+        # Compose substitutions for the published host port. OPA has no secrets; deploy.sh writes
+        # these into a non-secret .env so a changed value recreates OPA (write_env).
         OPA_BIND: "{{ opa_bind | default('127.0.0.1') }}"
         OPA_PORT: "{{ opa_port | default('8281') }}"
         # Listener TLS: the overlay mounts ./certs and serves the leaf named by OPA_SERVER_LEAF.
