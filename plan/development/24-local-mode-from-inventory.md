@@ -44,7 +44,7 @@ Out of scope: `tasks/clean-service.yml`, `clean-deploy-o11y.yml` and `stop-local
 
 - YAML files: the values of `when`, `that`, `failed_when`, `changed_when` and `until` are bare Jinja; every other string contributes only its `{{ }}` and `{% %}` blocks. Keys are not reads, so inventory text that assigns `local_mode` (as `bootstrap-local-dev.yml` writes) is not one either.
 - `.j2` files: only the Jinja blocks.
-- Python under `platform/playbooks/` (filter plugins, `files/`) and the services' shell scripts: a `local_mode` / `LOCAL_MODE` read is listed with the reason it is allowed (a shell script reads the `LOCAL_MODE` the playbook exports from the inventory identity), or refused.
+- Python and shell scripts are not scanned. They read the `LOCAL_MODE` environment variable a playbook exports (`files/summarize-o11y-scrape-baseline.py`, the services' `deploy.sh`), and the expression that sets it is in the YAML the test scans.
 
 - Permanent exemptions: `tasks/assert-local-mode-identity.yml` (it compares the declaration), and inventory writers named in the test with the reason.
 - A migration allowlist, created in the first PR with every file that reads it today. The test also fails when an allowlisted file no longer reads `local_mode`, so each PR must shrink the list; the last PR empties it and deletes the list.
@@ -69,7 +69,7 @@ The first PR adds a fourth forgery form to `platform/tests/forgeries.py`: honest
 3. **Gates that run before a playbook's placement check:** `deploy-o11y.yml`, `deploy-agentgateway.yml`, `deploy-orb-agent.yml`, `deploy-step-ca.yml`; and `tasks/agw-validate-config.yml`, `tasks/assert-o11y-scrape-limits.yml`, `tasks/o11y-alert-probe.yml`.
 4. **The o11y family not yet covered**, including the readers the grounding checkpoint found outside AC-726's list: `tasks/o11y-private-artifact-operation.yml`, `tasks/o11y-backup-artifact-census.yml`, `tasks/o11y-pbs-physical-storage-survey.yml`, `tasks/prepare-o11y-availability.yml`, `tasks/o11y-prepare-expected-target-transition.yml`; and the o11y templates. Split in two if the diff passes about 40 files.
 5. **CA, Caddy, agentgateway rest, console, authentik and the remaining playbooks**, with the four `add_host` playbooks audited as above.
-6. **Close:** empty the allowlist and delete it; `AGENTS.md` states the rule beside the credential rules; `docs/MISTAKES.md` names the test as the enforcement for the forged-mode class.
+6. **Close:** empty the allowlist and delete it (`tasks/clean-service.yml` leaves it through AC-730, which lands first); `AGENTS.md` states the rule beside the credential rules; `docs/MISTAKES.md` names the test as the enforcement for the forged-mode class.
 
 ## Release budget
 
