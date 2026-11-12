@@ -118,7 +118,8 @@ platform/tests/
 
 The crate sits in `platform/tests/` beside the Python files it replaces. Ledger citations keep their
 directory, and the console crate (`platform/services/console/app/Cargo.toml`, its own `[workspace]`) is
-unaffected.
+unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
+`cargo nextest run -E 'test(/^<area>::/)'` runs one area.
 
 ### Decisions
 
@@ -144,14 +145,16 @@ unaffected.
 | `full` | nightly on `dev`, every promotion into `main`, a change to the crate, the area map or a shared task | everything | under 15 min wall |
 | `live` | Semaphore templates (`Verify Service Health`, the probes) | not in CI | unchanged |
 
-The budgets are targets until Phase 1 measures them. A lane that exceeds its budget fails nothing, but
+A changed path that no area, `full` glob or ignore glob classifies runs everything in `push` and `ci`. Every
+suite module is listed in exactly one lane slot, an area tier or the security set, so a test outside every
+lane cannot exist (a test enforces it, Phase 2). The budgets are targets until Phase 1 measures them. A lane that exceeds its budget fails nothing, but
 it reports the overrun in the job summary, as the shards do today.
 
 ---
 
 ## Implementation Phases
 
-One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (see Release fit). A
+One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (see "Release fit" below the phase table). A
 port phase is split into one sub-item per area when it starts.
 
 | Phase | Work | Blocked by | Done when |
