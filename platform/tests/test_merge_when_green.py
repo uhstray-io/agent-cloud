@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1710,6 +1711,13 @@ class MergeGuardTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(guard.is_test_path(path))
 
+    def test_every_pytest_testpath_is_a_test_path(self):
+        # The guard's rule and pytest's own list must not drift apart.
+        config = tomllib.loads((SCRIPT.parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+        for testpath in config["tool"]["pytest"]["ini_options"]["testpaths"]:
+            with self.subTest(testpath=testpath):
+                self.assertTrue(guard.is_test_path(f"{testpath}/test_x.py"))
+
     def test_dev_drift_into_test_paths_refuses(self):
         api = FakeGitHub()
         api.drift = (2, ["README.md", "platform/tests/test_x.py"])
@@ -1739,7 +1747,7 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         api.drift = (1, ["README.md"])
         self.assertEqual(run_guard(api, "--merge", "--feedback-addressed")[0], 0)
-        self.assertEqual(api.drift_calls, [(PR, HEAD, "e" * 40)] * 2)
+        self.assertEqual(api.drift_calls, [(PR, HEAD, api.budget_after["dev_ref"])] * 2)
 
 
 def run_guard(api, *extra):

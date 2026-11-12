@@ -97,63 +97,50 @@ class GitHub:
         except (OSError, subprocess.CalledProcessError) as error:
             raise Refusal("SHA-bound merge command returned an error; read PR state before retrying") from error
 
+    def _git(self, failure, *args):
+        # Every local-git read: an argv list run in this checkout, recorded in calls; a failure is the caller's refusal.
+        command = ["git", "-C", str(self.repo_root), *args]
+        self.calls.append(command)
+        try:
+            return subprocess.run(command, capture_output=True, text=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise Refusal(failure) from error
+
     def release_budget(self, extra_files):
         # The one local-git read of the intake. It updates this checkout's remote-tracking refs and its release
         # tags; it writes nothing to GitHub. Returns the fetched dev tip with the budget before and after this PR.
         # The caller compares that tip with GitHub's live dev ref.
-        root = str(self.repo_root)
-        fetch = ["git", "-C", root, "fetch", "--no-tags", "origin",
-                 "+refs/heads/main:refs/remotes/origin/main",
-                 "+refs/heads/dev:refs/remotes/origin/dev",
-                 "+refs/tags/v*:refs/tags/v*"]
-        self.calls.append(fetch)
+        failed = f"Release budget: git failed in {self.repo_root}"
+        self._git("Release budget: fetching main, dev and the release tags failed",
+                  "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main",
+                  "+refs/heads/dev:refs/remotes/origin/dev", "+refs/tags/v*:refs/tags/v*")
+        dev_sha = self._git(failed, "rev-parse", "--verify", "origin/dev^{commit}").strip()
         try:
-            subprocess.run(fetch, capture_output=True, text=True, check=True)
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise Refusal("Release budget: fetching main, dev and the release tags failed") from error
-        rev_parse = ["git", "-C", root, "rev-parse", "--verify", "origin/dev^{commit}"]
-        self.calls.append(rev_parse)
-        try:
-            dev_sha = subprocess.run(rev_parse, capture_output=True, text=True, check=True).stdout.strip()
             before = semver.release_budget(self.repo_root, "origin/main", dev_sha)
             after = semver.release_budget(self.repo_root, "origin/main", dev_sha,
                                           extra_prs=1, extra_files=extra_files)
         except (OSError, subprocess.CalledProcessError) as error:
-            raise Refusal(f"Release budget: git failed in {root}") from error
+            raise Refusal(failed) from error
         return dev_sha, before, after
 
     def dev_drift(self, number, head_sha, dev_sha):
         # 5.23: CI proves the pull request head, not that head merged into the current dev. This reads dev's changes
-        # the head lacks from local git, after fetching the head itself; it writes nothing to GitHub.
-        root = str(self.repo_root)
-        fetch = ["git", "-C", root, "fetch", "--no-tags", "origin",
-                 f"+refs/pull/{number}/head:refs/remotes/origin/pr/{number}"]
-        self.calls.append(fetch)
-        try:
-            subprocess.run(fetch, capture_output=True, text=True, check=True)
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise Refusal("Dev drift: fetching the pull request head failed") from error
-        rev_parse = ["git", "-C", root, "rev-parse", "--verify", f"refs/remotes/origin/pr/{number}^{{commit}}"]
-        self.calls.append(rev_parse)
-        try:
-            fetched = subprocess.run(rev_parse, capture_output=True, text=True, check=True).stdout.strip()
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise Refusal(f"Dev drift: git failed in {root}") from error
+        # the head lacks from local git, after fetching the head itself; it writes nothing to GitHub. dev_sha is
+        # already local: validate runs the release budget's fetch first.
+        failed = f"Dev drift: git failed in {self.repo_root}"
+        self._git("Dev drift: fetching the pull request head failed",
+                  "fetch", "--no-tags", "origin", f"+refs/pull/{number}/head:refs/remotes/origin/pr/{number}")
+        fetched = self._git(failed, "rev-parse", "--verify", f"refs/remotes/origin/pr/{number}^{{commit}}").strip()
         if fetched != head_sha:
             raise Refusal(f"Dev drift: the fetched pull request head {fetched[:12]} is not the expected head "
                           f"{head_sha[:12]}")
-        count = ["git", "-C", root, "rev-list", "--count", f"{head_sha}..{dev_sha}"]
-        self.calls.append(count)
+        behind = self._git(failed, "rev-list", "--count", f"{head_sha}..{dev_sha}").strip()
+        if not behind.isdigit():
+            raise Refusal(failed)
         # The three-dot diff is merge-base..dev, the changes dev made that this head does not hold. --no-renames lists
         # both names of a rename, so a test file moved away from its old path still counts.
-        changed = ["git", "-C", root, "diff", "--name-only", "--no-renames", "-z", f"{head_sha}...{dev_sha}"]
-        self.calls.append(changed)
-        try:
-            behind = int(subprocess.run(count, capture_output=True, text=True, check=True).stdout.strip())
-            paths = subprocess.run(changed, capture_output=True, text=True, check=True).stdout.split("\0")
-        except (OSError, subprocess.CalledProcessError, ValueError) as error:
-            raise Refusal(f"Dev drift: git failed in {root}") from error
-        return behind, [path for path in paths if path]
+        paths = self._git(failed, "diff", "--name-only", "--no-renames", "-z", f"{head_sha}...{dev_sha}").split("\0")
+        return int(behind), [path for path in paths if path]
 
 
 def paged(api, endpoint, key):
@@ -901,8 +888,8 @@ def check_release_budget(api, file_records):
 
 
 def is_test_path(path):
-    # What CI's test suites read: anything under a tests/ directory, any conftest.py, and the pyproject.toml that
-    # configures pytest and ruff.
+    # Where CI's test suites live or are configured: any tests/ directory (each pytest testpath and the BATS suite),
+    # any conftest.py, and pyproject.toml. A dependency change (uv.lock) is not counted.
     posix = PurePosixPath(path)
     return "tests" in posix.parts[:-1] or posix.name == "conftest.py" or path == "pyproject.toml"
 
