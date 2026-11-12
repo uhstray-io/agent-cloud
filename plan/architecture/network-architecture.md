@@ -495,7 +495,7 @@ flowchart LR
     SEM -->|"public front door, every 10 min"| GRAF["Grafana liveness"]
     PROM["o11y Prometheus"] -->|"scrape node exporter<br/>on a private bind"| VMS
     SEM -->|"push-loki-lines"| LOKI["o11y Loki"]
-    SKY["skynet<br/>(launch caller, LIVE)"] -.->|"launch request, HTTPS (wired; no launch yet)"| LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
+    SKY["skynet<br/>(launch caller, LIVE)"] -.->|"launch request, HTTPS (wired; proven in local-dev, not production)"| LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
     LG -->|"asks OPA, HTTPS"| OPA["OPA decisions<br/>(LIVE)"]
     LG -->|"creates task only on allow"| SEM
 ```
@@ -509,7 +509,7 @@ flowchart LR
   scrape, and requires the series to arrive [41]. The liveness watcher probes Grafana through the
   public front door, so the firewall needs no exception for it [42].
 
-- **The launch gate is an HTTPS service, live in production since 2026-11-09.** It is the only identity that may ask Semaphore to launch a task for an agent. Its listener is HTTPS with an internal-CA server leaf, and its host admits connections on 8443 only from the skynet and console VMs. skynet's wiring to the gate is deployed, but no skynet-initiated launch through the gate is recorded yet [54].
+- **The launch gate is an HTTPS service, live in production since 2026-11-09.** It is the only identity that may ask Semaphore to launch a task for an agent. Its listener is HTTPS with an internal-CA server leaf, and its host admits connections on 8443 only from the skynet and console VMs. skynet's wiring to the gate is deployed. A skynet-initiated launch through the gate is proven in local-dev (OpenSpec change `skynet-launch-containment`, task 4.4) but not yet in production [54].
 
 ### 8. Provisioning: how a VM gets its address
 
@@ -802,3 +802,4 @@ document; for the long, frequently edited documents the section name is given as
 | 2026-10-27 | Initial version: current-state network map with status per component, decision criteria, in-flight phases and target outcome |
 | 2026-11-04 | Corrected in place against the repository: OPA production path and the launch gate (HTTPS, not deployed) added; o11y OTLP mutual TLS (PR #756) recorded as built and off by default; label count corrected to nineteen; rate-limit modes stated (inference block, MCP log only); the every-hop row now records the plain-HTTP gateway-to-vLLM gap and its compensating control; vLLM TLS status brought up to the 2026-10-26 handoff |
 | 2026-11-09 | Corrected the launch gate to live in production since 2026-11-09 in the diagrams, the component table and the control-plane prose; the gate-to-OPA and gate-to-Semaphore edges are solid, and the skynet-to-gate edge stays dashed until a skynet-initiated launch is recorded; the recorded gateway-to-vLLM gap is cited as a dated exception in PRINCIPLES.md §6; ADR-0017 is named as dgx-spark's |
+| 2026-11-12 | The launch-gate control-plane note records a skynet-initiated launch through the gate as proven in local-dev (task 4.4), not yet in production; the skynet-to-gate edge stays dashed until it is proven in production |

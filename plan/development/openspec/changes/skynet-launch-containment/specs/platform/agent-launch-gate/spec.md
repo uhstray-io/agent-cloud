@@ -66,7 +66,8 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 The launch gate SHALL take the branch from the template's repository record and MUST refuse a template
 that carries its own different branch. In local mode only, a record that declares `HEAD` (local-dev's
 working tree) SHALL be read as `dev`, the branch OPA is asked about and the one `service_branch` is set to;
-outside local mode `HEAD` SHALL reach OPA unchanged. When the template declares a `service_branch` survey field (the
+outside local mode `HEAD` SHALL reach OPA unchanged. In local mode the task therefore runs the working tree,
+which OPA judges as `dev`; the gate sends no task branch, so the record's `HEAD` is what runs. When the template declares a `service_branch` survey field (the
 branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
 whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
 values and integer fields ASCII digits with at most one leading minus.
