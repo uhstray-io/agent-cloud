@@ -104,6 +104,7 @@ and why.
 | 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
+| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 1 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -2904,6 +2905,30 @@ the test cannot catch it. Never trust a byte-exact source restore to reset what 
 widens 2.28 ("disable bytecode writes") from clean-copy tests to mutation checks.
 
 **Enforced by.** Convention.
+
+### 2.39 An absence check asked with a handle that could never show the thing
+
+**What happened.** PR #1099 added `callback_with_a_wrong_nonce_is_refused` for the
+Dispatch Console's sign-in gate (add-dispatch-console task 2.6). After the refused
+callback it asserted that `/v1/me` answers 401, but it sent the cookie the browser
+held before sign-in. The callback cycles the session id before it stores a user, so
+a user stored under the new id is invisible through the old cookie. The review wrote
+a mutant that cycled the id, stored the user and then answered 401: all three sign-in
+tests stayed green. Caught in review on 2026-11-12, before merge.
+
+**Root cause.** The assertion checked an absence, and absence is satisfied by any
+probe that cannot see the thing. The probe was chosen from the request side (the
+cookie the test already had) rather than from the response under test (the cookie the
+refusal itself sets).
+
+**The rule.** A test that asserts something did not happen asks through the handle the
+code under test hands back: the cookie, id or path its response sets, not one the test
+held beforehand. Then write the mutant that does the forbidden thing and watch it fail.
+
+**Enforced by.** Test: `callback_with_a_wrong_nonce_is_refused` and
+`callback_with_a_token_signed_by_another_key_is_refused` probe with
+`callback.session.unwrap_or(login_session)`; the store-then-refuse mutant turns both
+red. The general rule is `Convention`.
 
 ## 3. Acting on live state
 

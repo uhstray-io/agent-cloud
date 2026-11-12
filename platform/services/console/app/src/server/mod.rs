@@ -395,6 +395,9 @@ pub fn router(state: SharedState) -> Router {
 mod load_test;
 
 #[cfg(test)]
+mod oidc_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::probe::{http_get_raw, parse_status_line};
@@ -417,7 +420,7 @@ mod tests {
     }"#;
 
     /// The OIDC cell stays empty, so /auth/* answers 503 in these tests.
-    fn test_state() -> SharedState {
+    pub(super) fn test_state() -> SharedState {
         state_with_prefs(Prefs::in_memory().expect("in-memory prefs"))
     }
 
@@ -490,7 +493,7 @@ mod tests {
 
     /// A session store over a throwaway in-memory database. Tests that do not
     /// reopen a file use it; the production store shares the state's prefs connection.
-    fn memory_sessions() -> SqliteStore {
+    pub(super) fn memory_sessions() -> SqliteStore {
         Prefs::in_memory()
             .expect("in-memory sessions")
             .session_store()
@@ -520,7 +523,7 @@ mod tests {
         )
     }
 
-    async fn serve(app: Router) -> SocketAddr {
+    pub(super) async fn serve(app: Router) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -1393,6 +1396,112 @@ mod tests {
         let tree = call(addr, "GET", "/v1/tenants/acme/tree", Some(cookie), "").await;
         assert_eq!(tree.status, 404);
         assert_eq!(tree.body, r#"{"error":"unknown_tenant"}"#);
+    }
+
+    /// Task 3.3 (plan 17): the scope file the server reads is the one `scope.json.j2` renders from the example
+    /// inventory. `test_console_scope_contract.py` holds the fixture equal to that render. This loads the same
+    /// fixture through `load`, the production path for CONSOLE_SCOPE_FILE, and serves it.
+    #[tokio::test]
+    async fn the_rendered_example_scope_is_served() {
+        let data_dir =
+            std::env::temp_dir().join(format!("console-scope-contract-{}", std::process::id()));
+        std::fs::create_dir_all(&data_dir).expect("data dir");
+        let state = load(Config {
+            base_url: "https://console.test".into(),
+            oidc_issuer: "https://auth.test/application/o/console/".into(),
+            oidc_client_id: "console".into(),
+            oidc_client_secret: "test-secret".into(),
+            extra_ca_file: None,
+            data_dir: data_dir.clone(),
+            scope_file: std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/scope.example.json"
+            )),
+            semaphore: None,
+            workflow_file: None,
+            netbox: None,
+            proxmox: None,
+            openbao: None,
+            flows_file: None,
+            gateway_file: None,
+            catalog_file: None,
+            grafana_url: None,
+            grafana_token: None,
+            authentik: None,
+            role_map_file: None,
+            github: None,
+            launch_gate: None,
+            launch_dev_variants: true,
+        })
+        .expect("the example scope loads as CONSOLE_SCOPE_FILE");
+
+        let app = api_router(state.clone())
+            .merge(test_login_route(
+                "/test/developer",
+                &["platform-developers"],
+            ))
+            .merge(test_login_route("/test/stranger", &["users"]))
+            .layer(session_layer(state.prefs.session_store()));
+        let addr = serve(app).await;
+        let developer = call(addr, "GET", "/test/developer", None, "")
+            .await
+            .cookie
+            .expect("developer session");
+        let stranger = call(addr, "GET", "/test/stranger", None, "")
+            .await
+            .cookie
+            .expect("stranger session");
+
+        let list = call(addr, "GET", "/v1/tenants", Some(developer.clone()), "").await;
+        let tree = call(addr, "GET", "/v1/tenants/uhstray/tree", Some(developer), "").await;
+        let unlisted = call(addr, "GET", "/v1/tenants", Some(stranger), "").await;
+        let _ = std::fs::remove_file(data_dir.join("prefs.db"));
+        let _ = std::fs::remove_dir(&data_dir);
+
+        assert_eq!(list.status, 200, "{}", list.body);
+        assert_eq!(
+            list.body,
+            r#"{"example":true,"tenants":[{"id":"uhstray","name":"Uhstray (example)"}]}"#
+        );
+
+        assert_eq!(tree.status, 200, "{}", tree.body);
+        assert!(
+            !tree.body.contains("platform-developers"),
+            "group lists leaked: {}",
+            tree.body
+        );
+        let tree_json: serde_json::Value = serde_json::from_str(&tree.body).expect("json");
+        assert_eq!(tree_json["tenant"]["id"], "uhstray");
+        assert_eq!(tree_json["tenant"]["name"], "Uhstray (example)");
+        assert_eq!(tree_json["example"], true);
+        assert_eq!(tree_json["orgs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(tree_json["orgs"][0]["id"], "uhstray-io");
+        let sites: Vec<(&str, Vec<&str>)> = tree_json["orgs"][0]["sites"]
+            .as_array()
+            .expect("sites")
+            .iter()
+            .map(|site| {
+                let envs: Vec<&str> = site["envs"]
+                    .as_array()
+                    .expect("envs")
+                    .iter()
+                    .map(|env| env.as_str().expect("env"))
+                    .collect();
+                (site["id"].as_str().expect("site id"), envs)
+            })
+            .collect();
+        assert_eq!(
+            sites,
+            [
+                ("site-hq", vec!["prod", "dev"]),
+                ("do-nyc1", vec!["prod"]),
+                ("cloudflare", vec!["prod"]),
+            ]
+        );
+
+        // A caller in none of the fixture's groups gets the empty list: the file's `groups` decide it.
+        assert_eq!(unlisted.status, 200, "{}", unlisted.body);
+        assert_eq!(unlisted.body, r#"{"example":true,"tenants":[]}"#);
     }
 
     #[tokio::test]
