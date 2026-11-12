@@ -101,6 +101,7 @@ pub mod yaml {
 
     #[derive(Default)]
     struct Builder {
+        origin: String,
         docs: Vec<Node>,
         stack: Vec<Frame>,
         anchors: HashMap<usize, Node>,
@@ -137,20 +138,59 @@ pub mod yaml {
         }
     }
 
-    /// PyYAML's merge: explicit keys win, then the merged maps in order (earlier wins).
-    fn apply_merges(mut entries: Vec<(Node, Node)>, merges: Vec<Node>) -> Vec<(Node, Node)> {
-        let sources = merges.into_iter().flat_map(|m| match m {
-            Node::Seq(maps) => maps,
-            other => vec![other],
-        });
-        for source in sources {
-            for (k, v) in source.as_map().map(<[_]>::to_vec).unwrap_or_default() {
-                if !entries.iter().any(|(existing, _)| *existing == k) {
-                    entries.push((k, v));
+    /// Insert, or replace the value of an existing key: a mapping's later key wins, as in a
+    /// Python dict.
+    fn upsert(entries: &mut Vec<(Node, Node)>, key: Node, value: Node) {
+        match entries.iter_mut().find(|(k, _)| *k == key) {
+            Some(slot) => slot.1 = value,
+            None => entries.push((key, value)),
+        }
+    }
+
+    /// PyYAML's `flatten_mapping` (constructor.py): each `<<` value, in the order the keys
+    /// appear, is a mapping or a list of mappings whose list is reversed, so within one list the
+    /// earlier mapping wins and across `<<` keys the later one does. Explicit keys come last and
+    /// win over every merged key. A merge value that is not a mapping is an error, as in PyYAML.
+    fn apply_merges(
+        explicit: Vec<(Node, Node)>,
+        merges: Vec<Node>,
+        origin: &str,
+    ) -> Vec<(Node, Node)> {
+        let mut out = vec![];
+        for merge in merges {
+            let maps = match merge {
+                Node::Map(_) => vec![merge],
+                Node::Seq(items) => items.into_iter().rev().collect(),
+                other => panic!("{origin}: a `<<` merge value must be a mapping, found {other:?}"),
+            };
+            for map in maps {
+                let Node::Map(entries) = map else {
+                    panic!("{origin}: a `<<` merge list may hold only mappings, found {map:?}")
+                };
+                for (k, v) in entries {
+                    upsert(&mut out, k, v);
                 }
             }
         }
-        entries
+        for (k, v) in explicit {
+            upsert(&mut out, k, v);
+        }
+        out
+    }
+
+    /// A scalar with a YAML core tag (`!!bool no`) is constructed as PyYAML's SafeLoader
+    /// constructs it. Core tags no test relies on are refused, never read as their text.
+    fn resolve_core_tag(value: String, suffix: &str, origin: &str) -> Node {
+        match suffix {
+            "str" => Node::Str(value),
+            "null" => Node::Null,
+            "bool" => match value.to_lowercase().as_str() {
+                "yes" | "true" | "on" => Node::Bool(true),
+                "no" | "false" | "off" => Node::Bool(false),
+                _ => panic!("{origin}: `!!bool {value}` is not a YAML 1.1 boolean"),
+            },
+            other => panic!("{origin}: core tag `!!{other}` is not supported by the test loader"),
+        }
     }
 
     impl MarkedEventReceiver for Builder {
@@ -162,9 +202,12 @@ pub mod yaml {
                         && tag.is_none()
                         && value == "<<";
                     let node = match (style, tag) {
+                        (TScalarStyle::Plain, None) => resolve_plain(&value),
+                        (_, Some(t)) if t.handle == "tag:yaml.org,2002:" => {
+                            resolve_core_tag(value, &t.suffix, &self.origin)
+                        }
                         // An application tag (compose's `!reset`, `!override`) reads as its text,
                         // as the any-tag constructor of the Python tests did.
-                        (TScalarStyle::Plain, None) => resolve_plain(&value),
                         _ => Node::Str(value),
                     };
                     if anchor > 0 {
@@ -199,7 +242,8 @@ pub mod yaml {
                         ..
                     }) = self.stack.pop()
                     {
-                        self.finish(Node::Map(apply_merges(entries, merges)), anchor);
+                        let merged = apply_merges(entries, merges, &self.origin);
+                        self.finish(Node::Map(merged), anchor);
                     }
                 }
                 _ => {}
@@ -210,7 +254,10 @@ pub mod yaml {
     /// Every document in `text`. Panics with `origin` on a parse error: in a test, a file the
     /// suite cannot parse is a failure, never a skip.
     pub fn parse(text: &str, origin: &str) -> Vec<Node> {
-        let mut builder = Builder::default();
+        let mut builder = Builder {
+            origin: origin.to_owned(),
+            ..Builder::default()
+        };
         Parser::new_from_str(text)
             .load(&mut builder, true)
             .unwrap_or_else(|e| panic!("{origin}: YAML parse error: {e}"));
@@ -403,6 +450,74 @@ mod tests {
         assert_eq!(svc.get("user").and_then(Node::as_str), Some("z"));
         assert!(svc.get("<<").is_none(), "the merge key itself is not a key");
         assert_eq!(doc.get("copy"), doc.get("base"));
+    }
+
+    #[test]
+    fn a_duplicate_key_takes_the_last_value() {
+        let doc = &parse("restart: always\nrestart: unless-stopped\n", "inline")[0];
+        assert_eq!(
+            doc.get("restart").and_then(Node::as_str),
+            Some("unless-stopped")
+        );
+        assert_eq!(doc.as_map().map(<[_]>::len), Some(1));
+    }
+
+    #[test]
+    fn core_tags_construct_as_pyyaml_does() {
+        let doc = &parse(
+            "a: !!bool no\nb: !!bool 'YES'\nc: !!str yes\nd: !!null x\n",
+            "inline",
+        )[0];
+        assert_eq!(doc.get("a"), Some(&Node::Bool(false)));
+        assert_eq!(doc.get("b"), Some(&Node::Bool(true)));
+        assert_eq!(doc.get("c"), Some(&Node::Str("yes".into())));
+        assert_eq!(doc.get("d"), Some(&Node::Null));
+    }
+
+    #[test]
+    #[should_panic(expected = "core tag `!!int`")]
+    fn an_unsupported_core_tag_is_refused() {
+        parse("a: !!int 5\n", "inline");
+    }
+
+    #[test]
+    fn across_merge_keys_the_later_wins_and_explicit_keys_win_over_both() {
+        let text = "a: &a {restart: always, user: a}\n\
+                    b: &b {restart: unless-stopped}\n\
+                    s:\n  <<: *a\n  <<: *b\n\
+                    t:\n  <<: *a\n  <<: *b\n  restart: always\n";
+        let doc = &parse(text, "inline")[0];
+        let s = doc.get("s").unwrap();
+        assert_eq!(
+            s.get("restart").and_then(Node::as_str),
+            Some("unless-stopped")
+        );
+        assert_eq!(s.get("user").and_then(Node::as_str), Some("a"));
+        assert_eq!(
+            doc.get("t").unwrap().get("restart").and_then(Node::as_str),
+            Some("always")
+        );
+    }
+
+    #[test]
+    fn within_one_merge_list_the_earlier_mapping_wins() {
+        // PyYAML reverses the list before merging (constructor.py, flatten_mapping).
+        let text = "a: &a {restart: always}\nb: &b {restart: unless-stopped}\nu:\n  <<: [*a, *b]\n";
+        let doc = &parse(text, "inline")[0];
+        let u = doc.get("u").unwrap();
+        assert_eq!(u.get("restart").and_then(Node::as_str), Some("always"));
+    }
+
+    #[test]
+    #[should_panic(expected = "merge value must be a mapping")]
+    fn a_scalar_merge_value_is_refused() {
+        parse("s: &s x\nm:\n  <<: *s\n", "inline");
+    }
+
+    #[test]
+    #[should_panic(expected = "merge list may hold only mappings")]
+    fn a_merge_list_with_a_scalar_is_refused() {
+        parse("a: &a {x: 1}\nm:\n  <<: [*a, 3]\n", "inline");
     }
 
     #[test]

@@ -28,26 +28,22 @@ fn stdout_of(cmd: &mut assert_cmd::Command) -> String {
 }
 
 #[test]
-fn gen_secret_default_is_at_least_20_chars_without_base64_punctuation_and_varies() {
+fn gen_secret_default_is_at_most_32_chars_without_base64_punctuation() {
     let dir = TempDir::new().unwrap();
 
     // Captured with $(...), as every caller does: when `/` or `+` is stripped, openssl's
     // trailing newline falls inside `head -c` and the raw output ends in "\n".
-    let out = stdout_of(&mut sh(
-        &dir,
-        r#"printf '%s\n' "$(gen_secret)" "$(gen_secret)""#,
-    ));
+    let out = stdout_of(&mut sh(&dir, r#"printf '%s\n' "$(gen_secret)""#));
 
-    let values: Vec<&str> = out.lines().collect();
-    assert_eq!(values.len(), 2, "{out:?}");
-    for v in &values {
-        assert!(v.len() >= 20, "{v:?} shorter than 20");
-        assert!(
-            !v.contains(['/', '+', '=']),
-            "{v:?} keeps base64 punctuation"
-        );
-    }
-    assert_ne!(values[0], values[1], "two calls returned the same secret");
+    // Only deterministic properties (03 Part 1, rule 5): `head -c 32` bounds the length and
+    // `tr -d '/+='` removes the punctuation. How many characters `tr` strips depends on the
+    // random bytes, so no lower bound is asserted.
+    let value = out.trim_end_matches('\n');
+    assert!(!value.is_empty() && value.len() <= 32, "{value:?}");
+    assert!(
+        value.chars().all(|c| c.is_ascii_alphanumeric()),
+        "{value:?} keeps characters outside [A-Za-z0-9]"
+    );
 }
 
 #[test]
