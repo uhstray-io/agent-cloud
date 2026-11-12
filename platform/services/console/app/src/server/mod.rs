@@ -270,6 +270,8 @@ pub fn spawn_discovery(state: SharedState) {
 /// `always_save` re-saves a live session on every request, which is what resets an
 /// `OnInactivity` expiry. tower-sessions saves only a modified session, so without it the
 /// expiry ran from sign-in. The cost is one store write and one `Set-Cookie` per request.
+/// A re-save only updates a live row (`sessions.rs`), so a request in flight during sign-out
+/// cannot bring the session back.
 /// Sessions live in the preferences database (`sessions.rs`), so a restart keeps them.
 pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
     SessionManagerLayer::new(store)
