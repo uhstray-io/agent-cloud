@@ -5045,7 +5045,8 @@ grounding checkpoint of 2026-11-12 found it.
 memory, never in the repository's record, so the committed rule went stale with nothing to flag it.
 
 **The rule.** An agent pushes a feature branch, opens a pull request into `dev`, and merges it through
-`scripts/merge-when-green.py` once the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold;
+`scripts/merge-when-green.py` once the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold
+and no `dev` merge hold is in force (an announced release freeze, or a drill held under 3.23);
 a `dev` → `main` promotion merges after two review rounds of its final head. Still asked every time,
 with an approval covering exactly the action it names: a push to `main` or `dev`, a force push, a
 squash merge, passing `--dev-drift-acknowledged`, and a push or pull request in a repository outside
