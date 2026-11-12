@@ -80,6 +80,9 @@ impl Provider {
     /// The next token response is signed with a second key. The JWKS still publishes only `key`,
     /// under the same kid, so the console finds the published key and the signature fails.
     fn sign_with_unpublished_key(&self) {
+        // Generate the key now, before the callback request: a debug-build RSA keygen inside the
+        // token handler would count against the console's token-exchange timeout.
+        let _ = unpublished_signing_key();
         self.expected.lock().expect("expected lock").unpublished_key = true;
     }
 
