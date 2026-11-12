@@ -39,10 +39,17 @@ struct Effective {
 
 /// Compose merges a directory's overlays over its base file. A service with no `restart`
 /// key keeps Compose's default ("no" restart), labels merge by key.
-fn effective_services() -> BTreeMap<(String, String), Effective> {
+fn effective_services(files: &[String]) -> BTreeMap<(String, String), Effective> {
     let mut by_dir: BTreeMap<String, Vec<(bool, String, Node)>> = BTreeMap::new();
-    for file in repo::ls_files(&COMPOSE_SPECS) {
-        let Some(doc) = yaml::load(&repo::path(&file)).into_iter().next() else {
+    for file in files {
+        let docs = yaml::load(&repo::path(file));
+        // PyYAML's yaml.load refuses a stream of several documents; so does this.
+        assert!(
+            docs.len() <= 1,
+            "{file}: {} YAML documents, expected one",
+            docs.len()
+        );
+        let Some(doc) = docs.into_iter().next() else {
             continue;
         };
         // A task list with "compose" in its name is not a compose file.
@@ -53,7 +60,7 @@ fn effective_services() -> BTreeMap<(String, String), Effective> {
         else {
             continue;
         };
-        let (dir, name) = file.rsplit_once('/').unwrap_or(("", &file));
+        let (dir, name) = file.rsplit_once('/').unwrap_or(("", file));
         let is_overlay = !BASE_NAMES.contains(&name);
         by_dir
             .entry(dir.to_owned())
@@ -66,7 +73,10 @@ fn effective_services() -> BTreeMap<(String, String), Effective> {
         docs.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1))); // base first, then overlays by name
         for (_, file, services) in docs {
             for (name, svc) in services.as_map().unwrap_or_default() {
-                let name = name.as_str().unwrap_or_default().to_owned();
+                // A bare `yes`/`no`/`null` service name is a YAML 1.1 boolean or null, not text.
+                let Some(name) = name.as_str().map(str::to_owned) else {
+                    panic!("{file}: service name {name:?} is not a string");
+                };
                 let entry: &mut Effective = out.entry((dir.clone(), name)).or_default();
                 if svc.get("restart").is_some() || entry.file.is_empty() {
                     entry.restart = svc.get("restart").cloned();
@@ -98,12 +108,13 @@ fn effective_services() -> BTreeMap<(String, String), Effective> {
 #[test]
 fn every_services_effective_policy_is_always_or_a_labelled_one_shot_no() {
     // Arrange
-    let services = effective_services();
+    let files = repo::ls_files(&COMPOSE_SPECS);
     assert!(
-        services.len() > 10,
-        "found only {} compose services; the glob is wrong",
-        services.len()
+        files.len() > 10,
+        "found only {} compose files; the glob is wrong",
+        files.len()
     );
+    let services = effective_services(&files);
 
     // Act
     let bad: Vec<String> = services
