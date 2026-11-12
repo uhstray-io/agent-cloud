@@ -31,13 +31,15 @@ UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
 BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
-# The bats-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
+# The bats-pinned workflow once the change detector and the retired jobs were removed; dev held it until Rust (tests).
 RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
+# The retired workflow plus the Rust (tests) job (plan 24); dev holds it after this merge.
+RUST_TESTS_WORKFLOW_BLOB_SHA = "27315c40070f2c27cc2b2786f46e69a9a83e2f47"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
     "Static Analysis", "Security Scan", *PYTHON_SHARDS,
-    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Version",
+    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Rust (tests)", "Version",
 }
 # Paths of the pinned historical workflow states only; the current workflow has no such job.
 GO_PATH = "platform/services/uhhcraft/deployment/"
@@ -255,7 +257,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False, versioned=False, sharded=False, retired=False):
+                          pi_moved=False, versioned=False, sharded=False, retired=False, rust_tests=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -275,6 +277,8 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         expected["node-pi-provider"] = "Node pi provider"
     if console or runs or pi_moved or versioned or sharded:
         expected["rust-console"] = "Rust (console)"
+    if rust_tests:
+        expected["rust-tests"] = "Rust (tests)"
     if runs or pi_moved or versioned:
         expected["python-playbook-runs"] = "Python Playbook Runs"
     if versioned or sharded:
@@ -575,11 +579,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Bats-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+            # Same jobs as retired plus the Rust (tests) job.
+            check_workflow_policy(base, sharded=True, retired=True)
+            check_workflow_policy(candidate, sharded=True, retired=True, rust_tests=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed current workflow")
         check_workflow_policy(base, sharded=True, retired=True)
         if base != candidate or workflow_records:
             raise Refusal("Current workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RUST_TESTS_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed Rust-tests workflow")
+        check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Rust-tests workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
