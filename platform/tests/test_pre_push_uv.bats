@@ -45,6 +45,11 @@ echo "${PATH%%:*}" >> "$FAKE_BATS_LOG"
 [ -n "${FAKE_BATS_ARGS:-}" ] && echo "$*" > "$FAKE_BATS_ARGS"
 [ -n "${FAKE_BATS_MARK:-}" ] && : > "$FAKE_BATS_MARK"
 [ -n "${FAKE_BATS_PIDS:-}" ] && echo "$PPID $$" > "$FAKE_BATS_PIDS"
+# FAKE_BATS_CHILD: a child process, as real bats runs its suite in, that writes the named file
+# after two seconds unless it is killed first.
+if [ -n "${FAKE_BATS_CHILD:-}" ]; then
+  sh -c 'sleep 2; : > "$1"' _ "$FAKE_BATS_CHILD" &
+fi
 if [ -n "${FAKE_BATS_HOLD:-}" ]; then
   i=0
   while [ ! -e "$FAKE_BATS_HOLD" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
@@ -60,6 +65,7 @@ SH
 #!/usr/bin/env sh
 echo "$0 first-path=${PATH%%:*}" >> "$FAKE_PY_LOG"
 case "$*" in
+  *"import pytest"*) [ "${FAKE_NO_PYTEST:-0}" = 1 ] && exit 1; exit 0 ;;
   *"-m pytest"*)
     echo "pytest PYTEST_FAST=${PYTEST_FAST:-unset} PYTEST_FAST_CHANGED=${PYTEST_FAST_CHANGED:-unset}" >> "$FAKE_PY_LOG"
     if [ -n "${PYTEST_FAST_CHANGED:-}" ] && [ -n "${FAKE_FAST_COPY:-}" ]; then
@@ -408,4 +414,53 @@ out_collection_and_failure() {
   assert_contains "$output" 'full Python suite, not the fast lane'
   assert_contains "$output" 'refs/remotes/<url>/dev'
   refute_contains "$output" 'SECRET-TOKEN'
+}
+
+
+@test "pre-push uv: a python3 without pytest skips on the fallback and blocks on the locked environment" {
+  run push "$T/nouv" FAKE_NO_PYTEST=1
+  [ "$status" -eq 0 ] || { echo "fallback blocked: $output"; false; }
+  assert_contains "$output" 'not collectable here'
+  assert_contains "$output" 'No module named pytest'
+  run push "$T/fakebin" FAKE_NO_PYTEST=1
+  [ "$status" -ne 0 ] || { echo "locked environment passed: $output"; false; }
+  assert_contains "$output" 'pytest is not importable on the locked uv environment'
+}
+
+@test "pre-push uv: one missing module does not forgive a syntax error in another file" {
+  local out
+  out=$(printf '%s\n' \
+    '_______________________ ERROR collecting test_a.py ________________________' \
+    "E   ModuleNotFoundError: No module named 'nope'" \
+    '_______________________ ERROR collecting test_b.py ________________________' \
+    'E   SyntaxError: invalid syntax' \
+    '=========================== short test summary info ============================' \
+    'ERROR test_a.py - ImportError while importing test module' \
+    'ERROR test_b.py - SyntaxError: invalid syntax' \
+    '1 passed, 2 errors in 0.70s')
+  run push "$T/nouv" FAKE_COLLECT_RC=1 "FAKE_COLLECT_OUT=$out"
+  [ "$status" -ne 0 ] || { echo "a syntax error was forgiven: $output"; false; }
+  refute_contains "$output" 'not collectable here'
+}
+
+@test "pre-push uv: a full run that collects no tests blocks" {
+  run push "$T/fakebin" FAKE_COLLECT_RC=5 "FAKE_COLLECT_OUT=no tests ran in 0.01s"
+  [ "$status" -ne 0 ] || { echo "an empty full run passed: $output"; false; }
+  assert_contains "$output" 'collected no tests (exit 5) on a full run'
+}
+
+@test "pre-push uv: TERM kills the processes BATS started, not only BATS itself" {
+  ( printf 'refs/heads/feat 1111111111111111111111111111111111111111 refs/heads/feat 0000000000000000000000000000000000000000\n' \
+      | (cd "$REPO" && env FAKE_PY_LOG="$LOG" FAKE_BATS_LOG="$T/bats.log" FAKE_UV_LOG="$T/uv.log" \
+        FAKE_BATS_PIDS="$T/bats.pids" FAKE_BATS_HOLD="$T/release" FAKE_BATS_CHILD="$T/child-finished" \
+        TMPDIR="$T/tmp" PATH="$T/fakebin:$PATH" "$HOOK_SH" "$HOOK" origin https://example.invalid/repo.git) ) \
+    > "$T/term.out" 2>&1 &
+  local i=0
+  while [ ! -s "$T/bats.pids" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -s "$T/bats.pids" ] || { echo "BATS never started:"; cat "$T/term.out"; : > "$T/release"; false; }
+  read -r hook_pid _bats_pid < "$T/bats.pids"
+  kill -TERM "$hook_pid" 2>/dev/null || { : > "$T/release"; echo "hook already gone"; false; }
+  sleep 3
+  : > "$T/release"
+  [ ! -e "$T/child-finished" ] || { echo "a process BATS started outlived TERM to the hook"; false; }
 }

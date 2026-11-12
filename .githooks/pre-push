@@ -70,6 +70,9 @@
 remote_name=${1:-}
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 cd "$root" || exit 0
+# A push to a URL passes the URL as the remote name, and it can carry credentials, so the hook
+# prints (and records in its lock) the remote's name only when it is a configured remote.
+if git remote 2>/dev/null | grep -qxF -- "$remote_name"; then pp_remote_label=$remote_name; else pp_remote_label="<url>"; fi
 
 # Git exports its repository variables to hooks. Left set, they point every git command
 # a TEST runs at THIS repository, even from a scratch directory: on 2026-09-23 a BATS
@@ -130,8 +133,22 @@ changed_file=""
 # Kills the BATS job if it is still running. A background job in a non-interactive sh
 # ignores SIGINT, so this kill, not the terminal, is what stops it on Ctrl-C.
 # Clears the pid so a later exit cannot signal a recycled process.
+# Every descendant of $1, read from the process table (POSIX `ps -A -o pid= -o ppid=`). BATS runs
+# its suite in child processes; killing only its own pid left them running after the lock was
+# released, and a process group is not portable: dash cannot `set -m` without a terminal.
+pp_descendants() {
+  for _child in $(ps -A -o pid= -o ppid= 2>/dev/null | awk -v p="$1" '$2 == p { print $1 }'); do
+    echo "$_child"
+    pp_descendants "$_child"
+  done
+}
 pp_cleanup() {
-  if [ -n "$bats_pid" ]; then kill "$bats_pid" 2>/dev/null; bats_pid=""; fi
+  if [ -n "$bats_pid" ]; then
+    _tree="$bats_pid $(pp_descendants "$bats_pid")"
+    # shellcheck disable=SC2086 # the pid list is deliberately word-split
+    kill $_tree 2>/dev/null
+    bats_pid=""
+  fi
   if [ -n "$pp_scratch" ]; then
     rm -f "$bats_out" "$py_out" "$py_rc_file" "$changed_file"
     rmdir "$pp_scratch" 2>/dev/null
@@ -166,6 +183,14 @@ pp_test_failure() {
 }
 # The collection-error and conftest-load blocks of a run's output: each from its banner to
 # the next section heading (a line starting with ____ or ==== and a space).
+# One letter per collection-error block: M when it reports a missing module, X otherwise.
+pp_collection_kinds() {
+  awk 'function close_block() { if (on) print (missing ? "M" : "X"); on = 0; missing = 0 }
+       /^_+ ERROR collecting |^ImportError while loading conftest/ { close_block(); on = 1; next }
+       /^[_=]+ / { close_block(); next }
+       on && /ModuleNotFoundError|No module named|ImportError: cannot import name/ { missing = 1 }
+       END { close_block() }' "$1"
+}
 pp_collection_block() {
   awk '/^_+ ERROR collecting |^ImportError while loading conftest/ { on = 1; print; next }
        /^[_=]+ / { on = 0 }
@@ -194,7 +219,7 @@ pp_refuse() {  # $1 ref, $2 lock path, $3 reason
 pp_acquire() {  # $1 lock name, $2 ref
   _lock="$lock_dir/$1.lock"
   _tmp="$lock_dir/$1.$$.tmp"
-  { printf '%s\nref=%s remote=%s started=%s\n' "$$" "$2" "$remote_name" \
+  { printf '%s\nref=%s remote=%s started=%s\n' "$$" "$2" "$pp_remote_label" \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$_tmp"; } 2>/dev/null || { rm -f "$_tmp"; return 2; }
   if ln "$_tmp" "$_lock" 2>/dev/null; then
     rm -f "$_tmp"; held_locks="$held_locks $1"; return 0
@@ -272,6 +297,9 @@ py_out="$pp_scratch/pytest.out"
 py_rc_file="$pp_scratch/pytest.rc"
 changed_file="$pp_scratch/changed-paths"
 : > "$changed_file"
+# An inherited PYTEST_FAST or PYTEST_SHARD must narrow neither suite (the same names as
+# SELECTION_ENV in platform/tests/shards.py); the fast lane sets its own below.
+unset PYTEST_FAST PYTEST_FAST_CHANGED PYTEST_SHARD
 
 failed=0
 
@@ -368,9 +396,25 @@ fi
 # every declared package is installed, so a missing module is an undeclared or misspelt
 # import — a defect, and the push FAILS. Only the python3 fallback still skips it.
 py_pp=platform/services/netbox/deployment/workers/proxmox_discovery:platform/services/netbox/deployment/workers/pfsense_sync
+# On the locked environment this is .venv/bin/python3 (PATH set above).
+py=python3
+py_runs=0
 if [ -f pyproject.toml ]; then
-  # On the locked environment this is .venv/bin/python3 (PATH set above).
-  py=python3
+  if "$py" -c 'import pytest' >/dev/null 2>&1; then
+    py_runs=1
+  elif [ "$py_locked" = "0" ]; then
+    # The old --collect-only pass reported this as a missing module; it stays fail-open.
+    printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
+    printf '          No module named pytest (%s)\n' "$(command -v "$py" 2>/dev/null || echo "$py")" >&2
+    printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
+    printf '          Install uv; the hook then installs the locked set itself.\n' >&2
+  else
+    printf 'pre-push: pytest is not importable on the locked uv environment, which declares it.\n' >&2
+    printf '          That is a broken environment, not a missing dependency, so this does not skip.\n' >&2
+    failed=1
+  fi
+fi
+if [ "$py_runs" = "1" ]; then
   # ONE run: collection and the tests together, as CI does. Its output is shown as it runs
   # and kept, so a collection failure can be told apart from a failing test below. The
   # fast lane (plan 21, phase 4) narrows the run when this push can be measured.
@@ -384,14 +428,8 @@ if [ -f pyproject.toml ]; then
   fi
 
   # Fast lane. The push's changed paths, against its merge base with dev. A push that cannot
-  # be measured (no dev ref, no merge base) runs the full suite, and says why. The
-  # environment is cleared first, so an inherited PYTEST_FAST or PYTEST_SHARD cannot narrow a
-  # full run (the same names as SELECTION_ENV in platform/tests/shards.py).
-  unset PYTEST_FAST PYTEST_FAST_CHANGED PYTEST_SHARD
+  # be measured (no dev ref, no merge base) runs the full suite, and says why.
   pp_fast_why=""
-  # A push to a URL passes the URL as the remote name, and it can carry credentials, so a message
-  # names the remote only when it is a configured one.
-  if git remote 2>/dev/null | grep -qxF -- "$remote_name"; then pp_remote_label=$remote_name; else pp_remote_label="<url>"; fi
   if ! git rev-parse --verify -q "refs/remotes/$remote_name/dev^{commit}" >/dev/null 2>&1; then
     pp_fast_why="there is no refs/remotes/$pp_remote_label/dev to measure the push against"
   else
@@ -428,14 +466,25 @@ if [ -f pyproject.toml ]; then
   py_rc=$(cat "$py_rc_file")
   case "$py_rc" in
     0) ;;
-    5) printf 'pre-push: pytest collected no tests (exit 5), so there was nothing to run.\n' >&2 ;;
+    5)
+      # Running nowhere is indistinguishable from passing. A fast lane can legitimately select
+      # nothing; a full run that collects nothing is a broken configuration.
+      if [ "${PYTEST_FAST:-}" = "1" ]; then
+        printf 'pre-push: the fast lane collected no tests (exit 5), so there was nothing to run.\n' >&2
+      else
+        printf 'pre-push: pytest collected no tests (exit 5) on a full run, so nothing was tested.\n' >&2
+        failed=1
+      fi
+      ;;
     *)
       if pp_collection_failure "$py_out" && ! pp_test_failure "$py_out"; then
         # Forgivable ONLY as a missing module, and only on the python3 fallback. On the locked
         # environment every declared package is installed, so a missing module is an undeclared
         # import: a defect, and the push fails.
         _missing=$(pp_collection_block "$py_out" | grep -E 'ModuleNotFoundError|No module named|ImportError: cannot import name')
-        if [ "$py_locked" = "0" ] && [ -n "$_missing" ]; then
+        # Every collection-error block must be a missing module: one missing dependency
+        # forgives no syntax error in another file.
+        if [ "$py_locked" = "0" ] && [ -n "$_missing" ] && ! pp_collection_kinds "$py_out" | grep -q X; then
           printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
           printf '%s\n' "$_missing" | sed 's/^/          /' >&2
           printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
