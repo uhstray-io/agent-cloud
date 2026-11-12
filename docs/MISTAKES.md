@@ -166,7 +166,7 @@ and why.
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
-| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged` and other organisations' repositories | Process | 0 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged` and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5033,7 +5033,7 @@ round. CodeRabbit flagged the gap; the rule above now requires rounds until one 
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
-**Occurrences: 0** — the occurrence that earned 5.7's rule is 5.7's.
+**Occurrences: 1** — 2026-11-12, the committed rule left stale for four weeks (below).
 
 **What happened.** On 2026-10-14 the operator lifted per-action approval for pushes and pull requests,
 and on 2026-11-09 and 2026-11-10 for a merge into `dev` after one review round and a promotion after
@@ -5050,16 +5050,19 @@ and no `dev` merge hold is in force: a `dev` freeze the operator has announced, 
 duration of a drill run under 3.23, agreed with the merging sessions, until that drill's fix lands. A
 `dev` → `main` promotion merges after two review rounds of its final head. Still asked every time, with
 an approval covering exactly the action it names: a push to `main` or `dev`, a force push, a squash
-merge, passing `--dev-drift-acknowledged`, and a push or pull request in a repository outside the
-organisation. Direction to do the work releases none of those.
+merge, passing `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one
+that changes a release script or a workflow file), and a push or pull request in a repository outside
+the organisation. Direction to do the work releases none of those.
 
 **Enforced by.** `.github/rulesets/protect-main.json` refuses a force push and a deletion on `main` and
 requires a pull request with passing checks, with one bypass, the repository-admin role (break-glass),
 for all of them; `protect-dev.json` refuses a force push and a deletion on `dev`, with no bypass.
 `scripts/merge-when-green.py` gates a merge into `dev` (the Feature-to-Dev gates), which a plain
-`gh pr merge` skips. The rest is convention: a `dev` merge hold, which nothing the guard reads records,
-a fast-forward push straight to `dev`, a squash merge, `--dev-drift-acknowledged`, other organisations'
-repositories, and the two promotion rounds, which no check counts.
+`gh pr merge` skips. An agent running under an account with the repository-admin role holds that
+bypass, so for it a push, force push or deletion on `main` is held by convention too. The rest is
+convention: a `dev` merge hold, which nothing the guard reads records, a fast-forward push straight
+to `dev`, a squash merge, `--dev-drift-acknowledged`, other organisations' repositories, and the two
+promotion rounds, which no check counts.
 
 ## 6. Working from assumptions about files
 

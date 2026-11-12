@@ -549,8 +549,9 @@ environment before operations; a checked-in deploy path is not proof it is runni
 > **Pushes, pull requests and merges follow the operator's standing authorization**
 > (operator decisions of 2026-10-14, 2026-11-09 and 2026-11-10):
 >
-> - An agent may push a feature branch and open a pull request into `dev` without asking, then
->   carry it through review: fix or answer every finding, push the fixes, and request review again.
+> - An agent may push a feature branch and open a pull request into `dev`, or a `dev` → `main`
+>   promotion pull request, without asking, then carry it through review: fix or answer every
+>   finding, push the fixes, and request review again.
 > - It merges a pull request into `dev` through `scripts/merge-when-green.py` once every gate listed
 >   under "Feature-to-Dev pull-request merges" holds, and no `dev` merge hold is in force
 >   (`docs/MISTAKES.md` 5.26 says what counts as one). A review receipt, `--feedback-addressed`
@@ -562,11 +563,14 @@ environment before operations; a checked-in deploy path is not proof it is runni
 >   `Promotion source (dev -> main)` check passing.
 >   The two rounds are a convention: no check counts them.
 > - Still asked every time: a push straight to `main` or `dev`, any force push, any squash merge,
->   passing `--dev-drift-acknowledged`, and a push or pull request in a repository outside this
->   organisation. An approval for one of these covers exactly the action it names, on the branch or
+>   passing `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one
+>   that changes a release script or a workflow file), and a push or pull request in a repository
+>   outside this organisation. An agent running under an account with the repository-admin role
+>   holds `protect-main`'s break-glass bypass, so for it GitHub refuses none of these on `main`;
+>   asking is the control. An approval for one of these covers exactly the action it names, on the branch or
 >   pull request it names (`docs/MISTAKES.md` 5.26, which supersedes 5.7's rule).
 
-**Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
+**Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev` without the operator's approval for that one push (`docs/MISTAKES.md` 5.26).**
 
 - `main` is the production branch — Semaphore deploys from it.
 - `dev` is the permanent integration branch — feature work merges here first and is validated (locally per `LOCAL-DEV-README.md` / `plan/development/00-foundation-local-dev.md`, and/or via prod branch deploys per `plan/architecture/03-testing-ci-quality.md`) before promotion to `main`.
@@ -606,7 +610,7 @@ requires `main` to be an ancestor of the PR head and refuses otherwise; clear it
 `main` into `dev` through a feature PR (`git merge --no-ff origin/main` on a branch cut from
 `dev`).
 
-**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` is protected only against deletion and force-push, by the `protect-dev` ruleset with no bypass actor — no PR or check rule, because the sync workflow pushes merge commits to it; `docs/MISTAKES.md` 3.13.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (skynet, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
+**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` is protected only against deletion and force-push, by the `protect-dev` ruleset with no bypass actor — no PR or check rule, because the sync workflow pushes merge commits to it; `docs/MISTAKES.md` 3.13.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass). skynet's agents and automation PATs have no bypass path, but an agent session running under an account that holds the admin role (a Claude Code session on the operator's account, for one) holds the bypass, so for it the rules on `main` are held by convention (`docs/MISTAKES.md` 5.26). See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
 ### Test check on push (`.githooks/pre-push`)
 
