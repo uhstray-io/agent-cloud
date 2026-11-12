@@ -65,7 +65,7 @@ and why.
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
-| 1.36 | Briefed a fix's guarantee (a forged `local_mode` cannot lift production refusals) from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, shared derivation proposed |
+| 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, no detector |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1444,6 +1444,8 @@ behavioural claim with no citation, has no mechanical detector; it stays Convent
 
 **Occurrence 12 — 2026-11-11.** Answering a review finding on PR #1082 (the Plane mobile app's OIDC callback), I wrote that a `plane_redirect_uri` missing `/auth/oidc/callback/` is harmless because "the existing promotion verify fails it on the web redirect". It does not: `platform/services/authentik/deployment/templates/verify-oidc.py.j2` compares the live `redirect_uris` against the inventory value itself (`want not in got`), so a wrong inventory value is applied and then found present, and the check passes. I had read that template earlier in the same session, for a different question, and stated its coverage from its purpose ("live OIDC config diverged from intent") rather than its comparison. The pr-reviewer agent caught it in its review round on head `3e4e4791`; the PR comment was then corrected in place. Why the rule did not fire: like occurrence 9, a behavioural claim about a check's coverage in outward text, written while composing a reply rather than a brief, so the "read the logic before describing it" habit was not triggered; having read the file earlier made the claim feel verified. No new guard: occurrence 9's analysis holds (no mechanical detector for an uncited behavioural claim); the independent review is what caught it.
 
+The rule is widened in 1.36.
+
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -1574,30 +1576,31 @@ The alert outcome was also unchecked when I offered it. Traced afterwards, it ho
 
 **Occurrences: 1** — 2026-11-11
 
-**What happened.** The first fix for AC-695 (skynet decided local mode from `local_mode` alone, so `-e
-local_mode=true` on a production launch skipped its production refusals) copied the launch gate's expression,
-`local_mode` and `inventory_hostname` matching `<name>-local` (`deploy-launch-gate.yml:73` at `b7e11937`), on the
-strength of its comment (`:70-72`), which said the rule was derived "as tasks/clean-service.yml derives it" and
-that `-e local_mode=true` "cannot lift the ... refusals below". I read the expression, not the file the comment
-cited. `tasks/clean-service.yml:85-89` says `-e` can set `inventory_hostname` and that its checks key on
-`ansible_play_hosts_all` instead, the property `AGENTS.md:262` also records. The commit went out as `59c97fb7`,
-subject "a forged local_mode cannot lift production refusals", false as written: `-e local_mode=true -e
+**What happened.** The first fix for AC-695 had to stop `-e local_mode=true` from skipping skynet's production
+refusals. I briefed a worker to copy the launch gate's expression: `local_mode` and `inventory_hostname` matching
+`<name>-local` (`deploy-launch-gate.yml:73` at `b7e11937`). I took it from the expression's comment (`:70-72`),
+which said the rule was derived "as tasks/clean-service.yml derives it" and that `-e local_mode=true` "cannot lift
+the ... refusals below". I read the expression, not the file the comment cited. `tasks/clean-service.yml:85-89`
+says `-e` can set `inventory_hostname` and that its checks key on `ansible_play_hosts_all` instead, the property
+`AGENTS.md:262` also records. The commit went out as `59c97fb7`, "fix(skynet): local mode needs a -local host, so a
+forged local_mode cannot lift production refusals", which is false as written: `-e local_mode=true -e
 inventory_hostname=skynet-local` on host `skynet-prod` made local mode true (ansible-core 2.21.0, scratch play).
-The grounding checkpoint caught it before a PR was opened; the redesign and its passes are in 5.24 occurrence 4.
-`59c97fb7` is on `dev` with that subject.
+The grounding checkpoint caught it before a PR was opened, and the redesign landed in the same PR (5.24 occurrence
+4), so `59c97fb7` merged to `dev` inside #1078 (merge `69082755`) with that subject.
 
 **Root cause.** 1.29's rule was met literally: the body of the expression was read. The claim was a guarantee
 (what an extra var cannot do), and no expression can show that; the proof lived in the file the comment cited.
 
 **The rule.** A guarantee about what a mechanism prevents is unverified until the code or document that enforces
-it is read, whatever pointed to it: a name (1.29), a subagent (1.25, 1.28) or a comment's citation. Follow the
-citation and read the cited lines before a brief, commit or reply repeats the guarantee. Widens 1.29.
+it is read, whatever pointed to it (1.25, 1.28, 1.29), a comment's citation included. Follow the citation and read
+the cited lines before a brief, commit or reply repeats the guarantee.
 
 **Enforced by.** The instance: `platform/tests/test_launch_gate_playbooks.bats:590-591` and
 `platform/tests/test_service_skynet.bats:602` pin each playbook's `ansible_play_hosts_all` expression in all three
-plays. The class: Convention. Proposal: one shared local-mode derivation the playbooks include (AC-702), so no
-playbook comment has to cite another file for the rule; the launch gate's comment still cites
-`tasks/clean-service.yml:85-89`, where the derivation itself is at `:70`.
+plays. The class: Convention, with no detector; 1.29's proposed guards check the paths a brief or outward text
+names, not the paths a comment in those files cites. A shared local-mode derivation (AC-702) would remove this
+instance's need to cite another file: the launch gate's comment still cites `tasks/clean-service.yml:85-89`, where
+the derivation itself is at `:70`.
 
 ## 2. Tests that would have passed for the wrong reason
 
