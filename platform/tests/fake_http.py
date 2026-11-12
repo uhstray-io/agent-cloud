@@ -79,7 +79,8 @@ class DrainingHandler(BaseHTTPRequestHandler):
 # every server exit. Servers a test builds itself pass it too.
 SHUTDOWN_POLL_SECONDS = 0.01
 
-# How long a TLS client gets to finish its handshake before its connection is dropped.
+# Socket timeout while a TLS handshake runs: each blocking read in it waits at most this long, and it is
+# lifted once the handshake completes. A client that never finishes holds only its own request thread.
 TLS_HANDSHAKE_TIMEOUT = 10
 
 # A wildcard bind is reached on loopback, so the URL names loopback.
@@ -89,8 +90,9 @@ _LOOPBACK_FOR = {"0.0.0.0": "127.0.0.1", "::": "::1"}
 @contextmanager
 def serve(handler, *, host="127.0.0.1", ssl_context=None):
     """A fixture server for `handler` on an ephemeral port of `host`, while the with-block runs; yields
-    its URL ("http://127.0.0.1:<port>", or "https://..." when `ssl_context` is given). `host` may be a
-    wildcard ("0.0.0.0", for a container that reaches the host) or IPv6 ("::1"). Threaded, with daemon
+    its URL: "http://<host>:<port>", "https://..." when `ssl_context` is given, the host bracketed for IPv6
+    ("http://[::1]:<port>"), and loopback for a wildcard bind ("0.0.0.0", for a container that reaches
+    the host, gives "http://127.0.0.1:<port>"). Threaded, with daemon
     request threads, and stopped and closed on exit. Each TLS connection does its handshake on its own
     request thread, so a client that connects and stalls holds up only itself."""
     class Server(ThreadingHTTPServer):

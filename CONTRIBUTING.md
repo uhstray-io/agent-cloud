@@ -263,7 +263,8 @@ run in CI (plan 21). Four rules keep that cost and its failure modes down:
    sooner, so it adds no forgery risk. Underscore names stay internal.
 4. **Start a fixture server with `fake_http.serve(handler)`** (`ssl_context=` for HTTPS, `host=` for a
    `0.0.0.0` or IPv6 `::1` bind; read the port with `urlsplit(url).port`), on a
-   handler built on `fake_http.DrainingHandler`. It listens on an ephemeral loopback port with a
+   handler built on `fake_http.DrainingHandler`. It listens on an ephemeral port (loopback unless `host=`
+   says otherwise) with a
    deep backlog and stops quickly; `test_fake_http.py` refuses a new hand-built server. The
    handler takes its delays as parameters, so a test can shorten them without a copy of it.
 

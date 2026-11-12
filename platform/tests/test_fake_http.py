@@ -4,9 +4,11 @@ import ast
 import http.client
 import socket
 import ssl
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+import fake_http
 import pytest
 from fake_http import DrainingHandler, serve
 from test_pve_pinned_get import _generate_leaf
@@ -372,3 +374,25 @@ def test_a_tls_client_that_never_handshakes_holds_up_only_itself(tmp_path):
             assert _post(url, b"past-the-stall", context=client_context) == b"past-the-stall"
         finally:
             silent.close()
+
+
+class _KeepAliveEcho(_Echo):
+    protocol_version = "HTTP/1.1"  # one connection serves several requests
+
+
+def test_the_handshake_timeout_is_lifted_once_the_handshake_completes(tmp_path, monkeypatch):
+    # Left in place, the timeout would drop an idle keep-alive connection: the second request, sent after
+    # it has passed, would find the connection closed.
+    monkeypatch.setattr(fake_http, "TLS_HANDSHAKE_TIMEOUT", 0.3)
+    server_context, client_context = _tls_contexts(tmp_path)
+    with serve(_KeepAliveEcho, ssl_context=server_context) as url:
+        parts = urlsplit(url)
+        connection = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=5, context=client_context)
+        try:
+            connection.request("POST", "/", body=b"first")
+            assert connection.getresponse().read() == b"first"
+            time.sleep(1)
+            connection.request("POST", "/", body=b"second")
+            assert connection.getresponse().read() == b"second"
+        finally:
+            connection.close()
