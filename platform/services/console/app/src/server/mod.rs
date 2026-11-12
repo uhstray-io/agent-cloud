@@ -385,6 +385,9 @@ pub fn router(state: SharedState) -> Router {
 mod load_test;
 
 #[cfg(test)]
+mod oidc_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::probe::{http_get_raw, parse_status_line};
@@ -407,7 +410,7 @@ mod tests {
     }"#;
 
     /// The OIDC cell stays empty, so /auth/* answers 503 in these tests.
-    fn test_state() -> SharedState {
+    pub(super) fn test_state() -> SharedState {
         state_with_prefs(Prefs::in_memory().expect("in-memory prefs"))
     }
 
@@ -480,7 +483,7 @@ mod tests {
 
     /// A session store over a throwaway in-memory database. Tests that do not
     /// reopen a file use it; the production store shares the state's prefs connection.
-    fn memory_sessions() -> SqliteStore {
+    pub(super) fn memory_sessions() -> SqliteStore {
         Prefs::in_memory()
             .expect("in-memory sessions")
             .session_store()
@@ -510,7 +513,7 @@ mod tests {
         )
     }
 
-    async fn serve(app: Router) -> SocketAddr {
+    pub(super) async fn serve(app: Router) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
