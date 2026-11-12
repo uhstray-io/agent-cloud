@@ -134,7 +134,7 @@ flowchart TB
     SEM -->|"SSH"| CADDY
     LG -->|"Semaphore task on allow, HTTPS"| SEM
     LG -->|"asks OPA, HTTPS"| OPA
-    SKY -. "launch request via the gate, HTTPS (wired; proven in local-dev, not production)" .-> LG
+    SKY -. "launch request via the gate, HTTPS (wired)" .-> LG
     SEM -->|"AppRole over HTTP, internal only"| BAO
     SEM -->|"SSH (issuance runs in the CA container)"| CA
     GH["GitHub"]
@@ -495,7 +495,7 @@ flowchart LR
     SEM -->|"public front door, every 10 min"| GRAF["Grafana liveness"]
     PROM["o11y Prometheus"] -->|"scrape node exporter<br/>on a private bind"| VMS
     SEM -->|"push-loki-lines"| LOKI["o11y Loki"]
-    SKY["skynet<br/>(launch caller, LIVE)"] -.->|"launch request, HTTPS (wired; proven in local-dev, not production)"| LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
+    SKY["skynet<br/>(launch caller, LIVE)"] -.->|"launch request, HTTPS (wired)"| LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
     LG -->|"asks OPA, HTTPS"| OPA["OPA decisions<br/>(LIVE)"]
     LG -->|"creates task only on allow"| SEM
 ```

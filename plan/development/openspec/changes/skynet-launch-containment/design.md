@@ -69,8 +69,8 @@ See proposal.md (Why). Facts that shape the approach:
    policy can bind decisions to what actually runs; the agent field is the one the caller's token is
    allowed to act as. Caller-supplied `proposal` and `context` are forwarded unchanged (OPA judges them).
    A task in this change confirms the current rego ignores the added field (opa test stays green).
-   *2026-11-12 note:* that held when task 1.2 ran. The rego now reads `settings` to bound `target_service`
-   and `target_host` on agent launches, and refuses a `settings` that is not an object; it judges no other value.
+   *2026-11-12 note:* that held when task 1.2 ran; the rego has since bounded some `settings` keys on agent
+   launches (`agent_actions.rego`, "Agent launches: survey input bounds").
 7. **Caller auth:** one 48-character bearer per caller, generated once by the gate's deploy into
    `secret/services/launch-gate:caller_<name>_token`; skynet's deploy shared-reads its own
    (`caller_skynet_token`). The caller→agents map is a deploy default in the repo
@@ -94,8 +94,9 @@ See proposal.md (Why). Facts that shape the approach:
     the developer's checked-out tree, and OPA allows agent launches only from `main` or `dev`, so a local gate
     refused every agent launch (found by the local skynet launch probe, local task 14161). In local mode only,
     the gate reads `HEAD` as `dev` before pinning `service_branch` and asking OPA, which matches skynet's local
-    catalog. Rejected: declaring the local record as `dev`, because Semaphore might then check out `dev` in the
-    read-only in-place mount and stop running the working tree; and proving 4.4 in production instead, which
+    catalog. Rejected, untested: declaring the local record as `dev` (`local_repo_branch` in `bootstrap-local-dev.yml`),
+    on the concern that Semaphore would then check out `dev` in the read-only in-place mount and stop running the
+    working tree; and proving 4.4 in production instead, which
     would leave local-dev unable to launch any agent task. Outside local mode `HEAD` still reaches OPA and is
     refused.
 

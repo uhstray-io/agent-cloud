@@ -64,11 +64,8 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
 
 ### Requirement: The code that runs is the branch OPA judged
 The launch gate SHALL take the branch from the template's repository record and MUST refuse a template
-that carries its own different branch. In local mode only, a record that declares `HEAD` (local-dev's
-working tree) SHALL be read as `dev`, the branch OPA is asked about and the one `service_branch` is set to;
-outside local mode `HEAD` SHALL reach OPA unchanged. In local mode the task therefore runs the working tree,
-which OPA judges as `dev`; the gate sends no task branch, so the record's `HEAD` is what runs. When the template declares a `service_branch` survey field (the
-branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
+that carries its own different branch; the one exception is the next requirement. When the template declares
+a `service_branch` survey field (the branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
 whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
 values and integer fields ASCII digits with at most one leading minus.
 
@@ -81,6 +78,13 @@ values and integer fields ASCII digits with at most one leading minus.
 - **WHEN** a request omits `service_branch` for a template that declares it
 - **THEN** the created task's environment sets `service_branch` to the repository record's branch, the
   same branch OPA was asked about
+
+### Requirement: Local-dev's working tree is judged as dev
+In local mode only (the gate's `local_mode` setting, which its deploy derives from the host names and refuses
+to take from a disagreeing extra var), the launch gate SHALL read a repository record that declares `HEAD`,
+local-dev's working tree, as `dev`: the branch OPA is asked about and the one `service_branch` is set to. The
+task then runs the working tree, since the gate sends no task branch. Outside local mode `HEAD` SHALL reach OPA
+unchanged.
 
 #### Scenario: Local-dev working tree
 - **WHEN** the gate runs in local mode and a template's repository record declares `HEAD`
