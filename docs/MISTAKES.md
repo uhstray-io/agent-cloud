@@ -1347,10 +1347,10 @@ about what is deployed or registered is a live-state claim, whatever file it was
    `inferred:`. A claim about deployed state with no `live:` command is `inferred:`.
 2. Mechanism, failing closed: a PreToolUse hook on `gh pr comment`, `gh pr review` and
    `gh api …/comments` refuses any body without an `Evidence` section in which every line starts
-   `repo:` or `live:`, and refuses a body that contains `inferred:` anywhere. A label dropped while
-   a reviewer's finding is reworded (as happened here) leaves the claim without an evidence line,
-   so the post is refused rather than let through. Limit: the hook checks that each claim names a
-   source, not that the source says what the line claims.
+   `repo:` or `live:`, and refuses a body that contains `inferred:` anywhere. A reworded finding
+   posted with no `Evidence` section (as happened here) is refused rather than let through. Limit:
+   the hook checks that every evidence line names a source, not that every claim has one, nor that
+   the source says what the line claims.
 
 Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
 
