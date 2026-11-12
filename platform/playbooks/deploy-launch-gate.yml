@@ -335,6 +335,13 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    # keep-id (compose.prod.yml) needs podman 4.3 or later, and local mode runs no keep-id overlay, so it does not run there.
+    - name: "Refuse a podman older than 4.3 for userns keep-id"
+      ansible.builtin.include_tasks: tasks/assert-podman-keep-id.yml
+      vars:
+        _apk_for: "Production launch gate (compose.prod.yml)"
+      when: not _launch_gate_local_mode
+
     - name: "Manage secrets and template the env file and config"
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 

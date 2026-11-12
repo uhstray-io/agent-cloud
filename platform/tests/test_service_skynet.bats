@@ -245,7 +245,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the nineteen refusals are present as named assert tasks; eighteen sit before the repo is placed, and the podman refusal follows placement" {
+@test "skynet: the eighteen refusals are present as named assert tasks, all before the repo is placed; the keep-id check is a shared include after placement" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -257,7 +257,7 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 19 ]
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 18 ]
   # The mode check is the first refusal: it compares the public local_mode with the hosts before any other input is checked.
   assert_grep -qx "Refuse a local_mode that disagrees with the hosts' identity" <<<"$refusals"
   assert_precedes "$PLAYBOOK" 'Refuse a local_mode that disagrees' 'Refuse skynet_image unless'
@@ -285,12 +285,11 @@ PY
   assert_grep -qx 'Refuse a TLS deploy whose internal_leaves does not declare the skynet server leaf for this host' <<<"$refusals"
   assert_grep -qx 'Refuse a TLS production skynet_bind unless it is declared as one non-wildcard, non-loopback IPv4 address' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_port unless it is a whole port number from 1024 to 65535 and not skynet_publish_port' <<<"$refusals"
-  assert_grep -qx 'Refuse a production run on a podman older than 4.3 (userns keep-id)' <<<"$refusals"
   assert_precedes "$PLAYBOOK" 'Refuse a TLS deploy whose internal_leaves' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse a TLS production skynet_bind unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_port unless it is a whole port' 'tasks/place-monorepo\.yml'
-  assert_precedes "$PLAYBOOK" 'Place the monorepo \+ ensure podman/compose' 'Read the podman version for keep-id'
-  assert_precedes "$PLAYBOOK" 'Refuse a production run on a podman older' 'tasks/manage-secrets\.yml'
+  assert_precedes "$PLAYBOOK" 'Place the monorepo \+ ensure podman/compose' 'Refuse a podman older than 4.3 for userns keep-id'
+  assert_precedes "$PLAYBOOK" 'tasks/assert-podman-keep-id\.yml' 'tasks/manage-secrets\.yml'
   # The svc-skynet token has no refusal here: it is an existing secret, and manage-secrets refuses
   # the run by name after the placement and before any OpenBao write (the Deploy console precedent).
   refute_grep -qiE 'semaphore (api )?token' <<<"$refusals"
@@ -333,8 +332,8 @@ tasks = [
     t for t in play1["tasks"]
     if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
-if len(tasks) != 19:
-    sys.exit(f"expected 19 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 18:
+    sys.exit(f"expected 18 refusal asserts in Phase 1, found {len(tasks)}")
 # The play's own vars come too: the TLS refusals read the _skynet_* names Phase 1 defines.
 # "all", not "localhost": the -i host is the one the run uses (skynet-local for local mode; MISTAKES 2.21).
 play = [{"name": "extracted refusals", "hosts": "all", "connection": "local",
@@ -351,8 +350,6 @@ base = {
     "skynet_model": "test-model",
     # Local mode skips the production refusals, so the baseline needs no CA host and no OPA address.
     "local_mode": True,
-    # The podman version the production check reads (deploy-skynet.yml). A stub, so no test needs a podman.
-    "_skynet_podman_version": {"rc": 0, "stdout": "4.9.3"},
 }
 with open(f"{out}/base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
@@ -745,35 +742,6 @@ tls_prod_value() {
   [ "$status" -eq 0 ]
 }
 
-# Production without the TLS listener, the object's keys applied last. Output is kept (prod_accepted discards it),
-# so a test can name the refusal that fired.
-prod_loud() {
-  prod_inventory
-  printf '%s' "$1" > "$BATS_TEST_TMPDIR/prod-loud.json"
-  ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 \
-    -e skynet_publish_bind=203.0.113.10 -e "@$BATS_TEST_TMPDIR/prod-loud.json"
-}
-
-@test "skynet: with skynet_tls in production, a podman older than 4.3 or a failed read is refused; without TLS or in local mode the version is not checked" {
-  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  extract_refusals
-  write_tls_leaf_cases
-  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
-  [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
-  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 1, "stdout": ""}}'
-  [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
-  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.3.0"}}'
-  [ "$status" -eq 0 ]
-  # Without the listener the version is not checked, so a plain-API production deploy on 4.2.1 is accepted as before.
-  run prod_loud '{"_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
-  [ "$status" -eq 0 ]
-  run accepted _skynet_podman_version '{"rc": 0, "stdout": "4.2.1"}'
-  [ "$status" -eq 0 ]
-}
-
 @test "skynet: the HTTPS leaf is issued after the trust bundle and before the symlink, gated on skynet_tls; local re-issues only a leaf expiring within 7 days" {
   python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -809,9 +777,8 @@ assert fresh_task["when"] == ["_skynet_tls", "_skynet_local"], fresh_task.get("w
 PY
 }
 
-@test "skynet: the production podman check reads the version after the monorepo is placed, gated on local mode and on skynet_tls" {
+@test "skynet: the keep-id check is the shared task, included after the monorepo is placed, gated on production and skynet_tls" {
   python3 - "$PLAYBOOK" <<'PY'
-import json
 import sys
 
 import yaml
@@ -820,14 +787,13 @@ plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
 play1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
 tasks = play1["tasks"]
 names = [t.get("name", "") for t in tasks]
-read = tasks[names.index("Read the podman version for keep-id (production)")]
-check = tasks[names.index("Refuse a production run on a podman older than 4.3 (userns keep-id)")]
-assert read["register"] == "_skynet_podman_version", read
-assert read["ansible.builtin.command"]["argv"][0] == "{{ container_engine | default('podman') }}", read
-assert read["failed_when"] is False and read["check_mode"] is False, read
-assert read["when"] == ["not _skynet_local", "_skynet_tls"], read.get("when")
+check = tasks[names.index("Refuse a podman older than 4.3 for userns keep-id")]
+assert check["ansible.builtin.include_tasks"] == "tasks/assert-podman-keep-id.yml", check
+assert check["vars"] == {"_apk_for": "Production skynet's HTTPS listener (compose.prod-tls.yml)"}, check.get("vars")
 assert check["when"] == ["not _skynet_local", "_skynet_tls"], check.get("when")
-assert names.index("Place the monorepo + ensure podman/compose") < names.index("Read the podman version for keep-id (production)") < names.index(check["name"]) < names.index("Manage secrets and template env file"), names
+assert names.index("Place the monorepo + ensure podman/compose") + 1 == names.index(check["name"]), names
+assert names.index(check["name"]) < names.index("Manage secrets and template env file"), names
+assert not [t for t in tasks if str(t.get("register", "")).endswith("podman_version")], names
 PY
 }
 

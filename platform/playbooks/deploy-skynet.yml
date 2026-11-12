@@ -334,34 +334,12 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
-    # Production with the HTTPS listener: keep-id (compose.prod-tls.yml) needs podman 4.3 or later. This read runs
-    # after placement, because placement installs podman (tasks/place-monorepo.yml), so a fresh VM has one to read.
-    # Read-only. Undeclared, and in local mode, neither task runs.
-    - name: "Read the podman version for keep-id (production)"
-      ansible.builtin.command:
-        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
-      register: _skynet_podman_version
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      when:
-        - not _skynet_local
-        - _skynet_tls
-
-    - name: "Refuse a production run on a podman older than 4.3 (userns keep-id)"
-      ansible.builtin.assert:
-        that:
-          # The read must succeed first: a missing podman prints no version, and the comparison would then fail on ''.
-          - _skynet_podman_version.rc | default(1) == 0
-          # keep-id is a podman option: another engine's version number would pass the comparison.
-          - (container_engine | default('podman')) == 'podman'
-          - _skynet_podman_version.stdout is version('4.3', '>=')
-        fail_msg: >-
-          Production skynet needs podman 4.3 or later for the userns keep-id mapping (compose.prod-tls.yml), which the
-          HTTPS listener requires. This host runs
-          {{ container_engine | default('podman') }} {{ _skynet_podman_version.stdout | default('(no version read)') | trim }}
-          (read rc {{ _skynet_podman_version.rc | default('unset') }}). Run Install Podman on this host, then re-run this deploy.
-        quiet: true
+    # Production with the HTTPS listener: keep-id (compose.prod-tls.yml) needs podman 4.3 or later. The shared check
+    # runs after placement installs podman. Undeclared, and in local mode, it does not run.
+    - name: "Refuse a podman older than 4.3 for userns keep-id"
+      ansible.builtin.include_tasks: tasks/assert-podman-keep-id.yml
+      vars:
+        _apk_for: "Production skynet's HTTPS listener (compose.prod-tls.yml)"
       when:
         - not _skynet_local
         - _skynet_tls

@@ -346,25 +346,6 @@
         quiet: true
       when: _tls
 
-    # Rootless production runs the gateway with userns keep-id (compose.tls.yml), so its
-    # non-root user (65532) owns the deploy account's files and can read the 0600 key
-    # (measured 2026-10-02 with podman-compose 1.0.6: without it, "Permission denied").
-    # `keep-id:uid=,gid=` needs podman 4.3 or later.
-    - name: "Read the podman version for keep-id"
-      ansible.builtin.command:
-        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
-      register: _podman_version
-      changed_when: false
-      check_mode: false
-      when: _tls and not (local_mode | default(false) | bool)
-
-    - name: "Refuse keep-id on a podman older than 4.3"
-      ansible.builtin.assert:
-        that: _podman_version.stdout is version('4.3', '>=')
-        fail_msg: "Listener TLS needs podman 4.3 or later for userns keep-id; this host has {{ _podman_version.stdout }}."
-        quiet: true
-      when: _tls and not (local_mode | default(false) | bool)
-
     # Local-dev runs the gateway on a rootful socket, where keep-id does not apply: the local
     # overlay runs the container as the key owner instead (AGW_RUN_AS in .env).
     - name: "Read the deploy account's uid:gid for the local key owner"
@@ -450,6 +431,16 @@
 
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    # Rootless production runs the gateway with userns keep-id (compose.tls.yml), so its
+    # non-root user (65532) owns the deploy account's files and can read the 0600 key
+    # (measured 2026-10-02 with podman-compose 1.0.6: without it, "Permission denied").
+    # `keep-id:uid=,gid=` needs podman 4.3 or later. The shared check runs here, after placement installs podman.
+    - name: "Refuse a podman older than 4.3 for userns keep-id"
+      ansible.builtin.include_tasks: tasks/assert-podman-keep-id.yml
+      vars:
+        _apk_for: "Listener TLS (compose.tls.yml)"
+      when: _tls and not (local_mode | default(false) | bool)
 
 
     # Rollback (rollback-inference-route.yml, gateway-config mode; gateway task 4.6) puts back
