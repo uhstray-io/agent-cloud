@@ -357,9 +357,9 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 # 6. Commit (conventional commits, no AI attribution)
 git commit -m "feat(<scope>): <short summary>"
 
-# 7. Push and open a PR — each is user-gated: ask first
-git push -u origin feat/<short-description>   # only after explicit approval
-gh pr create                                  # only after explicit approval
+# 7. Push and open a PR into dev (the standing authorization in AGENTS.md, Branch Workflow)
+git push -u origin feat/<short-description>
+gh pr create --base dev
 ```
 
 **Wait for all PR checks to pass before merging.** This applies equally to code, plans, and docs. CodeRabbit + the three CI jobs (static analysis, security, unit tests) are gating. The unit-tests job includes the Dispatch Console's Rust checks (`Rust (console)`). Merging needs your explicit approval for that PR.

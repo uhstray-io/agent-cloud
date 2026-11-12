@@ -36,7 +36,7 @@ config-as-code**. Do the work *through* those mechanisms — not around them:
 
 ### Feature-to-Dev pull-request merges
 
-Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, run both review passes on the new head and post their statuses (Branch Workflow steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). Merge only after one independent final-head approval, the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. With explicit authorization for that PR/head, use `--feedback-addressed --merge`; the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
+Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, run both review passes on the new head and post their statuses (Branch Workflow steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). Merge only after one independent final-head approval, the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. When they hold, use `--feedback-addressed --merge` (the Branch Workflow callout below says when an agent may do so without asking); the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
 
 `dev` intentionally has no required-check rule because the main-to-Dev sync workflow pushes directly to it. The CLI is therefore an operator gate, not GitHub-enforced protection; do not substitute `gh pr merge --auto`, `--admin`, or a direct merge command.
 
@@ -546,14 +546,20 @@ environment before operations; a checked-in deploy path is not proof it is runni
 
 ### Branch Workflow
 
-> **NEVER push, open a pull request, or merge one unless the user explicitly authorizes that
-> specific action — every push, every PR, every merge, every time.**
-> Agents may create a branch and commit locally, but **push, `gh pr create`, and `gh pr merge`
-> are each user-gated actions**: stop and ask ("branch ready — push it? open the PR?"). An
-> approval covers exactly the actions it names, on the branch/PR it names — a previously
-> approved sibling cycle authorizes nothing (`docs/MISTAKES.md` §5.7). This applies to
-> feature→`dev` PRs and `dev`→`main` promotion PRs alike, and to pushing follow-up commits
-> to a PR already under review.
+> **Pushes, pull requests and merges follow the operator's standing authorization**
+> (operator decisions of 2026-10-14, 2026-11-09 and 2026-11-10):
+>
+> - An agent may push a feature branch and open a pull request into `dev` without asking, then
+>   carry it through review: fix or answer every finding, push the fixes, and request review again.
+> - It merges a pull request into `dev` through `scripts/merge-when-green.py` once one completed
+>   review round covers the final head (CodeRabbit, or an independent Claude review recorded with
+>   `--review-receipt` when CodeRabbit posts none), every finding is fixed or answered on the pull
+>   request, and every required check passes on that head.
+> - A `dev` → `main` promotion merges after two completed review rounds, with every finding fixed
+>   or answered and the `Promotion source (dev -> main)` check passing.
+> - Still asked every time: a push straight to `main` or `dev`, any force push, and a push or pull
+>   request in a repository outside this organisation. An approval for one of these covers exactly
+>   the action it names, on the branch or pull request it names (`docs/MISTAKES.md` §5.7).
 
 **Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
