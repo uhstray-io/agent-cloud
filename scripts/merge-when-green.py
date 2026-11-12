@@ -13,7 +13,7 @@ import json
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlencode
 
 REPO = "uhstray-io/agent-cloud"
@@ -121,6 +121,39 @@ class GitHub:
         except (OSError, subprocess.CalledProcessError) as error:
             raise Refusal(f"Release budget: git failed in {root}") from error
         return dev_sha, before, after
+
+    def dev_drift(self, number, head_sha, dev_sha):
+        # 5.23: CI proves the pull request head, not that head merged into the current dev. This reads dev's changes
+        # the head lacks from local git, after fetching the head itself; it writes nothing to GitHub.
+        root = str(self.repo_root)
+        fetch = ["git", "-C", root, "fetch", "--no-tags", "origin",
+                 f"+refs/pull/{number}/head:refs/remotes/origin/pr/{number}"]
+        self.calls.append(fetch)
+        try:
+            subprocess.run(fetch, capture_output=True, text=True, check=True)
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise Refusal("Dev drift: fetching the pull request head failed") from error
+        rev_parse = ["git", "-C", root, "rev-parse", "--verify", f"refs/remotes/origin/pr/{number}^{{commit}}"]
+        self.calls.append(rev_parse)
+        try:
+            fetched = subprocess.run(rev_parse, capture_output=True, text=True, check=True).stdout.strip()
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise Refusal(f"Dev drift: git failed in {root}") from error
+        if fetched != head_sha:
+            raise Refusal(f"Dev drift: the fetched pull request head {fetched[:12]} is not the expected head "
+                          f"{head_sha[:12]}")
+        count = ["git", "-C", root, "rev-list", "--count", f"{head_sha}..{dev_sha}"]
+        self.calls.append(count)
+        # The three-dot diff is merge-base..dev, the changes dev made that this head does not hold. --no-renames lists
+        # both names of a rename, so a test file moved away from its old path still counts.
+        changed = ["git", "-C", root, "diff", "--name-only", "--no-renames", "-z", f"{head_sha}...{dev_sha}"]
+        self.calls.append(changed)
+        try:
+            behind = int(subprocess.run(count, capture_output=True, text=True, check=True).stdout.strip())
+            paths = subprocess.run(changed, capture_output=True, text=True, check=True).stdout.split("\0")
+        except (OSError, subprocess.CalledProcessError, ValueError) as error:
+            raise Refusal(f"Dev drift: git failed in {root}") from error
+        return behind, [path for path in paths if path]
 
 
 def paged(api, endpoint, key):
@@ -867,7 +900,26 @@ def check_release_budget(api, file_records):
     return after
 
 
-def validate(api, number, sha, receipt_path):
+def is_test_path(path):
+    # What CI's test suites read: anything under a tests/ directory, any conftest.py, and the pyproject.toml that
+    # configures pytest and ruff.
+    posix = PurePosixPath(path)
+    return "tests" in posix.parts[:-1] or posix.name == "conftest.py" or path == "pyproject.toml"
+
+
+def check_dev_drift(api, number, sha, dev_sha, acknowledged):
+    # docs/MISTAKES.md 5.23: a green head that lacks test-path changes already on dev is merged into dev untested.
+    behind, paths = api.dev_drift(number, sha, dev_sha)
+    tests = sorted(path for path in paths if is_test_path(path))
+    print(f"DEV: this head lacks {behind} commits of dev {dev_sha[:12]}; {len(tests)} test paths among their changes")
+    if tests and not acknowledged:
+        shown = ", ".join(tests[:5]) + (f" (+{len(tests) - 5} more)" if len(tests) > 5 else "")
+        raise Refusal(f"dev {dev_sha[:12]} holds {behind} commits this head lacks, and they change test paths: "
+                      f"{shown}. Merge origin/dev into the branch and let CI run on the new head, or pass "
+                      "--dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
+
+
+def validate(api, number, sha, receipt_path, dev_drift_acknowledged=False):
     pr = get_pr(api, number)
     base_sha = check_pr(pr, number, sha)
     files, file_records = changed_files(api, number)
@@ -879,6 +931,7 @@ def validate(api, number, sha, receipt_path):
         check_protected_paths(files)
         raise
     check_protected_paths(files)
+    check_dev_drift(api, number, sha, budget["dev_ref"], dev_drift_acknowledged)
     check_workflow_change(api, base_sha, sha, file_records)
     comments = paged(api, f"repos/{REPO}/issues/{number}/comments", "")
     if any(not isinstance(comment, dict) or not isinstance(comment.get("body"), str) for comment in comments):
@@ -901,6 +954,8 @@ def main(argv=None, api=None):
     parser.add_argument("--feedback-addressed", action="store_true",
                         help="attest actionable review and ordinary-comment feedback is addressed")
     parser.add_argument("--review-receipt", help="JSON receipt for an independent Sol/Claude review")
+    parser.add_argument("--dev-drift-acknowledged", action="store_true",
+                        help="merge although dev holds test-path changes this head lacks (docs/MISTAKES.md 5.23)")
     args = parser.parse_args(argv)
     if not SHA.fullmatch(args.head):
         parser.error("--head must be a full 40-character lowercase SHA")
@@ -908,7 +963,7 @@ def main(argv=None, api=None):
         parser.error("--merge requires --feedback-addressed attestation")
     api = api or GitHub()
     try:
-        evidence = validate(api, args.pr, args.head, args.review_receipt)
+        evidence = validate(api, args.pr, args.head, args.review_receipt, args.dev_drift_acknowledged)
         print(f"PASS: PR {args.pr} head {args.head}; {len(evidence['checks'])} expected checks; "
               f"approval={'receipt' if evidence['receipt'] else 'GitHub'}; "
               f"{evidence['comments']} conversation comments read")
@@ -916,7 +971,7 @@ def main(argv=None, api=None):
             print("Read-only validation only; no feedback attestation supplied and no merge attempted.")
             return 0
         # Re-read every gate immediately before the single mutating command.
-        refreshed = validate(api, args.pr, args.head, args.review_receipt)
+        refreshed = validate(api, args.pr, args.head, args.review_receipt, args.dev_drift_acknowledged)
         if (refreshed["base_sha"] != evidence["base_sha"]
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
