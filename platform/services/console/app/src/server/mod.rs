@@ -276,8 +276,7 @@ pub fn spawn_discovery(state: SharedState) {
 /// the pre-sign-in cookie. If that response lands last, the browser keeps the dead id and the
 /// user signs in again. This fails closed and costs availability only; it is accepted.
 /// Sessions live in the preferences database (`sessions.rs`), so a restart keeps them.
-/// Because every request renews the expiry, an open tab (the work board polls every 10 s) never
-/// goes idle; `auth::current_user` also ends a session 12 hours after sign-in (AC-747).
+/// `auth::current_user` also caps a session's age (`auth::SESSION_LIFETIME_SECS`).
 pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
     SessionManagerLayer::new(store)
         .with_name("console_session")
@@ -542,7 +541,7 @@ mod tests {
                         let at = sessions::now_unix() - age;
                         auth::sign_in_at(&session, &user, at).await
                     }
-                    None => session.insert(auth::KEY_USER, &user).await,
+                    None => auth::sign_in_without_time(&session, &user).await,
                 }
                 .expect("insert user");
                 "signed in"
@@ -1143,13 +1142,12 @@ mod tests {
         assert_eq!(me.cookie, Some(cookie), "the refresh keeps the session id");
     }
 
-    /// The stored expiry moves on a signed-in request, not only the cookie. The row is first
-    /// set to expire in a minute, so the read itself has to move it into the 8-hour window.
-    #[tokio::test]
-    async fn a_signed_in_request_moves_the_stored_session_expiry() {
-        use tower_sessions::cookie::time::OffsetDateTime;
-
-        let path = std::env::temp_dir().join(format!("console-expiry-{}.db", std::process::id()));
+    /// Signs in on a file-backed session store, and returns the address, the session cookie, a
+    /// second connection to the same file and the file's path (the caller removes it).
+    async fn signed_in_on_file(
+        name: &str,
+    ) -> (SocketAddr, String, rusqlite::Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("console-{name}-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let state = state_with_prefs(Prefs::open(&path).expect("open"));
         let app = api_router(state.clone())
@@ -1158,14 +1156,25 @@ mod tests {
         let addr = serve(app).await;
         let login = call(addr, "GET", "/test/login", None, "").await;
         let cookie = login.cookie.expect("session cookie set on login");
-
-        // A second connection to the same file sets the sign-in's one live row to expire soon.
         let other = rusqlite::Connection::open(&path).expect("second connection");
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let rows = other
-            .execute("UPDATE sessions SET expiry_unix = ?1", [now + 60])
-            .expect("expire soon");
+        (addr, cookie, other, path)
+    }
+
+    /// Sets the sign-in's one live session row to expire at `expiry_unix`.
+    fn set_stored_expiry(conn: &rusqlite::Connection, expiry_unix: i64) {
+        let rows = conn
+            .execute("UPDATE sessions SET expiry_unix = ?1", [expiry_unix])
+            .expect("set expiry");
         assert_eq!(rows, 1, "sign-in leaves exactly one live row");
+    }
+
+    /// The stored expiry moves on a signed-in request, not only the cookie. The row is first
+    /// set to expire in a minute, so the read itself has to move it into the 8-hour window.
+    #[tokio::test]
+    async fn a_signed_in_request_moves_the_stored_session_expiry() {
+        let (addr, cookie, other, path) = signed_in_on_file("expiry").await;
+        let now = sessions::now_unix();
+        set_stored_expiry(&other, now + 60);
 
         let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
         let stored: i64 = other
@@ -1220,28 +1229,12 @@ mod tests {
     /// though it is well inside its absolute lifetime.
     #[tokio::test]
     async fn an_idle_session_past_its_inactivity_expiry_answers_401() {
-        use tower_sessions::cookie::time::OffsetDateTime;
-
-        let path = std::env::temp_dir().join(format!("console-idle-{}.db", std::process::id()));
-        let _ = std::fs::remove_file(&path);
-        let state = state_with_prefs(Prefs::open(&path).expect("open"));
-        let app = api_router(state.clone())
-            .merge(test_login_route("/test/login", &["ops"]))
-            .layer(session_layer(state.prefs.session_store()));
-        let addr = serve(app).await;
-        let login = call(addr, "GET", "/test/login", None, "").await;
-        let cookie = login.cookie.expect("session cookie set on login");
+        let (addr, cookie, other, path) = signed_in_on_file("idle").await;
         let live = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
         assert_eq!(live.status, 200, "{}", live.body);
 
-        // The 8 hours of inactivity pass: the one live row's expiry is now in the past.
-        let other = rusqlite::Connection::open(&path).expect("second connection");
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let rows = other
-            .execute("UPDATE sessions SET expiry_unix = ?1", [now - 1])
-            .expect("expire");
-        assert_eq!(rows, 1, "sign-in leaves exactly one live row");
-
+        // The 8 hours of inactivity pass: the row's expiry is now in the past.
+        set_stored_expiry(&other, sessions::now_unix() - 1);
         let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
         let _ = std::fs::remove_file(&path);
         assert_eq!(me.status, 401);

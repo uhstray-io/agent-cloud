@@ -38,7 +38,8 @@ pub type OidcClient = CoreClient<
 const KEY_PKCE: &str = "auth.pkce_verifier";
 const KEY_CSRF: &str = "auth.csrf_state";
 const KEY_NONCE: &str = "auth.nonce";
-pub const KEY_USER: &str = "user";
+/// Private, so the user is read only through `current_user`, which enforces the lifetime.
+const KEY_USER: &str = "user";
 /// Unix seconds of the sign-in that stored `KEY_USER`.
 const KEY_SIGNED_IN_AT: &str = "auth.signed_in_at";
 
@@ -235,6 +236,15 @@ pub(crate) async fn sign_in_at(
     session.insert(KEY_SIGNED_IN_AT, signed_in_at).await
 }
 
+/// Stores `user` with no sign-in time, the shape of a session stored before the lifetime existed.
+#[cfg(test)]
+pub(crate) async fn sign_in_without_time(
+    session: &Session,
+    user: &CurrentUser,
+) -> Result<(), tower_sessions::session::Error> {
+    session.insert(KEY_USER, user).await
+}
+
 /// The signed-in user for this request, if any. A session value that does not
 /// parse counts as signed out. A session past `SESSION_LIFETIME_SECS`, or with no sign-in
 /// time (one stored before the lifetime existed), is deleted and counts as signed out: the
@@ -245,7 +255,8 @@ pub async fn current_user(session: &Session) -> Option<CurrentUser> {
     if signed_in_at.is_some_and(|at| within_lifetime(at, now_unix())) {
         return Some(user);
     }
-    // A failed delete still answers signed out; the row then expires on inactivity.
+    // `flush` clears the data before it deletes the row, so a failed delete still signs the
+    // user out: the row is saved back empty and expires 8 hours after the last request.
     let _ = session.flush().await;
     None
 }
