@@ -1,18 +1,24 @@
-"""A ratchet on raw `local_mode` reads in the playbooks and services (AC-726, plan 24).
+"""A ratchet on raw `local_mode` reads in the playbooks, the services and Semaphore's tasks (AC-726, plan 24).
 
-Every playbook, shared task and template takes the local-dev mode from the inventory's identity,
-`(groups['all'] | local_dev_inventory)`. A raw read of `local_mode` lets an extra var decide what
-runs: an extra var outranks the inventory and renders afresh at each read (docs/MISTAKES.md 1.15).
-local_mode_reads_allowlist.txt lists the files that still read it raw. The list only shrinks: a
-file leaves it in the PR that migrates the file, and a new reader fails here.
+The local-dev mode is taken from the inventory's identity, `(groups['all'] | local_dev_inventory)`. A
+raw read of `local_mode` lets an extra var decide what runs: an extra var outranks the inventory and
+renders afresh at each read (docs/MISTAKES.md 1.15). local_mode_reads_allowlist.txt lists the files
+that still read it raw. The list only shrinks: a file
+leaves it in the PR that migrates the file, and a new reader fails here.
 
 A read is found by parsing, not by grep, so prose that names the variable is not one:
-- YAML: the values of when, that, failed_when, changed_when and until are bare Jinja, so the whole
-  string is searched. Every other string contributes only its {{ }} and {% %} blocks. Mapping keys
-  never count, so inventory text that assigns local_mode (`local_mode: true`, or `local_mode=true`
+- YAML: the values of when, that, failed_when, changed_when, until and var are bare Jinja, so the
+  whole string is searched. Every other string contributes only its {{ }} and {% %} blocks. Mapping
+  keys never count, so inventory text that assigns local_mode (`local_mode: true`, or `local_mode=true`
   inside a block scalar) is not a read.
 - .j2 templates: only their {{ }} and {% %} blocks.
 - Jinja comments ({# #}) never count.
+
+Known limits, for review rather than this test: a name built by concatenation or held in another
+variable (`lookup('vars', 'local_' ~ 'mode')`, `vars[_name]`), and a controller environment read
+(`lookup('env', 'LOCAL_MODE')`), are not detected. Python and shell are not scanned: they read the
+LOCAL_MODE variable a playbook exports, and that export is an expression in the YAML scanned here
+(plan 24).
 
 pytest puts this directory on sys.path, so playbook_yaml is imported by name.
 """
@@ -28,12 +34,12 @@ import pytest
 import yaml
 
 REPO = playbook_yaml.REPO
-ROOTS = ("platform/playbooks", "platform/services")
+ROOTS = ("platform/playbooks", "platform/services", "platform/semaphore")
 SUFFIXES = (".yml", ".yaml", ".j2")
 ALLOWLIST = Path(__file__).with_name("local_mode_reads_allowlist.txt")
 
 IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])local_mode(?![A-Za-z0-9_])")
-BARE_KEYS = frozenset({"when", "that", "failed_when", "changed_when", "until"})
+BARE_KEYS = frozenset({"when", "that", "failed_when", "changed_when", "until", "var"})
 JINJA_COMMENT = re.compile(r"\{#.*?#\}", re.S)
 JINJA_BLOCK = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.S)
 
@@ -42,10 +48,6 @@ EXEMPT = {
     "platform/playbooks/tasks/assert-local-mode-identity.yml":
         "the one permanent reader: it compares the declaration with the inventory's identity",
 }
-
-# YAML files that are Jinja templates and do not parse as YAML: scanned as .j2, with the reason.
-PARSE_AS_TEMPLATE: dict[str, str] = {}
-
 
 def reads_in_text(text: str, bare: bool) -> bool:
     """One string's read. `bare` searches the whole string (a condition); otherwise only its Jinja blocks."""
@@ -77,7 +79,7 @@ def reads_in_template(text: str) -> bool:
 
 def reads(rel: str) -> bool:
     text = (REPO / rel).read_text()
-    if rel.endswith(".j2") or rel in PARSE_AS_TEMPLATE:
+    if rel.endswith(".j2"):
         return reads_in_template(text)
     return reads_in_yaml(text)
 
@@ -112,8 +114,8 @@ def allowlisted() -> list[str]:
 def test_no_file_reads_local_mode_raw_outside_the_allowlist():
     readers, broken = scan()
     assert not broken, (
-        "YAML that does not parse, so its reads cannot be checked (add it to PARSE_AS_TEMPLATE, with the "
-        "reason, if it is a Jinja template):\n  " + "\n  ".join(f"{p}: {e}" for p, e in sorted(broken.items())))
+        "YAML that does not parse, so its reads cannot be checked (a Jinja template is named .j2, which is "
+        "scanned as a template):\n  " + "\n  ".join(f"{p}: {e}" for p, e in sorted(broken.items())))
     offenders = sorted(readers - set(EXEMPT) - set(allowlisted()))
     assert not offenders, (
         "These files read local_mode raw and are not on the migration allowlist:\n  " + "\n  ".join(offenders)
@@ -158,6 +160,13 @@ def test_a_bare_condition_is_read_whole():
     assert reads_in_yaml("that:\n  - not (local_mode | default(false) | bool)\n")
     for key in sorted(BARE_KEYS):
         assert reads_in_yaml(f"{key}: local_mode\n"), key
+
+
+def test_debug_var_names_its_variable_so_the_value_is_read():
+    # Ansible evaluates `debug: var:` as a variable name (ansible-playbook 2.20.8 printed the value), so the
+    # nested key is a read. The same text under msg is prose.
+    assert reads_in_yaml("- debug:\n    var: local_mode\n")
+    assert not reads_in_yaml("- debug:\n    msg: local_mode\n")
 
 
 def test_mapping_keys_and_text_outside_jinja_are_not_reads():

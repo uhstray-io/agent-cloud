@@ -1,15 +1,14 @@
-"""The OpenBao transport guard's local-mode forms need a local-dev inventory too (AC-696, AC-726).
+"""The OpenBao transport guard's local-mode forms need a local-dev inventory (plan 24).
 
-tasks/assert-bao-transport.yml accepts a single-label http:// host, and host.containers.internal,
-only on a local-dev inventory (the identity filter_plugins/local_dev.py decides, read from `groups`).
-The guard does not read local_mode at all (plan 24): before AC-726 it also required local_mode, and an
-extra var outranks the inventory. Before AC-696, local_mode alone opened those forms, so `-e
-local_mode=true` on a production run widened the guard that keeps the AppRole secret_id off a public name.
+tasks/assert-bao-transport.yml accepts a single-label http:// host, and host.containers.internal, only on
+a local-dev inventory. The identity (filter_plugins/local_dev.py) decides, read from `groups`; the guard
+does not read local_mode. A forged local_mode must not open those forms on production, because they must
+never send the AppRole secret_id to a public name, and an extra var outranks the inventory.
 
-These tests run the real guard in a real ansible-playbook on the inventories in
-local_mode_inventories.py: a scratch play on localhost includes the task with the URL set on the
-include. A forged local_mode is a templated forgery (docs/MISTAKES.md 1.15). Private addresses are
-built from octets, so no literal private address sits in this file (the IP gate).
+These tests run the real guard in a real ansible-playbook on the inventories in local_mode_inventories.py:
+a scratch play on localhost includes the task with the URL set on the include. A forged local_mode is a
+templated forgery (docs/MISTAKES.md 1.15). Private addresses are built from octets, so no literal private
+address sits in this file (the IP gate).
 """
 
 import json
@@ -56,11 +55,10 @@ def test_the_local_mode_forms_pass_on_the_example_shape_with_implicit_localhost(
     passed(_guard(tmp_path, EXAMPLE_YAML, url, suffix="yml"))
 
 
-@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=True, forged=False))
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=True, forged=False)[:2])
 def test_a_local_dev_inventory_takes_the_single_label_form_whatever_local_mode_says(tmp_path, forge):
-    # The mode follows the inventory: a forged false cannot close the form on a local-dev inventory. Before
-    # AC-726 the guard also read local_mode, so this refused. The plain and context forms show it; a
-    # stateful form is honest on its only read here and so cannot.
+    # The mode follows the inventory: a forged false cannot close the form on a local-dev inventory. The plain
+    # and context forms only: the stateful form is honest on its only read, so it cannot show that read.
     passed(_guard(tmp_path, LOCAL_INI, SINGLE_LABEL, "-e", forge(tmp_path)))
 
 

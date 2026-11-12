@@ -5,7 +5,7 @@
 # The first task names an unparsed inventory before anything judges the OpenBao address.
 # Without it, a task whose inventory file Semaphore lost (concurrent tasks share
 # /tmp/semaphore/project_<n>/inventory_<id>; one finishing removes it before another parses
-# it) has no local_mode, so a correct local single-label OpenBao URL is refused with
+# it) leaves no `<name>-local` host in groups['all'], which is not local-dev, so a correct local single-label OpenBao URL is refused with
 # "Refusing to send secret material ... invalid endpoint" — true, and not the cause.
 #
 # The check applies whenever the run was GIVEN an inventory (-i), and Semaphore always gives

@@ -1,9 +1,10 @@
 """The render-count helpers in forgeries.py (plan 24).
 
-`counting` measures how many times a run reads a templated extra var, and `honest_for` renders the
-honest value for a given number of readings and the other value after. Each test runs a localhost play
-whose K debug tasks each print the variable once, through harness_sandbox.run_playbook, so the number of
-tasks is the number of readings.
+`counting` measures how many times a run reads a templated extra var, and `honest_for` renders the honest
+value for a given number of readings and the other value after. Each run here is a localhost play whose
+TASKS debug tasks each print the variable once, through harness_sandbox.run_playbook, so the number of
+tasks is the number of readings. One run per helper proves it. The stateful spelling is compared with
+honest_for(1) byte for byte, with no run.
 
 These tests prove the helpers, not a refusal, and send no refused input, so the templated-forgery rule
 in test_extra_var_refusal_tests.py has nothing to require of them.
@@ -41,23 +42,10 @@ def test_counting_counts_each_reading_of_the_name(tmp_path):
 
 def test_honest_for_renders_the_honest_value_first_then_the_other(tmp_path):
     extra = forgeries.honest_for("probe", "honest", "other", 2, tmp_path)
-    assert _values(tmp_path, extra) == ["honest", "honest", "other"]
+    assert _values(tmp_path, extra) == ["honest"] * 2 + ["other"] * (TASKS - 2)
 
 
-def test_one_render_is_the_stateful_form(tmp_path):
+def test_the_stateful_spelling_is_honest_for_one_byte_for_byte(tmp_path):
+    # No run: both come from the one builder at one rendering, so the two -e strings must be equal.
     spellings = {p.id: p.values[0] for p in forgeries.templated_forgeries("probe", "honest", "other")}
-    first, second = tmp_path / "stateful", tmp_path / "honest-for"
-    assert _values(first, spellings["stateful"](first)) == ["honest", "other", "other"]
-    assert _values(second, forgeries.honest_for("probe", "honest", "other", 1, second)) == [
-        "honest", "other", "other"]
-
-
-def test_a_reading_after_the_measured_count_gets_the_other_value(tmp_path):
-    measure = tmp_path / "measure"
-    extra, counter = forgeries.counting("probe", "honest", measure)
-    _values(measure, extra)
-    measured = int(counter.read_text())
-    assert measured == TASKS
-    run = tmp_path / "run"
-    extra = forgeries.honest_for("probe", "honest", "other", measured - 1, run)
-    assert _values(run, extra) == ["honest"] * (TASKS - 1) + ["other"]
+    assert spellings["stateful"](tmp_path) == forgeries.honest_for("probe", "honest", "other", 1, tmp_path)

@@ -57,6 +57,20 @@ def _render_counter(name: str, tmp_path: Path) -> tuple[Path, str]:
     return counter, f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; echo $n"
 
 
+def _ternary(cond: str, good, bad) -> str:
+    """The -e string that renders `good` while the Jinja condition `cond` holds, else `bad`."""
+    return "{{ " + cond + " | ternary(" + _literal(good) + ", " + _literal(bad) + ") }}"
+
+
+def _counted(name: str, tmp_path: Path, comparison: str, good, bad) -> tuple[str, Path]:
+    """The one builder of a render-counted value: -e JSON that renders `good` while the number of EARLIER
+    renderings of the name satisfies `comparison` (a Jinja test on int, such as "< 1"), else `bad`. The count
+    is kept in a file under tmp_path. Returns (the -e JSON, the counter path)."""
+    counter, shell = _render_counter(name, tmp_path)
+    cond = "(lookup('ansible.builtin.pipe', " + _string(shell) + ") | int " + comparison + ")"
+    return json.dumps({name: _ternary(cond, good, bad)}), counter
+
+
 def templated_forgeries(name: str, honest, forged) -> list:
     """pytest params, ids plain/context/stateful. Each is a function of the test's tmp_path
     (the stateful template counts its renderings in a file there) returning the -e JSON.
@@ -72,13 +86,11 @@ def templated_forgeries(name: str, honest, forged) -> list:
     def context(tmp_path: Path) -> str:
         good, bad = values(tmp_path)
         cond = "(ansible_loop_var is defined or (ansible_play_name | default('')) is search('(?i)refuse'))"
-        return json.dumps({name: "{{ " + cond + " | ternary(" + _literal(good) + ", " + _literal(bad) + ") }}"})
+        return json.dumps({name: _ternary(cond, good, bad)})
 
     def stateful(tmp_path: Path) -> str:
         good, bad = values(tmp_path)
-        _, shell = _render_counter(name, tmp_path)
-        cond = "(lookup('ansible.builtin.pipe', " + _string(shell) + ") | int < 1)"
-        return json.dumps({name: "{{ " + cond + " | ternary(" + _literal(good) + ", " + _literal(bad) + ") }}"})
+        return honest_for(name, good, bad, 1, tmp_path)
 
     return [pytest.param(plain, id="plain"), pytest.param(context, id="context"),
             pytest.param(stateful, id="stateful")]
@@ -104,22 +116,17 @@ def counting(name: str, value, tmp_path: Path) -> tuple[str, Path]:
     Returns (the -e JSON, the counter path). After a run the counter holds how many times the name was
     rendered. Plan 24: a run's readings are measured with this first, and that count goes to honest_for.
     """
-    counter, shell = _render_counter(name, tmp_path)
-    cond = "(lookup('ansible.builtin.pipe', " + _string(shell) + ") | int >= 0)"
-    rendered = "{{ " + cond + " | ternary(" + _literal(value) + ", " + _literal(value) + ") }}"
-    return json.dumps({name: rendered}), counter
+    return _counted(name, tmp_path, ">= 0", value, value)
 
 
 def honest_for(name: str, honest, forged, renders: int, tmp_path: Path) -> str:
     """-e JSON that renders `honest` for the first `renders` renderings of the name, then `forged`.
 
-    stateful is the renders=1 case. Plan 24: the identity check reads local_mode more than once, and
-    test_local_mode_identity.py refuses the stateful spelling on a production inventory, so the check
-    itself refuses `stateful`. Give this the count `counting` measured for the check: any reader after the
-    check then gets the forgery, so a raw read shows through. Not a parametrized spelling: a refusal test
-    that uses it also parametrizes over templated_forgeries.
+    stateful is the renders=1 case. The identity check reads local_mode more than once, so the stateful
+    spelling cannot pass it (plan 24; test_local_mode_identity.py). A test that uses honest_for after the
+    check need not also parametrize templated_forgeries there: the check itself refuses the templated
+    forms on a production inventory. Give this the count `counting` measured for the check, so any reader
+    after the check gets the forgery and a raw read shows through.
     """
     assert isinstance(renders, int) and renders >= 1, renders
-    _, shell = _render_counter(name, tmp_path)
-    cond = "(lookup('ansible.builtin.pipe', " + _string(shell) + ") | int < " + str(renders) + ")"
-    return json.dumps({name: "{{ " + cond + " | ternary(" + _literal(honest) + ", " + _literal(forged) + ") }}"})
+    return _counted(name, tmp_path, f"< {renders}", honest, forged)[0]

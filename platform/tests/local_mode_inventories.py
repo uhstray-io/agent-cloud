@@ -4,13 +4,12 @@ test_local_mode_identity.py, test_bao_transport_identity.py and test_local_mode_
 ansible-playbook on these inventories. Each names localhost and, for local-dev, one `<name>-local`
 host, so the identity filter (filter_plugins/local_dev.py) decides the mode, not the test. Every run
 goes through harness_sandbox.run_playbook: bounded, no stdin, writes confined. A run that needs a
-command the task calls (git, getent, sudo) puts a test double first on PATH (fake_bin).
+command the task calls (git, getent, sudo) puts a test double first on PATH (harness_sandbox.fake_bin).
 
 Imported as `import local_mode_inventories`, like forgeries: pytest puts this directory on sys.path.
 """
 
 import json
-import os
 import re
 from pathlib import Path
 
@@ -62,7 +61,7 @@ def include_play(task: Path, *, hosts: str = "all", play_vars: dict | None = Non
 def run(tmp_path: Path, inventory: str, play: str, *args: str, suffix: str = "ini", env: dict | None = None):
     """Write the inventory and the play into tmp_path and run them; the output is one line.
 
-    `env` is laid over the harness environment (fake_bin's PATH, for one)."""
+    `env` is laid over the harness environment (harness_sandbox.fake_bin's PATH, for one)."""
     inv = tmp_path / f"inventory.{suffix}"
     inv.write_text(inventory)
     playbook = tmp_path / "play.yml"
@@ -70,19 +69,6 @@ def run(tmp_path: Path, inventory: str, play: str, *args: str, suffix: str = "in
     proc = harness_sandbox.run_playbook(playbook, tmp_path, *args, inventory=inv, env=env)
     proc.output = " ".join((proc.stdout + proc.stderr).split())   # one line, whatever the wrapping
     return proc
-
-
-def fake_bin(tmp_path: Path, scripts: dict[str, str]) -> dict:
-    """The environment for a run whose PATH starts with test doubles: one shell script per name in
-    tmp_path/fakebin, so a command a task calls (git, getent, sudo, a container engine) is the double
-    and never the host's own. Returns the `env` argument of run()."""
-    bindir = tmp_path / "fakebin"
-    bindir.mkdir()
-    for name, body in scripts.items():
-        script = bindir / name
-        script.write_text("#!/bin/sh\n" + body)
-        script.chmod(0o755)
-    return {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
 
 
 def task_statuses(stdout: str) -> dict[str, str]:
