@@ -596,8 +596,15 @@ requires `main` to be an ancestor of the PR head and refuses otherwise; clear it
 and pytest, with the same test paths, working directory and `PYTHONPATH` as CI. No install
 step; live as soon as `make git-setup` has been run.
 
-`bats platform/tests/` runs the same files as CI, serially; CI runs them with `--jobs 4
---no-parallelize-within-files` (plan 21, D4). Both suites run on the locked environment
+The hook runs a **fast lane**, not the full suite (plan 21, D6). pytest runs, by whole file,
+every test file the push changes against `<remote>/dev`, every file holding a test the
+durations file (`platform/tests/test_durations.json`) does not record, and every file whose
+recorded tests all ran under 0.25 s in CI with none skipped (`PYTEST_FAST=1`, selected in
+the root `conftest.py`). BATS runs in full, beside pytest, with `--jobs 4
+--no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it) and
+serially otherwise. When the pushed commit has no merge base with `<remote>/dev`, the hook
+runs the full Python suite and says why. A change to a playbook or helper therefore runs only
+the fast and changed test files here; CI runs everything. Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
 outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
