@@ -88,7 +88,7 @@ flowchart TB
     SEM -->|"deployment"| ANS
     ANS -->|"deployment"| PVE
     SK -.->|"launches refused since 2026-10-31"| SEM
-    SK -.->|"launch request (wired; no launch yet)"| LG
+    SK -.->|"launch request (wired)"| LG
     AUTH -->|"identity (OIDC, forward_auth)"| SEM
     AUTH -->|"identity (OIDC, forward_auth)"| CADDY
     STEP -->|"identity (mTLS leaves)"| AGW

@@ -2,8 +2,7 @@
 
 tasks/assert-local-mode-identity.yml checks `local_mode` against this, because an extra var outranks
 the inventory. Every host but `localhost` must be named `<name>-local`, and there must be at least
-one. Callers pass a host list `-e` cannot set (`groups['all']` or
-`ansible_play_hosts_all`). An input that is not a list of host-name
+one. Callers pass `groups['all']`, which `-e` cannot set. An input that is not a list of host-name
 strings raises AnsibleFilterError, so the guard fails closed. Tested by
 platform/tests/test_local_dev_filter.py.
 """

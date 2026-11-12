@@ -164,7 +164,7 @@ and why.
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
-| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Superseded by 5.25 |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
@@ -1660,9 +1660,11 @@ The grounding checkpoint caught it before a PR was opened, and the redesign land
 it is read, whatever pointed to it (1.25, 1.28, 1.29), a comment's citation included. Follow the citation and read
 the cited lines before a brief, commit or reply repeats the guarantee.
 
-**Enforced by.** The instance: since AC-702 (#1106) both playbooks derive local mode with the shared
-`local_dev_inventory` filter (`platform/playbooks/filter_plugins/local_dev.py`), pinned in all three plays by
-`platform/tests/test_launch_gate_playbooks.bats:590-591` and `platform/tests/test_service_skynet.bats:602`. The class:
+**Enforced by.** The instance: both playbooks derive local mode with the shared `local_dev_inventory` filter
+(`platform/playbooks/filter_plugins/local_dev.py`; AC-702, #1106), from the inventory since AC-784, pinned in all
+three plays by `platform/tests/test_launch_gate_playbooks.bats:590-591` and
+`platform/tests/test_service_skynet.bats:623-624`. Phase 1 of each includes the shared identity check first, pinned by
+`platform/tests/test_launch_gate_playbooks.bats:597-600` and `platform/tests/test_service_skynet.bats:263-273`. The class:
 Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a brief or outward
 text names, not the paths a comment in those files cites.
 
@@ -4947,7 +4949,7 @@ through the script.
 
 ### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
 
-**Occurrences: 4** — 2026-10-29, 2026-11-11, 2026-11-10 (recorded late), 2026-11-11
+**Occurrences: 5** — 2026-10-29, 2026-11-11, 2026-11-10 (recorded late), 2026-11-11, 2026-11-09 to 11-10 (recorded late)
 
 **What happened.** The branch workflow (`AGENTS.md:568`, step 4) runs `/simplify` and
 `/security-review` on the branch changes before a PR is opened. #1066 (fixture servers onto
@@ -5000,6 +5002,14 @@ building it starts with a new entry that supersedes this rule. Not built.
 
 **Superseded 2026-11-12 by 5.25.** At four occurrences the rule above ("one line for each in the PR body") is
 replaced by a mechanical one: the passes are commit statuses the merge guard requires on the merge head.
+
+**Occurrence 5 — 2026-11-09 to 11-10, recorded late (2026-11-12, after the supersession).** One session (the
+launch-gate work of 1.21 occurrence 4) opened six PRs without either pass: #924, #932, #938, #939, #951 and #952,
+all opened 2026-11-09 to 11-10 (UTC). skynet#14 is not counted: the skynet repository's workflow has no such step.
+Each had one `pr-reviewer` round and green CI before it merged; #952's round requested changes for a HIGH finding,
+fixed before merge. Why the rule did not fire: as in occurrence 3; the session did not reread step 4 before each
+PR. None of the six heads carries either commit status, which 5.25's guard now requires of a merge through
+`scripts/merge-when-green.py`.
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
