@@ -1220,8 +1220,14 @@ mod tests {
             let me = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
             assert_eq!(me.status, 401, "{path}");
             assert_eq!(me.body, r#"{"error":"unauthenticated"}"#, "{path}");
+            // A deleted session removes its cookie; one left in the store is re-saved with 8h.
+            let set_cookie = me.set_cookie_line.clone().unwrap_or_default();
+            assert!(
+                set_cookie.contains("Max-Age=0"),
+                "{path}: the over-age session must be deleted: {set_cookie}"
+            );
             let again = call(addr, "GET", "/v1/work", Some(cookie), "").await;
-            assert_eq!(again.status, 401, "{path}: the over-age session is deleted");
+            assert_eq!(again.status, 401, "{path}: the old cookie stays signed out");
         }
     }
 

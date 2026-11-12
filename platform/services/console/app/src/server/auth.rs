@@ -248,7 +248,7 @@ pub(crate) async fn sign_in_without_time(
 /// The signed-in user for this request, if any. A session value that does not
 /// parse counts as signed out. A session past `SESSION_LIFETIME_SECS`, or with no sign-in
 /// time (one stored before the lifetime existed), is deleted and counts as signed out: the
-/// API answers 401 and the UI sends the user back through Authentik.
+/// API answers 401 and the UI shows the sign-in page, which goes through Authentik.
 pub async fn current_user(session: &Session) -> Option<CurrentUser> {
     let user = session.get::<CurrentUser>(KEY_USER).await.ok().flatten()?;
     let signed_in_at = session.get::<i64>(KEY_SIGNED_IN_AT).await.ok().flatten();
