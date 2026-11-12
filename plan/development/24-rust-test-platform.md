@@ -160,7 +160,8 @@ it reports the overrun in the job summary, as the shards do today.
 
 ## Implementation Phases
 
-One Plane work item per phase, in module `rust-test-platform`, milestone `v0.15.0`. A port phase is
+One Plane work item per phase, in module `rust-test-platform`: Phases 0 to 3 in milestone `v0.15.0`,
+Phases 4 to 10 in `v0.16.0` (operator decision, 2026-11-12). A port phase is
 split into one sub-item per area when it starts.
 
 | Phase | Work | Blocked by | Done when |
@@ -180,10 +181,10 @@ split into one sub-item per area when it starts.
 The workflow changes in Phases 1, 2, 4 and 10 touch `.github/workflows/`, so they are operator merges
 (plan 23, Part A). The main-to-dev sync cannot carry them.
 
-**Release fit.** The operator placed this module in v0.15.0, the carry-over release that policy 10 R12
-exempts from the size limits. Phases 0 to 3 fit it. Phases 4 to 10 port about 140,000 lines of tests and
-42,000 lines of product code. They are not expected to finish before v0.15.0 is promoted. Moving them to a
-later milestone is the operator's call; it is not decided here.
+**Release fit.** Phases 0 to 3 ship in v0.15.0, the carry-over release that policy 10 R12 exempts from
+the size limits. Phases 4 to 10 port about 140,000 lines of tests and 42,000 lines of product code, and
+move to v0.16.0 (operator decision, 2026-11-12). From v0.16.0 the release limits apply, so each port
+phase is cut into area pull requests that fit the 100-PR and 120-file budget.
 
 ---
 
@@ -229,4 +230,5 @@ later milestone is the operator's call; it is not decided here.
 
 | Date | Change |
 |---|---|
+| 2026-11-12 | Phases 4 to 10 moved to milestone v0.16.0 (operator decision). |
 | 2026-11-12 | Created. Operator decisions the same day: Rust replaces pytest and BATS; Python product code is ported to Rust where the runtime is ours (D4); the six support dependencies and `cargo-nextest` are approved (D1, D2) |
