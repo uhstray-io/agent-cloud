@@ -78,7 +78,7 @@ deliberation behind them is retained in the Hindsight bank.
 > change's delta spec (`specs/platform/agent-launch-gate/spec.md`), and its archive is scheduled for Release 2
 > (`plan/development/23-release-train.md`).
 > A skynet-initiated launch through the gate is proven in local-dev, not yet in production:
-> `Probe skynet Launch (Dev)` has not run there.
+> `Probe skynet Launch (Dev)` was not yet a production template when the template list was read on 2026-11-11.
 
 ## Design Principles
 

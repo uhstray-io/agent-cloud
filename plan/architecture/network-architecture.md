@@ -792,7 +792,7 @@ document; for the long, frequently edited documents the section name is given as
 51. `plan/development/openspec/changes/production-internal-ca/proposal.md:1-25`
 52. `platform/services/opa/deployment/context/architecture.md:31-46` (production specifics, deployed 2026-10-29)
 53. `platform/playbooks/deploy-opa.yml` (production refusals; `opa_tls` defaults to false)
-54. `platform/playbooks/deploy-launch-gate.yml`; `platform/services/launch-gate/deployment/CLAUDE.md:1-12` (status: deployed in production since 2026-11-09); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
+54. `platform/playbooks/deploy-launch-gate.yml`; `platform/services/launch-gate/deployment/CLAUDE.md:1-36` (status: deployed in production since 2026-11-09); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
 55. `platform/services/o11y/deployment/compose.otlp-tls.yml`; `platform/playbooks/tasks/assert-o11y-otlp-tls.yml`; `platform/playbooks/deploy-o11y-journal-collector.yml` (switch `o11y_otlp_tls_enabled`, default false; merged as PR #756, commit `0bc41a8b`)
 
 ## Revision History

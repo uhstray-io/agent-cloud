@@ -63,8 +63,8 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
   defaults, and nothing else
 
 ### Requirement: The code that runs is the branch OPA judged
-The launch gate SHALL take the branch from the template's repository record and MUST refuse a template
-that carries its own different branch; the one exception is the next requirement. When the template declares
+The launch gate SHALL take the branch from the template's repository record (read as `dev` for local-dev's
+working tree, the next requirement) and MUST refuse a template that carries its own different branch. When the template declares
 a `service_branch` survey field (the branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
 whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
 values and integer fields ASCII digits with at most one leading minus.
