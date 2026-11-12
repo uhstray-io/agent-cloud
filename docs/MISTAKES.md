@@ -165,7 +165,7 @@ and why.
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
-| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
@@ -5013,7 +5013,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 1** — 2026-11-12. The four that earned this rule are 5.24's.
+**Occurrences: 2** — 2026-11-12, 2026-11-12. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5040,6 +5040,14 @@ found (a skipped pass posted as run goes green); and it binds only merges that g
 reading "Ran on e58f113c". That claimed a pass for a head it never reviewed. The rule as first drafted ("run both
 passes, commit their fixes, push, then post") did not cover it: nothing said a pass's own fixes need a further
 round. CodeRabbit flagged the gap; the rule above now requires rounds until one changes nothing.
+
+**Occurrence 2 — 2026-11-12.** On #1128, after a two-line review fix and a merge of `dev`, I checked the
+delta by hand (the pull request's lines matched the approved head, and the merge added no edit of its
+own) and posted both statuses on the merge head `95a10ea4` with descriptions saying the passes ran
+there. Neither pass had run on that head. The rule says to run both passes on every new head; nothing
+stops a status being posted first, because the guard checks only that a status exists and is well
+formed. Caught minutes later, before any merge: both passes then ran on the next head, and its statuses
+replaced these. A hand check of a small delta is not a pass, and its status must not say it is.
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
