@@ -66,6 +66,7 @@ and why.
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, no detector |
+| 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1662,6 +1663,34 @@ plays. The class: Convention, with no detector; 1.29's path-read guards (occurre
 brief or outward text names, not the paths a comment in those files cites. A shared local-mode derivation (AC-702) would remove this
 instance's need to cite another file: the launch gate's comment still cites `tasks/clean-service.yml:85-89`, where
 the derivation itself is at `:70`.
+
+### 1.37 Called a fix impossible from a true fact stretched past its scope, then built around it (widens 1.19)
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** AC-743: GNU parallel starts every job with SIGALRM ignored
+(`$SIG{ALRM} = 'IGNORE'`, line 6352 of the installed 20261022 script), so ansible-core refused task
+timeouts under `bats --jobs 4`. I wrote "a wrapper cannot repair that: parallel sets the disposition
+itself", from the true POSIX fact that a shell cannot reset a signal it inherited as ignored, and
+never tried a wrapper. On that claim I built a probe that detected the condition and fell back to
+serial BATS, and repeated the claim in the hook comment, `AGENTS.md`, the commit body, the PR #1114
+body and the Plane item. The review round approved it. The `/simplify` altitude reviewer then ran
+`PARALLEL_SHELL` (GNU parallel runs each job as `$PARALLEL_SHELL -c cmd` after the fork) with a
+three-line perl job shell: the job saw SIGALRM at default (`0`, against `1` without it), and
+`test_provision_vm.bats` under `--jobs 4` passed with the wrapper and failed without it.
+
+**Root cause.** The fact was about shells; the claim was about every wrapper. A negative claim ("X
+cannot fix this") was made from evidence that only rules out one kind of X, and the one cheap
+experiment that would have tested it (a non-shell job wrapper) was never run.
+
+**The rule.** Supersedes 1.19's scope to claims about what cannot work. A statement that a fix is
+impossible is made only after the cheapest counter-experiment has failed, or from a source that
+states the impossibility for the general case. A true fact about one mechanism is reported as
+exactly that ("a shell cannot reset it"), never widened to every mechanism.
+
+**Enforced by.** The instance: `platform/tests/test_pre_push_parallel_sigalrm.bats` "parallel-job-shell: a job
+started with SIGALRM ignored runs with it at default" proves the wrapper, with a control that the job
+really starts with SIGALRM ignored. The class: Convention, with no detector.
 
 ## 2. Tests that would have passed for the wrong reason
 
