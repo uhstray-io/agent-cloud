@@ -1,0 +1,60 @@
+"""Synthetic inventories and the one runner for the local_mode identity tests (AC-696).
+
+test_local_mode_identity.py, test_bao_transport_identity.py and test_enable_linger_identity.py run a
+real ansible-playbook on these inventories. Each names localhost and, for local-dev, one `<name>-local`
+host, so the identity filter (filter_plugins/local_dev.py) decides the mode, not the test. Every run
+goes through harness_sandbox.run_playbook: bounded, no stdin, writes confined.
+
+Imported as `import local_mode_inventories`, like forgeries: pytest puts this directory on sys.path.
+"""
+
+import re
+from pathlib import Path
+
+import harness_sandbox
+
+# The message of the shared identity guard (tasks/assert-local-mode-identity.yml).
+IDENTITY_REFUSAL = "The mode follows the inventory, not the variable"
+
+LOCAL_INI = """\
+localhost ansible_connection=local
+dns-local ansible_connection=local
+
+[all:vars]
+local_mode=true
+"""
+PROD_INI = """\
+localhost ansible_connection=local
+dns-prod ansible_connection=local
+"""
+EXAMPLE_YAML = """\
+all:
+  vars:
+    local_mode: true
+  hosts:
+    dns-local:
+      ansible_connection: local
+"""
+
+
+def run(tmp_path: Path, inventory: str, play: str, *args: str, suffix: str = "ini", check: bool = False):
+    """Write the inventory and the play into tmp_path and run them; the output is one line."""
+    inv = tmp_path / f"inventory.{suffix}"
+    inv.write_text(inventory)
+    playbook = tmp_path / "play.yml"
+    playbook.write_text(play)
+    flags = ["--check"] if check else []
+    proc = harness_sandbox.run_playbook(playbook, tmp_path, *args, *flags, inventory=inv)
+    proc.output = " ".join((proc.stdout + proc.stderr).split())   # one line, whatever the wrapping
+    return proc
+
+
+def passed(proc) -> None:
+    assert proc.returncode == 0, proc.output
+    assert "failed=0" in proc.output, proc.output
+    assert re.search(r"ok=[1-9]", proc.output), proc.output
+
+
+def refused(proc, text: str) -> None:
+    assert proc.returncode != 0, proc.output
+    assert text in proc.output, proc.output

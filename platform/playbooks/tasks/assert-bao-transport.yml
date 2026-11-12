@@ -10,16 +10,9 @@
 # on an internal VLAN and is reached at an http:// address. Requiring https
 # outright would break every real run.
 #
-# http:// to a SINGLE-LABEL hostname (no dots) is allowed ONLY under local_mode, and only when
-# the inventory is local-dev too: local-dev reaches its store as http://local-openbao:8200 on
-# the genesis podman network. It is NOT allowed unconditionally, because a resolver with a
-# `search` suffix in resolv.conf can turn a bare name into a public FQDN — the exact class
-# the anchored pattern exists to refuse. local_mode alone does not decide it: an extra var
-# outranks the inventory, so `-e local_mode=true` on a production run would open the form.
-# The inventory's identity decides it instead (filter_plugins/local_dev.py, checked the same way
-# by tasks/assert-local-mode-identity.yml). The trailing delimiter still applies, so
-# http://name@evil.example is refused: the name before @ is userinfo, and the
-# request would go to the public host after it.
+# Single-label http:// names and host.containers.internal pass ONLY under local_mode on a local-dev
+# inventory (filter_plugins/local_dev.py): an extra var outranks the inventory, and a bare name can
+# resolve publicly. The trailing delimiter still refuses http://name@host (name before @ is userinfo).
 #
 # The same local-dev branch accepts exactly one dotted name: host.containers.internal, the
 # name podman gives a container for its engine host. A local controller reaches services

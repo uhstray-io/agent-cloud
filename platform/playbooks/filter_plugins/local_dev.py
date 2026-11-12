@@ -1,24 +1,10 @@
-"""Whether an inventory is a local-dev inventory, from the names of its hosts (local_mode).
+"""Whether an inventory is local-dev, from the names of its hosts (local_mode).
 
-The placement and linger tasks branch on `local_mode`, and an extra var outranks the inventory,
-so `-e local_mode=true` on a production host would take the local branch against it. The shared
-guard (tasks/assert-local-mode-identity.yml) decides the mode from the inventory instead, with
-this filter over `groups['all']`:
-
-- a local-dev inventory names every host `<name>-local` (bootstrap-local-dev.yml, the example
-  inventory platform/inventory/local-dev.yml.example); no production host does;
-- `localhost` is the controller and is dropped first. Local-dev's controller host is named
-  `localhost` (its explicit ungrouped entry, or an implicit one), so it must not count against
-  the rule. A production inventory names its controller the same way, and that is not a
-  reason to call it local-dev.
-
-`groups` is read because `-e` cannot set it: clean-service.yml:85-89 verified that on
-ansible-core 2.21, and it is why the teardown reads the hosts rather than the variable.
-
-Fail closed: an input that is not a list of host-name strings raises AnsibleFilterError, which
-fails the guard. An empty inventory (nothing but `localhost`) is not local-dev.
-
-Tested directly by platform/tests/test_local_dev_filter.py.
+tasks/assert-local-mode-identity.yml checks `local_mode` against this, because an extra var outranks
+the inventory. Every host but `localhost` must be named `<name>-local`, and there must be at least
+one. Hosts come from `groups['all']`, which `-e` cannot set. An input that is not a list of host-name
+strings raises AnsibleFilterError, so the guard fails closed. Tested by
+platform/tests/test_local_dev_filter.py.
 """
 
 import re

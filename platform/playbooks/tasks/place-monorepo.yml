@@ -24,9 +24,7 @@
 # Principles — reuse over per-service glue).
 
 - name: "Refuse a local_mode that disagrees with the inventory's identity"
-  # Sibling task in this directory. It runs before any read of local_mode below (and in
-  # install-podman-compose.yml, enable-linger.yml), so a plain `-e local_mode=true` on a production
-  # host is refused before the local branch is taken.
+  # Sibling task. It runs first, before any local_mode read in this file and the tasks it includes.
   ansible.builtin.include_tasks: assert-local-mode-identity.yml
 
 - name: "Assert required variables for monorepo placement"
