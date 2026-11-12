@@ -721,6 +721,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate OPA even when its policies and image match (reloads the policies)"
+        type: string
+        required: false
+        default_value: "false"
 
   # The skynet orchestration API (OpenSpec service-deployment-workflow, task 3.7). Its Semaphore token is
   # the svc-skynet account's, written to secret/services/skynet by "Provision skynet Semaphore Access":
