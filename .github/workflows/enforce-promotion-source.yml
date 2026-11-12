@@ -13,6 +13,7 @@ name: Promotion Source Guard
 # lacks it would silently revert it on `main` (docs/MISTAKES.md 10.23).
 # Emergency hotfixes bypass via the ruleset's Admin break-glass actor (they can merge
 # despite this check), so this is a guardrail, not an absolute lock.
+# The job also enforces the release budget (policy 10); its last step carries that check.
 
 on:
   pull_request:
@@ -68,3 +69,36 @@ jobs:
             exit "$rc"
           fi
           echo "OK: dev contains every commit on main."
+
+      - name: Require the release to fit the release budget
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Policy 10 R2 and R3 limits (100 pull requests, 120 files), counted by scripts/semver.py
+          # release-budget: the same count the dev merge guard uses (plan 23). R12: no limit applies
+          # until the v0.15.0 carry-over tag exists. origin/main is fetched by the ancestry step above.
+          # Tags are fetched here, explicitly, because the transition depends on whether v0.15.0 exists.
+          git fetch --no-tags origin '+refs/tags/v*:refs/tags/v*'
+          BUDGET="$(python3 scripts/semver.py release-budget --main-ref origin/main --dev-ref "$HEAD_SHA")"
+          echo "$BUDGET"
+          export BUDGET
+          python3 -c '
+          import json
+          import os
+          import sys
+
+          budget = json.loads(os.environ["BUDGET"])
+          prs = budget["prs"]
+          files = budget["files"]
+          limit_prs = budget["limits"]["prs"]
+          limit_files = budget["limits"]["files"]
+          since = budget["from"] or "the first commit"
+          if budget["transition"]:
+              print("::notice title=Release budget transition::No release budget applies before the v0.15.0 carry-over release (policy 10 R12). This promotion counts {} pull requests and {} files.".format(prs, files))
+          elif budget["full"]:
+              print("::error title=Release over budget::{} pull requests (limit {}) and {} files (limit {}) since {}. Policy 10 R5: promote before more lands. R11: an over-limit dev ships only through the break-glass (R10), recorded in the release notes.".format(prs, limit_prs, files, limit_files, since))
+              sys.exit(1)
+          else:
+              print("OK: {}/{} pull requests and {}/{} files since {}.".format(prs, limit_prs, files, limit_files, since))
+          '
