@@ -1352,7 +1352,9 @@ about what is deployed or registered is a live-state claim, whatever file it was
    the hook checks that every evidence line names a source, not that every claim has one, nor that
    the source says what the line claims.
 
-Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
+The hook does not replace the recheck in The rule: a `repo:` line names a file at a ref, not
+proof that the lead re-read it against the claim, so the recheck stays required with the hook in
+place. Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
