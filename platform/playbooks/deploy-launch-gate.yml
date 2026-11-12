@@ -67,10 +67,12 @@
     _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
     _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
     _engine: "{{ container_engine | default('podman') }}"
-    # Local-dev only when the inventory says so AND the host is a local-dev host (<name>-local), as
-    # tasks/clean-service.yml derives it: an extra var `-e local_mode=true` on a production launch cannot
-    # lift the bind, URL and step-ca refusals below.
-    _launch_gate_local_mode: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    # Local-dev is decided by the hosts of this play, never by the public `local_mode` or by `inventory_hostname`,
+    # which an extra var can set: local only when every host is named <name>-local, as tasks/clean-service.yml:85-89
+    # derives it. `-e local_mode=` cannot lift the bind, URL and step-ca refusals below, and a value that disagrees
+    # with the hosts is refused first, not used.
+    _launch_gate_local_mode: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _launch_gate_mode_set: "{{ local_mode | default('unset') }}"
     # The rendered values. Each `_launch_gate_*` is read by env.j2 or config.json.j2 under that name.
     # The listener's bind, port, leaf and name use a plain default(), as renew-internal-certs.yml's
     # listener table does: an inventory value set to '' is then the same value to the deploy and to the
@@ -106,6 +108,21 @@
       - { src: config.json.j2, dest: config.json, mode: "0644" }
 
   tasks:
+    # First of all: a local_mode that disagrees with the hosts' identity stops the run before any other check. The
+    # mode is not chosen by the variable; a forged `-e local_mode=true` on a production host, or `-e local_mode=false`
+    # on a local-dev host, is refused, and nothing is placed or written.
+    - name: "Refuse a local_mode that disagrees with the hosts' identity"
+      ansible.builtin.assert:
+        that:
+          - _launch_gate_mode_set != 'unset' or not _launch_gate_local_mode
+          - _launch_gate_mode_set == 'unset' or (_launch_gate_mode_set | bool) == _launch_gate_local_mode
+        fail_msg: >-
+          Refusing: local_mode is {{ _launch_gate_mode_set }}, but the hosts of this play are
+          {{ 'all' if _launch_gate_local_mode else 'not all' }} local-dev hosts (named <service>-local). The mode
+          follows the hosts, not the variable, and a local-dev inventory sets local_mode: true (the shared tasks
+          still read it). Nothing changed.
+        quiet: true
+
     # Read-only check of the credential path before anything is written.
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
@@ -378,6 +395,9 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _engine: "{{ container_engine | default('podman') }}"
+    # The same derivation as Phase 1, from the same hosts, so -e local_mode or -e inventory_hostname cannot change it
+    # here either. (-e of this internal name is refused by the guard play, which --start-at-task skips.)
+    _launch_gate_local_mode: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
 
   tasks:
     - name: "Run deploy.sh (container lifecycle)"
@@ -386,8 +406,8 @@
         bash deploy.sh
       environment:
         CONTAINER_ENGINE: "{{ _engine }}"
-        # The same derivation as Phase 1: the public flag alone never selects local-dev here.
-        LOCAL_MODE: "{{ 'true' if ((local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z'))) else '' }}"
+        # The same derivation as Phase 1: the hosts decide, never the public flag or inventory_hostname.
+        LOCAL_MODE: "{{ 'true' if _launch_gate_local_mode else '' }}"
         # Force the compose provider on the Mac-direct genesis path; empty on the Semaphore path.
         COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
         # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate even when every input
@@ -420,7 +440,7 @@
     # port is published on the Mac's loopback, which that container cannot reach. So a local probe dials the TLS
     # name on the container's own port (8443: config.json.j2 listen_port) through the local-dev network alias
     # (compose.local.yml), and sends no --resolve. Production keeps --resolve to the declared bind and port.
-    _launch_gate_local_mode: "{{ (local_mode | default(false) | bool) and (inventory_hostname is match('^[A-Za-z0-9._-]+-local\\Z')) }}"
+    _launch_gate_local_mode: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
     _launch_gate_probe_port: "{{ '8443' if _launch_gate_local_mode else _launch_gate_port }}"
     _launch_gate_plain_host: "{{ _launch_gate_tls_name if _launch_gate_local_mode else _launch_gate_bind }}"
     # curl, not uri: --resolve (production only) sends the declared name to the bind address, while the certificate

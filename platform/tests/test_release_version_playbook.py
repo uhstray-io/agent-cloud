@@ -457,10 +457,12 @@ def test_the_play_vars_are_all_internal_or_the_openbao_connection():
         assert name.startswith(("_rv_", "_bao_")), name
 
 
-def test_the_only_inputs_read_from_outside_are_release_major_and_release_refresh_tag_each_read_once():
+def test_the_only_inputs_read_from_outside_are_each_named_value_read_once():
     code = yaml.safe_dump(_play())
     assert code.count("{{ release_major") == 1
     assert code.count("{{ release_refresh_tag") == 1
+    assert code.count("{{ release_notes_from_task") == 1
+    assert code.count("{{ release_semaphore_project_id") == 1
     assert _values()["_rv_major"] == "{{ release_major | default('') | trim }}"
     assert _values()["_rv_refresh"] == "{{ release_refresh_tag | default('') | trim }}"
     assert "survey" not in code
@@ -708,7 +710,7 @@ def test_the_notes_model_is_a_literal_value_that_no_survey_or_extra_var_can_chan
     )
 
 
-def test_the_refresh_template_is_declared_with_one_typed_input_no_schedule_and_sits_after_the_major():
+def test_the_refresh_template_is_declared_with_its_two_inputs_no_schedule_and_sits_after_the_major():
     templates = _templates()
     entries = [t for t in templates if t.get("name") == "Refresh Release Notes (Dev)"]
     assert len(entries) == 1
@@ -726,7 +728,17 @@ def test_the_refresh_template_is_declared_with_one_typed_input_no_schedule_and_s
             ),
             "type": "string",
             "required": True,
-        }
+        },
+        {
+            "name": "release_notes_from_task",
+            "title": "Publish a reviewed check run (task id)",
+            "description": (
+                "Optional. The id of a successful check-mode run of this template for the same tag; its printed "
+                "notes are published exactly, instead of generating new ones."
+            ),
+            "type": "integer",
+            "required": False,
+        },
     ]
     names = [t["name"] for t in templates]
     assert names.index("Refresh Release Notes (Dev)") == names.index("Release Major Version (Dev)") + 1
@@ -1114,3 +1126,249 @@ def test_a_run_whose_inventory_did_not_parse_is_refused_before_openbao_is_reache
     assert _index(guard) < _index(_registered("_rv_auth"))  # the AppRole login, found by its register
     refresh_check = _one(lambda leaf: leaf["name"].startswith("Refuse a refresh beside a major"), "refresh/major check")
     assert _index(refresh_check) < _index(guard)
+
+
+# --- Publish a reviewed body (release_notes_from_task). The optional input, its two asserts, the refresh block's two
+# includes, the publish task file and the record the notes task writes. Nothing here starts a run. --------------------
+
+FROM_TASK = REPO / "platform/playbooks/tasks/release-notes-from-task.yml"
+# The include argument is relative to the playbook, as tasks/release-notes-body.yml is.
+FROM_TASK_INCLUDE = "tasks/release-notes-from-task.yml"
+HELPER = REPO / "platform/playbooks/files/release_notes_from_task.py"
+HELPER_ARGV = ["python3", "-I", "{{ playbook_dir }}/files/release_notes_from_task.py"]
+FROM_TASK_LEAVES = _walk(yaml.safe_load(FROM_TASK.read_text()), "tasks", False, {}, [])
+# Results that hold the Semaphore token, a Semaphore reply or the body. A visible task in the publish file names none.
+FROM_TASK_PROTECTED = (
+    "_rnt_semaphore_read",
+    "_rnt_semaphore",
+    "_rnt_task_read",
+    "_rnt_output_read",
+    "_rnt_template_read",
+    "_rnt_check",
+    "_rnt_result",
+    "_rn_body",
+)
+PUBLISH_MODULES = {"uri", "command", "set_fact", "assert", "debug"}
+
+
+def _from_task(pred, what):
+    return _pick(FROM_TASK_LEAVES, pred, what)
+
+
+def _from_task_fact(name):
+    return _from_task(lambda lf: _sets(lf, name), name)
+
+
+def test_the_publish_input_is_one_optional_integer_on_the_refresh_template_only():
+    carrying = [t["name"] for t in _templates() if "release_notes_from_task" in str(t.get("survey_vars", ""))]
+    assert carrying == ["Refresh Release Notes (Dev)"]
+
+
+def test_the_publish_values_are_internal_read_once_and_the_project_defaults_to_the_instances_one():
+    vals = _values()
+    assert vals["_rv_from_task"] == "{{ release_notes_from_task | default('', true) | string | trim }}"
+    assert vals["_rv_semaphore_project_id"] == "{{ release_semaphore_project_id | default(1) }}"
+    code = yaml.safe_dump(_play())
+    assert code.count("{{ release_notes_from_task") == 1
+    assert code.count("{{ release_semaphore_project_id") == 1
+
+
+def test_the_publish_id_is_checked_by_form_and_needs_a_refresh_tag_before_any_network_call():
+    tasks = _play()["tasks"]
+    number = next(
+        t for t in tasks if "release_notes_from_task must be empty" in str(t.get("ansible.builtin.assert", {}))
+    )
+    pair = next(
+        t
+        for t in tasks
+        if "release_notes_from_task needs release_refresh_tag" in str(t.get("ansible.builtin.assert", {}))
+    )
+    assert number["ansible.builtin.assert"]["that"] == [
+        "_rv_from_task | length == 0 or _rv_from_task is match('^[1-9][0-9]*$')"
+    ]
+    assert pair["ansible.builtin.assert"]["that"] == ["_rv_from_task | length == 0 or _rv_refresh | length > 0"]
+    beside = next(t for t in tasks if "cannot both be set" in str(t.get("ansible.builtin.assert", {})))
+    guard = next(t for t in tasks if t.get("ansible.builtin.include_tasks") == "tasks/require-parsed-inventory.yml")
+    login = next(t for t in tasks if t.get("register") == "_rv_auth")
+    assert tasks.index(beside) < tasks.index(number) < tasks.index(pair) < tasks.index(guard) < tasks.index(login)
+
+
+def test_the_refresh_block_generates_the_notes_or_publishes_the_reviewed_run_never_both():
+    leaves = _walk(_guarded_tasks("_rv_refresh | length > 0"), "block", False, {}, [])
+    generated = _pick(
+        leaves,
+        lambda lf: _module(lf["task"]) == ("include_tasks", "tasks/release-notes-body.yml"),
+        "refresh body include",
+    )
+    assert generated["task"].get("when") == "_rv_from_task | length == 0"
+    assert generated["task"]["vars"] == {"_rn_tag": "{{ _rv_refresh }}"}
+    published = _pick(
+        leaves,
+        lambda lf: _module(lf["task"]) == ("include_tasks", FROM_TASK_INCLUDE),
+        "publish include",
+    )
+    assert published["task"].get("when") == "_rv_from_task | length > 0"
+    assert published["task"]["vars"] == {"_rnt_tag": "{{ _rv_refresh }}", "_rnt_task_id": "{{ _rv_from_task | int }}"}
+    # Included nowhere else: a normal run never publishes a reviewed body.
+    everywhere = _by_module("include_tasks", lambda args: args == FROM_TASK_INCLUDE)
+    assert [lf["name"] for lf in everywhere] == [published["name"]]
+
+
+def test_the_publish_file_is_read_only_and_every_request_and_the_helper_is_hidden_and_checked_as_a_read():
+    modules = {_module(lf["task"])[0] for lf in FROM_TASK_LEAVES}
+    assert modules <= PUBLISH_MODULES, modules
+    for lf in FROM_TASK_LEAVES:
+        module, args = _module(lf["task"])
+        if module == "uri":
+            assert args.get("method", "GET") == "GET", lf["name"]
+            assert args["follow_redirects"] == "none", lf["name"]
+        if module in ("uri", "command"):
+            assert lf["no_log"] is True, lf["name"]
+            assert lf["task"].get("check_mode") is False, lf["name"]
+            assert lf["task"].get("changed_when") is False, lf["name"]
+    reads = [lf for lf in FROM_TASK_LEAVES if _module(lf["task"])[0] in ("uri", "command")]
+    assert len(reads) == 5, "the secret read, the task, its output, its template and the helper"
+
+
+def test_the_semaphore_routes_are_the_three_gets_and_carry_the_bearer_token_in_headers_only():
+    uris = [(lf["name"], _module(lf["task"])[1]) for lf in FROM_TASK_LEAVES if _module(lf["task"])[0] == "uri"]
+    semaphore = [(name, args) for name, args in uris if "/api/project/" in args["url"]]
+    assert [args["url"] for _, args in semaphore] == [
+        "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}",
+        "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}/output",
+        "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/templates/{{ _rnt_template_id | int }}",
+    ]
+    for name, args in semaphore:
+        assert args["headers"] == {"Authorization": "Bearer {{ _rnt_semaphore.api_token }}"}, name
+        assert args["unredirected_headers"] == ["Authorization"], name
+        assert args["use_netrc"] is False and args["use_proxy"] is False, name
+    bao = next(args for _, args in uris if args["url"] == "{{ _bao_url }}/v1/secret/data/services/semaphore")
+    assert bao["headers"] == {"X-Vault-Token": "{{ _rv_auth.json.auth.client_token }}"}
+    assert bao["unredirected_headers"] == ["X-Vault-Token"]
+    for lf in FROM_TASK_LEAVES:
+        if _module(lf["task"])[0] == "command":
+            stdin = str(_module(lf["task"])[1].get("stdin", ""))
+            assert "api_token" not in stdin and "X-Vault" not in stdin and "client_token" not in stdin, lf["name"]
+
+
+def test_the_endpoint_is_refused_unless_https_and_named_by_requirement_not_by_value():
+    check = _from_task(
+        lambda lf: "(_rnt_semaphore.url | default('', true)) is match('^https://[^/]+$')"
+        in str(lf["task"].get("ansible.builtin.assert", {}).get("that", "")),
+        "endpoint assert",
+    )
+    assert check["no_log"] is True
+    expected = "(_rnt_semaphore.api_token | default('', true)) | length > 0"
+    assert check["task"]["ansible.builtin.assert"]["that"][1] == expected
+    assert "secret/services/semaphore must hold an https url and an api_token" in (
+        check["task"]["ansible.builtin.assert"]["fail_msg"]
+    )
+
+
+def test_the_helper_is_the_one_isolated_command_and_takes_the_run_on_stdin():
+    assert HELPER.is_file()
+    commands = [lf for lf in FROM_TASK_LEAVES if _module(lf["task"])[0] == "command"]
+    assert len(commands) == 1
+    args = _module(commands[0]["task"])[1]
+    assert args["argv"] == HELPER_ARGV
+    assert args.get("stdin_add_newline") is False
+    for key in ("'task'", "'output_rows'", "'template'", "'expected_tag'", "'expected_task_id'"):
+        assert key in args["stdin"], key
+    assert "_rnt_task_id | int" in args["stdin"]
+
+
+def test_a_refusal_names_one_rule_token_and_is_checked_before_any_body_is_taken():
+    rule = _from_task_fact("_rnt_rule")
+    assert rule["no_log"] is True
+    text = rule["task"]["ansible.builtin.set_fact"]["_rnt_rule"]
+    assert "select('match', '^release-notes-from-task: [a-z0-9_]{1,80}$')" in text
+    assert "'no named rule'" in text
+    refusal = _from_task(
+        lambda lf: lf["task"].get("ansible.builtin.assert", {}).get("that") == ["_rnt_rc == 0"],
+        "refusal",
+    )
+    assert refusal["no_log"] is not True
+    assert "{{ _rnt_rule }}" in refusal["task"]["ansible.builtin.assert"]["fail_msg"]
+    assert "Nothing was written" in refusal["task"]["ansible.builtin.assert"]["fail_msg"]
+    body = _from_task_fact("_rn_body")
+    assert FROM_TASK_LEAVES.index(rule) < FROM_TASK_LEAVES.index(refusal) < FROM_TASK_LEAVES.index(body)
+
+
+def test_no_visible_task_in_the_publish_file_names_a_protected_result():
+    for lf in FROM_TASK_LEAVES:
+        if lf["no_log"] is True:
+            continue
+        text = yaml.safe_dump(lf["task"])
+        for name in FROM_TASK_PROTECTED:
+            assert not re.search(rf"\b{name}\b", text), f"{lf['name']} names {name}"
+
+
+def test_the_body_is_taken_hidden_and_its_record_holds_only_the_task_tag_digest_and_size():
+    body = _from_task_fact("_rn_body")
+    assert body["no_log"] is True
+    assert body["task"]["ansible.builtin.set_fact"]["_rn_body"] == "{{ _rnt_result.body }}"
+    summary = _from_task_fact("_rnt_summary")
+    assert summary["no_log"] is True
+    assert sorted(summary["task"]["ansible.builtin.set_fact"]["_rnt_summary"]) == ["bytes", "sha256", "tag", "task_id"]
+    digest = _from_task_fact("_rnt_body_sha256")
+    assert digest["no_log"] is True
+    assert digest["task"]["ansible.builtin.set_fact"]["_rnt_body_sha256"] == "{{ _rn_body | hash('sha256') }}"
+
+
+def test_the_published_body_is_checked_against_its_record_for_digest_tag_and_task_id_before_publishing():
+    check = _from_task(
+        lambda lf: "_rnt_body_sha256 == _rnt_summary.sha256"
+        in str(lf["task"].get("ansible.builtin.assert", {}).get("that", "")),
+        "digest check",
+    )
+    assert check["task"]["ansible.builtin.assert"]["that"] == [
+        "_rnt_body_sha256 == _rnt_summary.sha256",
+        "_rnt_summary.tag == _rnt_tag",
+        "_rnt_summary.task_id | int == _rnt_task_id | int",
+    ]
+    assert "nothing was published" in check["task"]["ansible.builtin.assert"]["fail_msg"]
+    assert FROM_TASK_LEAVES.index(_from_task_fact("_rn_body")) < FROM_TASK_LEAVES.index(check)
+
+
+def test_the_publish_file_checks_the_tag_and_task_id_form_first_and_names_only_allowed_facts_visibly():
+    first = FROM_TASK_LEAVES[0]
+    assert _module(first["task"])[0] == "assert"
+    assert first["task"]["ansible.builtin.assert"]["that"] == [
+        "_rnt_tag is match('^v[0-9]+[.][0-9]+[.][0-9]+$')",
+        "_rnt_task_id | int > 0",
+    ]
+    for lf in FROM_TASK_LEAVES:
+        reg = lf["task"].get("register")
+        if reg:
+            assert reg.startswith("_rnt_"), lf["name"]
+        module, args = _module(lf["task"])
+        if module == "set_fact":
+            for key in args:
+                assert key.startswith("_rnt_") or key == "_rn_body", f"{lf['name']}: {key}"
+
+
+def test_the_notes_record_is_a_set_stats_of_tag_digest_and_body_written_after_the_body_is_taken():
+    record = _notes(lambda lf: _module(lf["task"])[0] == "set_stats", "record")
+    assert _module(record["task"])[1] == {
+        "data": {
+            "release_notes": {
+                "tag": "{{ _rn_tag }}",
+                "sha256": "{{ _rn_body | hash('sha256') }}",
+                "body": "{{ _rn_body }}",
+            }
+        },
+        "per_host": False,
+        "aggregate": False,
+    }
+    assert record["no_log"] is not True
+    body_fact = _notes(lambda lf: _sets(lf, "_rn_body"), "body fact")
+    assert NOTES_LEAVES.index(body_fact) < NOTES_LEAVES.index(record)
+
+
+def test_the_notes_sha256_is_printed_visibly_so_a_reviewer_can_match_a_later_publish():
+    shown = _notes(
+        lambda lf: _module(lf["task"])[0] == "debug" and "hash('sha256')" in str(_module(lf["task"])[1].get("msg", "")),
+        "digest debug",
+    )
+    assert shown["no_log"] is not True
+    assert "{{ _rn_tag }}" in shown["task"]["ansible.builtin.debug"]["msg"]

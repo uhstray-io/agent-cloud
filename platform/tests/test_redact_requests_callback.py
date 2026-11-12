@@ -9,6 +9,7 @@ import os
 import subprocess
 import textwrap
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 from fake_http import DrainingHandler, serve
@@ -54,7 +55,7 @@ def server():
             pass
 
     with serve(Handler) as url:
-        yield int(url.rsplit(":", 1)[1])
+        yield urlsplit(url).port
 
 
 def run(tmp_path, port, *extra, callback=None):

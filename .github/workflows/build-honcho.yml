@@ -3,7 +3,7 @@ name: Build honcho image
 
 # Build honcho from upstream source (plastic-labs/honcho) at a PINNED ref and
 # push it to ghcr.io/uhstray-io/honcho — deploy.sh only ever pulls this
-# prebuilt image (plan/development/11-tududi-honcho-deployment.md, D4), it
+# prebuilt image (plan/development/11-honcho-deployment.md, D4), it
 # never builds on the VM. Dispatch-only for now: bumping the ref is a
 # deliberate act (the deriver's LLM behavior can change between upstream
 # releases). A weekly rebuild cron stays OFF until the image is past interim.

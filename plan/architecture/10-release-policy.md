@@ -1,7 +1,7 @@
 # 10 — Release Policy
 
 **Date:** 2026-11-10
-**Status:** ACTIVE (rules in force); enforcement PROPOSED in [plan 23](../development/23-release-train.md)
+**Status:** ACTIVE (rules in force; R2–R5 enforced since plan 23, phases 1–3)
 **Author:** Joseph A. Wisneski IV
 **Context:** A release is one `dev` → `main` promotion. Plan 20 gave each release a version
 number. Nothing limited how much one release carries, and v0.14.0 carried 26 days of work.
@@ -69,7 +69,7 @@ patch, and a new major (1.0.0 and later) is cut only by the operator's launch of
 | R6 | **Cut a release when either trigger fires:** its planned scope has landed, or either count reaches 80% of its limit (80 pull requests or 96 files). The limit is a ceiling, not a target. |
 | R7 | **Every release is planned.** Before work starts, a release has a declared scope: OpenSpec changes or task groups, listed in dependency order, with a file budget of at most **90 files**, which stays under R6's 96-file trigger. The 30 files between the plan and the limit are headroom for fixes found along the way. A change too large for one release is split by task group across consecutive releases. |
 | R8 | **A pull request that does not fit waits or splits.** A pull request larger than the remaining budget waits for the next release or is split. A pull request over 120 files can never merge and must be split. |
-| R9 | **Fixed promotion checklist.** Every promotion meets all of these: two review rounds with every finding answered (the operator's rule for pull requests into `main`, set 2026-11-10 and recorded here); every required check green, including `Promotion source (dev -> main)` and, once built, `Release size`; the `main` copies of isolated-environment templates provisioned before merge; release notes in the standing format (Summary and Major Updates, then Features, Fixes and Documentation Updates, a collapsed list of other changes, and contributors). |
+| R9 | **Fixed promotion checklist.** Every promotion meets all of these: two review rounds with every finding answered (the operator's rule for pull requests into `main`, set 2026-11-10 and recorded here); every required check green, including `Promotion source (dev -> main)`, whose `Release size` step checks the budget; the `main` copies of isolated-environment templates provisioned before merge; release notes in the standing format (Summary and Major Updates, then Features, Fixes and Documentation Updates, a collapsed list of other changes, and contributors). |
 | R10 | **No waivers.** The only override is the existing `protect-main` admin break-glass. A release merged through it says so in its release notes, with the reason. |
 | R11 | **Recovering an over-limit `dev`.** The intake check is an operator gate, not a required check (`dev` has none), so a merge made outside the guard can push `dev` over a limit. Over the file limit, revert pull requests can bring `dev` back under it. Over the pull-request limit there is no way back on `dev`, because the count only grows: each revert is another pull request. The release then ships through R10's break-glass, recorded in its notes, and the merge that skipped the guard is a `docs/MISTAKES.md` entry. |
 | R12 | **Transition: the limits start after v0.15.0.** When this policy was adopted, `dev` was already 40 pull requests and 661 files ahead of `main`, 517 of the files from one pull request (#1043, retiring platforms). The operator decided on 2026-11-11 that the next promotion, v0.15.0, ships that content as the **carry-over release**: it is promoted whole, under R9's checklist, and R2–R6 do not apply to it. Its scope is fixed to plan 23's Release 1 row: what is on `dev` at adoption, the open pull requests that row names, and the enforcement phases. Any other pull request waits for v0.15.0's promotion, except the no-new-path merges R5 allows. It is cut when that row has landed. Its release notes name it as the carry-over release under R12. R2–R11 apply to every release after it, counted from v0.15.0's tag. This is the policy's start date, not a waiver: R10 governs every later release. |
@@ -98,7 +98,7 @@ flowchart TD
     T -->|no| PR
     T -->|yes| PROMO["dev → main promotion PR"]
     FULL --> PROMO
-    PROMO --> CHK["Promotion source check<br/>Release size check (backstop)<br/>2 review rounds, R9 checklist"]
+    PROMO --> CHK["Promotion source check<br/>its Release size step (backstop)<br/>2 review rounds, R9 checklist"]
     CHK --> MAIN["merged into main<br/>tagged vX.Y.Z + Release (plan 20)"]
     MAIN --> RESET["budget resets: counts from the new tag"]
     RESET --> PR
@@ -108,26 +108,26 @@ flowchart TD
 
 | Rule | Mechanism | Status |
 |---|---|---|
-| R2, R3 counting | a `release-budget` subcommand in `scripts/semver.py` | **Not built** (plan 23, phase 1) |
-| R4, R5 intake gate | `scripts/merge-when-green.py` refuses a merge into `dev` that would exceed a limit | **Not built** (plan 23, phase 2) |
-| R2, R3 backstop | a `Release size` step on pull requests into `main` | **Not built** (plan 23, phase 3) |
+| R2, R3 counting | the `release-budget` subcommand of `scripts/semver.py` | **Built** (#1081; plan 23, phase 1) |
+| R4, R5 intake gate | `scripts/merge-when-green.py` refuses a merge into `dev` that would exceed a limit | **Built** (#1093; plan 23, phase 2) |
+| R2, R3 backstop | the `Release size` step of the `Promotion source (dev -> main)` check, on pull requests into `main` | **Built** (#1083; plan 23, phase 3) |
 | R6–R8 planning | the release scope in plan 23 and in Plane cycles | **Convention** until plan 23, phase 5 |
 | R9 checklist | review receipts, required checks, release notes | Partly enforced (required checks); the rest is convention |
 
-**Until the gates exist**, whoever merges into `dev` runs both counts first, from an
-up-to-date clone:
+**Reading the budget.** Both gates print the counts they decide on. The dev merge guard prints a
+`BUDGET:` line on every run that reaches the count, including read-only runs and runs on pull requests only the operator may
+merge. The promotion check's `Release size` step prints the JSON it reads. To read the count directly,
+from an up-to-date clone:
 
 ```bash
-git fetch origin
-python3 scripts/semver.py notes --from "$(git describe --tags --abbrev=0 --exclude '*-dev.*' origin/main)" --to origin/dev | wc -l
-git diff --name-only origin/main...origin/dev | wc -l
+git fetch --tags origin
+python3 scripts/semver.py release-budget
 ```
 
-On 2026-11-11 these printed `40` and `661`: `dev` is over the file limit, which R12
-covers. The counts start from zero again at v0.15.0's tag.
-
-If either result, plus the pull request about to merge, would exceed its limit, the
-release is full (R5).
+It prints one JSON object: the release it counts from, `prs`, `files`, the limits, what remains,
+`warn` (80% of a limit), `full`, and `transition` (true until v0.15.0's tag exists, R12). On
+2026-11-11, before v0.15.0, the counts were 40 pull requests and 661 files, which R12 covers. The
+counts start from zero again at v0.15.0's tag.
 
 ## Implementation Phases
 
@@ -157,8 +157,8 @@ The enforcement phases and the release roadmap live in
 
 - [plan 23 — Release train](../development/23-release-train.md): enforcement phases and the dependency-ordered release roadmap
 - [plan 20 — Semantic versioning](../development/20-semantic-versioning.md): how a release is numbered, tagged and published
-- [dev merge guard](../development/dev-merge-guard.md): where the intake gate is added
-- `.github/workflows/enforce-promotion-source.yml`: where the backstop is added
+- [dev merge guard](../development/dev-merge-guard.md): where the intake gate lives
+- `.github/workflows/enforce-promotion-source.yml`: where the backstop lives
 - [03 — Testing & CI Quality](03-testing-ci-quality.md)
 - Root `AGENTS.md` → "Branch Workflow"
 
@@ -168,3 +168,4 @@ The enforcement phases and the release roadmap live in
 |---|---|
 | 2026-11-10 | Initial policy: 100-PR and 120-file limits per release (operator), counting rules, intake gate, planning rules. |
 | 2026-11-11 | Review fixes: R12 transition, its scope fixed to plan 23's Release 1 row with R6 off for it (operator: limits start after v0.15.0, the carry-over release); R5 lets reverts and in-scope promotion fixes merge into a full release; R2 states that main-only pull requests are counted; R3 counts a rename once; size table and intake figures recomputed with R2's own count and explicit UTC windows; R9's two-round rule given its source; plan renumbered to 23. |
+| 2026-11-12 | Enforcement built: the count (#1081), the dev merge guard's intake check (#1093) and the promotion check's `Release size` step (#1083). The interim manual commands are replaced by the gates' own readouts and `semver.py release-budget`. |
