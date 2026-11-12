@@ -1108,9 +1108,10 @@ mod tests {
         assert_ne!(logout.body, r#"{"error":"origin_refused"}"#);
     }
 
-    /// D53 without a session: the origin rule runs before the session check, so a write from another origin, or with no
-    /// `Origin`, is refused 403 although the caller is not signed in. The console's own origin and an `application/json`
-    /// `Content-Type` reach the handler, which answers 401 for the missing session.
+    /// D53 without a session: the origin rule runs before the session check, so a write from another origin, with no
+    /// `Origin`, or with a `Content-Type` other than `application/json`, is refused 403 although the caller is not
+    /// signed in. The console's own origin and an `application/json` `Content-Type` reach the handler, which answers 401
+    /// for the missing session.
     #[tokio::test]
     async fn a_write_without_a_session_is_origin_checked_first() {
         let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
@@ -1142,6 +1143,18 @@ mod tests {
         .await;
         assert_eq!(no_origin.status, 403, "{}", no_origin.body);
         assert_eq!(no_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let text_body = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Origin", CONSOLE_ORIGIN), ("Content-Type", "text/plain")],
+            BODY,
+        )
+        .await;
+        assert_eq!(text_body.status, 403, "{}", text_body.body);
+        assert_eq!(text_body.body, r#"{"error":"origin_refused"}"#);
 
         let own_origin = call_with(
             addr,

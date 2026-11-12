@@ -27,7 +27,7 @@ The console MUST sign users in through the Authentik OIDC client `console`, usin
 
 ### Requirement: Health and the API session gate
 
-The console MUST answer `GET /healthz` with 200 and the text `ok` without a session. Every `/v1/*` route MUST answer 401 with the JSON body `{"error":"unauthenticated"}` when the request carries no session. A state-changing request under `/v1/` (POST, PUT, PATCH or DELETE) whose `Origin` is not the console's own base URL, or whose `Content-Type` is not `application/json`, MUST be refused with 403 and the JSON body `{"error":"origin_refused"}` before the session is checked (D53), whether or not it carries a session.
+The console MUST answer `GET /healthz` with 200 and the text `ok` without a session. Every `/v1/*` request that passes the origin rule below MUST answer 401 with the JSON body `{"error":"unauthenticated"}` when the request carries no session, except a method the console does not serve on that path, which answers 405 with an empty body. A state-changing request under `/v1/` (POST, PUT, PATCH or DELETE) MUST be refused with 403 and the JSON body `{"error":"origin_refused"}` before the session is checked (D53), whether or not it carries a session, unless it carries exactly one `Origin` header equal to the origin of the console's base URL and a `Content-Type` whose media type is `application/json` (parameters such as `charset` are allowed).
 
 #### Scenario: Health answers without a session
 
@@ -41,7 +41,7 @@ The console MUST answer `GET /healthz` with 200 and the text `ok` without a sess
 
 #### Scenario: Every /v1 route answers 401 without a session
 
-- **WHEN** a request without a session calls any `/v1/*` route, including `GET /v1/tenants`, `GET /v1/tenants/{t}/tree` and `PUT /v1/me`, a state-changing one carrying the console's own `Origin` and `Content-Type: application/json`
+- **WHEN** a request without a session calls any `/v1/*` route, including `GET /v1/tenants`, `GET /v1/tenants/{t}/tree` and `PUT /v1/me`, a state-changing route the console serves, carrying the console's own `Origin` and `Content-Type: application/json`
 - **THEN** each response is 401 with the JSON body `{"error":"unauthenticated"}`, and no tenant or preference data is returned
 
 #### Scenario: A cross-origin write is refused before the session check
