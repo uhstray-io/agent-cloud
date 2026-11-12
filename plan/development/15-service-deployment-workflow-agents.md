@@ -61,9 +61,9 @@ deliberation behind them is retained in the Hindsight bank.
 | D10 | **Every existing step is reviewed against explicit criteria** before it is trusted in the graph; the registry records the review date | Trust existing playbooks as-is | An executor that "works" with no stated pass condition cannot report a failure |
 | D11 | **Agents read deployment state.** Every node receives the run's prior step results and the registry entries for its current and next steps; read tools are NetBox custom fields and Semaphore `check_task` | Stateless nodes | The reasoning steps must know what already happened to this service |
 
-> **2026-10-31 note on D3 and D9.** The decisions above are kept as recorded on 2026-09-22. It is not yet
-> true that OPA gates Semaphore launches. skynet's own client asks OPA before each launch; Semaphore does
-> not ask OPA. Because Semaphore v2.19.11 merges a launcher's task environment over the template's,
+> **2026-10-31 note on D3 and D9** (superseded by the 2026-11-11 update below). The decisions above are
+> kept as recorded on 2026-09-22. It is not yet true that OPA gates Semaphore launches. skynet's own
+> client asks OPA before each launch; Semaphore does not ask OPA. Because Semaphore v2.19.11 merges a launcher's task environment over the template's,
 > unfiltered (upstream `services/tasks/TaskRunner.go:395-425`), any `task_runner` can inject extra
 > variables, including templated ones. svc-skynet was demoted to `guest` on 2026-10-31, so skynet can no
 > longer launch. The server-side gate that will ask OPA before every agent launch is planned in OpenSpec
@@ -71,12 +71,22 @@ deliberation behind them is retained in the Hindsight bank.
 > is not built. Read each statement in this document that OPA gates a launch as the target state until
 > that gate lands.
 
+> **2026-11-11 update.** The gate has landed. It was deployed in production on 2026-11-09 and is the only
+> launch-capable identity for agent launches. It asks OPA before every launch and sends the values the run will
+> receive as `settings`. The policy bounds two of them today, `target_service` and `target_host`. skynet launches
+> only through it. Every task of the change is done; its requirements are in the
+> change's delta spec (`specs/platform/agent-launch-gate/spec.md`), and its archive is scheduled for Release 2
+> (`plan/development/23-release-train.md`).
+> A skynet-initiated launch through the gate is proven in local-dev, not yet in production:
+> `Probe skynet Launch (Dev)` was not yet a production template when the template list was read on 2026-11-11.
+
 ## Design Principles
 
 1. **AI proposes, OPA validates, Semaphore executes** (`PRINCIPLES.md` §4;
    `plan/architecture/01-automation-model.md` §8). No agent runs a command on a host, edits
    a file, or calls a service API directly. Every action is a named Semaphore template
-   launched after an OPA decision. 2026-10-31: target state; see the note after the decisions table.
+   launched after an OPA decision. 2026-11-11: the launch gate asks OPA before every agent launch; see the update
+   after the decisions table.
 2. **Snapshot in, proposal out.** Each reasoning step is a pure function from one
    read-only JSON snapshot to one schema-validated proposal. That is what makes it
    testable, replayable, and auditable.
@@ -143,8 +153,8 @@ asks OPA, and Semaphore does not; see the note after the decisions table.
 A validated proposal is one of two things:
 
 - **A runtime action.** "Run template *T* with arguments *A*." Executes immediately when
-  OPA allows `{agent, service, action: run_task, template_name: T}`. 2026-10-31: target state; no launch
-  of this kind happens today (see the note after the decisions table).
+  OPA allows `{agent, service, action: run_task, template_name: T}`. 2026-11-11: skynet launches only through
+  the launch gate, proven in local-dev and not yet in production (see the update after the decisions table).
 - **A finding that declared state must change.** A VM spec, a firewall variable, an
   Authentik blueprint, a service env template. The workflow records the finding with the
   proposed diff, marks the step `fail: change-required`, and the change goes through the
@@ -450,7 +460,7 @@ regenerated from the updated drawing.
 
 ## Security Considerations
 
-- **No model touches a host.** Every action is a Semaphore template after an OPA decision (2026-10-31: target state, see the note after the decisions table); snapshot templates are read-only and their output carries no secret values (only names and presence, the `check-secrets.yml` convention).
+- **No model touches a host.** Every action is a Semaphore template after an OPA decision (2026-11-11: the launch gate asks OPA before every agent launch, see the update after the decisions table); snapshot templates are read-only and their output carries no secret values (only names and presence, the `check-secrets.yml` convention).
 - **Least privilege per role.** `allowed_templates` bounds each identity to its steps; the destructive gate is unchanged.
 - **Blast radius of a wrong proposal** is bounded to what the named template can do, which is already reviewed code. A `change-required` finding never applies itself.
 - **Collector credentials:** Semaphore API token, NetBox automation token and Loki push are read from OpenBao under the controller AppRole with `no_log` on the credential tasks only.
