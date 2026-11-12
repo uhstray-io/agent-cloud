@@ -347,8 +347,9 @@ pub fn api_router(state: SharedState) -> Router {
 }
 
 /// D53: a state-changing request under `/v1/` is refused 403 `origin_refused` unless its `Origin` is the console's own
-/// base URL and its body is JSON. The session cookie is SameSite=Lax, which another `uhstray.io` subdomain passes, so
-/// this check carries the protection. GET and HEAD, and every path outside `/v1/` (the `/auth/*` routes), pass through.
+/// base URL and its `Content-Type` is `application/json`. The session cookie is SameSite=Lax, which another
+/// `uhstray.io` subdomain passes, so this check carries the protection. GET and HEAD, and every path outside `/v1/`
+/// (the `/auth/*` routes), pass through.
 async fn require_console_origin(
     State(app): State<SharedState>,
     request: Request,
@@ -394,6 +395,9 @@ pub fn router(state: SharedState) -> Router {
 mod load_test;
 
 #[cfg(test)]
+mod oidc_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::probe::{http_get_raw, parse_status_line};
@@ -416,7 +420,7 @@ mod tests {
     }"#;
 
     /// The OIDC cell stays empty, so /auth/* answers 503 in these tests.
-    fn test_state() -> SharedState {
+    pub(super) fn test_state() -> SharedState {
         state_with_prefs(Prefs::in_memory().expect("in-memory prefs"))
     }
 
@@ -489,7 +493,7 @@ mod tests {
 
     /// A session store over a throwaway in-memory database. Tests that do not
     /// reopen a file use it; the production store shares the state's prefs connection.
-    fn memory_sessions() -> SqliteStore {
+    pub(super) fn memory_sessions() -> SqliteStore {
         Prefs::in_memory()
             .expect("in-memory sessions")
             .session_store()
@@ -519,7 +523,7 @@ mod tests {
         )
     }
 
-    async fn serve(app: Router) -> SocketAddr {
+    pub(super) async fn serve(app: Router) -> SocketAddr {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
@@ -924,12 +928,21 @@ mod tests {
         .await;
         assert_eq!(put_ok.status, 200);
         let put_json: serde_json::Value = serde_json::from_str(&put_ok.body).expect("json");
-        assert_eq!(put_json["preferences"]["theme"], "dark");
-        assert_eq!(put_json["preferences"]["default_scope"], "acme/ops");
+        let mut put_keys: Vec<&str> = put_json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        put_keys.sort_unstable();
+        assert_eq!(put_keys, ["claims", "preferences"]);
+        assert_eq!(put_json["claims"], me_json["claims"]);
+        let saved = serde_json::json!({"theme": "dark", "timezone": "Europe/Berlin", "default_scope": "acme/ops"});
+        assert_eq!(put_json["preferences"], saved);
 
         let again = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
         let again_json: serde_json::Value = serde_json::from_str(&again.body).expect("json");
-        assert_eq!(again_json["preferences"]["timezone"], "Europe/Berlin");
+        assert_eq!(again_json["preferences"], saved);
 
         let bad_theme = call(
             addr,
@@ -1004,6 +1017,83 @@ mod tests {
         (addr, cookie)
     }
 
+    /// The `preferences` object that `GET /v1/me` returns for this session.
+    async fn read_preferences(addr: SocketAddr, cookie: &str) -> serde_json::Value {
+        let me = call(addr, "GET", "/v1/me", Some(cookie.to_string()), "").await;
+        assert_eq!(me.status, 200);
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        me_json["preferences"].clone()
+    }
+
+    /// Scenario "Profile shows the signed-in claims": `claims` holds every OIDC claim the
+    /// login set, and a user with no saved preferences sees the defaults.
+    #[tokio::test]
+    async fn profile_returns_every_claim_and_default_preferences() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        assert_eq!(me.status, 200);
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        assert_eq!(
+            me_json["claims"],
+            serde_json::json!({
+                "sub": "user-1",
+                "email": "ada@example.test",
+                "name": "Ada",
+                "username": "ada",
+                "groups": ["ops"]
+            })
+        );
+        assert_eq!(
+            me_json["preferences"],
+            serde_json::json!({"theme": "system", "timezone": "UTC", "default_scope": null})
+        );
+    }
+
+    /// Scenario "Invalid preference is refused": a refused `PUT /v1/me` answers 422 and
+    /// leaves the stored preferences as they were. Each refusal is followed by a read, so
+    /// a store that writes before it validates fails here.
+    #[tokio::test]
+    async fn an_invalid_timezone_is_refused_and_nothing_changes() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+        let saved = serde_json::json!({"theme": "light", "timezone": "Europe/Berlin", "default_scope": "acme"});
+
+        let put = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"light","timezone":"Europe/Berlin","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(put.status, 200);
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+
+        let bad_theme = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"neon","timezone":"Europe/Berlin","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(bad_theme.status, 422);
+        assert!(bad_theme.body.contains("invalid_preferences"));
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+
+        let bad_zone = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"dark","timezone":"Bad;Zone","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(bad_zone.status, 422);
+        assert!(bad_zone.body.contains("invalid_preferences"));
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+    }
+
     /// The expiry is an inactivity expiry: a read on a live session re-saves it, so the
     /// browser gets a fresh `console_session` cookie. Without `always_save` the read is 200
     /// and sends no `Set-Cookie`, and the session expires 8h after sign-in regardless.
@@ -1063,8 +1153,8 @@ mod tests {
         );
     }
 
-    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its body is JSON.
-    /// A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
+    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its `Content-Type` is
+    /// `application/json`. A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
     #[tokio::test]
     async fn state_changing_v1_requests_need_the_console_origin_and_a_json_body() {
         let (addr, cookie) = signed_in(&["ops"]).await;
@@ -1175,6 +1265,70 @@ mod tests {
         assert_ne!(logout.body, r#"{"error":"origin_refused"}"#);
     }
 
+    /// D53 without a session: the origin rule runs before the session check, so a write from another origin, with no
+    /// `Origin`, or with a `Content-Type` other than `application/json`, is refused 403 although the caller is not
+    /// signed in. The console's own origin and an `application/json` `Content-Type` reach the handler, which answers 401
+    /// for the missing session.
+    #[tokio::test]
+    async fn a_write_without_a_session_is_origin_checked_first() {
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
+        const BODY: &str = r#"{"preferences":{"theme":"dark"}}"#;
+
+        let cross_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(cross_origin.status, 403, "{}", cross_origin.body);
+        assert_eq!(cross_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let no_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Content-Type", "application/json")],
+            BODY,
+        )
+        .await;
+        assert_eq!(no_origin.status, 403, "{}", no_origin.body);
+        assert_eq!(no_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let text_body = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Origin", CONSOLE_ORIGIN), ("Content-Type", "text/plain")],
+            BODY,
+        )
+        .await;
+        assert_eq!(text_body.status, 403, "{}", text_body.body);
+        assert_eq!(text_body.body, r#"{"error":"origin_refused"}"#);
+
+        let own_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(own_origin.status, 401, "{}", own_origin.body);
+        assert_eq!(own_origin.body, r#"{"error":"unauthenticated"}"#);
+    }
+
     #[tokio::test]
     async fn member_sees_only_the_tenants_naming_their_group() {
         let (addr, cookie) = signed_in(&["ops"]).await;
@@ -1242,6 +1396,112 @@ mod tests {
         let tree = call(addr, "GET", "/v1/tenants/acme/tree", Some(cookie), "").await;
         assert_eq!(tree.status, 404);
         assert_eq!(tree.body, r#"{"error":"unknown_tenant"}"#);
+    }
+
+    /// Task 3.3 (plan 17): the scope file the server reads is the one `scope.json.j2` renders from the example
+    /// inventory. `test_console_scope_contract.py` holds the fixture equal to that render. This loads the same
+    /// fixture through `load`, the production path for CONSOLE_SCOPE_FILE, and serves it.
+    #[tokio::test]
+    async fn the_rendered_example_scope_is_served() {
+        let data_dir =
+            std::env::temp_dir().join(format!("console-scope-contract-{}", std::process::id()));
+        std::fs::create_dir_all(&data_dir).expect("data dir");
+        let state = load(Config {
+            base_url: "https://console.test".into(),
+            oidc_issuer: "https://auth.test/application/o/console/".into(),
+            oidc_client_id: "console".into(),
+            oidc_client_secret: "test-secret".into(),
+            extra_ca_file: None,
+            data_dir: data_dir.clone(),
+            scope_file: std::path::PathBuf::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/scope.example.json"
+            )),
+            semaphore: None,
+            workflow_file: None,
+            netbox: None,
+            proxmox: None,
+            openbao: None,
+            flows_file: None,
+            gateway_file: None,
+            catalog_file: None,
+            grafana_url: None,
+            grafana_token: None,
+            authentik: None,
+            role_map_file: None,
+            github: None,
+            launch_gate: None,
+            launch_dev_variants: true,
+        })
+        .expect("the example scope loads as CONSOLE_SCOPE_FILE");
+
+        let app = api_router(state.clone())
+            .merge(test_login_route(
+                "/test/developer",
+                &["platform-developers"],
+            ))
+            .merge(test_login_route("/test/stranger", &["users"]))
+            .layer(session_layer(state.prefs.session_store()));
+        let addr = serve(app).await;
+        let developer = call(addr, "GET", "/test/developer", None, "")
+            .await
+            .cookie
+            .expect("developer session");
+        let stranger = call(addr, "GET", "/test/stranger", None, "")
+            .await
+            .cookie
+            .expect("stranger session");
+
+        let list = call(addr, "GET", "/v1/tenants", Some(developer.clone()), "").await;
+        let tree = call(addr, "GET", "/v1/tenants/uhstray/tree", Some(developer), "").await;
+        let unlisted = call(addr, "GET", "/v1/tenants", Some(stranger), "").await;
+        let _ = std::fs::remove_file(data_dir.join("prefs.db"));
+        let _ = std::fs::remove_dir(&data_dir);
+
+        assert_eq!(list.status, 200, "{}", list.body);
+        assert_eq!(
+            list.body,
+            r#"{"example":true,"tenants":[{"id":"uhstray","name":"Uhstray (example)"}]}"#
+        );
+
+        assert_eq!(tree.status, 200, "{}", tree.body);
+        assert!(
+            !tree.body.contains("platform-developers"),
+            "group lists leaked: {}",
+            tree.body
+        );
+        let tree_json: serde_json::Value = serde_json::from_str(&tree.body).expect("json");
+        assert_eq!(tree_json["tenant"]["id"], "uhstray");
+        assert_eq!(tree_json["tenant"]["name"], "Uhstray (example)");
+        assert_eq!(tree_json["example"], true);
+        assert_eq!(tree_json["orgs"].as_array().map(Vec::len), Some(1));
+        assert_eq!(tree_json["orgs"][0]["id"], "uhstray-io");
+        let sites: Vec<(&str, Vec<&str>)> = tree_json["orgs"][0]["sites"]
+            .as_array()
+            .expect("sites")
+            .iter()
+            .map(|site| {
+                let envs: Vec<&str> = site["envs"]
+                    .as_array()
+                    .expect("envs")
+                    .iter()
+                    .map(|env| env.as_str().expect("env"))
+                    .collect();
+                (site["id"].as_str().expect("site id"), envs)
+            })
+            .collect();
+        assert_eq!(
+            sites,
+            [
+                ("site-hq", vec!["prod", "dev"]),
+                ("do-nyc1", vec!["prod"]),
+                ("cloudflare", vec!["prod"]),
+            ]
+        );
+
+        // A caller in none of the fixture's groups gets the empty list: the file's `groups` decide it.
+        assert_eq!(unlisted.status, 200, "{}", unlisted.body);
+        assert_eq!(unlisted.body, r#"{"example":true,"tenants":[]}"#);
     }
 
     #[tokio::test]

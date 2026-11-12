@@ -52,13 +52,15 @@ def admin(key: str, username: str, **extra) -> dict:
     return {"key": key, "username": username, "name": key.title(), "email": f"{key}@example.invalid", **extra}
 
 
-def _ansible(tmp: Path, host_vars: dict, tasks: list, play_vars: dict | None = None):
+def _ansible(tmp: Path, host_vars: dict, tasks: list, play_vars: dict | None = None, host: str = "gw"):
     # A test that declares an admin list means to derive from it: the gate is on unless it says.
     # `agw_admin_identities_enabled: None` leaves the variable undefined.
     if "platform_admins" in host_vars:
         host_vars = {"agw_admin_identities_enabled": True, **host_vars}
     host_vars = {k: v for k, v in host_vars.items() if not (k == "agw_admin_identities_enabled" and v is None)}
-    inv = {"all": {"hosts": {"gw": {"ansible_connection": "local", **host_vars}}}}
+    # `host` names the one inventory host; a `<name>-local` name makes this a local-dev inventory
+    # (filter_plugins/local_dev.py), which the OpenBao transport guard's local-mode forms require.
+    inv = {"all": {"hosts": {host: {"ansible_connection": "local", **host_vars}}}}
     (tmp / "inv.yml").write_text(yaml.safe_dump(inv))
     (tmp / "play.yml").write_text(
         yaml.safe_dump(

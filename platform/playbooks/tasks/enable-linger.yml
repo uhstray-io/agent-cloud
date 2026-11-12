@@ -29,8 +29,9 @@
 #
 # SELF-GATING: skips entirely under local_mode (local-dev containers run on the
 # developer's podman machine, not host linger) — callers just include it, no
-# per-call `when` needed. Included by the shared prod preamble
-# (tasks/place-monorepo.yml), so every composable service gets reboot
+# per-call `when` needed. Its first task refuses a local_mode that disagrees with the
+# inventory, so a forged extra var cannot take that skip on production. Included by the
+# shared prod preamble (tasks/place-monorepo.yml), so every composable service gets reboot
 # persistence without remembering to ask for it.
 #
 # Required vars: none. Optional `linger_user` names the account to linger when it is
@@ -38,6 +39,9 @@
 # unprivileged account rather than as ansible_user (a CI runner must, since
 # ansible_user holds NOPASSWD sudo after hardening and the runner must hold none).
 # Defaults to ansible_user, so every existing caller is unaffected.
+
+- name: "Refuse a local_mode that disagrees with the inventory's identity"
+  ansible.builtin.include_tasks: assert-local-mode-identity.yml
 
 - name: "Check whether lingering is already enabled for {{ linger_user | default(ansible_user) }}"
   ansible.builtin.command: "loginctl show-user {{ linger_user | default(ansible_user) }} --property=Linger"

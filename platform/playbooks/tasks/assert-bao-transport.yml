@@ -10,16 +10,11 @@
 # on an internal VLAN and is reached at an http:// address. Requiring https
 # outright would break every real run.
 #
-# http:// to a SINGLE-LABEL hostname (no dots) is allowed ONLY under local_mode:
-# local-dev reaches its store as http://local-openbao:8200 on the genesis podman
-# network. It is NOT allowed unconditionally, because a resolver with a `search`
-# suffix in resolv.conf can turn a bare name into a public FQDN — the exact class
-# the anchored pattern exists to refuse. local_mode is the inventory axis that
-# actually distinguishes the two cases. The trailing delimiter still applies, so
-# http://name@evil.example is refused: the name before @ is userinfo, and the
-# request would go to the public host after it.
+# Single-label http:// names and host.containers.internal pass ONLY under local_mode on a local-dev
+# inventory (filter_plugins/local_dev.py): an extra var outranks the inventory, and a bare name can
+# resolve publicly. The trailing delimiter still refuses http://name@host (name before @ is userinfo).
 #
-# The same local_mode branch accepts exactly one dotted name: host.containers.internal, the
+# The same local-dev branch accepts exactly one dotted name: host.containers.internal, the
 # name podman gives a container for its engine host. A local controller reaches services
 # published on the engine's loopback through it (local NetBox, for the conformance collector).
 # The name is matched in full, with the same trailing delimiter, so it cannot be a prefix of
@@ -83,6 +78,7 @@
          and (_assert_bao_url is not match('^https://')
               or _assert_bao_url is match(_pat_https)))
         or ((local_mode | default(false) | bool)
+            and (groups['all'] | local_dev_inventory)
             and _assert_bao_url is match(_pat_single_label))
     fail_msg: >-
       Refusing to send secret material to {{ _assert_url_label | default('OpenBao') }}
