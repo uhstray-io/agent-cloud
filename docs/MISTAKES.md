@@ -5045,21 +5045,20 @@ grounding checkpoint of 2026-11-12 found it.
 memory, never in the repository's record, so the committed rule went stale with nothing to flag it.
 
 **The rule.** An agent pushes a feature branch, opens a pull request into `dev`, and merges it through
-`scripts/merge-when-green.py` once the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold
-and no `dev` merge hold is in force (an announced release freeze, or a drill held under 3.23);
-a `dev` → `main` promotion merges after two review rounds of its final head. Still asked every time,
-with an approval covering exactly the action it names: a push to `main` or `dev`, a force push, a
-squash merge, passing `--dev-drift-acknowledged`, and a push or pull request in a repository outside
-the organisation. Direction to do the work releases none of those.
+`scripts/merge-when-green.py` once the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold and
+no `dev` merge hold is in force (a `dev` freeze the operator has announced, or merges held for a drill
+under 3.23 until its fix lands); a `dev` → `main` promotion merges after two review rounds of its final
+head. Still asked every time, with an approval covering exactly the action it names: a push to `main` or
+`dev`, a force push, a squash merge, passing `--dev-drift-acknowledged`, and a push or pull request in a
+repository outside the organisation. Direction to do the work releases none of those.
 
 **Enforced by.** `.github/rulesets/protect-main.json` refuses a force push and a deletion on `main` and
-requires a pull request with passing checks, with one bypass, the repository-admin role (break-glass), for
-all of them; `protect-dev.json`
-refuses a force push and a deletion on `dev`, with no bypass. `scripts/merge-when-green.py` gates a merge
-into `dev` (the Feature-to-Dev gates), which a plain `gh pr merge` skips. The rest is convention:
-a fast-forward push straight to `dev`, a squash merge, `--dev-drift-acknowledged`, other organisations'
+requires a pull request with passing checks, with one bypass, the repository-admin role (break-glass),
+for all of them; `protect-dev.json` refuses a force push and a deletion on `dev`, with no bypass.
+`scripts/merge-when-green.py` gates a merge into `dev` (the Feature-to-Dev gates), which a plain `gh pr
+merge` skips. The rest is convention: a `dev` merge hold, which nothing the guard reads records, a
+fast-forward push straight to `dev`, a squash merge, `--dev-drift-acknowledged`, other organisations'
 repositories, and the two promotion rounds, which no check counts.
-
 ## 6. Working from assumptions about files
 
 ### 6.1 Editing against an imagined structure
