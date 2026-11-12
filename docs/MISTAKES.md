@@ -146,7 +146,7 @@ and why.
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | 2 | Pre-push hook |
-| 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | 1 | Convention (user-stated) |
+| 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | 1 | Superseded by 5.26 |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | 1 | Pinned binary and SHA256 in CI |
 | 5.9 | **x2** — Added AI attribution to commits against the repo rule (six commits, one pushed); then to a PR body, which no hook reads (widened by 5.15) | Process | 2 | commit-msg hook |
 | 5.10 | **x2** — Switched branches inside a checkout another task was using; the rule is one worktree per work item (widened by 5.14) | Process | 2 | Convention (hook proposed) |
@@ -165,6 +165,7 @@ and why.
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
+| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged` and other organisations' repositories | Process | 0 | `scripts/merge-when-green.py` for merges into `dev`; convention for the rest |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4459,6 +4460,10 @@ Mechanically enforceable via a permission rule denying `git push`/`gh pr create`
 Semaphore-task dispatches; extending deny-by-default to these three git surfaces
 would close it.
 
+**Superseded 2026-11-12 by 5.26.** The operator's standing decisions of 2026-10-14, 2026-11-09 and
+2026-11-10 lifted per-action approval for pushes, pull requests into `dev` and reviewed merges. The
+principle above, an approval covers exactly the action it names, stays for the actions 5.26 still asks.
+
 ### 5.8 A required CI gate installed whatever upstream published last
 
 **What happened.** On 2026-09-23, the required TruffleHog scan selected v3.97.7
@@ -5012,6 +5017,30 @@ found (a skipped pass posted as run goes green); and it binds only merges that g
 reading "Ran on e58f113c". That claimed a pass for a head it never reviewed. The rule as first drafted ("run both
 passes, commit their fixes, push, then post") did not cover it: nothing said a pass's own fixes need a further
 round. CodeRabbit flagged the gap; the rule above now requires rounds until one changes nothing.
+
+### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
+
+**Occurrences: 0** — the occurrence that earned 5.7's rule is 5.7's.
+
+**What happened.** On 2026-10-14 the operator lifted per-action approval for pushes and pull requests,
+and on 2026-11-09 and 2026-11-10 for a merge into `dev` after one review round and a promotion after
+two. AGENTS.md's Branch Workflow callout and 5.7 still required an explicit approval for every push,
+pull request and merge, so the committed rule and the operator's contradicted each other until the
+grounding checkpoint of 2026-11-12 found it.
+
+**Root cause.** The operator's standing decisions lived only in the agent's private instructions and
+memory, never in the repository's record, so the committed rule went stale with nothing to flag it.
+
+**The rule.** An agent pushes a feature branch, opens a pull request into `dev`, and merges it through
+`scripts/merge-when-green.py` once the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold;
+a `dev` → `main` promotion merges after two review rounds of its final head. Still asked every time,
+with an approval covering exactly the action it names: a push to `main` or `dev`, a force push, a
+squash merge, passing `--dev-drift-acknowledged`, and a push or pull request in a repository outside
+the organisation. Direction to do the work releases none of those.
+
+**Enforced by.** `scripts/merge-when-green.py` for merges into `dev` (the Feature-to-Dev gates). The
+rest is convention: no check counts the two promotion rounds, and nothing in this repository stops an
+agent from taking an action on the still-asked list.
 
 ## 6. Working from assumptions about files
 
