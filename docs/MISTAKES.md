@@ -160,7 +160,7 @@ and why.
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
-| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
+| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
@@ -4840,9 +4840,12 @@ an exact head is not enough when the base moved after its CI ran.
 and any of them touches a test file, merge `dev` into the branch and let CI run again on the new
 head.
 
-**Enforced by.** Convention. Proposal: `merge-when-green.py` reports how many commits `origin/dev`
-holds that the head lacks, and refuses when any of them touches a test file until the operator
-passes an explicit acknowledgement.
+**Enforced by.** Since 2026-11-12, `scripts/merge-when-green.py` (`check_dev_drift`): it reports how many
+commits `origin/dev` holds that the head lacks and refuses when any of them changes a test path, unless the
+operator passes `--dev-drift-acknowledged`; tested in `platform/tests/test_merge_when_green.py`
+(`test_dev_drift_into_test_paths_refuses`, `DevDriftGitTests`). Limits: only `dev`'s side is read, so a head
+that adds a repo-wide test still merges when `dev` changed no test path; and it binds only merges that go
+through the script.
 
 ### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
 
