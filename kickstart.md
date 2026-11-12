@@ -362,7 +362,7 @@ git push -u origin feat/<short-description>
 gh pr create --base dev
 ```
 
-**Wait for all PR checks to pass before merging.** This applies equally to code, plans, and docs. CodeRabbit + the three CI jobs (static analysis, security, unit tests) are gating. The unit-tests job includes the Dispatch Console's Rust checks (`Rust (console)`). A merge into `dev` goes through `scripts/merge-when-green.py` after one completed review round of the final head (AGENTS.md, Branch Workflow).
+**Wait for all PR checks to pass before merging.** This applies equally to code, plans, and docs. CodeRabbit + the three CI jobs (static analysis, security, unit tests) are gating. The unit-tests job includes the Dispatch Console's Rust checks (`Rust (console)`). A merge into `dev` goes through `scripts/merge-when-green.py` once the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold, one independent approval of the final head among them.
 
 ### Common gotchas
 

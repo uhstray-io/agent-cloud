@@ -165,7 +165,7 @@ and why.
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
-| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged` and other organisations' repositories | Process | 0 | `scripts/merge-when-green.py` for merges into `dev`; convention for the rest |
+| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged` and other organisations' repositories | Process | 0 | Rulesets (force push, deletion, direct push to `main`) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5038,9 +5038,11 @@ with an approval covering exactly the action it names: a push to `main` or `dev`
 squash merge, passing `--dev-drift-acknowledged`, and a push or pull request in a repository outside
 the organisation. Direction to do the work releases none of those.
 
-**Enforced by.** `scripts/merge-when-green.py` for merges into `dev` (the Feature-to-Dev gates). The
-rest is convention: no check counts the two promotion rounds, and nothing in this repository stops an
-agent from taking an action on the still-asked list.
+**Enforced by.** `.github/rulesets/protect-main.json` and `protect-dev.json` refuse a force push and a
+branch deletion, and `protect-main.json` a direct push to `main`. `scripts/merge-when-green.py` gates a
+merge into `dev` (the Feature-to-Dev gates), which a plain `gh pr merge` skips. The rest is convention:
+a fast-forward push straight to `dev`, a squash merge, `--dev-drift-acknowledged`, other organisations'
+repositories, and the two promotion rounds, which no check counts.
 
 ## 6. Working from assumptions about files
 
