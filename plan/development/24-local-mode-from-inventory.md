@@ -9,7 +9,7 @@
 
 Every reader takes local-dev mode from the inventory's identity: `(groups['all'] | local_dev_inventory)` (filter `platform/playbooks/filter_plugins/local_dev.py`: every host but `localhost` named `<name>-local`, at least one). `groups` is a magic variable an extra var cannot set (`tasks/clean-service.yml:85-89`), and the repository proves it: `platform/tests/test_bao_transport_identity.py::test_forged_groups_do_not_make_a_production_inventory_local_dev` passes `-e` of `groups` and is still refused.
 
-Every real local-dev inventory reads as local-dev under the filter (checked 2026-11-12): the one inventory the local Semaphore uses (`bootstrap-local-dev.yml`, `_inv_ini`) names `localhost` and sixteen `<name>-local` hosts; genesis runs on `platform/inventory/local-dev.yml`, copied from `local-dev.yml.example`, whose hosts are all `<name>-local`; and since AC-696 the identity check already refuses any placement run whose inventory disagrees.
+Every real local-dev inventory reads as local-dev under the filter (checked 2026-11-12): the one inventory the local Semaphore uses (`bootstrap-local-dev.yml`, `_inv_ini`) names `localhost` and fifteen `<name>-local` hosts; genesis runs on `platform/inventory/local-dev.yml`, copied from `local-dev.yml.example`, whose hosts are all `<name>-local`; and since AC-696 the identity check already refuses any placement run whose inventory disagrees.
 
 - **Inline, with no intermediate variable.** A play or task variable holding the result can itself be set with `-e`. Underscore names are refused by the run-start guard (`refuse-internal-extra-vars.yml`), but `--limit` excluding localhost and `--start-at-task` skip that play (its own header). The inline filter call has no such hole.
 - **`local_mode` stays an inventory declaration.** The local-dev inventory keeps setting it, and `tasks/assert-local-mode-identity.yml` keeps refusing a value that disagrees with the identity, so a misdeclared inventory is still caught. After this plan it is the only reader.
@@ -20,7 +20,7 @@ Rejected: refusing `-e local_mode` by name at run start (closes it in one place,
 
 ## Scope (measured on `dev` at `b8f4b28e`, before AC-784)
 
-`local_mode` appears 467 times in 128 files under `platform/playbooks/` and `platform/services/` (`git grep -c`), 298 of them as `local_mode | default(false ...`. By area:
+`local_mode` appears on 481 lines in 128 files (`git grep -c local_mode` over the `.yml`, `.yaml` and `.j2` files under `platform/playbooks/` and `platform/services/`), with 298 occurrences of `local_mode | default(false` (`git grep -h` piped to `grep -o`). By area:
 
 | Area | Files | Occurrences |
 |---|---|---|
