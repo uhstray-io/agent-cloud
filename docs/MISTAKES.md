@@ -6834,7 +6834,7 @@ visible the work board re-reads every 10 seconds (`src/ui/work.rs:24`, `:513-529
 and inventory every 30 (`src/ui/inventory.rs:24`). A session in a visible tab is
 therefore never inactive and never expires, and nothing caps a session's age. The v0.15.0
 promotion review found it (#1112) and filed AC-747. The fix had merged in #1094 and was
-not deployed to production; an offer to deploy it was withdrawn.
+not deployed to production.
 
 **Root cause.** The fix answered "does a request move the expiry?" and its tests proved
 that one does. It did not ask which requests should: a timer-driven poll is not user
