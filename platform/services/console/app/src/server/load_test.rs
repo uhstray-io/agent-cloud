@@ -97,10 +97,7 @@ fn admin_login_route() -> Router {
                 username: Some("admin".into()),
                 groups: vec!["platform-admins".into()],
             };
-            session
-                .insert(auth::KEY_USER, &user)
-                .await
-                .expect("insert user");
+            auth::sign_in(&session, &user).await.expect("insert user");
             "signed in"
         }),
     )
