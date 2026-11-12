@@ -158,7 +158,7 @@ and why.
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
-| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) | Process | 2 | Convention (PR-template checkboxes and a merge-guard check of the PR body proposed) |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Convention (an exact-head commit status per pass, required by `merge-when-green.py`, proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4724,7 +4724,7 @@ passes an explicit acknowledgement.
 
 ### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
 
-**Occurrences: 2** — 2026-10-29, 2026-11-11
+**Occurrences: 4** — 2026-10-29, 2026-11-11, 2026-11-10 (recorded late), 2026-11-11
 
 **What happened.** The branch workflow (`AGENTS.md:568`, step 4) runs `/simplify` and
 `/security-review` on the branch changes before a PR is opened. #1066 (fixture servers onto
@@ -4751,6 +4751,29 @@ put one line for each in the PR body: what it found, and what was fixed or defer
 question in mind. This entry gives the rule its own place, so the count is visible. 2.23 and 2.35
 were also found by `/simplify` passes after their PRs merged; whether step 4 ran on those PRs is
 not recorded, so they are not counted.
+
+**Occurrence 3 — 2026-11-10, recorded late.** #993 (skynet's HTTPS listener, also in 1.29 occurrence 9) was
+opened and merged on 2026-11-10 (UTC) with neither pass; the session's saved record mentions neither.
+The grounding checkpoint ran both after the merge, and `/simplify` found a production-refusal bypass: skynet
+decided local mode from an extra var (AC-695, fixed in #1078). Why the rule did not fire: review rounds and green
+CI read as a complete review, the gap the root cause above names.
+
+**Occurrence 4 — 2026-11-11.** Both passes ran before #1078 (AC-695) was opened, at a grounding checkpoint over
+`b7e11937..48c4f75d` (from `59c97fb7`), the version that keyed local mode on `inventory_hostname`. Their findings, that `-e` can set
+that name (the property `AGENTS.md:262` already records), drove the redesign onto `ansible_play_hosts_all`
+(`5a37a00e`, `867957aa`); the PR review's fixes followed in `a4a2760f`. Neither pass ran over the diff the PR
+opened or merged with, and its body names the passes only as the source of the finding. Why the rule did not fire: the passes had
+run before `gh pr create`, so the step read as done, but they covered a version the PR no longer carried.
+
+**Proposal, refined at count 4.** The rule's PR-body line names no head, and a body line is free text no gate reads
+(`scripts/merge-when-green.py` reads only comment bodies). Instead: each pass posts a commit status on the head it
+covered (contexts `simplify` and `security-review`), and `check_commit_statuses` (`scripts/merge-when-green.py:572`)
+requires both present and successful on the merge head; today it refuses only a status that is present and not
+successful. A push after the passes leaves the new head with no such status, so a stale pass is refused without any
+string comparison, the same exact-head pin 5.20 applies to reviews. Still self-attested, and it binds only merges
+that go through the script. 1.16 and 5.15 also propose reading the PR body; this proposal reads none. It widens
+the rule from "before `gh pr create`" to the merge head, so a push of review fixes needs both passes again;
+building it starts with a new entry that supersedes this rule. Not built.
 
 ## 6. Working from assumptions about files
 
