@@ -2332,7 +2332,7 @@ templates:
     # Read-only: every backup-capable storage's capacity, archives per guest, what a prune at
     # each job's own retention would remove, unexplained bytes, storages that share a
     # filesystem, and every backup job's schedule and retention. No survey: it reads the
-    # whole cluster. GET only; identical under --check.
+    # whole cluster. GET only; a dry run reports the same.
 
   - name: Survey o11y Backup Readiness (Dev)
     playbook: platform/playbooks/survey-o11y-backup-readiness.yml
