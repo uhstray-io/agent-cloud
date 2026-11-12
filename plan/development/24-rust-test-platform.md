@@ -109,7 +109,7 @@ flowchart LR
 ```text
 platform/tests/
   Cargo.toml            agent-cloud-tests, its own [workspace]; Cargo.lock committed
-  .config/nextest.toml  the default and ci profiles, the ansible test-group
+  .config/nextest.toml  the default and ci profiles, the playbook test-group
   areas.yml            area -> path globs (D3)
   src/lib.rs            shared support: repo root, YAML 1.1 loader, task walker, process runner
   src/bin/testsel.rs    changed paths -> nextest filterset (Phase 2)
@@ -126,7 +126,7 @@ unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
 
 | # | Decision | Why the alternatives lost |
 |---|---|---|
-| D1 | **Runner: `cargo-nextest` 0.9.151.** `lane.sh` runs each lane under a profile: `ci` in CI, `default` elsewhere. A `playbook` test-group caps concurrent `ansible-playbook` runs. `slow-timeout` bounds every test, which is plan 21 F5's missing timeout | `cargo test` runs one binary's tests on threads in one process, so a hung child holds the run and per-test timeouts need custom code. `rustest` 0.3.1 replaces the libtest harness (`harness = false`), was last released 2025-06-04 and has 82 downloads a month (lib.rs, read 2026-11-12) |
+| D1 | **Runner: `cargo-nextest` 0.9.151.** `lane.sh` runs the `ci` lane under the `ci` profile and the other lanes under `default`. A `playbook` test-group caps concurrent `ansible-playbook` runs. `slow-timeout` bounds every test, which is plan 21 F5's missing timeout | `cargo test` runs one binary's tests on threads in one process, so a hung child holds the run and per-test timeouts need custom code. `rustest` 0.3.1 replaces the libtest harness (`harness = false`), was last released 2025-06-04 and has 82 downloads a month (lib.rs, read 2026-11-12) |
 | D2 | **Libraries.** `assert_cmd` + `predicates` (process tests), `insta` with `yaml` and `json` (snapshots of rendered output and refusal messages), `proptest` (properties of parsers and resolvers), `wiremock` + `tokio` (HTTP fakes, replacing the 31 hand-rolled servers of plan 21 F5), `yaml-rust2` (YAML), `tempfile`, `globset`, `serde_json`. Approved by the operator on 2026-11-12 | `quickcheck` duplicates `proptest`, and `proptest` keeps failing cases in `proptest-regressions/`. `trybuild` tests compile errors of macros and types, and the repository has none. `serde_yaml` is deprecated (`0.9.34+deprecated` on crates.io) |
 | D3 | **Lanes from `areas.yml`.** YAML, read with the suite's own loader, so no TOML dependency. Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over the selected modules (`test(/^(?:<module>|...)::/)`). The security set is added in every lane (its static tests in `commit`), with the touched areas' tiers the lane allows. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
 | D4 | **Port Python where the runtime is ours.** Controller-side helpers (`scripts/*.py`, `platform/lib/*.py`, `platform/playbooks/files/*.py` run on the controller) become subcommands of one Rust CLI. Host-side helpers follow once D6 is decided. Operator decision, 2026-11-12 | Keeping a thin pytest lane was the recommended option. Shim tests (`python3 -c` per case) are slower than in-process pytest |
@@ -142,8 +142,8 @@ unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
 |---|---|---|---|
 | `commit` | pre-commit hook | static tier of areas touched by staged paths, plus the security set's static tests | under 10 s |
 | `push` | pre-push hook | every tier of touched areas, plus the security set; playbook tier included | under 2 min on a workstation |
-| `ci` | pull request into `dev` | as `push`, against the pull request base | under 8 min wall |
-| `full` | nightly on `dev`, every promotion into `main`, a change to the crate, the area map or a shared task | everything | under 15 min wall |
+| `ci` | pull request into `dev` or `main` | as `push`, against the pull request base; everything for a promotion into `main` | under 8 min wall |
+| `full` | nightly on `dev` (planned), or run by hand | everything | under 15 min wall |
 | `live` | Semaphore templates (`Verify Service Health`, the probes) | not in CI | unchanged |
 
 A changed path that matches no area, no `full` trigger and no ignored path (D3) runs everything in `push`
@@ -192,7 +192,7 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 | Nothing lost | Every deleted pytest or BATS test appears in its port's map with a replacement or a reason |
 | Guards still bite | Each ported security test is mutated once and goes red (03 Part 1, rule 9) |
 | Ledger honest | The Rust citation check is green, and no "Enforced by" names a test that does not exist |
-| Selection safe | A change to the crate, `areas.yml` or a shared task runs `full`; the security set runs in every lane |
+| Selection safe | A change to the crate, `areas.yml` or a shared task runs everything in `push` and `ci` (every area's static tier in `commit`); the security set runs in every lane |
 
 ---
 
