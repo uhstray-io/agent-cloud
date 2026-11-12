@@ -4753,16 +4753,16 @@ were also found by `/simplify` passes after their PRs merged; whether step 4 ran
 not recorded, so they are not counted.
 
 **Occurrence 3 — 2026-11-10, recorded late.** #993 (skynet's HTTPS listener, also in 1.29 occurrence 9) was
-opened and merged on 2026-11-10 with neither pass; the session's saved record mentions neither.
+opened and merged on 2026-11-10 (UTC) with neither pass; the session's saved record mentions neither.
 The grounding checkpoint ran both after the merge, and `/simplify` found a production-refusal bypass: skynet
 decided local mode from an extra var (AC-695, fixed in #1078). Why the rule did not fire: review rounds and green
 CI read as a complete review, the gap the root cause above names.
 
 **Occurrence 4 — 2026-11-11.** Both passes ran before #1078 (AC-695) was opened, at a grounding checkpoint over
-`59c97fb7..48c4f75d`, the version that keyed local mode on `inventory_hostname`. Their findings, that `-e` can set
+`b7e11937..48c4f75d` (from `59c97fb7`), the version that keyed local mode on `inventory_hostname`. Their findings, that `-e` can set
 that name (the property `AGENTS.md:262` already records), drove the redesign onto `ansible_play_hosts_all`
-(`5a37a00e`, `867957aa`) and the review fixes in `a4a2760f`. Neither pass ran over the diff the PR opened or merged
-with, and its body names the passes only as the source of the finding. Why the rule did not fire: the passes had
+(`5a37a00e`, `867957aa`); the PR review's fixes followed in `a4a2760f`. Neither pass ran over the diff the PR
+opened or merged with, and its body names the passes only as the source of the finding. Why the rule did not fire: the passes had
 run before `gh pr create`, so the step read as done, but they covered a version the PR no longer carried.
 
 **Proposal, refined at count 4.** The rule's PR-body line names no head, and a body line is free text no gate reads
@@ -4771,7 +4771,9 @@ covered (contexts `simplify` and `security-review`), and `check_commit_statuses`
 requires both present and successful on the merge head; today it refuses only a status that is present and not
 successful. A push after the passes leaves the new head with no such status, so a stale pass is refused without any
 string comparison, the same exact-head pin 5.20 applies to reviews. Still self-attested, and it binds only merges
-that go through the script. 1.16 and 5.15 also propose reading the PR body; this proposal reads none. Not built.
+that go through the script. 1.16 and 5.15 also propose reading the PR body; this proposal reads none. It widens
+the rule from "before `gh pr create`" to the merge head, so a push of review fixes needs both passes again;
+building it starts with a new entry that supersedes this rule. Not built.
 
 ## 6. Working from assumptions about files
 
