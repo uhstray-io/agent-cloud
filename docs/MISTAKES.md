@@ -50,7 +50,7 @@ and why.
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
 | 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
-| 1.21 | **x4** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 4 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed |
+| 1.21 | **x5** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 5 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
@@ -117,7 +117,7 @@ and why.
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | 1 | Test: committed launcher places and gates the flag before launch |
 | 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | 1 | Test (pinned targets + definitions, before every run) + runtime path asserts against an inline root + default-deny sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
-| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 2 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`; for OPA, the `opa:` cases there run its real deploy.sh with no `.env`) |
+| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`); widened by 3.24 |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
@@ -130,6 +130,7 @@ and why.
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
 | 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
 | 3.23 | Ran an 18-minute production drill whose second deploy clones the moving `dev` head against a SHA pinned at launch; three merges landed mid-drill and the restore refused, leaving the drilled projection live | Live state | 1 | Convention |
+| 3.24 | A deploy placed files OPA reads only at startup and never restarted it; production OPA served its 2026-11-01 policies until 2026-11-12, twelve policy commits not live (widens 3.11) | Live state | 1 | Test for OPA (`opa:` cases in `test_compose_up_if_changed.bats`); general form Convention; verify gap AC-845 |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -1073,7 +1074,7 @@ live rule and contact state", "real deploy verifies every provisioned dashboard 
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
 
-**Occurrences: 4** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09
+**Occurrences: 5** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09, 2026-11-12
 
 **Occurrence 2 — 2026-10-13.** Verify o11y Service (Dev) tasks 5257 and 5262 passed with the
 agentgateway canary, and the operator was told the Loki line read back "is a span log", so
@@ -1133,6 +1134,18 @@ task tagged `skynet <workflow_id> <step>`, so "skynet launches through the gate"
 own selection rather than an inference from its neighbours; until it exists, that claim is not
 made for any environment where the probe has not run.
 
+
+**Occurrence 5 — 2026-11-12.** The handoff for the skynet registry rollout stated "Production
+OPA has the stamp: Deploy OPA (Dev) task 15168 deployed agent-cloud 188ce892, whose data.json has
+service-assess reviewed: true." The deploy's success was cited as proof of what the running OPA
+answered. Its verify reads the placed files (`opa test --bundle /policies`) and asks sample
+decisions that do not depend on the stamp, so it passed with the server still on its 2026-11-01
+policies (3.24). The rule did not fire because the claim named the deploy, not its check: "it
+deployed the commit" read as "the server runs the commit". It cost a live probe failure (task
+15656) and an investigation, and touched no live state. Guard proposal, retiring `Convention`
+for this form: Plane AC-845, a Deploy OPA verify that asks the running server a decision whose
+expected answer is computed from the placed data, so "the deploy passed" includes "the server
+loaded it".
 ### 1.22 A runner's tool version stated twice without reading the running system
 
 **What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
@@ -3350,7 +3363,7 @@ paths under the repository's `platform/` for writing.
 
 ### 3.11 Changed when a long-lived process restarts without auditing the steps that relied on the old restart; production Authentik lost every custom blueprint instance
 
-**Occurrences: 2** — 2026-10-05, 2026-11-12
+**Widened by 3.24 (2026-11-12):** the same failure with no restart change at all; 3.24's rule covers every deploy.
 
 **What happened.** PR #431 made the Authentik and o11y deploys recreate their containers
 only when an input changed, instead of on every run. Semaphore task 2843, the first deploy
@@ -3384,32 +3397,6 @@ Authentik and o11y bind sources.
 task 2896, recreated the project ("operator requested FORCE_RECREATE=true") and its verify
 reported 14 blueprints applied. The normal deploy after it, task 2899, reported
 `DEPLOY_CHANGED=false`, changed=0, with 14 blueprints OK.
-
-**Occurrence 2 — 2026-11-12.** Production OPA served its 2026-11-01 policies for eleven days.
-It loads `./policies` once, at startup (`--bundle /policies`, no `--watch`), and its deploy.sh
-ran a plain `compose up -d`, which leaves a running container alone when only bind-mounted
-files changed. Four `Deploy OPA (Dev)` runs (11933, 12121, 15166, 15168) placed new policies
-and passed their verify, and none of them reached the running server: `opa test --bundle
-/policies` reads the files on disk, and the sample allow and deny decisions do not depend on
-the new data. Twelve policy commits were not live, a security bound on agent-launched
-`target_service` (157e10aa) among them. It surfaced when `Probe launch-gate (Dev)` with the
-base `Snapshot Service Assessment` got 403 `opa_denied` (task 15656) while the `(Dev)` control
-got 201 and 409 (task 15659); `Inspect Service Runtime (Dev)` (task 15664) showed the OPA
-container started 2026-11-01 03:25 UTC with no restart since. The handoff for this rollout had
-stated that production OPA carried the `service-assess` review stamp because task 15168
-deployed the commit that adds it; a successful deploy was taken as the running state.
-
-Why the rule did not fire: it is worded for a change to *when* a process restarts. OPA's
-deploy never restarted the process at all, so no change triggered the audit. The rule's last
-sentence covers it ("files read once at start ... must be followed by a restart"); the trigger
-did not. Fixed by having OPA's deploy.sh call the shared `compose_up_if_changed policies`, which
-hashes the policy tree, the compose files and `.env` into the container label and recreates OPA
-when any of them differs; deploy.sh writes that `.env` from the compose substitutions it is
-given, because the helper refuses to run without one and OPA renders none. Enforced by the two
-`opa:` cases in `platform/tests/test_compose_up_if_changed.bats`, which run OPA's real deploy.sh
-against stub engines with no `.env` present (a policy edit or a new port recreates, an unchanged
-re-run does not), for OPA only; the general form, a service that reads a file once at start
-without that file among its `compose_up_if_changed` inputs, is still Convention.
 
 ### 3.12 Two `(Dev)` deploys checked out `main` on their hosts, because the API launch carried no survey defaults
 
@@ -3808,6 +3795,36 @@ no task can remove another's.
 **The rule.** A run that deploys more than once against one pinned SHA must place that SHA, not a branch, and a revision guard runs before anything is placed or rendered. Until the drill does, launch it only with `dev` merges held for its duration, agreed with the sessions that merge, and have the matching Recover template ready to run against the current head.
 
 **Enforced by.** Convention. The fix is Plane AC-827: the drill places the reviewed SHA for both deploys, and the revision guard runs first.
+
+### 3.24 A deploy placed files its process reads only at startup and never restarted it; production OPA served eleven-day-old policies (widens 3.11)
+
+**What happened.** Production OPA served its 2026-11-01 policies until 2026-11-12. It loads
+`./policies` once, at startup (`--bundle /policies`, no `--watch`), and its deploy.sh ran a plain
+`compose up -d`, which leaves a running container alone when only bind-mounted files changed.
+Four `Deploy OPA (Dev)` runs (11933, 12121, 15166, 15168) placed new policies and passed their
+verify, and none reached the running server: `opa test --bundle /policies` reads the files on
+disk, and the sample allow and deny decisions do not depend on the new data. Twelve policy
+commits were not live, among them the bound on agent-launched `target_service` (157e10aa) and the
+`service-assess` review stamp (efe8736b). It surfaced when `Probe launch-gate (Dev)` with the base
+`Snapshot Service Assessment` got 403 `opa_denied` (task 15656) while the `(Dev)` control got 201
+and 409 (task 15659); `Inspect Service Runtime (Dev)` (task 15664) showed the OPA container
+started 2026-11-01 03:25 UTC with no restart since.
+
+**Root cause.** 3.11's rule is triggered by a change to *when* a process restarts. OPA's deploy
+never restarted the process at all, so nothing triggered the audit, and the deploy's verify
+checked the placed files rather than what the server had loaded.
+
+**The rule.** A deploy that places a file its process reads only at startup must restart the
+process when that file changes. For a compose service, name the file or directory as a
+`compose_up_if_changed` input, so its digest rides the container label. Whether or not anything
+about restarts changed, check this for every service whose config is a bind mount.
+
+**Enforced by.** For OPA: the `opa:` cases in `platform/tests/test_compose_up_if_changed.bats`
+run its real deploy.sh against stub engines with no `.env` present (a policy edit or a new port
+recreates, an unchanged re-run does not) and pin `write_env` to the compose substitutions. The
+general form, a service that reads a bind-mounted file once at start without that file among its
+`compose_up_if_changed` inputs, is Convention. The verify-side gap (proving what the running
+server loaded) is Plane AC-845.
 
 ## 4. Data handling
 

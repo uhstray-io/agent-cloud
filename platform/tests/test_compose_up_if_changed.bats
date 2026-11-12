@@ -187,7 +187,7 @@ a_setup() {
 
 @test "deploy playbooks pass deploy_force_recreate to deploy.sh, default off" {
   local pb
-  for pb in deploy-authentik.yml deploy-o11y.yml; do
+  for pb in deploy-authentik.yml deploy-o11y.yml deploy-opa.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY2'
 import sys
 from pathlib import Path
@@ -483,7 +483,7 @@ SH
 # ── playbooks read the line ──────────────────────────────────────────────────
 @test "deploy playbooks derive changed from DEPLOY_CHANGED, not changed_when: true" {
   local pb
-  for pb in deploy-authentik.yml deploy-o11y.yml; do
+  for pb in deploy-authentik.yml deploy-o11y.yml deploy-opa.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY'
 import sys
 from pathlib import Path

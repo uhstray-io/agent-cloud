@@ -185,6 +185,9 @@
         # Empty COMPOSE_OVERLAYS adds nothing (common.sh's compose() loops over its words).
         COMPOSE_OVERLAYS: "{{ 'compose.tls.yml' if _opa_tls else '' }}"
         OPA_SERVER_LEAF: "{{ opa_server_leaf | default('opa-server') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate OPA even when
+        # its policies, compose files, .env and image all match, as for Authentik and o11y.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
       # deploy.sh recreates OPA only when its policies, compose files or image changed (common.sh
       # compose_up_if_changed) and says which on its own line.
