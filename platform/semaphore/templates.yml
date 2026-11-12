@@ -1031,8 +1031,8 @@ templates:
   # Read-only allow-path probe of the launch gate (skynet-launch-containment task 5.5): one dry-run
   # Snapshot Service Assessment launch as the probe identity (skynet, acting as service-agent), then the
   # same request again at once, which the gate must refuse already_running. The variant survey picks the
-  # (Dev) copy (the default) or the base template on main. Runs inside the gate's container; never prints
-  # the caller token. Dev-bound until promotion.
+  # (Dev) copy (default) or the base template. Runs inside the gate's container; never prints the caller
+  # token. Dev-bound until promotion.
   - name: Probe launch-gate (Dev)
     playbook: platform/playbooks/probe-launch-gate.yml
     repository: agent-cloud dev
@@ -1397,8 +1397,8 @@ templates:
   # model input.
   - name: Snapshot Firewall
     playbook: platform/playbooks/snapshot-firewall.yml
-    # On main since v0.15.0. fw-assess is not marked reviewed in OPA's registry, so skynet launches
-    # the (Dev) copy and production has no base template for it.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks fw-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1411,8 +1411,8 @@ templates:
   # assessment's only model input.
   - name: Snapshot Service Assessment
     playbook: platform/playbooks/snapshot-service-assessment.yml
-    # On main since v0.15.0. service-assess is marked reviewed in OPA's registry, so skynet launches
-    # the base template (on main); the (Dev) copy remains for runs from dev.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks service-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1423,8 +1423,8 @@ templates:
 
   - name: Snapshot Access
     playbook: platform/playbooks/snapshot-access.yml
-    # On main since v0.15.0. access-assess is not marked reviewed in OPA's registry, so skynet
-    # launches the (Dev) copy and production has no base template for it.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks access-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service

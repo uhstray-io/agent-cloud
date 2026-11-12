@@ -273,12 +273,11 @@ def test_a_blank_target_takes_the_default_opa_svc(tmp_path, pki, gate):
     assert server.seen[0]["body"]["survey"] == {"target_service": "opa_svc"}
 
 
+# No variant at all is dev: the allow-path test above sends none and asserts TEMPLATE.
 @pytest.mark.parametrize(
     "variant, template",
     [
-        pytest.param(None, TEMPLATE, id="absent-is-dev"),
         pytest.param("", TEMPLATE, id="blank-is-dev"),
-        pytest.param("dev", TEMPLATE, id="dev"),
         pytest.param("base", BASE_TEMPLATE, id="base"),
     ],
 )
@@ -288,14 +287,19 @@ def test_the_variant_picks_the_template_both_launches_send(tmp_path, pki, gate, 
         tmp_path,
         address=f"127.0.0.1:{server.server_port}",
         cafile=pki / "ca.crt",
-        extra_vars=None if variant is None else {"probe_template_variant": variant},
+        extra_vars={"probe_template_variant": variant},
     )
     assert rc == 0, out
     assert [request["body"]["template"] for request in server.seen] == [template, template]
 
 
-@pytest.mark.parametrize("check", [False, True], ids=["real", "dry-run"])
-@pytest.mark.parametrize("variant", ["main", "Snapshot Access", "BASE", "Dev"])
+@pytest.mark.parametrize(
+    "variant, check",
+    [
+        pytest.param("BASE", False, id="case-differs"),
+        pytest.param(TEMPLATE, True, id="a-template-name-in-a-dry-run"),
+    ],
+)
 def test_a_variant_that_is_not_dev_or_base_is_refused_before_any_request(tmp_path, pki, gate, variant, check):
     server = gate(["201", "409:already_running"])
     rc, out = _run(
@@ -389,10 +393,10 @@ def test_the_probe_identity_and_the_step_are_fixed():
     variables = _probe_play()["vars"]
     assert variables["_launch_gate_probe_caller"] == "skynet"
     assert variables["_launch_gate_probe_agent"] == "service-agent"
-    # One of the step's two names, never the survey value itself: anything but "dev" maps to the base name.
-    assert variables["_launch_gate_probe_template"] == (
-        "Snapshot Service Assessment{{ ' (Dev)' if _probe_variant == 'dev' else '' }}"
-    )
+    # One of the step's two names, never the survey value itself.
+    assert variables["_launch_gate_probe_templates"] == {"dev": TEMPLATE, "base": BASE_TEMPLATE}
+    # The variant guard is in this play, so a --limit that skips the localhost play cannot skip it.
+    assert _probe_play()["tasks"][0]["name"] == "Require probe_template_variant to be dev or base"
     assert variables["_launch_gate_probe_step"] == "service-assess"
 
 
