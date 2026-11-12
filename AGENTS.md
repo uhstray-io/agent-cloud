@@ -608,8 +608,9 @@ durations file (`platform/tests/test_durations.json`) does not record, and every
 recorded tests all ran under 0.25 s in CI with none skipped (`PYTEST_FAST=1`, selected in
 the root `conftest.py`). BATS runs in full, beside pytest, with `--jobs 4
 --no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it) and
-serially otherwise. When the pushed commit has no merge base with `<remote>/dev`, the hook
-runs the full Python suite and says why. A change to a playbook or helper therefore runs only
+passes its jobs SIGALRM at default (GNU parallel 20261022 does not, so BATS runs serially
+with it), and serially otherwise. When the pushed commit has no merge base with
+`<remote>/dev`, the hook runs the full Python suite and says why. A change to a playbook or helper therefore runs only
 the fast and changed test files here; CI runs everything. Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points

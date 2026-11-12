@@ -48,8 +48,9 @@
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
 # evidence they pass in CI, and CI remains the authority. BATS takes CI's flags,
-# `--jobs 4 --no-parallelize-within-files` (plan 21), when GNU parallel is installed, and
-# runs serially otherwise. It runs beside pytest, not before it.
+# `--jobs 4 --no-parallelize-within-files` (plan 21), when GNU parallel is installed AND
+# starts its jobs with SIGALRM at its default (the probe in the BATS section), and runs
+# serially otherwise. It runs beside pytest, not before it.
 #
 # THE FAST LANE (plan 21, phase 4, D6). The pytest run covers only the files this push
 # changes, plus the files the durations file marks fast or does not record, measured
@@ -344,15 +345,41 @@ fi
 # ── BATS ────────────────────────────────────────────────────────────────────
 # Started here in the background, so it runs beside pytest, and awaited after pytest
 # (below). It takes CI's flags (.github/workflows/lint-and-test.yml) when GNU parallel is
-# installed, and runs serially otherwise.
+# installed AND its jobs keep SIGALRM at the default, and runs serially otherwise.
+#
+# GNU parallel 20261022 starts every job with SIGALRM ignored, and a job inherits that.
+# ansible-core's task `timeout:` then fails with "An existing alarm handler was present",
+# so a playbook test that passes alone fails under parallel BATS. A wrapper cannot repair
+# that: parallel sets the disposition itself. So the hook detects it, once per push.
+#
+# The probe runs one job through the binary bats itself would call. bats-core 1.13 picks
+# that binary as BATS_PARALLEL_BINARY_NAME, else `parallel` (bats-exec-suite), so the name
+# is read the same way here. The job is `python3`, which exits 0 only when SIGALRM is at
+# SIG_DFL. Only that exit status is read, so a parallel that exits 0 without running its
+# job is trusted. Any nonzero status (SIGALRM ignored, python3 missing, parallel erroring)
+# runs BATS serially. Fail toward correct-but-slower.
+#   $1  the parallel binary
+# `:::` gives parallel one argument, so the job runs whatever stdin is: with an empty stdin
+# parallel would run zero jobs and exit 0. Stderr is discarded; GNU parallel prints its
+# citation notice only to a terminal, so the probe prints nothing.
+pp_parallel_keeps_sigalrm() {
+  "$1" -j1 "python3 -c \"import signal, sys; sys.exit(0 if signal.getsignal(signal.SIGALRM) == signal.SIG_DFL else 1)\"" ::: probe \
+    >/dev/null 2>&1
+}
+
 if [ -d platform/tests ]; then
   if command -v bats >/dev/null 2>&1; then
     bats_args=""
-    if command -v parallel >/dev/null 2>&1; then
-      bats_args="--jobs 4 --no-parallelize-within-files"
-    else
+    pp_parallel=${BATS_PARALLEL_BINARY_NAME:-parallel}
+    if ! command -v "$pp_parallel" >/dev/null 2>&1; then
       printf 'pre-push: GNU parallel is not installed, so BATS runs serially (slower). Install it,\n' >&2
       printf '  as the Brewfile does:  brew install parallel\n' >&2
+    elif pp_parallel_keeps_sigalrm "$pp_parallel"; then
+      bats_args="--jobs 4 --no-parallelize-within-files"
+    else
+      _pp_ver=$("$pp_parallel" --version 2>/dev/null | head -n 1)
+      printf 'pre-push: %s starts its jobs with SIGALRM ignored, which breaks Ansible task\n' "${_pp_ver:-GNU parallel}" >&2
+      printf '  timeouts ("An existing alarm handler was present"), so BATS runs serially (slower).\n' >&2
     fi
     printf 'pre-push: running BATS suite%s...\n' "${bats_args:+ in parallel}" >&2
     # shellcheck disable=SC2086 # bats_args is deliberately word-split into flags.
