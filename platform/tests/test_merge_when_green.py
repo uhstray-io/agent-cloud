@@ -1457,16 +1457,16 @@ class MergeGuardTests(unittest.TestCase):
         run_refusal(self, api, "context=security-review")
 
     def test_a_review_pass_status_with_no_finding_refuses(self):
-        for description in ("", "   ", "<one line: what it found, fixed or deferred>", None):
+        for description in ("", "   ", guard.REVIEW_PASS_PLACEHOLDER, None):
             with self.subTest(description=description):
                 api = FakeGitHub()
-                api.statuses[0]["description"] = description
-                run_refusal(self, api, "carries no finding")
+                next(s for s in api.statuses if s["context"] == "simplify")["description"] = description
+                run_refusal(self, api, "Review-pass commit status simplify carries no finding")
 
     def test_the_newest_review_pass_status_decides(self):
         api = FakeGitHub()
-        newer = dict(api.statuses[0], description="<one line: what it found, fixed or deferred>",
-                     created_at="2026-10-10T13:00:00Z")
+        older = next(s for s in api.statuses if s["context"] == "simplify")
+        newer = dict(older, description=guard.REVIEW_PASS_PLACEHOLDER, created_at="2026-10-10T13:00:00Z")
         api.statuses = [newer] + api.statuses
         run_refusal(self, api, "carries no finding")
 

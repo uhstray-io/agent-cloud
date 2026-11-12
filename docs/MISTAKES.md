@@ -4919,8 +4919,9 @@ be posted only on a commit GitHub already holds.
 both statuses (`REVIEW_PASS_STATUSES`), or with one whose description is empty or the unfilled placeholder, and
 names the command that posts each missing one; tested in `platform/tests/test_merge_when_green.py`
 (`test_each_review_pass_status_is_required_on_the_exact_head`, `test_a_review_pass_status_with_no_finding_refuses`).
-Limits: the status is self-attested, so the gate proves a pass was claimed for the head, not what it found; and it
-binds only merges that go through the script (a plain `gh pr merge --merge` skips it).
+Limits: the status is self-attested, so the gate proves a pass was claimed for the head, not that it ran or what it
+found (a skipped pass posted as run goes green); and it binds only merges that go through the script (a plain
+`gh pr merge --merge` skips it).
 
 ## 6. Working from assumptions about files
 
