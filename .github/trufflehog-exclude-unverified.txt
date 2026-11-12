@@ -1,1 +1,2 @@
 ^uv\.lock$
+^platform/tests/test_pre_push_uv\.bats$
