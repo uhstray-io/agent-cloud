@@ -64,7 +64,7 @@ and why.
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
-| 1.35 | Offered an operator a drill option naming a mechanism no playbook implements, and an alert outcome I had not traced | Unverified claim | 1 | Convention |
+| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1548,16 +1548,19 @@ the producer identity and Prometheus targets read now have their own words, so t
 
 **Enforced by.** Convention.
 
-### 1.35 Offered an operator a drill option whose mechanism and outcome I had not checked
+### 1.35 Offered an operator a drill option, and then recorded it, from a truncated read (widens 1.19)
 
-**What happened.** On 2026-11-11 I asked Joseph whether to run the endpoint absent-series proof (the open "Endpoint availability live receipt" in 2.3). The recommended option said Alloy would be stopped "through a Semaphore playbook", that the missing-probe alert would fire, and that Alloy would then be restarted. He chose "Run it next slot". Checking afterwards found two problems:
+**What happened.** On 2026-11-11 I asked Joseph whether to run the endpoint absent-series proof (the open "Endpoint availability live receipt" in 2.3). The recommended option said Alloy would be stopped "through a Semaphore playbook", that the missing-probe alert would fire, and that Alloy would then be restarted. He chose "Run it next slot". I then told him no such mechanism existed, and wrote the first draft of this entry saying `o11y-fault-drill.yml` "only stops DGX node exporters" and that "no template stops the receiver's Alloy". Both were read from a filtered `head -40` of the playbook's header comment. The PR #1087 review found the facts:
 
-- No such mechanism exists. `drill-o11y-endpoint-availability.yml` only fails one target's probe, `o11y-fault-drill.yml` only stops DGX node exporters, and no template stops the receiver's Alloy. The platform forbids stopping it by hand.
-- The outcome was unverified when I offered it. The rule is `absent_over_time(probe_success{…}[w]) unless on(…) (up{…} == 0)`, keyed to the same target identity. Traced afterwards, the claim held: `config.alloy.j2` has Alloy scrape its own blackbox exporter and remote-write the result, so the probe and its `up` both disappear when Alloy stops. That was luck, not checking.
+- `o11y-fault-drill.yml` has three modes: `exporter`, `probe` and `grafana` (`:10-37`, the mode guard at `:83`). `grafana` stops the `o11y-grafana` container for up to fifteen minutes.
+- `clean-deploy-o11y.yml` (through `tasks/clean-service.yml`) and `reboot-host.yml` do take Alloy down, destructively or with the whole host.
+- What is true: no bounded, non-destructive drill stops the receiver's Alloy or removes a single probe series.
 
-**Root cause.** I wrote the option from the drill's goal, not from the code that would carry it out. The question gave Joseph a confident plan, and he approved it on that basis.
+The alert outcome was also unchecked when I offered it. Traced afterwards, it holds: `config.alloy.j2` has Alloy scrape its own blackbox exporter and remote-write the result, so the probe and its `up` both disappear when Alloy stops, and `unless on(…) (up{…} == 0)` (`alerts.yml.j2:132`) does not suppress.
 
-**The rule.** Before offering an option that names a mechanism, find the playbook or template that implements it, and trace the alert expression the option says will fire. If either is missing, the option is "build X first", with that work named.
+**Root cause.** A claim that something does not exist was made from a partial read: a grep filter and a line limit cut off the modes that disproved it. The correction then repeated the same read, so the error went into the record meant to prevent it.
+
+**The rule.** A claim that a mechanism exists, or does not, needs the whole file or an exhaustive search (for example `git grep` over `platform/playbooks` and `platform/semaphore/templates.yml`), never a truncated header. An option offered to an operator names the playbook that carries it out and the alert expression it will fire. If either is missing, the option is "build X first", with that work named.
 
 **Enforced by.** Convention.
 
