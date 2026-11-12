@@ -12,8 +12,10 @@
 # Include it FIRST in a shared task, before any task reads local_mode. It refuses a plain
 # disagreement (local_mode unset is accepted, true is accepted only for local-dev). It does not
 # close a template: an extra var renders afresh at each read, and the raw reads after this include
-# read it again, so one reading here is not one reading there (docs/MISTAKES.md 1.15). It changes nothing. Its shape follows deploy-skynet.yml's "Refuse a local_mode that disagrees
-# with the hosts' identity" (AC-695).
+# read it again, so one reading here is not one reading there (docs/MISTAKES.md 1.15); a templated
+# extra var can already run a command on the runner (AGENTS.md, launch rights are runner rights).
+# Its shape follows deploy-skynet.yml's "Refuse a local_mode that disagrees with the hosts'
+# identity" (AC-695).
 #
 # Expects no variables: it reads only `groups` and `local_mode`.
 
