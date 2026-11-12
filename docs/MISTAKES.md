@@ -1465,7 +1465,7 @@ behavioural claim with no citation, has no mechanical detector; it stays Convent
 
 **Occurrence 13 — 2026-11-12.** The publish step for a reviewed release-notes body (PR #1064) refused any
 `secret/services/semaphore` url that did not match `^https://[^/]+$`, a format I wrote from the URL the launcher
-uses, without reading the path's other readers. One of them, `platform/playbooks/promote-semaphore-admins.yml:18-25`,
+uses, without reading the path's other readers. One of them, `platform/playbooks/promote-semaphore-admins.yml:77-84`,
 documents that the stored URL may end in `/` and trims it (task 9870, #604), and others check the transport with the
 shared `tasks/assert-bao-transport.yml`, which admits https and http to loopback or a private address. The first real
 publish (Semaphore task 15360, v0.14.0) stopped at that assert before any write. The assert also required an
