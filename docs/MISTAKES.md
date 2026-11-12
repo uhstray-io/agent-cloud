@@ -213,7 +213,7 @@ and why.
 | 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
 | 10.35 | Merged a tag-pushing workflow whose push path no run had exercised; GitHub refused its first tag because the job token lacked the `workflows` permission | Mechanism never exercised | 1 | Convention (pre-merge write probe with the real credential) |
 | 10.36 | An assert's `fail_msg` read a key only a failed summary carries; ansible-core renders `fail_msg` even when the assertion holds, so a successful Deploy Plane run failed after recreating the stack | Mechanism never exercised | 1 | Test (`test_the_webhook_assert_renders_with_and_without_an_error` runs the task through ansible-playbook both ways); the general form Convention |
-| 10.37 | The console session was documented and specified as an 8-hour inactivity expiry, but the session layer never re-saved on a read, so it expired 8 hours after sign-in; the first fix made every re-save an upsert that could bring a signed-out session back | Mechanism never exercised | 1 | Test (`a_signed_in_request_refreshes_the_session_cookie`, `save_never_brings_back_a_deleted_session`, `save_never_extends_an_expired_session`, mutation-checked) |
+| 10.37 | The console session was documented and specified as an 8-hour inactivity expiry, but the session layer never re-saved on a read, so it expired 8 hours after sign-in; the first fix made every re-save an upsert that could bring a signed-out session back | Mechanism never exercised | 1 | Test (`a_signed_in_request_refreshes_the_session_cookie` proves the cookie refresh; `save_moves_the_stored_expiry` and `a_signed_in_request_moves_the_stored_session_expiry` prove the stored expiry moves; `save_never_brings_back_a_deleted_session`, `save_never_extends_an_expired_session`; mutation-checked) |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -6618,11 +6618,12 @@ and sign-out, so every session ended 8 hours after sign-in however active the us
 was. It shipped in v0.14.0 and was found on 2026-11-11 while reconciling the Phase 1
 checklist, whose 2.3 box had never been ticked.
 
-The first fix (`4cf50a17`, never pushed) added `with_always_save(true)`. The store's
-`save` was an upsert (`INSERT ... ON CONFLICT DO UPDATE`), so a request that loaded the
-session before sign-out re-inserted the deleted row when it answered: a stolen cookie
-that kept polling would have outlived sign-out. An automated security review of the
-commit caught it before push.
+The first fix (`4cf50a17`, never deployed; fixed by the next commit in the same pull
+request) added `with_always_save(true)`. The store's `save` was an upsert
+(`INSERT ... ON CONFLICT DO UPDATE`), so a request that loaded the session before sign-out
+re-inserted the deleted row when it answered: a stolen cookie that kept polling would have
+outlived sign-out. An automated security review of the commit caught it before the pull
+request was opened.
 
 **Root cause.** The expiry was configured, documented and specified, and nothing ever
 exercised it: no test made a signed-in read and checked that the expiry moved. The
@@ -6634,11 +6635,17 @@ it, not by the line that configures it. When a change makes a store write more o
 re-check each write against a row that may have been deleted or expired since the
 request read it; a re-save updates a live row and never inserts.
 
-**Enforced by.** Tests: `a_signed_in_request_refreshes_the_session_cookie`
-(`mod.rs`), and `save_never_brings_back_a_deleted_session` and
-`save_never_extends_an_expired_session` (`sessions.rs`); removing `with_always_save`,
-restoring the upsert or dropping the expiry condition each turns one red. The race
-itself is covered at the store level, not by an interleaved HTTP test.
+**Enforced by.** Tests, each mutation-checked. `a_signed_in_request_refreshes_the_session_cookie`
+(`mod.rs`) proves the refresh is sent: a signed-in read carries a `Set-Cookie`. It cannot see a
+frozen stored expiry, and liveness is decided by that stored expiry, so
+`save_moves_the_stored_expiry` (`sessions.rs`) proves the stored expiry moves, and
+`a_signed_in_request_moves_the_stored_session_expiry` (`mod.rs`) proves it through a signed-in
+request. `save_never_brings_back_a_deleted_session` and `save_never_extends_an_expired_session`
+(`sessions.rs`) cover the re-save. Removing `with_always_save` turns the cookie test and the
+HTTP expiry test red; freezing the stored column turns the store test and the HTTP expiry test
+red; restoring the upsert turns `save_never_brings_back_a_deleted_session` red; dropping the
+expiry condition turns `save_never_extends_an_expired_session` red. The race itself is covered
+at the store level, not by an interleaved HTTP test.
 
 ## 11. The largest one
 

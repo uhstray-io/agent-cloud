@@ -272,6 +272,9 @@ pub fn spawn_discovery(state: SharedState) {
 /// expiry ran from sign-in. The cost is one store write and one `Set-Cookie` per request.
 /// A re-save only updates a live row (`sessions.rs`), so a request in flight during sign-out
 /// cannot bring the session back.
+/// With `always_save`, a response to another tab's request during `/auth/callback` re-sends
+/// the pre-sign-in cookie. If that response lands last, the browser keeps the dead id and the
+/// user signs in again. This fails closed and costs availability only; it is accepted.
 /// Sessions live in the preferences database (`sessions.rs`), so a restart keeps them.
 pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
     SessionManagerLayer::new(store)
@@ -1021,6 +1024,43 @@ mod tests {
             );
         }
         assert_eq!(me.cookie, Some(cookie), "the refresh keeps the session id");
+    }
+
+    /// The stored expiry moves on a signed-in request, not only the cookie. The row is first
+    /// set to expire in a minute, so the read itself has to move it into the 8-hour window.
+    #[tokio::test]
+    async fn a_signed_in_request_moves_the_stored_session_expiry() {
+        use tower_sessions::cookie::time::OffsetDateTime;
+
+        let path = std::env::temp_dir().join(format!("console-expiry-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let state = state_with_prefs(Prefs::open(&path).expect("open"));
+        let app = api_router(state.clone())
+            .merge(test_login_route("/test/login", &["ops"]))
+            .layer(session_layer(state.prefs.session_store()));
+        let addr = serve(app).await;
+        let login = call(addr, "GET", "/test/login", None, "").await;
+        let cookie = login.cookie.expect("session cookie set on login");
+
+        // A second connection to the same file sets the sign-in's one live row to expire soon.
+        let other = rusqlite::Connection::open(&path).expect("second connection");
+        let now = OffsetDateTime::now_utc().unix_timestamp();
+        let rows = other
+            .execute("UPDATE sessions SET expiry_unix = ?1", [now + 60])
+            .expect("expire soon");
+        assert_eq!(rows, 1, "sign-in leaves exactly one live row");
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        let stored: i64 = other
+            .query_row("SELECT expiry_unix FROM sessions", [], |row| row.get(0))
+            .expect("stored expiry");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(me.status, 200, "{}", me.body);
+        assert!(
+            stored >= now + 7 * 3600,
+            "a signed-in read must move the stored expiry into the 8h window: {stored} vs {now}"
+        );
     }
 
     /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its body is JSON.

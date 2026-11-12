@@ -280,6 +280,20 @@ mod tests {
         assert_eq!(stored_expiries(&store).await.len(), 1);
     }
 
+    /// Liveness reads the stored `expiry_unix` column (`read`, `sweep`), not the JSON body, so
+    /// a re-save must move the column. The body check above passes with the column frozen, and
+    /// then sessions end 8 hours after sign-in again.
+    #[tokio::test]
+    async fn save_moves_the_stored_expiry() {
+        let store = memory_store();
+        let base = now_unix();
+        let mut session = record(base + 60);
+        store.create(&mut session).await.expect("create");
+        session.expiry_date = OffsetDateTime::from_unix_timestamp(base + 3600).expect("in range");
+        store.save(&session).await.expect("save");
+        assert_eq!(stored_expiries(&store).await, vec![base + 3600]);
+    }
+
     /// A request that loaded the session before sign-out re-saves it on response. The
     /// deleted row must stay deleted.
     #[tokio::test]
