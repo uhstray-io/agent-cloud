@@ -2,12 +2,16 @@
 
 import ast
 import http.client
-import threading
-from http.server import ThreadingHTTPServer
+import socket
+import ssl
+import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import fake_http
 import pytest
 from fake_http import DrainingHandler, serve
+from test_pve_pinned_get import _generate_leaf
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,7 +54,10 @@ def test_every_fake_server_derives_from_the_draining_base():
         if path.name == "fake_http.py":
             continue
         rel = str(path.relative_to(ROOT))
-        for node in ast.walk(ast.parse(path.read_text(), str(path))):
+        text = path.read_text()
+        if "BaseHTTPRequestHandler" not in text:  # exact: a base the walk below finds spells this name
+            continue
+        for node in ast.walk(ast.parse(text, str(path))):
             if isinstance(node, ast.ClassDef) and any(
                 "BaseHTTPRequestHandler" in ast.unparse(base) for base in node.bases
             ):
@@ -101,17 +108,12 @@ class _Refuses(DrainingHandler):
 
 
 def test_an_immediate_refusal_of_a_large_body_is_not_a_reset():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _Refuses)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
+    with serve(_Refuses) as url:
         for _ in range(5):
-            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+            conn = http.client.HTTPConnection("127.0.0.1", urlsplit(url).port, timeout=10)
             conn.request("POST", "/v1/auth/approle/login", body=b"x" * (4 * 1024 * 1024))
             assert conn.getresponse().status == 401
             conn.close()
-    finally:
-        server.shutdown()
-        server.server_close()
 
 
 # ── refused_port(): "nothing listens here" without a port another test can be handed ──
@@ -263,15 +265,10 @@ OWN_SERVERS = frozenset({
     "platform/tests/test_agw_client_tls_probe.py",
     "platform/tests/test_agw_isolation_probe.py",
     "platform/tests/test_agw_mcp_verify.py",
-    "platform/tests/test_agw_openrouter.py",
-    "platform/tests/test_agw_skynet_route.py",
-    "platform/tests/test_agw_stream_usage.py",
-    "platform/tests/test_fake_http.py",
     "platform/tests/test_instrument_host_o11y.py",
     "platform/tests/test_probe_launch_gate.py",
     "platform/tests/test_probe_skynet_launch.py",
     "platform/tests/test_renew_internal_certs.py",
-    "platform/tests/test_verify_o11y_dashboard_data.py",
 })
 
 
@@ -287,9 +284,15 @@ def _builds_own_server(tree) -> bool:
 def test_no_new_test_builds_its_own_http_server():
     import tomllib
     testpaths = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["testpaths"]
-    found = {p.relative_to(ROOT).as_posix() for t in testpaths for p in (ROOT / t).rglob("*.py")
-             if "__pycache__" not in p.parts and p.name != "fake_http.py"
-             and _builds_own_server(ast.parse(p.read_text(encoding="utf-8")))}
+    found = set()
+    for t in testpaths:
+        for p in (ROOT / t).rglob("*.py"):
+            if "__pycache__" in p.parts or p.name == "fake_http.py":
+                continue
+            text = p.read_text(encoding="utf-8")
+            # Exact, not a heuristic: any use the parse would find spells one of the two names.
+            if "HTTPServer" in text and _builds_own_server(ast.parse(text)):
+                found.add(p.relative_to(ROOT).as_posix())
     assert not found - OWN_SERVERS, f"start it with fake_http.serve(handler): {sorted(found - OWN_SERVERS)}"
     assert not OWN_SERVERS - found, f"migrated: take these off OWN_SERVERS: {sorted(OWN_SERVERS - found)}"
 
@@ -306,49 +309,90 @@ class _Echo(DrainingHandler):
         self.wfile.write(body)
 
 
+def _post(url, body, *, context=None):
+    parts = urlsplit(url)
+    if context is None:
+        connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=5)
+    else:
+        connection = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=5, context=context)
+    try:
+        connection.request("POST", "/", body=body)
+        return connection.getresponse().read()
+    finally:
+        connection.close()
+
+
 def test_serve_answers_on_an_ephemeral_loopback_port_and_stops_after():
     with serve(_Echo) as url:
         assert url.startswith("http://127.0.0.1:")
-        port = int(url.rsplit(":", 1)[1])
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        connection.request("POST", "/", body=b"ping")
-        assert connection.getresponse().read() == b"ping"
-        connection.close()
+        assert _post(url, b"ping") == b"ping"
     with pytest.raises(OSError):
-        http.client.HTTPConnection("127.0.0.1", port, timeout=2).request("GET", "/")
+        http.client.HTTPConnection("127.0.0.1", urlsplit(url).port, timeout=2).request("GET", "/")
+
+
+def test_serve_on_a_wildcard_host_is_reached_on_loopback():
+    with serve(_Echo, host="0.0.0.0") as url:
+        assert url.startswith("http://127.0.0.1:")
+        assert _post(url, b"wildcard") == b"wildcard"
+
+
+def test_serve_on_ipv6_loopback():
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        pytest.skip("this host cannot bind IPv6 loopback")
+    with serve(_Echo, host="::1") as url:
+        assert url.startswith("http://[::1]:")
+        assert _post(url, b"over-ipv6") == b"over-ipv6"
+
+
+def _tls_contexts(tmp_path):
+    leaf = _generate_leaf(tmp_path)
+    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    server_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    server_context.load_cert_chain(leaf.cert_path, leaf.key_path)
+    client_context = ssl.create_default_context(cafile=str(leaf.cert_path))
+    client_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return server_context, client_context
 
 
 def test_serve_with_an_ssl_context_answers_over_tls(tmp_path):
-    import datetime
-    import ssl
-
-    from cryptography import x509
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import ec
-    from cryptography.x509.oid import NameOID
-
-    key = ec.generate_private_key(ec.SECP256R1())
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
-    now = datetime.datetime.now(datetime.UTC)
-    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
-            .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(minutes=5))
-            .not_valid_after(now + datetime.timedelta(hours=1))
-            .add_extension(x509.SubjectAlternativeName([x509.IPAddress(__import__("ipaddress").ip_address("127.0.0.1"))]),
-                           critical=False)
-            .sign(key, hashes.SHA256()))
-    cert_file, key_file = tmp_path / "s.crt", tmp_path / "s.key"
-    cert_file.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    key_file.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                           serialization.NoEncryption()))
-    server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    server_context.minimum_version = ssl.TLSVersion.TLSv1_2
-    server_context.load_cert_chain(cert_file, key_file)
-    client_context = ssl.create_default_context(cafile=str(cert_file))
-    client_context.minimum_version = ssl.TLSVersion.TLSv1_2
+    server_context, client_context = _tls_contexts(tmp_path)
     with serve(_Echo, ssl_context=server_context) as url:
         assert url.startswith("https://127.0.0.1:")
-        connection = http.client.HTTPSConnection("127.0.0.1", int(url.rsplit(":", 1)[1]), timeout=5,
-                                                 context=client_context)
-        connection.request("POST", "/", body=b"over-tls")
-        assert connection.getresponse().read() == b"over-tls"
-        connection.close()
+        assert _post(url, b"over-tls", context=client_context) == b"over-tls"
+
+
+def test_a_tls_client_that_never_handshakes_holds_up_only_itself(tmp_path):
+    # A handshake on the accept thread (the listening socket wrapped) would block here until the
+    # silent client gives up: the real request then times out, and the test fails instead of hanging.
+    server_context, client_context = _tls_contexts(tmp_path)
+    with serve(_Echo, ssl_context=server_context) as url:
+        silent = socket.create_connection(("127.0.0.1", urlsplit(url).port), timeout=5)
+        try:
+            assert _post(url, b"past-the-stall", context=client_context) == b"past-the-stall"
+        finally:
+            silent.close()
+
+
+class _KeepAliveEcho(_Echo):
+    protocol_version = "HTTP/1.1"  # one connection serves several requests
+
+
+def test_the_handshake_timeout_is_lifted_once_the_handshake_completes(tmp_path, monkeypatch):
+    # Left in place, the timeout would drop an idle keep-alive connection: the second request, sent after
+    # it has passed, would find the connection closed.
+    monkeypatch.setattr(fake_http, "TLS_HANDSHAKE_TIMEOUT", 0.3)
+    server_context, client_context = _tls_contexts(tmp_path)
+    with serve(_KeepAliveEcho, ssl_context=server_context) as url:
+        parts = urlsplit(url)
+        connection = http.client.HTTPSConnection(parts.hostname, parts.port, timeout=5, context=client_context)
+        try:
+            connection.request("POST", "/", body=b"first")
+            assert connection.getresponse().read() == b"first"
+            time.sleep(1)
+            connection.request("POST", "/", body=b"second")
+            assert connection.getresponse().read() == b"second"
+        finally:
+            connection.close()

@@ -23,7 +23,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler, refused_port
+from fake_http import SHUTDOWN_POLL_SECONDS, DrainingHandler, refused_port
 from test_agw_client_tls_probe import _ca, _leaf
 
 REPO = playbook_yaml.REPO
@@ -115,7 +115,8 @@ def gate(pki):
 
     def start(script: list[str]) -> Gate:
         server = Gate(pki, script)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS},
+                         daemon=True).start()
         started.append(server)
         return server
 

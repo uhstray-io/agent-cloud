@@ -11,7 +11,8 @@ import json
 
 import forgeries
 import pytest
-from seed_harness import FakeBao, run_seed, serve, writes
+from fake_http import serve
+from seed_harness import FakeBao, run_seed, writes
 
 PLAYBOOKS = {
     "postiz": ("platform/playbooks/seed-postiz-secrets.yml", "services/postiz",

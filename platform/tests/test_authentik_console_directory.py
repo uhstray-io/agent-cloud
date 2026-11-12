@@ -308,7 +308,7 @@ def fake_api():
     with contextlib.ExitStack() as servers:
         def start(sc: dict) -> int:
             url = servers.enter_context(serve(_handler(sc)))
-            return int(url.rsplit(":", 1)[1])
+            return urlsplit(url).port
 
         yield start
 

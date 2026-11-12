@@ -24,7 +24,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import SHUTDOWN_POLL_SECONDS, DrainingHandler
 
 REPO = playbook_yaml.REPO
 DEPLOY = REPO / "platform/playbooks/deploy-agentgateway.yml"
@@ -164,7 +164,7 @@ def gateway():
 
     def start(mode, call="ok"):
         gw = Gateway(mode, call)
-        threading.Thread(target=gw.serve_forever, daemon=True).start()
+        threading.Thread(target=gw.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS}, daemon=True).start()
         made.append(gw)
         return gw
 

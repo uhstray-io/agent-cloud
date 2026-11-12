@@ -13,6 +13,7 @@ import json
 import shutil
 from contextlib import ExitStack
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import harness_sandbox
 import playbook_yaml
@@ -507,7 +508,7 @@ def _provision_play(tmp_path, cfg, name="dns"):
     prov = copy.deepcopy(next(p for p in plays if p.get("name") == "Provision VM from template"))
     for task in playbook_yaml.tasks(prov["tasks"]):
         if task.get("name") == "Wait for SSH":  # the fake's port stands in for sshd
-            task["ansible.builtin.wait_for"].update(port=int(fake.url.rsplit(":", 1)[1]), timeout=10)
+            task["ansible.builtin.wait_for"].update(port=urlsplit(fake.url).port, timeout=10)
     record = next(p for p in plays if p.get("name") == "Record the provision-vm step result")
     verdict = next(p for p in plays if str(p.get("name", "")).startswith("Verdict:"))
     try:

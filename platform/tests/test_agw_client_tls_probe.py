@@ -22,7 +22,7 @@ import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler, refused_port
+from fake_http import SHUTDOWN_POLL_SECONDS, DrainingHandler, refused_port
 from strict_chain import assert_strict_chain
 
 REPO = playbook_yaml.REPO
@@ -150,7 +150,8 @@ def listener(pki):
 
     def start(mode="san-first", ca="ca", require_cert=True):
         server = Listener(pki, mode, ca, require_cert)
-        threading.Thread(target=server.serve_forever, daemon=True).start()
+        threading.Thread(target=server.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS},
+                         daemon=True).start()
         started.append(server)
         return server
 

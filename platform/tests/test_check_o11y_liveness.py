@@ -11,7 +11,8 @@ import subprocess
 
 import pytest
 import yaml
-from seed_harness import ROLE, ROOT, FakeBao, run_seed, serve
+from fake_http import serve
+from seed_harness import ROLE, ROOT, FakeBao, run_seed
 
 PLAYBOOK = "platform/playbooks/check-o11y-liveness.yml"
 TOKEN = "synthetic-watcher-token-value"

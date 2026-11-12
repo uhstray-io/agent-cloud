@@ -24,6 +24,7 @@ import o11y_isolated_restore as restore  # noqa: E402
 import o11y_pbs_receipts as pbs_receipts  # noqa: E402
 import playbook_yaml  # noqa: E402
 import seed_harness  # noqa: E402
+from fake_http import serve  # noqa: E402
 
 PUBLIC_SHA = "a" * 40
 PRIVATE_SHA = "b" * 40
@@ -732,7 +733,7 @@ def test_restore_playbook_adapters_match_closed_helpers_and_pve_qga_shape():
                  "connection": "local", "vars": variables, "tasks": selected_tasks}]
         play_path = tmp_path / "adapter.yml"
         SyntheticPve.observed.clear()
-        with seed_harness.serve(SyntheticPve) as address:
+        with serve(SyntheticPve) as address:
             variables["_restore_pve_host"] = address
             play_path.write_text(yaml.safe_dump(play, sort_keys=False))
             result = harness_sandbox.run(
