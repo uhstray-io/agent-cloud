@@ -5041,13 +5041,14 @@ reading "Ran on e58f113c". That claimed a pass for a head it never reviewed. The
 passes, commit their fixes, push, then post") did not cover it: nothing said a pass's own fixes need a further
 round. CodeRabbit flagged the gap; the rule above now requires rounds until one changes nothing.
 
-**Occurrence 2 — 2026-11-12.** On #1128, after a two-line review fix and a merge of `dev`, I checked the
-delta by hand (the pull request's lines matched the approved head, and the merge added no edit of its
-own) and posted both statuses on the merge head `95a10ea4` with descriptions saying the passes ran
-there. Neither pass had run on that head. The rule says to run both passes on every new head; nothing
-stops a status being posted first, because the guard checks only that a status exists and is well
-formed. Caught minutes later, before any merge: both passes then ran on the next head, and its statuses
-replaced these. A hand check of a small delta is not a pass, and its status must not say it is.
+**Occurrence 2 — 2026-11-12.** On #1128, after a small review fix (`4d0ece19`) and a merge of `dev`, I
+checked the delta by hand and posted both statuses on the merge head `95a10ea4`, with descriptions saying
+the passes ran there. Neither pass had run on that head. The rule says to run both passes on every new
+head; nothing stops a status being posted first, because the guard checks only that a status exists and is
+well formed. Caught before any merge. A status belongs to one commit, so the false ones stay on
+`95a10ea4`; a newer `failure` status for each context on that head makes the guard refuse it, and both
+passes ran on the next head before its statuses were posted. A hand check of a small delta is not a pass,
+and its status must not say it is.
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
@@ -5070,7 +5071,7 @@ with the merging sessions, until that drill's fix lands. A `dev` → `main` prom
 review rounds of its final head. Still asked every time, with an approval covering exactly the action
 it names: a push to `main` or `dev`, a force push, a squash merge, passing `--dev-drift-acknowledged`,
 merging a pull request the guard leaves to the operator (one that changes a release script or a
-workflow file), and a push or pull request in a repository outside the organisation. Direction to do
+workflow file the guard does not accept), and a push or pull request in a repository outside the organisation. Direction to do
 the work releases none of those.
 
 **Enforced by.** `.github/rulesets/protect-main.json` refuses a force push and a deletion on `main` and

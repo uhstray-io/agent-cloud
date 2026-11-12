@@ -564,7 +564,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 >   The two rounds are a convention: no check counts them.
 > - Still asked every time: a push straight to `main` or `dev`, any force push, any squash merge,
 >   passing `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one
->   that changes a release script or a workflow file), and a push or pull request in a repository
+>   that changes a release script or a workflow file the guard does not accept), and a push or pull request in a repository
 >   outside this organisation. An agent running under an account with the repository-admin role
 >   holds `protect-main`'s break-glass bypass, so for it GitHub does not refuse a push, force push
 >   or deletion on `main`; asking is the control. An approval for one of these covers exactly the
