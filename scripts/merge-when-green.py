@@ -139,9 +139,11 @@ class GitHub:
         if not behind.isdigit():
             raise Refusal(failed)
         # The paths changed by the same commits the count reads, <head>..<dev>. A three-dot diff would use one merge
-        # base where there are several, and list files this head already holds. A merge commit lists no paths of its
-        # own; the commits it brings in do. --no-renames lists both names of a rename, so a moved test file counts.
-        log = self._git(failed, "log", "--format=", "--name-only", "--no-renames", "-z", f"{head_sha}..{dev_sha}")
+        # base where there are several, and list files this head already holds. --diff-merges=combined lists only what a
+        # merge commit changed beyond all its parents (a conflict fix or an edit made in the merge); the commits it
+        # brings in list their own. --no-renames lists both names of a rename, so a moved test file counts.
+        log = self._git(failed, "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined", "-z",
+                        f"{head_sha}..{dev_sha}")
         return int(behind), sorted({path for path in log.split("\0") if path})
 
 

@@ -1995,6 +1995,19 @@ class DevDriftGitTests(GitOriginFixture, unittest.TestCase):
         merged_sha = git_out(self.seed, "rev-parse", "HEAD")
         self.assertEqual(github.dev_drift(7, merged_sha, dev_sha), (0, []))
 
+    def test_a_test_path_added_in_a_merge_commit_itself_counts(self):
+        # An edit made inside a merge on dev, not in any commit it brings in, is still dev's change.
+        github, feature_sha, _dev_sha = self.start_feature()
+        git(self.seed, "checkout", "-q", "-b", "side", feature_sha + "~1")
+        commit_file(self.seed, "side.md", "s\n", "docs: s (#4)")
+        git(self.seed, "checkout", "-q", "dev")
+        git(self.seed, "merge", "-q", "--no-ff", "--no-commit", "side")
+        commit_file(self.seed, "platform/tests/test_merge_only.py", "def test_m():\n    pass\n", "Merge side")
+        git(self.seed, "push", "-q", "origin", "dev")
+        dev_sha = github.release_budget([])[0]
+        self.assertEqual(github.dev_drift(7, feature_sha, dev_sha),
+                         (3, ["platform/tests/test_merge_only.py", "platform/tests/test_y.py", "side.md"]))
+
     def test_the_head_is_kept_where_no_fetch_refspec_writes(self):
         # A remote branch named pr/7 reaches refs/remotes/origin/pr/7 on any plain fetch; the pinned head must not live
         # there, or that fetch would replace it.
