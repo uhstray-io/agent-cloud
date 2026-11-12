@@ -47,6 +47,27 @@ fn gen_secret_default_is_at_most_32_chars_without_base64_punctuation() {
 }
 
 #[test]
+fn gen_secret_strips_base64_punctuation_then_truncates() {
+    // A fake openssl gives a fixed "random" value, so the exact output is the assertion
+    // (03 Part 1, rule 7): every `/`, `+` and `=` removed, then cut to the requested length.
+    let dir = TempDir::new().unwrap();
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let openssl = bin.join("openssl");
+    std::fs::write(&openssl, "#!/bin/sh\nprintf 'ab/cd+ef=gh/ij+kl==\\n'\n").unwrap();
+    std::fs::set_permissions(&openssl, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = stdout_of(sh(&dir, "gen_secret 24 10").env("PATH", path));
+
+    assert_eq!(out, "abcdefghij");
+}
+
+#[test]
 fn gen_secret_truncates_to_the_requested_length() {
     // 48 bytes encode to 64 characters, so even after `/+=` are stripped the output always
     // exceeds the requested length. A length near the encoded size would depend on the
