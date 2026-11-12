@@ -388,8 +388,10 @@ discard, and Tempo discard alerts. Each raw selector query explicitly sets
 missing or stale input. The helper validates the query response shape, privately
 joins series to active targets, permits multiple distinct reason series, and
 requires finite nonnegative values. Each public row contains only its fixed metric family, status
-(`observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`), and
-fixed reason. Labels, values, timestamps, selectors, URLs, response bodies, and
+(`observed_zero`, `observed_nonzero`, `missing_or_stale`, `absent_lazy_counter`, or `unavailable`), and
+fixed reason. `absent_lazy_counter` applies only to the Alloy enqueue-failed and Loki discarded-samples counters, which upstream
+creates on the first drop: it is reported when the family is empty but a liveness series is present for every
+expected target of the same job, and it never counts as an observed zero. Labels, values, timestamps, selectors, URLs, response bodies, and
 exceptions stay private. Failures remain isolated from the active-load baseline,
 candidate preview, and loaded-limit receipt; check mode reports
 `check_mode_unverified`. This source receipt does not prove metric exposition,

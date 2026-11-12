@@ -70,6 +70,11 @@ The OIDC client secret is Authentik's (`secret/services/authentik:plane_oidc_cli
 injected into the provider by `blueprints/plane-oidc.yaml`). The deploy shared-reads it, only when
 `plane_authentik_base` is set, and never stores a copy under `secret/services/plane`.
 
+The provider registers two strict redirect URIs: the web callback `/auth/oidc/callback/` and the
+mobile app's `/auth/mobile/oidc/callback/`. The mobile app signs in through `/auth/mobile/oidc/`,
+which Plane's OIDC documentation does not list, and without that callback Authentik answers
+"Redirect URI Error" (AC-711).
+
 The Pro licence key is the operator's, at `plane_license_key`, and the deploy never generates it.
 Seed it through the isolated seed environment, with the value in a file, never in argv:
 
@@ -102,9 +107,10 @@ webhook (URL `<plane_public_url>/silo/api/github/github-webhook`, JSON, and the 
 through `github_app_token.py set-hook-secret` on the controller; GitHub never returns the secret,
 so it is set on every deploy. Verify sends an unsigned delivery through the proxy and requires
 401: spike 0.16 showed silo answers 403 when it has no App configured and 401 to an unsigned
-delivery once it has the App and the secret. The Cloudflare challenge skip for that one path
+delivery once it has the App and the secret. The Cloudflare skip for that one path
 (`plane-github-webhook-bypass-challenge` in `platform/infra/cloudflare/waf.tf`) depends on that
-check. It is safe to apply at any time: with no App configured silo answers every delivery 403, so
+check. It skips the bot challenge and the managed rules, which blocked signed deliveries whose
+issue bodies discussed security topics (AC-687), and leaves the rate limits on. It is safe to apply at any time: with no App configured silo answers every delivery 403, so
 it is not gated on the deploy; after both are live, redeliver one App delivery and expect 202.
 
 Integrations lists GitHub only once Plane's marketplace application for it exists. Plane creates

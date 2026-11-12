@@ -204,6 +204,15 @@ PY
   # Strict redirect on Plane's own callback path (developer-docs govern/oidc-sso.md).
   grep -qF "plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/')" "$bp"
   grep -qF 'matching_mode: strict' "$bp"
+  # The mobile app signs in through /auth/mobile/oidc/, which sends its own callback
+  # (backend-commercial views/app/mobile/oidc.py); without it Authentik answers "Redirect URI Error".
+  grep -qF "plane_redirect_mobile: \"{{ (plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/')) | replace('/auth/oidc/callback/', '/auth/mobile/oidc/callback/') }}\"" "$bp"
+  # Every redirect entry is strict, the mobile one included: the strict grep above already
+  # passes on the web entry alone. Scoped to the redirect_uris construct.
+  local redirects
+  redirects=$(sed -n '/redirect_uris:/,/property_mappings:/p' "$bp")
+  grep -qF 'url: !Context plane_redirect_mobile' <<<"$redirects"
+  [ "$(grep -c 'matching_mode: strict' <<<"$redirects")" -eq "$(grep -c 'url: ' <<<"$redirects")" ]
   grep -qF 'client_secret: !Env PLANE_OIDC_CLIENT_SECRET' "$bp"
   grep -qF "scope_name, email" "$bp"
   # Catalogued with production guards, the secret owned by authentik.
@@ -259,6 +268,11 @@ PY
   # The edge skip is the exact webhook path on Plane's host, nothing wider.
   grep -qF 'http.request.uri.path eq \"/silo/api/github/github-webhook\"' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
   refute_grep -qF 'starts_with(http.request.uri.path, \"/silo' "$REPO_ROOT/platform/infra/cloudflare/waf.tf"
+  # It skips the managed rules too (AC-687: they blocked signed deliveries), never the rate limit.
+  sed -n '/ref *= "plane-github-webhook-bypass-challenge"/,/^    },*$/p' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" > "$BATS_TEST_TMPDIR/hook.tf"
+  assert_grep -qF 'expression  = "(http.host eq \"plane.uhstray.io\" and http.request.uri.path eq \"/silo/api/github/github-webhook\")"' "$BATS_TEST_TMPDIR/hook.tf"
+  assert_grep -qF 'phases   = ["http_request_sbfm", "http_request_firewall_managed"]' "$BATS_TEST_TMPDIR/hook.tf"
+  refute_grep -qF 'http_ratelimit' "$BATS_TEST_TMPDIR/hook.tf"
   # Appended after the Plane MCP rule, so no existing rule moved.
   [ "$(grep -E '^      ref +=' "$REPO_ROOT/platform/infra/cloudflare/waf.tf" | cut -d'"' -f2 | awk 'p { print; exit } $0 == "plane-mcp-bypass-challenge" { p = 1 }')" = "plane-github-webhook-bypass-challenge" ]
 }

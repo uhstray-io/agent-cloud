@@ -10,6 +10,7 @@ import ssl
 import subprocess
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import harness_sandbox
 import pytest
@@ -196,7 +197,7 @@ def _run_tls(tmp_path, status: int, host_vars: str = "", *, trust: bool = True, 
     if not (tmp_path / "leaf.pem").exists():
         _tls_material(tmp_path)
     with _serve_tls(status, tmp_path) as base:
-        url = f"https://{url_host}:{base.rsplit(':', 1)[1]}/health"
+        url = f"https://{url_host}:{urlsplit(base).port}/health"
         declared = [f"health_url={url}"]
         if trust:
             declared.append(f"health_ca_path={tmp_path / 'ca.pem'}")
