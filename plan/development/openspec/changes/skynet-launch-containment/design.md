@@ -102,6 +102,10 @@ See proposal.md (Why). Facts that shape the approach:
 
 ## Risks / Trade-offs
 
+- [In local mode OPA judges the working tree as `dev`] → Decision 12: a local gate reads the record's `HEAD`
+  as `dev`, so any checked-out branch or uncommitted edit passes OPA's main-or-dev rule. Accepted for
+  local-dev only: `local_mode` comes from the deploy's host names, a disagreeing extra var is refused, and
+  outside local mode OPA refuses `HEAD`.
 - [The gate's token can still launch any project template] → The gate is a ~500-line service on its own
   VM with one open port, no shell-outs, no templating of inputs and no other workloads; its token never
   leaves OpenBao and the gate's `.env`.

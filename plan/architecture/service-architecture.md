@@ -349,7 +349,7 @@ sequenceDiagram
         OPA-->>SK: allow
         SK->>LG: launch request (caller token, exact values)
         LG->>OPA: may this launch run, with these values?
-        OPA-->>LG: allow (a deny refuses the request; no task is created)
+        OPA-->>LG: allow (a deny refuses the request, and no task is created)
         LG->>SEM: launch the step's template
         SEM->>T: idempotent playbook run
         SEM-->>SK: step result

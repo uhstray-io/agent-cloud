@@ -88,8 +88,11 @@ unchanged.
 
 #### Scenario: Local-dev working tree
 - **WHEN** the gate runs in local mode and a template's repository record declares `HEAD`
-- **THEN** OPA is asked about `dev`, a declared `service_branch` is set to `dev`, and a gate outside local
-  mode given the same record asks OPA about `HEAD`
+- **THEN** OPA is asked about `dev`, and a declared `service_branch` is set to `dev`
+
+#### Scenario: HEAD outside local mode
+- **WHEN** the gate does not run in local mode and a template's repository record declares `HEAD`
+- **THEN** OPA is asked about `HEAD`, which it refuses
 
 ### Requirement: OPA decides server-side before every launch
 For every request that passes validation, the launch gate SHALL query OPA's decision endpoint itself,
