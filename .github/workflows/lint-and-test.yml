@@ -373,6 +373,9 @@ jobs:
         working-directory: platform/tests
     steps:
       - uses: actions/checkout@v7
+        with:
+          # Full history, so the lane script can diff the pull request against its base.
+          fetch-depth: 0
 
       - name: Install Rust 1.96
         run: |
@@ -399,8 +402,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo nextest run --locked --profile ci
+      - name: Test (ci lane)
+        # Which tests run is the lane script's decision, so changing lanes never edits this
+        # workflow (plan 24, D8). BASE_REF is the pull request's base branch.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./lane.sh ci
 
   # ── Rust: Dispatch Console (Dioxus fullstack crate in app/) ──────────
   # Not path-gated on purpose. `test` (Unit Tests) below requires every job in

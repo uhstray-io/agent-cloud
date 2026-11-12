@@ -34,7 +34,7 @@ BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
 # The bats-pinned workflow once the change detector and the retired jobs were removed; dev held it until Rust (tests).
 RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
 # The retired workflow plus the Rust (tests) job (plan 24); dev holds it after this merge.
-RUST_TESTS_WORKFLOW_BLOB_SHA = "27315c40070f2c27cc2b2786f46e69a9a83e2f47"
+RUST_TESTS_WORKFLOW_BLOB_SHA = "dec5a2c5d87d9eb95b96c57ace3b2b67022b54e3"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
