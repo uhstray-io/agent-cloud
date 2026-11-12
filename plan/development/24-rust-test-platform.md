@@ -1,10 +1,11 @@
 # 24 — Rust test platform: one fast suite, run by lane
 
 **Date:** 2026-11-12
-**Status:** PROPOSED (Phase 0 in review; Phases 1 and later not started)
+**Status:** PROPOSED (Phases 0 and 1 in review: #1109, #1110, #1114, #1115; Phase 3 in progress; Phase 2 and Phases 4 to 10 not started)
 **Author:** Joseph A. Wisneski IV
 **Context:** The repository's tests are pytest and BATS. They have grown to a size where no lane finishes
-quickly: a pull request waits about 20 to 24 minutes for CI, and the pre-push hook is routinely skipped
+quickly: the Python suite costs about 11,400 worker-seconds per pull request, spread over eight shards of 282 to 495 s
+each after plan 21's sharding (run 42931485014), and the pre-push hook is routinely skipped
 ([plan 21](21-test-suite-runtime.md), Baseline). This plan replaces both runners with one Rust test crate
 run by `cargo-nextest`. It ports the Python product code those tests exercise to Rust wherever the runtime
 is ours. It also defines test **lanes**, so a commit, a push and a pull request each run only the tests their
@@ -55,7 +56,8 @@ is *subprocess*; one that imports repository code is *import*; the rest are *sta
    unverified on CI). The operator decided on 2026-11-12 to port that Python to Rust wherever the runtime
    is ours (D4), so the code under test becomes native Rust tested in-process.
 4. **Not all Python can move.** Some code runs inside a host framework that only loads Python:
-   - Ansible filter and callback plugins (12 files);
+   - Ansible filter and callback plugins (13 files: 11 in `platform/playbooks/filter_plugins`, one in
+     `platform/semaphore/filter_plugins`, and `callback_plugins/redact_requests.py`);
    - scripts run inside the Plane, NetBox and Authentik containers through their Django shells;
    - NetBox orb-agent workers and NetBox configuration.
 
@@ -139,7 +141,7 @@ unaffected.
 | D4 | **Port Python where the runtime is ours.** Controller-side helpers (`scripts/*.py`, `platform/lib/*.py`, `platform/playbooks/files/*.py` run on the controller) become subcommands of one Rust CLI. Host-side helpers follow once D6 is decided. Operator decision, 2026-11-12 | Keeping a thin pytest lane was the recommended option. Shim tests (`python3 -c` per case) are slower than in-process pytest |
 | D5 | **Framework-bound Python stays Python, kept thin.** Filter and callback plugins are loaded by Ansible. Plane, NetBox and Authentik scripts run in their Django shells. NetBox workers and configuration run in NetBox. Each keeps its logic in a pure function, and the function's cases run through the tier that can load it: playbook tier for plugins, a fake-module `python3` run for Django scripts. One test per behaviour, cases looped inside one run | A Rust port of these is impossible: the host only loads Python |
 | D6 | **Host-side binary distribution: OPEN, operator decision.** Proposed: CI builds static musl binaries for `x86_64` and `aarch64` and publishes them on the release. Deploys fetch them by pinned sha256, the pattern Deploy Plane uses for Plane's Compose files, and copy them instead of `script:` | Building on the controller needs a Rust toolchain in the Semaphore image. A host has no toolchain |
-| D7 | **YAML 1.1 booleans.** `.yamllint.yml` allows bare `yes`/`no`, which Ansible (PyYAML, YAML 1.1) reads as booleans and `yaml-rust2` (YAML 1.2) reads as strings. The support library resolves scalars with YAML 1.1 rules wherever a test compares booleans, and a property test pins the resolver to PyYAML's set | Banning bare `yes`/`no` repository-wide is a separate change |
+| D7 | **YAML 1.1 booleans.** `.yamllint.yml` allows bare `yes`/`no`, which Ansible (PyYAML, YAML 1.1) reads as booleans and `yaml-rust2` (YAML 1.2) reads as strings. The support library resolves scalars with YAML 1.1 rules wherever a test compares booleans, and a table test in `src/lib.rs` pins the resolver to PyYAML's bool and null sets (`yaml/resolver.py`) | Banning bare `yes`/`no` repository-wide is a separate change |
 | D8 | **CI: one always-running `Rust (tests)` job, selection inside it.** It runs `testsel` against the pull request's base, then nextest with the `ci` profile, and the `Unit Tests` aggregator needs it. Promotion pull requests into `main`, and the nightly run on `dev`, use the `full` profile | A job skipped by a path filter fails the aggregator (Problem, "Lanes do not exist today") |
 | D9 | **The ledger learns Rust.** The citation check (`test_ledger_test_citations.py`) is ported first and resolves `platform/tests/suite/<area>.rs::<fn>`. A ported test's old citation is ratcheted with the replacing test named in the reason. The ledger is append-only, so its old text stays | Deleting a cited file before the checker reads Rust turns the check red (`docs/MISTAKES.md` 8.2) |
 
