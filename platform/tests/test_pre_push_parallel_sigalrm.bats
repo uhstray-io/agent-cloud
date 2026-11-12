@@ -36,7 +36,10 @@ SH
 # fake_parallel NAME ignore|default|fail: a fake GNU parallel at fakebin/NAME. It answers
 # --version like GNU parallel does. Otherwise it takes the first argument that is not an
 # option as its job and runs it under sh, with SIGALRM ignored (ignore) or at default
-# (default). fail exits 1 without running anything.
+# (default). fail exits 1 without running anything. Like the real one, ignore and default
+# run the job only when `:::` supplies its argument: without it GNU parallel reads arguments
+# from stdin, which is empty here, runs zero jobs and exits 0. So a probe that dropped its
+# `::: probe` would pass, and case 1 catches that.
 #
 # default sets SIGALRM to DEFAULT explicitly. A test run under `bats --jobs` inherits SIGALRM
 # ignored from GNU parallel 20261022, and a shell cannot reset a signal it inherited as
@@ -53,6 +56,7 @@ SH
       echo 'exit 1' >> "$f" ;;
     ignore)
       cat >> "$f" <<'SH'
+case " $* " in *' ::: '*) ;; *) exit 0 ;; esac
 for a; do case $a in -*) ;; *) job=$a; break ;; esac; done
 trap '' ALRM
 sh -c "$job"
@@ -60,6 +64,7 @@ SH
       ;;
     default)
       cat >> "$f" <<'SH'
+case " $* " in *' ::: '*) ;; *) exit 0 ;; esac
 for a; do case $a in -*) ;; *) job=$a; break ;; esac; done
 exec perl -e '$SIG{ALRM} = "DEFAULT"; exec @ARGV' sh -c "$job"
 SH
@@ -82,7 +87,7 @@ push() {
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   [ "$(cat "$T/bats.args")" = 'platform/tests/' ] \
     || { echo "bats args were: $(cat "$T/bats.args")"; false; }
-  assert_contains "$output" 'GNU parallel 20261022 (fake) starts its jobs with SIGALRM ignored'
+  assert_contains "$output" 'SIGALRM probe through GNU parallel 20261022 (fake) failed'
   assert_contains "$output" 'runs serially'
 }
 
@@ -92,7 +97,7 @@ push() {
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   [ "$(cat "$T/bats.args")" = '--jobs 4 --no-parallelize-within-files platform/tests/' ] \
     || { echo "bats args were: $(cat "$T/bats.args")"; false; }
-  refute_contains "$output" 'SIGALRM ignored'
+  refute_contains "$output" 'SIGALRM probe'
 }
 
 @test "pre-push parallel: a probe that fails for any reason runs BATS serially" {
@@ -101,6 +106,8 @@ push() {
   [ "$status" -eq 0 ] || { echo "$output"; false; }
   [ "$(cat "$T/bats.args")" = 'platform/tests/' ] \
     || { echo "bats args were: $(cat "$T/bats.args")"; false; }
+  # The message names the probe, not one cause: this probe failed without SIGALRM involved.
+  assert_contains "$output" 'SIGALRM probe through GNU parallel 20261022 (fake) failed'
   assert_contains "$output" 'runs serially'
 }
 

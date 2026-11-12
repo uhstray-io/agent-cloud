@@ -359,9 +359,10 @@ fi
 # job is trusted. Any nonzero status (SIGALRM ignored, python3 missing, parallel erroring)
 # runs BATS serially. Fail toward correct-but-slower.
 #   $1  the parallel binary
-# `:::` gives parallel one argument, so the job runs whatever stdin is: with an empty stdin
-# parallel would run zero jobs and exit 0. Stderr is discarded; GNU parallel prints its
-# citation notice only to a terminal, so the probe prints nothing.
+# `::: probe` gives the job one argument, so parallel runs it once. Without `:::`, parallel
+# reads its arguments from stdin; the hook's stdin is already consumed by the ref loop above,
+# so it would run zero jobs and exit 0, and the probe would always pass. Stderr is discarded;
+# GNU parallel prints its citation notice only to a terminal, so the probe prints nothing.
 pp_parallel_keeps_sigalrm() {
   "$1" -j1 "python3 -c \"import signal, sys; sys.exit(0 if signal.getsignal(signal.SIGALRM) == signal.SIG_DFL else 1)\"" ::: probe \
     >/dev/null 2>&1
@@ -378,8 +379,10 @@ if [ -d platform/tests ]; then
       bats_args="--jobs 4 --no-parallelize-within-files"
     else
       _pp_ver=$("$pp_parallel" --version 2>/dev/null | head -n 1)
-      printf 'pre-push: %s starts its jobs with SIGALRM ignored, which breaks Ansible task\n' "${_pp_ver:-GNU parallel}" >&2
-      printf '  timeouts ("An existing alarm handler was present"), so BATS runs serially (slower).\n' >&2
+      printf 'pre-push: the SIGALRM probe through %s failed, so BATS runs serially (slower).\n' "${_pp_ver:-GNU parallel}" >&2
+      printf '  The usual cause: GNU parallel starts its jobs with SIGALRM ignored, which breaks Ansible\n' >&2
+      printf '  task timeouts ("An existing alarm handler was present"). A missing python3 or a parallel\n' >&2
+      printf '  error fails the probe too.\n' >&2
     fi
     printf 'pre-push: running BATS suite%s...\n' "${bats_args:+ in parallel}" >&2
     # shellcheck disable=SC2086 # bats_args is deliberately word-split into flags.
