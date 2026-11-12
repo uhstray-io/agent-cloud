@@ -509,17 +509,23 @@ mod tests {
         Router::new().route(
             path,
             get(move |session: Session| async move {
-                let user = auth::CurrentUser {
-                    sub: "user-1".into(),
-                    email: Some("ada@example.test".into()),
-                    name: Some("Ada".into()),
-                    username: Some("ada".into()),
-                    groups: groups.iter().map(|group| group.to_string()).collect(),
-                };
-                auth::sign_in(&session, &user).await.expect("insert user");
+                auth::sign_in(&session, &test_user(groups))
+                    .await
+                    .expect("insert user");
                 "signed in"
             }),
         )
+    }
+
+    /// The user every test login route signs in.
+    fn test_user(groups: &[&str]) -> auth::CurrentUser {
+        auth::CurrentUser {
+            sub: "user-1".into(),
+            email: Some("ada@example.test".into()),
+            name: Some("Ada".into()),
+            username: Some("ada".into()),
+            groups: groups.iter().map(|group| group.to_string()).collect(),
+        }
     }
 
     /// Test-only route that signs a user in as if `age_secs` ago, or, with `None`, stores the user
@@ -530,13 +536,7 @@ mod tests {
         Router::new().route(
             path,
             get(move |session: Session| async move {
-                let user = auth::CurrentUser {
-                    sub: "user-1".into(),
-                    email: None,
-                    name: None,
-                    username: Some("ada".into()),
-                    groups: vec!["ops".into()],
-                };
+                let user = test_user(&["ops"]);
                 match age_secs {
                     Some(age) => {
                         let at = sessions::now_unix() - age;
