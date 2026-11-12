@@ -18,7 +18,7 @@ from pathlib import Path
 import forgeries
 import pytest
 from ansible_python import needs_ansible
-from local_mode_inventories import EXAMPLE_YAML, LOCAL_INI, PROD_INI, passed, refused, run
+from local_mode_inventories import EXAMPLE_YAML, LOCAL_INI, PROD_INI, include_play, passed, refused, run
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/assert-bao-transport.yml"
@@ -33,15 +33,7 @@ PRIVATE_URL = "http://" + ".".join(map(str, (10, 0, 0, 5))) + ":8200"
 
 
 def _guard(tmp_path, inventory, url, *args, suffix="ini"):
-    play = (
-        "- hosts: localhost\n"
-        "  connection: local\n"
-        "  gather_facts: false\n"
-        "  tasks:\n"
-        "    - name: the shared transport guard\n"
-        f"      ansible.builtin.include_tasks: {json.dumps(str(TASK))}\n"
-        "      vars:\n"
-        f"        _assert_bao_url: {json.dumps(url)}\n")
+    play = include_play(TASK, hosts="localhost", task_vars={"_assert_bao_url": url})
     return run(tmp_path, inventory, play, *args, suffix=suffix)
 
 

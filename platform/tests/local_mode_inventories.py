@@ -8,6 +8,7 @@ goes through harness_sandbox.run_playbook: bounded, no stdin, writes confined.
 Imported as `import local_mode_inventories`, like forgeries: pytest puts this directory on sys.path.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -37,6 +38,19 @@ all:
     dns-local:
       ansible_connection: local
 """
+
+
+def include_play(task: Path, *, hosts: str = "all", play_vars: dict | None = None,
+                 task_vars: dict | None = None) -> str:
+    """A play that includes one task file by its absolute path, on a local connection."""
+    play = {"hosts": hosts, "connection": "local", "gather_facts": False}
+    if play_vars:
+        play["vars"] = play_vars
+    include = {"name": "the task under test", "ansible.builtin.include_tasks": str(task)}
+    if task_vars:
+        include["vars"] = task_vars
+    play["tasks"] = [include]
+    return json.dumps([play])  # JSON is YAML
 
 
 def run(tmp_path: Path, inventory: str, play: str, *args: str, suffix: str = "ini"):
