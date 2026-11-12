@@ -21,7 +21,8 @@
 //! The one extension (this port only): FILE also matches a Rust test, `[dir/]suite/<name>.rs`,
 //! optionally followed by `::<fn>`. A path starting `suite/` is relative to `platform/tests/`;
 //! any other path is relative to the repository root. With `::<fn>`, the file must define
-//! `fn <fn>` (followed by `(` or `<`, anywhere on a line). A Rust citation is checked for
+//! `fn <fn>` followed by `(` or `<`, at the start of a line after any attributes, `pub(..)` or
+//! `async`; `//` and `/* */` comments do not count. A Rust citation is checked for
 //! existence and fn name only. It does not feed the
 //! NAME and BATS NAME pools, so both checkers search the same files for every claim and differ
 //! only on Rust citations, which the Python checker does not read.
@@ -175,8 +176,8 @@ fn defines(path: &Path, name: &str) -> bool {
     if path.extension().and_then(|e| e.to_str()) == Some("rs") {
         // Line-anchored like the Python rule, so `// fn x()` does not count; attributes and
         // `pub`/`async` may precede it. Block comments are dropped first.
-        // ponytail: comments only; a line starting `fn x(` inside a multi-line string still
-        // counts, strip string literals too if that ever bites.
+        // ponytail: two known false greens, a line starting `fn x(` inside a multi-line string
+        // and one after a nested `/* /* */`. Use a Rust tokenizer if either ever bites.
         let code = BLOCK_COMMENT.replace_all(&text, "");
         let pattern = format!(
             r"(?m)^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
