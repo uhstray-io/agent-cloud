@@ -47,18 +47,41 @@
     _rnt_semaphore: "{{ _rnt_semaphore_read.json.data.data if _rnt_semaphore_read.status == 200 else {} }}"
   no_log: true
 
-- name: "Require secret/services/semaphore to hold an https url and an api_token (hidden: names the requirement only)"
+# The stored url is read as every other reader of this path reads it: trailing slashes trimmed
+# (promote-semaphore-admins.yml, #604), and the transport checked by the shared guard, which admits https and http to
+# loopback or a private address only. A stricter pattern of its own refused the stored value and stopped the first real
+# publish (Semaphore task 15360) before any write.
+- name: "Take the Semaphore base URL without a trailing slash (hidden: it comes from the secret read)"
+  ansible.builtin.set_fact:
+    _rnt_endpoint: "{{ (_rnt_semaphore.url | default('', true) | string | trim) | regex_replace('/+$', '') }}"
+  no_log: true
+
+# Two asserts, so a refusal names which field is missing; the values stay hidden either way.
+- name: "Require secret/services/semaphore to hold a url (hidden: names the requirement only)"
   ansible.builtin.assert:
     that:
-      - (_rnt_semaphore.url | default('', true)) is match('^https://[^/]+$')
-      - (_rnt_semaphore.api_token | default('', true)) | length > 0
-    fail_msg: "secret/services/semaphore must hold an https url and an api_token before the reviewed notes can be read."
+      - _rnt_endpoint | length > 0
+    fail_msg: "secret/services/semaphore must hold a url before the reviewed notes can be read."
     quiet: true
   no_log: true
 
+- name: "Require secret/services/semaphore to hold an api_token (hidden: names the requirement only)"
+  ansible.builtin.assert:
+    that:
+      - (_rnt_semaphore.api_token | default('', true)) | length > 0
+    fail_msg: "secret/services/semaphore must hold an api_token before the reviewed notes can be read."
+    quiet: true
+  no_log: true
+
+- name: "Refuse a cleartext Semaphore endpoint (the shared transport guard; the token goes in a header to it)"
+  ansible.builtin.include_tasks: assert-bao-transport.yml
+  vars:
+    _assert_bao_url: "{{ _rnt_endpoint }}"
+    _assert_url_label: "Semaphore"
+
 - name: "Read the Semaphore task (hidden: the request carries the API token)"
   ansible.builtin.uri:
-    url: "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}"
+    url: "{{ _rnt_endpoint }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}"
     method: GET
     headers:
       Authorization: "Bearer {{ _rnt_semaphore.api_token }}"
@@ -75,7 +98,7 @@
 
 - name: "Read the task's output rows (hidden: the request carries the API token)"
   ansible.builtin.uri:
-    url: "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}/output"
+    url: "{{ _rnt_endpoint }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}/output"
     method: GET
     headers:
       Authorization: "Bearer {{ _rnt_semaphore.api_token }}"
@@ -97,7 +120,7 @@
 
 - name: "Read the task's template (hidden: the request carries the API token)"
   ansible.builtin.uri:
-    url: "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/templates/{{ _rnt_template_id | int }}"
+    url: "{{ _rnt_endpoint }}/api/project/{{ _rv_semaphore_project_id }}/templates/{{ _rnt_template_id | int }}"
     method: GET
     headers:
       Authorization: "Bearer {{ _rnt_semaphore.api_token }}"
