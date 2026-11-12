@@ -81,16 +81,15 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
 
 # A branch deletion pushes an all-zero local sha and has no code to test. Reading stdin
 # also drains it, which git expects.
-only_deletions=1
 push_refs=""
 push_shas=""
 while read -r _local_ref local_sha remote_ref _remote_sha; do
   case "$local_sha" in
     "" ) ;;
-    *[!0]* ) only_deletions=0; push_refs="$push_refs $remote_ref"; push_shas="$push_shas $local_sha" ;;
+    *[!0]* ) push_refs="$push_refs $remote_ref"; push_shas="$push_shas $local_sha" ;;
   esac
 done
-[ "$only_deletions" = "1" ] && exit 0
+[ -z "$push_refs" ] && exit 0
 
 # ── One test run per branch at a time (docs/MISTAKES.md §5.11) ─────────────
 # A backgrounded push's buffered output once read as "finished" and a second push of
@@ -122,6 +121,8 @@ pp_release_locks() {
 
 # The BATS job and the files both suites write to. Set in the suite sections below.
 bats_pid=""
+# The run's scratch files live in one directory, made after the SKIP_TESTS exit below.
+pp_scratch=""
 bats_out=""
 py_out=""
 py_rc_file=""
@@ -131,9 +132,11 @@ changed_file=""
 # Clears the pid so a later exit cannot signal a recycled process.
 pp_cleanup() {
   if [ -n "$bats_pid" ]; then kill "$bats_pid" 2>/dev/null; bats_pid=""; fi
-  for _f in "$bats_out" "$py_out" "$py_rc_file" "$changed_file"; do
-    if [ -n "$_f" ]; then rm -f "$_f"; fi
-  done
+  if [ -n "$pp_scratch" ]; then
+    rm -f "$bats_out" "$py_out" "$py_rc_file" "$changed_file"
+    rmdir "$pp_scratch" 2>/dev/null
+    pp_scratch=""
+  fi
   pp_release_locks
 }
 trap 'pp_cleanup' EXIT
@@ -263,6 +266,13 @@ if [ "${SKIP_TESTS:-}" = "1" ]; then
   exit 0
 fi
 
+pp_scratch=$(mktemp -d) || { printf 'pre-push: cannot create a temporary directory for the run.\n' >&2; exit 1; }
+bats_out="$pp_scratch/bats.out"
+py_out="$pp_scratch/pytest.out"
+py_rc_file="$pp_scratch/pytest.rc"
+changed_file="$pp_scratch/changed-paths"
+: > "$changed_file"
+
 failed=0
 
 # ── Locked Python environment ───────────────────────────────────────────────
@@ -316,7 +326,6 @@ if [ -d platform/tests ]; then
       printf 'pre-push: GNU parallel is not installed, so BATS runs serially (slower). Install it,\n' >&2
       printf '  as the Brewfile does:  brew install parallel\n' >&2
     fi
-    bats_out=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the BATS output.\n' >&2; exit 1; }
     printf 'pre-push: running BATS suite%s...\n' "${bats_args:+ in parallel}" >&2
     # shellcheck disable=SC2086 # bats_args is deliberately word-split into flags.
     bats $bats_args platform/tests/ > "$bats_out" 2>&1 &
@@ -376,10 +385,10 @@ if [ -f pyproject.toml ]; then
 
   # Fast lane. The push's changed paths, against its merge base with dev. A push that cannot
   # be measured (no dev ref, no merge base) runs the full suite, and says why. The
-  # environment is cleared first, so an inherited PYTEST_FAST cannot narrow a full run.
-  unset PYTEST_FAST PYTEST_FAST_CHANGED
+  # environment is cleared first, so an inherited PYTEST_FAST or PYTEST_SHARD cannot narrow a
+  # full run (the same names as SELECTION_ENV in platform/tests/shards.py).
+  unset PYTEST_FAST PYTEST_FAST_CHANGED PYTEST_SHARD
   pp_fast_why=""
-  changed_file=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the changed paths.\n' >&2; exit 1; }
   if ! git rev-parse --verify -q "refs/remotes/$remote_name/dev^{commit}" >/dev/null 2>&1; then
     pp_fast_why="there is no refs/remotes/$remote_name/dev to measure the push against"
   else
@@ -408,8 +417,6 @@ if [ -f pyproject.toml ]; then
     printf 'pre-push: full Python suite, not the fast lane: %s.\n' "$pp_fast_why" >&2
   fi
 
-  py_out=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the Python output.\n' >&2; exit 1; }
-  py_rc_file=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the Python output.\n' >&2; exit 1; }
   printf 'pre-push: running Python suite%s...\n' "${py_par:+ in parallel}" >&2
   # The exit status goes to a file: POSIX sh has no pipefail, so a pipeline's status would be
   # tee's. `echo $?` runs straight after pytest, so it is pytest's status.
@@ -424,9 +431,10 @@ if [ -f pyproject.toml ]; then
         # Forgivable ONLY as a missing module, and only on the python3 fallback. On the locked
         # environment every declared package is installed, so a missing module is an undeclared
         # import: a defect, and the push fails.
-        if [ "$py_locked" = "0" ] && pp_collection_block "$py_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
+        _missing=$(pp_collection_block "$py_out" | grep -E 'ModuleNotFoundError|No module named|ImportError: cannot import name')
+        if [ "$py_locked" = "0" ] && [ -n "$_missing" ]; then
           printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
-          pp_collection_block "$py_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
+          printf '%s\n' "$_missing" | sed 's/^/          /' >&2
           printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
           printf '          Install uv; the hook then installs the locked set itself.\n' >&2
           printf '          If this names a module the tests legitimately need and it is not\n' >&2

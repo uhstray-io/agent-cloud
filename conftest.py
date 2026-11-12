@@ -83,23 +83,34 @@ def _changed_paths(path_text: str) -> frozenset[str]:
     return frozenset(line.strip() for line in lines if line.strip())
 
 
+def _is_test_module(collection_path: Path) -> bool:
+    return not collection_path.is_dir() and fnmatch.fnmatch(collection_path.name, "test_*.py")
+
+
+def _repo_relative(collection_path: Path, root: Path) -> str | None:
+    """The path relative to the rootdir, posix; None outside it."""
+    try:
+        return collection_path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
 @functools.cache
 def _fast_selection(root: Path, testpaths: tuple[str, ...], changed_file: str) -> tuple[frozenset[str], frozenset[str]]:
     """The enumerated test files and the ones the fast lane keeps, computed once per process."""
     lib = _shard_lib(root)
     files = lib.enumerate_files(root, list(testpaths))
     durations = lib.load_durations(root / DURATIONS)
-    kept = lib.fast_lane(files, durations, root, set(_changed_paths(changed_file)))
+    kept = lib.fast_lane(files, durations, root, _changed_paths(changed_file))
     return frozenset(files), frozenset(kept)
 
 
 def _fast_lane_ignore(collection_path: Path, config: pytest.Config) -> bool | None:
-    if collection_path.is_dir() or not fnmatch.fnmatch(collection_path.name, "test_*.py"):
+    if not _is_test_module(collection_path):
         return None
     root = config.rootpath.resolve()
-    try:
-        rel = collection_path.resolve().relative_to(root).as_posix()
-    except ValueError:
+    rel = _repo_relative(collection_path, root)
+    if rel is None:
         return None
     enumerated, kept = _fast_selection(root, tuple(config.getini("testpaths")), os.environ.get(FAST_CHANGED_ENV, ""))
     if rel in enumerated and rel not in kept:
@@ -118,12 +129,9 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
         k, n = _shard_lib(root).parse_shard(spec)
     except ValueError as exc:
         raise pytest.UsageError(f"PYTEST_SHARD={spec!r}: {exc}") from exc
-    if collection_path.is_dir() or not fnmatch.fnmatch(collection_path.name, "test_*.py"):
+    if not _is_test_module(collection_path):
         return None
-    try:
-        rel = collection_path.resolve().relative_to(root).as_posix()
-    except ValueError:
-        rel = None
+    rel = _repo_relative(collection_path, root)
     assignment = _assignment(root, tuple(config.getini("testpaths")), n)
     owner = assignment.get(rel, 1) if rel is not None else 1
     if owner != k:

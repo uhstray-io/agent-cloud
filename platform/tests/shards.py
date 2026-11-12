@@ -23,6 +23,9 @@ from pathlib import Path
 
 DEF_TEST = re.compile(r"^\s*(async\s+)?def test_")
 SHARD_SPEC = re.compile(r"([0-9]+)/([0-9]+)")
+# The variables that narrow a pytest run. A nested run in a test strips them, and the pre-push hook unsets
+# them before choosing its own (.githooks/pre-push), so an outer selection never leaks into another run.
+SELECTION_ENV = ("PYTEST_FAST", "PYTEST_FAST_CHANGED", "PYTEST_SHARD")
 FAST_CUTOFF = 0.25  # seconds: a file whose recorded tests all ran under this, with none skipped, is in the fast lane
 
 
@@ -132,7 +135,7 @@ def _has_missing_test(path: Path, entry: dict) -> bool:
     return bool(names - recorded)
 
 
-def fast_lane(files: list[str], durations: dict, root: Path, changed: set[str]) -> set[str]:
+def fast_lane(files: list[str], durations: dict, root: Path, changed: set[str] | frozenset[str]) -> set[str]:
     """The subset of ``files`` the pre-push fast lane runs (plan 21 phase 4, D6).
 
     A file is kept when any of these holds, tested in this order so a file is parsed only when the cheaper

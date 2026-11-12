@@ -315,7 +315,7 @@ def test_the_hook_refuses_an_invalid_spec(root_conftest, monkeypatch):
 
 # ---- the pre-push fast lane (plan 21 phase 4, D6) -----------------------------------------------------
 
-LANE_ENV_NAMES = ("PYTEST_FAST", "PYTEST_FAST_CHANGED", "PYTEST_SHARD")
+LANE_ENV_NAMES = shards.SELECTION_ENV
 
 
 @pytest.fixture(autouse=True)
