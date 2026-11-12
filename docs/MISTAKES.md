@@ -129,6 +129,7 @@ and why.
 | 3.20 | **x2** — Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) (x2: three more launches in forbidden minutes, no failure) | Live state | 2 | Convention (launch away from schedule slots); per-task inventory proposed; widened by 3.22 |
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
 | 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
+| 3.23 | Ran an 18-minute production drill whose second deploy clones the moving `dev` head against a SHA pinned at launch; three merges landed mid-drill and the restore refused, leaving the drilled projection live | Live state | 1 | Convention |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -3765,6 +3766,16 @@ real fix is a per-task inventory copy, below.
 falls within a template's recorded typical duration of the next declared slot, and proceeds only with an explicit
 accept-the-risk flag, matching the rule above. The foundational fix is unchanged: a per-task copy of the inventory, so
 no task can remove another's.
+
+### 3.23 A long drill pinned a SHA at launch but cloned the moving branch for its restore
+
+**What happened.** On 2026-11-12 I launched `Drill o11y Endpoint Availability (Dev)` in absent mode (task 15623, `service:authentik`), pinned to the `dev` head read at launch (`432c137a`). The drill has two deploys, with the alert proof between them (task 15623 ran from 20:35 to about 20:53 UTC). Both clone `service_branch` (`dev`), and both refuse unless the receiver checkout equals `expected_repository_sha`. The `dev` freeze had just been lifted, and three PRs merged between 20:39 and 20:46 UTC. The drilled deploy and its proof ran (the missing-data alert fired, and Discord confirmed it). The restoring deploy then cloned the new head, found it differed from the pin, and refused before changing anything. That left authentik's probe removed and its missing alert firing, under the drill marker, until `Recover o11y Endpoint Drill (Dev)` (task 15629, pinned to the then-current head) restored it, finishing at 21:06 UTC. I asked the active PM sessions to hold `dev` merges during the recovery.
+
+**Root cause.** The drill pins one SHA for its whole run, but places the checkout from a branch name, so its correctness depends on nobody merging for the length of the run. The same exposure was already known for single launches: a launch pinned to a head read too early refuses. A multi-deploy run widens it from seconds to the drill's full duration. Nothing on the controller holds the branch still, and I did not ask for a hold before launching.
+
+**The rule.** A run that deploys more than once against one pinned SHA must place that SHA, not a branch. Until the drill does, launch it only with `dev` merges held for its duration, agreed with the sessions that merge, and have the matching Recover template ready to run against the current head.
+
+**Enforced by.** Convention. The fix is tracked in Plane (the drill places the reviewed SHA for both deploys).
 
 ## 4. Data handling
 
