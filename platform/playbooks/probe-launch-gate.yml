@@ -3,7 +3,12 @@
 # skynet-launch-containment, task 5.5: scenarios "OPA allows", "Duplicate launch while running" and "Dry run").
 #
 # From inside the gate's own container, as one fixed identity (caller skynet, acting as agent service-agent), it
-# asks the gate to launch Snapshot Service Assessment (Dev) as a dry run, then repeats the same request at once.
+# asks the gate to launch Snapshot Service Assessment as a dry run, then repeats the same request at once. The
+# survey's probe_template_variant picks which of the step's two templates: "dev" (the default) sends
+# "Snapshot Service Assessment (Dev)", which the dev repository record runs; "base" sends "Snapshot Service Assessment",
+# which runs on main and which OPA allows only because the registry marks service-assess reviewed. skynet launches the
+# base name once its vendored registry carries that mark, so "base" is the probe of that path. Only these two names
+# can be sent: the variant maps to a fixed name, never a free-form template.
 # The gate's own rules decide both launches: the caller may act as the agent, the template is on the allowlist,
 # OPA allows the step, and the dry-run read-back proves check mode. A dry run of a read-only snapshot creates one
 # Semaphore task per launch and changes nothing else.
@@ -27,7 +32,7 @@
 #
 # Inventory (launch_gate_svc, one host): launch_gate_callers (default as deploy-launch-gate.yml), launch_gate_tls_server_name
 # (or dns_site and dns_zone), container_engine. Survey: probe_target_service, the populated <name>_svc group Snapshot
-# reads (default opa_svc).
+# reads (default opa_svc); probe_template_variant, dev or base (default dev).
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -48,6 +53,7 @@
   become: false
   vars:
     _probe_target: "{{ probe_target_service | default('opa_svc', true) | string }}"
+    _probe_variant: "{{ probe_template_variant | default('dev', true) | string }}"
   tasks:
     - name: "Require exactly one launch_gate_svc host"
       ansible.builtin.assert:
@@ -67,6 +73,12 @@
           it), got "{{ _probe_target }}".
         quiet: true
 
+    - name: "Require probe_template_variant to be dev or base"
+      ansible.builtin.assert:
+        that: _probe_variant in ['dev', 'base']
+        fail_msg: 'probe_template_variant must be "dev" or "base" (blank for dev), got "{{ _probe_variant }}".'
+        quiet: true
+
 - name: "Probe the launch gate's allow path and its duplicate refusal"
   hosts: launch_gate_svc
   gather_facts: false
@@ -77,11 +89,12 @@
     # listener on 127.0.0.1 and verifies the certificate as this name.
     _launch_gate_tls_name: "{{ launch_gate_tls_server_name | default('launch-gate.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
     _probe_target: "{{ probe_target_service | default('opa_svc', true) | string }}"
-    # The fixed probe identity. The step must be a registry step (see the header). The template is the (Dev) variant,
-    # which only the dev repository record runs.
+    # The fixed probe identity. The step must be a registry step (see the header). The template is one of that step's
+    # two names, chosen by the survey variant the localhost play has already checked is dev or base.
     _launch_gate_probe_caller: skynet
     _launch_gate_probe_agent: service-agent
-    _launch_gate_probe_template: "Snapshot Service Assessment (Dev)"
+    _probe_variant: "{{ probe_template_variant | default('dev', true) | string }}"
+    _launch_gate_probe_template: "Snapshot Service Assessment{{ ' (Dev)' if _probe_variant == 'dev' else '' }}"
     _launch_gate_probe_step: service-assess
     # The same default and role list deploy-launch-gate.yml uses for its caller map. test_probe_launch_gate.py pins that the two match.
     _launch_gate_role_agents: ['infra-agent', 'security-agent', 'o11y-agent', 'service-agent', 'network-agent']

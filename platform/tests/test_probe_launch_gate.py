@@ -32,6 +32,7 @@ SCRIPT = REPO / "platform/playbooks/files/launch-gate-allow-probe.py"
 DEPLOY = REPO / "platform/playbooks/deploy-launch-gate.yml"
 DATA = REPO / "platform/services/opa/deployment/policies/agentcloud/data.json"
 TEMPLATE = "Snapshot Service Assessment (Dev)"
+BASE_TEMPLATE = "Snapshot Service Assessment"
 TLS_NAME = "localhost"
 # Synthetic. The playbook reads it from the container environment; it is not a credential.
 TOKEN = "synthetic-probe-caller-token-not-a-credential"
@@ -272,6 +273,42 @@ def test_a_blank_target_takes_the_default_opa_svc(tmp_path, pki, gate):
     assert server.seen[0]["body"]["survey"] == {"target_service": "opa_svc"}
 
 
+@pytest.mark.parametrize(
+    "variant, template",
+    [
+        pytest.param(None, TEMPLATE, id="absent-is-dev"),
+        pytest.param("", TEMPLATE, id="blank-is-dev"),
+        pytest.param("dev", TEMPLATE, id="dev"),
+        pytest.param("base", BASE_TEMPLATE, id="base"),
+    ],
+)
+def test_the_variant_picks_the_template_both_launches_send(tmp_path, pki, gate, variant, template):
+    server = gate(["201", "409:already_running"])
+    rc, out = _run(
+        tmp_path,
+        address=f"127.0.0.1:{server.server_port}",
+        cafile=pki / "ca.crt",
+        extra_vars=None if variant is None else {"probe_template_variant": variant},
+    )
+    assert rc == 0, out
+    assert [request["body"]["template"] for request in server.seen] == [template, template]
+
+
+@pytest.mark.parametrize("check", [False, True], ids=["real", "dry-run"])
+@pytest.mark.parametrize("variant", ["main", "Snapshot Access", "BASE", "Dev"])
+def test_a_variant_that_is_not_dev_or_base_is_refused_before_any_request(tmp_path, pki, gate, variant, check):
+    server = gate(["201", "409:already_running"])
+    rc, out = _run(
+        tmp_path,
+        address=f"127.0.0.1:{server.server_port}",
+        cafile=pki / "ca.crt",
+        extra_vars={"probe_template_variant": variant},
+        check=check,
+    )
+    assert rc != 0 and 'probe_template_variant must be "dev" or "base"' in out, out
+    assert server.seen == []
+
+
 # ── refusals before any request ──────────────────────────────────────────────
 
 
@@ -352,7 +389,10 @@ def test_the_probe_identity_and_the_step_are_fixed():
     variables = _probe_play()["vars"]
     assert variables["_launch_gate_probe_caller"] == "skynet"
     assert variables["_launch_gate_probe_agent"] == "service-agent"
-    assert variables["_launch_gate_probe_template"] == TEMPLATE
+    # One of the step's two names, never the survey value itself: anything but "dev" maps to the base name.
+    assert variables["_launch_gate_probe_template"] == (
+        "Snapshot Service Assessment{{ ' (Dev)' if _probe_variant == 'dev' else '' }}"
+    )
     assert variables["_launch_gate_probe_step"] == "service-assess"
 
 
@@ -414,16 +454,20 @@ def test_the_caller_default_is_the_deploy_default():
     assert _declared_callers(PLAYBOOK) == _declared_callers(DEPLOY)
 
 
-def test_the_semaphore_template_is_dev_bound_with_one_optional_target_survey():
+def test_the_semaphore_template_is_dev_bound_with_a_target_and_a_variant_survey():
     templates = yaml.safe_load((REPO / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(t for t in templates if t["name"] == "Probe launch-gate (Dev)")
     assert template["playbook"] == "platform/playbooks/probe-launch-gate.yml"
     assert template["repository"] == "agent-cloud dev"
     assert "dev_variant" not in template
-    [survey] = template["survey_vars"]
-    assert survey["name"] == "probe_target_service"
-    assert survey["type"] == "string"
-    assert survey["required"] is False
+    target, variant = template["survey_vars"]
+    assert target["name"] == "probe_target_service"
+    assert target["type"] == "string"
+    assert target["required"] is False
+    assert variant["name"] == "probe_template_variant"
+    assert variant["type"] == "enum"
+    assert variant["default_value"] == "dev"
+    assert [value["value"] for value in variant["values"]] == ["dev", "base"]
 
 
 def test_the_docs_list_the_probe():
