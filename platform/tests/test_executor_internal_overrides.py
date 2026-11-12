@@ -1000,6 +1000,11 @@ def test_password_prompts_are_not_variables_and_pass_the_guard(tmp_path):
                                 {"hosts": "localhost", "gather_facts": False,
                                  "tasks": [{"ansible.builtin.debug": {"msg": "GUARD PASSED"}}]}]))
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
+    # In a new session, with no controlling terminal, as under Semaphore and CI. Ansible prompts
+    # through getpass, which reads /dev/tty whenever the process has a controlling terminal and
+    # stdin only when it has none. Run from a developer's shell (the pre-push hook) the answers on
+    # stdin were never read, and the test waited out its timeout on a prompt nobody could see.
     proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(play), "--ask-pass", "--ask-become-pass"],
-                          input="pw\npw\n", cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=120)
+                          input="pw\npw\n", cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=120,
+                          start_new_session=True)
     assert proc.returncode == 0 and "GUARD PASSED" in proc.stdout, proc.stdout + proc.stderr
