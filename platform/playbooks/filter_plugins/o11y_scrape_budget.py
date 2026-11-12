@@ -769,6 +769,14 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
     }
 
 
+# The producer helper runs through ansible's script action over ssh: no stdin, sudoable, so
+# ansible adds -tt, and ControlPersist keeps the session multiplexed. OpenSSH's mux client then
+# prints this one line on the local ssh stderr when the shared session closes (the string is in
+# the ssh binary). It is transport noise, not producer output, so exactly one such line is
+# accepted; any other stderr still counts as producer_stderr_present.
+_SSH_MUX_CLOSE_STDERR = re.compile(r"Shared connection to [A-Za-z0-9._:\[\]-]{1,253} closed\.\r?\n?")
+
+
 def o11y_availability_source_gate_diagnostic(result: Any) -> str:
     """Reduce a protected Ansible command result to one fixed diagnostic category."""
     fallback = "producer_evidence_invalid"
@@ -811,7 +819,7 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
         ):
             return readback["reason"]
         coverage = o11y_availability_source_coverage(readback, allow_self_only=True)
-        if stderr != "":
+        if stderr != "" and not (isinstance(stderr, str) and _SSH_MUX_CLOSE_STDERR.fullmatch(stderr)):
             return "producer_stderr_present"
         if rc == 0 and coverage.get("status") == "observed":
             return "producer_observed" if coverage.get("matches_intended") is True else "producer_mismatch"
