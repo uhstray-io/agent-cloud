@@ -186,7 +186,7 @@ fn defines(path: &Path, name: &str) -> bool {
     }
 }
 
-/// `src` with every comment (nested `/* */` included), string literal (plain, byte, raw) and char
+/// `src` with every comment (nested `/* */` included), string literal (plain, byte, C, raw) and char
 /// literal replaced by spaces, newlines kept so line anchors still hold. A lifetime (`'a`) is
 /// code: a `'` opens a char literal only when its closing `'` follows the one char or escape.
 fn blank_comments_and_literals(src: &str) -> String {
@@ -220,7 +220,7 @@ fn blank_comments_and_literals(src: &str) -> String {
                 }
             }
         } else if c[i] == 'r'
-            && (!ident(i) || (c[i - 1] == 'b' && !ident(i - 1)))
+            && (!ident(i) || (matches!(c[i - 1], 'b' | 'c') && !ident(i - 1)))
             && matches!(c.get(i + 1), Some('"' | '#'))
         {
             let hashes = c[i + 1..].iter().take_while(|&&ch| ch == '#').count();
@@ -595,6 +595,12 @@ fn raw_string_fn() {}
 const R2: &str = r#"a " quote
 fn raw_quote_fn() {}
 "#;
+const B: &[u8] = br#"a " quote
+fn byte_raw_fn() {}
+"#;
+const CR: &core::ffi::CStr = cr#"a " quote
+fn c_raw_fn() {}
+"#;
 const Q: &str = "/* \" ";
 fn after_string_fn() {}
 const C: char = '"';
@@ -609,6 +615,8 @@ fn after_escaped_quote_fn() {}
         ("string_fn", false),
         ("raw_string_fn", false),
         ("raw_quote_fn", false),
+        ("byte_raw_fn", false),
+        ("c_raw_fn", false),
         ("after_string_fn", true),
         ("after_char_fn", true),
         ("after_escaped_quote_fn", true),
