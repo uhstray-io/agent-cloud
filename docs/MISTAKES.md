@@ -1317,8 +1317,8 @@ into plan 23's design table and into Plane item AC-699 as "refuses unless that c
 `origin/dev` equals the pull request's pinned base SHA", and #1020 merged with it, without checking
 what GitHub's `base.sha` holds. Building AC-699 on 2026-11-12, I compared it with the live `dev`
 ref (`gh api repos/uhstray-io/agent-cloud/pulls/<n> -q .base.sha` against
-`gh api repos/uhstray-io/agent-cloud/git/ref/heads/dev -q .object.sha`): each of the 8 most recently
-updated open pull requests into `dev` (`gh pr list -L 8`) carried a `base.sha` older than the tip
+`gh api repos/uhstray-io/agent-cloud/git/ref/heads/dev -q .object.sha`): each of the 8 open pull
+requests into `dev` that `gh pr list -L 8` returned carried a `base.sha` older than the tip
 `c0e58d71`. The gate as planned would have refused
 almost every merge. It was caught before any code. The count now checks the fetched `origin/dev`
 against GitHub's live `dev` ref (#1093), and plan 23 records the change. Why the rule did not fire:
