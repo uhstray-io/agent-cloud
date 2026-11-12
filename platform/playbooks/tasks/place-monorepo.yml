@@ -10,15 +10,24 @@
 #                        mount, including uncommitted changes. A separately bound
 #                        branch template copies its own checkout instead.
 #                        The Semaphore container has no sudo/apt.
+#                        local_mode is checked against the inventory first
+#                        (tasks/assert-local-mode-identity.yml): a local-dev inventory
+#                        only, so `-e local_mode=true` cannot force local mode onto a production host.
 #
 # Expects in the including play's scope:
 #   _monorepo_dir          — where the repo lands on the target
 #   _branch                — service_branch | default('main')  (prod clone)
 #   monorepo_repo          — clone URL                          (prod only)
-#   local_mode             — bool (inventory)
+#   local_mode             — bool (inventory; the first task below refuses one that disagrees)
 #
 # DRY: edit the placement logic HERE, never per service (CLAUDE.md Engineering
 # Principles — reuse over per-service glue).
+
+- name: "Refuse a local_mode that disagrees with the inventory's identity"
+  # Sibling task in this directory. It runs before any read of local_mode below (and in
+  # install-podman-compose.yml, enable-linger.yml), so a plain `-e local_mode=true` on a production
+  # host is refused before the local branch is taken.
+  ansible.builtin.include_tasks: assert-local-mode-identity.yml
 
 - name: "Assert required variables for monorepo placement"
   ansible.builtin.assert:

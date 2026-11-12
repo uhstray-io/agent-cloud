@@ -1,0 +1,33 @@
+---
+# assert-local-mode-identity.yml — refuse a local_mode that disagrees with the inventory.
+#
+# place-monorepo.yml, install-podman-compose.yml and enable-linger.yml read `local_mode` and take
+# the local branch (working-tree copy, no clone, no sudo) on a true value. Both an inventory var
+# and an extra var set it, and an extra var outranks the inventory, so `-e local_mode=true` on a
+# production host would take the local branch against that host. This check decides the mode
+# from the inventory instead: the inventory is local-dev when every host but `localhost` is named
+# `<name>-local` (filter_plugins/local_dev.py). Groups cannot be set by `-e`, which is why the
+# names are read from `groups` (clean-service.yml:85-89).
+#
+# Include it FIRST in a shared task, before any task reads local_mode. It refuses a plain
+# disagreement (local_mode unset is accepted, true is accepted only for local-dev). It does not
+# close a template: an extra var renders afresh at each read, and the raw reads after this include
+# read it again, so one reading here is not one reading there (docs/MISTAKES.md 1.15). It changes nothing. Its shape follows deploy-skynet.yml's "Refuse a local_mode that disagrees
+# with the hosts' identity" (AC-695).
+#
+# Expects no variables: it reads only `groups` and `local_mode`.
+
+- name: "Refuse a local_mode that disagrees with the inventory's identity"
+  ansible.builtin.assert:
+    that:
+      - _lmi_mode_set != 'unset' or not _lmi_local
+      - _lmi_mode_set == 'unset' or (_lmi_mode_set | bool) == _lmi_local
+    fail_msg: >-
+      Refusing: local_mode is {{ _lmi_mode_set }}, but this inventory is
+      {{ 'local-dev (every host but localhost is named <name>-local)' if _lmi_local else 'not local-dev' }}.
+      The mode follows the inventory, not the variable: a local-dev inventory sets local_mode: true,
+      and any other leaves it unset or false. Nothing changed.
+    quiet: true
+  vars:
+    _lmi_local: "{{ groups['all'] | local_dev_inventory }}"
+    _lmi_mode_set: "{{ local_mode | default('unset') }}"
