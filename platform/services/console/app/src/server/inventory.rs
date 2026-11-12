@@ -1235,10 +1235,7 @@ mod tests {
                     username: Some("ops-user".into()),
                     groups: groups.iter().map(|group| group.to_string()).collect(),
                 };
-                session
-                    .insert(auth::KEY_USER, &user)
-                    .await
-                    .expect("insert user");
+                auth::sign_in(&session, &user).await.expect("insert user");
                 "signed in"
             }),
         )
