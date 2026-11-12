@@ -36,7 +36,7 @@ config-as-code**. Do the work *through* those mechanisms — not around them:
 
 ### Feature-to-Dev pull-request merges
 
-Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from. Merge only after one independent final-head approval, all final-head CI jobs pass, review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. With explicit authorization for that PR/head, use `--feedback-addressed --merge`; the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
+Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch and let CI run on the new head, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). Merge only after one independent final-head approval, all final-head CI jobs pass, review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. With explicit authorization for that PR/head, use `--feedback-addressed --merge`; the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
 
 `dev` intentionally has no required-check rule because the main-to-Dev sync workflow pushes directly to it. The CLI is therefore an operator gate, not GitHub-enforced protection; do not substitute `gh pr merge --auto`, `--admin`, or a direct merge command.
 
@@ -99,7 +99,7 @@ plan/                        Architecture, implementation, and composability pla
 ### Sub-directory Documentation
 
 - `platform/services/netbox/deployment/CLAUDE.md` — NetBox + Diode discovery pipeline
-- `platform/services/console/deployment/CLAUDE.md` — Dispatch Console (Rust/Dioxus; image built on the host from the committed sources, native Authentik OIDC, SQLite preferences; exec-form probe healthcheck on a distroless image)
+- `platform/services/console/deployment/CLAUDE.md` — Dispatch Console (Rust/Dioxus; image built on the host from the committed sources, native Authentik OIDC, SQLite preferences; exec-form probe healthcheck on a distroless image). Plan: [`plan/development/17-dispatch-console.md`](plan/development/17-dispatch-console.md); operator front door: [`platform/services/console/deployment/README.md`](platform/services/console/deployment/README.md)
 - `platform/services/honcho/deployment/CLAUDE.md` — honcho memory API (api+deriver+pgvector+redis; JWT `/v3`, Authentik-gated `/docs`; evolve's team-memory backend)
 - `platform/services/skynet/deployment/CLAUDE.md` — skynet orchestration API (digest-pinned tier-2 image + its Postgres; Bearer-gated `/skynet/runs`, a read-only bearer for the Dispatch Console; published on a declared bind; its Semaphore identity is the svc-skynet account, not an operator token; the gateway's `/skynet/` route stays off until enabled)
 - `platform/services/launch-gate/deployment/CLAUDE.md` — launch gate, the only launch-capable Semaphore identity for agent-initiated launches (`svc-launch-gate` at `task_runner`): it authenticates the caller, checks the agent and the template allowlist, asks OPA, and only then launches; HTTPS-only with an internal-CA server leaf that it re-reads itself; deployed in local-dev and, since 2026-11-09, production
@@ -124,7 +124,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/architecture/service-architecture.md` — Current-state service map: services by layer, identity, shared secrets, runtime dependencies, deploy and AI paths; status per service
 - `plan/architecture/04-credentials-access.md` — Semaphore vs SSH access rules; Secret generation, storage, rotation, and retirement
 - `plan/architecture/05-platform-infra.md` — Caddy reverse proxy architecture, TLS/DNS-01 integration, routing patterns, automation gaps; Container runtime considerations
-- `plan/architecture/03-testing-ci-quality.md` — Security testing requirements; Testing standards for new services; Full testing strategy and implementation status; Branch deploy and validation workflow
+- `plan/architecture/03-testing-ci-quality.md` — Part 1: the testing principles (what earns a test, rules for writing one, tiers, lanes); Part 2: Security testing requirements; Testing standards for new services; Full testing strategy and implementation status; Branch deploy and validation workflow
 - `plan/architecture/skills-recommendation.md` — Claude Code skills for development workflows
 - `LOCAL-DEV-README.md` — Local-dev front door: architecture, quickstart, DNS+TLS access, promotion (user-facing). Operate/triage in `docs/LOCAL-DEV.md`; full design in the plan below
 - `plan/development/00-foundation-local-dev.md` — Local dev instance (podman; make bootstraps, local Semaphore operates) + promotion pipeline; **genesis (`make local-bootstrap`) brings up the secure foundation (OpenBao→dns→step-ca→caddy→authentik) directly, then Semaphore LAST already OIDC-secured — §12A**; see also `docs/LOCAL-DEV.md` and `plan/development/00-foundation-local-dev.md`; hickory-dns internal DNS platform service (zones-as-code; decision-gated internal ACME)
@@ -139,6 +139,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/21-test-suite-runtime.md` — Test suite runtime and redundancy: measured CI baseline, the forged-extra-var matrix reduced where the guard reads names only, fixed waits given public knobs, self-balancing pytest shards from a committed durations file, a shared playbook runner with timeouts, GNU parallel for BATS, a pre-push fast lane
 - `plan/development/22-console-access-requests.md` — Console access requests and the skynet iam-agent (PROPOSED handoff plan): the site-config declaration stays the authority, a request becomes a reviewed site-config PR, Plane follows the Authentik groups
 - `plan/architecture/10-release-policy.md` — Release policy: one `dev` → `main` promotion per release, hard limits of 100 PRs and 120 changed files, checked when work enters `dev`. `plan/development/23-release-train.md` builds the gates and orders the active work into releases
+- `plan/development/24-rust-test-platform.md` — Rust test platform (PROPOSED): one `cargo-nextest` crate in `platform/tests/` replaces pytest and BATS, tests run by lane (commit, push, ci, full) selected from `areas.toml`, Python product code ported to Rust where the runtime is ours
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
@@ -607,9 +608,11 @@ every test file the push changes against `<remote>/dev`, every file holding a te
 durations file (`platform/tests/test_durations.json`) does not record, and every file whose
 recorded tests all ran under 0.25 s in CI with none skipped (`PYTEST_FAST=1`, selected in
 the root `conftest.py`). BATS runs in full, beside pytest, with `--jobs 4
---no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it) and
-serially otherwise. When the pushed commit has no merge base with `<remote>/dev`, the hook
-runs the full Python suite and says why. A change to a playbook or helper therefore runs only
+--no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it), each
+job run through `platform/tests/bin/parallel-job-shell` (GNU parallel starts its jobs with
+SIGALRM ignored, which breaks Ansible task timeouts; the wrapper restores it), and serially
+otherwise. When the pushed commit has no merge base with
+`<remote>/dev`, the hook runs the full Python suite and says why. A change to a playbook or helper therefore runs only
 the fast and changed test files here; CI runs everything. Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
