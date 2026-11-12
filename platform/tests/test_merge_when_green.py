@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import tempfile
 import unittest
@@ -100,10 +101,31 @@ BASE = "b" * 40
 PR = 532
 
 
+def make_budget(prs, files, transition=False, start="v0.14.0"):
+    # The shape semver.release_budget returns; warn and full follow its R6 rule.
+    limit_prs, limit_files = guard.semver.LIMIT_PRS, guard.semver.LIMIT_FILES
+    return {"from": start, "main_ref": "origin/main", "dev_ref": "e" * 40, "prs": prs, "files": files,
+            "limits": {"prs": limit_prs, "files": limit_files},
+            "remaining": {"prs": limit_prs - prs, "files": limit_files - files},
+            "warn": prs * 5 >= limit_prs * 4 or files * 5 >= limit_files * 4,
+            "full": prs > limit_prs or files > limit_files, "transition": transition}
+
+
+def set_budget(api, before, after, transition=False):
+    # before and after are (pull requests, files) pairs.
+    api.budget_before = make_budget(*before, transition=transition)
+    api.budget_after = make_budget(*after, transition=transition)
+
+
 class FakeGitHub:
     def __init__(self):
         self.calls = []
         self.merge_calls = []
+        self.dev_tip = "e" * 40
+        self.budget_dev_sha = None
+        self.budget_before = make_budget(prs=5, files=20)
+        self.budget_after = make_budget(prs=6, files=21)
+        self.budget_calls = []
         self.pr = {
             "number": PR, "state": "open", "draft": False, "merged": False,
             "base": {"ref": "dev", "sha": BASE, "repo": {"full_name": guard.REPO}},
@@ -196,6 +218,8 @@ class FakeGitHub:
             return {"data": {"repository": {"pullRequest": {"reviewThreads": {
                 "nodes": self.threads, "pageInfo": self.thread_page_info,
             }}}}}
+        if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+            return {"ref": "refs/heads/dev", "object": {"sha": self.dev_tip, "type": "commit"}}
         raise AssertionError(endpoint)
 
     @property
@@ -303,6 +327,10 @@ class FakeGitHub:
         self.merge_calls.append(["gh", "pr", "merge", str(pr), "--repo", guard.REPO,
                                  "--merge", "--match-head-commit", sha, "--body", title])
         self.pr["merged"] = True
+
+    def release_budget(self, extra_files):
+        self.budget_calls.append(list(extra_files))
+        return (self.budget_dev_sha or self.dev_tip, self.budget_before, self.budget_after)
 
 
 def run_refusal(test, api, expected="", *extra):
@@ -1659,6 +1687,219 @@ class MergeGuardTests(unittest.TestCase):
         self.assertEqual(api.merge_calls, [["gh", "pr", "merge", str(PR), "--repo", guard.REPO,
                                             "--merge", "--match-head-commit", HEAD,
                                             "--body", "fix: retitled before the merge"]])
+
+
+def run_guard(api, *extra):
+    # Read-only unless extra asks for a merge. Returns (exit code, stdout, stderr), so a test can assert the
+    # readout and the refusal apart.
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        result = guard.main(["--pr", str(PR), "--head", HEAD, *extra], api)
+    return result, out.getvalue(), err.getvalue()
+
+
+class ReleaseBudgetTests(unittest.TestCase):
+    def test_readout_prints_on_a_passing_read_only_run(self):
+        api = FakeGitHub()
+        result, out, _err = run_guard(api)
+        self.assertEqual(result, 0)
+        self.assertIn("BUDGET: after this merge 6/100 pull requests and 21/120 files since v0.14.0", out)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_pull_request_limit_refuses_the_hundred_and_first(self):
+        api = FakeGitHub()
+        set_budget(api, before=(100, 21), after=(101, 21))
+        result, _out, err = run_guard(api)
+        self.assertEqual(result, 1)
+        self.assertIn("Release full", err)
+        self.assertIn("101 pull requests (limit 100)", err)
+        set_budget(api, before=(99, 21), after=(100, 21))
+        self.assertEqual(run_guard(api)[0], 0)
+
+    def test_new_path_over_the_file_limit_refuses_and_one_hundred_twenty_passes(self):
+        api = FakeGitHub()
+        set_budget(api, before=(5, 120), after=(6, 121))
+        result, _out, err = run_guard(api)
+        self.assertEqual(result, 1)
+        self.assertIn("121 changed files (limit 120)", err)
+        self.assertIn("may still merge", err)
+        set_budget(api, before=(5, 119), after=(6, 120))
+        self.assertEqual(run_guard(api)[0], 0)
+
+    def test_a_pull_request_adding_no_new_path_passes_over_the_file_limit(self):
+        # R5: a pull request whose files the release already holds may merge past 120 files, up to the PR limit.
+        api = FakeGitHub()
+        set_budget(api, before=(99, 125), after=(100, 125))
+        self.assertEqual(run_guard(api)[0], 0)
+        set_budget(api, before=(100, 125), after=(101, 125))
+        result, _out, err = run_guard(api)
+        self.assertEqual(result, 1)
+        self.assertIn("101 pull requests (limit 100)", err)
+
+    def test_transition_passes_over_both_limits_and_says_so(self):
+        api = FakeGitHub()
+        set_budget(api, before=(299, 899), after=(300, 900), transition=True)
+        result, out, _err = run_guard(api)
+        self.assertEqual(result, 0)
+        self.assertIn("BUDGET: after this merge 300/100 pull requests and 900/120 files", out)
+        self.assertIn("transition: policy 10 R12", out)
+
+    def test_stale_local_dev_refuses(self):
+        api = FakeGitHub()
+        api.budget_dev_sha = "f" * 40
+        result, _out, err = run_guard(api)
+        self.assertEqual(result, 1)
+        self.assertIn("is not GitHub's dev", err)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_unreadable_github_dev_ref_refuses(self):
+        api = FakeGitHub()
+        original = api.api
+
+        def unreadable(endpoint, fields=()):
+            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+                return {"object": {"sha": "not-a-sha"}}
+            return original(endpoint, fields)
+
+        api.api = unreadable
+        run_refusal(self, api, "GitHub's dev ref is unreadable")
+
+    def test_a_null_dev_object_before_the_merge_refuses_without_a_traceback(self):
+        # The last read before gh pr merge goes through the same reader, so a malformed answer is a refusal.
+        api = FakeGitHub()
+        original, reads = api.api, []
+
+        def null_late(endpoint, fields=()):
+            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+                reads.append(endpoint)
+                if len(reads) > 2:
+                    return {"ref": "refs/heads/dev", "object": None}
+            return original(endpoint, fields)
+
+        api.api = null_late
+        run_refusal(self, api, "GitHub's dev ref is unreadable")
+
+    def test_each_changed_path_is_counted_once_by_its_post_change_name(self):
+        records = (
+            ({"filename": "new.md", "previous_filename": "old.md", "status": "renamed"}, ["new.md"]),
+            ({"filename": "gone.md", "status": "removed"}, ["gone.md"]),
+        )
+        for record, expected in records:
+            with self.subTest(status=record["status"]):
+                api = FakeGitHub()
+                api.file_pages = [[record]]
+                self.assertEqual(run_guard(api)[0], 0)
+                self.assertEqual(api.budget_calls, [expected])
+
+    def test_readout_prints_before_a_protected_path_refusal(self):
+        api = FakeGitHub()
+        api.files = ["scripts/semver.py"]
+        result, out, err = run_guard(api)
+        self.assertEqual(result, 1)
+        self.assertIn("BUDGET: after this merge", out)
+        self.assertIn("release script that runs with a write token", err)
+
+    def test_a_budget_refusal_on_a_protected_path_names_the_operator_merge(self):
+        # A release-script PR is the operator's to merge whatever the count says, so that answer comes first.
+        api = FakeGitHub()
+        api.files = ["scripts/semver.py"]
+        api.budget_dev_sha = "f" * 40
+        result, _out, err = run_guard(api)
+        self.assertEqual(result, 1)
+        self.assertIn("release script that runs with a write token", err)
+        self.assertNotIn("is not GitHub's dev", err)
+
+    def test_dev_moving_after_the_count_refuses_the_merge(self):
+        # Both validations count at the tip GitHub reported; a merge into dev before the merge call is refused.
+        api = FakeGitHub()
+        original, reads = api.api, []
+
+        def moving(endpoint, fields=()):
+            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+                reads.append(endpoint)
+                sha = api.dev_tip if len(reads) <= 2 else "f" * 40
+                return {"ref": "refs/heads/dev", "object": {"sha": sha, "type": "commit"}}
+            return original(endpoint, fields)
+
+        api.api = moving
+        run_refusal(self, api, "dev moved after the release budget was counted")
+        self.assertEqual(len(reads), 3)
+
+
+def git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def git_out(cwd, *args):
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def commit_file(repo, name, text, subject):
+    (Path(repo) / name).write_text(text, encoding="utf-8")
+    git(repo, "add", name)
+    git(repo, "commit", "-q", "-m", subject)
+
+
+class ReleaseBudgetGitTests(unittest.TestCase):
+    # GitHub.release_budget against real repositories: a bare origin, a seed that pushes to it, and the
+    # checkout the guard reads.
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.origin, self.seed, self.clone = root / "origin.git", root / "seed", root / "clone"
+        # Git hooks export GIT_DIR and its relatives; without this a call would act on the real checkout.
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        env.update(GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM="1",
+                   GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.invalid",
+                   GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.invalid")
+        patch = mock.patch.dict(os.environ, env, clear=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        git(root, "init", "-q", "--bare", "-b", "main", str(self.origin))
+        git(root, "init", "-q", "-b", "main", str(self.seed))
+        git(self.seed, "remote", "add", "origin", str(self.origin))
+        commit_file(self.seed, "README.md", "base\n", "chore: base")
+        git(self.seed, "tag", "v0.1.0")
+        git(self.seed, "push", "-q", "origin", "main", "v0.1.0")
+        git(self.seed, "checkout", "-q", "-b", "dev")
+        commit_file(self.seed, "app.py", "x = 1\n", "fix: x (#1)")
+        git(self.seed, "push", "-q", "origin", "dev")
+        git(root, "clone", "-q", str(self.origin), str(self.clone))
+
+    def test_counts_at_the_fetched_dev_tip_and_fetches_again_on_each_call(self):
+        github = guard.GitHub(repo_root=self.clone)
+        dev_sha, before, after = github.release_budget(["extra.md"])
+        self.assertEqual(dev_sha, git_out(self.seed, "rev-parse", "HEAD"))
+        self.assertEqual((before["from"], before["prs"], before["files"]), ("v0.1.0", 1, 1))
+        self.assertEqual((after["prs"], after["files"]), (2, 2))
+        self.assertTrue(after["transition"])
+
+        commit_file(self.seed, "more.py", "y = 2\n", "fix: y (#2)")
+        git(self.seed, "push", "-q", "origin", "dev")
+        dev_sha, before, _after = github.release_budget([])
+        self.assertEqual(dev_sha, git_out(self.seed, "rev-parse", "HEAD"))
+        self.assertEqual((before["prs"], before["files"]), (2, 2))
+
+    def test_fetches_main_and_the_release_tags_it_counts_from(self):
+        # A carry-over tag cut after the clone was made must reach the count: without the tag refspec the
+        # transition would never end, and without the main refspec the release would start at the old tag.
+        github = guard.GitHub(repo_root=self.clone)
+        self.assertTrue(github.release_budget([])[1]["transition"])
+        git(self.seed, "checkout", "-q", "main")
+        git(self.seed, "merge", "-q", "--no-ff", "-m", "Merge pull request #2 from uhstray-io/dev", "dev")
+        git(self.seed, "tag", guard.semver.TRANSITION_TAG)
+        git(self.seed, "push", "-q", "origin", "main", guard.semver.TRANSITION_TAG)
+        _dev_sha, before, _after = github.release_budget([])
+        self.assertFalse(before["transition"])
+        self.assertEqual(before["from"], guard.semver.TRANSITION_TAG)
+
+    def test_a_missing_checkout_refuses_on_the_fetch(self):
+        github = guard.GitHub(repo_root=self.origin.parent / "absent")
+        with self.assertRaisesRegex(guard.Refusal, "fetching main, dev and the release tags failed"):
+            github.release_budget([])
+
 
 if __name__ == "__main__":
     unittest.main()

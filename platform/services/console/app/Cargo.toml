@@ -36,3 +36,8 @@ server = [
     "dep:rusqlite",
     "dep:reqwest",
 ]
+
+[dev-dependencies]
+# Test-only: generates the RSA key the in-process OIDC provider signs ID tokens with. Version
+# 0.9.10 is the one openidconnect 4.0.1 already locks. Operator approval 2026-11-12 (proposal.md).
+rsa = "0.9.10"

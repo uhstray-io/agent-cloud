@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only Dev PR merge gate; --merge performs one explicit, SHA-bound merge."""
+"""Dev PR merge gate, read-only toward GitHub; --merge performs one explicit, SHA-bound merge.
+
+The release-budget count fetches main, dev and the v* tags into this checkout (remote-tracking refs and
+tags, shared by every worktree of the clone); nothing else is written locally.
+"""
 
 import argparse
 import base64
@@ -63,8 +67,9 @@ class Refusal(Exception):
 
 
 class GitHub:
-    def __init__(self):
+    def __init__(self, repo_root=None):
         self.calls = []
+        self.repo_root = repo_root or Path(__file__).resolve().parents[1]
 
     def api(self, endpoint, fields=()):
         command = ["gh", "api", endpoint]
@@ -91,6 +96,31 @@ class GitHub:
             return subprocess.run(command, capture_output=True, text=True, check=True)
         except (OSError, subprocess.CalledProcessError) as error:
             raise Refusal("SHA-bound merge command returned an error; read PR state before retrying") from error
+
+    def release_budget(self, extra_files):
+        # The one local-git read of the intake. It updates this checkout's remote-tracking refs and its release
+        # tags; it writes nothing to GitHub. Returns the fetched dev tip with the budget before and after this PR.
+        # The caller compares that tip with GitHub's live dev ref.
+        root = str(self.repo_root)
+        fetch = ["git", "-C", root, "fetch", "--no-tags", "origin",
+                 "+refs/heads/main:refs/remotes/origin/main",
+                 "+refs/heads/dev:refs/remotes/origin/dev",
+                 "+refs/tags/v*:refs/tags/v*"]
+        self.calls.append(fetch)
+        try:
+            subprocess.run(fetch, capture_output=True, text=True, check=True)
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise Refusal("Release budget: fetching main, dev and the release tags failed") from error
+        rev_parse = ["git", "-C", root, "rev-parse", "--verify", "origin/dev^{commit}"]
+        self.calls.append(rev_parse)
+        try:
+            dev_sha = subprocess.run(rev_parse, capture_output=True, text=True, check=True).stdout.strip()
+            before = semver.release_budget(self.repo_root, "origin/main", dev_sha)
+            after = semver.release_budget(self.repo_root, "origin/main", dev_sha,
+                                          extra_prs=1, extra_files=extra_files)
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise Refusal(f"Release budget: git failed in {root}") from error
+        return dev_sha, before, after
 
 
 def paged(api, endpoint, key):
@@ -169,11 +199,14 @@ def changed_files(api, number):
     if any(f.get("status") == "renamed" and not f.get("previous_filename") for f in files):
         raise Refusal("Changed-file rename evidence is incomplete")
     paths = [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
+    return paths, files
+
+
+def check_protected_paths(paths):
     if any(path.startswith(".github/workflows/") and path != WORKFLOW for path in paths):
         raise Refusal("PR changes another protected workflow path")
     if any(path in RELEASE_SCRIPTS for path in paths):
         raise Refusal("PR changes a release script that runs with a write token; the operator merges it")
-    return paths, files
 
 
 def required_jobs(files):
@@ -792,10 +825,60 @@ def review_evidence(api, number, sha, author, receipt_path):
     return [r.get("html_url", "") for r in approvals], receipt
 
 
+def live_dev_sha(api):
+    """The commit GitHub's dev ref points at now. Refuses an unreadable answer rather than raising."""
+    live = api.api(f"repos/{REPO}/git/ref/heads/dev")
+    live_object = live.get("object") if isinstance(live, dict) else None
+    live_sha = live_object.get("sha") if isinstance(live_object, dict) else None
+    if not isinstance(live_sha, str) or not SHA.fullmatch(live_sha):
+        raise Refusal("Release budget: GitHub's dev ref is unreadable")
+    return live_sha
+
+
+def check_release_budget(api, file_records):
+    # Policy 10 R4, R5: a merge may not take its release past 100 pull requests, or past 120 changed files when it
+    # adds a path; R12 suspends both until the carry-over tag exists. The count is taken at the dev tip GitHub
+    # reports now. The pull request's base.sha is not that tip: it was stale on each of the 8 open pull
+    # requests that `gh pr list -L 8` returned (2026-11-12).
+    live_sha = live_dev_sha(api)
+    # The post-change path of each file: a rename counts once, under its new name; a deletion under its old one.
+    dev_sha, before, after = api.release_budget([f["filename"] for f in file_records])
+    if dev_sha != live_sha:
+        raise Refusal(f"Release budget: local origin/dev {dev_sha[:12]} is not GitHub's dev {live_sha[:12]}; "
+                      "refusing to count a stale release")
+    limits = after["limits"]
+    since = after["from"] or "the first commit"
+    readout = (f"BUDGET: after this merge {after['prs']}/{limits['prs']} pull requests and "
+               f"{after['files']}/{limits['files']} files since {since}")
+    if after["transition"]:
+        readout += f" (transition: policy 10 R12, no limit applies before {semver.TRANSITION_TAG})"
+    elif after["warn"]:
+        readout += " (warn: 80% of a limit)"
+    print(readout)
+    if after["transition"]:
+        return after
+    if after["prs"] > limits["prs"]:
+        raise Refusal(f"Release full: this merge makes {after['prs']} pull requests (limit {limits['prs']}) "
+                      f"since {since}; promote the release first (policy 10 R4, R5)")
+    if after["files"] > limits["files"] and after["files"] > before["files"]:
+        raise Refusal(f"Release full: this merge makes {after['files']} changed files (limit {limits['files']}) "
+                      f"since {since}; promote the release first (policy 10 R4, R5). A pull request that adds no "
+                      "new path, such as a revert, may still merge")
+    return after
+
+
 def validate(api, number, sha, receipt_path):
     pr = get_pr(api, number)
     base_sha = check_pr(pr, number, sha)
     files, file_records = changed_files(api, number)
+    # The readout prints on every run that reaches the count, release-script PRs included, so the budget comes before
+    # the path refusals. A budget refusal still names a protected path first: that is the operator-merge answer.
+    try:
+        budget = check_release_budget(api, file_records)
+    except Refusal:
+        check_protected_paths(files)
+        raise
+    check_protected_paths(files)
     check_workflow_change(api, base_sha, sha, file_records)
     comments = paged(api, f"repos/{REPO}/issues/{number}/comments", "")
     if any(not isinstance(comment, dict) or not isinstance(comment.get("body"), str) for comment in comments):
@@ -807,7 +890,7 @@ def validate(api, number, sha, receipt_path):
     if current_base_sha != base_sha or current_pr["head"]["sha"] != pr["head"]["sha"]:
         raise Refusal("PR base or head moved while collecting merge evidence")
     return {"checks": checks, "approvals": approvals, "receipt": receipt, "comments": len(comments),
-            "base_sha": base_sha, "head_sha": sha, "title": current_pr["title"]}
+            "base_sha": base_sha, "head_sha": sha, "title": current_pr["title"], "budget": budget}
 
 
 def main(argv=None, api=None):
@@ -837,6 +920,10 @@ def main(argv=None, api=None):
         if (refreshed["base_sha"] != evidence["base_sha"]
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
+        # The budget was counted at one dev tip; a merge into dev since then would count against it unseen, and
+        # gh pr merge cannot pin the base. One last read narrows that window to this call.
+        if live_dev_sha(api) != refreshed["budget"]["dev_ref"]:
+            raise Refusal("dev moved after the release budget was counted; run the guard again")
         try:
             api.merge(args.pr, args.head, refreshed["title"])
         except Refusal:
