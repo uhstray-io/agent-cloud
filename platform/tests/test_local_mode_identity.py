@@ -14,14 +14,18 @@ value. Every inventory here connects with `local` and every task is an assert or
 run, so nothing is copied, cloned or written. The place-monorepo case runs with --check: its
 first task refuses before any copy. A static test pins the first task of place-monorepo.yml and
 enable-linger.yml to the include, so the guard cannot be placed after a read of local_mode.
+
+enable-linger.yml's check covers that file's own reads, whichever playbook reaches it. It does not
+cover a caller's own raw local_mode gate (instrument-host-o11y.yml's `_ih_rootless`,
+ensure-service-persistence.yml's rootful and Docker branches): AC-726.
 """
 
 import json
 from pathlib import Path
 
 import forgeries
+import playbook_yaml
 import pytest
-import yaml
 from ansible_python import needs_ansible
 from local_mode_inventories import (
     EXAMPLE_YAML,
@@ -38,7 +42,7 @@ REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/assert-local-mode-identity.yml"
 PLACE = REPO / "platform/playbooks/tasks/place-monorepo.yml"
 LINGER = REPO / "platform/playbooks/tasks/enable-linger.yml"
-NAME = IDENTITY_TASK
+FIRST_LINGER_TASK = "TASK [Check whether lingering"
 
 pytestmark = needs_ansible
 
@@ -106,7 +110,7 @@ def test_place_monorepo_refuses_a_forged_local_mode_before_its_own_tasks(tmp_pat
         "  tasks:\n"
         "    - name: place the monorepo\n"
         f"      ansible.builtin.include_tasks: {json.dumps(str(PLACE))}\n")
-    proc = run(tmp_path, PROD_INI, play, "-e", forge(tmp_path), check=True)
+    proc = run(tmp_path, PROD_INI, play, "-e", forge(tmp_path), "--check")
     refused(proc, IDENTITY_REFUSAL)
     # Refused by place-monorepo's own first task, not later by enable-linger.yml's copy of the check
     # (its last include): no task of place-monorepo ran. Under --check the copy would not write, so
@@ -116,17 +120,42 @@ def test_place_monorepo_refuses_a_forged_local_mode_before_its_own_tasks(tmp_pat
 
 @pytest.mark.parametrize("path", [PLACE, LINGER], ids=["place-monorepo", "enable-linger"])
 def test_the_shared_callers_name_the_identity_guard_as_their_first_task(path):
-    tasks = yaml.safe_load(path.read_text())
-    first = tasks[0]
-    assert first["name"] == NAME, first
+    first = playbook_yaml.load(path)[0]
+    assert first["name"] == IDENTITY_TASK, first
     assert first.get("ansible.builtin.include_tasks") == "assert-local-mode-identity.yml", first
     assert "when" not in first, first
-    assert TASK.is_file()
 
 
 def test_the_guard_file_is_one_named_assert_with_no_condition_of_its_own():
-    tasks = yaml.safe_load(TASK.read_text())
+    tasks = playbook_yaml.load(TASK)
     assert len(tasks) == 1, tasks
-    assert tasks[0]["name"] == NAME, tasks[0]
+    assert tasks[0]["name"] == IDENTITY_TASK, tasks[0]
     assert "ansible.builtin.assert" in tasks[0], tasks[0]
     assert "when" not in tasks[0], tasks[0]
+
+
+def _linger(tmp_path, inventory, *args):
+    # linger_user is set so the linger task names render on any host, and a run that reaches a
+    # linger task fails for no reason but the guard's. --check: nothing is enabled or written.
+    play = (
+        "- hosts: localhost\n"
+        "  connection: local\n"
+        "  gather_facts: false\n"
+        "  vars:\n"
+        "    linger_user: testuser\n"
+        "  tasks:\n"
+        "    - name: the linger tasks\n"
+        f"      ansible.builtin.include_tasks: {json.dumps(str(LINGER))}\n")
+    return run(tmp_path, inventory, play, *args, "--check")
+
+
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True))
+def test_a_forged_local_mode_is_refused_before_any_linger_task(tmp_path, forge):
+    proc = _linger(tmp_path, PROD_INI, "-e", forge(tmp_path))
+    refused(proc, IDENTITY_REFUSAL)
+    assert f"TASK [{IDENTITY_TASK}]" in proc.output, proc.output
+    assert FIRST_LINGER_TASK not in proc.output, proc.output
+
+
+def test_a_local_dev_inventory_passes_the_linger_guard_and_skips_the_linger_tasks(tmp_path):
+    passed(_linger(tmp_path, LOCAL_INI))

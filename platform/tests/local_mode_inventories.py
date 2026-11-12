@@ -1,7 +1,7 @@
 """Synthetic inventories and the one runner for the local_mode identity tests (AC-696).
 
-test_local_mode_identity.py, test_bao_transport_identity.py and test_enable_linger_identity.py run a
-real ansible-playbook on these inventories. Each names localhost and, for local-dev, one `<name>-local`
+test_local_mode_identity.py and test_bao_transport_identity.py run a real ansible-playbook on these
+inventories. Each names localhost and, for local-dev, one `<name>-local`
 host, so the identity filter (filter_plugins/local_dev.py) decides the mode, not the test. Every run
 goes through harness_sandbox.run_playbook: bounded, no stdin, writes confined.
 
@@ -39,14 +39,13 @@ all:
 """
 
 
-def run(tmp_path: Path, inventory: str, play: str, *args: str, suffix: str = "ini", check: bool = False):
+def run(tmp_path: Path, inventory: str, play: str, *args: str, suffix: str = "ini"):
     """Write the inventory and the play into tmp_path and run them; the output is one line."""
     inv = tmp_path / f"inventory.{suffix}"
     inv.write_text(inventory)
     playbook = tmp_path / "play.yml"
     playbook.write_text(play)
-    flags = ["--check"] if check else []
-    proc = harness_sandbox.run_playbook(playbook, tmp_path, *args, *flags, inventory=inv)
+    proc = harness_sandbox.run_playbook(playbook, tmp_path, *args, inventory=inv)
     proc.output = " ".join((proc.stdout + proc.stderr).split())   # one line, whatever the wrapping
     return proc
 
