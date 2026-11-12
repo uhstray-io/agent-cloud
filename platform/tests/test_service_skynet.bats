@@ -261,6 +261,8 @@ PY
   # The mode check is the first refusal: it compares the public local_mode with the hosts before any other input is checked.
   assert_grep -qx "Refuse a local_mode that disagrees with the hosts' identity" <<<"$refusals"
   assert_precedes "$PLAYBOOK" 'Refuse a local_mode that disagrees' 'Refuse skynet_image unless'
+  # It is the first task of Phase 1, ahead of the transport guard.
+  assert_precedes "$PLAYBOOK" 'Refuse a local_mode that disagrees' 'Transport guard: the OpenBao endpoint'
   # The launch-gate refusals: the URL is https in every mode, and its IP is checked in production.
   assert_grep -qx 'Refuse skynet_launch_gate_url unless it is https' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_launch_gate_ip unless it is one non-wildcard IPv4 address in production' <<<"$refusals"
@@ -589,6 +591,12 @@ prod_accepted() {
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false
   [ "$status" -ne 0 ]
   assert_contains "$output" "The mode follows the hosts"
+  # (d) a -local host with no local_mode: refused, because the shared tasks this play includes still read it.
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("local_mode"); json.dump(d, open(sys.argv[2], "w"))' \
+    "$BATS_TEST_TMPDIR/base.json" "$BATS_TEST_TMPDIR/base-unset.json"
+  run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" -e "@$BATS_TEST_TMPDIR/base-unset.json"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" "a local-dev inventory sets local_mode: true"
 }
 
 @test "skynet: local mode follows the play's hosts: three _skynet_local definitions read ansible_play_hosts_all, and only the mode check reads local_mode" {

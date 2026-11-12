@@ -122,24 +122,26 @@
     _skynet_mode_set: "{{ local_mode | default('unset') }}"
 
   tasks:
+    # The first task: the hosts decide local mode (_skynet_local), so a local_mode that disagrees with them,
+    # or a local-dev host with none, is refused before the transport guard and anything below.
+    - name: "Refuse a local_mode that disagrees with the hosts' identity"
+      ansible.builtin.assert:
+        that:
+          - _skynet_mode_set != 'unset' or not _skynet_local
+          - _skynet_mode_set == 'unset' or (_skynet_mode_set | bool) == _skynet_local
+        fail_msg: >-
+          Refusing: local_mode is {{ _skynet_mode_set }}, but the hosts of this play are
+          {{ 'all' if _skynet_local else 'not all' }} local-dev hosts (named <service>-local).
+          The mode follows the hosts, not the variable, and a local-dev inventory sets local_mode: true
+          (the shared tasks still read it). Nothing changed.
+        quiet: true
+
     # Read-only check of the credential path before anything is written: a refused
     # run must not have already placed the repo or written a secret.
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
       ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
       vars:
         _assert_bao_url: "{{ _bao_url }}"
-
-    # The hosts decide local mode (_skynet_local), so a local_mode that disagrees with them is refused first:
-    # nothing below runs, so nothing is placed or written.
-    - name: "Refuse a local_mode that disagrees with the hosts' identity"
-      ansible.builtin.assert:
-        that:
-          - _skynet_mode_set == 'unset' or (_skynet_mode_set | bool) == _skynet_local
-        fail_msg: >-
-          Refusing: local_mode is {{ _skynet_mode_set }}, but the hosts of this play are
-          {{ 'all' if _skynet_local else 'not all' }} local-dev hosts (named <service>-local).
-          The mode follows the hosts, not the variable. Nothing changed.
-        quiet: true
 
     # Inputs are refused BEFORE the repo is placed or any OpenBao write happens. Each
     # refusal names its variable and the fix, so a bad inventory reads as a bad input,

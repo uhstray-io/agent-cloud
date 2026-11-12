@@ -593,7 +593,10 @@ assert "inventory_hostname is match" not in text
 assert plays[0]["vars"]["_launch_gate_mode_set"] == "{{ local_mode | default('unset') }}", plays[0]["vars"]
 first = plays[0]["tasks"][0]
 assert first["name"] == "Refuse a local_mode that disagrees with the hosts' identity", first.get("name")
-assert first["ansible.builtin.assert"]["that"] == "_launch_gate_mode_set == 'unset' or (_launch_gate_mode_set | bool) == _launch_gate_local_mode", first
+assert first["ansible.builtin.assert"]["that"] == [
+    "_launch_gate_mode_set != 'unset' or not _launch_gate_local_mode",
+    "_launch_gate_mode_set == 'unset' or (_launch_gate_mode_set | bool) == _launch_gate_local_mode",
+], first
 assert "when" not in first, first
 assert plays[1]["tasks"][0]["environment"]["LOCAL_MODE"] == "{{ 'true' if _launch_gate_local_mode else '' }}", plays[1]["tasks"][0]["environment"]
 PY
@@ -635,6 +638,17 @@ PY
   assert_contains "$output" 'The mode follows the hosts, not the variable'
   refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
   refute_contains "$output" 'Place the monorepo'
+  [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
+}
+
+@test "launch-gate deploy: a local-dev host with no local_mode is refused, so the shared tasks cannot take the production branch" {
+  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
+  local inv="$BATS_TEST_TMPDIR/hosts.ini"
+  write_mode_inventory "$inv" lg-test-local docker.io/library/python:3.12-slim
+  run ansible-playbook -i "$inv" "$DEPLOY" -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
+  [ "$status" -ne 0 ]
+  assert_contains "$output" 'a local-dev inventory sets local_mode: true'
+  refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
 }
 

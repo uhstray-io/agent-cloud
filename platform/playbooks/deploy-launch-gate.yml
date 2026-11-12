@@ -113,11 +113,14 @@
     # on a local-dev host, is refused, and nothing is placed or written.
     - name: "Refuse a local_mode that disagrees with the hosts' identity"
       ansible.builtin.assert:
-        that: _launch_gate_mode_set == 'unset' or (_launch_gate_mode_set | bool) == _launch_gate_local_mode
+        that:
+          - _launch_gate_mode_set != 'unset' or not _launch_gate_local_mode
+          - _launch_gate_mode_set == 'unset' or (_launch_gate_mode_set | bool) == _launch_gate_local_mode
         fail_msg: >-
           Refusing: local_mode is {{ _launch_gate_mode_set }}, but the hosts of this play are
           {{ 'all' if _launch_gate_local_mode else 'not all' }} local-dev hosts (named <service>-local). The mode
-          follows the hosts, not the variable. Nothing changed.
+          follows the hosts, not the variable, and a local-dev inventory sets local_mode: true (the shared tasks
+          still read it). Nothing changed.
         quiet: true
 
     # Read-only check of the credential path before anything is written.
@@ -392,7 +395,8 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _engine: "{{ container_engine | default('podman') }}"
-    # The same derivation as Phase 1, from the same hosts, so a run that starts here (--start-at-task) cannot read a forged mode.
+    # The same derivation as Phase 1, from the same hosts, so -e local_mode or -e inventory_hostname cannot change it
+    # here either. (-e of this internal name is refused by the guard play, which --start-at-task skips.)
     _launch_gate_local_mode: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
 
   tasks:
