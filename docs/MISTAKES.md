@@ -158,7 +158,7 @@ and why.
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
-| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) | Process | 2 | Convention (PR-template checkboxes and a merge-guard check of the PR body proposed) |
+| 5.24 | **x3** — Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33; x3: six launch-gate PRs on 2026-11-08 to 11-11) | Process | 3 | Convention retired at count 3: PR-template checkboxes and a merge-guard check of the PR body proposed |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4724,7 +4724,7 @@ passes an explicit acknowledgement.
 
 ### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
 
-**Occurrences: 2** — 2026-10-29, 2026-11-11
+**Occurrences: 3** — 2026-10-29, 2026-11-11, 2026-11-11
 
 **What happened.** The branch workflow (`AGENTS.md:568`, step 4) runs `/simplify` and
 `/security-review` on the branch changes before a PR is opened. #1066 (fixture servers onto
@@ -4751,6 +4751,19 @@ put one line for each in the PR body: what it found, and what was fixed or defer
 question in mind. This entry gives the rule its own place, so the count is visible. 2.23 and 2.35
 were also found by `/simplify` passes after their PRs merged; whether step 4 ran on those PRs is
 not recorded, so they are not counted.
+
+**Occurrence 3 — 2026-11-11.** One session (the skynet launch-gate work) opened six agent-cloud PRs between 2026-11-08
+and 2026-11-11 without running either pass: #924, #932, #938, #939, #951 and #952. (skynet#14 is not counted: the
+skynet repository's workflow has no such step.) Each
+had one `pr-reviewer` round and green CI before it merged. #952's round requested changes: its TLS context set
+no minimum version, failing `test_tls_contexts_pinned.py`, and an uncaught `ValueError` would have printed the
+bearer token into task output if the token carried a CR or LF. Both were fixed before merge. Why the rule did not
+fire: the session followed the operator's PR process (one review round, then green checks on the final head) and
+did not reread step 4 of the branch workflow before opening each PR, so the review round was taken as covering the
+same ground. At three occurrences the rule cannot rely on memory, so `Convention` is retired. The guard is the
+proposal above: PR-template checkboxes for both passes, and a `merge-when-green.py` check that the PR body names
+them.
+
 
 ## 6. Working from assumptions about files
 
