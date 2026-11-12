@@ -207,8 +207,12 @@ PY
   # The mobile app signs in through /auth/mobile/oidc/, which sends its own callback
   # (backend-commercial views/app/mobile/oidc.py); without it Authentik answers "Redirect URI Error".
   grep -qF "plane_redirect_mobile: \"{{ (plane_redirect_uri | default('https://plane.agent-cloud.test:8443/auth/oidc/callback/')) | replace('/auth/oidc/callback/', '/auth/mobile/oidc/callback/') }}\"" "$bp"
-  # Scoped to the mobile entry: the strict grep above already passes on the web entry alone.
-  grep -B1 -F 'url: !Context plane_redirect_mobile' "$bp" | grep -qF 'matching_mode: strict'
+  # Every redirect entry is strict, the mobile one included: the strict grep above already
+  # passes on the web entry alone. Scoped to the redirect_uris construct.
+  local redirects
+  redirects=$(sed -n '/redirect_uris:/,/property_mappings:/p' "$bp")
+  grep -qF 'url: !Context plane_redirect_mobile' <<<"$redirects"
+  [ "$(grep -c 'matching_mode: strict' <<<"$redirects")" -eq "$(grep -c 'url: ' <<<"$redirects")" ]
   grep -qF 'client_secret: !Env PLANE_OIDC_CLIENT_SECRET' "$bp"
   grep -qF "scope_name, email" "$bp"
   # Catalogued with production guards, the secret owned by authentik.
