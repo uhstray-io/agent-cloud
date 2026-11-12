@@ -277,7 +277,7 @@ def test_persistence_requires_the_podman_user_boot_unit(tmp_path, enabled, expec
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="needs ansible-playbook")
 def test_persistence_accepts_only_what_boots(tmp_path):
     # podman-restart.service, rootful and rootless, starts only `restart: always` containers
-    # (test_restart_policy.bats). "no" is accepted only from a one-shot init container that has
+    # (suite/restart_policy.rs). "no" is accepted only from a one-shot init container that has
     # exited 0, never from a running one (PR review, Codex). Rootful podman once kept accepting
     # unless-stopped (PR 195 grounding review).
     path = PLAYBOOKS / "verify-service-persistence.yml"

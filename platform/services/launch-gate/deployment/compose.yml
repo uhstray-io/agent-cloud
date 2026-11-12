@@ -19,7 +19,7 @@ services:
   launch-gate:
     image: ${LAUNCH_GATE_IMAGE:?set launch_gate_image in the inventory}
     container_name: launch-gate
-    # Podman's boot unit starts only `restart: always` containers (test_restart_policy.bats).
+    # Podman's boot unit starts only `restart: always` containers (suite/restart_policy.rs).
     restart: always
     # An init process as PID 1: Python as PID 1 ignores SIGTERM (the kernel gives PID 1 no default handler), so a
     # stop waited out the 10 s timeout and ended in SIGKILL (exit 137, seen on the first local deploy). With init

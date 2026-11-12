@@ -6096,6 +6096,8 @@ include the linger task, and requires that task to link the user unit into
 `default.target.wants`. Both guards were mutated once and went red. An actual reboot
 test of a service host is still not exercised by any automation.
 
+**Enforcement moved — 2026-11-12.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no`, `platform/tests/suite/restart_policy.rs::no_container_is_started_with_restart_unless_stopped`, `platform/tests/suite/restart_policy.rs::the_shared_preamble_includes_the_linger_task` and `platform/tests/suite/restart_policy.rs::the_linger_task_links_podmans_user_boot_unit_as_the_container_user` are its four replacements.
+
 ### 10.16 The agentgateway deploy was proven only on an executor where its bug could not show
 
 **What happened.** `deploy-agentgateway.yml` built `_client_defs` as TEXT, a
