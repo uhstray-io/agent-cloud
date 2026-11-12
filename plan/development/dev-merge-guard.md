@@ -136,4 +136,4 @@ The CLI does not change GitHub rulesets or the main-to-Dev sync. Direct use of `
 - 2026-11-10: Tenth workflow transition, uv to runner-pinned (`ubuntu-24.04` for every job), after `ubuntu-latest` moved to 26.04 and broke one TLS test on every pull request.
 - 2026-11-10: Eleventh workflow transition, runner-pinned to sharded: the six named Python jobs become one eight-shard matrix job, and BATS runs files in parallel (plan 21 phase 2).
 - 2026-11-11: Twelfth workflow transition, sharded to bats-pinned: Bash Tests installs bats from its pinned release (commit-checked) instead of apt, after the Ubuntu archive could not be resolved from the runner for hours.
-- 2026-11-11: Thirteenth workflow transition, bats-pinned to retired: the `Detect changes` job and the three UhhCraft Go jobs are removed with the retired platforms (#1043), so every expected job is required and none is path-gated.
+- 2026-11-11: Thirteenth workflow transition, bats-pinned to retired: the `Detect changes` job and the three Go jobs are removed with the retired platforms (#1043), so every expected job is required and none is path-gated.
