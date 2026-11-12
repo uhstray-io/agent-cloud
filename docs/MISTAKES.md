@@ -3403,11 +3403,13 @@ Why the rule did not fire: it is worded for a change to *when* a process restart
 deploy never restarted the process at all, so no change triggered the audit. The rule's last
 sentence covers it ("files read once at start ... must be followed by a restart"); the trigger
 did not. Fixed by having OPA's deploy.sh call the shared `compose_up_if_changed policies`, which
-hashes the policy tree into the container label and recreates OPA when it differs.
-Enforced by the `opa: deploy.sh recreates OPA when the policies it loads at startup change`
-case in `platform/tests/test_service_opa.bats`, for OPA only; the general form, a service that
-reads a file once at start without that file among its `compose_up_if_changed` inputs, is
-still Convention.
+hashes the policy tree, the compose files and `.env` into the container label and recreates OPA
+when any of them differs; deploy.sh writes that `.env` from the compose substitutions it is
+given, because the helper refuses to run without one and OPA renders none. Enforced by the two
+`opa:` cases in `platform/tests/test_compose_up_if_changed.bats`, which run OPA's real deploy.sh
+against stub engines with no `.env` present (a policy edit or a new port recreates, an unchanged
+re-run does not), for OPA only; the general form, a service that reads a file once at start
+without that file among its `compose_up_if_changed` inputs, is still Convention.
 
 ### 3.12 Two `(Dev)` deploys checked out `main` on their hosts, because the API launch carried no survey defaults
 

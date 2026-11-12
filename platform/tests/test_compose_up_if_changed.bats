@@ -497,3 +497,33 @@ assert tasks[0]["changed_when"] == "'DEPLOY_CHANGED=true' in _deploy.stdout_line
 PY
   done
 }
+
+# OPA reads ./policies only at startup, and its deploy dir has no rendered .env (docs/MISTAKES.md
+# 3.11). Its real deploy.sh must run with no .env present, recreate on a policy or substituted-value
+# change, and leave an unchanged OPA alone.
+opa_setup() {
+  svc_setup opa opa=opa
+  rm -f "$D/.env"
+}
+
+@test "opa: a deploy with no .env runs, writes only the set substitutions and labels OPA" {
+  opa_setup
+  OPA_PORT=8281 deploy
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  [ "$(cat "$D/.env")" = "OPA_PORT=8281" ]
+  [ -s "$S/c/opa/label" ]
+}
+
+@test "opa: same policies and values twice is a no-op; a policy edit or a new port recreates" {
+  opa_setup
+  OPA_PORT=8281 deploy
+  OPA_PORT=8281 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=false"
+  echo "# edited" >> "$D/policies/agentcloud/data.json"
+  OPA_PORT=8281 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  OPA_PORT=8282 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  [ "$(cat "$S/recreates")" -eq 3 ]
+}
