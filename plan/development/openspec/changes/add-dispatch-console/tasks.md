@@ -11,7 +11,8 @@ Only the crates in the approved dependency list may be added. A crate outside th
 - [ ] 1.1 Create the crate `platform/services/console/app/`, package name `console`, edition 2021, with the approved dependencies only. Add `platform/services/console/app/.gitignore` with `target/`.
 - [ ] 1.2 Add the health route `GET /healthz`, which returns 200 with the text `ok` and needs no session. Add the `probe` subcommand, `server probe <path> <expected_status>`, which runs before the server starts, sends an HTTP/1.0 GET to `127.0.0.1` on `$PORT` (default 8080), prints the status code, and exits 0 only when it equals the expected status.
 - [ ] 1.3 Write the deployment directory `platform/services/console/deployment/`: the Containerfile (builder `rust` bookworm and runtime `distroless` cc-debian12 nonroot, both digest-pinned), `compose.yml`, `compose.local.yml`, `deploy.sh`, `templates/env.j2`, `templates/scope.json.j2`, `README.md`, `CLAUDE.md` with `AGENTS.md` as a symlink to it, and `.gitignore`.
-- [ ] 1.4 Validation gate: scenario "Health answers without a session" holds. The probe exits 0 for `/healthz` with expected status 200 and exits 1 for a wrong expected status.
+- [x] 1.4 Validation gate: scenario "Health answers without a session" holds. The probe exits 0 for `/healthz` with expected status 200 and exits 1 for a wrong expected status.
+  - Done 2026-11-11: `healthz_answers_ok_without_session` (`app/src/server/mod.rs`) proves health with no session; `run_cli_exits_zero_on_the_expected_status_and_one_otherwise` (`app/src/probe.rs`) runs the probe subcommand end to end against a live socket: exit 0 for `/healthz` with expected 200, exit 1 for a wrong expected status.
 
 ## 2. Sign-in and the API session gate
 

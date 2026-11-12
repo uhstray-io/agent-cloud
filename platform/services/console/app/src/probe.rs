@@ -145,4 +145,46 @@ mod tests {
         assert_eq!(run_cli(&[]), 1);
         assert_eq!(run_cli(&["/healthz".into(), "abc".into()]), 1);
     }
+
+    #[test]
+    fn run_cli_exits_zero_on_the_expected_status_and_one_otherwise() {
+        // The whole subcommand, as the container healthcheck runs it: argument
+        // parsing, PORT, the socket and the exit code. The listener answers 200.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let port = listener.local_addr().expect("local addr").port();
+        let server = thread::spawn(move || {
+            let mut heads = Vec::new();
+            for _ in 0..2 {
+                let (mut conn, _) = listener.accept().expect("accept");
+                // Read until the blank line that ends the request head.
+                let mut seen = Vec::new();
+                let mut chunk = [0u8; 256];
+                while !seen.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = conn.read(&mut chunk).expect("read request");
+                    if n == 0 {
+                        break;
+                    }
+                    seen.extend_from_slice(&chunk[..n]);
+                }
+                heads.push(String::from_utf8_lossy(&seen).into_owned());
+                conn.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                    .expect("write");
+            }
+            heads
+        });
+        std::env::set_var("PORT", port.to_string());
+        let probe = |expected: &str| run_cli(&["/healthz".into(), expected.into()]);
+        let matching = probe("200");
+        let wrong = probe("401");
+        std::env::remove_var("PORT");
+        let heads = server.join().expect("server thread");
+        assert_eq!(matching, 0);
+        assert_eq!(wrong, 1);
+        for head in &heads {
+            assert!(
+                head.starts_with("GET /healthz HTTP/1.0\r\n"),
+                "request line was {head:?}"
+            );
+        }
+    }
 }
