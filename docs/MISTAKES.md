@@ -3777,7 +3777,7 @@ no task can remove another's.
 
 **The rule.** A run that deploys more than once against one pinned SHA must place that SHA, not a branch, and a revision guard runs before anything is placed or rendered. Until the drill does, launch it only with `dev` merges held for its duration, agreed with the sessions that merge, and have the matching Recover template ready to run against the current head.
 
-**Enforced by.** Convention. The fix is tracked in Plane (the drill places the reviewed SHA for both deploys).
+**Enforced by.** Convention. The fix is Plane AC-827: the drill places the reviewed SHA for both deploys, and the revision guard runs first.
 
 ## 4. Data handling
 
