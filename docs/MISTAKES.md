@@ -58,12 +58,14 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) | Unverified claim | 11 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) | Unverified claim | 12 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
+| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
+| 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, no detector |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -136,7 +138,7 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips) | Process | 12 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips; 2026-11-11: a new test file past the spawn guard; 2026-11-11: a test-only push under `SKIP_TESTS=1`, past the line-window ratchet) | Process | 14 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
@@ -158,7 +160,7 @@ and why.
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
-| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) | Process | 2 | Convention (PR-template checkboxes and a merge-guard check of the PR body proposed) |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Convention (an exact-head commit status per pass, required by `merge-when-green.py`, proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -1309,7 +1311,7 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 11** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10
+**Occurrences: 12** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1439,6 +1441,11 @@ behavioural claim with no citation, has no mechanical detector; it stays Convent
 
 
 **Occurrence 11 — 2026-11-10.** Launching check-mode runs of the `main`-bound `Provision VM` and `Resize VM` templates for the OPA host, I passed `target_service=opa_svc`, the group name, taken from another template's default (`Probe launch-gate (Dev)`'s `probe_target_service` defaults to `opa_svc`) without reading these templates' own survey descriptions ("Service whose <name>_svc group holds the declaration (e.g. github_runner)", "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)"). Both playbooks append `_svc` (`provision-vm.yml:112`, `resize-vm.yml:168`), so Semaphore tasks 14728 and 14729 refused before touching Proxmox, naming the group `opa_svc_svc`; the relaunch with `target_service=opa` passed (14731, 14734). This is occurrence 2's slip again, on the same field and the same two templates. Why the rule did not fire: it was not recalled; a survey value set on a launcher command line felt like an input, not a claim about what the template does. Guard proposal: the launcher (`scripts/semaphore-launch.py`) refuses a `target_service` ending in `_svc` for every template on OPA's existing `bare_service_name_templates` list (`platform/services/opa/deployment/policies/agentcloud/data.json`), and OPA's own bare-name check refuses the same suffix, so one list guards both the operator launcher and the launch gate.
+
+**Occurrence 12 — 2026-11-11.** Answering a review finding on PR #1082 (the Plane mobile app's OIDC callback), I wrote that a `plane_redirect_uri` missing `/auth/oidc/callback/` is harmless because "the existing promotion verify fails it on the web redirect". It does not: `platform/services/authentik/deployment/templates/verify-oidc.py.j2` compares the live `redirect_uris` against the inventory value itself (`want not in got`), so a wrong inventory value is applied and then found present, and the check passes. I had read that template earlier in the same session, for a different question, and stated its coverage from its purpose ("live OIDC config diverged from intent") rather than its comparison. The pr-reviewer agent caught it in its review round on head `3e4e4791`; the PR comment was then corrected in place. Why the rule did not fire: like occurrence 9, a behavioural claim about a check's coverage in outward text, written while composing a reply rather than a brief, so the "read the logic before describing it" habit was not triggered; having read the file earlier made the claim feel verified. No new guard: occurrence 9's analysis holds (no mechanical detector for an uncited behavioural claim); the independent review is what caught it.
+
+The rule is widened in 1.36.
+
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -1548,6 +1555,52 @@ the producer identity and Prometheus targets read now have their own words, so t
 **The rule.** A scope claim names the object it was measured on. Take a PR's file set from `git diff <merge>^1 <merge>` (or `gh pr view --json files`). Take a source slice from the exact commits listed by SHA. Never let one stand in for the other.
 
 **Enforced by.** Convention.
+
+### 1.35 Offered an operator a drill option, and then recorded it, from a truncated read (widens 1.19)
+
+**What happened.** On 2026-11-11 I asked Joseph whether to run the endpoint absent-series proof (the open "Endpoint availability live receipt" in 2.3). The recommended option said Alloy would be stopped "through a Semaphore playbook", that the missing-probe alert would fire, and that Alloy would then be restarted. He chose "Run it next slot". I then told him no such mechanism existed, and wrote the first draft of this entry saying `o11y-fault-drill.yml` "only stops DGX node exporters" and that "no template stops the receiver's Alloy". Both were read from a filtered `head -40` of the playbook's header comment. The PR #1087 review found the facts:
+
+- `o11y-fault-drill.yml` has three modes: `exporter`, `probe` and `grafana` (`:10-37`, the mode guard at `:83`). `grafana` stops the `o11y-grafana` container for up to fifteen minutes.
+- `clean-deploy-o11y.yml` (through `tasks/clean-service.yml`) and `reboot-host.yml` do take Alloy down, destructively or with the whole host.
+- What is true: no bounded, non-destructive drill stops the receiver's Alloy or removes a single probe series.
+
+The alert outcome was also unchecked when I offered it. Traced afterwards, it holds: `config.alloy.j2` has Alloy scrape its own blackbox exporter and remote-write the result, so the probe and its `up` both disappear when Alloy stops, and `unless on(…) (up{…} == 0)` (`alerts.yml.j2:132`) does not suppress.
+
+**Root cause.** A claim that something does not exist was made from a partial read: a grep filter and a line limit cut off the modes that disproved it. The correction then repeated the same read, so the error went into the record meant to prevent it.
+
+**The rule.** A claim that a mechanism exists, or does not, needs the whole file or an exhaustive search (for example `git grep` over `platform/playbooks` and `platform/semaphore/templates.yml`), never a truncated header. An option offered to an operator names the playbook that carries it out and the alert expression it will fire. If either is missing, the option is "build X first", with that work named.
+
+**Enforced by.** Convention.
+
+### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
+
+**Occurrences: 1** — 2026-11-11
+
+**What happened.** The first fix for AC-695 had to stop `-e local_mode=true` from skipping skynet's production
+refusals. I briefed a worker to copy the launch gate's expression: `local_mode` and `inventory_hostname` matching
+`<name>-local` (`deploy-launch-gate.yml:73` at `b7e11937`). I took it from the expression's comment (`:70-72`),
+which said the rule was derived "as tasks/clean-service.yml derives it" and that `-e local_mode=true` "cannot lift
+the ... refusals below". I read the expression, not the file the comment cited. `tasks/clean-service.yml:85-89`
+says `-e` can set `inventory_hostname` and that its checks key on `ansible_play_hosts_all` instead, the property
+`AGENTS.md:262` also records. The commit went out as `59c97fb7`, "fix(skynet): local mode needs a -local host, so a
+forged local_mode cannot lift production refusals", which is false as written: `-e local_mode=true -e
+inventory_hostname=skynet-local` on host `skynet-prod` made local mode true (ansible-core 2.21.0, scratch play).
+The grounding checkpoint caught it before a PR was opened, and the redesign landed in the same PR (5.24 occurrence
+4), so `59c97fb7` merged to `dev` inside #1078 (merge `69082755`) with that subject.
+
+**Root cause.** 1.29's rule was met literally: the body of the expression was read. The claim was a guarantee
+(what an extra var cannot do), and no expression can show that; the proof lived in the file the comment cited.
+
+**The rule.** A guarantee about what a mechanism prevents is unverified until the code or document that enforces
+it is read, whatever pointed to it (1.25, 1.28, 1.29), a comment's citation included. Follow the citation and read
+the cited lines before a brief, commit or reply repeats the guarantee.
+
+**Enforced by.** The instance: `platform/tests/test_launch_gate_playbooks.bats:590-591` and
+`platform/tests/test_service_skynet.bats:602` pin each playbook's `ansible_play_hosts_all` expression in all three
+plays. The class: Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a
+brief or outward text names, not the paths a comment in those files cites. A shared local-mode derivation (AC-702) would remove this
+instance's need to cite another file: the launch gate's comment still cites `tasks/clean-service.yml:85-89`, where
+the derivation itself is at `:70`.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -4139,6 +4192,17 @@ subset excluded it, although this test only reads `templates.yml`. Fixed before 
 hold text-only tests about shared files. **Refines the proposed guard:** select the always-run scans per test (a
 marker on tests that launch nothing), not per file.
 
+**Occurrence 2026-11-11 (a new test file past the spawn guard).** PR #1064's head `9e104291` added
+`platform/tests/test_release_notes_from_task.py`, whose helper call used `subprocess.run` with no `timeout=`,
+and was pushed under `SKIP_TESTS=1` after the suites it touched passed locally (934 tests). CI's Python (1/8)
+failed on `test_playbook_spawns_are_bounded.py::test_no_new_unbounded_spawn`, which refuses any test file
+that starts a process without a timeout (1 failed, 1857 passed). Fixed before merge by passing
+`harness_sandbox.DEFAULT_TIMEOUT_SECONDS`. Why the rule did not fire: the suites were again chosen by the
+files the change touched, and this guard scans every test file without naming any of them. The proposed
+fast subset of scans that launch nothing includes it and would have stopped the push.
+
+**Occurrence 2026-11-11 (a test-only change pushed with the hook switched off).** PR #1082 (AC-711) took a review finding to scope a strict-match assertion to one blueprint entry. I rewrote it as `grep -B1 -F <url line> | grep -qF 'matching_mode: strict'`, ran the one test file and a mutation of the entry, and pushed head `3e4e4791` with `SKIP_TESTS=1` on the reasoning that the full suite had passed on the parent commit. `Bash Tests` failed in CI: `platform/tests/test_no_line_window_assertions.bats` refuses `-B1` as a line-count window (2.6, 2.8). Fixed before merge by scoping the check to the `redirect_uris` construct with a `sed` range between its two keys. Why the rule did not fire: the change touched only a test, so running that test felt like the whole check, but a test file is itself the subject of repo-wide guards (the window ratchet), which only the full suite runs. Supports the narrower-skip proposal: `SKIP_TESTS` should never cover a pushed change to a `*.bats` or `*.bash` file.
+
 ### 5.3 Merging while the review was rate-limited
 
 **What happened.** Merged a pull request while the review bot reported
@@ -4724,7 +4788,7 @@ passes an explicit acknowledgement.
 
 ### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
 
-**Occurrences: 2** — 2026-10-29, 2026-11-11
+**Occurrences: 4** — 2026-10-29, 2026-11-11, 2026-11-10 (recorded late), 2026-11-11
 
 **What happened.** The branch workflow (`AGENTS.md:568`, step 4) runs `/simplify` and
 `/security-review` on the branch changes before a PR is opened. #1066 (fixture servers onto
@@ -4751,6 +4815,29 @@ put one line for each in the PR body: what it found, and what was fixed or defer
 question in mind. This entry gives the rule its own place, so the count is visible. 2.23 and 2.35
 were also found by `/simplify` passes after their PRs merged; whether step 4 ran on those PRs is
 not recorded, so they are not counted.
+
+**Occurrence 3 — 2026-11-10, recorded late.** #993 (skynet's HTTPS listener, also in 1.29 occurrence 9) was
+opened and merged on 2026-11-10 (UTC) with neither pass; the session's saved record mentions neither.
+The grounding checkpoint ran both after the merge, and `/simplify` found a production-refusal bypass: skynet
+decided local mode from an extra var (AC-695, fixed in #1078). Why the rule did not fire: review rounds and green
+CI read as a complete review, the gap the root cause above names.
+
+**Occurrence 4 — 2026-11-11.** Both passes ran before #1078 (AC-695) was opened, at a grounding checkpoint over
+`b7e11937..48c4f75d` (from `59c97fb7`), the version that keyed local mode on `inventory_hostname`. Their findings, that `-e` can set
+that name (the property `AGENTS.md:262` already records), drove the redesign onto `ansible_play_hosts_all`
+(`5a37a00e`, `867957aa`); the PR review's fixes followed in `a4a2760f`. Neither pass ran over the diff the PR
+opened or merged with, and its body names the passes only as the source of the finding. Why the rule did not fire: the passes had
+run before `gh pr create`, so the step read as done, but they covered a version the PR no longer carried.
+
+**Proposal, refined at count 4.** The rule's PR-body line names no head, and a body line is free text no gate reads
+(`scripts/merge-when-green.py` reads only comment bodies). Instead: each pass posts a commit status on the head it
+covered (contexts `simplify` and `security-review`), and `check_commit_statuses` (`scripts/merge-when-green.py:572`)
+requires both present and successful on the merge head; today it refuses only a status that is present and not
+successful. A push after the passes leaves the new head with no such status, so a stale pass is refused without any
+string comparison, the same exact-head pin 5.20 applies to reviews. Still self-attested, and it binds only merges
+that go through the script. 1.16 and 5.15 also propose reading the PR body; this proposal reads none. It widens
+the rule from "before `gh pr create`" to the merge head, so a push of review fixes needs both passes again;
+building it starts with a new entry that supersedes this rule. Not built.
 
 ## 6. Working from assumptions about files
 
