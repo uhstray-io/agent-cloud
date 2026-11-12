@@ -42,14 +42,7 @@ struct Effective {
 fn effective_services(files: &[String]) -> BTreeMap<(String, String), Effective> {
     let mut by_dir: BTreeMap<String, Vec<(bool, String, Node)>> = BTreeMap::new();
     for file in files {
-        let docs = yaml::load(&repo::path(file));
-        // PyYAML's yaml.load refuses a stream of several documents; so does this.
-        assert!(
-            docs.len() <= 1,
-            "{file}: {} YAML documents, expected one",
-            docs.len()
-        );
-        let Some(doc) = docs.into_iter().next() else {
+        let Some(doc) = yaml::load_one(&repo::path(file)) else {
             continue;
         };
         // A task list with "compose" in its name is not a compose file.

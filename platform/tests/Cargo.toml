@@ -16,6 +16,8 @@ license = "MIT"
 [lib]
 path = "src/lib.rs"
 doctest = false
+# Its tests live in suite/support.rs, so the crate builds one test binary.
+test = false
 
 [[test]]
 name = "suite"

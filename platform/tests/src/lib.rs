@@ -178,37 +178,37 @@ pub mod yaml {
         out
     }
 
-    /// A scalar with a YAML core tag (`!!bool no`) is constructed as PyYAML's SafeLoader
-    /// constructs it. Core tags no test relies on are refused, never read as their text.
-    fn resolve_core_tag(value: String, suffix: &str, origin: &str) -> Node {
-        match suffix {
-            "str" => Node::Str(value),
-            "null" => Node::Null,
-            "bool" => match value.to_lowercase().as_str() {
-                "yes" | "true" | "on" => Node::Bool(true),
-                "no" | "false" | "off" => Node::Bool(false),
-                _ => panic!("{origin}: `!!bool {value}` is not a YAML 1.1 boolean"),
-            },
-            other => panic!("{origin}: core tag `!!{other}` is not supported by the test loader"),
+    /// The handle yaml-rust2 gives a `!!` core tag. No repository file uses one, so the
+    /// loader refuses them all rather than construct some and misread others.
+    const CORE_TAG: &str = "tag:yaml.org,2002:";
+
+    fn refuse_core_tag(tag: Option<&yaml_rust2::parser::Tag>, origin: &str) {
+        if let Some(t) = tag.filter(|t| t.handle == CORE_TAG) {
+            panic!(
+                "{origin}: core tag `!!{}` is not supported by the test loader",
+                t.suffix
+            );
         }
     }
 
     impl MarkedEventReceiver for Builder {
         fn on_event(&mut self, ev: Event, _mark: Marker) {
+            if let Event::Scalar(_, _, _, tag)
+            | Event::SequenceStart(_, tag)
+            | Event::MappingStart(_, tag) = &ev
+            {
+                refuse_core_tag(tag.as_ref(), &self.origin);
+            }
             match ev {
                 Event::Scalar(value, style, anchor, tag) => {
-                    let is_merge_key = self.key_position()
-                        && style == TScalarStyle::Plain
-                        && tag.is_none()
-                        && value == "<<";
-                    let node = match (style, tag) {
-                        (TScalarStyle::Plain, None) => resolve_plain(&value),
-                        (_, Some(t)) if t.handle == "tag:yaml.org,2002:" => {
-                            resolve_core_tag(value, &t.suffix, &self.origin)
-                        }
-                        // An application tag (compose's `!reset`, `!override`) reads as its text,
-                        // as the any-tag constructor of the Python tests did.
-                        _ => Node::Str(value),
+                    let plain = style == TScalarStyle::Plain && tag.is_none();
+                    let is_merge_key = plain && self.key_position() && value == "<<";
+                    // An application tag (compose's `!reset`, `!override`) reads as its text, as
+                    // the any-tag constructor of the Python tests did.
+                    let node = if plain {
+                        resolve_plain(&value)
+                    } else {
+                        Node::Str(value)
                     };
                     if anchor > 0 {
                         self.anchors.insert(anchor, node.clone());
@@ -216,19 +216,28 @@ pub mod yaml {
                     self.push(node, is_merge_key);
                 }
                 Event::Alias(id) => {
-                    let node = self.anchors.get(&id).cloned().unwrap_or(Node::Null);
+                    // yaml-rust2 refuses an alias to an unknown anchor before this sees it.
+                    let node = self
+                        .anchors
+                        .get(&id)
+                        .cloned()
+                        .expect("alias to a known anchor");
                     self.push(node, false);
                 }
-                Event::SequenceStart(anchor, _) => self.stack.push(Frame::Seq {
-                    items: vec![],
-                    anchor,
-                }),
-                Event::MappingStart(anchor, _) => self.stack.push(Frame::Map {
-                    entries: vec![],
-                    merges: vec![],
-                    key: None,
-                    anchor,
-                }),
+                Event::SequenceStart(anchor, _) => {
+                    self.stack.push(Frame::Seq {
+                        items: vec![],
+                        anchor,
+                    });
+                }
+                Event::MappingStart(anchor, _) => {
+                    self.stack.push(Frame::Map {
+                        entries: vec![],
+                        merges: vec![],
+                        key: None,
+                        anchor,
+                    });
+                }
                 Event::SequenceEnd => {
                     if let Some(Frame::Seq { items, anchor }) = self.stack.pop() {
                         self.finish(Node::Seq(items), anchor);
@@ -264,10 +273,19 @@ pub mod yaml {
         builder.docs
     }
 
-    pub fn load(path: &Path) -> Vec<Node> {
+    /// The one document in a file, `None` for an empty file. PyYAML's `yaml.load` refuses a
+    /// stream of several documents, and so does this.
+    pub fn load_one(path: &Path) -> Option<Node> {
         let text =
             std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        parse(&text, &path.display().to_string())
+        let docs = parse(&text, &path.display().to_string());
+        assert!(
+            docs.len() <= 1,
+            "{}: {} YAML documents, expected one",
+            path.display(),
+            docs.len()
+        );
+        docs.into_iter().next()
     }
 }
 
@@ -278,8 +296,12 @@ pub mod repo {
 
     use crate::yaml::{self, Node};
 
+    /// Read at run time, never compiled in: two checkouts sharing one CARGO_TARGET_DIR reuse
+    /// one build, and a compiled-in path would test the other checkout's files.
     static ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
+        let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
+            .expect("CARGO_MANIFEST_DIR unset: run the suite through cargo or nextest");
+        Path::new(&manifest)
             .join("../..")
             .canonicalize()
             .expect("repository root")
@@ -294,47 +316,34 @@ pub mod repo {
         root().join(rel)
     }
 
+    /// `git -C <root> <args>`; panics unless the exit status is at most `max_status`.
+    fn git(args: &[&str], max_status: i32) -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(root())
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.code().is_some_and(|c| c <= max_status),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf-8 git output")
+    }
+
     /// Tracked files matching git pathspecs, relative to the root. Untracked files are not
     /// part of the repository and never decide a test.
     pub fn ls_files(pathspecs: &[&str]) -> Vec<String> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root())
-            .args(["ls-files", "--"])
-            .args(pathspecs)
-            .output()
-            .expect("git ls-files");
-        assert!(
-            out.status.success(),
-            "git ls-files failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8(out.stdout)
-            .expect("utf-8 paths")
-            .lines()
-            .map(str::to_owned)
-            .collect()
+        let args = [&["ls-files", "--"], pathspecs].concat();
+        git(&args, 0).lines().map(str::to_owned).collect()
     }
 
-    /// `git grep -n -E` over tracked files; the matching lines, empty when none match.
+    /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git
+    /// grep exits 1 for no match).
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root())
-            .args(["grep", "-n", "-E", "-e", pattern, "--"])
-            .args(pathspecs)
-            .output()
-            .expect("git grep");
-        // git grep exits 1 for "no match"; anything above is an error.
-        assert!(
-            out.status.code().is_some_and(|c| c <= 1),
-            "git grep failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect()
+        let args = [&["grep", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
+        git(&args, 1).lines().map(str::to_owned).collect()
     }
 
     /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
@@ -360,10 +369,8 @@ pub mod repo {
             }
         }
         let mut out = vec![];
-        for doc in yaml::load(&path(rel)) {
-            if let Some(items) = doc.as_seq() {
-                walk(items, &mut out);
-            }
+        if let Some(items) = yaml::load_one(&path(rel)).as_ref().and_then(Node::as_seq) {
+            walk(items, &mut out);
         }
         out
     }
@@ -374,21 +381,22 @@ pub mod process {
 
     use assert_cmd::Command;
 
-    /// A child bounded by a timeout, with an environment that holds only `PATH`, a C locale
-    /// and a `HOME` the caller owns. Nothing from the developer's shell (an `ANSIBLE_CONFIG`,
-    /// a `VAULT_TOKEN`) reaches the code under test.
+    /// A child bounded by a timeout, with an environment that holds only `PATH`, a C locale,
+    /// and a `HOME` and `TMPDIR` inside the directory the caller owns. Nothing from the
+    /// developer's shell (an `ANSIBLE_CONFIG`, a `VAULT_TOKEN`) reaches the code under test.
     pub fn scrubbed(program: &str, home: &std::path::Path) -> Command {
         let mut cmd = Command::new(program);
         cmd.env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("LANG", "C")
             .env("HOME", home)
+            .env("TMPDIR", home)
             .timeout(Duration::from_secs(30));
         cmd
     }
 
     /// `bash -c` with `lib` (a repository-relative shell library) sourced first. `script`
-    /// runs in the caller's working directory, with `$1..` from `args`.
+    /// runs in the caller's working directory; arguments added with `.arg()` are `$1..`.
     pub fn bash_with(lib: &str, script: &str, home: &std::path::Path) -> Command {
         let mut cmd = scrubbed("bash", home);
         cmd.arg("-c")
@@ -402,129 +410,5 @@ pub mod process {
 
     fn shell_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', r"'\''"))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::yaml::{Node, parse, resolve_plain};
-
-    #[test]
-    fn plain_scalars_resolve_as_pyyaml_does() {
-        let cases = [
-            ("no", Node::Bool(false)),
-            ("Off", Node::Bool(false)),
-            ("YES", Node::Bool(true)),
-            ("on", Node::Bool(true)),
-            ("~", Node::Null),
-            ("", Node::Null),
-            ("NULL", Node::Null),
-            ("always", Node::Str("always".into())),
-            ("n", Node::Str("n".into())),
-            ("nO", Node::Str("nO".into())),
-        ];
-        for (input, expected) in cases {
-            assert_eq!(resolve_plain(input), expected, "plain scalar {input:?}");
-        }
-    }
-
-    #[test]
-    fn quoted_and_tagged_scalars_stay_strings() {
-        let doc = &parse("a: 'no'\nb: \"yes\"\nc: !reset no\nd: no\n", "inline")[0];
-        assert_eq!(doc.get("a"), Some(&Node::Str("no".into())));
-        assert_eq!(doc.get("b"), Some(&Node::Str("yes".into())));
-        assert_eq!(doc.get("c"), Some(&Node::Str("no".into())));
-        assert_eq!(doc.get("d"), Some(&Node::Bool(false)));
-    }
-
-    #[test]
-    fn aliases_and_merge_keys_resolve_with_explicit_keys_winning() {
-        let text = "base: &b {restart: always, image: x}\n\
-                    other: &o {image: y, user: z}\n\
-                    svc:\n  <<: [*b, *o]\n  image: mine\n\
-                    copy: *b\n";
-        let doc = &parse(text, "inline")[0];
-        let svc = doc.get("svc").unwrap();
-        assert_eq!(svc.get("image").and_then(Node::as_str), Some("mine"));
-        assert_eq!(svc.get("restart").and_then(Node::as_str), Some("always"));
-        assert_eq!(svc.get("user").and_then(Node::as_str), Some("z"));
-        assert!(svc.get("<<").is_none(), "the merge key itself is not a key");
-        assert_eq!(doc.get("copy"), doc.get("base"));
-    }
-
-    #[test]
-    fn a_duplicate_key_takes_the_last_value() {
-        let doc = &parse("restart: always\nrestart: unless-stopped\n", "inline")[0];
-        assert_eq!(
-            doc.get("restart").and_then(Node::as_str),
-            Some("unless-stopped")
-        );
-        assert_eq!(doc.as_map().map(<[_]>::len), Some(1));
-    }
-
-    #[test]
-    fn core_tags_construct_as_pyyaml_does() {
-        let doc = &parse(
-            "a: !!bool no\nb: !!bool 'YES'\nc: !!str yes\nd: !!null x\n",
-            "inline",
-        )[0];
-        assert_eq!(doc.get("a"), Some(&Node::Bool(false)));
-        assert_eq!(doc.get("b"), Some(&Node::Bool(true)));
-        assert_eq!(doc.get("c"), Some(&Node::Str("yes".into())));
-        assert_eq!(doc.get("d"), Some(&Node::Null));
-    }
-
-    #[test]
-    #[should_panic(expected = "core tag `!!int`")]
-    fn an_unsupported_core_tag_is_refused() {
-        parse("a: !!int 5\n", "inline");
-    }
-
-    #[test]
-    fn across_merge_keys_the_later_wins_and_explicit_keys_win_over_both() {
-        let text = "a: &a {restart: always, user: a}\n\
-                    b: &b {restart: unless-stopped}\n\
-                    s:\n  <<: *a\n  <<: *b\n\
-                    t:\n  <<: *a\n  <<: *b\n  restart: always\n";
-        let doc = &parse(text, "inline")[0];
-        let s = doc.get("s").unwrap();
-        assert_eq!(
-            s.get("restart").and_then(Node::as_str),
-            Some("unless-stopped")
-        );
-        assert_eq!(s.get("user").and_then(Node::as_str), Some("a"));
-        assert_eq!(
-            doc.get("t").unwrap().get("restart").and_then(Node::as_str),
-            Some("always")
-        );
-    }
-
-    #[test]
-    fn within_one_merge_list_the_earlier_mapping_wins() {
-        // PyYAML reverses the list before merging (constructor.py, flatten_mapping).
-        let text = "a: &a {restart: always}\nb: &b {restart: unless-stopped}\nu:\n  <<: [*a, *b]\n";
-        let doc = &parse(text, "inline")[0];
-        let u = doc.get("u").unwrap();
-        assert_eq!(u.get("restart").and_then(Node::as_str), Some("always"));
-    }
-
-    #[test]
-    #[should_panic(expected = "merge value must be a mapping")]
-    fn a_scalar_merge_value_is_refused() {
-        parse("s: &s x\nm:\n  <<: *s\n", "inline");
-    }
-
-    #[test]
-    #[should_panic(expected = "merge list may hold only mappings")]
-    fn a_merge_list_with_a_scalar_is_refused() {
-        parse("a: &a {x: 1}\nm:\n  <<: [*a, 3]\n", "inline");
-    }
-
-    #[test]
-    fn a_quoted_merge_key_is_an_ordinary_key() {
-        let doc = &parse("b: &b {x: 1}\nm:\n  '<<': *b\n", "inline")[0];
-        let m = doc.get("m").unwrap();
-        assert!(m.get("<<").is_some());
-        assert!(m.get("x").is_none());
     }
 }
