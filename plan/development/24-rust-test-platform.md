@@ -1,10 +1,11 @@
 # 24 — Rust test platform: one fast suite, run by lane
 
 **Date:** 2026-11-12
-**Status:** PROPOSED (Phase 0 in review; Phases 1 and later not started)
+**Status:** PROPOSED (Phases 0 to 3 in review: #1109, #1110 and #1115, #1119, #1118; the pre-push fix AC-743 is #1114; Phases 4 to 10 not started)
 **Author:** Joseph A. Wisneski IV
 **Context:** The repository's tests are pytest and BATS. They have grown to a size where no lane finishes
-quickly: a pull request waits about 20 to 24 minutes for CI, and the pre-push hook is routinely skipped
+quickly: the Python suite costs about 11,400 worker-seconds per pull request, spread over eight shards of 282 to 495 s
+each after plan 21's sharding (run 42931485014), and the pre-push hook is routinely skipped
 ([plan 21](21-test-suite-runtime.md), Baseline). This plan replaces both runners with one Rust test crate
 run by `cargo-nextest`. It ports the Python product code those tests exercise to Rust wherever the runtime
 is ours. It also defines test **lanes**, so a commit, a push and a pull request each run only the tests their
@@ -55,7 +56,8 @@ is *subprocess*; one that imports repository code is *import*; the rest are *sta
    unverified on CI). The operator decided on 2026-11-12 to port that Python to Rust wherever the runtime
    is ours (D4), so the code under test becomes native Rust tested in-process.
 4. **Not all Python can move.** Some code runs inside a host framework that only loads Python:
-   - Ansible filter and callback plugins (12 files);
+   - Ansible filter and callback plugins (13 files: 11 in `platform/playbooks/filter_plugins`, one in
+     `platform/semaphore/filter_plugins`, and `callback_plugins/redact_requests.py`);
    - scripts run inside the Plane, NetBox and Authentik containers through their Django shells;
    - NetBox orb-agent workers and NetBox configuration.
 
@@ -78,22 +80,11 @@ the required check.
 
 ## Design Principles
 
-The full testing principles are 03 Part 1. This plan applies them as follows.
-
-1. **Delete before porting.** Each test is first judged against 03 Part 1, "What earns a test". A test
-   that pins source text, restates another test, or proves nothing a reader relies on is deleted, and its
-   deletion is listed in the port's map. Only the rest is ported.
-2. **Static proof over process proof.** A property of the repository's files is checked by parsing them.
-   A process starts only when the behaviour lives in Ansible, bash or a service and cannot be read from a
-   file.
-3. **One binary, many modules.** The crate builds one test binary, so a port adds a module, not a link
-   step.
-4. **Every test belongs to an area and a tier.** Area and tier decide which lane runs a test (D3). A test
-   with neither does not compile into a lane.
-5. **The security set always runs.** Every lane runs the tests that enforce a mistakes-ledger rule or a
-   secret-handling rule, whatever changed.
-6. **No coverage lost silently.** Each port pull request carries a map from every deleted test to its
-   replacement, or to the reason it was dropped.
+The principles are [03 Part 1](../architecture/03-testing-ci-quality.md): what earns a test, the rules for
+writing one, one binary with one module per area, the security set in every lane, and coverage as a map.
+This plan's own choices are decisions D1 to D9 below. One rule is specific to the port: **delete before
+porting**. Each test is judged against 03 Part 1, "What earns a test", first, and a test that pins source
+text, restates another test or proves nothing a reader relies on is deleted and listed in the port's map.
 
 ---
 
@@ -118,7 +109,7 @@ flowchart LR
 platform/tests/
   Cargo.toml            agent-cloud-tests, its own [workspace]; Cargo.lock committed
   .config/nextest.toml  lanes as profiles, the ansible test-group
-  areas.yml             area -> path globs (D3)
+  areas.yml            area -> path globs (D3)
   src/lib.rs            shared support: repo root, YAML 1.1 loader, task walker, process runner
   src/bin/testsel.rs    changed paths -> nextest filterset (Phase 2)
   suite/main.rs         the one test binary; one module per area
@@ -127,7 +118,8 @@ platform/tests/
 
 The crate sits in `platform/tests/` beside the Python files it replaces. Ledger citations keep their
 directory, and the console crate (`platform/services/console/app/Cargo.toml`, its own `[workspace]`) is
-unaffected.
+unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
+`cargo nextest run -E 'test(/^<area>::/)'` runs one area.
 
 ### Decisions
 
@@ -135,11 +127,11 @@ unaffected.
 |---|---|---|
 | D1 | **Runner: `cargo-nextest` 0.9.151.** Profiles are lanes. A `playbook` test-group caps concurrent `ansible-playbook` runs. `slow-timeout` bounds every test, which is plan 21 F5's missing timeout | `cargo test` runs one binary's tests on threads in one process, so a hung child holds the run and per-test timeouts need custom code. `rustest` 0.3.1 replaces the libtest harness (`harness = false`), was last released 2025-06-04 and has 82 downloads a month (lib.rs, read 2026-11-12) |
 | D2 | **Libraries.** `assert_cmd` + `predicates` (process tests), `insta` with `yaml` and `json` (snapshots of rendered output and refusal messages), `proptest` (properties of parsers and resolvers), `wiremock` + `tokio` (HTTP fakes, replacing the 31 hand-rolled servers of plan 21 F5), `yaml-rust2` (YAML), `tempfile`, `globset`, `serde_json`. Approved by the operator on 2026-11-12 | `quickcheck` duplicates `proptest`, and `proptest` keeps failing cases in `proptest-regressions/`. `trybuild` tests compile errors of macros and types, and the repository has none. `serde_yaml` is deprecated (`0.9.34+deprecated` on crates.io) |
-| D3 | **Lanes from `areas.yml`.** Each area names its path globs. The file is YAML, read with the suite's own loader, so no TOML dependency. `testsel` maps changed paths to areas and emits `-E` filtersets over module paths (`test(/^<area>::/)`). The security set and the static tier of the touched areas are always added. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
+| D3 | **Lanes from `areas.yml`.** YAML, read with the suite's own loader, so no TOML dependency. Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over module paths (`test(/^<area>::/)`). The security set and the static tier of the touched areas are always added. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
 | D4 | **Port Python where the runtime is ours.** Controller-side helpers (`scripts/*.py`, `platform/lib/*.py`, `platform/playbooks/files/*.py` run on the controller) become subcommands of one Rust CLI. Host-side helpers follow once D6 is decided. Operator decision, 2026-11-12 | Keeping a thin pytest lane was the recommended option. Shim tests (`python3 -c` per case) are slower than in-process pytest |
 | D5 | **Framework-bound Python stays Python, kept thin.** Filter and callback plugins are loaded by Ansible. Plane, NetBox and Authentik scripts run in their Django shells. NetBox workers and configuration run in NetBox. Each keeps its logic in a pure function, and the function's cases run through the tier that can load it: playbook tier for plugins, a fake-module `python3` run for Django scripts. One test per behaviour, cases looped inside one run | A Rust port of these is impossible: the host only loads Python |
 | D6 | **Host-side binary distribution: OPEN, operator decision.** Proposed: CI builds static musl binaries for `x86_64` and `aarch64` and publishes them on the release. Deploys fetch them by pinned sha256, the pattern Deploy Plane uses for Plane's Compose files, and copy them instead of `script:` | Building on the controller needs a Rust toolchain in the Semaphore image. A host has no toolchain |
-| D7 | **YAML 1.1 booleans.** `.yamllint.yml` allows bare `yes`/`no`, which Ansible (PyYAML, YAML 1.1) reads as booleans and `yaml-rust2` (YAML 1.2) reads as strings. The support library resolves scalars with YAML 1.1 rules wherever a test compares booleans, and a property test pins the resolver to PyYAML's set | Banning bare `yes`/`no` repository-wide is a separate change |
+| D7 | **YAML 1.1 booleans.** `.yamllint.yml` allows bare `yes`/`no`, which Ansible (PyYAML, YAML 1.1) reads as booleans and `yaml-rust2` (YAML 1.2) reads as strings. The support library resolves scalars with YAML 1.1 rules wherever a test compares booleans, and a table test in `suite/support.rs` pins the resolver to PyYAML's bool and null sets (`yaml/resolver.py`) | Banning bare `yes`/`no` repository-wide is a separate change |
 | D8 | **CI: one always-running `Rust (tests)` job, selection inside it.** It runs `testsel` against the pull request's base, then nextest with the `ci` profile, and the `Unit Tests` aggregator needs it. Promotion pull requests into `main`, and the nightly run on `dev`, use the `full` profile | A job skipped by a path filter fails the aggregator (Problem, "Lanes do not exist today") |
 | D9 | **The ledger learns Rust.** The citation check (`test_ledger_test_citations.py`) is ported first and resolves `platform/tests/suite/<area>.rs::<fn>`. A ported test's old citation is ratcheted with the replacing test named in the reason. The ledger is append-only, so its old text stays | Deleting a cited file before the checker reads Rust turns the check red (`docs/MISTAKES.md` 8.2) |
 
@@ -150,25 +142,26 @@ unaffected.
 | `commit` | pre-commit hook | static tier of areas touched by staged paths, plus the security set's static tests | under 10 s |
 | `push` | pre-push hook | every tier of touched areas, plus the security set; playbook tier included | under 2 min on a workstation |
 | `ci` | pull request into `dev` | as `push`, against the pull request base | under 8 min wall |
-| `full` | nightly on `dev`, every promotion into `main`, a change to the crate itself | everything | under 15 min wall |
+| `full` | nightly on `dev`, every promotion into `main`, a change to the crate, the area map or a shared task | everything | under 15 min wall |
 | `live` | Semaphore templates (`Verify Service Health`, the probes) | not in CI | unchanged |
 
-The budgets are targets until Phase 1 measures them. A lane that exceeds its budget fails nothing, but
+A changed path that matches no area, no `full` trigger and no ignored path (D3) runs everything in `push`
+and `ci`; in `commit` it adds nothing. Every suite module is listed in exactly one lane slot, an area tier or
+the security set, so a test outside every lane cannot exist (Phase 2 adds the test that enforces it). The budgets are targets until Phase 1 measures them. A lane that exceeds its budget fails nothing, but
 it reports the overrun in the job summary, as the shards do today.
 
 ---
 
 ## Implementation Phases
 
-One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (operator decisions,
-2026-11-12: Phases 4 to 10 move to v0.16.0, and nothing merges into `dev` until v0.15.0 is released). A port phase is
-split into one sub-item per area when it starts.
+One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (see "Release fit" below the phase table). A
+port phase is split into one sub-item per area when it starts.
 
 | Phase | Work | Blocked by | Done when |
 |---|---|---|---|
 | 0 | This plan, and 03 Part 1 (testing principles) | none | Merged into `dev` |
 | 1 | Crate, nextest `default` and `ci` profiles, shared support library (YAML 1.1 loader, task walker, scrubbed bounded runner). Pilot: `test_restart_policy.bats` (static) and `test_common.bats` (cli) ported **additively**; the BATS files stay until Phase 3. The `Rust (tests)` CI job and the merge guard's new workflow state are a separate operator-merged pull request (AC-744). The `playbook` test-group arrives with the first playbook-tier test (Phase 6) | 0 | `cargo nextest run --profile ci` passes in CI (after AC-744); both pilots fail when their guarded code is mutated |
-| 2 | Lanes: `areas.yml`, `testsel`, the `commit` and `push` hooks, selection in the CI job | 1 | A docs-only pull request runs only the static tier and the security set; a playbook change runs its area's playbook tier |
+| 2 | Lanes: `areas.yml`, `testsel`, the `commit` and `push` hooks, selection in the CI job | 1 | A docs-only pull request runs only the static tier and the security set; a playbook change runs its area's playbook tier; a test refuses a suite module listed in no lane slot or in two |
 | 3 | Ledger citation check ported to Rust and taught `.rs` (D9); pilot BATS files deleted | 1 | The ledger check is green with both pilots cited by their Rust paths |
 | 4 | Port BATS (82 files) by area; delete the `bats` job | 2, 3 | `bats` gone from the workflow; every deleted test mapped |
 | 5 | Port the static and subprocess Python tests (93 files) | 2, 3 | Those files deleted, every test mapped |

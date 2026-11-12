@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -131,6 +132,8 @@ class FakeGitHub:
         self.budget_before = make_budget(prs=5, files=20)
         self.budget_after = make_budget(prs=6, files=21)
         self.budget_calls = []
+        self.drift = (0, [])
+        self.drift_calls = []
         self.pr = {
             "number": PR, "state": "open", "draft": False, "merged": False,
             "base": {"ref": "dev", "sha": BASE, "repo": {"full_name": guard.REPO}},
@@ -341,6 +344,10 @@ class FakeGitHub:
     def release_budget(self, extra_files):
         self.budget_calls.append(list(extra_files))
         return (self.budget_dev_sha or self.dev_tip, self.budget_before, self.budget_after)
+
+    def dev_drift(self, number, head_sha, dev_sha):
+        self.drift_calls.append((number, head_sha, dev_sha))
+        return self.drift
 
 
 def run_refusal(test, api, expected="", *extra):
@@ -945,7 +952,7 @@ class MergeGuardTests(unittest.TestCase):
             ("retired base to uv head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW + b"# extra\n"),
                 api.workflow_sources.__setitem__(HEAD, RETIRED_WORKFLOW)),
@@ -953,15 +960,15 @@ class MergeGuardTests(unittest.TestCase):
             ("retired base to edited head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, RETIRED_WORKFLOW + b"# extra\n")),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base to versioned head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base to runner-pinned head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW)),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
         ]
         for label, change, message in cases:
             with self.subTest(label=label):
@@ -994,7 +1001,7 @@ class MergeGuardTests(unittest.TestCase):
             ("retired to rust-tests with extra byte", lambda api: (
                 api.set_rust_tests_transition(),
                 api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base with extra byte to rust-tests", lambda api: (
                 api.set_rust_tests_transition(),
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW + b"# extra\n")),
@@ -1264,7 +1271,7 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         api.workflow_source = RETIRED_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
-        run_refusal(self, api, "Current workflow may only remain byte-identical")
+        run_refusal(self, api, "Retired workflow may only remain byte-identical")
 
     def test_rust_tests_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
@@ -1783,6 +1790,54 @@ class MergeGuardTests(unittest.TestCase):
                                             "--merge", "--match-head-commit", HEAD,
                                             "--body", "fix: retitled before the merge"]])
 
+    def test_is_test_path_names_what_the_ci_suites_read(self):
+        for path in ("platform/tests/test_x.py", "platform/tests/x.bats",
+                     "platform/services/caddy/deployment/tests/test_y.py", "conftest.py", "pyproject.toml"):
+            with self.subTest(path=path):
+                self.assertTrue(guard.is_test_path(path))
+        for path in ("README.md", "scripts/merge-when-green.py", "tests.md", "platform/playbooks/deploy.yml", "uv.lock",
+                     "platform/services/console/app/src/probe.rs"):
+            with self.subTest(path=path):
+                self.assertFalse(guard.is_test_path(path))
+
+    def test_every_pytest_testpath_is_a_test_path(self):
+        # The guard's rule and pytest's own list must not drift apart.
+        config = tomllib.loads((SCRIPT.parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+        for testpath in config["tool"]["pytest"]["ini_options"]["testpaths"]:
+            with self.subTest(testpath=testpath):
+                self.assertTrue(guard.is_test_path(f"{testpath}/test_x.py"))
+
+    def test_dev_drift_into_test_paths_refuses(self):
+        api = FakeGitHub()
+        api.drift = (2, ["README.md", "platform/tests/test_x.py"])
+        run_refusal(self, api, "change test paths: platform/tests/test_x.py")
+
+    def test_dev_drift_refusal_lists_five_paths_then_counts(self):
+        api = FakeGitHub()
+        api.drift = (7, [f"platform/tests/test_{index}.py" for index in range(7)])
+        run_refusal(self, api, "platform/tests/test_4.py (+2 more)")
+
+    def test_acknowledged_dev_drift_merges(self):
+        api = FakeGitHub()
+        api.drift = (2, ["platform/tests/test_x.py"])
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD, "--merge", "--feedback-addressed",
+                                     "--dev-drift-acknowledged"], api), 0)
+        self.assertEqual(len(api.merge_calls), 1)
+
+    def test_dev_drift_outside_tests_merges_and_reports(self):
+        api = FakeGitHub()
+        api.drift = (3, ["README.md"])
+        result, out, _err = run_guard(api, "--merge", "--feedback-addressed")
+        self.assertEqual(result, 0)
+        self.assertIn("DEV: this head lacks 3 commits", out)
+        self.assertEqual(len(api.merge_calls), 1)
+
+    def test_dev_drift_is_read_at_the_budget_dev_tip(self):
+        api = FakeGitHub()
+        api.drift = (1, ["README.md"])
+        self.assertEqual(run_guard(api, "--merge", "--feedback-addressed")[0], 0)
+        self.assertEqual(api.drift_calls, [(PR, HEAD, api.budget_after["dev_ref"])] * 2)
+
 
 def run_guard(api, *extra):
     # Read-only unless extra asks for a merge. Returns (exit code, stdout, stderr), so a test can assert the
@@ -1935,9 +1990,9 @@ def commit_file(repo, name, text, subject):
     git(repo, "commit", "-q", "-m", subject)
 
 
-class ReleaseBudgetGitTests(unittest.TestCase):
-    # GitHub.release_budget against real repositories: a bare origin, a seed that pushes to it, and the
-    # checkout the guard reads.
+class GitOriginFixture:
+    # A bare origin, a seed that pushes to it, and the checkout the guard reads. Mixed into each class that runs git
+    # against these repositories; it holds no tests, so a subclass does not rerun another class's.
 
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -1962,6 +2017,10 @@ class ReleaseBudgetGitTests(unittest.TestCase):
         commit_file(self.seed, "app.py", "x = 1\n", "fix: x (#1)")
         git(self.seed, "push", "-q", "origin", "dev")
         git(root, "clone", "-q", str(self.origin), str(self.clone))
+
+
+class ReleaseBudgetGitTests(GitOriginFixture, unittest.TestCase):
+    # GitHub.release_budget against real repositories.
 
     def test_counts_at_the_fetched_dev_tip_and_fetches_again_on_each_call(self):
         github = guard.GitHub(repo_root=self.clone)
@@ -1994,6 +2053,85 @@ class ReleaseBudgetGitTests(unittest.TestCase):
         github = guard.GitHub(repo_root=self.origin.parent / "absent")
         with self.assertRaisesRegex(guard.Refusal, "fetching main, dev and the release tags failed"):
             github.release_budget([])
+
+
+class DevDriftGitTests(GitOriginFixture, unittest.TestCase):
+    # GitHub.dev_drift against the same repositories: a pull request head published at refs/pull/7/head, and dev
+    # moved on past the commit that head branched from.
+
+    def start_feature(self):
+        git(self.seed, "checkout", "-q", "-b", "feature")
+        commit_file(self.seed, "feature.py", "z = 3\n", "fix: z (#3)")
+        git(self.seed, "push", "-q", "origin", "feature:refs/pull/7/head")
+        feature_sha = git_out(self.seed, "rev-parse", "HEAD")
+        git(self.seed, "checkout", "-q", "dev")
+        (self.seed / "platform" / "tests").mkdir(parents=True)
+        commit_file(self.seed, "platform/tests/test_y.py", "def test_y():\n    pass\n", "test: y (#2)")
+        git(self.seed, "push", "-q", "origin", "dev")
+        dev_sha = git_out(self.seed, "rev-parse", "HEAD")
+        github = guard.GitHub(repo_root=self.clone)
+        # The budget read fetches dev into the checkout, as it does in a real run.
+        self.assertEqual(github.release_budget([])[0], dev_sha)
+        return github, feature_sha, dev_sha
+
+    def test_lists_dev_changes_the_head_lacks_and_none_once_the_head_holds_dev(self):
+        github, feature_sha, dev_sha = self.start_feature()
+        self.assertEqual(github.dev_drift(7, feature_sha, dev_sha), (1, ["platform/tests/test_y.py"]))
+        git(self.seed, "checkout", "-q", "feature")
+        git(self.seed, "merge", "-q", "--no-ff", "-m", "Merge dev into feature", "dev")
+        git(self.seed, "push", "-q", "origin", "feature:refs/pull/7/head")
+        merged_sha = git_out(self.seed, "rev-parse", "HEAD")
+        self.assertEqual(github.dev_drift(7, merged_sha, dev_sha), (0, []))
+
+    def test_a_test_path_added_in_a_merge_commit_itself_counts(self):
+        # An edit made inside a merge on dev, not in any commit it brings in, is still dev's change.
+        github, feature_sha, _dev_sha = self.start_feature()
+        git(self.seed, "checkout", "-q", "-b", "side", feature_sha + "~1")
+        commit_file(self.seed, "side.md", "s\n", "docs: s (#4)")
+        git(self.seed, "checkout", "-q", "dev")
+        git(self.seed, "merge", "-q", "--no-ff", "--no-commit", "side")
+        commit_file(self.seed, "platform/tests/test_merge_only.py", "def test_m():\n    pass\n", "Merge side")
+        git(self.seed, "push", "-q", "origin", "dev")
+        dev_sha = github.release_budget([])[0]
+        self.assertEqual(github.dev_drift(7, feature_sha, dev_sha),
+                         (3, ["platform/tests/test_merge_only.py", "platform/tests/test_y.py", "side.md"]))
+
+    def test_a_test_file_renamed_away_on_dev_counts_under_its_old_name(self):
+        # The file exists before the head branches, so only dev's rename can list its old path.
+        (self.seed / "tests").mkdir()
+        commit_file(self.seed, "tests/test_r.py", "def test_r():\n    pass\n", "test: r (#5)")
+        github, feature_sha, _dev_sha = self.start_feature()
+        git(self.seed, "mv", "tests/test_r.py", "moved_r.py")
+        git(self.seed, "commit", "-q", "-m", "chore: move r (#6)")
+        git(self.seed, "push", "-q", "origin", "dev")
+        dev_sha = github.release_budget([])[0]
+        self.assertEqual(github.dev_drift(7, feature_sha, dev_sha),
+                         (2, ["moved_r.py", "platform/tests/test_y.py", "tests/test_r.py"]))
+
+    def test_the_head_is_kept_where_no_fetch_refspec_writes(self):
+        # A remote branch named pr/7 reaches refs/remotes/origin/pr/7 on any plain fetch; the pinned head must not live
+        # there, or that fetch would replace it.
+        github, feature_sha, dev_sha = self.start_feature()
+        git(self.seed, "push", "-q", "origin", "dev:refs/heads/pr/7")
+        self.assertEqual(github.dev_drift(7, feature_sha, dev_sha), (1, ["platform/tests/test_y.py"]))
+        git(self.clone, "fetch", "-q", "origin")
+        self.assertEqual(git_out(self.clone, "rev-parse", "refs/merge-guard/pull/7"), feature_sha)
+        self.assertEqual(git_out(self.clone, "rev-parse", "refs/remotes/origin/pr/7"), dev_sha)
+
+    def test_a_fetched_head_other_than_the_expected_one_refuses(self):
+        github, _feature_sha, dev_sha = self.start_feature()
+        with self.assertRaisesRegex(guard.Refusal, "is not the expected head"):
+            github.dev_drift(7, dev_sha, dev_sha)
+
+    def test_an_unknown_dev_commit_refuses_on_the_count(self):
+        github, feature_sha, _dev_sha = self.start_feature()
+        with self.assertRaisesRegex(guard.Refusal, "Dev drift: git failed in"):
+            github.dev_drift(7, feature_sha, "c" * 40)
+
+    def test_a_missing_checkout_refuses_on_the_pull_request_fetch(self):
+        github = guard.GitHub(repo_root=self.origin.parent / "absent")
+        with self.assertRaisesRegex(guard.Refusal, "fetching the pull request head failed"):
+            github.dev_drift(7, "a" * 40, "b" * 40)
 
 
 if __name__ == "__main__":
