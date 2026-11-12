@@ -136,7 +136,7 @@ def last_release(repo):
 
 
 def _last_release_on(repo, ref):
-    """The highest release tag merged into ref, by name, or None. Dev tags never count; see release_budget."""
+    """The highest release tag merged into ref, by version, or None. Dev tags never count; see release_budget."""
     found = [
         (_release_version(tag), tag)
         for tag in _git(repo, "tag", "--list", "v*", "--merged", ref).stdout.split()
@@ -193,7 +193,7 @@ def pr_titles(repo, rev_range, first_parent):
 
 
 def release_budget(repo, main_ref, dev_ref, extra_prs=0, extra_files=()):
-    """What the release dev_ref would make on main_ref counts against the limits (policy 10 R2, R3, R6, R12).
+    """How much the release that promotes dev_ref onto main_ref uses of its limits (policy 10 R2, R3, R6, R12).
 
     The release starts at the highest release tag merged into main_ref, so a pinned ref counts from its own
     release. extra_prs and extra_files add a pull request not yet merged, for the merge guard. Computes only.
