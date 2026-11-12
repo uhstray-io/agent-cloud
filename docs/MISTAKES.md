@@ -5044,11 +5044,11 @@ round. CodeRabbit flagged the gap; the rule above now requires rounds until one 
 **Occurrence 2 — 2026-11-12.** On #1128, after a small review fix (`4d0ece19`) and a merge of `dev`, I
 checked the delta by hand and posted both statuses on the merge head `95a10ea4`, with descriptions saying
 the passes ran there. Neither pass had run on that head. The rule says to run both passes on every new
-head; nothing stops a status being posted first, because the guard checks only that a status exists and is
-well formed. Caught before any merge. A status belongs to one commit, so the false ones stay on
-`95a10ea4`; a newer `failure` status for each context on that head makes the guard refuse it, and both
-passes ran on the next head before its statuses were posted. A hand check of a small delta is not a pass,
-and its status must not say it is.
+head, but nothing stops a status being posted first: the guard checks that each pass's latest status is
+a success with a filled description, never that the pass ran. Caught before any merge. A status belongs
+to one commit, so the false ones stay on `95a10ea4`; a newer `failure` status on that head makes the
+guard refuse it, and no further status was posted until both passes had run on the head being pushed. A
+hand check of a small delta is not a pass, and its status must not say it is.
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
@@ -5065,14 +5065,14 @@ memory, never in the repository's record, so the committed rule went stale with 
 
 **The rule.** An agent pushes a feature branch and opens a pull request into `dev`, or a `dev` → `main`
 promotion pull request. It merges a pull request into `dev` through `scripts/merge-when-green.py` once
-the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold and no `dev` merge hold is in force: a `dev`
-freeze the operator has announced, or merges held for the duration of a drill run under 3.23, agreed
-with the merging sessions, until that drill's fix lands. A `dev` → `main` promotion merges after two
-review rounds of its final head. Still asked every time, with an approval covering exactly the action
-it names: a push to `main` or `dev`, a force push, a squash merge, passing `--dev-drift-acknowledged`,
-merging a pull request the guard leaves to the operator (one that changes a release script or a
-workflow file the guard does not accept), and a push or pull request in a repository outside the organisation. Direction to do
-the work releases none of those.
+the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold and no `dev` merge hold is in force:
+a `dev` freeze the operator has announced, or merges held for the duration of a drill run under 3.23,
+agreed with the merging sessions, until that drill's fix lands. A `dev` → `main` promotion merges after
+two review rounds of its final head. Still asked every time, with an approval covering exactly the
+action it names: a push to `main` or `dev`, a force push, a squash merge, passing
+`--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one that changes a
+release script or a workflow file the guard does not accept), and a push or pull request in a
+repository outside the organisation. Direction to do the work releases none of those.
 
 **Enforced by.** `.github/rulesets/protect-main.json` refuses a force push and a deletion on `main` and
 requires a pull request with passing checks, with one bypass, the repository-admin role (break-glass),
