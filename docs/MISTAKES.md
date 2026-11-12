@@ -66,6 +66,7 @@ and why.
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, no detector |
+| 1.37 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1662,6 +1663,28 @@ plays. The class: Convention, with no detector; 1.29's path-read guards (occurre
 brief or outward text names, not the paths a comment in those files cites. A shared local-mode derivation (AC-702) would remove this
 instance's need to cite another file: the launch gate's comment still cites `tasks/clean-service.yml:85-89`, where
 the derivation itself is at `:70`.
+
+### 1.37 "Never overridden" checked in the caller, not in the library that overrides it
+
+**What happened.** Reconciling the Dispatch Console's Phase 1 checklist (task 2.1, PR #1104),
+I wrote that the console accepts only RS256 ID tokens: openidconnect 4.0.1's verifier
+defaults to RS256 (`verification/mod.rs:136-142`), and a grep showed the console never calls
+`set_allowed_algs`. The same claim went into the Plane comment on AC-488. Review of #1104 found
+that `CoreClient::from_provider_metadata` (called at `app/src/server/auth.rs:71`) copies the
+provider's `id_token_signing_alg_values_supported` into the client (`client.rs:272-276`), and
+`id_token_verifier()` calls `set_allowed_algs` with that list (`client.rs:658-659`). The
+console accepts whatever Authentik advertises; RS256 holds only because the blueprint pins
+the signing key.
+
+**Root cause.** "Never overridden" was checked by searching the console's own source for the
+override call. The override is made inside the library, by a constructor the console does
+call, so a search of the caller could not find it.
+
+**The rule.** A claim that a library default is in force is checked by following every call
+the code makes into that library to where the setting is finally read, not by searching the
+caller for the setter. Name the line that reads the setting.
+
+**Enforced by.** Convention. The corrected 2.1 note cites the library lines that set the list.
 
 ## 2. Tests that would have passed for the wrong reason
 
