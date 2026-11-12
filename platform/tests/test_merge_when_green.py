@@ -1707,7 +1707,8 @@ class MergeGuardTests(unittest.TestCase):
                      "platform/services/caddy/deployment/tests/test_y.py", "conftest.py", "pyproject.toml"):
             with self.subTest(path=path):
                 self.assertTrue(guard.is_test_path(path))
-        for path in ("README.md", "scripts/merge-when-green.py", "tests.md", "platform/playbooks/deploy.yml"):
+        for path in ("README.md", "scripts/merge-when-green.py", "tests.md", "platform/playbooks/deploy.yml", "uv.lock",
+                     "platform/services/console/app/src/probe.rs"):
             with self.subTest(path=path):
                 self.assertFalse(guard.is_test_path(path))
 
@@ -1993,6 +1994,16 @@ class DevDriftGitTests(GitOriginFixture, unittest.TestCase):
         git(self.seed, "push", "-q", "origin", "feature:refs/pull/7/head")
         merged_sha = git_out(self.seed, "rev-parse", "HEAD")
         self.assertEqual(github.dev_drift(7, merged_sha, dev_sha), (0, []))
+
+    def test_the_head_is_kept_where_no_fetch_refspec_writes(self):
+        # A remote branch named pr/7 reaches refs/remotes/origin/pr/7 on any plain fetch; the pinned head must not live
+        # there, or that fetch would replace it.
+        github, feature_sha, dev_sha = self.start_feature()
+        git(self.seed, "push", "-q", "origin", "dev:refs/heads/pr/7")
+        self.assertEqual(github.dev_drift(7, feature_sha, dev_sha), (1, ["platform/tests/test_y.py"]))
+        git(self.clone, "fetch", "-q", "origin")
+        self.assertEqual(git_out(self.clone, "rev-parse", "refs/merge-guard/pull/7"), feature_sha)
+        self.assertEqual(git_out(self.clone, "rev-parse", "refs/remotes/origin/pr/7"), dev_sha)
 
     def test_a_fetched_head_other_than_the_expected_one_refuses(self):
         github, _feature_sha, dev_sha = self.start_feature()

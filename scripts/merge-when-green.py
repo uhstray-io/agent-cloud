@@ -103,7 +103,7 @@ class GitHub:
         self.calls.append(command)
         try:
             return subprocess.run(command, capture_output=True, text=True, check=True).stdout
-        except (OSError, subprocess.CalledProcessError) as error:
+        except (OSError, subprocess.CalledProcessError, UnicodeDecodeError) as error:
             raise Refusal(failure) from error
 
     def release_budget(self, extra_files):
@@ -138,10 +138,11 @@ class GitHub:
         behind = self._git(failed, "rev-list", "--count", f"{head_sha}..{dev_sha}").strip()
         if not behind.isdigit():
             raise Refusal(failed)
-        # The three-dot diff is merge-base..dev, the changes dev made that this head does not hold. --no-renames lists
-        # both names of a rename, so a test file moved away from its old path still counts.
-        paths = self._git(failed, "diff", "--name-only", "--no-renames", "-z", f"{head_sha}...{dev_sha}").split("\0")
-        return int(behind), [path for path in paths if path]
+        # The paths changed by the same commits the count reads, <head>..<dev>. A three-dot diff would use one merge
+        # base where there are several, and list files this head already holds. A merge commit lists no paths of its
+        # own; the commits it brings in do. --no-renames lists both names of a rename, so a moved test file counts.
+        log = self._git(failed, "log", "--format=", "--name-only", "--no-renames", "-z", f"{head_sha}..{dev_sha}")
+        return int(behind), sorted({path for path in log.split("\0") if path})
 
 
 def paged(api, endpoint, key):
