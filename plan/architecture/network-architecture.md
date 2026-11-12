@@ -134,7 +134,7 @@ flowchart TB
     SEM -->|"SSH"| CADDY
     LG -->|"Semaphore task on allow, HTTPS"| SEM
     LG -->|"asks OPA, HTTPS"| OPA
-    SKY -. "launch request via the gate, HTTPS (wired; no launch yet)" .-> LG
+    SKY -. "launch request via the gate, HTTPS (wired; proven in local-dev, not production)" .-> LG
     SEM -->|"AppRole over HTTP, internal only"| BAO
     SEM -->|"SSH (issuance runs in the CA container)"| CA
     GH["GitHub"]
