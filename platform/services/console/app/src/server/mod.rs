@@ -267,6 +267,9 @@ pub fn spawn_discovery(state: SharedState) {
 }
 
 /// Session cookie `console_session`: Secure, HttpOnly, SameSite=Lax, 8h of inactivity.
+/// `always_save` re-saves a live session on every request, which is what resets an
+/// `OnInactivity` expiry. tower-sessions saves only a modified session, so without it the
+/// expiry ran from sign-in. The cost is one store write and one `Set-Cookie` per request.
 /// Sessions live in the preferences database (`sessions.rs`), so a restart keeps them.
 pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
     SessionManagerLayer::new(store)
@@ -275,6 +278,7 @@ pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
         .with_http_only(true)
         .with_same_site(SameSite::Lax)
         .with_expiry(Expiry::OnInactivity(CookieDuration::hours(8)))
+        .with_always_save(true)
 }
 
 async fn healthz() -> &'static str {
@@ -993,6 +997,28 @@ mod tests {
         let login = call(addr, "GET", "/test/login", None, "").await;
         let cookie = login.cookie.expect("session cookie set on login");
         (addr, cookie)
+    }
+
+    /// The expiry is an inactivity expiry: a read on a live session re-saves it, so the
+    /// browser gets a fresh `console_session` cookie. Without `always_save` the read is 200
+    /// and sends no `Set-Cookie`, and the session expires 8h after sign-in regardless.
+    #[tokio::test]
+    async fn a_signed_in_request_refreshes_the_session_cookie() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+        assert_eq!(me.status, 200);
+        let set_cookie = me
+            .set_cookie_line
+            .clone()
+            .expect("a read on a live session re-saves it and sends Set-Cookie");
+        for attribute in ["Secure", "HttpOnly", "SameSite=Lax", "console_session="] {
+            assert!(
+                set_cookie.contains(attribute),
+                "refreshed cookie missing {attribute}: {set_cookie}"
+            );
+        }
+        assert_eq!(me.cookie, Some(cookie), "the refresh keeps the session id");
     }
 
     /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its body is JSON.
