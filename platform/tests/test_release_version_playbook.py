@@ -1148,7 +1148,7 @@ FROM_TASK_PROTECTED = (
     "_rnt_result",
     "_rn_body",
 )
-PUBLISH_MODULES = {"uri", "command", "set_fact", "assert", "debug"}
+PUBLISH_MODULES = {"uri", "command", "set_fact", "assert", "debug", "include_tasks"}
 
 
 def _from_task(pred, what):
@@ -1234,9 +1234,9 @@ def test_the_semaphore_routes_are_the_three_gets_and_carry_the_bearer_token_in_h
     uris = [(lf["name"], _module(lf["task"])[1]) for lf in FROM_TASK_LEAVES if _module(lf["task"])[0] == "uri"]
     semaphore = [(name, args) for name, args in uris if "/api/project/" in args["url"]]
     assert [args["url"] for _, args in semaphore] == [
-        "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}",
-        "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}/output",
-        "{{ _rnt_semaphore.url }}/api/project/{{ _rv_semaphore_project_id }}/templates/{{ _rnt_template_id | int }}",
+        "{{ _rnt_endpoint }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}",
+        "{{ _rnt_endpoint }}/api/project/{{ _rv_semaphore_project_id }}/tasks/{{ _rnt_task_id | int }}/output",
+        "{{ _rnt_endpoint }}/api/project/{{ _rv_semaphore_project_id }}/templates/{{ _rnt_template_id | int }}",
     ]
     for name, args in semaphore:
         assert args["headers"] == {"Authorization": "Bearer {{ _rnt_semaphore.api_token }}"}, name
@@ -1251,18 +1251,47 @@ def test_the_semaphore_routes_are_the_three_gets_and_carry_the_bearer_token_in_h
             assert "api_token" not in stdin and "X-Vault" not in stdin and "client_token" not in stdin, lf["name"]
 
 
-def test_the_endpoint_is_refused_unless_https_and_named_by_requirement_not_by_value():
-    check = _from_task(
-        lambda lf: "(_rnt_semaphore.url | default('', true)) is match('^https://[^/]+$')"
-        in str(lf["task"].get("ansible.builtin.assert", {}).get("that", "")),
-        "endpoint assert",
+def test_the_endpoint_is_trimmed_required_and_checked_by_the_shared_transport_guard():
+    trim = _from_task_fact("_rnt_endpoint")
+    assert trim["no_log"] is True
+    assert trim["task"]["ansible.builtin.set_fact"]["_rnt_endpoint"] == (
+        "{{ (_rnt_semaphore.url | default('', true) | string | trim) | regex_replace('/+$', '') }}"
     )
-    assert check["no_log"] is True
-    expected = "(_rnt_semaphore.api_token | default('', true)) | length > 0"
-    assert check["task"]["ansible.builtin.assert"]["that"][1] == expected
-    assert "secret/services/semaphore must hold an https url and an api_token" in (
-        check["task"]["ansible.builtin.assert"]["fail_msg"]
+    url_check = _from_task(
+        lambda lf: lf["task"].get("ansible.builtin.assert", {}).get("that") == ["_rnt_endpoint | length > 0"],
+        "url assert",
     )
+    token_check = _from_task(
+        lambda lf: lf["task"].get("ansible.builtin.assert", {}).get("that")
+        == ["(_rnt_semaphore.api_token | default('', true)) | length > 0"],
+        "api_token assert",
+    )
+    for check, field in ((url_check, "a url"), (token_check, "an api_token")):
+        assert check["no_log"] is True
+        assert f"secret/services/semaphore must hold {field} " in check["task"]["ansible.builtin.assert"]["fail_msg"]
+    guard = _from_task(lambda lf: _module(lf["task"])[0] == "include_tasks", "transport guard include")
+    assert _module(guard["task"])[1] == "assert-bao-transport.yml"
+    assert guard["task"]["vars"] == {"_assert_bao_url": "{{ _rnt_endpoint }}", "_assert_url_label": "Semaphore"}
+    order = [lf["name"] for lf in FROM_TASK_LEAVES]
+    first_read = next(i for i, lf in enumerate(FROM_TASK_LEAVES) if "/api/project/" in str(lf["task"]))
+    names = [trim["name"], url_check["name"], token_check["name"], guard["name"]]
+    assert [order.index(n) for n in names] == sorted(order.index(n) for n in names)
+    assert order.index(guard["name"]) < first_read
+
+
+@pytest.mark.parametrize(
+    ("stored", "endpoint"),
+    [
+        ("https://semaphore.example.test", "https://semaphore.example.test"),
+        ("https://semaphore.example.test/", "https://semaphore.example.test"),
+        ("https://semaphore.example.test//", "https://semaphore.example.test"),
+        ("  https://semaphore.example.test:3000/ ", "https://semaphore.example.test:3000"),
+    ],
+)
+def test_the_stored_url_is_trimmed_as_the_other_readers_trim_it(stored, endpoint):
+    from ansible.plugins.filter.core import regex_replace
+
+    assert regex_replace(stored.strip(), "/+$", "") == endpoint
 
 
 def test_the_helper_is_the_one_isolated_command_and_takes_the_run_on_stdin():

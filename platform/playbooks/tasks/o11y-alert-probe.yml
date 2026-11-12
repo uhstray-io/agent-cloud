@@ -14,6 +14,9 @@
 #                                expected instance only. The first is always checked, so a
 #                                one-instance receipt must name its instance (default true:
 #                                both lines are checked, as before).
+#   _alert_probe_fire_retries      retries of the firing wait, each 10 s apart (default 36). An
+#                                absent-series rule needs its freshness window plus its for-window,
+#                                so the endpoint drill passes a larger budget only in absent mode.
 # The Discord marker is the caller's _delivery_marker, which every caller defines.
 - name: Create a unique identity for this drill run
   ansible.builtin.command:
@@ -189,7 +192,7 @@
             curl -fsS --config - http://127.0.0.1:3000/api/prometheus/grafana/api/v1/alerts
       register: _firing_alerts
       changed_when: false
-      retries: 36
+      retries: "{{ _alert_probe_fire_retries | default(36) }}"
       delay: 10
       no_log: true
       until: >-

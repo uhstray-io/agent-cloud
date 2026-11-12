@@ -464,7 +464,9 @@ assert receipt['delegate_to'] == 'localhost' and receipt['no_log'] is True and r
 probe = next(t for t in tasks if t['name'] == 'Start the opted-in probe with no metrics listener')
 lifetime = int(re.search(r'sleep (\d+)', probe['ansible.builtin.command']['argv'][-1]).group(1))
 scrape = next(t for t in tasks if t['name'] == 'Wait for the declared failed scrape')
-assert lifetime > sum(t['retries'] * t['delay'] for t in (scrape, wait, receipt)) + 60
+# retries may be a template with a default (the fire wait's _alert_probe_fire_retries); a local fault
+# drill passes no override, so render it with no variables to get the budget it actually waits.
+assert lifetime > sum(int(env.from_string(str(t['retries'])).render()) * t['delay'] for t in (scrape, wait, receipt)) + 60
 received = env.compile_expression(receipt['until'])
 marker = 'o11y-delivery-status=firing service=o11y-fault-probe-new'
 for webhook_id, body, expected in [('123', marker, True),
