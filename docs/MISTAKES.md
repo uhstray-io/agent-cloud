@@ -1658,9 +1658,10 @@ The grounding checkpoint caught it before a PR was opened, and the redesign land
 it is read, whatever pointed to it (1.25, 1.28, 1.29), a comment's citation included. Follow the citation and read
 the cited lines before a brief, commit or reply repeats the guarantee.
 
-**Enforced by.** The instance: since AC-702 (#1106) both playbooks derive local mode with the shared
-`local_dev_inventory` filter (`platform/playbooks/filter_plugins/local_dev.py`), pinned in all three plays by
-`platform/tests/test_launch_gate_playbooks.bats:590-591` and `platform/tests/test_service_skynet.bats:602`. The class:
+**Enforced by.** The instance: since AC-784 both playbooks derive local mode from the inventory with the shared
+`local_dev_inventory` filter (`platform/playbooks/filter_plugins/local_dev.py`) and include the shared identity check
+first, pinned in all three plays by `platform/tests/test_launch_gate_playbooks.bats:590-591` and
+`platform/tests/test_service_skynet.bats:623-624`. The class:
 Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a brief or outward
 text names, not the paths a comment in those files cites.
 
