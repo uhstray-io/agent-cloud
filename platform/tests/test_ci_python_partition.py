@@ -44,7 +44,9 @@ def _testpaths():
 
 def _collect(env, *args):
     """Node IDs pytest collects from the repository root with the shard job's environment."""
-    environment = {key: value for key, value in os.environ.items() if key != "PYTEST_SHARD"}
+    # The selection variables of an outer run (a shard, or the pre-push fast lane) must not reach this one.
+    environment = {key: value for key, value in os.environ.items()
+                   if key not in {"PYTEST_SHARD", "PYTEST_FAST", "PYTEST_FAST_CHANGED"}}
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *args],
         cwd=REPO, env={**environment, **env}, text=True, capture_output=True, check=False,
