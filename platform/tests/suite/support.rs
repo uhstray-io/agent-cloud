@@ -5,7 +5,7 @@
 use std::process::Command;
 
 use agent_cloud_tests::repo;
-use agent_cloud_tests::yaml::{Node, parse, resolve_plain};
+use agent_cloud_tests::yaml::{Node, load_one, parse, resolve_plain};
 
 #[test]
 fn the_repository_root_is_the_checkout_under_test() {
@@ -86,6 +86,22 @@ fn a_core_tag_on_a_scalar_is_refused() {
 #[should_panic(expected = "core tag `!!str`")]
 fn a_core_tag_on_a_mapping_is_refused() {
     parse("a: !!str {k: 1}\n", "inline");
+}
+
+#[test]
+#[should_panic(expected = "core tag `!!set`")]
+fn a_core_tag_on_a_sequence_is_refused() {
+    parse("a: !!set [x]\n", "inline");
+}
+
+#[test]
+#[should_panic(expected = "2 YAML documents, expected one")]
+fn a_file_of_several_documents_is_refused() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = dir.path().join("two.yml");
+    std::fs::write(&file, "- a: 1\n---\n- b: 2\n").unwrap();
+
+    load_one(&file);
 }
 
 #[test]

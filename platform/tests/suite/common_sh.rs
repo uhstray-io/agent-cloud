@@ -68,20 +68,6 @@ fn gen_secret_strips_base64_punctuation_then_truncates() {
 }
 
 #[test]
-fn gen_secret_truncates_to_the_requested_length() {
-    // 48 bytes encode to 64 characters, so even after `/+=` are stripped the output always
-    // exceeds the requested length. A length near the encoded size would depend on the
-    // random bytes (03 Part 1, rule 5).
-    for (bytes, len) in [(48, 16), (48, 1)] {
-        let dir = TempDir::new().unwrap();
-
-        let out = stdout_of(&mut sh(&dir, &format!("gen_secret {bytes} {len}")));
-
-        assert_eq!(out.len(), len, "gen_secret {bytes} {len} -> {out:?}");
-    }
-}
-
-#[test]
 fn needs_gen_is_true_only_for_empty_or_placeholder_values() {
     let cases = [
         ("", true),

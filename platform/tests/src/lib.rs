@@ -193,18 +193,22 @@ pub mod yaml {
 
     impl MarkedEventReceiver for Builder {
         fn on_event(&mut self, ev: Event, _mark: Marker) {
+            if let Event::Scalar(_, _, _, tag)
+            | Event::SequenceStart(_, tag)
+            | Event::MappingStart(_, tag) = &ev
+            {
+                refuse_core_tag(tag.as_ref(), &self.origin);
+            }
             match ev {
                 Event::Scalar(value, style, anchor, tag) => {
-                    let is_merge_key = self.key_position()
-                        && style == TScalarStyle::Plain
-                        && tag.is_none()
-                        && value == "<<";
-                    refuse_core_tag(tag.as_ref(), &self.origin);
-                    let node = match (style, tag) {
-                        (TScalarStyle::Plain, None) => resolve_plain(&value),
-                        // An application tag (compose's `!reset`, `!override`) reads as its text,
-                        // as the any-tag constructor of the Python tests did.
-                        _ => Node::Str(value),
+                    let plain = style == TScalarStyle::Plain && tag.is_none();
+                    let is_merge_key = plain && self.key_position() && value == "<<";
+                    // An application tag (compose's `!reset`, `!override`) reads as its text, as
+                    // the any-tag constructor of the Python tests did.
+                    let node = if plain {
+                        resolve_plain(&value)
+                    } else {
+                        Node::Str(value)
                     };
                     if anchor > 0 {
                         self.anchors.insert(anchor, node.clone());
@@ -220,15 +224,13 @@ pub mod yaml {
                         .expect("alias to a known anchor");
                     self.push(node, false);
                 }
-                Event::SequenceStart(anchor, tag) => {
-                    refuse_core_tag(tag.as_ref(), &self.origin);
+                Event::SequenceStart(anchor, _) => {
                     self.stack.push(Frame::Seq {
                         items: vec![],
                         anchor,
                     });
                 }
-                Event::MappingStart(anchor, tag) => {
-                    refuse_core_tag(tag.as_ref(), &self.origin);
+                Event::MappingStart(anchor, _) => {
                     self.stack.push(Frame::Map {
                         entries: vec![],
                         merges: vec![],
@@ -271,10 +273,19 @@ pub mod yaml {
         builder.docs
     }
 
-    pub fn load(path: &Path) -> Vec<Node> {
+    /// The one document in a file, `None` for an empty file. PyYAML's `yaml.load` refuses a
+    /// stream of several documents, and so does this.
+    pub fn load_one(path: &Path) -> Option<Node> {
         let text =
             std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        parse(&text, &path.display().to_string())
+        let docs = parse(&text, &path.display().to_string());
+        assert!(
+            docs.len() <= 1,
+            "{}: {} YAML documents, expected one",
+            path.display(),
+            docs.len()
+        );
+        docs.into_iter().next()
     }
 }
 
@@ -357,14 +368,8 @@ pub mod repo {
                 }
             }
         }
-        let docs = yaml::load(&path(rel));
-        assert!(
-            docs.len() <= 1,
-            "{rel}: {} YAML documents, expected one",
-            docs.len()
-        );
         let mut out = vec![];
-        if let Some(items) = docs.first().and_then(Node::as_seq) {
+        if let Some(items) = yaml::load_one(&path(rel)).as_ref().and_then(Node::as_seq) {
             walk(items, &mut out);
         }
         out
