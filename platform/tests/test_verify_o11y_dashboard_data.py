@@ -14,11 +14,9 @@ import re
 import shutil
 import socket
 import sys
-import threading
 from contextlib import ExitStack
-from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import forgeries
 import harness_sandbox
@@ -136,13 +134,11 @@ class FakeLoki:
             def log_message(self, *args):
                 pass
 
-        server_type = ThreadingHTTPServer
-        if ":" in host:
-            server_type = type("IPv6ThreadingHTTPServer", (ThreadingHTTPServer,), {"address_family": socket.AF_INET6})
-        self.server = server_type((host, 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        url_host = f"[{host}]" if ":" in host else host
-        self.url = f"http://{url_host}:{self.server.server_address[1]}"
+        self._serving = ExitStack()
+        self.url = self._serving.enter_context(serve(Handler, host=host))
+
+    def close(self):
+        self._serving.close()
 
     def answer(self, path, form):
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "streams")
@@ -183,7 +179,7 @@ class FakeLoki:
 def loki():
     fake = FakeLoki()
     yield fake
-    fake.server.shutdown()
+    fake.close()
 
 
 @pytest.fixture
@@ -1924,8 +1920,8 @@ def receiver(tmp_path, prometheus, loki):
         "[o11y_svc]\n"
         f"receiver ansible_connection=local ansible_python_interpreter=auto_silent "
         f"local_monorepo_dir={repo} monorepo_deploy_path=platform/services/o11y/deployment "
-        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={prometheus.url.rsplit(':', 1)[1]} "
-        f"o11y_loki_bind=127.0.0.1 o11y_loki_port={loki.server.server_address[1]}\n"
+        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={urlsplit(prometheus.url).port} "
+        f"o11y_loki_bind=127.0.0.1 o11y_loki_port={urlsplit(loki.url).port}\n"
     )
     return {"inventory": inventory, "prometheus": prometheus, "loki": loki}
 
@@ -1950,11 +1946,11 @@ def _ipv6_loki_or_skip():
 
 
 def _set_loki_inventory(receiver, bind, loki):
-    previous_port = receiver["loki"].server.server_address[1]
+    previous_port = urlsplit(receiver["loki"].url).port
     inventory = receiver["inventory"]
     contents = inventory.read_text().replace("o11y_loki_bind=127.0.0.1", f"o11y_loki_bind={bind}")
     contents = contents.replace(
-        f"o11y_loki_port={previous_port}", f"o11y_loki_port={loki.server.server_address[1]}"
+        f"o11y_loki_port={previous_port}", f"o11y_loki_port={urlsplit(loki.url).port}"
     )
     inventory.write_text(contents)
     receiver["loki"] = loki
