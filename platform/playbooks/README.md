@@ -355,7 +355,7 @@ except the collector and the custom-fields converger, and all are read-only exce
 ### Local-Dev Conventions (Phase 0A, `plan/archive/development/LOCAL-DEV-DEPLOYMENT.md`)
 
 - **Path vars:** playbooks reference `local_monorepo_dir` (clone location) and `local_home_dir` (convenience-symlink base) with `/home/{{ ansible_user }}` defaults — unset means byte-identical prod behavior; local inventories override them for macOS paths.
-- **Compose overlay:** `lib/common.sh`'s `compose()` appends `compose.local.yml` only when `LOCAL_MODE=true` **and** the overlay file exists; covered by `platform/tests/test_common.bats`.
+- **Compose overlay:** `lib/common.sh`'s `compose()` appends `compose.local.yml` only when `LOCAL_MODE=true` **and** the overlay file exists; covered by `platform/tests/suite/common_sh.rs`.
 
 ### Local-Dev Bootstrap
 
