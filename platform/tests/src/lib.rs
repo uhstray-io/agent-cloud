@@ -1,10 +1,11 @@
 //! Shared support for the agent-cloud test suite (plan 24).
 //!
-//! Three things every area needs, and nothing else:
 //! - [`repo`]: the repository root, `git ls-files`, and the playbook task walker;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
 //!   anchors, aliases, `<<` merge keys);
-//! - [`process`]: a bounded child process with a scrubbed environment (03 Part 1, rule 11).
+//! - [`process`]: a bounded child process with a scrubbed environment (03 Part 1, rule 11);
+//! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
+//!   `testsel` binary and `lane.sh` use it).
 
 pub mod lanes;
 
