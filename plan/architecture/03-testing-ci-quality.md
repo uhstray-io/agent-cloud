@@ -105,14 +105,14 @@ refuse proves the same property 244 times, at about a second each.
 
 ## Lanes: run what the change can break
 
-A change runs only the tests it can break, and the security set runs in every lane. The lanes, the area
-map, their triggers and time budgets are defined in [plan 24](../development/24-rust-test-platform.md),
-"Lanes".
+A change runs only the tests it can break, and the security set runs in every lane. The lanes, their
+triggers and time budgets are in [plan 24](../development/24-rust-test-platform.md), "Lanes"; the area map
+that selects tests is its decision D3.
 
 ## Where tests live and how they run
 
-- The Rust suite is one crate at `platform/tests/` with one test binary and one module per area
-  (plan 24, Phase 1; plan 24's "Crate layout" gives the run commands).
+- The Rust suite is planned as one crate at `platform/tests/` with one test binary and one module per
+  area (plan 24, Phase 1; plan 24's "Crate layout" gives the run commands).
 - The Dispatch Console crate (`platform/services/console/app/`) keeps its own tests, under these rules.
 - Rego policies keep `opa test` (Rego Tests job); Rego is the policy language, not a test harness choice.
 - Linters and scanners (ruff, shellcheck, ansible-lint, yamllint, hadolint, trufflehog, bandit) are not
