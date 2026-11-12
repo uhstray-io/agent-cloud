@@ -553,9 +553,10 @@ environment before operations; a checked-in deploy path is not proof it is runni
 >   carry it through review: fix or answer every finding, push the fixes, and request review again.
 > - It merges a pull request into `dev` through `scripts/merge-when-green.py` once every gate listed
 >   under "Feature-to-Dev pull-request merges" holds, and no `dev` merge hold is in force
->   (`docs/MISTAKES.md` 5.26 says what counts as one). A review receipt, `--feedback-addressed` and the `simplify` and `security-review` statuses are
->   self-attested: the guard checks that they are present and well formed, not that the review ran
->   or the feedback was handled, so each is a claim the agent must back.
+>   (`docs/MISTAKES.md` 5.26 says what counts as one). A review receipt, `--feedback-addressed`
+>   and the `simplify` and `security-review` statuses are self-attested: the guard checks that
+>   they are present and well formed, not that the review ran or the feedback was handled, so
+>   each is a claim the agent must back.
 > - A `dev` → `main` promotion merges with `gh pr merge --merge --match-head-commit <sha>` after two
 >   completed review rounds of its final head, with every finding fixed or answered and the
 >   `Promotion source (dev -> main)` check passing.
