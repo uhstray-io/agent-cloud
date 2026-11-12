@@ -25,7 +25,7 @@ The Authentik client is created first, because the sign-in routes need its secre
 - [ ] 2.4 Implement `POST /auth/logout`. It clears the session and answers 302 to `/`.
 - [ ] 2.5 Require a session on every `/v1/*` route. Without one, the route answers 401 with the JSON body `{"error":"unauthenticated"}`.
 - [x] 2.6 Validation gate: scenarios "Sign-in redirects to Authentik", "Callback stores the verified user", "Callback with a wrong nonce is refused" and "Unauthenticated API call answers 401" hold.
-  - Done 2026-11-12: `sign_in_redirects_to_the_provider`, `callback_stores_the_verified_user` and `callback_with_a_wrong_nonce_is_refused` (`app/src/server/oidc_tests.rs`) run the real login and callback against an in-process provider that signs RS256 ID tokens with a key generated per test run; `unauthenticated_v1_routes_answer_401_json` (`app/src/server/mod.rs`) holds the fourth scenario.
+  - Done 2026-11-12: `sign_in_redirects_to_the_provider`, `callback_stores_the_verified_user` and `callback_with_a_wrong_nonce_is_refused` (`app/src/server/oidc_tests.rs`) run the real login and callback against an in-process provider that signs RS256 ID tokens with a key generated per test run; `unauthenticated_v1_routes_answer_401_json` (`app/src/server/mod.rs`) holds the fourth scenario. `callback_with_a_wrong_state_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` also pin the state check and the signature check.
 
 ## 3. Tenants and scope tree
 

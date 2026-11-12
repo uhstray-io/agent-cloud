@@ -43,6 +43,8 @@ const GROUP: &str = "ops";
 struct Expected {
     challenge: String,
     nonce: String,
+    /// Sign the ID token with a key the JWKS does not publish.
+    unpublished_key: bool,
 }
 
 struct Provider {
@@ -75,7 +77,13 @@ impl Provider {
         expected.nonce = nonce.to_string();
     }
 
-    fn id_token(&self, nonce: &str) -> Value {
+    /// The next token response is signed with a second key. The JWKS still publishes only `key`,
+    /// under the same kid, so the console finds the published key and the signature fails.
+    fn sign_with_unpublished_key(&self) {
+        self.expected.lock().expect("expected lock").unpublished_key = true;
+    }
+
+    fn id_token(&self, nonce: &str, key: &CoreRsaPrivateSigningKey) -> Value {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .expect("system clock after 1970")
@@ -91,7 +99,7 @@ impl Provider {
         .expect("ID token claims");
         let token = CoreIdToken::new(
             claims,
-            &self.key,
+            key,
             CoreJwsSigningAlgorithm::RsaSsaPkcs1V15Sha256,
             None,
             None,
@@ -106,13 +114,24 @@ impl Provider {
 /// slow step.
 fn signing_key_pem() -> &'static str {
     static PEM: OnceLock<String> = OnceLock::new();
-    PEM.get_or_init(|| {
-        let key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048)
-            .expect("generate the provider's RSA key");
-        key.to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
-            .expect("encode the provider's RSA key")
-            .to_string()
-    })
+    PEM.get_or_init(generate_rsa_pem)
+}
+
+/// A second key, distinct from the first, for the one test that signs with a key the JWKS does not
+/// publish. It is generated only when that test asks for it, so no other test pays for it.
+fn unpublished_signing_key() -> CoreRsaPrivateSigningKey {
+    static PEM: OnceLock<String> = OnceLock::new();
+    let pem = PEM.get_or_init(generate_rsa_pem);
+    CoreRsaPrivateSigningKey::from_pem(pem, Some(JsonWebKeyId::new(KID.to_string())))
+        .expect("load the unpublished signing key")
+}
+
+fn generate_rsa_pem() -> String {
+    let key = rsa::RsaPrivateKey::new(&mut rsa::rand_core::OsRng, 2048)
+        .expect("generate an RSA key for the provider");
+    key.to_pkcs1_pem(rsa::pkcs1::LineEnding::LF)
+        .expect("encode an RSA key for the provider")
+        .to_string()
 }
 
 /// Authentik's shape: the issuer is a path ending in `/`, so discovery appends its suffix to it.
@@ -173,11 +192,13 @@ async fn token(State(provider): State<Arc<Provider>>, body: String) -> Response 
         )
             .into_response();
     }
+    let unpublished = expected.unpublished_key.then(unpublished_signing_key);
+    let signer = unpublished.as_ref().unwrap_or(&provider.key);
     Json(json!({
         "access_token": ACCESS_TOKEN,
         "token_type": "Bearer",
         "expires_in": 3600,
-        "id_token": provider.id_token(&expected.nonce),
+        "id_token": provider.id_token(&expected.nonce, signer),
     }))
     .into_response()
 }
@@ -373,8 +394,63 @@ async fn callback_with_a_wrong_nonce_is_refused() {
     assert_eq!(callback.status, 401, "{}", callback.body);
     assert_eq!(callback.body, r#"{"error":"id_token_invalid"}"#);
 
-    // Nothing was stored: the session the browser still holds is signed out.
-    let me = get_from(addr, "/v1/me", Some(login_session.as_str())).await;
+    // Nothing was stored. Probe with the cookie the refusal itself sets, the one the browser holds
+    // afterwards: a refusal that stored a user under a new session id would be seen only here.
+    let held = callback.session.unwrap_or(login_session);
+    let me = get_from(addr, "/v1/me", Some(held.as_str())).await;
+    assert_eq!(me.status, 401, "{}", me.body);
+    assert_eq!(me.body, r#"{"error":"unauthenticated"}"#);
+}
+
+#[tokio::test]
+async fn callback_with_a_wrong_state_is_refused() {
+    let (state, provider) = console_with_provider().await;
+    let addr = serve(api_router(state).layer(session_layer(memory_sessions()))).await;
+
+    let login = get_from(addr, "/auth/login", None).await;
+    let login_session = login.session.expect("session cookie set at login");
+    let query = query_of(&login.location.expect("Location to the provider"));
+    // The provider would accept this code and sign the right nonce, so only the state can refuse it.
+    provider.expect_login(&query["code_challenge"], &query["nonce"]);
+
+    let callback = get_from(
+        addr,
+        &format!("/auth/callback?code={CODE}&state=not-the-login-state"),
+        Some(login_session.as_str()),
+    )
+    .await;
+    assert_eq!(callback.status, 400, "{}", callback.body);
+    assert_eq!(callback.body, r#"{"error":"state_mismatch"}"#);
+
+    let held = callback.session.unwrap_or(login_session);
+    let me = get_from(addr, "/v1/me", Some(held.as_str())).await;
+    assert_eq!(me.status, 401, "{}", me.body);
+    assert_eq!(me.body, r#"{"error":"unauthenticated"}"#);
+}
+
+#[tokio::test]
+async fn callback_with_a_token_signed_by_another_key_is_refused() {
+    let (state, provider) = console_with_provider().await;
+    let addr = serve(api_router(state).layer(session_layer(memory_sessions()))).await;
+
+    let login = get_from(addr, "/auth/login", None).await;
+    let login_session = login.session.expect("session cookie set at login");
+    let query = query_of(&login.location.expect("Location to the provider"));
+    // The code, the state and the nonce are all right, so only the signature can refuse the token.
+    provider.expect_login(&query["code_challenge"], &query["nonce"]);
+    provider.sign_with_unpublished_key();
+
+    let callback = get_from(
+        addr,
+        &format!("/auth/callback?code={CODE}&state={}", query["state"]),
+        Some(login_session.as_str()),
+    )
+    .await;
+    assert_eq!(callback.status, 401, "{}", callback.body);
+    assert_eq!(callback.body, r#"{"error":"id_token_invalid"}"#);
+
+    let held = callback.session.unwrap_or(login_session);
+    let me = get_from(addr, "/v1/me", Some(held.as_str())).await;
     assert_eq!(me.status, 401, "{}", me.body);
     assert_eq!(me.body, r#"{"error":"unauthenticated"}"#);
 }
