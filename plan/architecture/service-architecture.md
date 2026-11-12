@@ -291,7 +291,10 @@ readable.
 flowchart LR
     SKY["skynet"] -->|"policy decision"| OPA["OPA"]
     SKY -->|"model calls"| AGW["agentgateway"]
-    SKY -.->|"launch templates, refused since 2026-10-31"| SEM["Semaphore"]
+    SKY -.->|"direct launches, refused since 2026-10-31"| SEM["Semaphore"]
+    SKY -->|"launch request"| LG["launch gate"]
+    LG -->|"policy decision"| OPA
+    LG -->|"Semaphore task on allow"| SEM
     AGW -->|"completions"| VLLM["vLLM"]
     AGW -->|"hosted models, when declared"| OR["OpenRouter"]
     AGW -->|"budgets"| AGWDB["gateway Postgres"]
@@ -332,6 +335,7 @@ sequenceDiagram
     participant SK as skynet (AI layer)
     participant GW as agentgateway
     participant OPA as OPA (guardrail)
+    participant LG as launch gate (guardrail)
     participant SEM as Semaphore (automation)
     participant T as Target VM
     H->>SK: start a run for a declared service
@@ -343,16 +347,25 @@ sequenceDiagram
         SK-->>H: proposal recorded, nothing executed
     else allowed
         OPA-->>SK: allow
-        SK->>SEM: launch the step's template
-        SEM->>T: idempotent playbook run
-        SEM-->>SK: step result
+        SK->>LG: launch request (caller token, exact values)
+        LG->>OPA: may this launch run, with these values?
+        alt denied
+            OPA-->>LG: deny
+            LG-->>SK: refused, no task created
+        else allowed
+            OPA-->>LG: allow
+            LG->>SEM: launch the step's template
+            SEM->>T: idempotent playbook run
+            SEM-->>SK: step result
+        end
     end
 ```
 
 The five agent roles that may act are infrastructure, security, observability, service and network, each an
 OPA identity; destructive actions also need `human_approved` [31]. In production this path is not
 connected yet: skynet has no production route [19][32].
-The OPA decision in the diagram is the one skynet's own client makes; Semaphore does not ask OPA. Direct
+The diagram shows two OPA decisions: skynet's own client asks first, then the launch gate asks again before it
+creates the task. Semaphore does not ask OPA. Direct
 launches by svc-skynet are refused while it is `guest` (since 2026-10-31) [42]: a guest has no run permission,
 and the launch probe expects HTTP 403 (`platform/playbooks/provision-skynet-semaphore-access.yml`). Launches
 through the launch gate use a different identity, svc-launch-gate, which holds `task_runner` [39], so that refusal
