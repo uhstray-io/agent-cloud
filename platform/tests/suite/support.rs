@@ -95,6 +95,12 @@ fn a_core_tag_on_a_sequence_is_refused() {
 }
 
 #[test]
+#[should_panic(expected = "core tag `!!bool`")]
+fn a_verbatim_core_tag_is_refused() {
+    parse("restart: !<tag:yaml.org,2002:bool> no\n", "inline");
+}
+
+#[test]
 #[should_panic(expected = "2 YAML documents, expected one")]
 fn a_file_of_several_documents_is_refused() {
     let dir = tempfile::TempDir::new().unwrap();

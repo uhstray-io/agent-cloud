@@ -171,12 +171,19 @@ fn defines(path: &Path, name: &str) -> bool {
         return false;
     }
     let name = regex::escape(name);
-    let pattern = if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-        format!(r"\bfn\s+{name}\s*[<(]")
+    if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+        // Line-anchored like the Python rule, so `// fn x()` does not count; attributes and
+        // `pub`/`async` may precede it. Block comments are dropped first.
+        // ponytail: comments only; a line starting `fn x(` inside a multi-line string still
+        // counts, strip string literals too if that ever bites.
+        let code = re(r"(?s)/\*.*?\*/").replace_all(&text, "");
+        let pattern = format!(
+            r"(?m)^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
+        );
+        re(&pattern).is_match(&code)
     } else {
-        format!(r"(?m)^\s*(?:async\s+)?(?:def|class)\s+{name}\b")
-    };
-    re(&pattern).is_match(&text)
+        re(&format!(r"(?m)^\s*(?:async\s+)?(?:def|class)\s+{name}\b")).is_match(&text)
+    }
 }
 
 fn bats_names(path: &Path) -> BTreeSet<String> {
@@ -438,7 +445,7 @@ fn rust_citations_resolve_against_the_suite_and_their_fn_names() {
     fs::create_dir_all(&suite).expect("suite fixture");
     fs::write(
         suite.join("restart_policy.rs"),
-        "#[test]\nfn real_fn() {}\n#[test] fn same_line_fn() {}\nfn generic_fn<T>() {}\n// fn commented_fn_lookalike\n",
+        "#[test]\nfn real_fn() {}\n#[test] fn same_line_fn() {}\nfn generic_fn<T>() {}\n// fn commented_fn_lookalike\n// fn line_commented_fn() {}\n/*\nfn block_commented_fn() {}\n*/\npub(crate) async fn qualified_fn() {}\n",
     )
     .expect("rs fixture");
     let cite = |span: &str| format!("### 4.1 A Rust entry\n\n**Enforced by.** `{span}`.\n");
@@ -458,7 +465,7 @@ fn rust_citations_resolve_against_the_suite_and_their_fn_names() {
 
     // Act / Assert: an attribute on the same line and a generic fn both count as defined; a
     // comment that names a fn without its `(` or `<` does not
-    for name in ["same_line_fn", "generic_fn"] {
+    for name in ["same_line_fn", "generic_fn", "qualified_fn"] {
         assert_eq!(
             unresolved(
                 &cite(&format!("suite/restart_policy.rs::{name}")),
@@ -475,6 +482,16 @@ fn rust_citations_resolve_against_the_suite_and_their_fn_names() {
         ),
         strings(&["4.1 suite/restart_policy.rs::commented_fn_lookalike"])
     );
+
+    // Act / Assert: a fn that survives only inside a line or block comment is not defined
+    for name in ["line_commented_fn", "block_commented_fn"] {
+        let span = format!("suite/restart_policy.rs::{name}");
+        assert_eq!(
+            unresolved(&cite(&span), root.path()),
+            strings(&[&format!("4.1 {span}")]),
+            "{name}"
+        );
+    }
 
     // Act / Assert: an invented fn name, and a missing file, both fail
     assert_eq!(
