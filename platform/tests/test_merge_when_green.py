@@ -1724,7 +1724,7 @@ class MergeGuardTests(unittest.TestCase):
         api.drift = (2, ["README.md", "platform/tests/test_x.py"])
         run_refusal(self, api, "change test paths: platform/tests/test_x.py")
         # The remedy names the passes too: merging dev in makes a new head, which needs them again (5.25).
-        run_refusal(self, api, "run both review passes on the new head and post their statuses")
+        run_refusal(self, api, "post their statuses (docs/MISTAKES.md 5.25), get the new head reviewed")
 
     def test_dev_drift_refusal_lists_five_paths_then_counts(self):
         api = FakeGitHub()

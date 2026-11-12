@@ -908,8 +908,8 @@ def check_dev_drift(api, number, sha, dev_sha, acknowledged):
         shown = ", ".join(tests[:5]) + (f" (+{len(tests) - 5} more)" if len(tests) > 5 else "")
         raise Refusal(f"dev {dev_sha[:12]} holds {behind} commits this head lacks, and they change test paths: "
                       f"{shown}. Merge origin/dev into the branch, run both review passes on the new head and post "
-                      "their statuses (docs/MISTAKES.md 5.25), and let CI run on it, or pass --dev-drift-acknowledged "
-                      "(docs/MISTAKES.md 5.23)")
+                      "their statuses (docs/MISTAKES.md 5.25), get the new head reviewed, and let CI run on it, or "
+                      "pass --dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
 
 
 def validate(api, number, sha, receipt_path, dev_drift_acknowledged=False):
