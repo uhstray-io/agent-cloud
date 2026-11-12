@@ -136,8 +136,8 @@ class FakeGitHub:
         self.file_pages = None
         self.check_pages = None
         # Both review passes, posted on this head (scripts/merge-when-green.py REVIEW_PASS_STATUSES).
-        self.statuses = [{"context": context, "state": "success", "created_at": "2026-10-10T11:00:00Z"}
-                         for context in guard.REVIEW_PASS_STATUSES]
+        self.statuses = [{"context": context, "state": "success", "created_at": "2026-10-10T11:00:00Z",
+                          "description": "no findings"} for context in guard.REVIEW_PASS_STATUSES]
         self.status_pages = None
         self.thread_page_info = {"hasNextPage": False, "endCursor": None}
         self.workflow_sources = {
@@ -1421,20 +1421,19 @@ class MergeGuardTests(unittest.TestCase):
                 api = FakeGitHub()
                 api.statuses = [status for status in api.statuses if status["context"] != context]
                 run_refusal(self, api, f"Review-pass commit status missing on this head: {context}")
-            with self.subTest(failed=context):
-                api = FakeGitHub()
-                api.statuses = [{"context": context, "state": "failure", "created_at": "2026-10-10T12:00:00Z"}
-                                ] + api.statuses
-                run_refusal(self, api, f"Latest commit status is not successful: {context}")
 
     def test_the_review_pass_refusal_names_the_command_that_posts_it(self):
         api = FakeGitHub()
         api.statuses = []
-        with self.assertRaises(guard.Refusal) as caught:
-            guard.validate(api, PR, HEAD, None)
-        self.assertIn(f"gh api repos/{guard.REPO}/statuses/{HEAD} -f state=success -f context=simplify",
-                      str(caught.exception))
-        self.assertIn("context=security-review", str(caught.exception))
+        run_refusal(self, api, f"gh api repos/{guard.REPO}/statuses/{HEAD} -f state=success -f context=simplify")
+        run_refusal(self, api, "context=security-review")
+
+    def test_a_review_pass_status_with_no_finding_refuses(self):
+        for description in ("", "   ", "<one line: what it found, fixed or deferred>", None):
+            with self.subTest(description=description):
+                api = FakeGitHub()
+                api.statuses[0]["description"] = description
+                run_refusal(self, api, "carries no finding")
 
     def test_commit_statuses_are_paginated_and_latest_state_wins(self):
         api = FakeGitHub()

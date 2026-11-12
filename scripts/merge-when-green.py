@@ -572,9 +572,8 @@ def check_runs(api, sha):
     return runs
 
 
-# The branch workflow's two review passes (AGENTS.md, Branch Workflow step 4; docs/MISTAKES.md 5.25). Each
-# is a commit status its runner posts on the head it covered, so a push after the passes leaves the new head
-# without them and a stale pass is refused with no text comparison.
+# The branch workflow's two review passes (AGENTS.md, Branch Workflow step 5; docs/MISTAKES.md 5.25), posted
+# by hand as commit statuses on the pushed head they covered, so a later push needs them again.
 REVIEW_PASS_STATUSES = ("simplify", "security-review")
 
 
@@ -591,6 +590,12 @@ def check_commit_statuses(api, sha):
               if context != "coderabbit" and status["state"] != "success"]
     if failed:
         raise Refusal(f"Latest commit status is not successful: {', '.join(sorted(failed))}")
+    for context in REVIEW_PASS_STATUSES:
+        description = (latest.get(context) or {}).get("description")
+        if context in latest and (not isinstance(description, str) or not description.strip()
+                                  or description.lstrip().startswith("<")):
+            raise Refusal(f"Review-pass commit status {context} carries no finding: its description is empty "
+                          "or the unfilled placeholder")
     missing = [context for context in REVIEW_PASS_STATUSES if context not in latest]
     if missing:
         posts = "; ".join(

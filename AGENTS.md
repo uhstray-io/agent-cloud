@@ -565,11 +565,12 @@ environment before operations; a checked-in deploy path is not proof it is runni
    - Update the top-level `README.md` if the PR adds features, services, or changes the repo structure
    - Update the most relevant sub-directory `README.md` or `CLAUDE.md` for the area changed
    - Update the root `CLAUDE.md` if the PR adds new conventions, plans, or cross-cutting patterns
-4. Run `/simplify` and `/security-review` on the branch changes, then post each pass as a commit status on the
-   head it covered, context `simplify` or `security-review` (`gh api repos/uhstray-io/agent-cloud/statuses/<head sha> -f state=success -f context=simplify -f description='<what it found; fixed or deferred>'`, and the same with
-   `context=security-review`). `scripts/merge-when-green.py` refuses a head without both, so a push after the
-   passes (review fixes, a `dev` merge) needs both again on the new head (`docs/MISTAKES.md` 5.25)
-5. Push the branch: `git push -u origin <type>/<description>`
+4. Run `/simplify` and `/security-review` on the branch changes, and commit any fixes they make
+5. Push the branch (`git push -u origin <type>/<description>`), then post each pass as a commit status on the
+   pushed head, which GitHub must already hold: `gh api repos/uhstray-io/agent-cloud/statuses/<head sha>
+   -f state=success -f context=<simplify|security-review> -f description='<what it found; fixed or deferred>'`.
+   `scripts/merge-when-green.py` refuses a head without both, so every later push (review fixes, a `dev`
+   merge) needs both passes again on the new head (`docs/MISTAKES.md` 5.25)
 6. Create a PR **into `dev`**: `gh pr create --base dev`
 7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
 8. Address all review findings and push fixes
