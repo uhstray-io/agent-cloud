@@ -40,14 +40,23 @@
 # also differs — `-q` here versus CI's `-v`, because a hook printing 95 passing test
 # names on every push is noise people learn to scroll past, and `<python> -m pytest`
 # rather than bare `pytest` so it uses that interpreter's pytest instead of whatever is
-# first on PATH. And pytest may be skipped here entirely when collection fails.
+# first on PATH. A collection failure is classified, not always run to a verdict (see the
+# pytest section).
 # Parallelism follows CI (`-n auto --dist worksteal`) only when pytest-xdist is
 # importable; without it the suite runs serially rather than refusing the push. Neither
 # way changes which tests run.
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
-# evidence they pass in CI, and CI remains the authority. `bats platform/tests/` runs the
-# same files as CI, serially; CI adds `--jobs 4 --no-parallelize-within-files` (plan 21).
+# evidence they pass in CI, and CI remains the authority. BATS takes CI's flags,
+# `--jobs 4 --no-parallelize-within-files` (plan 21), when GNU parallel is installed, and
+# runs serially otherwise. It runs beside pytest, not before it.
+#
+# THE FAST LANE (plan 21, phase 4, D6). The pytest run covers only the files this push
+# changes, plus the files the durations file marks fast or does not record, measured
+# against the merge base with `dev`. BATS runs in full. A push whose base cannot be measured
+# (no `dev` ref, no merge base) runs the full Python suite, and the hook says why. CI keeps
+# the full suite, so this hook is a narrower gate than CI: a change to a playbook or helper
+# runs only its fast or changed tests here. The output names the lane that ran.
 #
 # ONE RUN PER BRANCH AT A TIME. A second push of a branch whose first push is still
 # inside this hook is REFUSED at once, naming the push that holds the branch
@@ -74,10 +83,11 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY \
 # also drains it, which git expects.
 only_deletions=1
 push_refs=""
+push_shas=""
 while read -r _local_ref local_sha remote_ref _remote_sha; do
   case "$local_sha" in
     "" ) ;;
-    *[!0]* ) only_deletions=0; push_refs="$push_refs $remote_ref" ;;
+    *[!0]* ) only_deletions=0; push_refs="$push_refs $remote_ref"; push_shas="$push_shas $local_sha" ;;
   esac
 done
 [ "$only_deletions" = "1" ] && exit 0
@@ -109,15 +119,54 @@ pp_release_locks() {
   held_locks=""
   if [ -n "$reclaiming" ]; then rmdir "$reclaiming" 2>/dev/null; reclaiming=""; fi
 }
-trap 'pp_release_locks' EXIT
-trap 'pp_release_locks; exit 129' HUP
-trap 'pp_release_locks; exit 130' INT
-trap 'pp_release_locks; exit 143' TERM
+
+# The BATS job and the files both suites write to. Set in the suite sections below.
+bats_pid=""
+bats_out=""
+py_out=""
+py_rc_file=""
+changed_file=""
+# Kills the BATS job if it is still running. A background job in a non-interactive sh
+# ignores SIGINT, so this kill, not the terminal, is what stops it on Ctrl-C.
+# Clears the pid so a later exit cannot signal a recycled process.
+pp_cleanup() {
+  if [ -n "$bats_pid" ]; then kill "$bats_pid" 2>/dev/null; bats_pid=""; fi
+  for _f in "$bats_out" "$py_out" "$py_rc_file" "$changed_file"; do
+    if [ -n "$_f" ]; then rm -f "$_f"; fi
+  done
+  pp_release_locks
+}
+trap 'pp_cleanup' EXIT
+trap 'pp_cleanup; exit 129' HUP
+trap 'pp_cleanup; exit 130' INT
+trap 'pp_cleanup; exit 143' TERM
 
 # Print $1 as ONE single-quoted shell word ('\'' for each embedded quote), so a printed
 # recovery command stays correct for a path with spaces or quotes. POSIX sh has no %q.
 pp_shquote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+# Failure classes, read from a run's output file. Pytest prints the same banners in its
+# serial and parallel (xdist) modes, and a failing test's own output can contain any words,
+# so these match pytest's line-anchored banners and summary lines only.
+#
+# A collection failure: a test module that will not collect, or a conftest that will not
+# load (pytest exits 4 for that, with no banner).
+pp_collection_failure() {
+  grep -qE '^_+ ERROR collecting |^ImportError while loading conftest' "$1"
+}
+# A test failure: a FAILED line, or an ERROR that names a test (a fixture's setup or
+# teardown). A collection error is named by its file alone, so it never matches.
+pp_test_failure() {
+  grep -qE '^FAILED |^ERROR [^ ]+::' "$1"
+}
+# The collection-error and conftest-load blocks of a run's output: each from its banner to
+# the next section heading (a line starting with ____ or ==== and a space).
+pp_collection_block() {
+  awk '/^_+ ERROR collecting |^ImportError while loading conftest/ { on = 1; print; next }
+       /^[_=]+ / { on = 0 }
+       on { print }' "$1"
 }
 
 pp_refuse() {  # $1 ref, $2 lock path, $3 reason
@@ -255,12 +304,23 @@ if [ -f pyproject.toml ]; then
 fi
 
 # ── BATS ────────────────────────────────────────────────────────────────────
+# Started here in the background, so it runs beside pytest, and awaited after pytest
+# (below). It takes CI's flags (.github/workflows/lint-and-test.yml) when GNU parallel is
+# installed, and runs serially otherwise.
 if [ -d platform/tests ]; then
   if command -v bats >/dev/null 2>&1; then
-    printf 'pre-push: running BATS suite (~37s)...\n' >&2
-    if ! bats platform/tests/; then
-      failed=1
+    bats_args=""
+    if command -v parallel >/dev/null 2>&1; then
+      bats_args="--jobs 4 --no-parallelize-within-files"
+    else
+      printf 'pre-push: GNU parallel is not installed, so BATS runs serially (slower). Install it,\n' >&2
+      printf '  as the Brewfile does:  brew install parallel\n' >&2
     fi
+    bats_out=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the BATS output.\n' >&2; exit 1; }
+    printf 'pre-push: running BATS suite%s...\n' "${bats_args:+ in parallel}" >&2
+    # shellcheck disable=SC2086 # bats_args is deliberately word-split into flags.
+    bats $bats_args platform/tests/ > "$bats_out" 2>&1 &
+    bats_pid=$!
   else
     printf '\n' >&2
     printf 'pre-push WARNING: bats is not installed, so the Bash suite did not run.\n' >&2
@@ -302,38 +362,100 @@ py_pp=platform/services/netbox/deployment/workers/proxmox_discovery:platform/ser
 if [ -f pyproject.toml ]; then
   # On the locked environment this is .venv/bin/python3 (PATH set above).
   py=python3
-  # COLLECTION decides whether to run, not `import pytest` — and its OUTPUT decides
-  # whether a failure is forgivable. Keeping the output means no dependency list has
-  # to be maintained here to drift out of step with what the tests actually import.
-  collect_out=$(PYTHONPATH="$py_pp" "$py" -m pytest -q --collect-only 2>&1)
-  collect_rc=$?
-  if [ "$collect_rc" -eq 0 ]; then
-    # Parallel when available, as CI runs it (.github/workflows/lint-and-test.yml).
-    # Optional, so a missing pytest-xdist is not a new reason to block a push.
-    py_par=""
-    if "$py" -c 'import xdist' >/dev/null 2>&1; then
-      py_par="-n auto --dist worksteal"
-    else
-      printf 'pre-push: pytest-xdist is not installed, so the Python suite runs serially (slower).\n' >&2
-    fi
-    printf 'pre-push: running Python suite%s...\n' "${py_par:+ in parallel}" >&2
-    # shellcheck disable=SC2086 # py_par is deliberately word-split into flags.
-    if ! ( PYTHONPATH="$py_pp" "$py" -m pytest -q $py_par ); then
-      failed=1
-    fi
-  elif [ "$py_locked" = "0" ] && printf '%s' "$collect_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
-    printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
-    printf '%s\n' "$collect_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
-    printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
-    printf '          Install uv; the hook then installs the locked set itself.\n' >&2
-    printf '          If this names a module the tests legitimately need and it is not\n' >&2
-    printf '          there, DECLARE it in a pyproject.toml dependency group and run `uv lock`.\n' >&2
+  # ONE run: collection and the tests together, as CI does. Its output is shown as it runs
+  # and kept, so a collection failure can be told apart from a failing test below. The
+  # fast lane (plan 21, phase 4) narrows the run when this push can be measured.
+  # Parallel when available, as CI runs it (.github/workflows/lint-and-test.yml).
+  # Optional, so a missing pytest-xdist is not a new reason to block a push.
+  py_par=""
+  if "$py" -c 'import xdist' >/dev/null 2>&1; then
+    py_par="-n auto --dist worksteal"
   else
-    printf 'pre-push: Python collection FAILED for a reason that is not a missing\n' >&2
-    printf '          dependency — a syntax error, a bad import, invalid config, or (on the\n' >&2
-    printf '          locked uv environment) an import no dependency group declares.\n' >&2
-    printf '          That is a defect, not an environment gap, so this does not skip:\n' >&2
-    printf '%s\n' "$collect_out" | tail -15 | sed 's/^/          /' >&2
+    printf 'pre-push: pytest-xdist is not installed, so the Python suite runs serially (slower).\n' >&2
+  fi
+
+  # Fast lane. The push's changed paths, against its merge base with dev. A push that cannot
+  # be measured (no dev ref, no merge base) runs the full suite, and says why. The
+  # environment is cleared first, so an inherited PYTEST_FAST cannot narrow a full run.
+  unset PYTEST_FAST PYTEST_FAST_CHANGED
+  pp_fast_why=""
+  changed_file=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the changed paths.\n' >&2; exit 1; }
+  if ! git rev-parse --verify -q "refs/remotes/$remote_name/dev^{commit}" >/dev/null 2>&1; then
+    pp_fast_why="there is no refs/remotes/$remote_name/dev to measure the push against"
+  else
+    for _sha in $push_shas; do
+      _base=$(git merge-base "$_sha" "refs/remotes/$remote_name/dev" 2>/dev/null) || _base=""
+      if [ -z "$_base" ]; then
+        pp_fast_why="$_sha has no merge base with $remote_name/dev"
+        break
+      fi
+      if ! git diff --name-only "$_base" "$_sha" >> "$changed_file" 2>/dev/null; then
+        pp_fast_why="git could not list the paths that $_sha changes"
+        break
+      fi
+    done
+  fi
+  if [ -z "$pp_fast_why" ]; then
+    sort -u -o "$changed_file" "$changed_file"
+    PYTEST_FAST=1
+    PYTEST_FAST_CHANGED=$changed_file
+    export PYTEST_FAST PYTEST_FAST_CHANGED
+    _n=$(grep -c . "$changed_file")
+    printf 'pre-push: FAST LANE (PYTEST_FAST=1): the %s changed path(s) against %s/dev, plus the files\n' "$_n" "$remote_name" >&2
+    printf '  whose recorded tests are fast or unrecorded. CI runs the full suite. A change to a playbook\n' >&2
+    printf '  or helper runs only its fast or changed tests here (plan 21, D6).\n' >&2
+  else
+    printf 'pre-push: full Python suite, not the fast lane: %s.\n' "$pp_fast_why" >&2
+  fi
+
+  py_out=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the Python output.\n' >&2; exit 1; }
+  py_rc_file=$(mktemp) || { printf 'pre-push: cannot create a temporary file for the Python output.\n' >&2; exit 1; }
+  printf 'pre-push: running Python suite%s...\n' "${py_par:+ in parallel}" >&2
+  # The exit status goes to a file: POSIX sh has no pipefail, so a pipeline's status would be
+  # tee's. `echo $?` runs straight after pytest, so it is pytest's status.
+  # shellcheck disable=SC2086 # py_par is deliberately word-split into flags.
+  { PYTHONPATH="$py_pp" "$py" -m pytest -q $py_par; echo $? > "$py_rc_file"; } 2>&1 | tee "$py_out"
+  py_rc=$(cat "$py_rc_file")
+  case "$py_rc" in
+    0) ;;
+    5) printf 'pre-push: pytest collected no tests (exit 5), so there was nothing to run.\n' >&2 ;;
+    *)
+      if pp_collection_failure "$py_out" && ! pp_test_failure "$py_out"; then
+        # Forgivable ONLY as a missing module, and only on the python3 fallback. On the locked
+        # environment every declared package is installed, so a missing module is an undeclared
+        # import: a defect, and the push fails.
+        if [ "$py_locked" = "0" ] && pp_collection_block "$py_out" | grep -qE 'ModuleNotFoundError|No module named|ImportError: cannot import name'; then
+          printf 'pre-push: Python suite not collectable here — a dependency is missing:\n' >&2
+          pp_collection_block "$py_out" | grep -E 'ModuleNotFoundError|No module named|ImportError' | sed 's/^/          /' >&2
+          printf '          Skipped. CI installs the dependencies and runs it.\n' >&2
+          printf '          Install uv; the hook then installs the locked set itself.\n' >&2
+          printf '          If this names a module the tests legitimately need and it is not\n' >&2
+          printf '          there, DECLARE it in a pyproject.toml dependency group and run `uv lock`.\n' >&2
+        else
+          printf 'pre-push: Python collection FAILED for a reason that is not a missing\n' >&2
+          printf '          dependency — a syntax error, a bad import, invalid config, or (on the\n' >&2
+          printf '          locked uv environment) an import no dependency group declares.\n' >&2
+          printf '          That is a defect, not an environment gap, so this does not skip:\n' >&2
+          pp_collection_block "$py_out" | tail -15 | sed 's/^/          /' >&2
+          failed=1
+        fi
+      else
+        printf 'pre-push: Python suite FAILED (pytest exit %s).\n' "$py_rc" >&2
+        failed=1
+      fi
+      ;;
+  esac
+fi
+
+# ── Await BATS ──────────────────────────────────────────────────────────────
+# Its output was kept in a file while pytest ran. Its exit status is folded in here, so a
+# failing BATS run blocks the push even when pytest passed.
+if [ -n "$bats_pid" ]; then
+  wait "$bats_pid"
+  bats_rc=$?
+  bats_pid=""
+  cat "$bats_out"
+  if [ "$bats_rc" != "0" ]; then
     failed=1
   fi
 fi
