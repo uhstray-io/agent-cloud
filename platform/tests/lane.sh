@@ -2,9 +2,11 @@
 # Run one test lane of the Rust suite (plan 24): commit, push, ci or full.
 #
 # CI calls this script rather than nextest directly, so which tests a lane runs is decided
-# here and in the files it reads, never in .github/workflows/lint-and-test.yml (a workflow
-# change is a pinned merge-guard transition). Until lane selection lands (plan 24, Phase 2),
-# every lane runs the whole suite.
+# here and in areas.yml and src/lanes.rs, never in .github/workflows/lint-and-test.yml (a
+# workflow change is a pinned merge-guard transition). `testsel` prints the nextest filterset
+# for the lane: the staged paths for commit, the paths since origin/$BASE_REF (origin/dev when
+# BASE_REF is unset) for push and ci, nothing read from git for full or for ci against main
+# (a promotion runs everything).
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -15,4 +17,6 @@ case "$lane" in
   *) echo "lane.sh: unknown lane '$lane' (commit, push, ci or full)" >&2; exit 2 ;;
 esac
 
-exec cargo nextest run --locked --profile "$profile"
+filter=$(cargo run --locked --quiet --bin testsel -- "$lane")
+echo "lane.sh: $lane runs $filter" >&2
+exec cargo nextest run --locked --profile "$profile" --no-tests=warn -E "$filter"
