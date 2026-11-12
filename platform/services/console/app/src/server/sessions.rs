@@ -91,15 +91,13 @@ fn row_exists(conn: &Connection, id: &Id) -> session_store::Result<bool> {
     Ok(found.is_some())
 }
 
-/// Upsert: inserts a new row, or replaces the body and expiry of an existing one.
-fn write(conn: &Connection, record: &Record) -> session_store::Result<()> {
+/// Plain insert of a new row. `create` calls it only after drawing an id that no row holds,
+/// so it never overwrites anything.
+fn insert(conn: &Connection, record: &Record) -> session_store::Result<()> {
     let data = serde_json::to_string(record)
         .map_err(|_| session_store::Error::Encode("session record".to_string()))?;
     conn.execute(
-        "INSERT INTO sessions (id, data, expiry_unix) VALUES (?1, ?2, ?3)
-         ON CONFLICT(id) DO UPDATE SET
-             data = excluded.data,
-             expiry_unix = excluded.expiry_unix",
+        "INSERT INTO sessions (id, data, expiry_unix) VALUES (?1, ?2, ?3)",
         params![
             record.id.to_string(),
             data,
@@ -108,6 +106,25 @@ fn write(conn: &Connection, record: &Record) -> session_store::Result<()> {
     )
     .map_err(backend)?;
     Ok(())
+}
+
+/// Updates the body and expiry of a live row. A row that was deleted (signed out) or has
+/// expired since the request loaded it matches nothing, so `save` never brings it back and
+/// never extends it. Returns the number of rows changed.
+fn update_live(conn: &Connection, record: &Record, now: i64) -> session_store::Result<usize> {
+    let data = serde_json::to_string(record)
+        .map_err(|_| session_store::Error::Encode("session record".to_string()))?;
+    conn.execute(
+        "UPDATE sessions SET data = ?2, expiry_unix = ?3
+         WHERE id = ?1 AND expiry_unix > ?4",
+        params![
+            record.id.to_string(),
+            data,
+            record.expiry_date.unix_timestamp(),
+            now
+        ],
+    )
+    .map_err(backend)
 }
 
 /// Returns the live record. An expired row is deleted and reads as absent.
@@ -152,10 +169,13 @@ impl SessionStore for SqliteStore {
             while row_exists(&conn, &record.id)? {
                 record.id = Id::default();
             }
-            write(&conn, record)
+            insert(&conn, record)
         })
     }
 
+    /// Only ever updates a live row, so a session deleted or expired mid-request is never
+    /// brought back. tower-sessions calls `save` only for a session whose row it loaded, so
+    /// a row that matches nothing here means the session ended: that is not an error.
     fn save<'a, 'b, 'at>(
         &'a self,
         record: &'b Record,
@@ -167,7 +187,7 @@ impl SessionStore for SqliteStore {
     {
         Box::pin(async move {
             let conn = self.conn.lock().await;
-            write(&conn, record)?;
+            update_live(&conn, record, now_unix())?;
             self.sweep_if_due(&conn)
         })
     }
@@ -240,10 +260,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_then_load_returns_the_same_record() {
+    async fn create_then_load_returns_the_same_record() {
         let store = memory_store();
-        let saved = record(now_unix() + 3600);
-        store.save(&saved).await.expect("save");
+        let mut saved = record(now_unix() + 3600);
+        store.create(&mut saved).await.expect("create");
         assert_eq!(store.load(&saved.id).await.expect("load"), Some(saved));
     }
 
@@ -251,20 +271,69 @@ mod tests {
     async fn save_replaces_the_body_of_the_same_id() {
         let store = memory_store();
         let mut session = record(now_unix() + 3600);
-        store.save(&session).await.expect("first save");
+        store.create(&mut session).await.expect("create");
         session
             .data
             .insert("user".into(), serde_json::json!({"sub": "user-2"}));
-        store.save(&session).await.expect("second save");
+        store.save(&session).await.expect("save");
         assert_eq!(store.load(&session.id).await.expect("load"), Some(session));
         assert_eq!(stored_expiries(&store).await.len(), 1);
+    }
+
+    /// Liveness reads the stored `expiry_unix` column (`read`, `sweep`), not the JSON body, so
+    /// a re-save must move the column. The body check above passes with the column frozen, and
+    /// then sessions end 8 hours after sign-in again.
+    #[tokio::test]
+    async fn save_moves_the_stored_expiry() {
+        let store = memory_store();
+        let base = now_unix();
+        let mut session = record(base + 60);
+        store.create(&mut session).await.expect("create");
+        session.expiry_date = OffsetDateTime::from_unix_timestamp(base + 3600).expect("in range");
+        store.save(&session).await.expect("save");
+        assert_eq!(stored_expiries(&store).await, vec![base + 3600]);
+    }
+
+    /// A request that loaded the session before sign-out re-saves it on response. The
+    /// deleted row must stay deleted.
+    #[tokio::test]
+    async fn save_never_brings_back_a_deleted_session() {
+        let store = memory_store();
+        let mut session = record(now_unix() + 3600);
+        store.create(&mut session).await.expect("create");
+        store.delete(&session.id).await.expect("delete");
+        store.save(&session).await.expect("save after sign-out");
+        assert_eq!(store.load(&session.id).await.expect("load"), None);
+        assert!(stored_expiries(&store).await.is_empty());
+    }
+
+    /// The row expires while a request is in flight; its re-save must not extend it.
+    #[tokio::test]
+    async fn save_never_extends_an_expired_session() {
+        let store = memory_store();
+        let mut session = record(now_unix() + 3600);
+        store.create(&mut session).await.expect("create");
+        store
+            .conn
+            .lock()
+            .await
+            .execute(
+                "UPDATE sessions SET expiry_unix = ?1 WHERE id = ?2",
+                params![now_unix() - 1, session.id.to_string()],
+            )
+            .expect("expire the row");
+        session.expiry_date =
+            OffsetDateTime::from_unix_timestamp(now_unix() + 3600).expect("in range");
+        store.save(&session).await.expect("save");
+        assert_eq!(store.load(&session.id).await.expect("load"), None);
+        assert!(stored_expiries(&store).await.is_empty());
     }
 
     #[tokio::test]
     async fn expired_record_is_not_loaded_and_its_row_is_removed() {
         let store = memory_store();
-        let stale = record(now_unix() - 1);
-        store.save(&stale).await.expect("save");
+        let mut stale = record(now_unix() - 1);
+        store.create(&mut stale).await.expect("create");
         assert_eq!(store.load(&stale.id).await.expect("load"), None);
         assert!(stored_expiries(&store).await.is_empty());
     }
@@ -272,8 +341,8 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_the_record() {
         let store = memory_store();
-        let session = record(now_unix() + 3600);
-        store.save(&session).await.expect("save");
+        let mut session = record(now_unix() + 3600);
+        store.create(&mut session).await.expect("create");
         store.delete(&session.id).await.expect("delete");
         assert_eq!(store.load(&session.id).await.expect("load"), None);
     }
@@ -281,8 +350,8 @@ mod tests {
     #[tokio::test]
     async fn create_never_overwrites_a_colliding_id() {
         let store = memory_store();
-        let taken = record(now_unix() + 3600);
-        store.save(&taken).await.expect("save");
+        let mut taken = record(now_unix() + 3600);
+        store.create(&mut taken).await.expect("create taken");
 
         let mut fresh = record(now_unix() + 3600);
         fresh.id = taken.id;
@@ -305,8 +374,8 @@ mod tests {
     #[tokio::test]
     async fn startup_init_sweeps_expired_rows() {
         let store = memory_store();
-        let stale = record(now_unix() - 1);
-        store.save(&stale).await.expect("save");
+        let mut stale = record(now_unix() - 1);
+        store.create(&mut stale).await.expect("create");
         assert_eq!(
             stored_expiries(&store).await,
             vec![stale.expiry_date.unix_timestamp()]
@@ -319,12 +388,11 @@ mod tests {
     #[tokio::test]
     async fn save_sweeps_at_most_hourly() {
         let store = memory_store();
-        let stale = record(now_unix() - 1);
-        store.save(&stale).await.expect("save stale");
-        store
-            .save(&record(now_unix() + 3600))
-            .await
-            .expect("save live");
+        let mut stale = record(now_unix() - 1);
+        store.create(&mut stale).await.expect("create stale");
+        let mut live = record(now_unix() + 3600);
+        store.create(&mut live).await.expect("create live");
+        store.save(&live).await.expect("save live");
         assert_eq!(
             stored_expiries(&store).await.len(),
             2,
@@ -334,10 +402,7 @@ mod tests {
         store
             .last_sweep
             .store(now_unix() - SWEEP_EVERY_SECS, Ordering::Relaxed);
-        store
-            .save(&record(now_unix() + 3600))
-            .await
-            .expect("save due");
+        store.save(&live).await.expect("save due");
         assert!(
             !stored_expiries(&store)
                 .await
