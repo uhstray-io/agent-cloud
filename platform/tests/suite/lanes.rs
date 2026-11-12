@@ -246,9 +246,12 @@ fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
     let config = Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
     let main_rs = std::fs::read_to_string(repo::path("platform/tests/suite/main.rs"))
         .expect("suite/main.rs reads");
-    let declared: Vec<&str> = main_rs
-        .lines()
-        .filter_map(|line| line.strip_prefix("mod ")?.strip_suffix(';'))
+    // `mod x;`, `pub mod x;` and `pub(crate) mod x;`, indented or not: any form declares a module.
+    let declaration = regex::Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
+        .expect("valid pattern");
+    let declared: Vec<&str> = declaration
+        .captures_iter(&main_rs)
+        .map(|c| c.get(1).expect("a module name").as_str())
         .collect();
     assert!(!declared.is_empty(), "suite/main.rs declares no module");
 
@@ -330,4 +333,108 @@ fn testsel_prints_the_filterset_and_refuses_an_unknown_lane() {
         .arg("bogus")
         .assert()
         .code(2);
+}
+
+/// A git repository holding a small `areas.yml`, with `origin/dev` and `origin/main` at its
+/// first commit, so `testsel` reads its changes the way it reads a real checkout's.
+struct Checkout {
+    dir: TempDir,
+    home: TempDir,
+}
+
+impl Checkout {
+    fn new() -> Checkout {
+        let checkout = Checkout {
+            dir: TempDir::new().expect("a temporary checkout"),
+            home: TempDir::new().expect("a temporary home"),
+        };
+        checkout.write(
+            "platform/tests/areas.yml",
+            "full: [\"platform/tests/**\"]\nignore: [\"docs/**\"]\nalways: {static: [ledger]}\n\
+             areas:\n  restart_policy:\n    paths: [\"platform/**/compose.yml\"]\n    \
+             tiers: {static: [restart_policy], playbook: [linger]}\n",
+        );
+        checkout.write("platform/svc/compose.yml", "services: {}\n");
+        checkout.write("docs/guide.md", "guide\n");
+        checkout.git(&["init", "-q"]);
+        checkout.commit("base");
+        checkout.git(&["update-ref", "refs/remotes/origin/dev", "HEAD"]);
+        checkout.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        checkout
+    }
+
+    fn write(&self, rel: &str, text: &str) {
+        let path = self.dir.path().join(rel);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("parent directory");
+        std::fs::write(path, text).expect("fixture file");
+    }
+
+    fn git(&self, args: &[&str]) {
+        process::scrubbed("git", self.home.path())
+            .current_dir(self.dir.path())
+            .args(args)
+            .assert()
+            .success();
+    }
+
+    fn commit(&self, message: &str) {
+        self.git(&["add", "-A"]);
+        self.git(&[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ]);
+    }
+
+    /// What `testsel <lane>` prints here, with `BASE_REF` set when `base` is given.
+    fn testsel(&self, lane: &str, base: Option<&str>) -> String {
+        let testsel = assert_cmd::cargo::cargo_bin("testsel")
+            .display()
+            .to_string();
+        let mut cmd = process::scrubbed(&testsel, self.home.path());
+        cmd.current_dir(self.dir.path()).arg(lane);
+        if let Some(base) = base {
+            cmd.env("BASE_REF", base);
+        }
+        let out = cmd.assert().success().get_output().stdout.clone();
+        String::from_utf8(out).expect("utf-8 filterset")
+    }
+}
+
+#[test]
+fn testsel_reads_the_change_from_git_and_fails_open() {
+    // Arrange: a compose file moved into an ignored directory, committed
+    let checkout = Checkout::new();
+    checkout.git(&["mv", "platform/svc/compose.yml", "docs/moved.md"]);
+    checkout.commit("move");
+
+    // Act / Assert: the path that went away still selects its area
+    assert_eq!(
+        checkout.testsel("push", None),
+        "test(/^(?:ledger|linger|restart_policy)::/)\n",
+        "a rename is read as a delete and an add"
+    );
+    // Act / Assert: a base git cannot resolve runs everything, never nothing
+    assert_eq!(checkout.testsel("push", Some("nosuch")), "all()\n");
+    // Act / Assert: a promotion into main runs everything, whatever it changes
+    assert_eq!(checkout.testsel("ci", Some("main")), "all()\n");
+    assert_eq!(
+        checkout.testsel("ci", Some("dev")),
+        "test(/^(?:ledger|linger|restart_policy)::/)\n"
+    );
+
+    // Arrange: a staged compose file
+    checkout.write("platform/other/compose.yml", "services: {}\n");
+    checkout.git(&["add", "platform/other/compose.yml"]);
+
+    // Act / Assert: commit reads the index, and keeps the static tier only
+    assert_eq!(
+        checkout.testsel("commit", None),
+        "test(/^(?:ledger|restart_policy)::/)\n"
+    );
 }

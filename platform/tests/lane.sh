@@ -5,7 +5,8 @@
 # here and in areas.yml and src/lanes.rs, never in .github/workflows/lint-and-test.yml (a
 # workflow change is a pinned merge-guard transition). `testsel` prints the nextest filterset
 # for the lane: the staged paths for commit, the paths since origin/$BASE_REF (origin/dev when
-# BASE_REF is unset) for push and ci, nothing read from git for full.
+# BASE_REF is unset) for push and ci, nothing read from git for full or for ci against main
+# (a promotion runs everything).
 set -euo pipefail
 cd "$(dirname "$0")"
 

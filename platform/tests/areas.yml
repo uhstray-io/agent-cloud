@@ -47,8 +47,9 @@ areas:
     tiers:
       cli: [common_sh]
 
+  # The suite's own tests. A change under platform/tests/ hits `full`, which is checked before
+  # any area, so this area names no paths: it only gives these modules their one listing.
   test_platform:
-    paths:
-      - "platform/tests/**"
+    paths: []
     tiers:
       static: [lanes, support]

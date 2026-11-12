@@ -2,9 +2,10 @@
 //!
 //! `lane.sh` runs the filterset this prints. The changed paths come from git: the staged paths
 //! for `commit`, and for `push` and `ci` the paths since the merge base with `origin/$BASE_REF`
-//! (`origin/dev` when `BASE_REF` is unset or empty). When git cannot give the paths, the lane
-//! runs every test and a warning goes to stderr: a selector that cannot see the change must not
-//! decide that nothing changed.
+//! (`origin/dev` when `BASE_REF` is unset or empty). `ci` against `main` is a promotion, which
+//! runs every test (plan 24, D8). When git cannot give the paths, the lane runs every test and a
+//! warning goes to stderr: a selector that cannot see the change must not decide that nothing
+//! changed.
 
 use std::process::{Command, ExitCode};
 
@@ -29,7 +30,8 @@ fn main() -> ExitCode {
         }
     };
 
-    let selection = if lane == Lane::Full {
+    let promotion = lane == Lane::Ci && base_ref() == "main";
+    let selection = if lane == Lane::Full || promotion {
         Selection::All
     } else {
         match changed_paths(lane) {
