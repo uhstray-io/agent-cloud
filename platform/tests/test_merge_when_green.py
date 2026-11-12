@@ -952,7 +952,7 @@ class MergeGuardTests(unittest.TestCase):
             ("retired base to uv head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base with extra byte", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW + b"# extra\n"),
                 api.workflow_sources.__setitem__(HEAD, RETIRED_WORKFLOW)),
@@ -960,15 +960,15 @@ class MergeGuardTests(unittest.TestCase):
             ("retired base to edited head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, RETIRED_WORKFLOW + b"# extra\n")),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base to versioned head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, VERSIONED_WORKFLOW)),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base to runner-pinned head", lambda api: (
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, RUNNER_PINNED_WORKFLOW)),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
         ]
         for label, change, message in cases:
             with self.subTest(label=label):
@@ -1001,7 +1001,7 @@ class MergeGuardTests(unittest.TestCase):
             ("retired to rust-tests with extra byte", lambda api: (
                 api.set_rust_tests_transition(),
                 api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
-             "Workflow head is not the exact reviewed current workflow"),
+             "Workflow head is not the exact reviewed retired workflow"),
             ("retired base with extra byte to rust-tests", lambda api: (
                 api.set_rust_tests_transition(),
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW + b"# extra\n")),
@@ -1271,7 +1271,7 @@ class MergeGuardTests(unittest.TestCase):
         api = FakeGitHub()
         api.workflow_source = RETIRED_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
-        run_refusal(self, api, "Current workflow may only remain byte-identical")
+        run_refusal(self, api, "Retired workflow may only remain byte-identical")
 
     def test_rust_tests_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()

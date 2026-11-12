@@ -376,6 +376,8 @@ jobs:
         with:
           # Full history, so the lane script can diff the pull request against its base.
           fetch-depth: 0
+          # The job runs code from the pull request; it needs no token after checkout.
+          persist-credentials: false
 
       - name: Install Rust 1.96
         run: |

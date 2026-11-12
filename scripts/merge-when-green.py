@@ -34,7 +34,7 @@ BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
 # The bats-pinned workflow once the change detector and the retired jobs were removed; dev held it until Rust (tests).
 RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
 # The retired workflow plus the Rust (tests) job (plan 24); dev holds it after this merge.
-RUST_TESTS_WORKFLOW_BLOB_SHA = "dec5a2c5d87d9eb95b96c57ace3b2b67022b54e3"
+RUST_TESTS_WORKFLOW_BLOB_SHA = "fec0139560a9b9e845e1e7cc524b59489a980fff"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
@@ -613,10 +613,10 @@ def check_workflow_change(api, base_sha, head_sha, files):
                 raise Refusal("Workflow transition requires one modified record at the protected path")
             return
         if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
-            raise Refusal("Workflow head is not the exact reviewed current workflow")
+            raise Refusal("Workflow head is not the exact reviewed retired workflow")
         check_workflow_policy(base, sharded=True, retired=True)
         if base != candidate or workflow_records:
-            raise Refusal("Current workflow may only remain byte-identical on subsequent PRs")
+            raise Refusal("Retired workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
         if candidate_blob_sha != RUST_TESTS_WORKFLOW_BLOB_SHA:
