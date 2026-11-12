@@ -1,0 +1,180 @@
+---
+# survey-proxmox-backup-storage.yml — read-only survey of every backup-capable Proxmox storage.
+#
+# Why: the nightly vzdump jobs fail with "No space left on device" and "Broken pipe" once
+# their shared backup storage is full, and a failed job never prunes. Before any space is
+# freed, this answers where the space went, per storage:
+#   - capacity (total, used, available);
+#   - archives per guest (count, size, oldest and newest), flagging guests that no longer exist;
+#   - what a prune at each job's own retention would remove (Proxmox's prune preview);
+#   - the space a job's retention needs at the newest archive size;
+#   - bytes on the storage that no listed volume explains (partial files, foreign data);
+#   - storage IDs that look like the same filesystem (same server and export, nested paths,
+#     or identical byte counts), whose usage must be read together;
+#   - every backup job's schedule, node, storage, retention and guests it names that no longer exist.
+#
+# It writes nothing to Proxmox: every request is a GET, and it runs identically under --check.
+# The token-bearing requests are no_log; only the summarizer's receipt is printed, which
+# names storages and guests but never a server, export, path, volume ID or note.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: Survey Proxmox backup storage
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  module_defaults:
+    ansible.builtin.uri:
+      validate_certs: "{{ proxmox_validate_certs | default(false) | bool }}"
+      follow_redirects: none
+      method: GET
+      status_code: [200, 403]
+  vars:
+    _survey: "{{ playbook_dir }}/files/survey_backup_storage.py"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+  tasks:
+    - name: Refuse public cleartext OpenBao transport
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: Read Proxmox API credentials from OpenBao
+      ansible.builtin.set_fact:
+        _pve_data: "{{ lookup('community.hashi_vault.hashi_vault',
+          'secret/data/services/proxmox', url=_bao_url, auth_method='approle',
+          role_id=_bao_role_id, secret_id=_bao_secret_id) }}"
+      no_log: true
+
+    - name: Derive Proxmox API connection values
+      ansible.builtin.set_fact:
+        _pve_host: "{{ _pve_data.url | default('') }}"
+        _pve_token_id: "{{ _pve_data.token_id | default('') }}"
+        _pve_secret: "{{ _pve_data.api_token }}"
+      no_log: true
+
+    - name: Require Proxmox API over HTTPS
+      ansible.builtin.assert:
+        that: _pve_host is match('^https://')
+        fail_msg: "The Proxmox API URL from OpenBao must use HTTPS."
+
+    # The token id names a real Proxmox user, so it comes from the store, never a default.
+    - name: Require the stored Proxmox token id
+      ansible.builtin.assert:
+        that: _pve_token_id | length > 0
+        fail_msg: >-
+          secret/services/proxmox has no token_id. Store the Proxmox API token id
+          (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
+
+    - name: Read the cluster's nodes, storage configuration, backup jobs and guests
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/{{ item }}"
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: [nodes, storage, cluster/backup, "cluster/resources?type=vm"]
+      register: _cluster_reads
+      no_log: true
+      check_mode: false
+
+    - name: Select the online nodes
+      ansible.builtin.set_fact:
+        _online_nodes: "{{ _cluster_reads.results[0].json.data | selectattr('status', 'equalto', 'online')
+          | map(attribute='node') | list }}"
+      no_log: true
+
+    - name: Require well-formed node names before building storage URLs
+      ansible.builtin.assert:
+        that:
+          - _online_nodes | length > 0
+          - _online_nodes | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') | list | length == 0
+        fail_msg: "Proxmox reported no online node, or a malformed node name; nothing else was read."
+
+    - name: Read each online node's storage status
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item }}/storage"
+        status_code: 200
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _online_nodes }}"
+      register: _node_storage_reads
+      no_log: true
+      check_mode: false
+
+    - name: Plan which backup storages to read and which retentions to preview
+      ansible.builtin.command:
+        argv: [python3, "{{ _survey }}", plan]
+        stdin: >-
+          {{ {'nodes': _cluster_reads.results[0].json.data,
+              'jobs': _cluster_reads.results[2].json.data,
+              'storage_listings': _node_storage_reads.results} | to_json }}
+      register: _plan_run
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid survey plan
+      ansible.builtin.assert:
+        that: _plan_run.rc == 0
+        fail_msg: "Survey refused: {{ (_plan_run.stdout | from_json).refusal | default('the planner failed') }}"
+
+    - name: Keep the survey plan
+      ansible.builtin.set_fact:
+        _plan: "{{ _plan_run.stdout | from_json }}"
+
+    - name: Read every volume on each backup storage
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ item.node }}/storage/{{ item.storage | urlencode }}/content"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _plan.reads }}"
+      loop_control:
+        label: "{{ item.storage }}"
+      register: _content_reads
+      no_log: true
+      check_mode: false
+
+    # GET prunebackups is Proxmox's preview: it marks what a prune would remove and removes nothing.
+    - name: Preview what each job's retention would prune
+      ansible.builtin.uri:
+        url: >-
+          {{ _pve_host }}/api2/json/nodes/{{ item.0.node }}/storage/{{ item.0.storage | urlencode
+          }}/prunebackups{{ '' if item.1 == 'storage-default' else '?prune-backups=' + (item.1 | urlencode) }}
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: "{{ _plan.reads | subelements('retentions') }}"
+      loop_control:
+        label: "{{ item.0.storage }} {{ item.1 }}"
+      register: _prune_reads
+      no_log: true
+      check_mode: false
+
+    - name: Summarize the backup storage
+      ansible.builtin.command:
+        argv: [python3, "{{ _survey }}", summarize]
+        stdin: >-
+          {{ {'plan': _plan,
+              'storage_config': _cluster_reads.results[1].json.data,
+              'jobs': _cluster_reads.results[2].json.data,
+              'vms': _cluster_reads.results[3].json.data,
+              'content_reads': _content_reads.results,
+              'prune_reads': _prune_reads.results} | to_json }}
+      register: _summary_run
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Require a valid survey summary
+      ansible.builtin.assert:
+        that: _summary_run.rc == 0
+        fail_msg: "Survey refused: {{ (_summary_run.stdout | from_json).refusal | default('the summarizer failed') }}"
+
+    - name: Report the backup storage survey
+      ansible.builtin.debug:
+        msg: "{{ _summary_run.stdout | from_json }}"

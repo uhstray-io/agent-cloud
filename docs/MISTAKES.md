@@ -130,6 +130,7 @@ and why.
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
 | 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
 | 3.23 | Ran an 18-minute production drill whose second deploy clones the moving `dev` head against a SHA pinned at launch; three merges landed mid-drill and the restore refused, leaving the drilled projection live | Live state | 1 | Convention |
+| 3.24 | A read-only survey reported the nightly Proxmox backups failing for lack of space on 2026-10-14; it was filed as evidence for an o11y gate, not raised as an incident, and every node's backups kept failing for four more weeks | Live state | 1 | Convention; backup-failure and backup-storage alert proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -3781,6 +3782,16 @@ no task can remove another's.
 **The rule.** A run that deploys more than once against one pinned SHA must place that SHA, not a branch, and a revision guard runs before anything is placed or rendered. Until the drill does, launch it only with `dev` merges held for its duration, agreed with the sessions that merge, and have the matching Recover template ready to run against the current head.
 
 **Enforced by.** Convention. The fix is Plane AC-827: the drill places the reviewed SHA for both deploys, and the revision guard runs first.
+
+### 3.24 A survey found the cluster's backups failing for lack of space, and the finding was filed as gate evidence instead of raised
+
+**What happened.** On 2026-10-14 the Dev-bound inspect-only o11y backup survey, Semaphore task 5584, reported that the latest node-wide `vzdump` task within 26 hours had failed, with sanitized failure hint `no_space`. The receipt was recorded in `plan/development/openspec/changes/estate-wide-observability-instrumentation/tasks.md` (the "Read-only backup failure and freshness receipt" bullet) as evidence that the o11y backup gate stays open. Nothing else happened. On 2026-11-12 the operator's read-only scan of 879 vzdump notification emails showed that the nightly jobs on all six Proxmox nodes, which write to one shared backup storage, had failed almost every night since 2026-10-04: `No space left on device` on the first night, then `vma_queue_write: write error - Broken pipe` with 0 B written. About 40 nights passed with no usable backup of most guests.
+
+**Root cause.** The survey was scoped to one VM's backup gate, and its own rule kept job attribution "unavailable", so a `no_space` failure on the shared backup destination was read only as "this gate is not met". No owner, alert or tracked item covered the estate's backups, and nothing in the platform watches backup job results or backup storage capacity. A failed vzdump job does not prune, so the storage stayed full on its own.
+
+**The rule.** A diagnostic that finds a live failure outside its own scope (here: backups failing for space across the cluster) opens an urgent tracked item that day, naming the task that found it, and tells the operator. Recording it as gate evidence is not enough.
+
+**Enforced by.** Convention. Proposed guard: an o11y alert on backup storage use and on each backup job's last successful run, so the next full backup storage pages instead of waiting to be read. The storage survey is `Survey Proxmox Backup Storage (Dev)` (Plane AC-844).
 
 ## 4. Data handling
 
