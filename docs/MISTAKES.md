@@ -160,7 +160,7 @@ and why.
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
-| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, with no pass or a pass on an earlier head; six launch-gate PRs, 2026-11-08 to 11-11 | Process | 5 | Convention (an exact-head commit status per pass, required by `merge-when-green.py`, proposed) |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, with no pass or a pass on an earlier head; six launch-gate PRs opened 2026-11-09 to 11-10 (UTC) | Process | 5 | Convention (an exact-head commit status per pass, required by `merge-when-green.py`, proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4839,8 +4839,8 @@ that go through the script. 1.16 and 5.15 also propose reading the PR body; this
 the rule from "before `gh pr create`" to the merge head, so a push of review fixes needs both passes again;
 building it starts with a new entry that supersedes this rule. Not built.
 
-**Occurrence 5 — 2026-11-11.** One session (the skynet launch-gate work) opened six agent-cloud PRs between 2026-11-08
-and 2026-11-11 without running either pass: #924, #932, #938, #939, #951 and #952. (skynet#14 is not counted: the
+**Occurrence 5 — 2026-11-11.** One session (the skynet launch-gate work) opened six agent-cloud PRs between 2026-11-09
+and 2026-11-10 (UTC), the last merged on 2026-11-11, without running either pass: #924, #932, #938, #939, #951 and #952. (skynet#14 is not counted: the
 skynet repository's workflow has no such step.) Each had one `pr-reviewer` round and green CI before it merged.
 #952's round requested changes: its TLS context set no minimum version, failing `test_tls_contexts_pinned.py`, and
 an uncaught `ValueError` would have printed the bearer token into task output if the token carried a CR or LF. Both
