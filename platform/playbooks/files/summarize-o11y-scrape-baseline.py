@@ -3277,10 +3277,13 @@ def _lazy_counter_liveness_present(
     job: str,
     active_targets: set[tuple[str, str]],
 ) -> bool:
-    """True only when the family's liveness series from the same job is present.
+    """True only when every expected target has its own liveness series from the same job.
 
-    Any failure (refusal, API error, malformed or foreign series, no series) answers False, so the
-    caller keeps the family's missing_or_stale result. No liveness label or value leaves this function.
+    The liveness series must be present for every target in active_targets (each expected
+    (job, instance)), not for just one of them: with several instances, one live instance must not
+    mark the whole family absent_lazy_counter. Any failure (refusal, API error, malformed or foreign
+    series, no series, a missing target) answers False, so the caller keeps the family's
+    missing_or_stale result. No liveness label or value leaves this function.
     """
     liveness_name, extra_selector = LAZY_ALERT_INPUT_LIVENESS[metric_name]
     selector = ",".join([f'job="{job}"', *([extra_selector] if extra_selector else [])])
@@ -3288,9 +3291,15 @@ def _lazy_counter_liveness_present(
     try:
         raw = _run_api("/api/v1/query?" + urlencode(params), "alert_query_unavailable")
         liveness = _alert_input_family(raw, liveness_name, job, active_targets)
+        if liveness["status"] not in {"observed_zero", "observed_nonzero"}:
+            return False
+        seen = {
+            (row["metric"]["job"], row["metric"]["instance"])
+            for row in _api_vector(raw, "malformed_alert_response")
+        }
     except Exception:
         return False
-    return liveness["status"] in {"observed_zero", "observed_nonzero"}
+    return seen == active_targets
 
 
 def _alert_input_availability(

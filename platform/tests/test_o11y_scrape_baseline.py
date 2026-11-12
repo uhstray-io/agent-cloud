@@ -3986,6 +3986,53 @@ def test_lazy_counter_liveness_labels_and_values_never_reach_the_receipt(monkeyp
 
 
 @pytest.mark.parametrize(
+    "live_instances,expected",
+    [
+        (["loki-a-private:3100"], {"status": "missing_or_stale", "reason": "no_samples"}),
+        (["loki-b-private:3100"], {"status": "missing_or_stale", "reason": "no_samples"}),
+        (
+            ["loki-a-private:3100", "loki-b-private:3100"],
+            {"status": "absent_lazy_counter", "reason": "liveness_series_present"},
+        ),
+    ],
+)
+def test_lazy_counter_needs_liveness_from_every_expected_target(live_instances, expected, monkeypatch):
+    loki = SURVEY.ALERT_INPUTS[4][0]
+    liveness = SURVEY.LAZY_ALERT_INPUT_LIVENESS[loki][0]
+    _route_alert_queries(monkeypatch, {
+        liveness: [_alert_series(liveness, "loki", instance) for instance in live_instances],
+    })
+    receipt = SURVEY._alert_input_availability(_targets([
+        _target("loki", "loki-a-private:3100"),
+        _target("loki", "loki-b-private:3100"),
+    ]))
+    assert receipt["families"][4] == {"family": loki, **expected}
+
+
+@pytest.mark.parametrize(
+    "live_instance,expected_status,expected_reason",
+    [
+        ("alloy:12345", "absent_lazy_counter", "liveness_series_present"),
+        ("alloy-private:4317", "missing_or_stale", "no_samples"),
+    ],
+)
+def test_native_alloy_lazy_counter_liveness_is_judged_at_the_native_instance(
+    live_instance, expected_status, expected_reason, monkeypatch,
+):
+    enqueue = SURVEY.ALERT_INPUTS[2][0]
+    queue = SURVEY.LAZY_ALERT_INPUT_LIVENESS[enqueue][0]
+    queries = _route_alert_queries(monkeypatch, {
+        queue: [_alert_series(queue, "alloy", live_instance, value="3", data_type="traces")],
+    })
+    receipt = SURVEY._alert_input_availability(
+        _targets([_target("alloy", "alloy:12345"), _target("alloy", "alloy-private:4317")]),
+        native_alloy_verified=True,
+    )
+    assert receipt["families"][2] == {"family": enqueue, "status": expected_status, "reason": expected_reason}
+    assert f'{queue}{{job="alloy",data_type="traces"}}' in queries
+
+
+@pytest.mark.parametrize(
     "row,expected_reason",
     [
         (_alert_metric("counter", "alloy", "alloy-private:4317", 1000, "-1", "bad"), "malformed_sample"),
