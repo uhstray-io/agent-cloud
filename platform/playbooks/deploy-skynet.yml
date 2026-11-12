@@ -113,9 +113,29 @@
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
     _skynet_server_leaf: "{{ skynet_server_leaf | default('skynet-server') | string }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
-    _skynet_local: "{{ local_mode | default(false) | bool }}"
+    # Local mode follows the hosts of this play, not a variable: it holds only when every host is named
+    # <name>-local. ansible_play_hosts_all is set by the run and -e cannot set it (tasks/clean-service.yml:85-89
+    # relies on the same rule). inventory_hostname is not used: -e can set it. The mode check, the first
+    # refusal in Phase 1, refuses a local_mode that disagrees with the hosts.
+    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    # The public variable, read once: only the mode check below compares it with the hosts.
+    _skynet_mode_set: "{{ local_mode | default('unset') }}"
 
   tasks:
+    # The first task: the hosts decide local mode (_skynet_local), so a local_mode that disagrees with them,
+    # or a local-dev host with none, is refused before the transport guard and anything below.
+    - name: "Refuse a local_mode that disagrees with the hosts' identity"
+      ansible.builtin.assert:
+        that:
+          - _skynet_mode_set != 'unset' or not _skynet_local
+          - _skynet_mode_set == 'unset' or (_skynet_mode_set | bool) == _skynet_local
+        fail_msg: >-
+          Refusing: local_mode is {{ _skynet_mode_set }}, but the hosts of this play are
+          {{ 'all' if _skynet_local else 'not all' }} local-dev hosts (named <service>-local).
+          The mode follows the hosts, not the variable, and a local-dev inventory sets local_mode: true
+          (the shared tasks still read it). Nothing changed.
+        quiet: true
+
     # Read-only check of the credential path before anything is written: a refused
     # run must not have already placed the repo or written a secret.
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
@@ -198,7 +218,7 @@
         fail_msg: >-
           Production skynet must publish on the VM's own LAN address so the Dispatch Console can reach
           it: declare skynet_publish_bind (not a 127.x address) in the inventory and re-run.
-      when: not (local_mode | default(false) | bool)
+      when: not _skynet_local
 
     - name: "Refuse skynet_publish_port unless it is a whole port number from 1024 to 65535"
       ansible.builtin.assert:
@@ -221,7 +241,7 @@
         fail_msg: >-
           Production skynet reads the step-ca root and intermediate from the step_ca_svc group, and that
           group is empty. Declare the CA host in the inventory and re-run.
-      when: not (local_mode | default(false) | bool)
+      when: not _skynet_local
 
     - name: "Refuse skynet_opa_ip unless it is one non-wildcard IPv4 address in production"
       ansible.builtin.assert:
@@ -232,7 +252,7 @@
           skynet_opa_ip must be the IPv4 address of the OPA host. The production OPA name has no DNS
           record, so the container maps that name to this address. 0.0.0.0 is refused. Set it in the
           inventory and re-run.
-      when: not (local_mode | default(false) | bool)
+      when: not _skynet_local
 
     # Optional launch gate (skynet_launch_gate_url). Undeclared, neither refusal runs. Declared, the URL must
     # be https in every mode; in production its address is also mapped in the container (compose.launch-gate.yml).
@@ -254,7 +274,7 @@
           skynet_launch_gate_ip must be the IPv4 address of the launch gate host. The container maps the
           gate's name to this address. 0.0.0.0 is refused. Set it in the inventory and re-run.
       when:
-        - not (local_mode | default(false) | bool)
+        - not _skynet_local
         - (skynet_launch_gate_url | default('', true) | string | trim | length) > 0
 
     # The HTTPS listener (skynet_tls). Renewal proves the leaf at skynet_bind:skynet_port with the names below, so each
@@ -357,7 +377,7 @@
       vars:
         _ca_root_dest_dir: "{{ _deploy_dir }}"
         _ca_engine: "{{ container_engine | default('podman') }}"
-      when: local_mode | default(false) | bool
+      when: _skynet_local
 
     # Production: OPA's leaf is signed by the internal CA, and SSL_CERT_FILE (compose.prod.yml)
     # replaces the whole trust store. The bundle therefore carries the CA root and intermediate AND
@@ -369,7 +389,7 @@
         _ca_root_dest_dir: "{{ _deploy_dir }}"
         _ca_host: "{{ groups['step_ca_svc'] | first }}"
         _ca_root_combined_dest: "{{ _deploy_dir ~ '/certs/ca-bundle-combined.crt' }}"
-      when: not (local_mode | default(false) | bool)
+      when: not _skynet_local
 
     # The HTTPS listener's server leaf (skynet_tls): key generated on this host, signed by the one step_ca_svc host
     # (production) or by the local CA on this host (local_mode). Local-dev has no Renew Internal Certs run, and a local
@@ -418,6 +438,8 @@
     _engine: "{{ container_engine | default('podman') }}"
     # Same resolution as Phase 1, so the guard checks the endpoint the play actually uses.
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    # Same definition as Phase 1 (_skynet_local): deploy.sh's LOCAL_MODE is set from it.
+    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
 
   tasks:
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
@@ -469,7 +491,7 @@
         bash deploy.sh
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
-        LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
+        LOCAL_MODE: "{{ 'true' if _skynet_local else '' }}"
         # Force the compose provider on the Mac-direct genesis path; empty on the
         # Semaphore path (detect_runtime derives it). NOT default(omit) — omit
         # leaks its placeholder into environment (rc 127).
@@ -503,7 +525,8 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
-    _skynet_local: "{{ local_mode | default(false) | bool }}"
+    # Same definition as Phase 1 (_skynet_local): the probes take the local endpoints only for a -local host.
+    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
     _skynet_bind: "{{ skynet_bind | default('127.0.0.1') | string }}"
     _skynet_port: "{{ skynet_port | default(8443) | string }}"
