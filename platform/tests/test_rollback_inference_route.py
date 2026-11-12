@@ -13,8 +13,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import fake_http
@@ -273,14 +271,8 @@ class Route(fake_http.DrainingHandler):
 @pytest.fixture
 def route():
     Route.status = 200
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Route)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}/"
-    finally:
-        server.shutdown()
-        server.server_close()
+    with fake_http.serve(Route) as url:
+        yield f"{url}/"
 
 
 @pytest.fixture
@@ -303,7 +295,7 @@ def env(tmp_path, route):
     Bao.rotate_on_get, Bao.bump_before_cas = 0, False
     Bao.store = {"vllm_api_key": LIVE, "client_workstation": "synthetic-client-workstation",
                  "client_pi": "synthetic-client-pi", "agw_db_password": "synthetic-db"}
-    with seed_harness.serve(Bao) as address:
+    with fake_http.serve(Bao) as address:
         yield tmp_path, address, route
 
 

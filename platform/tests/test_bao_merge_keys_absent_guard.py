@@ -2,13 +2,11 @@
 
 import json
 import shutil
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import harness_sandbox
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/bao-merge-keys.yml"
@@ -88,12 +86,9 @@ class _Vault:
 
 
 def _run(tmp_path, vault, *, data=None, guard_absent=None, guard_values=None, guard_key=None, guard_value=None):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), vault.handler())
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
+    with serve(vault.handler()) as url:
         vars_ = {
-            "_bm_url": f"http://127.0.0.1:{server.server_port}",
+            "_bm_url": url,
             "_bm_token": "test-token",
             "_bm_path": "services/test",
             "_bm_data": data or {"new_value": "written"},
@@ -113,10 +108,6 @@ def _run(tmp_path, vault, *, data=None, guard_absent=None, guard_values=None, gu
             + "\n"
         )
         return harness_sandbox.run_playbook(playbook, tmp_path)
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
 
 
 def _writes(vault):

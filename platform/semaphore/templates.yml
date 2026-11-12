@@ -1042,6 +1042,16 @@ templates:
         type: string
         required: false
 
+  - name: Probe skynet Launch (Dev)
+    playbook: platform/playbooks/probe-skynet-launch.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: probe_service
+        title: "Service"
+        description: "skynet service_name whose service-validate step the run launches (blank for opa)"
+        type: string
+        required: false
+
   - name: Deploy honcho
     playbook: platform/playbooks/deploy-honcho.yml
     dev_variant: true
@@ -2986,6 +2996,16 @@ templates:
   # would remove, by name, and writes nothing. No survey: the declaration is the input.
   - name: Retire OpenBao Fields
     playbook: platform/playbooks/retire-openbao-fields.yml
+    dev_variant: true
+
+  # Copies the OpenBao KV-v2 fields that platform/playbooks/vars/copied-secret-fields.yml declares, from one
+  # path to another, inside the store: the value never leaves OpenBao on the way. It refuses, before any
+  # write, a copy whose source is missing or whose target holds a different value. Run the Dev variant in
+  # Semaphore's Dry run first: it lists each copy's state and writes nothing. Removing the source is a
+  # separate step (Retire OpenBao Fields), run only after the copy has landed. No survey: the declaration
+  # is the input.
+  - name: Copy OpenBao Fields
+    playbook: platform/playbooks/copy-openbao-fields.yml
     dev_variant: true
 
   - name: Apply All OpenBao Policies

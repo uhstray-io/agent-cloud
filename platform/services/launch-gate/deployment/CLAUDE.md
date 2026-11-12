@@ -167,6 +167,8 @@ Declared in `platform/playbooks/bootstrap-local-dev.yml` (`[launch_gate_svc]`, t
 mirrored in `platform/inventory/local-dev.yml.example`. `Deploy launch-gate (Local)` and
 `Provision launch-gate Semaphore Access (Local)` are in `platform/semaphore/templates-local.yml`.
 
+The deploy decides local mode from the hosts of its play (every host named `<name>-local`), never from `local_mode` or `inventory_hostname` alone, which an extra var can set; a `local_mode` that disagrees with the hosts is refused before anything changes.
+
 - Deploy OPA (Local) first. Phase 3 asks OPA for `/health` from inside the gate container at `http://opa:8181`, so a
   local deploy fails there while OPA is not running on the `local-dev` network.
 - The published port is 18443 on 127.0.0.1, because Caddy holds 8443 on the Mac. The container still listens on 8443.
@@ -187,6 +189,14 @@ keeps `certs/` (clean-service removes the checkout only in production). The leaf
 default). So the deploy itself checks it: in local-dev, `openssl x509 -checkend 604800` on `current/cert.pem`, and a
 leaf with under 7 days left, or none yet, is issued again (`_mint_reissue`). Re-run `Deploy launch-gate (Local)` at
 least weekly, or after a long break, to keep it current. Production keeps an issued leaf; Renew Internal Certs renews it.
+
+**The working-tree branch.** On both routes (`/v1/launch` and `/v1/decide`, through `Gate._judge`) the branch the
+gate pins and asks OPA about is the template's repository record's, read from Semaphore and never from the caller.
+Local-dev's working-tree record declares `HEAD` (whatever the developer has checked out), and OPA allows agent
+launches only from `main` or `dev`, so in local mode only the gate reads that `HEAD` as `dev` (`policy_branch`), as
+skynet's local catalog already does. Outside local mode `HEAD` reaches OPA unchanged and is refused. Found by the
+local skynet launch probe on 2026-11-09 (local task 14161): every agent launch through the local gate was denied "an
+agent task may run only from main or dev".
 
 ## Allowlist
 

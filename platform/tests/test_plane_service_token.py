@@ -5,15 +5,13 @@ tests run the real script against a stub that serves the sign-in redirect and Pl
 route: 201 on the first mint, 200 on a repeat.
 """
 
-import http.server
 import json
 import pathlib
 import subprocess
 import sys
-import threading
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 DEPLOY = pathlib.Path(__file__).resolve().parents[2] / "platform/services/plane/deployment"
 # The playbook runs plane_session.py and the script joined, exactly as here.
@@ -61,10 +59,8 @@ class StubPlane(DrainingHandler):
 @pytest.fixture
 def plane():
     StubPlane.state = {"paths": [], "sign_in": "ok", "token_status": 201, "token_body": {"token": TOKEN}}
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubPlane)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield StubPlane.state, f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
+    with serve(StubPlane) as base:
+        yield StubPlane.state, base
 
 
 def run(base):
