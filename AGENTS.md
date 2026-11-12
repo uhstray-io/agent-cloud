@@ -698,6 +698,8 @@ Config files: `pyproject.toml` (ruff, pytest), `.ansible-lint`, `.yamllint.yml`
 
 Tests: pytest collects the `testpaths` in `pyproject.toml` (`platform/tests`, `platform/semaphore/tests`, `platform/services/netbox/deployment/tests`, `platform/services/caddy/deployment/tests`); BATS runs `platform/tests/*.bats`
 
+**The Rust suite (plan 24) is replacing both.** `platform/tests/Cargo.toml` is one `cargo-nextest` crate: shared support in `platform/tests/src/lib.rs` (YAML read the way PyYAML reads it, repository and task walkers, a scrubbed and bounded process runner), one module per area in `platform/tests/suite/`. Run it with `cargo nextest run` from `platform/tests/`. Ported tests are added beside their pytest or BATS originals until the ledger citation check reads Rust (plan 24, Phase 3). The rules for writing a test are `plan/architecture/03-testing-ci-quality.md` Part 1
+
 **Writing a BATS test:** see "Writing BATS Tests" in `CONTRIBUTING.md`. In short — assert
 absence with `refute_grep` (a `!`-inverted command mid-body cannot fail under `set -e`, and
 `grep -v -q` passes when the string IS present), scope each assertion to the task or

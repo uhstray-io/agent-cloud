@@ -246,6 +246,27 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 `assert_grep`/`refute_grep`) and of `<assertion> || true`, and fails on any new one
 ("no new grep -v -q or || true assertions outside the ratchet").
 
+## Writing Rust Tests
+
+The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
+([plan 24](plan/development/24-rust-test-platform.md)). The rules are
+`plan/architecture/03-testing-ci-quality.md` Part 1. In short:
+
+- One module per area in `platform/tests/suite/`, declared in `suite/main.rs`.
+- Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
+  bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
+  anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.
+- Start a process only through `agent_cloud_tests::process`: a scrubbed environment and a
+  30-second bound.
+- Arrange, Act, Assert; several input cases are one test over a table.
+- Mutate the guarded code once and watch the test fail before you merge it.
+
+```bash
+cd platform/tests
+cargo nextest run                                  # everything
+cargo nextest run -E 'test(/^restart_policy::/)'  # one area
+```
+
 ## Writing Python Tests
 
 Most of the Python suite's time is spent starting `ansible-playbook`, about a second per
