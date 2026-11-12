@@ -582,21 +582,21 @@ launch_gate_opa_url=https://opa.example.test:8281
 INV
 }
 
-@test "launch-gate deploy: local mode is the hosts' identity in all three plays, and the mode refusal is the first task" {
+@test "launch-gate deploy: local mode is the inventory's identity in all three plays, and the shared identity check is the first task" {
   python3 - "$DEPLOY" <<'PY'
 import sys, yaml
 text = open(sys.argv[1], encoding="utf-8").read()
 plays = [p for p in yaml.safe_load(text) if "hosts" in p]
-want = "{{ ansible_play_hosts_all | local_dev_inventory }}"
+want = "{{ groups['all'] | local_dev_inventory }}"
 assert all(p["vars"]["_launch_gate_local_mode"] == want for p in plays), [p["vars"].get("_launch_gate_local_mode") for p in plays]
 assert "inventory_hostname is match" not in text
-assert plays[0]["vars"]["_launch_gate_mode_set"] == "{{ local_mode | default('unset') }}", plays[0]["vars"]
+assert "ansible_play_hosts_all" not in text
+assert "_launch_gate_mode_set" not in text
+# The playbook reads local_mode nowhere itself: the shared check it includes first is the one read.
+assert "local_mode | default(" not in text
 first = plays[0]["tasks"][0]
-assert first["name"] == "Refuse a local_mode that disagrees with the hosts' identity", first.get("name")
-assert first["ansible.builtin.assert"]["that"] == [
-    "_launch_gate_mode_set != 'unset' or not _launch_gate_local_mode",
-    "_launch_gate_mode_set == 'unset' or (_launch_gate_mode_set | bool) == _launch_gate_local_mode",
-], first
+assert first["name"] == "Refuse a local_mode that disagrees with the inventory's identity", first.get("name")
+assert first["ansible.builtin.include_tasks"] == "tasks/assert-local-mode-identity.yml", first
 assert "when" not in first, first
 assert plays[1]["tasks"][0]["environment"]["LOCAL_MODE"] == "{{ 'true' if _launch_gate_local_mode else '' }}", plays[1]["tasks"][0]["environment"]
 PY
@@ -608,7 +608,7 @@ PY
   write_mode_inventory "$inv" lg-prod docker.io/library/python:3.12-slim
   run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=true -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
   [ "$status" -ne 0 ]
-  assert_contains "$output" 'The mode follows the hosts, not the variable'
+  assert_contains "$output" 'The mode follows the inventory, not the variable'
   refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
   refute_contains "$output" 'Place the monorepo'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
@@ -623,7 +623,7 @@ PY
   printf '\n[other]\nlaunch-gate-local ansible_connection=local\n' >> "$inv"
   run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=true -e inventory_hostname=launch-gate-local -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
   [ "$status" -ne 0 ]
-  assert_contains "$output" 'The mode follows the hosts, not the variable'
+  assert_contains "$output" 'The mode follows the inventory, not the variable'
   refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
   refute_contains "$output" 'Place the monorepo'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
@@ -635,7 +635,7 @@ PY
   write_mode_inventory "$inv" lg-test-local docker.io/library/python:3.12-slim
   run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=false -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
   [ "$status" -ne 0 ]
-  assert_contains "$output" 'The mode follows the hosts, not the variable'
+  assert_contains "$output" 'The mode follows the inventory, not the variable'
   refute_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
   refute_contains "$output" 'Place the monorepo'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
@@ -658,7 +658,7 @@ PY
   write_mode_inventory "$inv" lg-test-local docker.io/library/python:3.12-slim
   run ansible-playbook -i "$inv" "$DEPLOY" -e local_mode=true -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
   [ "$status" -ne 0 ]
-  refute_contains "$output" 'The mode follows the hosts, not the variable'
+  refute_contains "$output" 'The mode follows the inventory, not the variable'
   assert_contains "$output" 'Refuse launch_gate_image unless it is a digest-pinned official Python image'
   refute_contains "$output" 'Place the monorepo'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]
@@ -671,7 +671,7 @@ PY
   write_mode_inventory "$inv" lg-prod docker.io/library/python@sha256:b18b261e1b4974b4f321451ad5251ded85abb22c2b8b262da527dda1d031ab30
   run ansible-playbook -i "$inv" "$DEPLOY" -e local_monorepo_dir="$BATS_TEST_TMPDIR/monorepo"
   [ "$status" -ne 0 ]
-  refute_contains "$output" 'The mode follows the hosts, not the variable'
+  refute_contains "$output" 'The mode follows the inventory, not the variable'
   assert_contains "$output" 'Refuse a production run whose launch_gate_bind is loopback'
   refute_contains "$output" 'Place the monorepo'
   [ ! -e "$BATS_TEST_TMPDIR/monorepo" ]

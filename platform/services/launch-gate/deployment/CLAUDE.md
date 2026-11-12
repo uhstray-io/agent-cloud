@@ -168,7 +168,7 @@ Declared in `platform/playbooks/bootstrap-local-dev.yml` (`[launch_gate_svc]`, t
 mirrored in `platform/inventory/local-dev.yml.example`. `Deploy launch-gate (Local)` and
 `Provision launch-gate Semaphore Access (Local)` are in `platform/semaphore/templates-local.yml`.
 
-The deploy decides local mode from the hosts of its play (every host named `<name>-local`), never from `local_mode` or `inventory_hostname` alone, which an extra var can set; a `local_mode` that disagrees with the hosts is refused before anything changes.
+The deploy decides local mode from the inventory (every host but `localhost` named `<name>-local`, read from `groups`), never from `local_mode` or `inventory_hostname`, which an extra var can set; a `local_mode` that disagrees with the inventory is refused before anything changes (`tasks/assert-local-mode-identity.yml`).
 
 - Deploy OPA (Local) first. Phase 3 asks OPA for `/health` from inside the gate container at `http://opa:8181`, so a
   local deploy fails there while OPA is not running on the `local-dev` network.
