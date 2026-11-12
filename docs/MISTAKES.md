@@ -65,7 +65,7 @@ and why.
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
 | 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
-| 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' expressions; class Convention, no detector |
+| 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) | Unverified claim | 1 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
@@ -1658,12 +1658,11 @@ The grounding checkpoint caught it before a PR was opened, and the redesign land
 it is read, whatever pointed to it (1.25, 1.28, 1.29), a comment's citation included. Follow the citation and read
 the cited lines before a brief, commit or reply repeats the guarantee.
 
-**Enforced by.** The instance: `platform/tests/test_launch_gate_playbooks.bats:590-591` and
-`platform/tests/test_service_skynet.bats:602` pin each playbook's `ansible_play_hosts_all` expression in all three
-plays. The class: Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a
-brief or outward text names, not the paths a comment in those files cites. A shared local-mode derivation (AC-702) would remove this
-instance's need to cite another file: the launch gate's comment still cites `tasks/clean-service.yml:85-89`, where
-the derivation itself is at `:70`.
+**Enforced by.** The instance: since AC-702 (#1106) both playbooks derive local mode with the shared
+`local_dev_inventory` filter (`platform/playbooks/filter_plugins/local_dev.py`), pinned in all three plays by
+`platform/tests/test_launch_gate_playbooks.bats:590-591` and `platform/tests/test_service_skynet.bats:602`. The class:
+Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a brief or outward
+text names, not the paths a comment in those files cites.
 
 ### 1.37 Called a fix impossible from a true fact stretched past its scope, then built around it (widens 1.19)
 
