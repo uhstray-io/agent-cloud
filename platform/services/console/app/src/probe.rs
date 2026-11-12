@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn run_cli_exits_zero_on_the_expected_status_and_one_otherwise() {
-        // The whole subcommand, as the container healthcheck runs it: argument
+        // The whole subcommand, as deploy.sh and the deploy verify exec it: argument
         // parsing, PORT, the socket and the exit code. The listener answers 200.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let port = listener.local_addr().expect("local addr").port();
