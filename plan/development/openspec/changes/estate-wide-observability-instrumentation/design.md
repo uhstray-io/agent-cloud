@@ -898,13 +898,18 @@ and `tempo_discarded_spans_total`. Query each raw family without the alert
 expressions' `or vector(0)` so absence remains visible.
 
 Set `lookback_delta=5m` explicitly on every raw selector query and do not add
-`or vector(0)`. An empty vector is reported as `missing_or_stale`; do not compare
+`or vector(0)`. An empty vector is reported as `missing_or_stale`, except for the two lazily created drop counters
+`otelcol_exporter_enqueue_failed_spans_total` and `loki_discarded_samples_total`. Their pinned upstream sources create a
+series only on the first drop, so an empty vector for them reports `absent_lazy_counter` with reason
+`liveness_series_present` when a liveness series is present for every expected target of the same job
+(`otelcol_exporter_queue_size{data_type="traces"}`, `loki_distributor_lines_received_total`). That status means no
+drop since the process last started and never counts as `observed_zero`. Do not compare
 the response `value[0]` (the query evaluation timestamp) with a local clock or
 claim it is the original sample timestamp. Validate the vector response shape,
 then join each returned `job`/`instance` privately against the exact active-target
 set. Accept multiple distinct reason series; require well-formed unique label
 sets and finite nonnegative counter values. Report one fixed public family/status/reason row per
-family: `observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`.
+family: `observed_zero`, `observed_nonzero`, `missing_or_stale`, `absent_lazy_counter`, or `unavailable`.
 No labels, sample values/timestamps, selectors, URLs, response bodies, or
 exceptions enter the receipt. A per-family query or validation failure does not
 fail or replace the required active-load baseline, source-only candidate

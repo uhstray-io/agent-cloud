@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import forgeries
 import harness_sandbox
@@ -120,7 +121,7 @@ class Stub:
         self._fixture = contextlib.ExitStack()
         root = self._fixture.enter_context(serve(Handler))
         self.url = f"{root}/v1"
-        self.port = int(root.rsplit(":", 1)[1])
+        self.port = urlsplit(root).port
 
     def stop(self):
         self._fixture.close()
@@ -1251,7 +1252,7 @@ class Bao(seed_harness.FakeBao):
 def _playbook(tmp: Path, gw: Stub, direct: Stub, extra=None, check=False, host_vars=None):
     Bao.requests = []
     Bao.store = {"client_workstation": GW_KEY, "vllm_api_key": UP_KEY, "agw_db_password": "synthetic-db"}
-    with seed_harness.serve(Bao) as address:
+    with serve(Bao) as address:
         host = {"ansible_connection": "local", "ansible_python_interpreter": sys.executable,
                 "service_name": "agentgateway", "agw_clients": ["workstation"], "agw_models": [{"name": "m"}],
                 "agw_upstream_base_url": direct.url, "agw_bind": "127.0.0.1", "agw_port": gw.port,

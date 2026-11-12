@@ -16,6 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
 from fake_http import DrainingHandler, serve
@@ -115,7 +116,7 @@ def fake():
         }
         handler = type("Handler", (FakeSemaphore,), {"state": state})
         url = servers.enter_context(serve(handler))
-        return SimpleNamespace(state=state, port=int(url.rsplit(":", 1)[1]), url=url)
+        return SimpleNamespace(state=state, port=urlsplit(url).port, url=url)
 
     with servers:
         yield start
