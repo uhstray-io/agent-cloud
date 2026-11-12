@@ -594,7 +594,7 @@ prod_accepted() {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
   printf 'skynet-prod ansible_connection=local\n' > "$BATS_TEST_TMPDIR/forged-prod.ini"
-  # (a) local_mode=true on a production host: the hosts are not all local-dev, so the mode check refuses it.
+  # (a) local_mode=true on a production inventory: it is not local-dev, so the shared check refuses it.
   run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true
   [ "$status" -ne 0 ]
@@ -604,7 +604,7 @@ prod_accepted() {
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e inventory_hostname=skynet-local
   [ "$status" -ne 0 ]
   assert_contains "$output" "The mode follows the inventory, not the variable"
-  # (c) a -local host with local_mode=false: the hosts are local-dev, so the false disagrees and is refused.
+  # (c) a -local inventory with local_mode=false: it is local-dev, so the false disagrees and is refused.
   run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false
   [ "$status" -ne 0 ]
@@ -658,7 +658,7 @@ base = {"skynet_tls": True, "dns_site": "dc1", "dns_zone": "example.test", "loca
 with open(f"{out}/tls-base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
 # Production: the same declaration on the production inventory host (localhost, prod_inventory), whose leaf must name it,
-# and local_mode false: the mode follows the hosts, and localhost is not a -local host.
+# and local_mode false: the mode follows the inventory, and an inventory of only localhost is not local-dev.
 prod = dict(base, local_mode=False, internal_leaves=[dict(leaf, host="localhost")])
 with open(f"{out}/tls-prod-base.json", "w", encoding="utf-8") as fh:
     json.dump(prod, fh)
