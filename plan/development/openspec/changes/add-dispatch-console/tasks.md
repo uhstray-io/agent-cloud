@@ -22,7 +22,7 @@ The Authentik client is created first, because the sign-in routes need its secre
 - [ ] 2.3 Implement `GET /auth/callback`. It exchanges the code, verifies the ID token and its `nonce`, stores the user in the session, and answers 302 to `/`. Use the cookie `console_session` (Secure, HttpOnly, SameSite=Lax) and an 8-hour inactivity expiry.
 - [ ] 2.4 Implement `POST /auth/logout`. It clears the session and answers 302 to `/`.
 - [x] 2.5 Require a session on every `/v1/*` route. Without one, the route answers 401 with the JSON body `{"error":"unauthenticated"}`.
-  - Done 2026-11-12, as changed by D53: every `/v1/*` handler checks the session first and answers 401 `unauthenticated` (`app/src/server/mod.rs`, `unauthenticated_v1_routes_answer_401_json`), but a state-changing request without the console's own `Origin` and a JSON body is refused 403 `origin_refused` before that check (`require_console_origin`, D53). The spec states both, and `a_write_without_a_session_is_origin_checked_first` pins the no-session case.
+  - Done 2026-11-12, as changed by D53: every `/v1/*` handler checks the session first and answers 401 `unauthenticated` (`app/src/server/mod.rs`, `unauthenticated_v1_routes_answer_401_json`), but a state-changing request without the console's own `Origin` and an `application/json` `Content-Type` is refused 403 `origin_refused` before that check (`require_console_origin`, D53). The spec states both, and `a_write_without_a_session_is_origin_checked_first` pins the no-session case.
 - [ ] 2.6 Validation gate: scenarios "Sign-in redirects to Authentik", "Callback stores the verified user", "Callback with a wrong nonce is refused" and "Unauthenticated API call answers 401" hold.
 
 ## 3. Tenants and scope tree

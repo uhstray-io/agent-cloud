@@ -338,8 +338,9 @@ pub fn api_router(state: SharedState) -> Router {
 }
 
 /// D53: a state-changing request under `/v1/` is refused 403 `origin_refused` unless its `Origin` is the console's own
-/// base URL and its body is JSON. The session cookie is SameSite=Lax, which another `uhstray.io` subdomain passes, so
-/// this check carries the protection. GET and HEAD, and every path outside `/v1/` (the `/auth/*` routes), pass through.
+/// base URL and its `Content-Type` is `application/json`. The session cookie is SameSite=Lax, which another
+/// `uhstray.io` subdomain passes, so this check carries the protection. GET and HEAD, and every path outside `/v1/`
+/// (the `/auth/*` routes), pass through.
 async fn require_console_origin(
     State(app): State<SharedState>,
     request: Request,
@@ -995,8 +996,8 @@ mod tests {
         (addr, cookie)
     }
 
-    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its body is JSON.
-    /// A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
+    /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its `Content-Type` is
+    /// `application/json`. A refused write changes nothing; GET is never refused; `/auth/*` sits outside the rule.
     #[tokio::test]
     async fn state_changing_v1_requests_need_the_console_origin_and_a_json_body() {
         let (addr, cookie) = signed_in(&["ops"]).await;
@@ -1108,8 +1109,8 @@ mod tests {
     }
 
     /// D53 without a session: the origin rule runs before the session check, so a write from another origin, or with no
-    /// `Origin`, is refused 403 although the caller is not signed in. The console's own origin and a JSON body reach the
-    /// handler, which answers 401 for the missing session.
+    /// `Origin`, is refused 403 although the caller is not signed in. The console's own origin and an `application/json`
+    /// `Content-Type` reach the handler, which answers 401 for the missing session.
     #[tokio::test]
     async fn a_write_without_a_session_is_origin_checked_first() {
         let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
