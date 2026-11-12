@@ -807,15 +807,21 @@ def review_evidence(api, number, sha, author, receipt_path):
     return [r.get("html_url", "") for r in approvals], receipt
 
 
-def check_release_budget(api, file_records):
-    # Policy 10 R4, R5: a merge may not take its release past 100 pull requests, or past 120 changed files when it
-    # adds a path; R12 suspends both until the carry-over tag exists. The count is taken at the dev tip GitHub
-    # reports now. The pull request's base.sha is not that tip: it was stale on 8 of 8 open pull requests (2026-11-12).
+def live_dev_sha(api):
+    """The commit GitHub's dev ref points at now. Refuses an unreadable answer rather than raising."""
     live = api.api(f"repos/{REPO}/git/ref/heads/dev")
     live_object = live.get("object") if isinstance(live, dict) else None
     live_sha = live_object.get("sha") if isinstance(live_object, dict) else None
     if not isinstance(live_sha, str) or not SHA.fullmatch(live_sha):
         raise Refusal("Release budget: GitHub's dev ref is unreadable")
+    return live_sha
+
+
+def check_release_budget(api, file_records):
+    # Policy 10 R4, R5: a merge may not take its release past 100 pull requests, or past 120 changed files when it
+    # adds a path; R12 suspends both until the carry-over tag exists. The count is taken at the dev tip GitHub
+    # reports now. The pull request's base.sha is not that tip: it was stale on 8 of 8 open pull requests (2026-11-12).
+    live_sha = live_dev_sha(api)
     # The post-change path of each file: a rename counts once, under its new name; a deletion under its old one.
     dev_sha, before, after = api.release_budget([f["filename"] for f in file_records])
     if dev_sha != live_sha:
@@ -897,9 +903,7 @@ def main(argv=None, api=None):
             raise Refusal("PR base or head moved between merge-gate validations")
         # The budget was counted at one dev tip; a merge into dev since then would count against it unseen, and
         # gh pr merge cannot pin the base. One last read narrows that window to this call.
-        live = api.api(f"repos/{REPO}/git/ref/heads/dev")
-        live_sha = live.get("object", {}).get("sha") if isinstance(live, dict) else None
-        if live_sha != refreshed["budget"]["dev_ref"]:
+        if live_dev_sha(api) != refreshed["budget"]["dev_ref"]:
             raise Refusal("dev moved after the release budget was counted; run the guard again")
         try:
             api.merge(args.pr, args.head, refreshed["title"])

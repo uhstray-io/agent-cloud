@@ -1742,6 +1742,21 @@ class ReleaseBudgetTests(unittest.TestCase):
         api.api = unreadable
         run_refusal(self, api, "GitHub's dev ref is unreadable")
 
+    def test_a_null_dev_object_before_the_merge_refuses_without_a_traceback(self):
+        # The last read before gh pr merge goes through the same reader, so a malformed answer is a refusal.
+        api = FakeGitHub()
+        original, reads = api.api, []
+
+        def null_late(endpoint, fields=()):
+            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+                reads.append(endpoint)
+                if len(reads) > 2:
+                    return {"ref": "refs/heads/dev", "object": None}
+            return original(endpoint, fields)
+
+        api.api = null_late
+        run_refusal(self, api, "GitHub's dev ref is unreadable")
+
     def test_each_changed_path_is_counted_once_by_its_post_change_name(self):
         records = (
             ({"filename": "new.md", "previous_filename": "old.md", "status": "renamed"}, ["new.md"]),
