@@ -118,8 +118,9 @@ Selection is never a reason to skip the security set, and a change the selector 
 ## Where tests live and how they run
 
 - One crate, `platform/tests/`, one test binary, one module per area: `platform/tests/suite/<area>.rs`.
-- Run everything: `cargo nextest run -P full` from `platform/tests/`. Run one area:
-  `cargo nextest run -E 'test(/^<area>::/)'`.
+- Run everything: `cargo nextest run` from `platform/tests/`. Run one area:
+  `cargo nextest run -E 'test(/^<area>::/)'`. The lane profiles (`commit`, `push`, `full`) arrive
+  with plan 24, Phase 2; until then the profiles are `default` and `ci`.
 - The Dispatch Console crate (`platform/services/console/app/`) keeps its own tests, under these rules.
 - Rego policies keep `opa test` (Rego Tests job); Rego is the policy language, not a test harness choice.
 - Linters and scanners (ruff, shellcheck, ansible-lint, yamllint, hadolint, trufflehog, bandit) are not

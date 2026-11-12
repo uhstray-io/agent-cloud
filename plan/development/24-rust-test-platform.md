@@ -119,7 +119,7 @@ platform/tests/
   Cargo.toml            agent-cloud-tests, its own [workspace]; Cargo.lock committed
   .config/nextest.toml  lanes as profiles, the ansible test-group
   areas.toml            area -> path globs (D3)
-  src/lib.rs            shared support: repo root, YAML cache, fake PATH, process runner
+  src/lib.rs            shared support: repo root, YAML 1.1 loader, task walker, process runner
   src/bin/testsel.rs    changed paths -> nextest filterset (Phase 2)
   suite/main.rs         the one test binary; one module per area
   suite/<area>.rs
@@ -166,7 +166,7 @@ split into one sub-item per area when it starts.
 | Phase | Work | Blocked by | Done when |
 |---|---|---|---|
 | 0 | This plan, and 03 Part 1 (testing principles) | none | Merged into `dev` |
-| 1 | Crate, nextest profiles and test-group, shared support library, `Rust (tests)` CI job added to `Unit Tests`. Pilot: `test_restart_policy.bats` (static) and `test_common.bats` (cli) ported **additively**; the BATS files stay until Phase 3 | 0 | `cargo nextest run -P ci` passes in CI; both pilots fail when their guarded code is mutated |
+| 1 | Crate, nextest `default` and `ci` profiles, shared support library (YAML 1.1 loader, task walker, scrubbed bounded runner). Pilot: `test_restart_policy.bats` (static) and `test_common.bats` (cli) ported **additively**; the BATS files stay until Phase 3. The `Rust (tests)` CI job and the merge guard's new workflow state are a separate operator-merged pull request (AC-744). The `playbook` test-group arrives with the first playbook-tier test (Phase 6) | 0 | `cargo nextest run --profile ci` passes in CI (after AC-744); both pilots fail when their guarded code is mutated |
 | 2 | Lanes: `areas.toml`, `testsel`, the `commit` and `push` hooks, selection in the CI job | 1 | A docs-only pull request runs only the static tier and the security set; a playbook change runs its area's playbook tier |
 | 3 | Ledger citation check ported to Rust and taught `.rs` (D9); pilot BATS files deleted | 1 | The ledger check is green with both pilots cited by their Rust paths |
 | 4 | Port BATS (82 files) by area; delete the `bats` job | 2, 3 | `bats` gone from the workflow; every deleted test mapped |
