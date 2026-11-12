@@ -56,6 +56,7 @@ static FILE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FILE_RS: LazyLock<Regex> =
     LazyLock::new(|| re(r"^(?P<path>(?:[\w.-]+/)*suite/[\w-]+\.rs)(?:::(?P<name>\w+))?$"));
+static BLOCK_COMMENT: LazyLock<Regex> = LazyLock::new(|| re(r"(?s)/\*.*?\*/"));
 static NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^test_\w+$"));
 static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| re(r"^(?:test_\w+\.py|[\w-]+\.bats)$"));
 static BATS_TEST: LazyLock<Regex> =
@@ -176,7 +177,7 @@ fn defines(path: &Path, name: &str) -> bool {
         // `pub`/`async` may precede it. Block comments are dropped first.
         // ponytail: comments only; a line starting `fn x(` inside a multi-line string still
         // counts, strip string literals too if that ever bites.
-        let code = re(r"(?s)/\*.*?\*/").replace_all(&text, "");
+        let code = BLOCK_COMMENT.replace_all(&text, "");
         let pattern = format!(
             r"(?m)^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
         );
@@ -463,8 +464,8 @@ fn rust_citations_resolve_against_the_suite_and_their_fn_names() {
         Vec::<String>::new()
     );
 
-    // Act / Assert: an attribute on the same line and a generic fn both count as defined; a
-    // comment that names a fn without its `(` or `<` does not
+    // Act / Assert: a same-line attribute, a generic fn and a `pub(crate) async fn` count as
+    // defined; a comment that names a fn without its `(` or `<` does not
     for name in ["same_line_fn", "generic_fn", "qualified_fn"] {
         assert_eq!(
             unresolved(
