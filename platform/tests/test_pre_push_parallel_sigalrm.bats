@@ -1,123 +1,79 @@
 #!/usr/bin/env bats
-# The pre-push hook runs BATS through GNU parallel only when parallel starts its jobs with
-# SIGALRM at the default disposition (AC-743; the probe in .githooks/pre-push).
+# BATS jobs under GNU parallel get SIGALRM at its default (AC-743).
 #
-# GNU parallel 20261022 ignores SIGALRM in every job it starts, and a job inherits that.
-# ansible-core's task `timeout:` then fails with "An existing alarm handler was present", so
-# test_provision_vm.bats passed alone and failed under the hook. A wrapper cannot repair
-# that, because parallel sets the disposition itself, so the hook detects it instead.
+# GNU parallel starts every job with SIGALRM ignored, and ansible-core then refuses a task
+# `timeout:`, so test_provision_vm.bats passed alone and failed under `bats --jobs`. The
+# pre-push hook runs parallel's jobs through platform/tests/bin/parallel-job-shell
+# (PARALLEL_SHELL), which restores the default. These check the wrapper itself, and that the
+# hook hands it to bats and to nothing else.
 #
-# These drive the real hook in a scratch repository with no pyproject.toml, so the Python
-# suite is skipped and each run is quick. A fake `bats` records the argv the hook chose.
-# Fake `parallel` binaries answer --version, then run their job with SIGALRM ignored, at
-# default, or fail without running it.
+# The hook runs in a scratch repository with no pyproject.toml, so the Python suite is skipped
+# and each run is quick. A fake `bats` records its argv and the PARALLEL_SHELL it was given.
 
 load assert_helpers
 
 setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   HOOK="$REPO_ROOT/.githooks/pre-push"
-  HOOK_SH=${HOOK_SH:-sh}
+  JOB_SHELL="$REPO_ROOT/platform/tests/bin/parallel-job-shell"
   T="$BATS_TEST_TMPDIR"
   REPO="$T/repo"
   git init -q "$REPO"
-  mkdir -p "$REPO/platform/tests" "$T/fakebin"
-  # A developer's exported name would make every case probe the wrong binary.
-  unset BATS_PARALLEL_BINARY_NAME
-  export FAKE_BATS_ARGS="$T/bats.args"
+  mkdir -p "$REPO/platform/tests/bin" "$T/fakebin"
+  unset BATS_PARALLEL_BINARY_NAME PARALLEL_SHELL
+  export FAKE_BATS_OUT="$T/bats.out"
   cat > "$T/fakebin/bats" <<'SH'
 #!/usr/bin/env sh
-echo "$*" > "$FAKE_BATS_ARGS"
-exit 0
+printf '%s\n%s\n' "$*" "${PARALLEL_SHELL:-unset}" > "$FAKE_BATS_OUT"
 SH
-  chmod +x "$T/fakebin/bats"
+  printf '#!/bin/sh\nexit 0\n' > "$T/fakebin/parallel"
+  chmod +x "$T/fakebin/bats" "$T/fakebin/parallel"
 }
 
-# fake_parallel NAME ignore|default|fail: a fake GNU parallel at fakebin/NAME. It answers
-# --version like GNU parallel does. Otherwise it takes the first argument that is not an
-# option as its job and runs it under sh, with SIGALRM ignored (ignore) or at default
-# (default). fail exits 1 without running anything. Like the real one, ignore and default
-# run the job only when `:::` supplies its argument: without it GNU parallel reads arguments
-# from stdin, which is empty here, runs zero jobs and exits 0. So a probe that dropped its
-# `::: probe` would pass, and case 1 catches that.
-#
-# default sets SIGALRM to DEFAULT explicitly. A test run under `bats --jobs` inherits SIGALRM
-# ignored from GNU parallel 20261022, and a shell cannot reset a signal it inherited as
-# ignored (POSIX), so passing the inherited state through would make this case fail there.
-# perl can restore the default disposition, and the disposition survives its exec.
-fake_parallel() {
-  local f="$T/fakebin/$1"
-  cat > "$f" <<'SH'
-#!/usr/bin/env sh
-case "$1" in --version) echo "GNU parallel 20261022 (fake)"; exit 0 ;; esac
-SH
-  case "$2" in
-    fail)
-      echo 'exit 1' >> "$f" ;;
-    ignore)
-      cat >> "$f" <<'SH'
-case " $* " in *' ::: '*) ;; *) exit 0 ;; esac
-for a; do case $a in -*) ;; *) job=$a; break ;; esac; done
-trap '' ALRM
-sh -c "$job"
-SH
-      ;;
-    default)
-      cat >> "$f" <<'SH'
-case " $* " in *' ::: '*) ;; *) exit 0 ;; esac
-for a; do case $a in -*) ;; *) job=$a; break ;; esac; done
-exec perl -e '$SIG{ALRM} = "DEFAULT"; exec @ARGV' sh -c "$job"
-SH
-      ;;
-  esac
-  chmod +x "$f"
-}
-
-# push [VAR=value ...] — run the hook in the scratch repository with one pushed branch, with
-# fakebin first on PATH and the given environment.
+# Run the hook in the scratch repository for one pushed branch, fakebin first on PATH.
 push() {
   printf 'refs/heads/feat 1111111111111111111111111111111111111111 refs/heads/feat 0000000000000000000000000000000000000000\n' \
-    | (cd "$REPO" && env PATH="$T/fakebin:$PATH" ${1+"$@"} \
-        "$HOOK_SH" "$HOOK" origin https://example.invalid/repo.git)
+    | (cd "$REPO" && env PATH="$T/fakebin:$PATH" ${1+"$@"} sh "$HOOK" origin https://example.invalid/repo.git)
 }
 
-@test "pre-push parallel: a parallel that starts jobs with SIGALRM ignored makes BATS run serially" {
-  fake_parallel parallel ignore
+# The exit status of a job that exits 0 only when SIGALRM is at its default, started with
+# SIGALRM ignored (as GNU parallel starts it) through the shell named in $1.
+job_status_under() {
+  perl -e '$SIG{ALRM} = "IGNORE"; exec @ARGV' "$1" -c \
+    'python3 -c "import signal, sys; sys.exit(signal.getsignal(signal.SIGALRM) != signal.SIG_DFL)"'
+}
+
+@test "parallel-job-shell: a job started with SIGALRM ignored runs with it at default" {
+  command -v perl >/dev/null || skip "perl not installed"
+  # The control proves the setup really hands the job an ignored SIGALRM.
+  run job_status_under /bin/sh
+  [ "$status" -eq 1 ] || { echo "control job saw SIGALRM at default: setup is wrong"; false; }
+  run job_status_under "$JOB_SHELL"
+  [ "$status" -eq 0 ] || { echo "the wrapper left SIGALRM ignored"; false; }
+}
+
+@test "pre-push parallel: bats gets CI's flags and the job shell" {
+  cp "$JOB_SHELL" "$REPO/platform/tests/bin/"
   run push
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ "$(cat "$T/bats.args")" = 'platform/tests/' ] \
-    || { echo "bats args were: $(cat "$T/bats.args")"; false; }
-  assert_contains "$output" 'SIGALRM probe through GNU parallel 20261022 (fake) failed'
-  assert_contains "$output" 'runs serially'
+  [ "$(sed -n 1p "$FAKE_BATS_OUT")" = '--jobs 4 --no-parallelize-within-files platform/tests/' ]
+  # The hook works from `git rev-parse --show-toplevel`, the resolved path.
+  [ "$(sed -n 2p "$FAKE_BATS_OUT")" = "$(git -C "$REPO" rev-parse --show-toplevel)/platform/tests/bin/parallel-job-shell" ]
+  refute_contains "$output" 'runs serially'
 }
 
-@test "pre-push parallel: a parallel whose jobs keep SIGALRM at default gets CI's flags" {
-  fake_parallel parallel default
+@test "pre-push parallel: a checkout without the job shell runs BATS serially, saying why" {
   run push
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ "$(cat "$T/bats.args")" = '--jobs 4 --no-parallelize-within-files platform/tests/' ] \
-    || { echo "bats args were: $(cat "$T/bats.args")"; false; }
-  refute_contains "$output" 'SIGALRM probe'
+  [ "$(sed -n 1p "$FAKE_BATS_OUT")" = 'platform/tests/' ]
+  [ "$(sed -n 2p "$FAKE_BATS_OUT")" = 'unset' ]
+  assert_contains "$output" 'parallel-job-shell is missing from this checkout'
 }
 
-@test "pre-push parallel: a probe that fails for any reason runs BATS serially" {
-  fake_parallel parallel fail
-  run push
+@test "pre-push parallel: the presence check reads the binary name bats uses (BATS_PARALLEL_BINARY_NAME)" {
+  cp "$JOB_SHELL" "$REPO/platform/tests/bin/"
+  run push BATS_PARALLEL_BINARY_NAME=no-such-parallel
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ "$(cat "$T/bats.args")" = 'platform/tests/' ] \
-    || { echo "bats args were: $(cat "$T/bats.args")"; false; }
-  # The message names the probe, not one cause: this probe failed without SIGALRM involved.
-  assert_contains "$output" 'SIGALRM probe through GNU parallel 20261022 (fake) failed'
-  assert_contains "$output" 'runs serially'
-}
-
-@test "pre-push parallel: the probe reads the binary name bats uses (BATS_PARALLEL_BINARY_NAME)" {
-  # `parallel` ignores SIGALRM, `renamed` does not. Only a probe that reads the name bats
-  # would call gets the flags, so this fails if the hook probes `parallel` instead.
-  fake_parallel parallel ignore
-  fake_parallel renamed default
-  run push BATS_PARALLEL_BINARY_NAME=renamed
-  [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ "$(cat "$T/bats.args")" = '--jobs 4 --no-parallelize-within-files platform/tests/' ] \
-    || { echo "bats args were: $(cat "$T/bats.args")"; false; }
+  [ "$(sed -n 1p "$FAKE_BATS_OUT")" = 'platform/tests/' ]
+  assert_contains "$output" 'GNU parallel is not installed'
 }
