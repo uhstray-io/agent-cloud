@@ -157,7 +157,8 @@ and why.
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
-| 5.23 | Merged a PR whose CI had tested its merge into an older `dev`; a ratchet test that landed 5 minutes earlier failed on the combination, and every PR into `dev` went red until #1068 | Process | 1 | Convention (re-run on a moved base; guard proposal recorded) |
+| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) | Process | 2 | Convention (PR-template checkboxes and a merge-guard check of the PR body proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4496,6 +4497,7 @@ main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can b
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
 
 Widened by 5.20 (2026-10-14): the same pin applies to promotions.
+Widened by 5.23 (2026-11-11): exact-head CI does not cover a base that moved after the run.
 
 ### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
 
@@ -4693,37 +4695,62 @@ half gains the proposal above: each shard prints its duration against its timeou
 The warning does not fail the run, so it is not enforcement and stays labelled Convention-plus-warning. First
 run: shards took 282 to 495 seconds, against 20 to 24 minutes for the old `Python core`.
 
-### 5.23 Merged a PR whose CI had tested its merge into an older `dev`
+### 5.23 A repo-wide guard and a PR that adds an offender merged minutes apart; `dev` went red (widens 5.16)
 
-**Occurrences: 1** — 2026-11-11
+**What happened.** On 2026-11-11, #1066 added `test_no_new_test_builds_its_own_http_server`
+(`platform/tests/test_fake_http.py`), which refuses any test file that builds its own HTTP server
+unless the file is on an exact list. It merged at 21:26:47 UTC with the 15 checks the merge guard expects green (CodeRabbit neutral). #952,
+from another session, added `platform/tests/test_probe_skynet_launch.py`, whose listener subclasses
+`ThreadingHTTPServer`. Its Python CI finished at 21:20:44 UTC, before #1066 existed on `dev`, and
+it merged at 21:31:51 UTC with its head not containing #1066. The combination failed the guard on
+`dev`: a PR CI run in that window failed the guard (run 43104746466), and `dev` itself runs no push
+CI, so its state is read from PR merge-ref runs. A peer session reported it; #1068 added the file to the
+list and merged at 21:49:50 UTC.
 
-**What happened.** PR #952 (the skynet launch probe) was merged into `dev` at 21:31:51 UTC on head `f37ea8a3`.
-All 16 checks on that head were green, and `scripts/merge-when-green.py` passed. That CI run (43101169921)
-checked out `pull/952/merge` (`a2522490`) at 21:13:15 UTC: the head merged into `dev` at `58a654ae`, the merge
-commit's first parent.
-PR #1066 merged at 21:26:47 UTC. It added `test_no_new_test_builds_its_own_http_server` to
-`platform/tests/test_fake_http.py`, a ratchet that lets the list of test files starting their own HTTP server
-(`OWN_SERVERS`) only shrink. #952's new test file starts one (`_Listener(ThreadingHTTPServer)`), and #1066 was
-not in #952's head. The combination failed on `dev`, and every PR into `dev` failed a Python shard until
-#1068 (`98a10fe1`, 21:49:50 UTC) added the file to `OWN_SERVERS`. Another session found it and fixed it. The
-reviewer of #952's final delta had noted that `dev` had moved since the branch merged it, and advised running
-the guard against the current head. The guard was run, and it passed.
+**Root cause.** The merge guard (`scripts/merge-when-green.py`) proves CI on the PR's head, not on
+the result of merging that head into the current `dev`. `dev` has no up-to-date-branch rule,
+because the main-to-dev sync pushes to it directly. A repo-wide check is exactly the kind of
+change whose result depends on files other PRs add, so two heads that are each green can merge
+into a red branch. 5.16's exact-head pin was met here (#952's own head had green CI), so this widens it:
+an exact head is not enough when the base moved after its CI ran.
 
-**Root cause.** A `pull_request` run tests the PR's merge with the base as it was when the run started. The
-merge guard checks that run's result on the exact head, and that the PR's base SHA does not change during its
-own evidence read (`merge-when-green.py`, the base comparison before the merge). It does not check whether
-`dev` moved after the CI run started, and nothing re-runs CI when `dev` moves, because `dev` has no
-required-check rule (AGENTS.md, "Feature-to-Dev pull-request merges"). Two PRs that are each green against an
-older `dev` can therefore combine red. A ratchet test, one that refuses any new instance of a pattern, makes
-this likely, because it fails on files it has never seen.
+**The rule.** Immediately before merging, when `origin/dev` holds commits the PR's head does not
+and any of them touches a test file, merge `dev` into the branch and let CI run again on the new
+head.
 
-**The rule.** Before merging into `dev`, compare the commit `dev` was at when the head's CI run started (the
-first parent of its `pull/<n>/merge` ref) with `dev`'s current tip. If `dev` has moved, merge it into the
-branch, or re-run the CI, and merge only on a run that includes the current `dev`.
+**Enforced by.** Convention. Proposal: `merge-when-green.py` reports how many commits `origin/dev`
+holds that the head lacks, and refuses when any of them touches a test file until the operator
+passes an explicit acknowledgement.
 
-**Enforced by.** Convention. Proposal: have `merge-when-green.py` refuse when the base it reads differs from
-the base the exact-head CI run tested (that run's merge ref's first parent). That turns "re-run on a moved
-base" into a refusal.
+### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
+
+**Occurrences: 2** — 2026-10-29, 2026-11-11
+
+**What happened.** The branch workflow (`AGENTS.md:568`, step 4) runs `/simplify` and
+`/security-review` on the branch changes before a PR is opened. #1066 (fixture servers onto
+`fake_http.serve`) was opened, reviewed by `pr-reviewer` and merged on 2026-11-11 without either.
+The grounding checkpoint ran them after the merge. `/security-review` found nothing reportable,
+but `/simplify` found that `serve` wraps the listening socket for TLS
+(`platform/tests/fake_http.py:91`), so the handshake runs on the accept thread and one silent
+client hangs every request and the teardown; a reviewer reproduced it. It also found that small
+parameters on `serve` would retire most of the files still on the guard's list. Those went to a
+follow-up rather than into the PR.
+
+**Root cause.** The step lives only in prose, and nothing between `git push` and the merge asks
+for it. The independent PR review covers correctness. It does not stand in for the two passes,
+which look for different things (reuse and altitude; a security-only threat model).
+
+**The rule.** Before `gh pr create`, run `/simplify` and `/security-review` on the branch diff and
+put one line for each in the PR body: what it found, and what was fixed or deferred.
+
+**Enforced by.** Convention. Proposal: a PR-template checkbox for each pass, and a
+`merge-when-green.py` check that the PR body names both.
+
+**Occurrence 1 — 2026-10-29.** Recorded in 10.33 (found 2026-10-31) only as a cause: the
+`/security-review` skipped for #778 would have read OPA's command line with the write-surface
+question in mind. This entry gives the rule its own place, so the count is visible. 2.23 and 2.35
+were also found by `/simplify` passes after their PRs merged; whether step 4 ran on those PRs is
+not recorded, so they are not counted.
 
 ## 6. Working from assumptions about files
 

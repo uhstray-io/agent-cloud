@@ -1688,8 +1688,8 @@ def test_the_skynet_refusal_names_the_declared_shape_word_for_word(world):
 # the port the service publishes, a host relying on the default would fail its proof every day, and the
 # behaviour tests (which all set the port) would not notice. Review of PR 842.
 # Each entry: the file that holds the service's default port, the text that comes just before the default, and the
-# character that ends it. skynet publishes through compose.tls.yml's required variable (no default there), so its
-# default is the one the deploy's env template renders.
+# character that ends it. skynet's compose.tls.yml defaults its port too (teardown needs it), but the deploy always
+# renders SKYNET_TLS_PUBLISH_PORT, so the default that matters is the one the env template renders.
 _LISTENER_DEFAULTS = {
     "opa-server": ("platform/services/opa/deployment/compose.yml", "${OPA_PORT:-", "}"),
     "launch-gate-server": ("platform/services/launch-gate/deployment/compose.yml", "${LAUNCH_GATE_PORT:-", "}"),
