@@ -194,15 +194,12 @@ fn add_tiers(modules: &mut BTreeSet<String>, tiers: &Tiers, static_only: bool) {
 }
 
 fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
-    let parts: [&Node; 4] = section(
+    let [full, ignore, always, areas] = section(
         doc,
         "the file",
-        &["full", "ignore", "always", "areas"],
+        ["full", "ignore", "always", "areas"],
         origin,
-    )?
-    .try_into()
-    .expect("section returns one value per key");
-    let [full, ignore, always, areas] = parts;
+    )?;
 
     let area_entries = areas
         .as_map()
@@ -213,11 +210,7 @@ fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
             .as_str()
             .ok_or_else(|| format!("{origin}: area name {key:?} is not a string"))?;
         let name = module_name(name, "area name", origin)?;
-        let parts: [&Node; 2] =
-            section(body, &format!("area `{name}`"), &["paths", "tiers"], origin)?
-                .try_into()
-                .expect("section returns one value per key");
-        let [paths, tiers] = parts;
+        let [paths, tiers] = section(body, &format!("area `{name}`"), ["paths", "tiers"], origin)?;
         parsed.insert(
             name.clone(),
             Area {
@@ -237,12 +230,12 @@ fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
 
 /// The value of each key of `node`, in the order of `keys`. Every key is required and no
 /// other is allowed: a misspelt key would otherwise select nothing, without a word.
-fn section<'a>(
+fn section<'a, const N: usize>(
     node: &'a Node,
     what: &str,
-    keys: &[&str],
+    keys: [&str; N],
     origin: &str,
-) -> Result<Vec<&'a Node>, String> {
+) -> Result<[&'a Node; N], String> {
     let entries = node
         .as_map()
         .ok_or_else(|| format!("{origin}: {what} must be a mapping"))?;
@@ -253,12 +246,13 @@ fn section<'a>(
             ));
         }
     }
-    keys.iter()
-        .map(|key| {
-            node.get(key)
-                .ok_or_else(|| format!("{origin}: {what} is missing `{key}`"))
-        })
-        .collect()
+    let mut values = [node; N];
+    for (value, key) in values.iter_mut().zip(keys) {
+        *value = node
+            .get(key)
+            .ok_or_else(|| format!("{origin}: {what} is missing `{key}`"))?;
+    }
+    Ok(values)
 }
 
 /// A module or area name: letters, digits and underscores, never empty. The name becomes a
