@@ -42,13 +42,10 @@ flowchart TD
 | Grafana | OIDC | Admin | **Editor** | Viewer | `GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH` (groups claim) |
 | Semaphore | OIDC | Admin (`promote-semaphore-admins.yml`) | **read-only (default)** | — | Semaphore v2.18.12 has **no** group→role map (roadmap); OIDC users are non-admin by default, so developers land read-only automatically. Admins→admin is automated via `promote-semaphore-admins.yml` (Semaphore API; the roster is derived from `platform_admins` plus Semaphore-only `semaphore_admin_users`, issue #604) |
 | ERPNext | OIDC | System Manager | (login only) | **direct rw role grant** (curated module "* User" set) | Frappe social-login matches by email; roles pre-provisioned by `post-deploy.sh` |
-| tududi (retired 2026-11-09) | OIDC | admin (email domain) | user (rw own tasks) | — | `OIDC_ADMIN_EMAIL_DOMAINS` (tududi side) |
-| n8n | forward_auth | full use | full use | — | binary (community n8n has no SSO roles) |
-| OpenHands | forward_auth | full use | full use | — | binary |
 | NetBox | forward_auth | superuser/staff | access | — | `REMOTE_AUTH_*_GROUPS` (groups header) |
 | OpenBao | forward_auth + oidc | admin (oidc, admin-tier) | access (forward_auth) | — | policy aliases (planned) |
 
-- **andrew** = `platform-developers` + `platform-business` → Grafana Editor, Semaphore read-only, ERPNext rw, n8n/OpenHands full use (tududi was retired 2026-11-09).
+- **andrew** = `platform-developers` + `platform-business` → Grafana Editor, Semaphore read-only, ERPNext rw.
 - **wisward** = `platform-admins` → top role everywhere (identical to the operator admin).
 - **Groups claim:** VERIFIED — Authentik's default `profile` scope mapping emits `groups` (confirmed against the pinned 2024.12.3 blueprint; `[g.name for g in request.user.ak_groups.all()]`). The `openid email profile` scopes the providers already request are sufficient; no extra scope mapping needed.
 

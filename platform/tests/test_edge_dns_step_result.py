@@ -9,9 +9,9 @@ import copy
 import importlib.util
 import json
 import os
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 from ansible_python import needs_ansible
@@ -92,11 +92,7 @@ def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None,
                          "tofu_action": action},
                 "tasks": tail}]
     (tmp_path / "p.yml").write_text(json.dumps(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    env["ANSIBLE_SHOW_CUSTOM_STATS"] = "1"
-    proc = subprocess.run(["ansible-playbook", "-i", "localhost,", str(tmp_path / "p.yml")], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False)
+    proc = harness_sandbox.run_playbook(tmp_path / "p.yml", tmp_path, env={"ANSIBLE_SHOW_CUSTOM_STATS": "1"})
     _run.stdout = proc.stdout
     if fails:
         return proc
@@ -272,15 +268,12 @@ def _tofu_run(tmp_path, check, plan_rc=0, plan_stdout="No changes.", init_rc=0, 
                          "_cf": {"r2_access_key_id": "a", "r2_secret_access_key": "b", "api_token": "c"}},
                 "tasks": tasks}]
     (tmp_path / "p.yml").write_text(json.dumps(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env.update({"PATH": f"{bin_dir}:{env['PATH']}", "ANSIBLE_NOCOLOR": "1", "ANSIBLE_SHOW_CUSTOM_STATS": "1",
-                "FAKE_TOFU_LOG": str(log), "FAKE_INIT_RC": str(init_rc), "FAKE_PLAN_RC": str(plan_rc),
-                "FAKE_PLAN_STDOUT": plan_stdout,
-                "FAKE_SHOW_JSON": GRAFANA_INSERT_PLAN if plan_rc == 2 else GRAFANA_NOOP_PLAN,
-                "FAKE_SHOW_RC": str(show_rc)})
-    argv = ["ansible-playbook", "-i", "localhost,", *(["--check"] if check else []), str(tmp_path / "p.yml")]
-    proc = subprocess.run(argv, cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-                          check=False)
+    env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "ANSIBLE_SHOW_CUSTOM_STATS": "1",
+           "FAKE_TOFU_LOG": str(log), "FAKE_INIT_RC": str(init_rc), "FAKE_PLAN_RC": str(plan_rc),
+           "FAKE_PLAN_STDOUT": plan_stdout,
+           "FAKE_SHOW_JSON": GRAFANA_INSERT_PLAN if plan_rc == 2 else GRAFANA_NOOP_PLAN,
+           "FAKE_SHOW_RC": str(show_rc)}
+    proc = harness_sandbox.run_playbook(tmp_path / "p.yml", tmp_path, *(["--check"] if check else []), env=env)
     calls = [line.split("|") for line in log.read_text().splitlines()] if log.exists() else []
     root = {str(p.relative_to(tf_dir)): p.read_text() for p in tf_dir.rglob("*") if p.is_file()}
     return proc, calls, root, tf_dir

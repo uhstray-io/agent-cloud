@@ -20,13 +20,6 @@ workstation OpenBao login before work that an existing Semaphore template can
 execute. Never export the controller AppRole from the browser or use backup
 credentials to manufacture workstation access.
 
-**Verified production evidence:** task 411, `Verify tududi-github Sync (Dev)` (template retired 2026-11-07; what it showed is recorded here because the task may not survive the template's deletion),
-authenticated through the controller AppRole, read runtime secrets, checked the
-GitHub App's repository coverage and reached n8n. It stopped at an absent
-credential-visible sync workflow with `changed=0`; it did not verify task/issue
-correspondence. This proves that executor's access at the time of the run, not
-every credential's validity or ongoing AppRole health.
-
 ## The production Semaphore host (recorded 2026-09-26)
 
 Production Semaphore runs under rootful podman from a legacy standalone compose directory
@@ -88,8 +81,7 @@ and the access report names each declared admin still to promote (issue #604). R
 under check mode first; the report lists the live team, admins and integrations by name. A real
 run adds declared accounts, sets declared roles, removes undeclared members and reads the team
 back; a declaration naming an account that does not exist stops it before any write. It never demotes a system admin or deletes an integration: each is named and fails the
-run for an operator decision. The NemoClaw AppRole's policy denies the path that holds the
-controller's own API token.
+run for an operator decision.
 
 ## Launching a task from outside the controller (the API path)
 
@@ -280,7 +272,7 @@ The declared **Publish Semaphore Template Surveys (Dev)** template runs
 Its required survey input is `semaphore_template_names_json`, for example:
 
 ```json
-["Store n8n API Key (Dev)"]
+["Store Postiz API Key (Dev)"]
 ```
 
 It uses the controller AppRole to read the fixed OpenBao
@@ -350,7 +342,7 @@ Before any API call, the playbook refuses a name that `templates.yml` or
 matches more than one live template. A name with no live template is reported as
 already absent, so a re-run converges.
 
-On the tududi refresher, a template with weeks of runs, the single template DELETE timed
+On a template with weeks of runs, the single template DELETE timed
 out at 30 s, then at 600 s (Semaphore tasks 14206, 14211, 14223), while smaller templates
 deleted fine. So the playbook drains the history first. It reads each template's newest
 page of tasks in both modes, and refuses before any delete while a task is running or
@@ -572,7 +564,7 @@ Postgres restored service with nothing lost (`docs/MISTAKES.md` 1.18).
 
 Task output is stored in that database. A deploy dry run launched with `diff: true`
 records the monorepo placement's whole git diff: about 86,000 lines per task for
-Deploy honcho (Dev) and Deploy tududi (Dev) on 2026-09-26. Watch the host's disk
+two (Dev) deploys on 2026-09-26. Watch the host's disk
 when dry-running deploys whose target checkout is far behind.
 
 Report task ID, observed source revision when available, target names, failed

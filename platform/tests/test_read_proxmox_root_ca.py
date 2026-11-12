@@ -32,14 +32,13 @@ import os
 import re
 import ssl
 import subprocess
-import threading
-from http.server import ThreadingHTTPServer
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler, refused_port
+from fake_http import DrainingHandler, refused_port, serve
 from test_pve_pinned_get import _generate_leaf
 
 REPO = Path(__file__).resolve().parents[2]
@@ -516,6 +515,7 @@ def _with_leaf(certs, leaf):
     return out
 
 
+@contextmanager
 def _fake_proxmox(nodes, certs, leaf):
     """A loopback HTTPS Proxmox API: the node list and the certificate info of each node. Records every request."""
     seen = []
@@ -544,18 +544,11 @@ def _fake_proxmox(nodes, certs, leaf):
         def log_message(self, *args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.minimum_version = ssl.TLSVersion.TLSv1_2
     tls.load_cert_chain(str(leaf.cert_path), str(leaf.key_path))
-    server.socket = tls.wrap_socket(server.socket, server_side=True)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server, seen
-
-
-def _stop(server):
-    server.shutdown()
-    server.server_close()
+    with serve(Handler, ssl_context=tls) as url:
+        yield url, seen
 
 
 def _harness(tmp_path, pve_url, token_id, pin=None):
@@ -614,13 +607,9 @@ def test_the_leaf_is_found_on_whichever_online_node_holds_it_and_only_the_root_c
              {"node": "pve-c", "status": "online"}]
     certs = _good_certs("pve-b", leaf if serving == "pve-b" else None) \
         | _good_certs("pve-c", leaf if serving == "pve-c" else None)
-    server, seen = _fake_proxmox(nodes, certs, leaf)
-    try:
+    with _fake_proxmox(nodes, certs, leaf) as (url, seen):
         # The lowercase, colon-free form of the pin: the playbook and the helper both normalise it.
-        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID,
-                             pin=leaf.flat.lower()))
-    finally:
-        _stop(server)
+        done = _run(_harness(tmp_path, url, TOKEN_ID, pin=leaf.flat.lower()))
     out = done.stdout + done.stderr
     assert done.returncode == 0, out[-2000:]
     # The node list, then one certificate-info GET per online node in name order, each with the admin header.
@@ -647,12 +636,8 @@ def test_a_successful_multi_node_run_prints_no_address_at_default_verbosity(tmp_
     # the derived debug. -v and above print the observe argv, which carries the API URL, so this runs without -v.
     nodes = [{"node": "pve-b", "status": "online"}, {"node": "pve-c", "status": "online"}]
     certs = _good_certs("pve-b") | _good_certs("pve-c", leaf)
-    server, _ = _fake_proxmox(nodes, certs, leaf)
-    url = f"https://127.0.0.1:{server.server_address[1]}"
-    try:
+    with _fake_proxmox(nodes, certs, leaf) as (url, _):
         done = _run(_harness(tmp_path, url, TOKEN_ID, pin=leaf.colon), verbosity=None)
-    finally:
-        _stop(server)
     out = done.stdout + done.stderr
     assert done.returncode == 0, out[-2000:]
     assert "listed as: pve-c/pve-ssl.pem, issued by this root CA." in out, out[-1500:]
@@ -662,11 +647,8 @@ def test_a_successful_multi_node_run_prints_no_address_at_default_verbosity(tmp_
 
 def _run_pinned(tmp_path, leaf, nodes, certs):
     """Run the harness on a fake Proxmox serving `certs`; returns (done, seen)."""
-    server, seen = _fake_proxmox(nodes, _with_leaf(certs, leaf), leaf)
-    try:
-        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID, pin=leaf.colon))
-    finally:
-        _stop(server)
+    with _fake_proxmox(nodes, _with_leaf(certs, leaf), leaf) as (url, seen):
+        done = _run(_harness(tmp_path, url, TOKEN_ID, pin=leaf.colon))
     return done, seen
 
 
@@ -725,11 +707,8 @@ def test_a_non_serving_node_whose_pve_ssl_has_no_issuer_does_not_block_the_pinne
 @needs_ansible
 def test_a_missing_pin_stops_before_the_token_is_used(tmp_path, leaf):
     nodes = [{"node": "pve-b", "status": "online"}]
-    server, seen = _fake_proxmox(nodes, _good_certs("pve-b", leaf), leaf)
-    try:
-        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID, pin=None))
-    finally:
-        _stop(server)
+    with _fake_proxmox(nodes, _good_certs("pve-b", leaf), leaf) as (url, seen):
+        done = _run(_harness(tmp_path, url, TOKEN_ID, pin=None))
     out = done.stdout + done.stderr
     assert done.returncode != 0, out[-1500:]
     assert "No proxmox_leaf_sha256 was given" in out, out[-1500:]
@@ -743,11 +722,8 @@ def test_a_missing_pin_stops_before_the_token_is_used(tmp_path, leaf):
 def test_a_wrong_pin_stops_before_the_token_is_used(tmp_path, leaf):
     wrong = hashlib.sha256(b"not the leaf certificate").hexdigest()
     nodes = [{"node": "pve-b", "status": "online"}]
-    server, seen = _fake_proxmox(nodes, _good_certs("pve-b", leaf), leaf)
-    try:
-        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID, pin=wrong))
-    finally:
-        _stop(server)
+    with _fake_proxmox(nodes, _good_certs("pve-b", leaf), leaf) as (url, seen):
+        done = _run(_harness(tmp_path, url, TOKEN_ID, pin=wrong))
     out = done.stdout + done.stderr
     assert done.returncode != 0, out[-1500:]
     assert "does not match the API leaf certificate observed from this run" in out, out[-1500:]
@@ -837,12 +813,8 @@ def test_a_wrong_pin_stops_before_the_token_is_used(tmp_path, leaf):
 ])
 def test_each_refusal_stops_before_anything_is_printed(tmp_path, leaf, case, nodes, certs, token_id, expected):
     certs = _with_leaf(certs, leaf)
-    server, seen = _fake_proxmox(nodes, certs, leaf)
-    try:
-        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", token_id,
-                             pin=leaf.colon))
-    finally:
-        _stop(server)
+    with _fake_proxmox(nodes, certs, leaf) as (url, seen):
+        done = _run(_harness(tmp_path, url, token_id, pin=leaf.colon))
     out = done.stdout + done.stderr
     assert done.returncode != 0, (case, out[-1500:])
     assert expected in out, (case, out[-1500:])
@@ -861,12 +833,8 @@ def test_a_custom_served_certificate_is_named_by_its_basename_and_nothing_is_pri
         _entry("pve-ssl.pem", "CN=pve-b", ROOT_SUBJECT, pem=LEAF_PEM),
         _entry("pveproxy-ssl.pem", "CN=pve-b", "CN=Example ACME CA", pem=LEAF_PEM, fingerprint=leaf.colon.lower()),
     ]}
-    server, _ = _fake_proxmox([{"node": "pve-b", "status": "online"}], certs, leaf)
-    try:
-        done = _run(_harness(tmp_path, f"https://127.0.0.1:{server.server_address[1]}", TOKEN_ID,
-                             pin=leaf.flat.lower()), verbosity=None)
-    finally:
-        _stop(server)
+    with _fake_proxmox([{"node": "pve-b", "status": "online"}], certs, leaf) as (url, _):
+        done = _run(_harness(tmp_path, url, TOKEN_ID, pin=leaf.flat.lower()), verbosity=None)
     out = done.stdout + done.stderr
     assert done.returncode != 0, out[-1500:]
     assert ("The pinned leaf is listed by pve-b/pveproxy-ssl.pem, and at least one of those entries is not issued by "
@@ -893,12 +861,8 @@ def test_a_refused_certificate_read_is_named_by_exit_code_and_its_url_is_not_pri
         tmp_path, leaf):
     # The node is online but has no certificate entry in the fake, so the certificate read answers 404: the helper
     # exits 4 after the pin held and the token was sent. The named reason is the only thing that may print.
-    server, seen = _fake_proxmox([{"node": "pve-b", "status": "online"}], {}, leaf)
-    url = f"https://127.0.0.1:{server.server_address[1]}"
-    try:
+    with _fake_proxmox([{"node": "pve-b", "status": "online"}], {}, leaf) as (url, seen):
         done = _run(_harness(tmp_path, url, TOKEN_ID, pin=leaf.colon), verbosity=None)
-    finally:
-        _stop(server)
     out = done.stdout + done.stderr
     assert done.returncode != 0, out[-1500:]
     assert seen and seen[-1][1] == "/api2/json/nodes/pve-b/certificates/info", seen

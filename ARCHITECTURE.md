@@ -21,7 +21,7 @@ private **site-config** repo; this repo holds templates, placeholders, and code.
    (the MAP)           connect, and a pointer from each subsystem to the doc that owns it.
                        Connective tissue — it simplifies, it does not re-state.
 
-   plan/architecture/  The per-area HOW and why-in-depth (00..09, deep + dense).
+   plan/architecture/  The per-area HOW and why-in-depth (00..06 and 08..09, deep + dense).
    plan/development/   The execution ROADMAP — service-by-service implementation plans.
    CLAUDE.md           The turn-by-turn operational rules an agent follows while editing.
 ```
@@ -43,14 +43,8 @@ flowchart TB
     classDef risk stroke:#b00020,stroke-width:2px
 
     subgraph AI["AI layer: proposes"]
-        NC["NemoClaw"]
-        NT["NetClaw"]
-        CW["Cowork (planned)"]
-        WB["WisBot (unverified)"]
-        WS["WebSmith (prompt-only, no runtime)"]
         SK["skynet orchestration API (deployed 2026-10-30)"]
         AGW["agentgateway inference edge (live)"]
-        SIDE["ComfyUI and Hunyuan3D sidecars"]
     end
 
     subgraph GR["Guardrail layer: validates"]
@@ -64,7 +58,6 @@ flowchart TB
     subgraph AU["Automation layer: executes"]
         SEM["Semaphore (orchestrator)"]
         ANS["Ansible playbooks"]
-        N8N["n8n (workflows, queue mode)"]
         RUN["GitHub runners (no enforced per-job isolation)"]:::risk
     end
 
@@ -80,14 +73,10 @@ flowchart TB
     end
 
     subgraph HOST["Hosted workloads (not a layer)"]
-        OH["OpenHands (host Docker socket, root-equivalent)"]:::risk
-        APPS["honcho, Postiz, ERPNext, Dispatch Console, tududi (retired), NocoDB (retiring)"]
-        UHH["UhhCraft"]
+        APPS["honcho, Postiz, ERPNext, Dispatch Console"]
         PLANE["Plane (deploy run recorded, live unverified)"]
     end
 
-    NC -.->|"model call (wiring not verified)"| AGW
-    NT -.->|"model call (wiring not verified)"| AGW
     SK -.->|"model call (production use not recorded)"| AGW
     AGW -->|"model call (plain HTTP, TLS pending)"| VLLM
     CADDY -->|"routing: production"| AGW
@@ -106,17 +95,14 @@ flowchart TB
     STEP -->|"identity (mTLS leaves)"| CADDY
     STEP -->|"identity (server TLS)"| OPA
     CADDY -->|"routing"| APPS
-    CADDY -->|"routing"| OH
-    UHH -.->|"generation call (GPU readiness unproven)"| SIDE
     PVE -.->|"telemetry (host scrape, enrollment pending)"| O11Y
     ORB -.->|"discovery (freshness not verified)"| NB
 ```
 
 **Legend.** A solid arrow is live: it is in code or a deployment record. A dashed arrow is
 planned, unverified, refused, or a rollback path. Edge labels name the kind of edge: model call,
-policy decision, credential retrieval, deployment, identity, routing, telemetry, discovery, or
-generation call. A red border marks a risk: a privileged or host-networked process, a
-root-equivalent socket, or missing enforced isolation.
+policy decision, credential retrieval, deployment, identity, routing, telemetry, or discovery.
+A red border marks a risk: a privileged or host-networked process, or missing enforced isolation.
 
 **What the diagram does not show.**
 
@@ -127,11 +113,8 @@ root-equivalent socket, or missing enforced isolation.
 - Semaphore launches from skynet were refused after 2026-10-31, when the svc-skynet role was
   demoted to read-only `guest`.
 - DNS names are served by hickory-dns, but no edge is drawn for name resolution.
-- WebSmith has no runtime by design, so it has no edges.
 - The Caddy-to-agentgateway hop uses the internal CA. The gateway-to-vLLM hop is plain HTTP;
   its TLS is pending.
-- Agent-to-agentgateway edges are dashed because the agent deployment config that would wire
-  them was not found in the repository.
 - Plain-HTTP and the firewall: backends speak plain HTTP only where the default-deny host
   firewall is applied, and that firewall is not declared on every host.
 
@@ -158,9 +141,7 @@ jump to that doc.
 
 | Subsystem | What it is | Layer | Owning doc |
 |---|---|---|---|
-| **skynet** | Orchestration API: runs the onboarding workflow, asks OPA for each decision, calls models through agentgateway. Deployed 2026-10-30; the gateway's `/skynet/` route is not yet in production | AI | [skynet/deployment/CLAUDE.md](platform/services/skynet/deployment/CLAUDE.md) |
-| **AI agents** (NemoClaw, NetClaw, WisBot, Cowork) | Headless / network / Discord / interactive agents that emit desired-state proposals | AI | [plan/development/06-inference-skynet.md](plan/development/06-inference-skynet.md) |
-| **WebSmith** | Website-building agent; produces a signed `SPEC.md` per site, handed to a service deploy | AI | [07-website-building-agent.md](plan/architecture/07-website-building-agent.md) |
+| **skynet** | Orchestration API and its agent roles (`infra-agent`, `security-agent`, `o11y-agent`, `service-agent`, `network-agent`, `skynet-eval`): runs the onboarding workflow, asks OPA for each decision, calls models through agentgateway. Deployed 2026-10-30; the gateway's `/skynet/` route is not yet in production | AI | [skynet/deployment/CLAUDE.md](platform/services/skynet/deployment/CLAUDE.md) |
 | **OpenBao** | Sole source of truth for every credential | Guardrail | [04-credentials-access.md](plan/architecture/04-credentials-access.md) |
 | **OPA / Kyverno** | Policy-as-code: agent-action authorization (OPA now), k8s admission (Kyverno, post-migration) | Guardrail | [plan/development/03-guardrails-governance.md](plan/development/03-guardrails-governance.md) |
 | **Authentik** | Central IdP/SSO; groups are the source of truth for human identity → roles | Guardrail | [04-credentials-access.md](plan/architecture/04-credentials-access.md) |
@@ -174,12 +155,11 @@ jump to that doc.
 | **Service onboarding & tiers** | The one-shape-per-tier model + onboarding checklist for new services | cross-cut | [02-service-onboarding.md](plan/architecture/02-service-onboarding.md) |
 | **Testing / CI / quality gates** | The lint + test + leak-prevention gates every PR passes | cross-cut | [03-testing-ci-quality.md](plan/architecture/03-testing-ci-quality.md) |
 | **agentgateway** | Inference edge: per-client keys and token budgets in front of the external vLLM; route switched 2026-10-14 | AI | [service-architecture.md](plan/architecture/service-architecture.md) |
-| **n8n** | Workflow automation, queue mode; production since 2026-09-02 | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **GitHub runners** | Self-hosted CI for private repos; no enforced per-job isolation | Automation | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **launch gate** | The only path from agents to Semaphore launches; live in production since 2026-11-09 | Guardrail | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **orb-agent** | NetBox discovery worker; runs privileged on the host network | Infrastructure | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **vLLM (DGX Spark)** | Model serving on the GPU pair; external, owned by the dgx-spark repository | Infrastructure (external) | [service-architecture.md](plan/architecture/service-architecture.md) |
-| **Hosted workloads** | honcho, Postiz, ERPNext, UhhCraft, Dispatch Console, OpenHands, tududi (retired), NocoDB (retiring), Plane (deploy run recorded, live unverified); not a layer | Hosted | [service-architecture.md](plan/architecture/service-architecture.md) |
+| **Hosted workloads** | honcho, Postiz, ERPNext, Dispatch Console, Plane (deploy run recorded, live unverified); not a layer | Hosted | [service-architecture.md](plan/architecture/service-architecture.md) |
 | **Doc standards & index** | How docs are structured, status values, the full doc index | cross-cut | [00-foundation-standards.md](plan/architecture/00-foundation-standards.md) |
 
 ## Load-Bearing Decisions (one line each)
@@ -222,9 +202,6 @@ The big ones, roughly in priority order:
 - **AppRole rotation remains incomplete.** The shared task now defaults to `secret_id_ttl: 2160h`
   and reuses stored credentials. Expiry-aware rotation and finite SecretID login counts remain
   targets; `token_num_uses` limits issued tokens, not SecretID authentications.
-- **NocoDB credential-boundary violation.** NocoDB is retired (2026-09-01) but still runs through its legacy `deploy.sh`, which sources `bao-client.sh`
-  (legitimate only for the genesis services OpenBao + Semaphore); retiring it is the concrete
-  acceptance test that the deploy.sh boundary is real.
 - **Scheduled config reconciliation** is INVESTIGATE/[TARGET]; today convergence is
   trigger-only and only liveness self-heals.
 - **Alerting before tracing**, the host firewall rollout (partial: applied on some hosts, not all) backing the "trusted network" claim,

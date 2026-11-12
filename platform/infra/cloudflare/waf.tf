@@ -230,5 +230,35 @@ resource "cloudflare_ruleset" "custom_firewall" {
         enabled = true
       }
     },
+    # Plane's GitHub App webhook — bypass the challenge for the one delivery path (plane change
+    # task 3.3). GitHub posts deliveries server-side, and the zone answered this path with
+    # `cf-mitigated: challenge` (HTTP 403, probed 2026-11-10), so no delivery could reach Plane.
+    # Authentication stays at the origin: spike 0.16 showed silo refuses an unsigned or wrongly
+    # signed delivery (401) once GITHUB_WEBHOOK_SECRET is set, env.j2 refuses to render the GitHub
+    # settings without it, and Deploy Plane's verify asserts the 401. Not gated on the App being
+    # declared (tofu cannot read the Ansible inventory, and needs no gate): with no App configured
+    # silo refuses every delivery with 403 (spike 0.16), so the path is closed either way; the one
+    # unsafe state, an App without the secret, is the one env.j2 refuses. Exact path only; the
+    # OAuth callbacks run in the user's browser, which passes a challenge.
+    # It also skips the managed rules (AC-687). On 2026-11-11 the zone blocked four `issues`
+    # deliveries with its WAF block page (403, `Server: cloudflare`, the same on every redelivery),
+    # issue bodies about OIDC, DNS exfiltration and Cloudflare settings; which managed rule fired is
+    # unverified (no firewall events read). Content inspection adds nothing here: only GitHub holds
+    # the webhook secret, so only a body GitHub signed gets past silo's signature check, and an
+    # unsigned or wrongly signed one is refused 401 at the origin. Rate limiting stays on.
+    {
+      ref         = "plane-github-webhook-bypass-challenge"
+      action      = "skip"
+      enabled     = true
+      description = "Plane GitHub App webhook - bypass challenge and managed rules for GitHub's deliveries"
+      expression  = "(http.host eq \"plane.uhstray.io\" and http.request.uri.path eq \"/silo/api/github/github-webhook\")"
+      action_parameters = {
+        phases   = ["http_request_sbfm", "http_request_firewall_managed"]
+        products = ["bic", "securityLevel"]
+      }
+      logging = {
+        enabled = true
+      }
+    },
   ]
 }

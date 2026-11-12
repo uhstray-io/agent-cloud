@@ -36,7 +36,7 @@ pub const MAX_REQUESTS: usize = 1500;
 /// when it is built, so this struct is the only shape a secret takes on its way out.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SecretPath {
-    /// `secret/` followed by the key, such as `secret/services/tududi`.
+    /// `secret/` followed by the key, such as `secret/services/postiz`.
     pub path: String,
     pub current_version: u64,
     /// How many versions the metadata keeps and has not destroyed.
@@ -373,7 +373,7 @@ mod tests {
             let keys = match key {
                 // `gone` is listed but has no metadata: a secret deleted after the LIST.
                 "" => json!(["services/", "zeta", "alpha", "gone"]),
-                "services" => json!(["console/", "tududi", "authentik-oidc"]),
+                "services" => json!(["console/", "postiz", "authentik-oidc"]),
                 "services/console" => json!(["github", "openbao-approle"]),
                 _ => return not_found,
             };
@@ -425,7 +425,7 @@ mod tests {
                 metadata(1, 7, "2026-05-01T00:00:00Z", json!({"owner": "console"}))
             }
             "services/console/openbao-approle" => metadata(1, 1, "2026-06-01T00:00:00Z", json!({})),
-            "services/tududi" => {
+            "services/postiz" => {
                 let mut data = metadata(2, 4, "2026-07-01T00:00:00Z", json!({}));
                 // Version 3 is destroyed: its entry stays, its data is gone. Version 2 has no
                 // `destroyed` key at all, which is not destroyed. Two of the three are kept.
@@ -469,7 +469,7 @@ mod tests {
                 1,
                 "2026-06-01T00:00:00Z",
             ),
-            row("secret/services/tududi", 4, 2, "2026-07-01T00:00:00Z"),
+            row("secret/services/postiz", 4, 2, "2026-07-01T00:00:00Z"),
             row("secret/zeta", 1, 1, "2026-03-01T00:00:00Z"),
         ]
     }
@@ -705,7 +705,7 @@ mod tests {
         let http = reqwest::Client::new();
 
         // services/console is two levels down. A depth bound of one skips it with its subtree,
-        // and the siblings beside it (services/tududi, services/authentik-oidc, the root's own
+        // and the siblings beside it (services/postiz, services/authentik-oidc, the root's own
         // leaves) are still read.
         let shallow = walk(&bao, &http, 1, MAX_LEAVES, MAX_REQUESTS)
             .await
@@ -715,7 +715,7 @@ mod tests {
             [
                 "secret/alpha",
                 "secret/services/authentik-oidc",
-                "secret/services/tududi",
+                "secret/services/postiz",
                 "secret/zeta",
             ]
         );

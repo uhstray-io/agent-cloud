@@ -49,10 +49,14 @@ fake_proc() { # fake_proc <pid> <real> <effective> <saved> <fs>
   printf 'Name:\tx\nUid:\t%s\t%s\t%s\t%s\nGid:\t0\t0\t0\t0\n' "$2" "$3" "$4" "$5" >"$T/proc/$1/status"
 }
 
-@test "ephemeral: the script is executable bash, and shellcheck-clean where shellcheck exists" {
+@test "ephemeral: the script is executable bash" {
   [ -x "$SUP" ]
   head -1 "$SUP" | grep -q bash
-  if command -v shellcheck >/dev/null; then shellcheck -S warning "$SUP"; fi
+}
+
+@test "ephemeral: the script is shellcheck-clean" {
+  command -v shellcheck >/dev/null || skip "shellcheck not installed"
+  shellcheck -S warning "$SUP"
 }
 
 @test "ephemeral: processes are matched by any of the four uids, in the account's ids only" {

@@ -20,10 +20,10 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -112,10 +112,7 @@ def _render_catalog(tmp_path: Path, templates, host_counts: dict, playbooks: Pat
     inv.write_text(yaml.safe_dump(inventory))
     plays_path = case_playbooks / "plays.yml"
     plays_path.write_text(yaml.safe_dump(plays))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(["ansible-playbook", "-i", str(inv), str(plays_path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    proc = harness_sandbox.run_playbook(plays_path, case, inventory=inv)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     return json.loads(out.read_text())
 
@@ -192,7 +189,7 @@ def test_the_real_templates_render_to_what_the_rule_states(tmp_path):
     # Non-zero counts for the groups the three named playbooks target, and for their name-rule decoys, so the
     # differential compares real numbers rather than zeros.
     host_counts = {
-        "step_ca_svc": 1, "github_runner_svc": 2, "inference_comfyui_svc": 1,
+        "step_ca_svc": 1, "github_runner_svc": 2,
         "netbox_svc": 3, "plane_svc": 2, "o11y_svc": 4,
         "orb_agent_svc": 9, "plane_mcp_svc": 9, "o11y_journal_collector_svc": 9,
     }
@@ -203,8 +200,7 @@ def test_the_real_templates_render_to_what_the_rule_states(tmp_path):
 
 @NEEDS_ANSIBLE
 def test_the_real_templates_pin_the_exclusion_the_strip_and_the_group_mapping(tmp_path):
-    body = _render_catalog(tmp_path, None, {"step_ca_svc": 1, "github_runner_svc": 2, "inference_comfyui_svc": 1},
-                           PLAYBOOKS)
+    body = _render_catalog(tmp_path, None, {"step_ca_svc": 1, "github_runner_svc": 2}, PLAYBOOKS)
     by_template = {e["template"]: e for e in body["services"]}
     # Deploy All Services deploys every service, so it is not one of them.
     assert "Deploy All Services" not in by_template
@@ -212,9 +208,9 @@ def test_the_real_templates_pin_the_exclusion_the_strip_and_the_group_mapping(tm
     assert by_template["Deploy step-ca (Dev)"] == {
         "service": "step-ca", "name": "step-ca", "template": "Deploy step-ca (Dev)", "deployed_hosts": 1}
     # A hyphenated service maps to its group with underscores.
-    assert by_template["Deploy ComfyUI Sidecar"] == {
-        "service": "inference-comfyui", "name": "ComfyUI Sidecar", "template": "Deploy ComfyUI Sidecar",
-        "deployed_hosts": 1}
+    assert by_template["Deploy GitHub Runner"] == {
+        "service": "github-runner", "name": "GitHub Runner", "template": "Deploy GitHub Runner",
+        "deployed_hosts": 2}
     assert by_template["Deploy GitHub Runner"]["deployed_hosts"] == 2
     assert by_template["Deploy NetBox"]["deployed_hosts"] == 0
 

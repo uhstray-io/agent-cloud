@@ -1,6 +1,6 @@
 ---
 # Pre-commit hooks for agent-cloud
-# Install: pip install pre-commit && pre-commit install
+# Install: uv tool install pre-commit && pre-commit install
 # Manual run: pre-commit run --all-files
 # Update hooks: pre-commit autoupdate
 
@@ -210,8 +210,8 @@ repos:
   # (2026-11-04). It runs inside Gate 1 (.githooks/pre-commit), so SKIP_SECRET_SCAN=1 skips it
   # too. The test takes about 0.4s, so it can gate the commit itself. Like the pre-push run, it
   # skips with a message when pytest is not importable for python3 (a missing tool skips;
-  # CLAUDE.md "Test check on push"). A real test failure blocks the commit. CI's Python core
-  # job runs the same file.
+  # CLAUDE.md "Test check on push"). A real test failure blocks the commit. One of CI's Python
+  # shards runs the same file.
   - repo: local
     hooks:
       - id: ledger-citations

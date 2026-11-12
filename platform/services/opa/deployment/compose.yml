@@ -39,7 +39,7 @@ services:
     ports:
       # Loopback by default (prod can widen); agents on the same network reach it
       # as opa:8181. The published host port is for diagnostics + smoke checks —
-      # 8281 by default (8181 is NocoDB's local bind). deploy-opa.yml passes
+      # 8281 by default. deploy-opa.yml passes
       # OPA_BIND/OPA_PORT from inventory.
       - "${OPA_BIND:-127.0.0.1}:${OPA_PORT:-8281}:8181"
     volumes:

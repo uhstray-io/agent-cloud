@@ -64,7 +64,7 @@ setup() {
 }
 
 @test "opa: data.json is valid JSON with the agent catalogs" {
-  python3 -c "import json; d=json.load(open('$POL_DIR/data.json'))['catalog']; assert 'nemoclaw' in d and 'netclaw' in d and 'semaphore' in d"
+  python3 -c "import json; d=json.load(open('$POL_DIR/data.json'))['catalog']; assert 'skynet' in d and 'infra-agent' in d and 'semaphore' in d"
 }
 
 # ── Listener TLS (opa_tls, production) ──────────────────────────────────────────
@@ -167,11 +167,11 @@ task_with() {
   local pb="$REPO_ROOT/platform/playbooks/deploy-opa.yml"
   task_with "$pb" 'ansible.builtin.uri:' > "$BATS_TEST_TMPDIR/uri-health.yml"
   assert_grep -qx '      when: not _opa_tls' "$BATS_TEST_TMPDIR/uri-health.yml"
-  task_with "$pb" 'Sample decision: nemoclaw read nocodb -> allow' > "$BATS_TEST_TMPDIR/plain-allow.yml"
+  task_with "$pb" 'Sample decision: infra-agent read netbox -> allow' > "$BATS_TEST_TMPDIR/plain-allow.yml"
   assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/plain-allow.yml"
   task_with "$pb" 'Sample decision: unknown agent -> deny' > "$BATS_TEST_TMPDIR/plain-deny.yml"
   assert_grep -qx '      when: not ansible_check_mode and not _opa_tls' "$BATS_TEST_TMPDIR/plain-deny.yml"
-  task_with "$pb" 'Sample decision over TLS: nemoclaw' > "$BATS_TEST_TMPDIR/tls-allow.yml"
+  task_with "$pb" 'Sample decision over TLS: infra-agent' > "$BATS_TEST_TMPDIR/tls-allow.yml"
   assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/tls-allow.yml"
   task_with "$pb" 'Sample decision over TLS: unknown agent' > "$BATS_TEST_TMPDIR/tls-deny.yml"
   assert_grep -qx '      when: _opa_tls and not ansible_check_mode' "$BATS_TEST_TMPDIR/tls-deny.yml"
@@ -223,7 +223,7 @@ task_with() {
   assert_grep -qxF '      - what: decision with explain' "$probes"
   assert_grep -qxF '        method: POST' "$probes"
   assert_grep -qxF '        path: /v1/data/agentcloud/decision?explain=full' "$probes"
-  assert_grep -qxF '          input: {agent: nemoclaw, action: read, service: nocodb}' "$probes"
+  assert_grep -qxF '          input: {agent: infra-agent, action: read, service: netbox}' "$probes"
   # The write probe never writes under a package a decision reads, nor under the policy API.
   sed -n '/what: policy write/,/what: data read/p' "$probes" > "$BATS_TEST_TMPDIR/write-entry.yml"
   refute_grep -qE '/v1/data/agentcloud/|/v1/policies' "$BATS_TEST_TMPDIR/write-entry.yml"

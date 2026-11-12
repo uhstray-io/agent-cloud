@@ -14,6 +14,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python
@@ -280,6 +281,7 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
             capture_output=True,
             text=True,
             check=False,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert result.returncode == 0
         assert result.stdout.strip() == f"{category}|{rc}"
@@ -293,6 +295,7 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
         capture_output=True,
         text=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert invalid_exit_code.returncode == 0
     assert invalid_exit_code.stdout.strip() == "diagnostic-unavailable|-1"
@@ -307,13 +310,15 @@ def test_validator_failure_diagnostics_use_only_fixed_exit_code_categories():
         capture_output=True,
         text=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert oversized_result.returncode == 0
     assert oversized_result.stdout.strip() == "diagnostic-unavailable|-1"
     assert oversized_diagnostic not in oversized_result.stdout + oversized_result.stderr
 
     invalid_input = subprocess.run(
-        [sys.executable, "-c", program], input="not-base64-json", capture_output=True, text=True, check=False
+        [sys.executable, "-c", program], input="not-base64-json", capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS
     )
     assert invalid_input.returncode == 0
     assert invalid_input.stdout.strip() == "diagnostic-unavailable|-1"
@@ -472,7 +477,8 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
     for program in programs:
         result = subprocess.run(
             [sys.executable, "-c", program], cwd=repo, env=git_env,
-            capture_output=True, text=True, check=False
+            capture_output=True, text=True, check=False,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS
         )
         assert result.returncode == 0
         assert result.stderr == ""
@@ -515,7 +521,8 @@ def test_checkout_diagnostics_report_only_fixed_status_categories_and_counts(tmp
     for index in range(55):
         (bulk / f"{index:02}.txt").write_text("bulk-content-must-not-appear\n")
     bounded = subprocess.run(
-        [sys.executable, "-c", programs[0]], cwd=repo, env=git_env, capture_output=True, text=True, check=False
+        [sys.executable, "-c", programs[0]], cwd=repo, env=git_env, capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS
     )
     assert bounded.returncode == 0
     bounded_report = json.loads(bounded.stdout)
@@ -536,7 +543,8 @@ def test_checkout_diagnostics_fail_closed_with_static_error_metadata(tmp_path):
     program = status_task["ansible.builtin.command"]["argv"][2]
     result = subprocess.run(
         [sys.executable, "-c", program], cwd=tmp_path, env=_isolated_git_environment(),
-        capture_output=True, text=True, check=False
+        capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS
     )
     assert result.returncode == 1
     assert result.stderr == ""
@@ -621,6 +629,7 @@ def test_checkout_diagnostics_classify_untracked_locations_without_exposing_path
     result = subprocess.run(
         [sys.executable, "-c", program], cwd=repo, env=git_env,
         capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0
     report = json.loads(result.stdout)
@@ -676,6 +685,7 @@ def test_checkout_diagnostics_bound_git_output_and_runtime_with_static_metadata(
         result = subprocess.run(
             [sys.executable, "-c", program], cwd=tmp_path, env=env,
             capture_output=True, text=True, check=False,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         assert pid_file.exists()
         return result, int(pid_file.read_text())
@@ -782,7 +792,8 @@ def test_checkout_diagnostics_count_porcelain_renames_copies_and_other_statuses(
 
     result = subprocess.run(
         [sys.executable, "-c", program], cwd=repo, env=git_env,
-        capture_output=True, text=True, check=False
+        capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS
     )
     assert result.returncode == 0
     report = json.loads(result.stdout)
@@ -833,6 +844,7 @@ def test_checkout_diagnostics_skip_both_paths_in_porcelain_rename_and_copy_recor
     result = subprocess.run(
         [sys.executable, "-c", program], cwd=tmp_path,
         env=env, capture_output=True, text=True, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0
     assert json.loads(result.stdout) == {
@@ -1252,6 +1264,7 @@ def test_actual_env_template_pin_passes_checker_and_deploy_preflight(tmp_path):
         capture_output=True,
         text=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert checker.returncode == 0
     assert json.loads(checker.stdout) == {

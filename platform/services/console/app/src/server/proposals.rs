@@ -1293,8 +1293,8 @@ mod tests {
     async fn store_keeps_rows_newest_first_and_filters_by_state() {
         let store = store().await;
         let first = store.insert(&new_row("honcho"), T0).await.expect("insert");
-        let second = store.insert(&new_row("tududi"), T0).await.expect("insert");
-        let third = store.insert(&new_row("n8n"), T0).await.expect("insert");
+        let second = store.insert(&new_row("postiz"), T0).await.expect("insert");
+        let third = store.insert(&new_row("o11y"), T0).await.expect("insert");
         assert_eq!((first, second, third), (1, 2, 3));
         let denial = Decision::new(DENIED, grace(), &ada(), None, T1.into());
         store
@@ -1833,7 +1833,7 @@ mod tests {
     fn service_names_follow_the_contract_pattern() {
         let long = "a".repeat(63);
         let too_long = "a".repeat(64);
-        for ok in ["honcho", "n8n", "a", "0-x", long.as_str()] {
+        for ok in ["honcho", "o11y", "a", "0-x", long.as_str()] {
             assert!(valid_service(ok), "{ok}");
         }
         for bad in [

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -77,7 +78,8 @@ def test_the_collector_keeps_only_service_and_vm_id(tmp_path):
     env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "ansible-remote")
     env["TMPDIR"] = "/private/tmp"
     out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                         text=True, capture_output=True, check=True).stdout
+                         text=True, capture_output=True, check=True,
+                         timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS).stdout
     line = next(ln for ln in out.splitlines() if "FOUND " in ln)
     found = json.loads(json.loads(line.split('"msg": ', 1)[1]).split("FOUND ", 1)[1])
     # the name, the id and the status NetBox already holds, which the write merges into
@@ -102,10 +104,9 @@ def test_the_run_record_names_the_ambiguous_vms_and_their_count(tmp_path, ambigu
                 "vars": {"_agg": agg, "_vm_ambiguous": ambiguous}, "tasks": [task]}]
     path = tmp_path / "record.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                         text=True, capture_output=True, check=True).stdout
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    done.check_returncode()
+    out = done.stdout
     run = next(ln for ln in out.splitlines() if "RUN: " in ln)
     conformance = json.loads(run.split("RUN: ", 1)[1])["conformance"]
     assert conformance["netbox_ambiguous_vm"] == {"count": len(ambiguous), "services": ambiguous}, run
@@ -142,7 +143,8 @@ def test_incomplete_netbox_reads_are_not_classified_as_empty_success(tmp_path):
     env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "ansible-remote")
     env["TMPDIR"] = "/private/tmp"
     result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness_path)], cwd=REPO, env=env,
-                            text=True, capture_output=True)
+                            text=True, capture_output=True,
+                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     assert result.returncode == 0, result.stdout + result.stderr
     out = result.stdout
     assert '\\"complete\\": false' in out, out
@@ -178,7 +180,8 @@ def test_nonterminal_netbox_page_is_unknown_without_echoing_next_url(tmp_path):
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_LOCAL_TEMP=str(tmp_path / "ansible-local"),
                ANSIBLE_REMOTE_TEMP=str(tmp_path / "ansible-remote"), TMPDIR="/private/tmp")
     result = subprocess.run(["ansible-playbook", "-i", "localhost,", str(harness_path)], cwd=REPO, env=env,
-                            text=True, capture_output=True)
+                            text=True, capture_output=True,
+                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     assert result.returncode == 0, result.stdout + result.stderr
     assert '\\"complete\\": false' in result.stdout, result.stdout
     assert '\\"unknown\\": [\\"svc-a\\"]' in result.stdout, result.stdout
@@ -213,10 +216,9 @@ def _run_tasks(tmp_path, tasks, variables, probe):
                 "tasks": [*tasks, {"ansible.builtin.debug": {"msg": "PROBE {{ " + probe + " | to_json }}"}}]}]
     path = tmp_path / "h.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                         text=True, capture_output=True, check=True).stdout
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    done.check_returncode()
+    out = done.stdout
     line = next(ln for ln in out.splitlines() if "PROBE " in ln)
     return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("PROBE ", 1)[1]), out
 

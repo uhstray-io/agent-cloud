@@ -11,11 +11,10 @@ fails a test rather than a production provision. Requires ansible-playbook for t
 
 import copy
 import json
-import os
 import re
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -314,10 +313,7 @@ def _run_guards(tmp_path, name, token_id):
     }]
     path = tmp_path / "guards.yml"
     path.write_text(yaml.safe_dump(harness, sort_keys=False))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    return harness_sandbox.run_playbook(path, tmp_path)
 
 
 @needs_ansible
@@ -347,8 +343,6 @@ def test_the_token_writer_names_a_token_id_only_when_the_run_does(tmp_path, toke
     path = tmp_path / "writer.yml"
     path.write_text(yaml.safe_dump([{"hosts": "localhost", "connection": "local", "gather_facts": False,
                                      "vars": extra, "tasks": [merge]}], sort_keys=False))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(path, tmp_path)
     assert done.returncode == 0, done.stdout[-1500:]
     assert json.loads(out.read_text()) == expected

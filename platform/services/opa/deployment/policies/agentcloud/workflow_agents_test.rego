@@ -493,6 +493,26 @@ test_stamped_edge_dns_allows_the_base_template_on_main if {
 		with data.agentcloud.catalog.workflow_steps["edge-dns"].reviewed as true
 }
 
+# The service-assess stamp (2026-11-11, add-dispatch-console 10.4a) is read from the live data.json,
+# so these pin how far it loosens: the base snapshot runs from main for service-assess and no other
+# reasoning step.
+test_stamped_service_assess_allows_the_base_snapshot_on_main if {
+	agentcloud.allow with input as object.union(_gate_probe("service-assess"), {"template_name": "Snapshot Service Assessment", "git_branch": "main"})
+}
+
+test_unstamped_fw_assess_still_denies_the_base_snapshot_on_main if {
+	d := agentcloud.decision with input as object.union(_run("security-agent", "Snapshot Firewall", "fw-assess"), {"template_name": "Snapshot Firewall", "git_branch": "main"})
+	not d.allowed
+	contains(d.reason, "an unreviewed step cannot run from main")
+}
+
+# The same agent the console launches as: service-agent also owns access-assess.
+test_unstamped_access_assess_still_denies_the_base_snapshot_on_main if {
+	d := agentcloud.decision with input as object.union(_run("service-agent", "Snapshot Access", "access-assess"), {"template_name": "Snapshot Access", "git_branch": "main"})
+	not d.allowed
+	contains(d.reason, "an unreviewed step cannot run from main")
+}
+
 # PR 203 Codex review: a base template runs from main even when the caller claims dev.
 test_a_base_template_is_main_whatever_branch_is_claimed if {
 	d := agentcloud.decision with input as object.union(_run("security-agent", "Harden SSH", "access-harden"), {"template_name": "Harden SSH", "git_branch": "dev"})
@@ -543,16 +563,6 @@ test_service_proposal_without_bounds_fails_closed if {
 	base := object.remove(_svc({"cores": 2, "memory_mb": 4096, "disk_gb": 32}, "Deploy Postiz"), ["context"])
 	inp := object.union(base, {"context": {}}) # union merges nested objects, so remove first
 	not agentcloud.allow with input as inp
-}
-
-# Legacy roles are frozen, not changed: their decisions are exactly as before.
-test_legacy_nemoclaw_unscoped_run_task_unchanged if {
-	agentcloud.allow with input as {
-		"agent": "nemoclaw",
-		"service": "semaphore",
-		"action": "run_task",
-		"template_name": "Deploy Postiz",
-	}
 }
 
 # A change-required verdict records a finding and launches no executor (PR 203 review).

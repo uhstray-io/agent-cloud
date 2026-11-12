@@ -9,11 +9,10 @@ tmp_path, so no Caddy host is needed.
 
 import importlib.util
 import json
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 
@@ -31,12 +30,8 @@ pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason
 def _run(tmp_path, playbook, target, *extra):
     inv = {"all": {"children": {"caddy_svc": {"hosts": {"caddy": {"ansible_connection": "local"}}}}}}
     (tmp_path / "inv.yml").write_text(json.dumps(inv))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(
-        ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(playbook), "-e", f"target_service={target}", *extra],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False,
-    )
+    proc = harness_sandbox.run_playbook(playbook, tmp_path, "-e", f"target_service={target}", *extra,
+                                        inventory=tmp_path / "inv.yml")
     return proc, step_results.results_in(proc.stdout.splitlines())
 
 

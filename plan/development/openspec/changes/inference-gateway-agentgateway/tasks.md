@@ -698,6 +698,10 @@
       (it was 2026-10-28) and Deploy agentgateway (Dev) task 5523 at 11019dd9 applied it (task
       output read from production Semaphore by the lead). Earlier notes naming 2026-10-28 are
       left as written. Not ticked.
+      2026-11-11: the expiry moved again. site-config #183 set `legacy_shared_expires` to 2026-12-11
+      (it was 2026-11-13) and the production Semaphore inventory was synced; no gateway deploy was
+      needed, since the date is applied at render time. The rotation is being automated in
+      uhstray-io/dgx-spark#43, which waits on dgx-spark ADR-0018. Not ticked.
       2026-10-16: the operator did NOT approve dgx-spark ADR-0018 (OpenBao as the only source of the vLLM
       key, read by dgx-spark's deploy job). It stays Proposed. So the retirement on or after 2026-11-13
       is the two-step rotation in dgx-spark#34's plan:

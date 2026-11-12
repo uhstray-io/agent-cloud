@@ -13,8 +13,8 @@ This directory is read by:
 <service>[-<scope>].hcl
 ```
 
-- `<service>` is the service name as it appears under `secret/services/<service>` (e.g., `uhhcraft`, `nemoclaw`, `semaphore`).
-- `<scope>` is optional. Common values: `read`, `write`, `rotate`. Omit when the policy is read-only and there's only one policy per service (e.g., `uhhcraft.hcl`).
+- `<service>` is the service name as it appears under `secret/services/<service>` (e.g., `semaphore`, `console`).
+- `<scope>` is optional. Common values: `read`, `write`, `rotate`. Omit when the policy is read-only and there's only one policy per service (e.g., `console.hcl`).
 - The filename minus `.hcl` becomes the policy name in OpenBao.
 
 ## Current policies
@@ -25,13 +25,6 @@ This directory is read by:
 | `semaphore-write.hcl` | Active | Semaphore VM | Write its own credentials back to `secret/services/semaphore` |
 | `orb-agent.hcl` | Active | NetBox orb-agent AppRole | Read NetBox + discovery credentials |
 | `console.hcl` | Active | Dispatch Console AppRole (`console`, applied by `provision-console-approle.yml`) | Read `secret/services/console/*` and secret metadata (plan 17, D27) |
-| `nemoclaw-read.hcl` | Active | NemoClaw agent AppRole | Read service credentials NemoClaw needs |
-| `nemoclaw-rotate.hcl` | Active | NemoClaw rotation flows | Rotate specific secrets |
-| `nocodb-write.hcl` | Active | NocoDB deploy.sh | Push runtime-generated API tokens back |
-| `n8n-write.hcl` | Active | n8n deploy.sh | Push runtime-generated API keys back |
-| `uhhcraft.hcl` | **Reserved** | (none yet) | UhhCraft read-only, awaiting AppRole if needed |
-| `inference-comfyui.hcl` | **Reserved** | (none yet) | ComfyUI sidecar read-only, awaiting AppRole if needed |
-| `inference-hunyuan3d.hcl` | **Reserved** | (none yet) | Hunyuan3D sidecar read-only, awaiting AppRole if needed |
 
 ## Reserved vs. Active
 
@@ -48,13 +41,13 @@ To **activate** a reserved policy: provision an AppRole via `tasks/manage-approl
 ## `secret/services/*` path conventions
 
 - `secret/services/<svc>` — the master KV entry for that service. Compose env-vars, API tokens, DB passwords, SMTP creds.
-- `secret/services/<svc>/<sub>` — optional sub-paths when one service has logically separate secrets (e.g., `uhhcraft/stripe`, `uhhcraft/database`). Use only when rotation cadences differ or when scoping requires it.
+- `secret/services/<svc>/<sub>` — optional sub-paths when one service has logically separate secrets. Use only when rotation cadences differ or when scoping requires it.
 - `secret/services/ssh/<svc>` — per-service SSH keypair (private + public).
 - `secret/services/approles/<svc>` — `role_id` + `secret_id` for the service's AppRole. Bound to its policy (`<svc>.hcl` or `<svc>-read.hcl`).
 
 ## When to add an `<svc>-write.hcl`
 
-Add a write-scoped policy when the service itself generates a credential at deploy time and needs to push it back. Examples: `nocodb-write.hcl` (API tokens minted by NocoDB on first boot), `n8n-write.hcl` (same pattern).
+Add a write-scoped policy when the service itself generates a credential at deploy time and needs to push it back. Example: `semaphore-write.hcl`, which lets the Semaphore VM write its own credentials back.
 
 If Ansible generates the credential (the common case via `tasks/manage-secrets.yml`), the write happens with Semaphore's policy, and no service-specific write policy is needed.
 

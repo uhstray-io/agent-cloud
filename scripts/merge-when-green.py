@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only Dev PR merge gate; --merge performs one explicit, SHA-bound merge."""
+"""Dev PR merge gate, read-only toward GitHub; --merge performs one explicit, SHA-bound merge.
+
+The release-budget count fetches main, dev and the v* tags into this checkout (remote-tracking refs and
+tags, shared by every worktree of the clone); nothing else is written locally.
+"""
 
 import argparse
 import base64
@@ -23,29 +27,39 @@ RUNS_PARTITIONED_WORKFLOW_BLOB_SHA = "466828e11b7bf29958d7de7a505dad908ae8b3cd"
 PI_MOVED_WORKFLOW_BLOB_SHA = "15a15a96bad6b35ee53d36ac7a37deea9cf298d0"
 RUFF_PINNED_WORKFLOW_BLOB_SHA = "98e7aca96851979464f36bffc48444eba93d39f0"
 VERSIONED_WORKFLOW_BLOB_SHA = "96632a06997d38434f41dab6f1b1f217411d4730"
+UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
+RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
+SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
+BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
+# The bats-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
+RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
+# The eight legs of the one `python` matrix job; each is its own check run under this name.
+PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
-    "Detect changes", "Static Analysis", "Security Scan", "Python core",
-    "Python Playbook Safety", "Python Agentgateway",
-    "Python Semaphore", "Python NetBox", "Bash Tests", "Rego Tests", "Unit Tests",
-    "Go lint (uhhcraft)", "Go test (uhhcraft)", "Go build (uhhcraft image)", "Rust (console)",
-    "Python Playbook Runs", "Version",
+    "Static Analysis", "Security Scan", *PYTHON_SHARDS,
+    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Version",
 }
+# Paths of the pinned historical workflow states only; the current workflow has no such job.
 GO_PATH = "platform/services/uhhcraft/deployment/"
 GO_WORKFLOW = WORKFLOW
-DOCKERFILES = {
-    "platform/services/uhhcraft/deployment/Dockerfile",
-    "platform/services/inference-comfyui/deployment/Dockerfile",
-    "platform/services/inference-hunyuan3d/deployment/Dockerfile",
-}
 SHA = re.compile(r"^[0-9a-f]{40}$")
 # The one rule set for pull request titles (plan 20), loaded from the sibling script so the two cannot disagree.
 SEMVER = Path(__file__).resolve().with_name("semver.py")
 _semver_spec = importlib.util.spec_from_file_location("semver_for_merge_guard", SEMVER)
 semver = importlib.util.module_from_spec(_semver_spec)
 _semver_spec.loader.exec_module(semver)
-# The Semaphore Release Version templates run these with a GitHub App token that can push tags (plan 20), so a
-# pull request that changes any of them is merged by the operator, never through this gate.
-RELEASE_SCRIPTS = ("scripts/semver.py", "scripts/semver-backfill.tsv", "platform/playbooks/release-version.yml")
+# The Semaphore release templates run these with a GitHub App token that can push tags (plan 20), so a
+# pull request that changes any of them is merged by the operator, never through this gate. The release playbook
+# and the files it includes or runs while that token is live (the release-notes tasks and their helper) are listed
+# with it, so none of them can change without the operator.
+RELEASE_SCRIPTS = (
+    "scripts/semver.py",
+    "scripts/semver-backfill.tsv",
+    "platform/playbooks/release-version.yml",
+    "platform/playbooks/tasks/release-notes-body.yml",
+    "platform/playbooks/tasks/release-notes-from-task.yml",
+    "platform/playbooks/files/release_notes_from_task.py",
+)
 
 
 class Refusal(Exception):
@@ -53,8 +67,9 @@ class Refusal(Exception):
 
 
 class GitHub:
-    def __init__(self):
+    def __init__(self, repo_root=None):
         self.calls = []
+        self.repo_root = repo_root or Path(__file__).resolve().parents[1]
 
     def api(self, endpoint, fields=()):
         command = ["gh", "api", endpoint]
@@ -81,6 +96,31 @@ class GitHub:
             return subprocess.run(command, capture_output=True, text=True, check=True)
         except (OSError, subprocess.CalledProcessError) as error:
             raise Refusal("SHA-bound merge command returned an error; read PR state before retrying") from error
+
+    def release_budget(self, extra_files):
+        # The one local-git read of the intake. It updates this checkout's remote-tracking refs and its release
+        # tags; it writes nothing to GitHub. Returns the fetched dev tip with the budget before and after this PR.
+        # The caller compares that tip with GitHub's live dev ref.
+        root = str(self.repo_root)
+        fetch = ["git", "-C", root, "fetch", "--no-tags", "origin",
+                 "+refs/heads/main:refs/remotes/origin/main",
+                 "+refs/heads/dev:refs/remotes/origin/dev",
+                 "+refs/tags/v*:refs/tags/v*"]
+        self.calls.append(fetch)
+        try:
+            subprocess.run(fetch, capture_output=True, text=True, check=True)
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise Refusal("Release budget: fetching main, dev and the release tags failed") from error
+        rev_parse = ["git", "-C", root, "rev-parse", "--verify", "origin/dev^{commit}"]
+        self.calls.append(rev_parse)
+        try:
+            dev_sha = subprocess.run(rev_parse, capture_output=True, text=True, check=True).stdout.strip()
+            before = semver.release_budget(self.repo_root, "origin/main", dev_sha)
+            after = semver.release_budget(self.repo_root, "origin/main", dev_sha,
+                                          extra_prs=1, extra_files=extra_files)
+        except (OSError, subprocess.CalledProcessError) as error:
+            raise Refusal(f"Release budget: git failed in {root}") from error
+        return dev_sha, before, after
 
 
 def paged(api, endpoint, key):
@@ -159,25 +199,20 @@ def changed_files(api, number):
     if any(f.get("status") == "renamed" and not f.get("previous_filename") for f in files):
         raise Refusal("Changed-file rename evidence is incomplete")
     paths = [path for f in files for path in (f.get("previous_filename"), f["filename"]) if path]
+    return paths, files
+
+
+def check_protected_paths(paths):
     if any(path.startswith(".github/workflows/") and path != WORKFLOW for path in paths):
         raise Refusal("PR changes another protected workflow path")
     if any(path in RELEASE_SCRIPTS for path in paths):
         raise Refusal("PR changes a release script that runs with a write token; the operator merges it")
-    return paths, files
 
 
 def required_jobs(files):
-    go = any(p.startswith(GO_PATH) or p == GO_WORKFLOW for p in files)
-    go_build = go or any(p in DOCKERFILES for p in files)
-    return {
-        "Detect changes": True, "Static Analysis": True, "Security Scan": True,
-        "Python core": True, "Python Playbook Safety": True, "Python Agentgateway": True,
-        "Python Semaphore": True, "Python NetBox": True,
-        "Bash Tests": True, "Rego Tests": True, "Unit Tests": True, "Rust (console)": True,
-        "Python Playbook Runs": True, "Version": True,
-        "Go lint (uhhcraft)": go, "Go test (uhhcraft)": go,
-        "Go build (uhhcraft image)": go_build,
-    }
+    # Every expected job is required on every pull request; none is path-gated now. A future path-gated
+    # job would return False here for the files that prove it absent.
+    return dict.fromkeys(EXPECTED, True)
 
 
 def workflow_bytes(api, commit_sha):
@@ -220,7 +255,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False, versioned=False):
+                          pi_moved=False, versioned=False, sharded=False, retired=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -238,12 +273,21 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         expected["python-agentgateway"] = "Python Agentgateway"
     if node or console or runs:
         expected["node-pi-provider"] = "Node pi provider"
-    if console or runs or pi_moved or versioned:
+    if console or runs or pi_moved or versioned or sharded:
         expected["rust-console"] = "Rust (console)"
     if runs or pi_moved or versioned:
         expected["python-playbook-runs"] = "Python Playbook Runs"
-    if versioned:
+    if versioned or sharded:
         expected["version"] = "Version"
+    if sharded:
+        # The six named Python jobs become one matrix job, its name templated per shard.
+        for job in ("python-core", "python-semaphore", "python-netbox"):
+            del expected[job]
+        expected["python"] = "Python (${{ matrix.shard }}/8)"
+    if retired:
+        # The current workflow: the change detector and the Go jobs it gated are gone.
+        for job in ("changes", "go-lint", "go-test", "go-build"):
+            del expected[job]
     jobs = {}
     current = None
     in_jobs = False
@@ -263,12 +307,13 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
             jobs[current]["name"] = name.group(1)
         elif current and (condition := re.fullmatch(r"    if: (.+)", line)):
             jobs[current]["if"] = condition.group(1)
-    conditions = {
-        "test": "always()",
-        "go-lint": "needs.changes.outputs.go == 'true'",
-        "go-test": "needs.changes.outputs.go == 'true'",
-        "go-build": "needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'",
-    }
+    conditions = {"test": "always()"}
+    if not retired:
+        conditions.update({
+            "go-lint": "needs.changes.outputs.go == 'true'",
+            "go-test": "needs.changes.outputs.go == 'true'",
+            "go-build": "needs.changes.outputs.go == 'true' || needs.changes.outputs.dockerfiles == 'true'",
+        })
     filters = {}
     inside_filters = False
     current_filter = None
@@ -290,7 +335,7 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
             if not path:
                 raise Refusal("Dev PR workflow path filters changed; review the merge gate policy first")
             filters[current_filter].append(path.group(1))
-    expected_filters = {
+    expected_filters = {} if retired else {
         "go": [GO_PATH + "**", GO_WORKFLOW],
         "python_inference": ["platform/services/inference-comfyui/deployment/**",
                              "platform/services/inference-hunyuan3d/deployment/**", WORKFLOW],
@@ -298,14 +343,15 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
                         "platform/services/inference-comfyui/deployment/Dockerfile",
                         "platform/services/inference-hunyuan3d/deployment/Dockerfile"],
     }
-    required = [
-        "name: Lint and Test", "pull_request:", "branches: [main, dev]",
-        "platform/services/uhhcraft/deployment/**",
-        GO_WORKFLOW,
-        "platform/services/uhhcraft/deployment/Dockerfile",
-        "platform/services/inference-comfyui/deployment/Dockerfile",
-        "platform/services/inference-hunyuan3d/deployment/Dockerfile",
-    ]
+    required = ["name: Lint and Test", "pull_request:", "branches: [main, dev]"]
+    if not retired:
+        required += [
+            "platform/services/uhhcraft/deployment/**",
+            GO_WORKFLOW,
+            "platform/services/uhhcraft/deployment/Dockerfile",
+            "platform/services/inference-comfyui/deployment/Dockerfile",
+            "platform/services/inference-hunyuan3d/deployment/Dockerfile",
+        ]
     if (jobs.keys() != expected.keys()
             or any(jobs[job].get("name") != name for job, name in expected.items())
             or any(jobs[job].get("if") != condition for job, condition in conditions.items())
@@ -448,11 +494,92 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Ruff-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == VERSIONED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == UV_WORKFLOW_BLOB_SHA:
+            # Same job set as versioned: the Python jobs install the uv lock instead of pip.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, versioned=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != VERSIONED_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed versioned workflow")
         check_workflow_policy(base, versioned=True)
         if base != candidate or workflow_records:
             raise Refusal("Versioned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == UV_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+            # Same job set as uv: every job runs on ubuntu-24.04 instead of ubuntu-latest.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, versioned=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != UV_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed uv workflow")
+        check_workflow_policy(base, versioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("uv workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
+            # The six Python jobs become one eight-shard matrix job (plan 21 phase 2); each side is
+            # checked against its own job set.
+            check_workflow_policy(base, versioned=True)
+            check_workflow_policy(candidate, sharded=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != RUNNER_PINNED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed runner-pinned workflow")
+        check_workflow_policy(base, versioned=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Runner-pinned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == SHARDED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == BATS_PINNED_WORKFLOW_BLOB_SHA:
+            # Same job set as sharded: Bash Tests installs bats from its pinned release, not apt.
+            check_workflow_policy(base, sharded=True)
+            check_workflow_policy(candidate, sharded=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != SHARDED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed sharded workflow")
+        check_workflow_policy(base, sharded=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Sharded workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == BATS_PINNED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+            # Same jobs as bats-pinned minus the change detector and the retired jobs.
+            check_workflow_policy(base, sharded=True)
+            check_workflow_policy(candidate, sharded=True, retired=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
+        if candidate_blob_sha != BATS_PINNED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed bats-pinned workflow")
+        check_workflow_policy(base, sharded=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Bats-pinned workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed current workflow")
+        check_workflow_policy(base, sharded=True, retired=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Current workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
@@ -478,6 +605,12 @@ def check_runs(api, sha):
     return runs
 
 
+# The branch workflow's two review passes (AGENTS.md, Branch Workflow step 5; docs/MISTAKES.md 5.25), posted
+# by hand as commit statuses on the pushed head they covered, so a later push needs them again.
+REVIEW_PASS_STATUSES = ("simplify", "security-review")
+REVIEW_PASS_PLACEHOLDER = "<one line: what it found, fixed or deferred>"
+
+
 def check_commit_statuses(api, sha):
     statuses = paged(api, f"repos/{REPO}/commits/{sha}/statuses", "")
     latest = {}
@@ -491,6 +624,18 @@ def check_commit_statuses(api, sha):
               if context != "coderabbit" and status["state"] != "success"]
     if failed:
         raise Refusal(f"Latest commit status is not successful: {', '.join(sorted(failed))}")
+    missing = [context for context in REVIEW_PASS_STATUSES if context not in latest]
+    if missing:
+        posts = "; ".join(
+            f"gh api repos/{REPO}/statuses/{sha} -f state=success -f context={context} "
+            f"-f description='{REVIEW_PASS_PLACEHOLDER}'" for context in missing)
+        raise Refusal(f"Review-pass commit status missing on this head: {', '.join(missing)}. Run the pass "
+                      f"on this exact head, then post its result: {posts}")
+    for context in REVIEW_PASS_STATUSES:
+        description = latest[context].get("description")
+        if not isinstance(description, str) or not description.strip() or description.lstrip().startswith("<"):
+            raise Refusal(f"Review-pass commit status {context} carries no finding: its description is empty "
+                          "or the unfilled placeholder")
 
 
 def workflow_runs(api, sha, number):
@@ -540,13 +685,23 @@ def check_job_evidence(api, number, sha, files):
         by_id[str(run["id"])] = run
     for run in external:
         # CodeRabbit posts a review check run beside its commit status: `success` when it
-        # reviewed, `neutral` when its review limit skipped the PR (#749). Neither is CI
+        # reviewed, `neutral` when its review limit skipped the PR (#749), `skipped` when it skips
+        # the review for any reason, a PR over its file limit among them (#1043). None is CI
         # evidence; the approval is enforced separately below. Identified by the GitHub-assigned
         # app slug, which another app cannot claim; any other state still refuses.
         if (isinstance(run, dict) and isinstance(run.get("app"), dict)
                 and run["app"].get("slug") == "coderabbitai"
                 and run.get("status") == "completed"
-                and run.get("conclusion") in ("success", "neutral")):
+                and run.get("conclusion") in ("success", "neutral", "skipped")):
+            continue
+        # Dependabot validates its own config on any commit that changes .github/dependabot.yml
+        # (so on every head that merges such a dev change in). Only its successful config check is
+        # accepted; a failed validation, or any other Dependabot run, still refuses.
+        if (isinstance(run, dict) and isinstance(run.get("app"), dict)
+                and run["app"].get("slug") == "dependabot"
+                and run.get("name") == ".github/dependabot.yml"
+                and run.get("status") == "completed"
+                and run.get("conclusion") == "success"):
             continue
         name = run.get("name", "<unnamed>") if isinstance(run, dict) else "<unnamed>"
         raise Refusal(f"Unknown external check policy: {name}")
@@ -670,10 +825,60 @@ def review_evidence(api, number, sha, author, receipt_path):
     return [r.get("html_url", "") for r in approvals], receipt
 
 
+def live_dev_sha(api):
+    """The commit GitHub's dev ref points at now. Refuses an unreadable answer rather than raising."""
+    live = api.api(f"repos/{REPO}/git/ref/heads/dev")
+    live_object = live.get("object") if isinstance(live, dict) else None
+    live_sha = live_object.get("sha") if isinstance(live_object, dict) else None
+    if not isinstance(live_sha, str) or not SHA.fullmatch(live_sha):
+        raise Refusal("Release budget: GitHub's dev ref is unreadable")
+    return live_sha
+
+
+def check_release_budget(api, file_records):
+    # Policy 10 R4, R5: a merge may not take its release past 100 pull requests, or past 120 changed files when it
+    # adds a path; R12 suspends both until the carry-over tag exists. The count is taken at the dev tip GitHub
+    # reports now. The pull request's base.sha is not that tip: it was stale on each of the 8 open pull
+    # requests that `gh pr list -L 8` returned (2026-11-12).
+    live_sha = live_dev_sha(api)
+    # The post-change path of each file: a rename counts once, under its new name; a deletion under its old one.
+    dev_sha, before, after = api.release_budget([f["filename"] for f in file_records])
+    if dev_sha != live_sha:
+        raise Refusal(f"Release budget: local origin/dev {dev_sha[:12]} is not GitHub's dev {live_sha[:12]}; "
+                      "refusing to count a stale release")
+    limits = after["limits"]
+    since = after["from"] or "the first commit"
+    readout = (f"BUDGET: after this merge {after['prs']}/{limits['prs']} pull requests and "
+               f"{after['files']}/{limits['files']} files since {since}")
+    if after["transition"]:
+        readout += f" (transition: policy 10 R12, no limit applies before {semver.TRANSITION_TAG})"
+    elif after["warn"]:
+        readout += " (warn: 80% of a limit)"
+    print(readout)
+    if after["transition"]:
+        return after
+    if after["prs"] > limits["prs"]:
+        raise Refusal(f"Release full: this merge makes {after['prs']} pull requests (limit {limits['prs']}) "
+                      f"since {since}; promote the release first (policy 10 R4, R5)")
+    if after["files"] > limits["files"] and after["files"] > before["files"]:
+        raise Refusal(f"Release full: this merge makes {after['files']} changed files (limit {limits['files']}) "
+                      f"since {since}; promote the release first (policy 10 R4, R5). A pull request that adds no "
+                      "new path, such as a revert, may still merge")
+    return after
+
+
 def validate(api, number, sha, receipt_path):
     pr = get_pr(api, number)
     base_sha = check_pr(pr, number, sha)
     files, file_records = changed_files(api, number)
+    # The readout prints on every run that reaches the count, release-script PRs included, so the budget comes before
+    # the path refusals. A budget refusal still names a protected path first: that is the operator-merge answer.
+    try:
+        budget = check_release_budget(api, file_records)
+    except Refusal:
+        check_protected_paths(files)
+        raise
+    check_protected_paths(files)
     check_workflow_change(api, base_sha, sha, file_records)
     comments = paged(api, f"repos/{REPO}/issues/{number}/comments", "")
     if any(not isinstance(comment, dict) or not isinstance(comment.get("body"), str) for comment in comments):
@@ -685,7 +890,7 @@ def validate(api, number, sha, receipt_path):
     if current_base_sha != base_sha or current_pr["head"]["sha"] != pr["head"]["sha"]:
         raise Refusal("PR base or head moved while collecting merge evidence")
     return {"checks": checks, "approvals": approvals, "receipt": receipt, "comments": len(comments),
-            "base_sha": base_sha, "head_sha": sha, "title": current_pr["title"]}
+            "base_sha": base_sha, "head_sha": sha, "title": current_pr["title"], "budget": budget}
 
 
 def main(argv=None, api=None):
@@ -715,6 +920,10 @@ def main(argv=None, api=None):
         if (refreshed["base_sha"] != evidence["base_sha"]
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
+        # The budget was counted at one dev tip; a merge into dev since then would count against it unseen, and
+        # gh pr merge cannot pin the base. One last read narrows that window to this call.
+        if live_dev_sha(api) != refreshed["budget"]["dev_ref"]:
+            raise Refusal("dev moved after the release budget was counted; run the guard again")
         try:
             api.merge(args.pr, args.head, refreshed["title"])
         except Refusal:

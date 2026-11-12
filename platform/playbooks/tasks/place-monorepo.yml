@@ -1,7 +1,7 @@
 ---
 # place-monorepo.yml — put the agent-cloud monorepo on the target and ensure the
 # podman/compose entrypoint. The shared Phase-1 preamble for composable service
-# deploys (deploy-dns, deploy-uhhcraft, and future services — ERPNext, OPA).
+# deploys (deploy-dns and the other composable service deploys).
 #
 # Two modes, selected by local_mode:
 #   prod  (unset/false): git clone/update from monorepo_repo at _branch.
@@ -10,15 +10,22 @@
 #                        mount, including uncommitted changes. A separately bound
 #                        branch template copies its own checkout instead.
 #                        The Semaphore container has no sudo/apt.
+#                        local_mode is checked against the inventory first
+#                        (tasks/assert-local-mode-identity.yml): a local-dev inventory
+#                        only, so `-e local_mode=true` cannot force local mode onto a production host.
 #
 # Expects in the including play's scope:
 #   _monorepo_dir          — where the repo lands on the target
 #   _branch                — service_branch | default('main')  (prod clone)
 #   monorepo_repo          — clone URL                          (prod only)
-#   local_mode             — bool (inventory)
+#   local_mode             — bool (inventory; the first task below refuses one that disagrees)
 #
 # DRY: edit the placement logic HERE, never per service (CLAUDE.md Engineering
 # Principles — reuse over per-service glue).
+
+- name: "Refuse a local_mode that disagrees with the inventory's identity"
+  # Sibling task. It runs first, before any local_mode read in this file and the tasks it includes.
+  ansible.builtin.include_tasks: assert-local-mode-identity.yml
 
 - name: "Assert required variables for monorepo placement"
   ansible.builtin.assert:
@@ -119,9 +126,8 @@
 
 - name: "Ensure podman + compose entrypoint"
   # Sibling task in this directory; resolves relative to this file. Podman hosts only: a
-  # Docker host (NetBox in production, OpenHands) must not get podman installed beside
-  # it, which is why deploy-openhands.yml avoided this task entirely (its header, lines
-  # 4-5). Gating it here lets every Docker caller share the placement.
+  # Docker host (NetBox in production) must not get podman installed beside it. Gating it
+  # here lets every Docker caller share the placement.
   ansible.builtin.include_tasks: install-podman-compose.yml
   when: (container_engine | default('podman')) == 'podman'
 

@@ -270,8 +270,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       envelope, service assessment, firewall policy, access policy, plus a shared verdict
 - [x] 4.3 Registry test: every named template exists in the catalog, every reasoning step has
       a snapshot template and schema, ids match the diagram
-- [x] 4.4 `data.json`: four identities with `allowed_actions` and `allowed_templates`;
-      `netclaw` and `nemoclaw` frozen with a comment
+- [x] 4.4 `data.json`: identities with `allowed_actions` and `allowed_templates`.
 - [x] 4.5 Rego: template allowlist rule; firewall content rule (controller SSH source kept,
       SSH never wider than the declared sources); service-assessment content rule (no
       destructive runtime action, VM spec within tier bounds); branch rule (no `main` for an
@@ -472,34 +471,30 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         stamped: service-deploy (still not re-reviewed), and the reasoning and planned steps.
         7.1 stays open for service-deploy. OPA must be redeployed to pick up `data.json`.
       - 2026-10-12: service-deploy re-review in progress. Wave 1 (PR #568:
-        `emit-service-deploy-result` and `compose_up_if_changed` for tududi, honcho and
-        openhands) is under review; wave 2 (n8n, NetBox, Postiz) is next; then two Dev
+        `emit-service-deploy-result` and `compose_up_if_changed` for honcho and two others)
+        is under review; wave 2 (one other service, NetBox, Postiz) is next; then two Dev
         deploys per service on production to prove `changed_on_rerun` false. Not ticked.
       - 2026-10-13: PR #568 (wave 1) merged into dev. The remaining services were regrouped:
-        wave 2 is n8n and Postiz, wave 3 is NetBox (a change-aware deploy that, when nothing
+        wave 2 is one other service and Postiz, wave 3 is NetBox (a change-aware deploy that, when nothing
         changed, leaves containers and the orb-agent untouched). Not ticked.
       - 2026-10-13, production (task output read from Semaphore by the lead): wave 1
         second-run proof COMPLETE. Each service's second real
         Dev deploy reports `DEPLOY_CHANGED=false` and service-deploy `changed_on_rerun` false:
-        tududi 4967 (changed) then 4968 (unchanged); honcho 4977 then 4982; agentgateway 4987
+        honcho 4977 then 4982; agentgateway 4987
         and 4992, both unchanged; Authentik 5022 (changed) then 5028 (unchanged) after PR #581
         (Deploy Authentik had failed on ansible-core 2.20 since 2026-10-09: template delimiters
         inside an assert, task 4995; MISTAKES 5.18); o11y 5037 (changed, the restore) then 5042
         (unchanged, ok=156 changed=0). Wave 3 (NetBox change-aware deploy) merged as PR #577;
         its double-deploy proof waits for promotion, because Deploy NetBox is main-bound. Wave 2
-        (n8n, Postiz) is in progress. Not ticked
+        (one other service, Postiz) is in progress. Not ticked
       - 2026-10-13, local proof of wave 3 (task output read from local Semaphore by the lead):
         Deploy NetBox (Local) task 5732 changed, then 5734 reported `changed=0` with
-        service-deploy `changed_on_rerun` false and the orb-agent untouched. Wave 2 (n8n,
+        service-deploy `changed_on_rerun` false and the orb-agent untouched. Wave 2 (one other service,
         Postiz) is PR #587: reviewed in one round with every finding fixed in cb98d760, merge
         pending CI. Production second-run proof for wave 2, and for wave 3 after promotion,
         is still to do. Not ticked
       - 2026-10-13, production wave 2 (task output read from production Semaphore by the
-        lead): PR #587 merged into dev as a81b0392. Deploy n8n (Dev) at a81b0392: dry run
-        5233 (status skip, check mode); real run 5236 (`DEPLOY_CHANGED=true`, `changed=3`, the
-        rendered .env gained `N8N_LISTEN`); real run 5240 (`DEPLOY_CHANGED=false`,
-        `changed=0`, service-deploy `changed_on_rerun` false, verified true). The n8n
-        second-run proof is COMPLETE. Postiz has no production containers yet, so its
+        lead): PR #587 merged into dev as a81b0392. Postiz has no production containers yet, so its
         production proof (including the podman-compose 1.0.6 recreate with dependents) is an
         operator follow-up. Wave 3 (NetBox) production proof still waits for promotion. Not
         ticked
@@ -518,13 +513,13 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         operator follow-up (no production containers). Not ticked
 - [x] 7.2 `provision-vm.yml` sets `onboot`; restart-policy check beside `enable-linger`.
       2026-09-22: onboot with per-host opt-out; `verify-service-persistence.yml` (step
-      systemd-enablement) passes on local tududi, normal and check mode (tasks 977, 978)
+      systemd-enablement) passes locally, normal and check mode (tasks 977, 978)
       - Production, 2026-09-26 (PRs #282, #283, #284, #285; site-config #32, #33). The setup
         half is `ensure-service-persistence.yml` (restarts nothing); every step was a dry run
-        first, through `(Dev)` templates. Verify Service Persistence passes on all eight
-        services in scope: authentik 1473, n8n 1510, o11y 1481, openbao 1519, semaphore 1520,
-        caddy 1521, honcho 1562, tududi 1564.
-        - Rootless (authentik, n8n, o11y, honcho, tududi, caddy): linger and podman's user boot
+        first, through `(Dev)` templates. Verify Service Persistence passes on all six
+        services in scope: authentik 1473, o11y 1481, openbao 1519, semaphore 1520,
+        caddy 1521, honcho 1562.
+        - Rootless (authentik, o11y, honcho, caddy): linger and podman's user boot
           unit, every container `always`.
         - openbao and semaphore run rootful podman from legacy standalone directories, on
           `unless-stopped` or no policy. The Ubuntu 24.04 podman (4.9.3) cannot change a policy
@@ -532,8 +527,8 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
           by name, enabled, never started), which Verify reads back. Inventory declares
           `podman_rootful` and `compose_working_dir` for them, and `compose_working_dir` only
           for caddy (rootless, legacy directory).
-        - honcho, n8n and tududi were found stopped (state `created`) and redeployed through
-          `Deploy <service> (Dev)`: n8n 1507/1508, honcho 1557/1559, tududi 1558/1560.
+        - honcho was found stopped (state `created`) and redeployed through
+          `Deploy <service> (Dev)`: honcho 1557/1559.
           authentik's server was stopped too: 1469/1471.
         - Out of scope: Postiz (no containers in production), devlog (skipped). `grafanapodman`
           is retired.
@@ -575,7 +570,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         it was not launched. Enrolling a host (its bind, port and `firewall_allow_groups` entry in
         site-config) waits on `estate-wide-observability-instrumentation` 1.3/1.4. Not ticked
 - [x] 7.4 Snapshot templates for service, firewall and access assessment; each verify-only,
-      emitting one JSON document. 2026-09-22: all three pass on local tududi in normal and
+      emitting one JSON document. 2026-09-22: all three pass locally in normal and
       check mode (tasks 971-976); the document is recorded with set_stats under `snapshot`
 - [ ] 7.5 Collector (scheduled), NetBox custom-field writes, Loki push, Grafana dashboard JSON,
       read-only report; single-writer test
@@ -596,7 +591,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         (ok=29, failed=0) and real run task 1907 (ok=30, changed=1, failed=0). Order proven:
         NetBox lookup → sort → aggregate → write. All 13 inventoried services were looked up
         (`netbox_no_vm` lists all 13, none unreachable, none ambiguous); `history_window_full`
-        empty. tududi's three snapshot results land in `inputs`, not conformance; Loki took
+        empty. The three snapshot results land in `inputs`, not conformance; Loki took
         the real run's push (`status` counts over 10 minutes: no_history 24, pass 4 — the
         snapshot passes no longer counted). The NetBox write had nothing to write there, since
         local NetBox holds no VM record for any service.
@@ -611,7 +606,7 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
         - `workflow-collector` token minted into `collector_api_token`: 1338, 1339;
         - collector: dry run 1340, real run 1341 (ok=30, changed=1, failed=0).
         The contemporaneous task record describes PATCHing workflow custom fields on seven
-        existing VM records (caddy, n8n, nemoclaw, netbox, nocodb, openbao, semaphore); it
+        existing VM records (caddy, netbox, openbao, semaphore and three others); it
         records no create or replacement. Seven services have no VM record; none was recorded
         unreachable or ambiguous. Re-read task 1341's raw report before relying on its
         `netbox_written` receipt. The record listed four failures from history:
@@ -704,9 +699,9 @@ Pushes, pull requests and merges only when Joe asks for them (repo rule). Tasks 
       - Production counterpart, 2026-09-26 (PR #283, site-config #32). A host whose port is
         loopback-only or firewalled to the Caddy host sets `health_probe_on_host: true` with a
         loopback `health_url`, and the probe runs on the host. Verify Service Health (Dev) passes
-        (HTTP 200) for authentik 1472, n8n 1509, o11y 1500, openbao 1522, semaphore 1523,
-        honcho 1561 and tududi 1563. caddy declares no health path. Before the change, the
-        executor's direct probe answered -1 for tududi, honcho and n8n however healthy they were
+        (HTTP 200) for authentik 1472, o11y 1500, openbao 1522, semaphore 1523,
+        honcho 1561. caddy declares no health path. Before the change, the
+        executor's direct probe answered -1 for honcho however healthy it was
 - [x] 7.10 Connection identity is still settable from outside the run (open, recorded
       2026-10-07 from the PR #459 review; not implemented). `refuse-internal-extra-vars.yml`
       refuses `_` names and become/connection password variables (`ansible_password`,
