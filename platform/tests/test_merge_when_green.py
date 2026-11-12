@@ -135,7 +135,9 @@ class FakeGitHub:
         ]
         self.file_pages = None
         self.check_pages = None
-        self.statuses = []
+        # Both review passes, posted on this head (scripts/merge-when-green.py REVIEW_PASS_STATUSES).
+        self.statuses = [{"context": context, "state": "success", "created_at": "2026-10-10T11:00:00Z"}
+                         for context in guard.REVIEW_PASS_STATUSES]
         self.status_pages = None
         self.thread_page_info = {"hasNextPage": False, "endCursor": None}
         self.workflow_sources = {
@@ -1408,17 +1410,38 @@ class MergeGuardTests(unittest.TestCase):
         api.statuses = [
             {"context": "ci/build", "state": "failure", "created_at": "2026-10-10T12:00:00Z"},
             {"context": "CodeRabbit", "state": "error", "created_at": "2026-10-10T12:01:00Z"},
-        ]
+        ] + api.statuses
         run_refusal(self, api, "Latest commit status is not successful")
         api.statuses[0]["state"] = "success"
         self.assertTrue(guard.validate(api, PR, HEAD, None))
+
+    def test_each_review_pass_status_is_required_on_the_exact_head(self):
+        for context in guard.REVIEW_PASS_STATUSES:
+            with self.subTest(missing=context):
+                api = FakeGitHub()
+                api.statuses = [status for status in api.statuses if status["context"] != context]
+                run_refusal(self, api, f"Review-pass commit status missing on this head: {context}")
+            with self.subTest(failed=context):
+                api = FakeGitHub()
+                api.statuses = [{"context": context, "state": "failure", "created_at": "2026-10-10T12:00:00Z"}
+                                ] + api.statuses
+                run_refusal(self, api, f"Latest commit status is not successful: {context}")
+
+    def test_the_review_pass_refusal_names_the_command_that_posts_it(self):
+        api = FakeGitHub()
+        api.statuses = []
+        with self.assertRaises(guard.Refusal) as caught:
+            guard.validate(api, PR, HEAD, None)
+        self.assertIn(f"gh api repos/{guard.REPO}/statuses/{HEAD} -f state=success -f context=simplify",
+                      str(caught.exception))
+        self.assertIn("context=security-review", str(caught.exception))
 
     def test_commit_statuses_are_paginated_and_latest_state_wins(self):
         api = FakeGitHub()
         api.status_pages = [
             [{"context": "ci/build", "state": "success", "created_at": "2026-10-10T12:01:00Z"}
              for _ in range(100)],
-            [{"context": "ci/build", "state": "failure", "created_at": "2026-10-10T12:00:00Z"}],
+            [{"context": "ci/build", "state": "failure", "created_at": "2026-10-10T12:00:00Z"}] + api.statuses,
         ]
         self.assertTrue(guard.validate(api, PR, HEAD, None))
         self.assertTrue(any(dict(fields).get("page") == "2" for endpoint, fields in api.calls

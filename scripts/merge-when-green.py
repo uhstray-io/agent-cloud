@@ -572,6 +572,12 @@ def check_runs(api, sha):
     return runs
 
 
+# The branch workflow's two review passes (AGENTS.md, Branch Workflow step 4; docs/MISTAKES.md 5.25). Each
+# is a commit status its runner posts on the head it covered, so a push after the passes leaves the new head
+# without them and a stale pass is refused with no text comparison.
+REVIEW_PASS_STATUSES = ("simplify", "security-review")
+
+
 def check_commit_statuses(api, sha):
     statuses = paged(api, f"repos/{REPO}/commits/{sha}/statuses", "")
     latest = {}
@@ -585,6 +591,13 @@ def check_commit_statuses(api, sha):
               if context != "coderabbit" and status["state"] != "success"]
     if failed:
         raise Refusal(f"Latest commit status is not successful: {', '.join(sorted(failed))}")
+    missing = [context for context in REVIEW_PASS_STATUSES if context not in latest]
+    if missing:
+        posts = "; ".join(
+            f"gh api repos/{REPO}/statuses/{sha} -f state=success -f context={context} "
+            f"-f description='<one line: what it found, fixed or deferred>'" for context in missing)
+        raise Refusal(f"Review-pass commit status missing on this head: {', '.join(missing)}. Run the pass "
+                      f"on this exact head, then post its result: {posts}")
 
 
 def workflow_runs(api, sha, number):
