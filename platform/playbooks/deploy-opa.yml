@@ -186,7 +186,9 @@
         COMPOSE_OVERLAYS: "{{ 'compose.tls.yml' if _opa_tls else '' }}"
         OPA_SERVER_LEAF: "{{ opa_server_leaf | default('opa-server') }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates OPA only when its policies, compose files or image changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"

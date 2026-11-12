@@ -117,7 +117,7 @@ and why.
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | 1 | Test: committed launcher places and gates the flag before launch |
 | 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | 1 | Test (pinned targets + definitions, before every run) + runtime path asserts against an inline root + default-deny sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
-| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
+| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 2 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
@@ -3350,6 +3350,8 @@ paths under the repository's `platform/` for writing.
 
 ### 3.11 Changed when a long-lived process restarts without auditing the steps that relied on the old restart; production Authentik lost every custom blueprint instance
 
+**Occurrences: 2** — 2026-10-05, 2026-11-12
+
 **What happened.** PR #431 made the Authentik and o11y deploys recreate their containers
 only when an input changed, instead of on every run. Semaphore task 2843, the first deploy
 under it, recreated the Authentik containers once. Task 2846 then ran the deploy's
@@ -3382,6 +3384,30 @@ Authentik and o11y bind sources.
 task 2896, recreated the project ("operator requested FORCE_RECREATE=true") and its verify
 reported 14 blueprints applied. The normal deploy after it, task 2899, reported
 `DEPLOY_CHANGED=false`, changed=0, with 14 blueprints OK.
+
+**Occurrence 2 — 2026-11-12.** Production OPA served its 2026-11-01 policies for eleven days.
+It loads `./policies` once, at startup (`--bundle /policies`, no `--watch`), and its deploy.sh
+ran a plain `compose up -d`, which leaves a running container alone when only bind-mounted
+files changed. Four `Deploy OPA (Dev)` runs (11933, 12121, 15166, 15168) placed new policies
+and passed their verify, and none of them reached the running server: `opa test --bundle
+/policies` reads the files on disk, and the sample allow and deny decisions do not depend on
+the new data. Twelve policy commits were not live, a security bound on agent-launched
+`target_service` (157e10aa) among them. It surfaced when `Probe launch-gate (Dev)` with the
+base `Snapshot Service Assessment` got 403 `opa_denied` (task 15656) while the `(Dev)` control
+got 201 and 409 (task 15659); `Inspect Service Runtime (Dev)` (task 15664) showed the OPA
+container started 2026-11-01 03:25 UTC with no restart since. The handoff for this rollout had
+stated that production OPA carried the `service-assess` review stamp because task 15168
+deployed the commit that adds it; a successful deploy was taken as the running state.
+
+Why the rule did not fire: it is worded for a change to *when* a process restarts. OPA's
+deploy never restarted the process at all, so no change triggered the audit. The rule's last
+sentence covers it ("files read once at start ... must be followed by a restart"); the trigger
+did not. Fixed by having OPA's deploy.sh call the shared `compose_up_if_changed policies`, which
+hashes the policy tree into the container label and recreates OPA when it differs.
+Enforced by the `opa: deploy.sh recreates OPA when the policies it loads at startup change`
+case in `platform/tests/test_service_opa.bats`, for OPA only; the general form, a service that
+reads a file once at start without that file among its `compose_up_if_changed` inputs, is
+still Convention.
 
 ### 3.12 Two `(Dev)` deploys checked out `main` on their hosts, because the API launch carried no survey defaults
 
