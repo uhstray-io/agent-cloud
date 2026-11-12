@@ -64,6 +64,7 @@ and why.
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
 | 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
+| 1.35 | Offered an operator a drill option naming a mechanism no playbook implements, and an alert outcome I had not traced | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1544,6 +1545,19 @@ the producer identity and Prometheus targets read now have their own words, so t
 **Root cause.** A claim about a pull request was established from one commit inside it. A commit's file list proves nothing about the PR's merge diff, and the gate being recorded existed to check exactly that.
 
 **The rule.** A scope claim names the object it was measured on. Take a PR's file set from `git diff <merge>^1 <merge>` (or `gh pr view --json files`). Take a source slice from the exact commits listed by SHA. Never let one stand in for the other.
+
+**Enforced by.** Convention.
+
+### 1.35 Offered an operator a drill option whose mechanism and outcome I had not checked
+
+**What happened.** On 2026-11-11 I asked Joseph whether to run the endpoint absent-series proof (the open "Endpoint availability live receipt" in 2.3). The recommended option said Alloy would be stopped "through a Semaphore playbook", that the missing-probe alert would fire, and that Alloy would then be restarted. He chose "Run it next slot". Checking afterwards found two problems:
+
+- No such mechanism exists. `drill-o11y-endpoint-availability.yml` only fails one target's probe, `o11y-fault-drill.yml` only stops DGX node exporters, and no template stops the receiver's Alloy. The platform forbids stopping it by hand.
+- The outcome was unverified when I offered it. The rule is `absent_over_time(probe_success{…}[w]) unless on(…) (up{…} == 0)`, keyed to the same target identity. Traced afterwards, the claim held: `config.alloy.j2` has Alloy scrape its own blackbox exporter and remote-write the result, so the probe and its `up` both disappear when Alloy stops. That was luck, not checking.
+
+**Root cause.** I wrote the option from the drill's goal, not from the code that would carry it out. The question gave Joseph a confident plan, and he approved it on that basis.
+
+**The rule.** Before offering an option that names a mechanism, find the playbook or template that implements it, and trace the alert expression the option says will fire. If either is missing, the option is "build X first", with that work named.
 
 **Enforced by.** Convention.
 
