@@ -25,7 +25,8 @@ The Authentik client is created first, because the sign-in routes need its secre
 - [x] 2.2 Implement `GET /auth/login`. It answers 302 to Authentik and keeps the PKCE S256 verifier, the `state` and the `nonce` in the session. The OIDC HTTP client has redirects turned off, and it adds the certificates in `CONSOLE_EXTRA_CA_FILE` when that variable is set.
   - Reconciled 2026-11-11 (shipped in v0.14.0, box never ticked): `login` (`app/src/server/auth.rs:80-105`) answers 302 to the authorize URL with a PKCE S256 challenge and keeps the verifier, state and nonce in the session; the HTTP client has redirects off and adds `CONSOLE_EXTRA_CA_FILE` roots (`app/src/server/mod.rs:123, 208-226`, error paths tested at `:2937-2949`).
 - [ ] 2.3 Implement `GET /auth/callback`. It exchanges the code, verifies the ID token and its `nonce`, stores the user in the session, and answers 302 to `/`. Use the cookie `console_session` (Secure, HttpOnly, SameSite=Lax) and an 8-hour inactivity expiry.
-- [ ] 2.4 Implement `POST /auth/logout`. It clears the session and answers 302 to `/`.
+- [x] 2.4 Implement `POST /auth/logout`. It clears the session and answers 302 to `/`.
+  - Reconciled 2026-11-11 (shipped in v0.14.0, box never ticked): `POST /auth/logout` (`app/src/server/mod.rs:290`) flushes the session and answers 302 to `/` (`app/src/server/auth.rs:205-210`). That a request in flight cannot restore the flushed session is 2.3's fix (update-only re-save).
 - [ ] 2.5 Require a session on every `/v1/*` route. Without one, the route answers 401 with the JSON body `{"error":"unauthenticated"}`.
 - [ ] 2.6 Validation gate: scenarios "Sign-in redirects to Authentik", "Callback stores the verified user", "Callback with a wrong nonce is refused" and "Unauthenticated API call answers 401" hold.
 
