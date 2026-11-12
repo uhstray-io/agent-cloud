@@ -1762,6 +1762,32 @@ class ReleaseBudgetTests(unittest.TestCase):
         self.assertIn("BUDGET: after this merge", out)
         self.assertIn("release script that runs with a write token", err)
 
+    def test_a_budget_refusal_on_a_protected_path_names_the_operator_merge(self):
+        # A release-script PR is the operator's to merge whatever the count says, so that answer comes first.
+        api = FakeGitHub()
+        api.files = ["scripts/semver.py"]
+        api.budget_dev_sha = "f" * 40
+        result, _out, err = run_guard(api)
+        self.assertEqual(result, 1)
+        self.assertIn("release script that runs with a write token", err)
+        self.assertNotIn("is not GitHub's dev", err)
+
+    def test_dev_moving_after_the_count_refuses_the_merge(self):
+        # Both validations count at the tip GitHub reported; a merge into dev before the merge call is refused.
+        api = FakeGitHub()
+        original, reads = api.api, []
+
+        def moving(endpoint, fields=()):
+            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+                reads.append(endpoint)
+                sha = api.dev_tip if len(reads) <= 2 else "f" * 40
+                return {"ref": "refs/heads/dev", "object": {"sha": sha, "type": "commit"}}
+            return original(endpoint, fields)
+
+        api.api = moving
+        run_refusal(self, api, "dev moved after the release budget was counted")
+        self.assertEqual(len(reads), 3)
+
 
 def git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
@@ -1818,6 +1844,19 @@ class ReleaseBudgetGitTests(unittest.TestCase):
         dev_sha, before, _after = github.release_budget([])
         self.assertEqual(dev_sha, git_out(self.seed, "rev-parse", "HEAD"))
         self.assertEqual((before["prs"], before["files"]), (2, 2))
+
+    def test_fetches_main_and_the_release_tags_it_counts_from(self):
+        # A carry-over tag cut after the clone was made must reach the count: without the tag refspec the
+        # transition would never end, and without the main refspec the release would start at the old tag.
+        github = guard.GitHub(repo_root=self.clone)
+        self.assertTrue(github.release_budget([])[1]["transition"])
+        git(self.seed, "checkout", "-q", "main")
+        git(self.seed, "merge", "-q", "--no-ff", "-m", "Merge pull request #2 from uhstray-io/dev", "dev")
+        git(self.seed, "tag", guard.semver.TRANSITION_TAG)
+        git(self.seed, "push", "-q", "origin", "main", guard.semver.TRANSITION_TAG)
+        _dev_sha, before, _after = github.release_budget([])
+        self.assertFalse(before["transition"])
+        self.assertEqual(before["from"], guard.semver.TRANSITION_TAG)
 
     def test_a_missing_checkout_refuses_on_the_fetch(self):
         github = guard.GitHub(repo_root=self.origin.parent / "absent")

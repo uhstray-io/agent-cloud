@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only Dev PR merge gate; --merge performs one explicit, SHA-bound merge."""
+"""Dev PR merge gate, read-only toward GitHub; --merge performs one explicit, SHA-bound merge.
+
+The release-budget count fetches main, dev and the v* tags into this checkout (remote-tracking refs and
+tags, shared by every worktree of the clone); nothing else is written locally.
+"""
 
 import argparse
 import base64
@@ -842,8 +846,13 @@ def validate(api, number, sha, receipt_path):
     pr = get_pr(api, number)
     base_sha = check_pr(pr, number, sha)
     files, file_records = changed_files(api, number)
-    # The readout prints on every run, release-script PRs included, so the budget comes before the path refusals.
-    budget = check_release_budget(api, file_records)
+    # The readout prints on every run that reaches the count, release-script PRs included, so the budget comes before
+    # the path refusals. A budget refusal still names a protected path first: that is the operator-merge answer.
+    try:
+        budget = check_release_budget(api, file_records)
+    except Refusal:
+        check_protected_paths(files)
+        raise
     check_protected_paths(files)
     check_workflow_change(api, base_sha, sha, file_records)
     comments = paged(api, f"repos/{REPO}/issues/{number}/comments", "")
@@ -886,6 +895,12 @@ def main(argv=None, api=None):
         if (refreshed["base_sha"] != evidence["base_sha"]
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
+        # The budget was counted at one dev tip; a merge into dev since then would count against it unseen, and
+        # gh pr merge cannot pin the base. One last read narrows that window to this call.
+        live = api.api(f"repos/{REPO}/git/ref/heads/dev")
+        live_sha = live.get("object", {}).get("sha") if isinstance(live, dict) else None
+        if live_sha != refreshed["budget"]["dev_ref"]:
+            raise Refusal("dev moved after the release budget was counted; run the guard again")
         try:
             api.merge(args.pr, args.head, refreshed["title"])
         except Refusal:

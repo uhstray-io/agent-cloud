@@ -102,12 +102,14 @@ The intake refuses a merge into `dev` that would take the release it joins past 
 
 - **Where the count is taken.** The guard fetches `main`, `dev` and the `v*` release tags into its own checkout (`git fetch --no-tags origin`, with forced refspecs for those names) and counts at the fetched `origin/dev`. That fetch is the one local write, and it force-updates the checkout's remote-tracking refs for `main` and `dev` and its local `v*` tags. Every worktree of that clone shares them. GitHub is still only read.
 - **Why not the pull request's base.** The count is refused unless the fetched `origin/dev` equals GitHub's live `dev` ref (`repos/{REPO}/git/ref/heads/dev`). The pull request's `base.sha` is not used, because it does not track `dev`'s tip: on 2026-11-12, 8 of 8 open pull requests had a stale `base.sha`.
-- **Readout.** Once the count is verified against GitHub's `dev`, each run prints one line to stdout, before the path and CI gates, operator-merge pull requests included. For example `BUDGET: after this merge 6/100 pull requests and 21/120 files since v0.14.0`. It adds `(warn: 80% of a limit)` at 80% of either limit.
+- **Readout.** Once the count is verified against GitHub's `dev`, each validation prints one line to stdout (a `--merge` run validates twice, so it prints two), before the path and CI gates, operator-merge pull requests included. For example `BUDGET: after this merge 6/100 pull requests and 21/120 files since v0.14.0`. It adds `(warn: 80% of a limit)` at 80% of either limit.
 - **Refusals.** Both exit 1 before any merge call.
   - More than 100 pull requests after this merge: `Release full`, with the count, the limit and "promote the release first (policy 10 R4, R5)".
   - More than 120 changed files after this merge, when this pull request adds a path the release does not yet hold (R5). A pull request whose paths the release already holds, such as a revert, may still merge past 120.
 - **Transition.** Until the `v0.15.0` tag exists (R12), neither limit refuses, and the readout says so.
-- **Operator merges.** A pull request that changes `RELEASE_SCRIPTS` or a workflow file still refuses at the path check, after its readout has printed.
+- **Operator merges.** A pull request that changes `RELEASE_SCRIPTS` or a workflow file still refuses at the path check, after its readout has printed. If the budget itself refuses first (a fetch failure, or a local `dev` that is not GitHub's), the guard still answers with the path refusal, because that pull request is the operator's to merge either way.
+- **Before the merge call.** A `--merge` run reads GitHub's `dev` once more just before `gh pr merge` and refuses if it is no longer the tip the budget counted at, since `gh pr merge` cannot pin the base. That narrows, but cannot close, the window in which another merge into `dev` lands unseen.
+- **Rename limit.** GitHub and `git diff -M` can disagree about whether a change is a rename. When GitHub reports a rename that git sees as a deletion and an addition, the intake counts one path where the promotion's diff has two. The promotion check's `Release size` step counts the real diff and catches it.
 
 ## Validation criteria
 
