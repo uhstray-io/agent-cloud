@@ -38,7 +38,8 @@ SH
 }
 
 @test "pre-push: the git environment is cleared before any suite runs" {
-  assert_precedes "$HOOK" '^unset GIT_DIR GIT_WORK_TREE' 'if ! bats platform/tests/'
+  # The first code line that runs bats (a comment that names it does not count).
+  assert_precedes "$HOOK" '^unset GIT_DIR GIT_WORK_TREE' '^[[:space:]]*bats '
 }
 
 # The shared bats helper clears the same variables for every test that loads it
