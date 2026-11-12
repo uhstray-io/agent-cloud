@@ -120,8 +120,9 @@ ENV IP=0.0.0.0 PORT=8080
 EXPOSE 8080
 
 # Exec form, no shell in distroless. The probe speaks HTTP over std sockets.
-# Note: podman's default OCI image format drops HEALTHCHECK, so the compose
-# healthcheck is the one that counts.
+# Note: podman's default OCI image format drops HEALTHCHECK, and compose.yml declares
+# none on purpose (podman-compose runs it through /bin/sh, which this image lacks).
+# Readiness is the exec probe in deploy.sh step 4.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/app/server", "probe", "/healthz", "200"]
 
