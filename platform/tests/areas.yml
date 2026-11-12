@@ -49,4 +49,4 @@ areas:
     paths:
       - "platform/tests/**"
     tiers:
-      static: [lanes]
+      static: [lanes, support]

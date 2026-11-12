@@ -300,14 +300,22 @@ pub mod repo {
     use crate::yaml::{self, Node};
 
     /// Read at run time, never compiled in: two checkouts sharing one CARGO_TARGET_DIR reuse
-    /// one build, and a compiled-in path would test the other checkout's files.
+    /// one build, and a compiled-in path would test the other checkout's files. Cargo and
+    /// nextest set CARGO_MANIFEST_DIR; a binary run on its own (`testsel` from a test) finds
+    /// the checkout it runs in through git.
     static ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
-        let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR unset: run the suite through cargo or nextest");
-        Path::new(&manifest)
-            .join("../..")
-            .canonicalize()
-            .expect("repository root")
+        let root = match std::env::var_os("CARGO_MANIFEST_DIR") {
+            Some(manifest) => Path::new(&manifest).join("../.."),
+            None => {
+                let out = Command::new("git")
+                    .args(["rev-parse", "--show-toplevel"])
+                    .output()
+                    .expect("git");
+                assert!(out.status.success(), "not inside a git checkout");
+                PathBuf::from(String::from_utf8(out.stdout).expect("utf-8 path").trim())
+            }
+        };
+        root.canonicalize().expect("repository root")
     });
 
     /// The repository root (this crate lives at `platform/tests/`).
