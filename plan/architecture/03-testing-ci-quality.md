@@ -28,8 +28,9 @@ Testing effort goes where a defect is expensive, silent or irreversible. In prio
 
 1. **Security invariants.** Secret handling (`no_log` scope, the redaction callback, no protected result
    in a visible loop), the extra-var guard, transport guards, destructive-action confirmations, and
-   credential-leak scans. A regression here leaks a credential or destroys state, so these tests form the
-   **security set**, which runs in every lane.
+   credential-leak scans. A regression here leaks a credential or destroys state, so these tests, with
+   those of item 2, form the **security set**, which runs in every lane (in the commit lane, its static
+   tests).
 2. **Rules the mistakes ledger enforces.** Every `docs/MISTAKES.md` entry whose "Enforced by" names a test.
    That test is the rule; deleting or weakening it reopens the mistake.
 3. **Release and promotion logic.** Version computation, release notes, the merge guard and the release
@@ -111,8 +112,8 @@ that selects tests is its decision D3.
 
 ## Where tests live and how they run
 
-- The Rust suite is planned as one crate at `platform/tests/` with one test binary and one module per
-  area (plan 24, Phase 1; plan 24's "Crate layout" gives the run commands).
+- The Rust suite is planned as one crate at `platform/tests/` with one test binary; each module belongs to
+  one area and one tier (plan 24, Phase 1; plan 24's "Crate layout" gives the run commands).
 - The Dispatch Console crate (`platform/services/console/app/`) keeps its own tests, under these rules.
 - Rego policies keep `opa test` (Rego Tests job); Rego is the policy language, not a test harness choice.
 - Linters and scanners (ruff, shellcheck, ansible-lint, yamllint, hadolint, trufflehog, bandit) are not
