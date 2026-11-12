@@ -21,8 +21,9 @@
 //! The one extension (this port only): FILE also matches a Rust test, `[dir/]suite/<name>.rs`,
 //! optionally followed by `::<fn>`. A path starting `suite/` is relative to `platform/tests/`;
 //! any other path is relative to the repository root. With `::<fn>`, the file must define
-//! `fn <fn>` followed by `(` or `<`, at the start of a line after any attributes, `pub(..)` or
-//! `async`; `//` and `/* */` comments do not count. A Rust citation is checked for
+//! `fn <fn>` followed by `(` or `<`, at the start of a line after any attributes, `pub` or
+//! `pub(..)`, or `async`; a fn inside a comment (nested ones included) or a string or char
+//! literal does not count. A Rust citation is checked for
 //! existence and fn name only. It does not feed the
 //! NAME and BATS NAME pools, so both checkers search the same files for every claim and differ
 //! only on Rust citations, which the Python checker does not read.
@@ -57,7 +58,6 @@ static FILE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FILE_RS: LazyLock<Regex> =
     LazyLock::new(|| re(r"^(?P<path>(?:[\w.-]+/)*suite/[\w-]+\.rs)(?:::(?P<name>\w+))?$"));
-static BLOCK_COMMENT: LazyLock<Regex> = LazyLock::new(|| re(r"(?s)/\*.*?\*/"));
 static NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^test_\w+$"));
 static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| re(r"^(?:test_\w+\.py|[\w-]+\.bats)$"));
 static BATS_TEST: LazyLock<Regex> =
@@ -174,11 +174,9 @@ fn defines(path: &Path, name: &str) -> bool {
     }
     let name = regex::escape(name);
     if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-        // Line-anchored like the Python rule, so `// fn x()` does not count; attributes and
-        // `pub`/`async` may precede it. Block comments are dropped first.
-        // ponytail: two known false greens, a line starting `fn x(` inside a multi-line string
-        // and one after a nested `/* /* */`. Use a Rust tokenizer if either ever bites.
-        let code = BLOCK_COMMENT.replace_all(&text, "");
+        // Line-anchored like the Python rule; attributes and `pub`/`async` may precede it.
+        // Comments and literals are blanked first, so a fn inside one does not count.
+        let code = blank_comments_and_literals(&text);
         let pattern = format!(
             r"(?m)^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
         );
@@ -186,6 +184,92 @@ fn defines(path: &Path, name: &str) -> bool {
     } else {
         re(&format!(r"(?m)^\s*(?:async\s+)?(?:def|class)\s+{name}\b")).is_match(&text)
     }
+}
+
+/// `src` with every comment (nested `/* */` included), string literal (plain, byte, raw) and char
+/// literal replaced by spaces, newlines kept so line anchors still hold. A lifetime (`'a`) is
+/// code: a `'` opens a char literal only when its closing `'` follows the one char or escape.
+fn blank_comments_and_literals(src: &str) -> String {
+    let c: Vec<char> = src.chars().collect();
+    let mut out = String::with_capacity(src.len());
+    let blank = |out: &mut String, chars: &[char]| {
+        out.extend(chars.iter().map(|&ch| if ch == '\n' { '\n' } else { ' ' }));
+    };
+    let ident = |i: usize| i > 0 && (c[i - 1].is_alphanumeric() || c[i - 1] == '_');
+    let mut i = 0;
+    while i < c.len() {
+        let start = i;
+        if c[i] == '/' && c.get(i + 1) == Some(&'/') {
+            while i < c.len() && c[i] != '\n' {
+                i += 1;
+            }
+        } else if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+            let mut depth = 0;
+            while i < c.len() {
+                if c[i] == '/' && c.get(i + 1) == Some(&'*') {
+                    depth += 1;
+                    i += 2;
+                } else if c[i] == '*' && c.get(i + 1) == Some(&'/') {
+                    depth -= 1;
+                    i += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        } else if c[i] == 'r'
+            && (!ident(i) || (c[i - 1] == 'b' && !ident(i - 1)))
+            && matches!(c.get(i + 1), Some('"' | '#'))
+        {
+            let hashes = c[i + 1..].iter().take_while(|&&ch| ch == '#').count();
+            if c.get(i + 1 + hashes) != Some(&'"') {
+                out.push(c[i]);
+                i += 1;
+                continue;
+            }
+            i += hashes + 2;
+            let closes = |i: usize| {
+                c[i] == '"'
+                    && c.get(i + 1..i + 1 + hashes)
+                        .is_some_and(|h| h.iter().all(|&ch| ch == '#'))
+            };
+            while i < c.len() && !closes(i) {
+                i += 1;
+            }
+            i = (i + 1 + hashes).min(c.len());
+        } else if c[i] == '"' {
+            i += 1;
+            while i < c.len() && c[i] != '"' {
+                i += if c[i] == '\\' { 2 } else { 1 };
+            }
+            i = (i + 1).min(c.len());
+        } else if c[i] == '\'' {
+            let close = if c.get(i + 1) == Some(&'\\') {
+                // The escaped char is at i + 2, so the closing quote is searched from i + 3.
+                c.get(i + 3..)
+                    .and_then(|rest| rest.iter().position(|&ch| ch == '\''))
+                    .map(|p| i + 3 + p)
+            } else {
+                Some(i + 2).filter(|&j| c.get(j) == Some(&'\''))
+            };
+            match close {
+                Some(j) => i = j + 1,
+                None => {
+                    out.push(c[i]);
+                    i += 1;
+                    continue;
+                }
+            }
+        } else {
+            out.push(c[i]);
+            i += 1;
+            continue;
+        }
+        blank(&mut out, &c[start..i.min(c.len())]);
+    }
+    out
 }
 
 fn bats_names(path: &Path) -> BTreeSet<String> {
@@ -493,6 +577,49 @@ fn rust_citations_resolve_against_the_suite_and_their_fn_names() {
             strings(&[&format!("4.1 {span}")]),
             "{name}"
         );
+    }
+
+    // Act / Assert: nested comments and string literals hide a fn; a quote or `/*` inside a
+    // literal, a char literal and a lifetime do not hide the code after them
+    fs::write(
+        suite.join("scanner.rs"),
+        r##"/* outer /* inner */
+fn nested_comment_fn() {}
+*/
+const S: &str = "
+fn string_fn() {}
+";
+const R: &str = r#"
+fn raw_string_fn() {}
+"#;
+const R2: &str = r#"a " quote
+fn raw_quote_fn() {}
+"#;
+const Q: &str = "/* \" ";
+fn after_string_fn() {}
+const C: char = '"';
+fn after_char_fn<'a>(x: &'a str) {}
+const P: (char, char) = ('\'','"');
+fn after_escaped_quote_fn() {}
+"##,
+    )
+    .expect("scanner fixture");
+    for (name, defined) in [
+        ("nested_comment_fn", false),
+        ("string_fn", false),
+        ("raw_string_fn", false),
+        ("raw_quote_fn", false),
+        ("after_string_fn", true),
+        ("after_char_fn", true),
+        ("after_escaped_quote_fn", true),
+    ] {
+        let span = format!("suite/scanner.rs::{name}");
+        let expected = if defined {
+            vec![]
+        } else {
+            strings(&[&format!("4.1 {span}")])
+        };
+        assert_eq!(unresolved(&cite(&span), root.path()), expected, "{name}");
     }
 
     // Act / Assert: an invented fn name, and a missing file, both fail
