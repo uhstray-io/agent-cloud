@@ -62,8 +62,8 @@ deliberation behind them is retained in the Hindsight bank.
 | D11 | **Agents read deployment state.** Every node receives the run's prior step results and the registry entries for its current and next steps; read tools are NetBox custom fields and Semaphore `check_task` | Stateless nodes | The reasoning steps must know what already happened to this service |
 
 > **2026-10-31 note on D3 and D9** (superseded by the 2026-11-11 update below). The decisions above are
-> kept as recorded on 2026-09-22. It is not yet true that OPA gates Semaphore launches. skynet's own client asks OPA before each launch; Semaphore does
-> not ask OPA. Because Semaphore v2.19.11 merges a launcher's task environment over the template's,
+> kept as recorded on 2026-09-22. It is not yet true that OPA gates Semaphore launches. skynet's own
+> client asks OPA before each launch; Semaphore does not ask OPA. Because Semaphore v2.19.11 merges a launcher's task environment over the template's,
 > unfiltered (upstream `services/tasks/TaskRunner.go:395-425`), any `task_runner` can inject extra
 > variables, including templated ones. svc-skynet was demoted to `guest` on 2026-10-31, so skynet can no
 > longer launch. The server-side gate that will ask OPA before every agent launch is planned in OpenSpec
