@@ -81,7 +81,8 @@ the required check.
 ## Design Principles
 
 The principles are [03 Part 1](../architecture/03-testing-ci-quality.md): what earns a test, the rules for
-writing one, one binary with one module per area, the security set in every lane, and coverage as a map.
+writing one, one test binary, the security set (secret-handling, guard and ledger-enforced tests) in every
+lane, and coverage as a map.
 This plan's own choices are decisions D1 to D9 below. One rule is specific to the port: **delete before
 porting**. Each test is judged against 03 Part 1, "What earns a test", first, and a test that pins source
 text, restates another test or proves nothing a reader relies on is deleted and listed in the port's map.
@@ -100,7 +101,7 @@ flowchart LR
     NX --> CLI["cli tier<br/>assert_cmd + fake PATH"]
     NX --> HTTP["http tier<br/>wiremock fakes"]
     NX --> PB["playbook tier<br/>ansible-playbook, test-group capped"]
-    SEC["security set<br/>(always selected)"] --> FS
+    SEC["security set<br/>(every lane; static only in commit)"] --> FS
 ```
 
 ### Crate layout
@@ -112,14 +113,14 @@ platform/tests/
   areas.yml            area -> path globs (D3)
   src/lib.rs            shared support: repo root, YAML 1.1 loader, task walker, process runner
   src/bin/testsel.rs    changed paths -> nextest filterset (Phase 2)
-  suite/main.rs         the one test binary; one module per area
-  suite/<area>.rs
+  suite/main.rs         the one test binary
+  suite/<module>.rs     one area and one tier each (an area may have several modules)
 ```
 
 The crate sits in `platform/tests/` beside the Python files it replaces. Ledger citations keep their
 directory, and the console crate (`platform/services/console/app/Cargo.toml`, its own `[workspace]`) is
 unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
-`cargo nextest run -E 'test(/^<area>::/)'` runs one area.
+`cargo nextest run -E 'test(/^<module>::/)'` runs one module.
 
 ### Decisions
 
@@ -127,13 +128,13 @@ unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
 |---|---|---|
 | D1 | **Runner: `cargo-nextest` 0.9.151.** Profiles are lanes. A `playbook` test-group caps concurrent `ansible-playbook` runs. `slow-timeout` bounds every test, which is plan 21 F5's missing timeout | `cargo test` runs one binary's tests on threads in one process, so a hung child holds the run and per-test timeouts need custom code. `rustest` 0.3.1 replaces the libtest harness (`harness = false`), was last released 2025-06-04 and has 82 downloads a month (lib.rs, read 2026-11-12) |
 | D2 | **Libraries.** `assert_cmd` + `predicates` (process tests), `insta` with `yaml` and `json` (snapshots of rendered output and refusal messages), `proptest` (properties of parsers and resolvers), `wiremock` + `tokio` (HTTP fakes, replacing the 31 hand-rolled servers of plan 21 F5), `yaml-rust2` (YAML), `tempfile`, `globset`, `serde_json`. Approved by the operator on 2026-11-12 | `quickcheck` duplicates `proptest`, and `proptest` keeps failing cases in `proptest-regressions/`. `trybuild` tests compile errors of macros and types, and the repository has none. `serde_yaml` is deprecated (`0.9.34+deprecated` on crates.io) |
-| D3 | **Lanes from `areas.yml`.** YAML, read with the suite's own loader, so no TOML dependency. Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over module paths (`test(/^<area>::/)`). The security set and the static tier of the touched areas are always added. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
+| D3 | **Lanes from `areas.yml`.** YAML, read with the suite's own loader, so no TOML dependency. Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over the selected modules (`test(/^(?:<module>|...)::/)`). The security set is added in every lane (its static tests in `commit`), with the touched areas' tiers the lane allows. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
 | D4 | **Port Python where the runtime is ours.** Controller-side helpers (`scripts/*.py`, `platform/lib/*.py`, `platform/playbooks/files/*.py` run on the controller) become subcommands of one Rust CLI. Host-side helpers follow once D6 is decided. Operator decision, 2026-11-12 | Keeping a thin pytest lane was the recommended option. Shim tests (`python3 -c` per case) are slower than in-process pytest |
 | D5 | **Framework-bound Python stays Python, kept thin.** Filter and callback plugins are loaded by Ansible. Plane, NetBox and Authentik scripts run in their Django shells. NetBox workers and configuration run in NetBox. Each keeps its logic in a pure function, and the function's cases run through the tier that can load it: playbook tier for plugins, a fake-module `python3` run for Django scripts. One test per behaviour, cases looped inside one run | A Rust port of these is impossible: the host only loads Python |
 | D6 | **Host-side binary distribution: OPEN, operator decision.** Proposed: CI builds static musl binaries for `x86_64` and `aarch64` and publishes them on the release. Deploys fetch them by pinned sha256, the pattern Deploy Plane uses for Plane's Compose files, and copy them instead of `script:` | Building on the controller needs a Rust toolchain in the Semaphore image. A host has no toolchain |
 | D7 | **YAML 1.1 booleans.** `.yamllint.yml` allows bare `yes`/`no`, which Ansible (PyYAML, YAML 1.1) reads as booleans and `yaml-rust2` (YAML 1.2) reads as strings. The support library resolves scalars with YAML 1.1 rules wherever a test compares booleans, and a table test in `suite/support.rs` pins the resolver to PyYAML's bool and null sets (`yaml/resolver.py`) | Banning bare `yes`/`no` repository-wide is a separate change |
 | D8 | **CI: one always-running `Rust (tests)` job, selection inside it.** It runs `testsel` against the pull request's base, then nextest with the `ci` profile, and the `Unit Tests` aggregator needs it. Promotion pull requests into `main`, and the nightly run on `dev`, use the `full` profile | A job skipped by a path filter fails the aggregator (Problem, "Lanes do not exist today") |
-| D9 | **The ledger learns Rust.** The citation check (`test_ledger_test_citations.py`) is ported first and resolves `platform/tests/suite/<area>.rs::<fn>`. A ported test's old citation is ratcheted with the replacing test named in the reason. The ledger is append-only, so its old text stays | Deleting a cited file before the checker reads Rust turns the check red (`docs/MISTAKES.md` 8.2) |
+| D9 | **The ledger learns Rust.** The citation check (`test_ledger_test_citations.py`) is ported first and resolves `platform/tests/suite/<module>.rs::<fn>`. A ported test's old citation is ratcheted with the replacing test named in the reason. The ledger is append-only, so its old text stays | Deleting a cited file before the checker reads Rust turns the check red (`docs/MISTAKES.md` 8.2) |
 
 ### Lanes
 
@@ -147,7 +148,8 @@ unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
 
 A changed path that matches no area, no `full` trigger and no ignored path (D3) runs everything in `push`
 and `ci`; in `commit` it adds nothing. Every suite module is listed in exactly one lane slot, an area tier or
-the security set, so a test outside every lane cannot exist (Phase 2 adds the test that enforces it). The budgets are targets until Phase 1 measures them. A lane that exceeds its budget fails nothing, but
+the security set, so a test outside every lane cannot exist (Phase 2 adds the test that enforces it). The
+budgets are targets until Phase 1 measures them. A lane that exceeds its budget fails nothing, but
 it reports the overrun in the job summary, as the shards do today.
 
 ---
@@ -196,7 +198,9 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 
 ## Security Considerations
 
-- The security set always runs, so selecting fewer tests never skips a secret-handling or guard test.
+- The security set runs in every lane, so `push`, `ci` and `full` never skip a secret-handling, guard or
+  ledger-enforced test; the `commit` lane runs its static tests only, and `push` runs the rest before the
+  change leaves the workstation.
 - Process tests run with a scrubbed environment: no `ANSIBLE_CONFIG`, no OpenBao or Semaphore variables,
   `HOME` and temp directories inside the test's `tempfile` directory. This is today's
   `harness_sandbox.env_for` rule, centralised in the support library.
@@ -224,6 +228,7 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 
 | Date | Change |
 |---|---|
+| 2026-11-12 | Review: the security set includes the ledger-enforced tests (03 item 2), as the original principles had it; modules are per area and tier, not one per area; an unclassified path runs everything in `push` and `ci` but adds nothing in `commit`, to keep the commit lane inside its 10 s budget. |
 | 2026-11-12 | Phases 0 to 3 also move to v0.16.0: no merges into `dev` until v0.15.0 is released (operator decision). |
 | 2026-11-12 | Phases 4 to 10 moved to milestone v0.16.0 (operator decision). |
 | 2026-11-12 | Created. Operator decisions the same day: Rust replaces pytest and BATS; Python product code is ported to Rust where the runtime is ours (D4); the six support dependencies and `cargo-nextest` are approved (D1, D2) |

@@ -10,6 +10,7 @@ dependencies = [
  "globset",
  "predicates",
  "proptest",
+ "regex",
  "tempfile",
  "yaml-rust2",
 ]

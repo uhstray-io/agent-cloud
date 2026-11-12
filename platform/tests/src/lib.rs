@@ -185,12 +185,14 @@ pub mod yaml {
     /// loader refuses them all rather than construct some and misread others.
     const CORE_TAG: &str = "tag:yaml.org,2002:";
 
+    // `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the verbatim
+    // `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Join them so both match.
     fn refuse_core_tag(tag: Option<&yaml_rust2::parser::Tag>, origin: &str) {
-        if let Some(t) = tag.filter(|t| t.handle == CORE_TAG) {
-            panic!(
-                "{origin}: core tag `!!{}` is not supported by the test loader",
-                t.suffix
-            );
+        if let Some(t) = tag {
+            let full = format!("{}{}", t.handle, t.suffix);
+            if let Some(name) = full.strip_prefix(CORE_TAG) {
+                panic!("{origin}: core tag `!!{name}` is not supported by the test loader");
+            }
         }
     }
 

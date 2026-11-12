@@ -23,8 +23,10 @@ ignore:
   - "plan/**"
   - "docs/**"
 
-# The security set: selected in every lane (static modules only in the commit lane).
-always: {}
+# The security set: selected in every lane (static modules only in the commit lane). `ledger`
+# checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
+always:
+  static: [ledger]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:

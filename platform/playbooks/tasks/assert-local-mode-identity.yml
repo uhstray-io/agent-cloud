@@ -6,7 +6,8 @@
 # `<name>-local` (filter_plugins/local_dev.py), read from `groups` because `-e` cannot set groups
 # (clean-service.yml:85-89). Unset is refused on a local-dev inventory and accepted elsewhere.
 #
-# Include it first in a shared task, before any read of local_mode. A templated extra var renders
+# Include it first, before any read of local_mode: in a shared task, or in a playbook's first play
+# (deploy-skynet.yml, deploy-launch-gate.yml). A templated extra var renders
 # afresh at each read, so one check does not close it (docs/MISTAKES.md 1.15).
 #
 # Expects no variables: it reads only `groups` and `local_mode`, inline in the assertion, so no task
