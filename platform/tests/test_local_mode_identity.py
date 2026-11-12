@@ -93,7 +93,7 @@ def test_the_example_shape_passes_on_the_implicit_localhost_play(tmp_path):
 
 
 @pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True))
-def test_place_monorepo_refuses_a_forged_local_mode_before_it_copies_anything(tmp_path, forge):
+def test_place_monorepo_refuses_a_forged_local_mode_before_its_own_tasks(tmp_path, forge):
     dst = tmp_path / "dst"
     play = (
         "- hosts: all\n"
@@ -108,7 +108,10 @@ def test_place_monorepo_refuses_a_forged_local_mode_before_it_copies_anything(tm
         f"      ansible.builtin.include_tasks: {json.dumps(str(PLACE))}\n")
     proc = run(tmp_path, PROD_INI, play, "-e", forge(tmp_path), check=True)
     refused(proc, IDENTITY_REFUSAL)
-    assert not dst.exists(), proc.output
+    # Refused by place-monorepo's own first task, not later by enable-linger.yml's copy of the check
+    # (its last include): no task of place-monorepo ran. Under --check the copy would not write, so
+    # the absence of the destination would prove nothing.
+    assert "Assert required variables for monorepo placement" not in proc.output, proc.output
 
 
 @pytest.mark.parametrize("path", [PLACE, LINGER], ids=["place-monorepo", "enable-linger"])
