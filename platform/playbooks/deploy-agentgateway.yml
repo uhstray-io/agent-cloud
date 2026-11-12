@@ -442,7 +442,6 @@
         _apk_for: "Listener TLS (compose.tls.yml)"
       when: _tls and not (local_mode | default(false) | bool)
 
-
     # Rollback (rollback-inference-route.yml, gateway-config mode; gateway task 4.6) puts back
     # the config.yaml the last change replaced, kept here as config.yaml.previous. The render is
     # the shared manage-secrets step, which reports no per-file change, so the current file is
