@@ -2008,6 +2008,18 @@ class DevDriftGitTests(GitOriginFixture, unittest.TestCase):
         self.assertEqual(github.dev_drift(7, feature_sha, dev_sha),
                          (3, ["platform/tests/test_merge_only.py", "platform/tests/test_y.py", "side.md"]))
 
+    def test_a_test_file_renamed_away_on_dev_counts_under_its_old_name(self):
+        # The file exists before the head branches, so only dev's rename can list its old path.
+        (self.seed / "tests").mkdir()
+        commit_file(self.seed, "tests/test_r.py", "def test_r():\n    pass\n", "test: r (#5)")
+        git(self.seed, "push", "-q", "origin", "dev")
+        github, feature_sha, _dev_sha = self.start_feature()
+        git(self.seed, "mv", "tests/test_r.py", "moved_r.py")
+        git(self.seed, "commit", "-q", "-m", "chore: move r (#6)")
+        git(self.seed, "push", "-q", "origin", "dev")
+        dev_sha = github.release_budget([])[0]
+        self.assertIn("tests/test_r.py", github.dev_drift(7, feature_sha, dev_sha)[1])
+
     def test_the_head_is_kept_where_no_fetch_refspec_writes(self):
         # A remote branch named pr/7 reaches refs/remotes/origin/pr/7 on any plain fetch; the pinned head must not live
         # there, or that fetch would replace it.
