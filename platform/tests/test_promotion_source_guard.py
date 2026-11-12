@@ -23,7 +23,7 @@ SEMVER = REPO / "scripts/semver.py"
 JOB = "promotion-source"
 ANCESTRY_STEP = "Require dev to contain every commit on main"
 SOURCE_STEP = "Require the PR to originate from dev"
-BUDGET_STEP = "Require the release to fit the release budget"
+BUDGET_STEP = "Release size"
 
 
 def _job() -> dict:

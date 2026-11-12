@@ -70,7 +70,7 @@ jobs:
           fi
           echo "OK: dev contains every commit on main."
 
-      - name: Require the release to fit the release budget
+      - name: Release size
         env:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -97,7 +97,7 @@ jobs:
           if budget["transition"]:
               print("::notice title=Release budget transition::No release budget applies before the v0.15.0 carry-over release (policy 10 R12). This promotion counts {} pull requests and {} files.".format(prs, files))
           elif budget["full"]:
-              print("::error title=Release over budget::{} pull requests (limit {}) and {} files (limit {}) since {}. Policy 10 R5: promote before more lands. R11: an over-limit dev ships only through the break-glass (R10), recorded in the release notes.".format(prs, limit_prs, files, limit_files, since))
+              print("::error title=Release over budget::{} pull requests (limit {}) and {} files (limit {}) since {}. Policy 10 R11: over the file limit, revert pull requests on dev can bring it back under; over the pull-request limit, the release ships only through the R10 break-glass, recorded in its release notes.".format(prs, limit_prs, files, limit_files, since))
               sys.exit(1)
           else:
               print("OK: {}/{} pull requests and {}/{} files since {}.".format(prs, limit_prs, files, limit_files, since))
