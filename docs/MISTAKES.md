@@ -5062,8 +5062,9 @@ for all of them; `protect-dev.json` refuses a force push and a deletion on `dev`
 `gh pr merge` skips. An agent running under an account with the repository-admin role holds that
 bypass, so for it a push, force push or deletion on `main` is held by convention too. The rest is
 convention: a `dev` merge hold, which nothing the guard reads records, a fast-forward push straight
-to `dev`, a squash merge, `--dev-drift-acknowledged`, other organisations' repositories, and the two
-promotion rounds, which no check counts.
+to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the
+operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
+repositories, and the two promotion rounds, which no check counts.
 
 ## 6. Working from assumptions about files
 
