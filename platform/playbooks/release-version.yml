@@ -46,6 +46,11 @@
 # planner, the tags, the push and the Release creation, and rewrites the body of that Release with the same
 # notes. release_major and release_refresh_tag cannot both be set.
 #
+# Publish a reviewed body. The same template takes an optional release_notes_from_task: the Semaphore task id of a
+# successful check-mode run of it for the same tag. The body is then that run's recorded notes, published exactly
+# (tasks/release-notes-from-task.yml), because the model text differs between two runs at temperature 0. Without it
+# the refresh generates the notes as before. release_notes_from_task needs release_refresh_tag.
+#
 # Check mode runs everything local: the mint (so a dry run proves the credentials), the clone, the
 # planner, the validation, the notes (the gateway is called, a read, and the body is printed) and the
 # report. It pushes nothing, creates no Release and rewrites no body.
@@ -90,6 +95,11 @@
         # Refresh mode: the release tag typed on Refresh Release Notes (Dev), empty otherwise. Read once here.
         # A refresh rewrites that Release's body; it tags, pushes and creates nothing.
         _rv_refresh: "{{ release_refresh_tag | default('') | trim }}"
+        # Publish mode: the task id of a reviewed check-mode run of the Refresh template, empty otherwise. Read once here.
+        _rv_from_task: "{{ release_notes_from_task | default('', true) | string | trim }}"
+        # The Semaphore project this instance runs in; the publish step reads that run's task and output from it. An
+        # inventory may override it. The default 1 is the instance's project, as set-semaphore-branch.yml takes it.
+        _rv_semaphore_project_id: "{{ release_semaphore_project_id | default(1) }}"
         # The only tag names this playbook will push: vX.Y.Z on main, vX.Y.Z-dev.N on dev (plan 20).
         # A name outside this form could carry a refspec (`x:refs/heads/dev`) or an option; both are refused.
         _rv_tag_re: '^v[0-9]+[.][0-9]+[.][0-9]+(-dev[.][0-9]+)?$'
@@ -123,6 +133,20 @@
         that:
           - _rv_major | length == 0 or _rv_refresh | length == 0
         fail_msg: "release_major and release_refresh_tag cannot both be set: a major run cuts a version, a refresh rewrites an existing Release."
+
+    - name: "Require the publish id to be a Semaphore task number (empty unless the Refresh template sets it)"
+      ansible.builtin.assert:
+        that:
+          - _rv_from_task | length == 0 or _rv_from_task is match('^[1-9][0-9]*$')
+        fail_msg: "release_notes_from_task must be empty or the id of a Semaphore task (a positive whole number), for example 14801."
+        quiet: true
+
+    - name: "Require a publish id to come with a refresh tag (it publishes the notes of that one release)"
+      ansible.builtin.assert:
+        that:
+          - _rv_from_task | length == 0 or _rv_refresh | length > 0
+        fail_msg: "release_notes_from_task needs release_refresh_tag: a reviewed run publishes the notes of one existing release."
+        quiet: true
 
     # The release notes find the inference route through the caddy_svc group. On Semaphore a run can lose its
     # inventory to the shared-file race (tasks/require-parsed-inventory.yml); every group is then empty, the notes
@@ -500,10 +524,20 @@
                 _rv_refresh_id: "{{ _rv_refresh_get.json.id }}"
               no_log: true
 
+            # Generated notes, unless a reviewed check run is named: then the body comes from that run (next include).
             - name: "Take the categorised notes for the refresh tag"
               ansible.builtin.include_tasks: tasks/release-notes-body.yml
               vars:
                 _rn_tag: "{{ _rv_refresh }}"
+              when: _rv_from_task | length == 0
+
+            # The reviewed notes: the named check-mode run's recorded body, checked by its sha256 (release-notes-from-task.yml).
+            - name: "Publish the notes of the reviewed check-mode run (release_notes_from_task)"
+              ansible.builtin.include_tasks: tasks/release-notes-from-task.yml
+              vars:
+                _rnt_tag: "{{ _rv_refresh }}"
+                _rnt_task_id: "{{ _rv_from_task | int }}"
+              when: _rv_from_task | length > 0
 
             - name: "Rewrite the Release body (hidden: the request carries the token; never in check mode)"
               ansible.builtin.uri:
