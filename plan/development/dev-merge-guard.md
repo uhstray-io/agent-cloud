@@ -111,12 +111,24 @@ The intake refuses a merge into `dev` that would take the release it joins past 
 - **Before the merge call.** A `--merge` run reads GitHub's `dev` once more just before `gh pr merge` and refuses if it is no longer the tip the budget counted at, since `gh pr merge` cannot pin the base. That narrows, but cannot close, the window in which another merge into `dev` lands unseen.
 - **Rename limit.** GitHub and `git diff -M` can disagree about whether a change is a rename. When GitHub reports a rename that git sees as a deletion and an addition, the intake counts one path where the promotion's diff has two. The promotion check's `Release size` step counts the real diff and catches it.
 
+## Dev drift
+
+CI proves the pull request's head, not that head merged into the current `dev` (`docs/MISTAKES.md` 5.23): two heads that are each green can merge into a red `dev` when one adds a repo-wide test the other's files fail.
+
+- **What is read.** After the release budget, the guard fetches `refs/pull/<n>/head` into its checkout as `refs/merge-guard/pull/<n>`, a namespace no fetch refspec writes to, and refuses unless it is the expected head. It then counts the commits on the verified `dev` tip that the head lacks (`git rev-list --count <head>..<dev>`) and lists the paths those same commits change (`git log --format= --name-only --no-renames --diff-merges=combined <head>..<dev>`: both names of a rename, and what a merge commit changed beyond all its parents; a three-dot diff would use one merge base where there are several). Local git, because GitHub's compare API documents no signal for a truncated file list.
+- **Test path.** A path under any `tests/` directory, any `conftest.py`, or `pyproject.toml`; a test pins that every pytest `testpath` qualifies. Only drift into test paths refuses, as 5.23's rule states: refusing any drift would need a `dev` merge and a new CI run whenever `dev` moved at all.
+- **Readout.** Each validation prints `DEV: this head lacks <n> commits of dev <sha>; <k> test paths among their changes`.
+- **Refusal.** When any changed path is a test path, the guard refuses, naming up to five, unless `--dev-drift-acknowledged` is passed. The answer is to merge `dev` into the branch and let CI run on the new head.
+- **Limit.** Only `dev`'s side is read. A head that adds a repo-wide test while `dev` gained a file that fails it, with no test path among `dev`'s changes, still merges unchecked. Rust tests written in `src/` (`#[cfg(test)]`, run by `cargo test`) are not test paths, and neither are `uv.lock` or CI and lint configuration (`.github/workflows/`, `.yamllint.yml`, `.ansible-lint`), though a change there can turn `dev` red the same way.
+- **Refs left behind.** Each validated pull request leaves `refs/merge-guard/pull/<n>` in the checkout the guard runs from; nothing removes them. They hold no secret and are rewritten on the next validation of that pull request.
+
 ## Validation criteria
 
 | Check | Pass condition |
 |---|---|
 | PR identity | Open, not draft, same-repository head, base `dev`, exact requested SHA |
 | Release budget | Fetched `origin/dev` equals GitHub's live `dev` ref; after this merge at most 100 pull requests, and at most 120 changed files unless the pull request adds no new path; no limit before `v0.15.0` (R12); the readout prints on every run that reaches the count |
+| Dev drift | The fetched `refs/pull/<n>/head` is the exact head; `dev` holds no commit the head lacks that changes a test path, unless `--dev-drift-acknowledged`; the readout prints on every run that reaches it |
 | Workflow policy | Base/head are the exact pre-partition-to-credential-safe-partition transition, the exact Playbook Safety-to-Agentgateway partition transition, or a byte-identical credential-safe or Agentgateway partition; the intermediate partition is refused as base or head; the matching schema is valid and tree mode is `100644` |
 | CI | Every expected job is present on the latest PR workflow attempt and has a successful exact-head check run; every latest exact-head commit status context succeeds except optional CodeRabbit, and the `simplify` and `security-review` statuses are both present; a CodeRabbit check run must be completed with `success`, `neutral` or `skipped`; Dependabot's config check (`.github/dependabot.yml`, posted on any head that changes that file, including a `dev` merge) must be completed with `success`; any other non-Actions check run refuses; no expected job may be skipped |
 | Review | One independent exact-head approval or valid receipt; no latest outstanding changes request; no unresolved thread |
@@ -155,4 +167,5 @@ The CLI does not change GitHub rulesets or the main-to-Dev sync. Direct use of `
 - 2026-11-11: Twelfth workflow transition, sharded to bats-pinned: Bash Tests installs bats from its pinned release (commit-checked) instead of apt, after the Ubuntu archive could not be resolved from the runner for hours.
 - 2026-11-11: Thirteenth workflow transition, bats-pinned to retired: the `Detect changes` job and the three Go jobs are removed with the retired platforms (#1043), so every expected job is required and none is path-gated.
 - 2026-11-11: Add `platform/playbooks/tasks/release-notes-from-task.yml` and `platform/playbooks/files/release_notes_from_task.py` to `RELEASE_SCRIPTS`; both run while the release token is live (publish a reviewed check-mode body).
+- 2026-11-12: Dev drift: refuse a head when `dev` holds commits it lacks that change test paths, unless `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23).
 - 2026-11-12: Release-budget intake (policy 10, plan 23 phase 2): refuse a `dev` merge over the release budget, counted at the fetched `origin/dev` verified against GitHub's live `dev` ref, not the pull request's `base.sha`; print the budget readout on every run that reaches the count.
