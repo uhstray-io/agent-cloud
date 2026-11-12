@@ -48,10 +48,9 @@ digits align.
 
 ## Shape, spacing, depth
 
-Radius 10px (cards), 6px (controls), 99px (pills and chips only). The Rust build holds these as `--r` and
+Radius 10px (cards), 6px (controls), 99px (pills, chips and the meter). The Rust build holds these as `--r` and
 `--r-sm` (`app/assets/main.css`), and also uses 7px on the brand mark and the navigation and
-account links, 5px on tenant-menu options and 4px on the focus ring; 99px also rounds the meter
-track and fill, and 50% makes the avatar, the empty-state icon and the step markers circular. Gaps from flex/grid, not
+account links, 5px on tenant-menu options and 4px on the focus ring; 50% makes the avatar, the empty-state icon and the step markers circular. Gaps from flex/grid, not
 margins. Elevation is either a border or a soft offset shadow, never both on one element.
 
 ## Status vocabulary

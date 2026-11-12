@@ -1666,6 +1666,8 @@ the derivation itself is at `:70`.
 
 ### 1.37 "Never overridden" checked in the caller, not in the library that overrides it
 
+**Occurrences: 1** — 2026-11-12
+
 **What happened.** Reconciling the Dispatch Console's Phase 1 checklist (task 2.1, PR #1104),
 I wrote that the console accepts only RS256 ID tokens: openidconnect 4.0.1's verifier
 defaults to RS256 (`verification/mod.rs:136-142`), and a grep showed the console never calls
