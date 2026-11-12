@@ -625,6 +625,12 @@ def check_runs(api, sha):
     return runs
 
 
+# The branch workflow's two review passes (AGENTS.md, Branch Workflow step 5; docs/MISTAKES.md 5.25), posted
+# by hand as commit statuses on the pushed head they covered, so a later push needs them again.
+REVIEW_PASS_STATUSES = ("simplify", "security-review")
+REVIEW_PASS_PLACEHOLDER = "<one line: what it found, fixed or deferred>"
+
+
 def check_commit_statuses(api, sha):
     statuses = paged(api, f"repos/{REPO}/commits/{sha}/statuses", "")
     latest = {}
@@ -638,6 +644,18 @@ def check_commit_statuses(api, sha):
               if context != "coderabbit" and status["state"] != "success"]
     if failed:
         raise Refusal(f"Latest commit status is not successful: {', '.join(sorted(failed))}")
+    missing = [context for context in REVIEW_PASS_STATUSES if context not in latest]
+    if missing:
+        posts = "; ".join(
+            f"gh api repos/{REPO}/statuses/{sha} -f state=success -f context={context} "
+            f"-f description='{REVIEW_PASS_PLACEHOLDER}'" for context in missing)
+        raise Refusal(f"Review-pass commit status missing on this head: {', '.join(missing)}. Run the pass "
+                      f"on this exact head, then post its result: {posts}")
+    for context in REVIEW_PASS_STATUSES:
+        description = latest[context].get("description")
+        if not isinstance(description, str) or not description.strip() or description.lstrip().startswith("<"):
+            raise Refusal(f"Review-pass commit status {context} carries no finding: its description is empty "
+                          "or the unfilled placeholder")
 
 
 def workflow_runs(api, sha, number):
