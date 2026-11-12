@@ -928,12 +928,21 @@ mod tests {
         .await;
         assert_eq!(put_ok.status, 200);
         let put_json: serde_json::Value = serde_json::from_str(&put_ok.body).expect("json");
-        assert_eq!(put_json["preferences"]["theme"], "dark");
-        assert_eq!(put_json["preferences"]["default_scope"], "acme/ops");
+        let mut put_keys: Vec<&str> = put_json
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        put_keys.sort_unstable();
+        assert_eq!(put_keys, ["claims", "preferences"]);
+        assert_eq!(put_json["claims"], me_json["claims"]);
+        let saved = serde_json::json!({"theme": "dark", "timezone": "Europe/Berlin", "default_scope": "acme/ops"});
+        assert_eq!(put_json["preferences"], saved);
 
         let again = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
         let again_json: serde_json::Value = serde_json::from_str(&again.body).expect("json");
-        assert_eq!(again_json["preferences"]["timezone"], "Europe/Berlin");
+        assert_eq!(again_json["preferences"], saved);
 
         let bad_theme = call(
             addr,
@@ -1006,6 +1015,83 @@ mod tests {
         let login = call(addr, "GET", "/test/login", None, "").await;
         let cookie = login.cookie.expect("session cookie set on login");
         (addr, cookie)
+    }
+
+    /// The `preferences` object that `GET /v1/me` returns for this session.
+    async fn read_preferences(addr: SocketAddr, cookie: &str) -> serde_json::Value {
+        let me = call(addr, "GET", "/v1/me", Some(cookie.to_string()), "").await;
+        assert_eq!(me.status, 200);
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        me_json["preferences"].clone()
+    }
+
+    /// Scenario "Profile shows the signed-in claims": `claims` holds every OIDC claim the
+    /// login set, and a user with no saved preferences sees the defaults.
+    #[tokio::test]
+    async fn profile_returns_every_claim_and_default_preferences() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        assert_eq!(me.status, 200);
+        let me_json: serde_json::Value = serde_json::from_str(&me.body).expect("json");
+        assert_eq!(
+            me_json["claims"],
+            serde_json::json!({
+                "sub": "user-1",
+                "email": "ada@example.test",
+                "name": "Ada",
+                "username": "ada",
+                "groups": ["ops"]
+            })
+        );
+        assert_eq!(
+            me_json["preferences"],
+            serde_json::json!({"theme": "system", "timezone": "UTC", "default_scope": null})
+        );
+    }
+
+    /// Scenario "Invalid preference is refused": a refused `PUT /v1/me` answers 422 and
+    /// leaves the stored preferences as they were. Each refusal is followed by a read, so
+    /// a store that writes before it validates fails here.
+    #[tokio::test]
+    async fn an_invalid_timezone_is_refused_and_nothing_changes() {
+        let (addr, cookie) = signed_in(&["ops"]).await;
+        let saved = serde_json::json!({"theme": "light", "timezone": "Europe/Berlin", "default_scope": "acme"});
+
+        let put = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"light","timezone":"Europe/Berlin","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(put.status, 200);
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+
+        let bad_theme = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"neon","timezone":"Europe/Berlin","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(bad_theme.status, 422);
+        assert!(bad_theme.body.contains("invalid_preferences"));
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
+
+        let bad_zone = call(
+            addr,
+            "PUT",
+            "/v1/me",
+            Some(cookie.clone()),
+            r#"{"preferences":{"theme":"dark","timezone":"Bad;Zone","default_scope":"acme"}}"#,
+        )
+        .await;
+        assert_eq!(bad_zone.status, 422);
+        assert!(bad_zone.body.contains("invalid_preferences"));
+        assert_eq!(read_preferences(addr, &cookie).await, saved);
     }
 
     /// The expiry is an inactivity expiry: a read on a live session re-saves it, so the

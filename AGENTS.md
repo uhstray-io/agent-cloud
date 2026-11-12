@@ -257,10 +257,10 @@ All deployment automation is built from reusable Ansible tasks. See `plan/archit
 | `tasks/deploy-orb-agent.yml` | Start privileged orb-agent with vault-integrated config |
 | `tasks/clean-service.yml` | Destroy containers, volumes, clone for full rebuild |
 | `tasks/clone-and-deploy.yml` | Clone monorepo, run deploy.sh, health check (legacy services) |
-| `tasks/place-monorepo.yml` | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble for composable deploys. Refuses to clone `main` from a playbook running on another named branch (a `(Dev)` template launched without `service_branch`); `-e allow_cross_branch_placement=true` places it on purpose |
-| `tasks/enable-linger.yml` | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot (linger alone does not). Included by `place-monorepo.yml`; takes an optional `linger_user` for a dedicated service account |
+| `tasks/place-monorepo.yml` | Put the monorepo on the target (clone in prod, copy the working tree in local-dev) — the shared Phase-1 preamble for composable deploys. Refuses to clone `main` from a playbook running on another named branch (a `(Dev)` template launched without `service_branch`); `-e allow_cross_branch_placement=true` places it on purpose. It first refuses a `local_mode` that disagrees with the inventory (`tasks/assert-local-mode-identity.yml`; local-dev means every host but `localhost` is named `<name>-local`) |
+| `tasks/enable-linger.yml` | Linger plus podman's user boot unit, so rootless `restart: always` containers survive a reboot (linger alone does not). Included by `place-monorepo.yml`; takes an optional `linger_user` for a dedicated service account. It first refuses a `local_mode` that disagrees with the inventory (`tasks/assert-local-mode-identity.yml`; local-dev means every host but `localhost` is named `<name>-local`) |
 | `tasks/assert-reset-confirmed.yml` | The destructive-reset confirmation: `-e confirm_reset` must equal the play's real host list (from `ansible_play_hosts_all`, which an extra var cannot set, never `inventory_hostname`, which it can). Included first by `tasks/clean-service.yml`, so every Clean Deploy refuses an unconfirmed launch before any teardown task; `clean-deploy-o11y.yml` and `clean-deploy-step-ca.yml` include it earlier still. Enforced by `platform/tests/test_clean_deploy_confirm.py` |
-| `tasks/assert-bao-transport.yml` | Refuse to send secret material over public cleartext. Included by every play that reaches OpenBao — and by any other endpoint that receives a token, via `_assert_url_label` |
+| `tasks/assert-bao-transport.yml` | Refuse to send secret material over public cleartext. Included by every play that reaches OpenBao — and by any other endpoint that receives a token, via `_assert_url_label`. Its local-mode URL forms (a single-label `http://` name, `host.containers.internal`) need `local_mode` and a local-dev inventory (`filter_plugins/local_dev.py`) |
 | `tasks/site-config-clone.yml` / `tasks/site-config-push.yml` | Clone site-config on a fresh branch with the deploy key the caller read from OpenBao (0600 inside the scratch dir, `IdentitiesOnly`, pinned host keys), then stage one path, commit, push and report names only. The shared path both backup playbooks use; the caller wipes the dir in `always:` |
 | `tasks/backup-ssh-key-to-site-config.yml` | Write one SSH keypair into the site-config clone (0600/0644), idempotent, refuses to clobber a differing key. The single implementation shared by the generator and the backup playbook |
 | `tasks/materialise-ssh-key.yml` / `tasks/remove-ssh-key.yml` | Put ONE SSH private key on the runner for an `ssh -i` probe (0700 scratch dir, key 0600, only the write `no_log`), check-mode-safe so dry runs still test key auth; the caller includes the remove task from `always`. The single implementation used by Distribute SSH Keys, Harden SSH and Verify Host Access |
@@ -565,8 +565,14 @@ environment before operations; a checked-in deploy path is not proof it is runni
    - Update the top-level `README.md` if the PR adds features, services, or changes the repo structure
    - Update the most relevant sub-directory `README.md` or `CLAUDE.md` for the area changed
    - Update the root `CLAUDE.md` if the PR adds new conventions, plans, or cross-cutting patterns
-4. Run `/simplify` and `/security-review` on the branch changes
-5. Push the branch: `git push -u origin <type>/<description>`
+4. Run `/simplify` and `/security-review` on the branch changes, and commit any fixes they make. A fix changes
+   the head the passes reviewed, so run both again after it, until a round changes nothing: the head that
+   round reviewed is the one to push and post
+5. Push the branch (`git push -u origin <type>/<description>`), then post each pass as a commit status on the
+   pushed head, which GitHub must already hold: `gh api repos/uhstray-io/agent-cloud/statuses/<head sha>
+   -f state=success -f context=<simplify|security-review> -f description='<one line: what it found, fixed or deferred>'`.
+   `scripts/merge-when-green.py` refuses a head without both, so every later push (review fixes, a `dev`
+   merge) needs both passes again on the new head (`docs/MISTAKES.md` 5.25)
 6. Create a PR **into `dev`**: `gh pr create --base dev`
 7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
 8. Address all review findings and push fixes
