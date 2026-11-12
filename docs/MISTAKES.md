@@ -5044,9 +5044,9 @@ grounding checkpoint of 2026-11-12 found it.
 **Root cause.** The operator's standing decisions lived only in the agent's private instructions and
 memory, never in the repository's record, so the committed rule went stale with nothing to flag it.
 
-**The rule.** An agent pushes a feature branch, opens a pull request into `dev` (or a `dev` → `main`
-promotion pull request), and merges one into `dev` through `scripts/merge-when-green.py` once the gates
-in AGENTS.md, "Feature-to-Dev pull-request merges", hold and no `dev` merge hold is in force: a `dev`
+**The rule.** An agent pushes a feature branch and opens a pull request into `dev`, or a `dev` → `main`
+promotion pull request. It merges a pull request into `dev` through `scripts/merge-when-green.py` once
+the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold and no `dev` merge hold is in force: a `dev`
 freeze the operator has announced, or merges held for the duration of a drill run under 3.23, agreed
 with the merging sessions, until that drill's fix lands. A `dev` → `main` promotion merges after two
 review rounds of its final head. Still asked every time, with an approval covering exactly the action
