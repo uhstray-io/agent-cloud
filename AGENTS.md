@@ -554,12 +554,16 @@ environment before operations; a checked-in deploy path is not proof it is runni
 > - It merges a pull request into `dev` through `scripts/merge-when-green.py` once one completed
 >   review round covers the final head (CodeRabbit, or an independent Claude review recorded with
 >   `--review-receipt` when CodeRabbit posts none), every finding is fixed or answered on the pull
->   request, and every required check passes on that head.
-> - A `dev` → `main` promotion merges after two completed review rounds, with every finding fixed
->   or answered and the `Promotion source (dev -> main)` check passing.
-> - Still asked every time: a push straight to `main` or `dev`, any force push, and a push or pull
->   request in a repository outside this organisation. An approval for one of these covers exactly
->   the action it names, on the branch or pull request it names (`docs/MISTAKES.md` §5.7).
+>   request, and every required check passes on that head. A receipt and `--feedback-addressed`
+>   are self-attested: the guard checks their fields, not that the review ran or the feedback was
+>   handled, so writing one is a claim the agent must be able to back.
+> - A `dev` → `main` promotion merges with `gh pr merge --merge` after two completed review rounds,
+>   with every finding fixed or answered and the `Promotion source (dev -> main)` check passing.
+>   The two rounds are a convention: no check counts them.
+> - Still asked every time: a push straight to `main` or `dev`, any force push, passing
+>   `--dev-drift-acknowledged`, and a push or pull request in a repository outside this
+>   organisation. An approval for one of these covers exactly the action it names, on the branch or
+>   pull request it names (`docs/MISTAKES.md` §5.7).
 
 **Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
 
@@ -584,7 +588,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
 8. Address all review findings and push fixes
 9. Confirm all checks pass after fixes
-10. Only then merge the PR into `dev` — use a **merge commit** (`gh pr merge --merge`), NOT squash. Preserving each feature branch's real commits on `dev` keeps `dev`↔`main` ancestry intact. **Squash a feature→`dev` merge only** to collapse a branch whose history accidentally contains something sensitive (secrets/credentials) you don't want preserved.
+10. Only then merge the PR into `dev`, through `scripts/merge-when-green.py --feedback-addressed --merge`, which issues one **merge commit** (`gh pr merge --merge --match-head-commit`), NOT squash; a plain `gh pr merge` skips the guard. Preserving each feature branch's real commits on `dev` keeps `dev`↔`main` ancestry intact. **Squash a feature→`dev` merge only** to collapse a branch whose history accidentally contains something sensitive (secrets/credentials) you don't want preserved.
 11. **Promotion to production**: once the `dev` changes are validated, open a `dev` → `main` PR and merge it with a **merge commit** (`gh pr merge --merge`), NOT squash. Sharing `dev`'s real commits on `main` keeps the branches' ancestry intact, so promotions never diverge and you never hand back-merge. **Squash a promotion only** to scrub a branch whose history accidentally contains something sensitive. A GitHub Action (`.github/workflows/sync-main-to-dev.yml`) keeps `dev` current with `main` after every promotion (see "Why the auto-sync" below). From the release after v0.15.0 (the carry-over release, R12), a promotion carries at most 100 pull requests and 120 changed files ([`plan/architecture/10-release-policy.md`](plan/architecture/10-release-policy.md)). Two gates hold it: the dev merge guard prints the release budget on every run that reaches the count and refuses a merge that would take the release over a limit, and the `Release size` step of the `Promotion source (dev -> main)` check refuses an over-budget promotion. `git fetch --tags origin && python3 scripts/semver.py release-budget` prints the count (policy 10, "Reading the budget").
 
 **Never merge a PR before its checks have completed and passed.** This applies to all development — new features, bug fixes, plan updates, documentation changes — and to promotion PRs from `dev` to `main`.
