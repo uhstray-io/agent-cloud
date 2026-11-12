@@ -1,7 +1,7 @@
 # 23 — Release train: iterative releases in dependency order
 
 **Date:** 2026-11-10
-**Status:** PROPOSED (not started; nothing in this plan has been executed)
+**Status:** ACTIVE (Part A built 2026-11-12: #1081, #1093, #1083 and the docs; Part B and the release roadmap not started)
 **Author:** Joseph A. Wisneski IV
 **Context:** [`plan/architecture/10-release-policy.md`](../architecture/10-release-policy.md)
 caps a release, one `dev` → `main` promotion, at 100 pull requests and 120 changed files.
@@ -202,4 +202,4 @@ scope is re-sized from the real diff when each release is planned.
 |---|---|
 | 2026-11-10 | Initial plan: enforcement phases, iteration loop, eight-release roadmap from the 24 active OpenSpec changes and the open PR queue. |
 | 2026-11-11 | The shared-key grace period moved to 2026-12-11 (site-config #183), recorded under Problem and in the release table. Review fixes: renumbered 22 → 23 (#998 took 22); Release 1 re-baselined as v0.15.0, the carry-over release (policy 10, R12, operator decision), after #1043 put `dev` at 661 files; intake reads git at the pinned base SHA, the transition is encoded once, and Phase 1's acceptance is pinned to fixed refs; disk citation corrected; task totals recounted on current `dev`. |
-| 2026-11-12 | Intake reads git at the fetched `origin/dev`, verified against GitHub's live `dev` ref, not the pull request's `base.sha`: `base.sha` does not track `dev` (8 of 8 open pull requests stale on 2026-11-12). Phase 2's acceptance follows. |
+| 2026-11-12 | Part A built: phase 1 #1081, phase 2 #1093, phase 3 #1083, phase 4 this documentation. Intake reads git at the fetched `origin/dev`, verified against GitHub's live `dev` ref, not the pull request's `base.sha`: `base.sha` does not track `dev` (8 of 8 open pull requests stale on 2026-11-12). Phase 2's acceptance follows. |
