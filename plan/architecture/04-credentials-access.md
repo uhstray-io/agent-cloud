@@ -322,7 +322,7 @@ The fix makes the Admin row of the table above hold for Semaphore without a hand
 - **Live status (2026-10-27): merged, not yet run in production** (`docs/MISTAKES.md` 10.30). **Promote Semaphore Admins (Dev)** was published that day by a scoped `setup-templates.yml` run, after the inventory sync. Its first check-mode launch, task 9806, failed in the git clone with `No space left on device` on the Semaphore host. The second operator's account still had `admin: false` at that point.
 - **Live status (2026-10-28): run in production.**
   - **First real run.** Task 9843 failed on the admin-flag PUT, with its error hidden by `no_log`. #754 made the run report each refused account and its status, and task 9870 then showed HTTP 301.
-  - **Cause.** The declared URL ends in `/`, and Semaphore redirects the `//api/users/<id>` path that produced. `uri` follows that redirect for a GET but not for a PUT.
+  - **Cause.** The declared URL ends in `/`, so the playbook built a `//api/users/<id>` path, which Semaphore redirects. `uri` follows that redirect for a GET but not for a PUT.
   - **Fix.** #760 trims the slash.
   - **Proof.** Real run task 9877 (dry run 9876) promoted the second operator with PUT status 204, and the account read back as `admin: true`. `stray` was already an admin on the declared list, so the run left it untouched.
 - **Visibility.** Both plays run on implicit `localhost`, which receives no group's vars, so `platform_admins` must sit in the inventory's top-level `all.vars`. When the list is not visible, nothing is derived: the committed default in `vars/platform-admins.yml` holds local-dev placeholder names, and a placeholder must never become an admin.
