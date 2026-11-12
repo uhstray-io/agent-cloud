@@ -179,7 +179,7 @@ only the first is fixed:
 
 | Stage | Cause | Status |
 |-------|-------|--------|
-| Container stayed stopped for three days | Compose declared `restart: unless-stopped`; podman 4.9.3's boot unit starts only `always` | **Fixed** (`docs/MISTAKES.md` 10.15; guarded by `platform/tests/test_restart_policy.bats`) |
+| Container stayed stopped for three days | Compose declared `restart: unless-stopped`; podman 4.9.3's boot unit starts only `always` | **Fixed** (`docs/MISTAKES.md` 10.15; guarded by `platform/tests/suite/restart_policy.rs`) |
 | Started container was sealed | Manual Shamir unseal, no auto-unseal (problem 2) | **Open gap.** Unsealed by hand on 2026-09-22 from the on-VM init file (problem 7) |
 
 While OpenBao is sealed, every Semaphore deploy that reads a secret fails, including the

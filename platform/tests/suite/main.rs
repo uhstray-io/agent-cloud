@@ -4,5 +4,7 @@
 //! Run one area:   `cargo nextest run -E 'test(/^restart_policy::/)'`.
 
 mod common_sh;
+mod lanes;
+mod ledger;
 mod restart_policy;
 mod support;

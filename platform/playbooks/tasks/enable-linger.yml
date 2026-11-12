@@ -14,7 +14,7 @@
 # for users on the Ubuntu 24.04 image (read 2026-09-22). This task used to claim
 # linger was enough; the 2026-09-19 reboot showed otherwise (docs/MISTAKES.md
 # 10.15). The compose-side half — every service declaring `always` — is guarded by
-# platform/tests/test_restart_policy.bats.
+# platform/tests/suite/restart_policy.rs.
 #
 # Rootful podman containers use the SYSTEM podman-restart.service instead, which
 # the image ships enabled; this task does not touch it.

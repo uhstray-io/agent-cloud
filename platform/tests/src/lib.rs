@@ -1,10 +1,13 @@
 //! Shared support for the agent-cloud test suite (plan 24).
 //!
-//! Three things every area needs, and nothing else:
 //! - [`repo`]: the repository root, `git ls-files`, and the playbook task walker;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
 //!   anchors, aliases, `<<` merge keys);
-//! - [`process`]: a bounded child process with a scrubbed environment (03 Part 1, rule 11).
+//! - [`process`]: a bounded child process with a scrubbed environment (03 Part 1, rule 11);
+//! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
+//!   `testsel` binary and `lane.sh` use it).
+
+pub mod lanes;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
@@ -182,12 +185,14 @@ pub mod yaml {
     /// loader refuses them all rather than construct some and misread others.
     const CORE_TAG: &str = "tag:yaml.org,2002:";
 
+    // `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the verbatim
+    // `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Join them so both match.
     fn refuse_core_tag(tag: Option<&yaml_rust2::parser::Tag>, origin: &str) {
-        if let Some(t) = tag.filter(|t| t.handle == CORE_TAG) {
-            panic!(
-                "{origin}: core tag `!!{}` is not supported by the test loader",
-                t.suffix
-            );
+        if let Some(t) = tag {
+            let full = format!("{}{}", t.handle, t.suffix);
+            if let Some(name) = full.strip_prefix(CORE_TAG) {
+                panic!("{origin}: core tag `!!{name}` is not supported by the test loader");
+            }
         }
     }
 
@@ -297,14 +302,22 @@ pub mod repo {
     use crate::yaml::{self, Node};
 
     /// Read at run time, never compiled in: two checkouts sharing one CARGO_TARGET_DIR reuse
-    /// one build, and a compiled-in path would test the other checkout's files.
+    /// one build, and a compiled-in path would test the other checkout's files. Cargo and
+    /// nextest set CARGO_MANIFEST_DIR; a binary run on its own (`testsel` from a test) finds
+    /// the checkout it runs in through git.
     static ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
-        let manifest = std::env::var_os("CARGO_MANIFEST_DIR")
-            .expect("CARGO_MANIFEST_DIR unset: run the suite through cargo or nextest");
-        Path::new(&manifest)
-            .join("../..")
-            .canonicalize()
-            .expect("repository root")
+        let root = match std::env::var_os("CARGO_MANIFEST_DIR") {
+            Some(manifest) => Path::new(&manifest).join("../.."),
+            None => {
+                let out = Command::new("git")
+                    .args(["rev-parse", "--show-toplevel"])
+                    .output()
+                    .expect("git");
+                assert!(out.status.success(), "not inside a git checkout");
+                PathBuf::from(String::from_utf8(out.stdout).expect("utf-8 path").trim())
+            }
+        };
+        root.canonicalize().expect("repository root")
     });
 
     /// The repository root (this crate lives at `platform/tests/`).

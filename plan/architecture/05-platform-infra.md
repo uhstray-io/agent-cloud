@@ -1218,7 +1218,7 @@ ExecStart=/usr/bin/podman $LOGGING start --all --filter restart-policy=always
 | Rootful (`sudo podman`) | system `podman-restart.service` | Shipped enabled on the image |
 | Rootless (the deploy user, or a dedicated account) | user `podman-restart.service` | Ships **disabled**. `tasks/enable-linger.yml` enables it and turns on linger so the user's systemd starts at boot |
 
-Two rules follow, and `platform/tests/test_restart_policy.bats` enforces both:
+Two rules follow, and `platform/tests/suite/restart_policy.rs` enforces both:
 
 1. **Every compose service declares `restart: always`**, or `"no"` for a one-shot
    container that also carries the label `agent-cloud.one-shot: "true"`
