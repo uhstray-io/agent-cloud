@@ -1107,6 +1107,57 @@ mod tests {
         assert_ne!(logout.body, r#"{"error":"origin_refused"}"#);
     }
 
+    /// D53 without a session: the origin rule runs before the session check, so a write from another origin, or with no
+    /// `Origin`, is refused 403 although the caller is not signed in. The console's own origin and a JSON body reach the
+    /// handler, which answers 401 for the missing session.
+    #[tokio::test]
+    async fn a_write_without_a_session_is_origin_checked_first() {
+        let addr = serve(api_router(test_state()).layer(session_layer(memory_sessions()))).await;
+        const BODY: &str = r#"{"preferences":{"theme":"dark"}}"#;
+
+        let cross_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", "https://evil.test"),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(cross_origin.status, 403, "{}", cross_origin.body);
+        assert_eq!(cross_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let no_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[("Content-Type", "application/json")],
+            BODY,
+        )
+        .await;
+        assert_eq!(no_origin.status, 403, "{}", no_origin.body);
+        assert_eq!(no_origin.body, r#"{"error":"origin_refused"}"#);
+
+        let own_origin = call_with(
+            addr,
+            "PUT",
+            "/v1/me",
+            None,
+            &[
+                ("Origin", CONSOLE_ORIGIN),
+                ("Content-Type", "application/json"),
+            ],
+            BODY,
+        )
+        .await;
+        assert_eq!(own_origin.status, 401, "{}", own_origin.body);
+        assert_eq!(own_origin.body, r#"{"error":"unauthenticated"}"#);
+    }
+
     #[tokio::test]
     async fn member_sees_only_the_tenants_naming_their_group() {
         let (addr, cookie) = signed_in(&["ops"]).await;
