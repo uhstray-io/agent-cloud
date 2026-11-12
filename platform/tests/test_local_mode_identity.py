@@ -17,6 +17,7 @@ enable-linger.yml to the include, so the guard cannot be placed after a read of 
 caller's own raw local_mode gate is not covered here: AC-726.
 """
 
+import re
 from pathlib import Path
 
 import forgeries
@@ -132,4 +133,7 @@ def test_a_forged_local_mode_is_refused_before_any_linger_task(tmp_path, forge):
 
 
 def test_a_local_dev_inventory_passes_the_linger_guard_and_skips_the_linger_tasks(tmp_path):
-    passed(_linger(tmp_path, LOCAL_INI))
+    proc = _linger(tmp_path, LOCAL_INI)
+    passed(proc)
+    # The linger tasks self-gate under local_mode: they are skipped, not run.
+    assert re.search(r"skipped=[1-9]", proc.output), proc.output
