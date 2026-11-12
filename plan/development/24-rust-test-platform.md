@@ -1,7 +1,7 @@
 # 24 — Rust test platform: one fast suite, run by lane
 
 **Date:** 2026-11-12
-**Status:** PROPOSED (Phases 0 and 1 in review: #1109, #1110, #1114, #1115; Phase 3 in progress; Phase 2 and Phases 4 to 10 not started)
+**Status:** PROPOSED (Phases 0 to 3 in review: #1109, #1110 and #1115, #1119, #1118; the pre-push fix AC-743 is #1114; Phases 4 to 10 not started)
 **Author:** Joseph A. Wisneski IV
 **Context:** The repository's tests are pytest and BATS. They have grown to a size where no lane finishes
 quickly: the Python suite costs about 11,400 worker-seconds per pull request, spread over eight shards of 282 to 495 s
@@ -80,22 +80,11 @@ the required check.
 
 ## Design Principles
 
-The full testing principles are 03 Part 1. This plan applies them as follows.
-
-1. **Delete before porting.** Each test is first judged against 03 Part 1, "What earns a test". A test
-   that pins source text, restates another test, or proves nothing a reader relies on is deleted, and its
-   deletion is listed in the port's map. Only the rest is ported.
-2. **Static proof over process proof.** A property of the repository's files is checked by parsing them.
-   A process starts only when the behaviour lives in Ansible, bash or a service and cannot be read from a
-   file.
-3. **One binary, many modules.** The crate builds one test binary, so a port adds a module, not a link
-   step.
-4. **Every test belongs to an area and a tier.** Area and tier decide which lane runs a test (D3). A test
-   with neither does not compile into a lane.
-5. **The security set always runs.** Every lane runs the tests that enforce a mistakes-ledger rule or a
-   secret-handling rule, whatever changed.
-6. **No coverage lost silently.** Each port pull request carries a map from every deleted test to its
-   replacement, or to the reason it was dropped.
+The principles are [03 Part 1](../architecture/03-testing-ci-quality.md): what earns a test, the rules for
+writing one, one binary with one module per area, the security set in every lane, and coverage as a map.
+This plan's own choices are decisions D1 to D9 below. One rule is specific to the port: **delete before
+porting**. Each test is judged against 03 Part 1, "What earns a test", first, and a test that pins source
+text, restates another test or proves nothing a reader relies on is deleted and listed in the port's map.
 
 ---
 
@@ -152,7 +141,7 @@ unaffected.
 | `commit` | pre-commit hook | static tier of areas touched by staged paths, plus the security set's static tests | under 10 s |
 | `push` | pre-push hook | every tier of touched areas, plus the security set; playbook tier included | under 2 min on a workstation |
 | `ci` | pull request into `dev` | as `push`, against the pull request base | under 8 min wall |
-| `full` | nightly on `dev`, every promotion into `main`, a change to the crate itself | everything | under 15 min wall |
+| `full` | nightly on `dev`, every promotion into `main`, a change to the crate, the area map or a shared task | everything | under 15 min wall |
 | `live` | Semaphore templates (`Verify Service Health`, the probes) | not in CI | unchanged |
 
 The budgets are targets until Phase 1 measures them. A lane that exceeds its budget fails nothing, but
@@ -162,9 +151,8 @@ it reports the overrun in the job summary, as the shards do today.
 
 ## Implementation Phases
 
-One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (operator decisions,
-2026-11-12: Phases 4 to 10 move to v0.16.0, and nothing merges into `dev` until v0.15.0 is released). A port phase is
-split into one sub-item per area when it starts.
+One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (see Release fit). A
+port phase is split into one sub-item per area when it starts.
 
 | Phase | Work | Blocked by | Done when |
 |---|---|---|---|

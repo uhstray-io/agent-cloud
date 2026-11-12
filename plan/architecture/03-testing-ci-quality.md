@@ -18,7 +18,7 @@
 # Part 1 — Testing principles
 
 A test exists to fail when the behaviour it names breaks, quickly enough that someone runs it. Every
-rule below serves one of those two halves. The suite is Rust, run by `cargo-nextest`
+rule below serves one of those two halves. The suite is moving to Rust, run by `cargo-nextest`
 ([plan 24](../development/24-rust-test-platform.md)). The rules are written for that suite, and apply to the
 pytest and BATS files until they are ported.
 
@@ -83,6 +83,9 @@ else, a test is written when it would catch a defect a reader cannot see in revi
 12. **Tests are code.** They are reviewed and refactored with the code they test. A test whose code under
     test was deleted is deleted with it.
 
+Rules 5, 8 and 9 come from incidents in `docs/MISTAKES.md` §2. The BATS mechanics that enforce them
+(`refute_grep`, scoping by `sed` range, the assertion ratchet) are in `CONTRIBUTING.md`, "Writing BATS Tests".
+
 ## Tiers: the cheapest test that can fail
 
 Each test belongs to exactly one tier. Choose the cheapest tier at which the behaviour can break.
@@ -102,25 +105,16 @@ refuse proves the same property 244 times, at about a second each.
 
 ## Lanes: run what the change can break
 
-A lane is a nextest profile plus a selection. Each test belongs to an **area**, whose path globs are in
-`platform/tests/areas.toml`. A change selects the areas its paths touch, plus the security set.
-
-| Lane | When | Runs |
-|---|---|---|
-| `commit` | every commit (pre-commit hook) | static tier of touched areas, plus the security set's static tests |
-| `push` | every push (pre-push hook) | all tiers of touched areas, plus the security set |
-| `ci` | every pull request into `dev` | as `push`, against the pull request base |
-| `full` | nightly on `dev`, every promotion into `main`, any change to the test crate, `areas.toml` or a shared task | everything |
-
-Selection is never a reason to skip the security set, and a change the selector cannot classify runs
-`full`. The lane budgets and their measurement are in plan 24.
+A change runs only the tests it can break. Each test belongs to an **area**, a set of path globs; a commit,
+a push and a pull request each select the areas their changed paths touch, at the depth their lane allows,
+and every lane adds the security set. Selection is never a reason to skip the security set, and a change the
+selector cannot classify runs everything. The lanes, their triggers and their time budgets are defined once,
+in [plan 24](../development/24-rust-test-platform.md), "Lanes".
 
 ## Where tests live and how they run
 
 - One crate, `platform/tests/`, one test binary, one module per area: `platform/tests/suite/<area>.rs`.
-- Run everything: `cargo nextest run` from `platform/tests/`. Run one area:
-  `cargo nextest run -E 'test(/^<area>::/)'`. The lane profiles (`commit`, `push`, `full`) arrive
-  with plan 24, Phase 2; until then the profiles are `default` and `ci`.
+  How to run it is in `CONTRIBUTING.md`.
 - The Dispatch Console crate (`platform/services/console/app/`) keeps its own tests, under these rules.
 - Rego policies keep `opa test` (Rego Tests job); Rego is the policy language, not a test harness choice.
 - Linters and scanners (ruff, shellcheck, ansible-lint, yamllint, hadolint, trufflehog, bandit) are not
