@@ -220,6 +220,7 @@ and why.
 | 10.35 | Merged a tag-pushing workflow whose push path no run had exercised; GitHub refused its first tag because the job token lacked the `workflows` permission | Mechanism never exercised | 1 | Convention (pre-merge write probe with the real credential) |
 | 10.36 | An assert's `fail_msg` read a key only a failed summary carries; ansible-core renders `fail_msg` even when the assertion holds, so a successful Deploy Plane run failed after recreating the stack | Mechanism never exercised | 1 | Test (`test_the_webhook_assert_renders_with_and_without_an_error` runs the task through ansible-playbook both ways); the general form Convention |
 | 10.37 | The console session was documented and specified as an 8-hour inactivity expiry, but the session layer never re-saved on a read, so it expired 8 hours after sign-in; the first fix made every re-save an upsert that could bring a signed-out session back | Mechanism never exercised | 1 | Test (`a_signed_in_request_refreshes_the_session_cookie` proves the cookie refresh; `save_moves_the_stored_expiry` and `a_signed_in_request_moves_the_stored_session_expiry` prove the stored expiry moves; `save_never_brings_back_a_deleted_session`, `save_never_extends_an_expired_session`; mutation-checked) |
+| 10.38 | Fixed the console's inactivity expiry by re-saving the session on every request without asking which requests are activity; the board's background polling counts, so a session in a visible tab never expires (widens 10.37) | Mechanism never exercised | 1 | Instance: Test (`a_session_ends_at_its_absolute_lifetime_however_active`, `lifetime_ends_twelve_hours_after_sign_in`; AC-747, #1125); class Convention |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -6889,6 +6890,35 @@ HTTP expiry test red; freezing the stored column turns the store test and the HT
 red; restoring the upsert turns `save_never_brings_back_a_deleted_session` red; dropping the
 expiry condition turns `save_never_extends_an_expired_session` red. The race itself is covered
 at the store level, not by an interleaved HTTP test.
+
+### 10.38 An inactivity expiry that every background poll resets (widens 10.37)
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** 10.37's fix made the console session layer re-save the session on
+every non-5xx response (`with_always_save(true)` beside `Expiry::OnInactivity(8h)`,
+`platform/services/console/app/src/server/mod.rs:286-287`), so a signed-in request
+moves the expiry. The browser makes signed-in requests on its own: while a tab is
+visible the work board re-reads every 10 seconds (`src/ui/work.rs:24`, `:513-529`)
+and inventory every 30 (`src/ui/inventory.rs:24`). A session in a visible tab is
+therefore never inactive and never expired, and nothing capped a session's age. The v0.15.0
+promotion review found it (#1112) and filed AC-747. The fix had merged in #1094 and was
+not deployed to production. #1125 (AC-747) added the cap: a session ends 12 hours after
+sign-in however active it is (`auth.rs:49`, checked in `auth::current_user`).
+
+**Root cause.** The fix answered "does a request move the expiry?" and its tests proved
+that one does. It did not ask which requests should: a timer-driven poll is not user
+activity, and an inactivity expiry that counts it measures how long the tab was open.
+
+**The rule.** Before changing what refreshes a session, list every request the client
+makes without a user action and decide for each whether it may extend the session. An
+inactivity expiry is paired with an absolute lifetime, so a session ends however it is
+refreshed.
+
+**Enforced by.** The instance: tests, since #1125. `a_session_ends_at_its_absolute_lifetime_however_active`
+(`mod.rs:1197`) proves a session signed in 12 hours ago is refused and deleted while a younger one is served, and
+`lifetime_ends_twelve_hours_after_sign_in` (`auth.rs:322`) pins the boundary. The class: Convention, with no
+detector; nothing lists the requests a client makes on its own before a refresh rule changes.
 
 ## 11. The largest one
 
