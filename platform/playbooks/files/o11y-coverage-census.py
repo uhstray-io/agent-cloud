@@ -437,6 +437,10 @@ def prepare_availability_targets(targets, *, enabled, reviewed, limits,
         if drill.get("mode") == "absent":
             # Refused when the drill would leave no other probe to prove the path, or would
             # drop the only internal-CA target, which decides whether compose mounts the CA bundle.
+            # The window caps the drill's wait: its missing-data rule fires only after the window
+            # and its for-window have passed, and the drill's fire budget is sized from the window.
+            if drilled[0]["freshness_seconds"] > 1800:
+                fail("absent availability drill needs a freshness window of at most 1800 seconds")
             if len(selected) < 2:
                 fail("absent availability drill needs another probed target")
             if drilled[0]["trust"] == "internal-ca" and not any(

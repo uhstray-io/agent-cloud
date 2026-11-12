@@ -1032,6 +1032,172 @@ def test_native_sample_projection_refuses_stale_raw_timestamps_and_reports_scrap
     assert receipt["targets"] == [{"target_id": "service:api", "status": "scrape_failed"}]
 
 
+ALERT_ONLY_TARGET = {
+    "target_id": "service:old", "service_identity": "old/service",
+    "environment": "prod", "cluster": "prod-west", "freshness_seconds": 300,
+}
+PROBED_VALUES = {
+    "up": 1, "probe_success": 1, "probe_duration_seconds": 0.25, "probe_http_status_code": 200,
+    "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
+}
+OLD_VALUES = dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1)
+
+
+def _install_alert_only_readback(monkeypatch, *, health_values, health_timestamps):
+    """One readback: the fixed Alloy self producer is fresh, the health rows are the given ones."""
+    self_values = _native_metric_api_document(values=[("service:o11y", "alloy", "alloy:12345", "o11y/alloy", {
+        "up": 1, "scrape_samples_scraped": 415, "scrape_body_size_bytes": 73_675,
+    })], timestamp_value=1999)
+    self_timestamps = _native_metric_api_document(values=[(
+        "service:o11y", "alloy", "alloy:12345", "o11y/alloy", dict.fromkeys(SURVEY.ALLOY_SELF_METRICS, 1900),
+    )], timestamp_value=1999)
+    health_raw = _native_metric_api_document(values=health_values, timestamp_value=1999)
+    health_ts = _native_metric_api_document(values=health_timestamps, timestamp_value=1999)
+
+    def api(path, _reason="query_unavailable", **_kwargs):
+        query = parse_qs(urlsplit(SURVEY.PROMETHEUS + path).query)["query"][0]
+        is_self = 'job="alloy"' in query
+        if "timestamp(" in query:
+            return self_timestamps if is_self else health_ts
+        return self_values if is_self else health_raw
+
+    monkeypatch.setattr(SURVEY, "_run_api", api)
+
+
+def _probed_row(families):
+    return ("service:api", "o11y-availability", "service:api", "api/service", families)
+
+
+def _alert_only_row(families):
+    return ("service:old", "o11y-availability", "service:old", "old/service", families)
+
+
+PROBED_OBSERVED = {
+    "target_id": "service:api", "status": "observed", "scrape_up": 1, "probe_success": 1,
+    "probe_http_status_code": 200, "probe_duration_seconds": "0.25",
+    "scrape_samples_scraped": 17, "scrape_body_size_bytes": 2034,
+}
+
+
+def test_absent_drill_leftover_samples_of_the_drilled_target_are_ignored_and_never_reported(monkeypatch):
+    # Pre-apply leftovers (1600) sit below the bound (1700): the drilled target's series is still
+    # visible to instant queries, and the readback must neither refuse on it nor report it.
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[_probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES)],
+        health_timestamps=[
+            _probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900)),
+            _alert_only_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1600)),
+        ],
+    )
+    receipt = SURVEY.collect_availability_native_samples(
+        availability, shared, environment="prod", cluster="prod-west",
+        process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+    )
+    assert receipt["targets"] == [PROBED_OBSERVED]
+    assert receipt["alloy_self"]["scrape_up"] == 1
+    assert "service:old" not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize(("sample_time", "outcome"), [(1700, "observed"), (1701, "native_samples_ambiguous")])
+def test_absent_drill_fresh_sample_of_the_drilled_target_refuses_the_read(monkeypatch, sample_time, outcome):
+    # The bound is oldest_allowed (1700). A sample at the bound is a leftover; one newer is not.
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[_probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES)],
+        health_timestamps=[
+            _probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900)),
+            _alert_only_row({**dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1600), "up": sample_time}),
+        ],
+    )
+    def collect():
+        return SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+        )
+
+    if outcome == "observed":
+        receipt = collect()
+        assert receipt["targets"] == [PROBED_OBSERVED]
+        assert "service:old" not in json.dumps(receipt)
+    else:
+        with pytest.raises(SURVEY.Refusal, match=outcome):
+            collect()
+
+
+def test_absent_drill_value_row_without_a_timestamp_row_is_a_leftover_too(monkeypatch):
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[_probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES)],
+        health_timestamps=[_probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900))],
+    )
+    receipt = SURVEY.collect_availability_native_samples(
+        availability, shared, environment="prod", cluster="prod-west",
+        process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+    )
+    assert receipt["targets"] == [PROBED_OBSERVED]
+    assert "service:old" not in json.dumps(receipt)
+
+
+def test_absent_drill_still_refuses_a_series_no_declaration_names(monkeypatch):
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(
+        monkeypatch,
+        health_values=[
+            _probed_row(PROBED_VALUES), _alert_only_row(OLD_VALUES),
+            ("service:ghost", "o11y-availability", "service:ghost", "ghost/service", {"up": 1}),
+        ],
+        health_timestamps=[
+            _probed_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1900)),
+            _alert_only_row(dict.fromkeys(SURVEY.ALLOY_HEALTH_METRICS, 1600)),
+        ],
+    )
+    with pytest.raises(SURVEY.Refusal, match="native_samples_ambiguous"):
+        SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+        )
+
+
+@pytest.mark.parametrize("alert_only", [
+    [{**ALERT_ONLY_TARGET, "target_id": "service:api", "service_identity": "api/service"}],
+    [ALERT_ONLY_TARGET, ALERT_ONLY_TARGET],
+    [{**ALERT_ONLY_TARGET, "environment": "dev"}],
+    [{k: v for k, v in ALERT_ONLY_TARGET.items() if k != "service_identity"}],
+    [["service:old"]],
+    {"target_id": "service:old"},
+    None,
+])
+def test_absent_drill_declaration_must_be_a_list_of_distinct_identities(monkeypatch, alert_only):
+    _details, availability, shared = _native_details_fixture()
+    availability = {**availability, "alert_only_targets": alert_only}
+    _install_alert_only_readback(monkeypatch, health_values=[], health_timestamps=[])
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+        )
+
+
+def test_absent_drill_declaration_without_a_probed_target_is_refused(monkeypatch):
+    _details, _availability, shared = _native_details_fixture()
+    availability = {"enabled": False, "targets": [], "limits": {}, "alert_only_targets": [ALERT_ONLY_TARGET]}
+    _install_alert_only_readback(monkeypatch, health_values=[], health_timestamps=[])
+    with pytest.raises(SURVEY.Refusal, match="native_declaration_invalid"):
+        SURVEY.collect_availability_native_samples(
+            availability, shared, environment="prod", cluster="prod-west",
+            process_started_at=1000, preapply_bound=1700, now=2000, freshness_seconds=300,
+            self_only=True,
+        )
+
+
 def test_native_api_batch_enforces_aggregate_call_byte_and_time_bounds(monkeypatch):
     calls = []
 

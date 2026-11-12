@@ -557,6 +557,30 @@ class CoverageCensusTests(unittest.TestCase):
             "freshness_seconds": 300,
         }])
 
+    def test_absent_drill_freshness_window_is_capped_at_1800_seconds(self):
+        alpha, beta, common = self._drill_fixture()
+        absent = {"target_id": "service:alpha", "mode": "absent"}
+
+        alpha["signals"]["health"]["freshness_seconds"] = 1800
+        allowed = prepare_availability([alpha, beta], drill=absent, **common)
+        self.assertEqual(allowed["alert_only_targets"][0]["freshness_seconds"], 1800)
+
+        alpha["signals"]["health"]["freshness_seconds"] = 1801
+        with redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            prepare_availability([alpha, beta], drill=absent, **common)
+        self.assertIn(
+            "absent availability drill needs a freshness window of at most 1800 seconds", out.getvalue(),
+        )
+
+    def test_status_code_drill_keeps_a_day_long_freshness_window(self):
+        alpha, beta, common = self._drill_fixture()
+        alpha["signals"]["health"]["freshness_seconds"] = 86400
+        drilled = prepare_availability(
+            [alpha, beta], drill={"target_id": "service:alpha", "status_code": 503}, **common,
+        )
+        self.assertEqual(drilled["drill"], {"target_id": "service:alpha", "status_code": 503})
+        self.assertNotIn("alert_only_targets", drilled)
+
     def test_status_code_drill_and_no_drill_carry_no_alert_only_targets(self):
         alpha, beta, common = self._drill_fixture()
         self.assertNotIn("alert_only_targets", prepare_availability([alpha, beta], **common))

@@ -2097,7 +2097,7 @@ templates:
   # Sends a REAL Discord alert. The endpoint availability rule fires for the one named
   # target: its health probe is either failed on purpose with a status code it never returns
   # (fail, the default), or its probe series is removed so only its missing-data rule can fire
-  # (absent). An absent drill waits about the target's freshness window plus two minutes, so it
+  # (absent). An absent drill waits about the target's freshness window plus four minutes, so it
   # runs longer. Tell the operator before launching. A second deploy restores the projection;
   # an interrupted run is recovered with Recover o11y Endpoint Drill (Dev).
   - name: Drill o11y Endpoint Availability (Dev)

@@ -4158,13 +4158,42 @@ def _native_metric_rows(
     return result
 
 
+def _availability_identities(
+    entries: list[Any], *, environment: str, cluster: str, taken: frozenset[str] = frozenset(),
+) -> dict[str, dict[str, str]]:
+    """The exact series identity each declared availability target must carry, keyed by target_id."""
+    identities: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise Refusal("native_declaration_invalid")
+        target_id = entry.get("target_id")
+        expected = {
+            "job": "o11y-availability", "instance": target_id,
+            "service": entry.get("service_identity"), "cluster": entry.get("cluster"),
+            "environment": entry.get("environment"), "target_id": target_id,
+        }
+        if (
+            not isinstance(target_id, str) or target_id in identities or target_id in taken
+            or entry.get("environment") != environment or entry.get("cluster") != cluster
+            or any(not isinstance(value, str) or not value for value in expected.values())
+        ):
+            raise Refusal("native_declaration_invalid")
+        identities[target_id] = expected
+    return identities
+
+
 def collect_availability_native_samples(
     availability: dict[str, Any], shared_limits: dict[str, Any], *, environment: str, cluster: str,
     process_started_at: Decimal | int, preapply_bound: int | None = None,
     now: int | None = None, freshness_seconds: int = 300, self_only: bool = False,
     deadline: float | None = None, max_total_bytes: int = MAX_API_BYTES,
 ) -> dict[str, Any]:
-    """Read bounded raw metric timestamps and values for the fixed Alloy producer."""
+    """Read bounded raw metric timestamps and values for the fixed Alloy producer.
+
+    A target under `alert_only_targets` (an absent drill) has no probe, but its series may
+    still be visible. Its leftover rows are ignored, and a fresh sample for it refuses the
+    read. Its rows never reach the receipts.
+    """
     targets = availability.get("targets") if isinstance(availability, dict) else None
     if (
         not isinstance(availability, dict)
@@ -4189,23 +4218,14 @@ def collect_availability_native_samples(
         "job": "alloy", "instance": "alloy:12345", "service": "o11y/alloy",
         "cluster": cluster, "environment": environment, "target_id": "service:o11y",
     }
-    target_identities: dict[str, dict[str, str]] = {}
-    for target in targets:
-        if not isinstance(target, dict):
-            raise Refusal("native_declaration_invalid")
-        target_id = target.get("target_id")
-        expected = {
-            "job": "o11y-availability", "instance": target_id,
-            "service": target.get("service_identity"), "cluster": target.get("cluster"),
-            "environment": target.get("environment"), "target_id": target_id,
-        }
-        if (
-            not isinstance(target_id, str) or target_id in target_identities
-            or target.get("environment") != environment or target.get("cluster") != cluster
-            or any(not isinstance(value, str) or not value for value in expected.values())
-        ):
-            raise Refusal("native_declaration_invalid")
-        target_identities[target_id] = expected
+    target_identities = _availability_identities(targets, environment=environment, cluster=cluster)
+    alert_only = availability.get("alert_only_targets", [])
+    if not isinstance(alert_only, list) or (alert_only and not targets):
+        raise Refusal("native_declaration_invalid")
+    alert_only_identities = _availability_identities(
+        alert_only, environment=environment, cluster=cluster, taken=frozenset(target_identities),
+    )
+    expected_identities = {**target_identities, **alert_only_identities}
 
     value_families = set(ALLOY_HEALTH_METRICS)
     self_families = set(ALLOY_SELF_METRICS)
@@ -4238,10 +4258,10 @@ def collect_availability_native_samples(
     health_timestamps: dict[tuple[str, str], Decimal] = {}
     if targets:
         health_timestamps = _native_metric_rows(
-            query_responses[0], families=value_families, expected=target_identities,
+            query_responses[0], families=value_families, expected=expected_identities,
         )
         health_values = _native_metric_rows(
-            query_responses[1], families=value_families, expected=target_identities,
+            query_responses[1], families=value_families, expected=expected_identities,
         )
         self_timestamp_raw, self_values_raw = query_responses[2:]
     else:
@@ -4255,6 +4275,21 @@ def collect_availability_native_samples(
         self_values_raw,
         families=self_families, expected=self_expected,
     )
+    # The drilled target of an absent drill has no probe after the drilled apply. A force-recreated
+    # Alloy writes no staleness marker, so an instant query can still return its last samples from
+    # before that apply. Those are expected leftovers and are ignored. A sample newer than the
+    # bound cannot be a leftover, so it refuses the read.
+    alert_only_keys: set[tuple[str, str]] = set()
+    for alert_target_id in alert_only_identities:
+        if any(
+            sample_time > oldest_allowed
+            for (row_target_id, _family), sample_time in health_timestamps.items()
+            if row_target_id == alert_target_id
+        ):
+            raise Refusal("native_samples_ambiguous")
+        alert_only_keys.update(
+            key for key in {*health_values, *health_timestamps} if key[0] == alert_target_id
+        )
 
     def require_fresh(
         values: dict[tuple[str, str], Decimal], timestamps: dict[tuple[str, str], Decimal],
@@ -4328,6 +4363,7 @@ def collect_availability_native_samples(
             "scrape_samples_scraped": samples, "scrape_body_size_bytes": body,
         })
         expected_keys.update((target_id, family) for family in ALLOY_HEALTH_METRICS)
+    expected_keys.update(alert_only_keys)
     unexpected_values = set(health_values) - expected_keys
     unexpected_timestamps = set(health_timestamps) - expected_keys
     if unexpected_values or unexpected_timestamps:
