@@ -159,7 +159,7 @@ def test_inventory_openbao_url_uses_shared_transport_policy() -> None:
     # Parsed, not raw: a comment that names the terms cannot satisfy the pin.
     guard = yaml.safe_load(BAO_TRANSPORT.read_text())[0]["ansible.builtin.assert"]["that"][0]
     single_label_branch = (
-        "or ((local_mode | default(false) | bool) and (groups['all'] | local_dev_inventory) "
+        "or ((groups['all'] | local_dev_inventory) "
         "and _assert_bao_url is match(_pat_single_label))"
     )
     assert single_label_branch in " ".join(guard.split())

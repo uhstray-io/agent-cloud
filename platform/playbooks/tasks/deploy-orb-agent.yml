@@ -31,7 +31,7 @@
         {{ container_engine | default('docker') }} rm netbox-orb-agent 2>/dev/null || true
       # Local-dev runs inside the Semaphore container on the rootful engine socket: no
       # sudo there and none needed. Production escalates as before.
-      become: "{{ not (local_mode | default(false) | bool) }}"
+      become: "{{ not (groups['all'] | local_dev_inventory) }}"
       # A WRITE: it stops and removes the running agent. It was labelled changed_when: false,
       # which made the check-mode retrofit treat it as a read and run it under --check, and a
       # dry run removed the local agent (docs/MISTAKES.md 5.12).
@@ -41,7 +41,7 @@
     - name: "Start orb-agent (privileged, host networking, with workers)"
       ansible.builtin.shell: |
         cd "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-        {{ '' if (local_mode | default(false) | bool) else 'sudo ' }}{{ container_engine | default('docker') }} run -d \
+        {{ '' if (groups['all'] | local_dev_inventory) else 'sudo ' }}{{ container_engine | default('docker') }} run -d \
           --name netbox-orb-agent \
           --privileged \
           --net=host \
@@ -53,7 +53,7 @@
           run -c /opt/orb/agent.yaml
       # Local-dev runs inside the Semaphore container on the rootful engine socket: no
       # sudo there and none needed. Production escalates as before.
-      become: "{{ not (local_mode | default(false) | bool) }}"
+      become: "{{ not (groups['all'] | local_dev_inventory) }}"
       register: _orb_start
       when: not ansible_check_mode
 
@@ -73,7 +73,7 @@
             {{ container_engine | default('docker') }} inspect netbox-orb-agent --format '{{ '{{' }}.State.Running{{ '}}' }}'
           # Local-dev runs inside the Semaphore container on the rootful engine socket: no
           # sudo there and none needed. Production escalates as before.
-          become: "{{ not (local_mode | default(false) | bool) }}"
+          become: "{{ not (groups['all'] | local_dev_inventory) }}"
           register: _orb_running
           retries: 6
           delay: 10
@@ -89,7 +89,7 @@
             executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
           # Local-dev runs inside the Semaphore container on the rootful engine socket: no
           # sudo there and none needed. Production escalates as before.
-          become: "{{ not (local_mode | default(false) | bool) }}"
+          become: "{{ not (groups['all'] | local_dev_inventory) }}"
           register: _orb_logs
           changed_when: false
           check_mode: false
