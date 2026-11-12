@@ -52,7 +52,8 @@ The Authentik client is created first, because the sign-in routes need its secre
 
 Every step runs through the Semaphore template. Nothing is deployed by hand over SSH.
 
-- [ ] 5.1 Write `platform/services/console/deployment/deploy.sh` for container lifecycle only. It builds the image on the host with `$CONTAINER_ENGINE build -f deployment/Containerfile platform/services/console`, and it reads the secrets it needs from the rendered `.env` file.
+- [x] 5.1 Write `platform/services/console/deployment/deploy.sh` for container lifecycle only. It builds the image on the host with `$CONTAINER_ENGINE build -f deployment/Containerfile platform/services/console`, and it reads the secrets it needs from the rendered `.env` file.
+  - Reconciled 2026-11-12 (shipped in v0.14.0, box never ticked): `deployment/deploy.sh` is container lifecycle only and builds on the host with `$CONTAINER_ENGINE build -f Containerfile ..` from `deployment/` (`:22, 92-96`), the same context as the task's command. It reads no secret at all (`:5-8`): the rendered `.env` reaches the container through compose's `env_file` (`deployment/compose.yml:21`), and the script reads only the image name from it.
 - [ ] 5.2 Write `platform/playbooks/deploy-console.yml` as the composable chain: `place-monorepo.yml`, then `manage-secrets.yml`, then `deploy.sh`, then verify. Verify runs `<engine> exec console` against `/healthz` (expecting 200) and `/v1/me` (expecting 401).
 - [ ] ~~5.3~~ **Superseded by Shared credentials task 8.0 (D27).** Was: Provision the console's own AppRole with `manage-approle.yml`, and store its credentials under `secret/services/approles/console`.
 - [ ] 5.4 Add the `console_svc` group and the `console-local` host to the inventory placeholders, with `service_name` `console`, `container_engine` `podman`, `console_bind` `127.0.0.1` and `console_port` `3410`. Real values stay in site-config.
