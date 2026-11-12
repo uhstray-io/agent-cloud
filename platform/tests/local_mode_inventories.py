@@ -15,6 +15,8 @@ import harness_sandbox
 
 # The message of the shared identity guard (tasks/assert-local-mode-identity.yml).
 IDENTITY_REFUSAL = "The mode follows the inventory, not the variable"
+# The task name the playbooks include the check under (place-monorepo.yml, enable-linger.yml).
+IDENTITY_TASK = "Refuse a local_mode that disagrees with the inventory's identity"
 
 LOCAL_INI = """\
 localhost ansible_connection=local

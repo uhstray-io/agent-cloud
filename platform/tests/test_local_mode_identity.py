@@ -23,13 +23,22 @@ import forgeries
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from local_mode_inventories import EXAMPLE_YAML, IDENTITY_REFUSAL, LOCAL_INI, PROD_INI, passed, refused, run
+from local_mode_inventories import (
+    EXAMPLE_YAML,
+    IDENTITY_REFUSAL,
+    IDENTITY_TASK,
+    LOCAL_INI,
+    PROD_INI,
+    passed,
+    refused,
+    run,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 TASK = REPO / "platform/playbooks/tasks/assert-local-mode-identity.yml"
 PLACE = REPO / "platform/playbooks/tasks/place-monorepo.yml"
 LINGER = REPO / "platform/playbooks/tasks/enable-linger.yml"
-NAME = "Refuse a local_mode that disagrees with the inventory's identity"
+NAME = IDENTITY_TASK
 
 pytestmark = needs_ansible
 

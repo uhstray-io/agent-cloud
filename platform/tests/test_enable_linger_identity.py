@@ -1,10 +1,10 @@
 """enable-linger.yml refuses a forged local_mode before any linger task (AC-696).
 
-ensure-service-persistence.yml and instrument-host-o11y.yml include enable-linger.yml without
-place-monorepo, so the linger tasks check local_mode themselves: a forged `-e local_mode=true` on
-production would otherwise skip every one of them. deploy-github-runner.yml runs place-monorepo
-first, but this check does not depend on that order. The static half (the first task is the
-include) is in test_local_mode_identity.py.
+The check covers this file's own reads, so it holds whichever playbook reaches the file. It does
+not cover a caller's own raw local_mode gate: instrument-host-o11y.yml decides whether to include
+this file at all from local_mode (`_ih_rootless`), and ensure-service-persistence.yml's rootful
+and Docker branches read it directly (AC-726). The static half (the first task is the include) is
+in test_local_mode_identity.py.
 
 A refusal test parametrizes over forgeries.templated_forgeries (docs/MISTAKES.md 1.15). Each run is
 --check and includes only enable-linger.yml, so nothing is enabled, copied or written.
@@ -16,11 +16,11 @@ from pathlib import Path
 import forgeries
 import pytest
 from ansible_python import needs_ansible
-from local_mode_inventories import IDENTITY_REFUSAL, LOCAL_INI, PROD_INI, passed, refused, run
+from local_mode_inventories import IDENTITY_REFUSAL, IDENTITY_TASK, LOCAL_INI, PROD_INI, passed, refused, run
 
 REPO = Path(__file__).resolve().parents[2]
 LINGER = REPO / "platform/playbooks/tasks/enable-linger.yml"
-NAME = "Refuse a local_mode that disagrees with the inventory's identity"
+NAME = IDENTITY_TASK
 FIRST_LINGER_TASK = "TASK [Check whether lingering"
 
 pytestmark = needs_ansible

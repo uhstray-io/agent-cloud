@@ -41,7 +41,6 @@
 # Defaults to ansible_user, so every existing caller is unaffected.
 
 - name: "Refuse a local_mode that disagrees with the inventory's identity"
-  # Before any local_mode read below: a forged `-e local_mode=true` would skip every task here.
   ansible.builtin.include_tasks: assert-local-mode-identity.yml
 
 - name: "Check whether lingering is already enabled for {{ linger_user | default(ansible_user) }}"
