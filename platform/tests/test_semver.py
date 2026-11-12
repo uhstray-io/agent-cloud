@@ -1471,3 +1471,33 @@ def test_release_budget_cli_prints_one_json_object_with_the_policy_keys(tmp_path
     }
     assert payload == semver.release_budget(repo.root, "main", "dev")
     assert payload["from"] == "v0.1.0"
+
+
+def test_release_budget_files_leave_out_a_main_only_commit_dev_has_not_synced(tmp_path):
+    # R3 counts main...dev (three dots): a commit on main alone is not part of the promotion's diff.
+    repo = _dev_repo(tmp_path)
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 12, "feat: a")
+    repo.checkout("main")
+    repo.commit("docs: main only")
+    assert semver.release_budget(repo.root, "main", "dev")["files"] == 1
+
+
+def test_release_budget_counts_a_main_only_pull_request_that_the_sync_brought_into_dev(tmp_path):
+    # R2 counts every pull request since the release, not only dev's first-parent chain: errs high.
+    repo = _dev_repo(tmp_path)
+    repo.checkout("main")
+    repo.feature("bump", "chore: bump")
+    repo.squash_pr("bump", 30, "chore: bump")
+    repo.checkout("dev")
+    repo.merge_raw("Merge remote-tracking branch 'origin/main' into dev", "chore: sync", "main")
+    assert semver.release_budget(repo.root, "main", "dev")["prs"] == 1
+
+
+def test_release_budget_without_a_release_tag_counts_all_of_dev(tmp_path):
+    repo = Repo(tmp_path / "repo", release=None)
+    repo.branch("dev")
+    repo.feature("feat-a", "feat: a")
+    repo.merge_pr("feat-a", 12, "feat: a")
+    budget = semver.release_budget(repo.root, "main", "dev")
+    assert (budget["from"], budget["prs"], budget["files"]) == (None, 1, 1)

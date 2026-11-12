@@ -136,7 +136,7 @@ def last_release(repo):
 
 
 def _last_release_on(repo, ref):
-    """The highest release tag merged into ref, by version, or None. Dev tags never count; see release_budget."""
+    """The highest release tag merged into ref, by version, or None. Dev tags never count (RELEASE_RE)."""
     found = [
         (_release_version(tag), tag)
         for tag in _git(repo, "tag", "--list", "v*", "--merged", ref).stdout.split()
@@ -196,7 +196,9 @@ def release_budget(repo, main_ref, dev_ref, extra_prs=0, extra_files=()):
     """How much the release that promotes dev_ref onto main_ref uses of its limits (policy 10 R2, R3, R6, R12).
 
     The release starts at the highest release tag merged into main_ref, so a pinned ref counts from its own
-    release. extra_prs and extra_files add a pull request not yet merged, for the merge guard. Computes only.
+    release. extra_prs and extra_files add a pull request not yet merged, for the merge guard. extra_files are
+    the paths after the change, as git diff names them: the new path of a rename, the old path of a deletion.
+    transition reads local tags only, so a caller fetches the release tags first. Computes only.
     """
     start = _last_release_on(repo, main_ref)
     rev_range = f"{start}..{dev_ref}" if start else dev_ref
