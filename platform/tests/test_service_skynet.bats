@@ -288,7 +288,6 @@ PY
   assert_precedes "$PLAYBOOK" 'Refuse a TLS deploy whose internal_leaves' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse a TLS production skynet_bind unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_port unless it is a whole port' 'tasks/place-monorepo\.yml'
-  assert_precedes "$PLAYBOOK" 'Place the monorepo \+ ensure podman/compose' 'Refuse a podman older than 4.3 for userns keep-id'
   assert_precedes "$PLAYBOOK" 'tasks/assert-podman-keep-id\.yml' 'tasks/manage-secrets\.yml'
   # The svc-skynet token has no refusal here: it is an existing secret, and manage-secrets refuses
   # the run by name after the placement and before any OpenBao write (the Deploy console precedent).
@@ -774,26 +773,6 @@ assert mint_task["vars"]["_mint_reissue"] == "{{ _skynet_local and (_skynet_leaf
 fresh_task = tasks[fresh]
 assert fresh_task["ansible.builtin.command"]["argv"][2:4] == ["-checkend", "604800"], fresh_task
 assert fresh_task["when"] == ["_skynet_tls", "_skynet_local"], fresh_task.get("when")
-PY
-}
-
-@test "skynet: the keep-id check is the shared task, included after the monorepo is placed, gated on production and skynet_tls" {
-  python3 - "$PLAYBOOK" <<'PY'
-import sys
-
-import yaml
-
-plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-play1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
-tasks = play1["tasks"]
-names = [t.get("name", "") for t in tasks]
-check = tasks[names.index("Refuse a podman older than 4.3 for userns keep-id")]
-assert check["ansible.builtin.include_tasks"] == "tasks/assert-podman-keep-id.yml", check
-assert check["vars"] == {"_apk_for": "Production skynet's HTTPS listener (compose.prod-tls.yml)"}, check.get("vars")
-assert check["when"] == ["not _skynet_local", "_skynet_tls"], check.get("when")
-assert names.index("Place the monorepo + ensure podman/compose") + 1 == names.index(check["name"]), names
-assert names.index(check["name"]) < names.index("Manage secrets and template env file"), names
-assert not [t for t in tasks if str(t.get("register", "")).endswith("podman_version")], names
 PY
 }
 

@@ -14,6 +14,9 @@ from pathlib import Path
 import harness_sandbox
 import pytest
 import yaml
+from ansible_python import needs_ansible
+
+pytestmark = needs_ansible
 
 SHARED_TASK = harness_sandbox.REPO / "platform/playbooks/tasks/assert-podman-keep-id.yml"
 CALLER = "Test caller (compose.test.yml)"
@@ -60,7 +63,8 @@ def output(done) -> str:
     return done.stdout + done.stderr
 
 
-@pytest.mark.parametrize("version", ["4.3.0", "4.9.3"])
+# 4.10.0: compared as strings it sorts below 4.3, so it fails a lexical comparison the version test must not make.
+@pytest.mark.parametrize("version", ["4.3.0", "4.10.0"])
 def test_a_podman_at_or_above_4_3_passes(tmp_path, version):
     bin_dir = tmp_path / "bin"
     fake_engine(bin_dir, "podman", version, rc=0)
@@ -80,8 +84,7 @@ def test_podman_4_2_1_is_refused_and_the_message_names_the_version(tmp_path):
 
 
 def test_a_podman_that_exits_1_is_refused_even_when_it_prints_a_passing_version(tmp_path):
-    # The version passes on its own, so only the read's return code can refuse this case. Dropping that
-    # condition (M1) makes the case pass, which is what this test catches.
+    # The version passes on its own, so only the read's return code can refuse this case.
     bin_dir = tmp_path / "bin"
     fake_engine(bin_dir, "podman", "4.9.3", rc=1)
     done = run_probe(tmp_path, bin_dir)
@@ -103,7 +106,7 @@ def test_a_podman_that_exits_1_with_no_output_is_refused_as_no_version_read(tmp_
 
 def test_another_engine_is_refused_even_at_a_passing_version(tmp_path):
     # docker prints 27.3.1, which passes the version comparison on its own, so only the engine condition can
-    # refuse it. Dropping that condition (M2) makes the case pass, which is what this test catches.
+    # refuse it.
     bin_dir = tmp_path / "bin"
     fake_engine(bin_dir, "docker", "27.3.1", rc=0)
     done = run_probe(tmp_path, bin_dir, "-e", "container_engine=docker")

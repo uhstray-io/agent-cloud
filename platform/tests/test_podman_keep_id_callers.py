@@ -1,13 +1,10 @@
-"""The four listener-TLS deploys use the one shared podman keep-id check, after placement, with their own gate (AC-702).
-
-Each caller must include tasks/assert-podman-keep-id.yml exactly once, directly after its placement include
-(tasks/place-monorepo.yml, which installs podman), with the gate the deploy's keep-id overlay needs and the
-name the refusal gives. No caller may keep a hand copy of the version read.
+"""The four keep-id deploys include the one shared podman check (tasks/assert-podman-keep-id.yml) once, directly
+after placement (which installs podman), each under its own gate (AC-702).
 """
 
 import harness_sandbox
+import playbook_yaml
 import pytest
-import yaml
 
 PLAYBOOKS = harness_sandbox.REPO / "platform/playbooks"
 PLACE = "tasks/place-monorepo.yml"
@@ -27,13 +24,13 @@ CALLERS = {
 
 
 def _task_lists(playbook):
-    """Every task list in the file (pre_tasks, tasks, post_tasks of every play), so an order is read within one list."""
-    plays = yaml.safe_load((PLAYBOOKS / playbook).read_text(encoding="utf-8"))
-    lists = []
-    for play in plays:
-        if isinstance(play, dict):
-            lists.extend(play.get(key, []) for key in ("pre_tasks", "tasks", "post_tasks"))
-    return lists
+    """Every task list in the file, blocks included, so an order is read within one list."""
+    return [
+        node[key]
+        for node in playbook_yaml.tasks(playbook_yaml.load(PLAYBOOKS / playbook))
+        for key in playbook_yaml.TASK_LISTS
+        if isinstance(node.get(key), list)
+    ]
 
 
 @pytest.mark.parametrize("playbook", sorted(CALLERS))

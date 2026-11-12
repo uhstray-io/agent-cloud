@@ -1,22 +1,12 @@
----
-# assert-podman-keep-id.yml — refuse a podman older than 4.3 before a deploy that runs userns keep-id.
+# assert-podman-keep-id.yml — refuse a podman older than 4.3 before anything runs with userns keep-id.
 #
-# keep-id (`userns_mode: keep-id:uid=...,gid=...` in a compose overlay) needs podman 4.3 or later, and an
-# older podman refuses the flag. One shared check, so every listener-TLS deploy holds the same bar: skynet's
-# production HTTPS listener, OPA's opa_tls, agentgateway's listener TLS and the production launch gate.
+# keep-id (`userns_mode: keep-id:uid=...,gid=...`, `--userns=keep-id:...`) maps the deploy account to the
+# container's non-root user, so that user can read the account's 0600 TLS key (without it, "Permission denied",
+# measured 2026-10-02 with podman-compose 1.0.6). The uid/gid form needs podman 4.3 or later.
 #
-# Include this AFTER tasks/place-monorepo.yml. Placement installs podman (and compose), so a fresh host has a
-# podman to read. A read before placement fails with "No such file" instead of the refusal.
-#
-# The read is read-only and runs under --check (check_mode false), so a dry run refuses the same host a real
-# run would. The assert is not skipped under --check. The caller decides whether the check applies, with the
-# `when` on its include_tasks.
-#
-# Input: _apk_for, what needs keep-id, named in the refusal (default 'this deploy').
-#
-# This is the strictest form, the one platform/playbooks/deploy-skynet.yml used before the check was shared. It
-# refuses a failed read and an engine other than podman, because keep-id is a podman option and another
-# engine's version number would pass the comparison.
+# Include AFTER tasks/place-monorepo.yml, which installs podman, under the caller's own `when`. Input: _apk_for,
+# what needs keep-id, named in the refusal. A failed read and an engine other than podman are refused too: keep-id
+# is a podman option, and another engine's version number would pass the comparison.
 
 - name: "Read the podman version for userns keep-id"
   ansible.builtin.command:
