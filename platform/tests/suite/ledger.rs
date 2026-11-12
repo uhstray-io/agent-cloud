@@ -2,7 +2,8 @@
 //!
 //! Ported from `platform/tests/test_ledger_test_citations.py` (plan 24, Phase 3, D9). The
 //! Python checker stays until its pre-commit hook moves (Phase 5). Both read the same ledger
-//! and the same ratchet, so they agree on every citation they both read.
+//! and the same ratchet; on 2026-11-12 both reported the same unresolved citations on this
+//! ledger. No differential test keeps them equal, so a rule change goes into both.
 //!
 //! Parse rule, as the Python module documents it. Fenced code blocks are dropped. The rest is
 //! split into claims: blank-line-separated paragraphs, except that each Markdown table row is
@@ -19,15 +20,19 @@
 //!
 //! The one extension (this port only): FILE also matches a Rust test, `[dir/]suite/<name>.rs`,
 //! optionally followed by `::<fn>`. A path starting `suite/` is relative to `platform/tests/`;
-//! any other path is relative to the repository root. With `::<fn>`, the file must contain
-//! `fn <fn>(`. A Rust citation is checked for existence and fn name only. It does not feed the
+//! any other path is relative to the repository root. With `::<fn>`, the file must define
+//! `fn <fn>` (followed by `(` or `<`, anywhere on a line). A Rust citation is checked for
+//! existence and fn name only. It does not feed the
 //! NAME and BATS NAME pools, so both checkers search the same files for every claim and differ
 //! only on Rust citations, which the Python checker does not read.
 //!
 //! A citation that cannot resolve because its test was deleted or renamed after the entry was
 //! written stays in the append-only ledger. `platform/tests/ledger_citation_ratchet.txt` lists
 //! it as `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers
-//! one occurrence. The list may only shrink.
+//! one occurrence. The list may only shrink. A Rust citation cannot be ratcheted while the Python
+//! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
+//! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
+//! ledger entry naming its new name, as 10.15's "Enforcement moved" note does.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -139,7 +144,7 @@ fn walk(dir: &Path, by_name: &mut BTreeMap<String, Vec<PathBuf>>) {
             if !SKIP_DIRS.contains(&dir_name.as_str()) {
                 walk(&path, by_name);
             }
-        } else if path.is_dir() {
+        } else if kind.is_symlink() && path.is_dir() {
             continue;
         } else if let Some(name) = path.file_name() {
             by_name
@@ -154,11 +159,20 @@ fn is_py(path: &Path) -> bool {
     path.extension().and_then(|e| e.to_str()) == Some("py")
 }
 
+fn read_lossy(path: &Path) -> String {
+    String::from_utf8_lossy(&fs::read(path).expect("readable file")).into_owned()
+}
+
 fn defines(path: &Path, name: &str) -> bool {
-    let text = String::from_utf8_lossy(&fs::read(path).expect("readable file")).into_owned();
+    let text = read_lossy(path);
+    // A literal search first: the name must appear for any pattern to match, and compiling a
+    // regex for each (name, file) pair cost seconds per run.
+    if !text.contains(name) {
+        return false;
+    }
     let name = regex::escape(name);
     let pattern = if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-        format!(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+{name}\s*\(")
+        format!(r"\bfn\s+{name}\s*[<(]")
     } else {
         format!(r"(?m)^\s*(?:async\s+)?(?:def|class)\s+{name}\b")
     };
@@ -166,7 +180,7 @@ fn defines(path: &Path, name: &str) -> bool {
 }
 
 fn bats_names(path: &Path) -> BTreeSet<String> {
-    let text = String::from_utf8_lossy(&fs::read(path).expect("readable file")).into_owned();
+    let text = read_lossy(path);
     BATS_TEST
         .captures_iter(&text)
         .map(|c| {
@@ -189,7 +203,7 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
 
     let mut bad: Vec<String> = Vec::new();
     for (entry, claim) in claims(text) {
-        let bad_before = bad.len();
+        let mut claim_bad: Vec<String> = Vec::new();
         let ss = spans(&claim);
         // The .py and .bats files this claim cites: the pool for NAME and BATS NAME.
         let mut cited: Vec<PathBuf> = Vec::new();
@@ -212,7 +226,7 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
             };
             let found: Vec<PathBuf> = found.into_iter().filter(|p| p.is_file()).collect();
             if found.is_empty() {
-                bad.push(s.clone());
+                claim_bad.push(s.clone());
                 continue;
             }
             if !is_rs {
@@ -221,7 +235,7 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
             if let Some(name) = &file.name
                 && !found.iter().any(|p| defines(p, name))
             {
-                bad.push(s.clone());
+                claim_bad.push(s.clone());
             }
         }
 
@@ -241,7 +255,7 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
                         || (is_py(p) && defines(p, s))
                 });
                 if !ok {
-                    bad.push(s.clone());
+                    claim_bad.push(s.clone());
                 }
             } else if !cited_bats.is_empty()
                 && file_span(s).is_none()
@@ -250,16 +264,11 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
                     .iter()
                     .any(|p| bats_names(p.as_path()).contains(s))
             {
-                bad.push(s.clone());
+                claim_bad.push(s.clone());
             }
         }
 
-        let added: Vec<String> = bad
-            .split_off(bad_before)
-            .iter()
-            .map(|s| format!("{entry} {s}"))
-            .collect();
-        bad.extend(added);
+        bad.extend(claim_bad.into_iter().map(|s| format!("{entry} {s}")));
     }
     bad
 }
@@ -429,7 +438,7 @@ fn rust_citations_resolve_against_the_suite_and_their_fn_names() {
     fs::create_dir_all(&suite).expect("suite fixture");
     fs::write(
         suite.join("restart_policy.rs"),
-        "#[test]\nfn real_fn() {}\n",
+        "#[test]\nfn real_fn() {}\n#[test] fn same_line_fn() {}\nfn generic_fn<T>() {}\n// fn commented_fn_lookalike\n",
     )
     .expect("rs fixture");
     let cite = |span: &str| format!("### 4.1 A Rust entry\n\n**Enforced by.** `{span}`.\n");
@@ -445,6 +454,26 @@ fn rust_citations_resolve_against_the_suite_and_their_fn_names() {
     assert_eq!(
         unresolved(&cite("suite/restart_policy.rs::real_fn"), root.path()),
         Vec::<String>::new()
+    );
+
+    // Act / Assert: an attribute on the same line and a generic fn both count as defined; a
+    // comment that names a fn without its `(` or `<` does not
+    for name in ["same_line_fn", "generic_fn"] {
+        assert_eq!(
+            unresolved(
+                &cite(&format!("suite/restart_policy.rs::{name}")),
+                root.path()
+            ),
+            Vec::<String>::new(),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        unresolved(
+            &cite("suite/restart_policy.rs::commented_fn_lookalike"),
+            root.path()
+        ),
+        strings(&["4.1 suite/restart_policy.rs::commented_fn_lookalike"])
     );
 
     // Act / Assert: an invented fn name, and a missing file, both fail
