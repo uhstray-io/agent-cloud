@@ -161,7 +161,8 @@ and why.
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | Convention (merge-guard check proposed) |
-| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Convention (an exact-head commit status per pass, required by `merge-when-green.py`, proposed) |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x4**: #993 and #1078, with no pass or a pass on an earlier head | Process | 4 | Superseded by 5.25 |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x1**: #1107, a pass's own fixes posted as reviewed | Process | 1 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -4895,6 +4896,39 @@ string comparison, the same exact-head pin 5.20 applies to reviews. Still self-a
 that go through the script. 1.16 and 5.15 also propose reading the PR body; this proposal reads none. It widens
 the rule from "before `gh pr create`" to the merge head, so a push of review fixes needs both passes again;
 building it starts with a new entry that supersedes this rule. Not built.
+
+**Superseded 2026-11-12 by 5.25.** At four occurrences the rule above ("one line for each in the PR body") is
+replaced by a mechanical one: the passes are commit statuses the merge guard requires on the merge head.
+
+### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
+
+**Occurrences: 1** — 2026-11-12. The four that earned this rule are 5.24's.
+
+**What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
+`Convention` as its enforcement.
+
+**Root cause.** Nothing between the passes and the merge read whether they ran, or on which head. A PR-body line
+names no head, and `scripts/merge-when-green.py` never reads a PR body.
+
+**The rule.** Run both passes and commit their fixes; a fix changes the head they reviewed, so run both again until
+a round changes nothing. Then push and post each as a commit status on the pushed head with a description of
+what it found and what was fixed or deferred: the command is in `AGENTS.md`, Branch Workflow step
+5. Every later push, review fixes or a `dev` merge included, needs both passes again on the new head. A status can
+be posted only on a commit GitHub already holds.
+
+**Enforced by.** `scripts/merge-when-green.py`: `check_commit_statuses` refuses a feature-to-`dev` head without
+both statuses (`REVIEW_PASS_STATUSES`), or with one whose description is empty or the unfilled placeholder, and
+names the command that posts each missing one; tested in `platform/tests/test_merge_when_green.py`
+(`test_each_review_pass_status_is_required_on_the_exact_head`, `test_a_review_pass_status_with_no_finding_refuses`).
+Limits: the status is self-attested, so the gate proves a pass was claimed for the head, not that it ran or what it
+found (a skipped pass posted as run goes green); and it binds only merges that go through the script (a plain
+`gh pr merge --merge` skips it).
+
+**Occurrence 1 — 2026-11-12.** On this rule's own PR (#1107), `/simplify` reviewed `74ac3ba0` and its fixes made
+`e58f113c`; `/security-review` then ran on `e58f113c`, and both statuses were posted there, the `simplify` one
+reading "Ran on e58f113c". That claimed a pass for a head it never reviewed. The rule as first drafted ("run both
+passes, commit their fixes, push, then post") did not cover it: nothing said a pass's own fixes need a further
+round. CodeRabbit flagged the gap; the rule above now requires rounds until one changes nothing.
 
 ## 6. Working from assumptions about files
 
