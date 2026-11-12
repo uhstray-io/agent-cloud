@@ -126,11 +126,12 @@ class GitHub:
     def dev_drift(self, number, head_sha, dev_sha):
         # 5.23: CI proves the pull request head, not that head merged into the current dev. This reads dev's changes
         # the head lacks from local git, after fetching the head itself; it writes nothing to GitHub. dev_sha is
-        # already local: validate runs the release budget's fetch first.
+        # already local: validate runs the release budget's fetch first. The head goes to its own namespace, which
+        # no fetch refspec of the checkout writes to.
         failed = f"Dev drift: git failed in {self.repo_root}"
         self._git("Dev drift: fetching the pull request head failed",
-                  "fetch", "--no-tags", "origin", f"+refs/pull/{number}/head:refs/remotes/origin/pr/{number}")
-        fetched = self._git(failed, "rev-parse", "--verify", f"refs/remotes/origin/pr/{number}^{{commit}}").strip()
+                  "fetch", "--no-tags", "origin", f"+refs/pull/{number}/head:refs/merge-guard/pull/{number}")
+        fetched = self._git(failed, "rev-parse", "--verify", f"refs/merge-guard/pull/{number}^{{commit}}").strip()
         if fetched != head_sha:
             raise Refusal(f"Dev drift: the fetched pull request head {fetched[:12]} is not the expected head "
                           f"{head_sha[:12]}")
@@ -888,8 +889,8 @@ def check_release_budget(api, file_records):
 
 
 def is_test_path(path):
-    # Where CI's test suites live or are configured: any tests/ directory (each pytest testpath and the BATS suite),
-    # any conftest.py, and pyproject.toml. A dependency change (uv.lock) is not counted.
+    # The paths counted as test code: any tests/ directory (each pytest testpath and the BATS suite), any conftest.py,
+    # and pyproject.toml. Not counted: uv.lock, and Rust tests written in src/ (#[cfg(test)]), which cargo test runs.
     posix = PurePosixPath(path)
     return "tests" in posix.parts[:-1] or posix.name == "conftest.py" or path == "pyproject.toml"
 

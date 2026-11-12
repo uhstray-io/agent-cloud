@@ -115,11 +115,11 @@ The intake refuses a merge into `dev` that would take the release it joins past 
 
 CI proves the pull request's head, not that head merged into the current `dev` (`docs/MISTAKES.md` 5.23): two heads that are each green can merge into a red `dev` when one adds a repo-wide test the other's files fail.
 
-- **What is read.** After the release budget, the guard fetches `refs/pull/<n>/head` into its checkout as `refs/remotes/origin/pr/<n>` and refuses unless it is the expected head. It then counts the commits on the verified `dev` tip that the head lacks (`git rev-list --count <head>..<dev>`) and lists the paths they change (`git diff --name-only --no-renames <head>...<dev>`, both names of a rename). Local git, because GitHub's compare API documents no signal for a truncated file list.
+- **What is read.** After the release budget, the guard fetches `refs/pull/<n>/head` into its checkout as `refs/merge-guard/pull/<n>`, a namespace no fetch refspec writes to, and refuses unless it is the expected head. It then counts the commits on the verified `dev` tip that the head lacks (`git rev-list --count <head>..<dev>`) and lists the paths they change (`git diff --name-only --no-renames <head>...<dev>`, both names of a rename). Local git, because GitHub's compare API documents no signal for a truncated file list.
 - **Test path.** A path under any `tests/` directory, any `conftest.py`, or `pyproject.toml`; a test pins that every pytest `testpath` qualifies. Only drift into test paths refuses, as 5.23's rule states: refusing any drift would need a `dev` merge and a new CI run whenever `dev` moved at all.
 - **Readout.** Each validation prints `DEV: this head lacks <n> commits of dev <sha>; <k> test paths among their changes`.
 - **Refusal.** When any changed path is a test path, the guard refuses, naming up to five, unless `--dev-drift-acknowledged` is passed. The answer is to merge `dev` into the branch and let CI run on the new head.
-- **Limit.** Only `dev`'s side is read. A head that adds a repo-wide test while `dev` gained a file that fails it, with no test path among `dev`'s changes, still merges unchecked.
+- **Limit.** Only `dev`'s side is read. A head that adds a repo-wide test while `dev` gained a file that fails it, with no test path among `dev`'s changes, still merges unchecked. Rust tests written in `src/` (`#[cfg(test)]`, run by `cargo test`) are not test paths, and neither is `uv.lock`.
 
 ## Validation criteria
 
