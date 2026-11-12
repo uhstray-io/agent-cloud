@@ -101,7 +101,7 @@ flowchart LR
     NX --> CLI["cli tier<br/>assert_cmd + fake PATH"]
     NX --> HTTP["http tier<br/>wiremock fakes"]
     NX --> PB["playbook tier<br/>ansible-playbook, test-group capped"]
-    SEC["security set<br/>(always selected)"] --> FS
+    SEC["security set<br/>(every lane; static only in commit)"] --> FS
 ```
 
 ### Crate layout
@@ -128,7 +128,7 @@ unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
 |---|---|---|
 | D1 | **Runner: `cargo-nextest` 0.9.151.** Profiles are lanes. A `playbook` test-group caps concurrent `ansible-playbook` runs. `slow-timeout` bounds every test, which is plan 21 F5's missing timeout | `cargo test` runs one binary's tests on threads in one process, so a hung child holds the run and per-test timeouts need custom code. `rustest` 0.3.1 replaces the libtest harness (`harness = false`), was last released 2025-06-04 and has 82 downloads a month (lib.rs, read 2026-11-12) |
 | D2 | **Libraries.** `assert_cmd` + `predicates` (process tests), `insta` with `yaml` and `json` (snapshots of rendered output and refusal messages), `proptest` (properties of parsers and resolvers), `wiremock` + `tokio` (HTTP fakes, replacing the 31 hand-rolled servers of plan 21 F5), `yaml-rust2` (YAML), `tempfile`, `globset`, `serde_json`. Approved by the operator on 2026-11-12 | `quickcheck` duplicates `proptest`, and `proptest` keeps failing cases in `proptest-regressions/`. `trybuild` tests compile errors of macros and types, and the repository has none. `serde_yaml` is deprecated (`0.9.34+deprecated` on crates.io) |
-| D3 | **Lanes from `areas.toml`.** Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over the selected modules (`test(/^(?:<module>|...)::/)`). The security set and the static tier of the touched areas are always added. A change to the test crate, `areas.toml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
+| D3 | **Lanes from `areas.toml`.** Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over the selected modules (`test(/^(?:<module>|...)::/)`). The security set is added in every lane (its static tests in `commit`), with the touched areas' tiers the lane allows. A change to the test crate, `areas.toml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
 | D4 | **Port Python where the runtime is ours.** Controller-side helpers (`scripts/*.py`, `platform/lib/*.py`, `platform/playbooks/files/*.py` run on the controller) become subcommands of one Rust CLI. Host-side helpers follow once D6 is decided. Operator decision, 2026-11-12 | Keeping a thin pytest lane was the recommended option. Shim tests (`python3 -c` per case) are slower than in-process pytest |
 | D5 | **Framework-bound Python stays Python, kept thin.** Filter and callback plugins are loaded by Ansible. Plane, NetBox and Authentik scripts run in their Django shells. NetBox workers and configuration run in NetBox. Each keeps its logic in a pure function, and the function's cases run through the tier that can load it: playbook tier for plugins, a fake-module `python3` run for Django scripts. One test per behaviour, cases looped inside one run | A Rust port of these is impossible: the host only loads Python |
 | D6 | **Host-side binary distribution: OPEN, operator decision.** Proposed: CI builds static musl binaries for `x86_64` and `aarch64` and publishes them on the release. Deploys fetch them by pinned sha256, the pattern Deploy Plane uses for Plane's Compose files, and copy them instead of `script:` | Building on the controller needs a Rust toolchain in the Semaphore image. A host has no toolchain |
@@ -198,7 +198,9 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 
 ## Security Considerations
 
-- The security set always runs, so selecting fewer tests never skips a secret-handling or guard test.
+- The security set runs in every lane, so `push`, `ci` and `full` never skip a secret-handling, guard or
+  ledger-enforced test; the `commit` lane runs its static tests only, and `push` runs the rest before the
+  change leaves the workstation.
 - Process tests run with a scrubbed environment: no `ANSIBLE_CONFIG`, no OpenBao or Semaphore variables,
   `HOME` and temp directories inside the test's `tempfile` directory. This is today's
   `harness_sandbox.env_for` rule, centralised in the support library.
