@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env perl
 # The shell GNU parallel runs each job with, when BATS runs files in parallel.
 #
 # GNU parallel sets SIGALRM to ignored in itself (`$SIG{ALRM} = 'IGNORE'` in
@@ -7,8 +7,9 @@
 # SIGALRM as an existing alarm handler and refuses a task `timeout:` ("An existing alarm
 # handler was present"), so a playbook test that passes alone fails under `bats --jobs`.
 #
-# A shell cannot reset a signal it inherited as ignored (POSIX), but perl can, and the
-# default disposition survives exec. GNU parallel runs each job as `$PARALLEL_SHELL -c cmd`
-# after the fork, so this wrapper restores SIGALRM before the job starts. `--` stops perl
-# reading `-c` as its own option.
-exec perl -e '$SIG{ALRM} = "DEFAULT"; exec "/bin/sh", @ARGV' -- "$@"
+# GNU parallel runs each job as `$PARALLEL_SHELL -c cmd` after the fork. A shell cannot reset
+# a signal it inherited as ignored, but perl can, and the default disposition survives exec,
+# so this restores SIGALRM and hands the job to /bin/sh. Perl is always present where GNU
+# parallel runs: parallel is itself a perl script.
+$SIG{ALRM} = "DEFAULT";
+exec "/bin/sh", @ARGV;

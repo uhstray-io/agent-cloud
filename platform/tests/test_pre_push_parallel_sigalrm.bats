@@ -8,7 +8,8 @@
 # hook hands it to bats and to nothing else.
 #
 # The hook runs in a scratch repository with no pyproject.toml, so the Python suite is skipped
-# and each run is quick. A fake `bats` records its argv and the PARALLEL_SHELL it was given.
+# and each run is quick. A fake `bats` records its argv and the PARALLEL_SHELL it was given,
+# each in its own file.
 
 load assert_helpers
 
@@ -21,10 +22,11 @@ setup() {
   git init -q "$REPO"
   mkdir -p "$REPO/platform/tests/bin" "$T/fakebin"
   unset BATS_PARALLEL_BINARY_NAME PARALLEL_SHELL
-  export FAKE_BATS_OUT="$T/bats.out"
+  export FAKE_BATS_ARGS="$T/bats.args" FAKE_BATS_SHELL="$T/bats.shell"
   cat > "$T/fakebin/bats" <<'SH'
 #!/usr/bin/env sh
-printf '%s\n%s\n' "$*" "${PARALLEL_SHELL:-unset}" > "$FAKE_BATS_OUT"
+echo "$*" > "$FAKE_BATS_ARGS"
+echo "${PARALLEL_SHELL:-unset}" > "$FAKE_BATS_SHELL"
 SH
   printf '#!/bin/sh\nexit 0\n' > "$T/fakebin/parallel"
   chmod +x "$T/fakebin/bats" "$T/fakebin/parallel"
@@ -56,17 +58,17 @@ job_status_under() {
   cp "$JOB_SHELL" "$REPO/platform/tests/bin/"
   run push
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ "$(sed -n 1p "$FAKE_BATS_OUT")" = '--jobs 4 --no-parallelize-within-files platform/tests/' ]
+  [ "$(cat "$FAKE_BATS_ARGS")" = '--jobs 4 --no-parallelize-within-files platform/tests/' ]
   # The hook works from `git rev-parse --show-toplevel`, the resolved path.
-  [ "$(sed -n 2p "$FAKE_BATS_OUT")" = "$(git -C "$REPO" rev-parse --show-toplevel)/platform/tests/bin/parallel-job-shell" ]
+  [ "$(cat "$FAKE_BATS_SHELL")" = "$(git -C "$REPO" rev-parse --show-toplevel)/platform/tests/bin/parallel-job-shell" ]
   refute_contains "$output" 'runs serially'
 }
 
 @test "pre-push parallel: a checkout without the job shell runs BATS serially, saying why" {
   run push
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ "$(sed -n 1p "$FAKE_BATS_OUT")" = 'platform/tests/' ]
-  [ "$(sed -n 2p "$FAKE_BATS_OUT")" = 'unset' ]
+  [ "$(cat "$FAKE_BATS_ARGS")" = 'platform/tests/' ]
+  [ "$(cat "$FAKE_BATS_SHELL")" = 'unset' ]
   assert_contains "$output" 'parallel-job-shell is missing from this checkout'
 }
 
@@ -74,6 +76,6 @@ job_status_under() {
   cp "$JOB_SHELL" "$REPO/platform/tests/bin/"
   run push BATS_PARALLEL_BINARY_NAME=no-such-parallel
   [ "$status" -eq 0 ] || { echo "$output"; false; }
-  [ "$(sed -n 1p "$FAKE_BATS_OUT")" = 'platform/tests/' ]
+  [ "$(cat "$FAKE_BATS_ARGS")" = 'platform/tests/' ]
   assert_contains "$output" 'GNU parallel is not installed'
 }

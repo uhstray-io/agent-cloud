@@ -48,9 +48,8 @@
 #
 # So a green push means the suites passed ON THIS MACHINE, or were skipped. It is not
 # evidence they pass in CI, and CI remains the authority. BATS takes CI's flags,
-# `--jobs 4 --no-parallelize-within-files` (plan 21), when GNU parallel and perl are
-# installed (the BATS section says why perl), and runs serially otherwise. It runs beside
-# pytest, not before it.
+# `--jobs 4 --no-parallelize-within-files` (plan 21), when GNU parallel is installed, and
+# runs serially otherwise. It runs beside pytest, not before it.
 #
 # THE FAST LANE (plan 21, phase 4, D6). The pytest run covers only the files this push
 # changes, plus the files the durations file marks fast or does not record, measured
@@ -344,22 +343,16 @@ fi
 
 # ── BATS ────────────────────────────────────────────────────────────────────
 # Started here in the background, so it runs beside pytest, and awaited after pytest
-# (below). It takes CI's flags (.github/workflows/lint-and-test.yml) when GNU parallel and
-# perl are installed, and runs serially otherwise.
-#
-# GNU parallel starts every job with SIGALRM ignored, and ansible-core then refuses a task
-# `timeout:` ("An existing alarm handler was present"). PARALLEL_SHELL makes parallel run each
-# job through platform/tests/bin/parallel-job-shell, which restores the default disposition
-# (the wrapper says why perl). bats-core runs files through `${BATS_PARALLEL_BINARY_NAME:-parallel}`.
+# (below). It takes CI's flags (.github/workflows/lint-and-test.yml) when GNU parallel is
+# installed, and runs serially otherwise. Each parallel job runs through
+# platform/tests/bin/parallel-job-shell (PARALLEL_SHELL), which restores SIGALRM; the wrapper
+# says why. bats-core finds parallel as `${BATS_PARALLEL_BINARY_NAME:-parallel}`.
 if [ -d platform/tests ]; then
   if command -v bats >/dev/null 2>&1; then
     bats_args=""
     if ! command -v "${BATS_PARALLEL_BINARY_NAME:-parallel}" >/dev/null 2>&1; then
       printf 'pre-push: GNU parallel is not installed, so BATS runs serially (slower). Install it,\n' >&2
       printf '  as the Brewfile does:  brew install parallel\n' >&2
-    elif ! command -v perl >/dev/null 2>&1; then
-      printf 'pre-push: perl is not installed, and BATS jobs under GNU parallel need it to restore\n' >&2
-      printf '  SIGALRM (platform/tests/bin/parallel-job-shell), so BATS runs serially (slower).\n' >&2
     elif [ ! -x platform/tests/bin/parallel-job-shell ]; then
       printf 'pre-push: platform/tests/bin/parallel-job-shell is missing from this checkout, so BATS\n' >&2
       printf '  runs serially (slower): without it GNU parallel jobs ignore SIGALRM.\n' >&2
@@ -368,13 +361,14 @@ if [ -d platform/tests ]; then
       pp_job_shell="$(pwd)/platform/tests/bin/parallel-job-shell"
     fi
     printf 'pre-push: running BATS suite%s...\n' "${bats_args:+ in parallel}" >&2
-    # PARALLEL_SHELL reaches bats (and parallel's jobs) only, never the pytest run below; exec
-    # keeps $bats_pid the bats process itself.
+    # A prefix assignment gives PARALLEL_SHELL to bats (and parallel's jobs) only, never the
+    # pytest run below, and keeps bats a direct child of this hook, so $bats_pid is bats.
     # shellcheck disable=SC2086 # bats_args is deliberately word-split into flags.
-    (
-      if [ -n "${pp_job_shell:-}" ]; then PARALLEL_SHELL=$pp_job_shell; export PARALLEL_SHELL; fi
-      exec bats $bats_args platform/tests/
-    ) > "$bats_out" 2>&1 &
+    if [ -n "${pp_job_shell:-}" ]; then
+      PARALLEL_SHELL=$pp_job_shell bats $bats_args platform/tests/ > "$bats_out" 2>&1 &
+    else
+      bats $bats_args platform/tests/ > "$bats_out" 2>&1 &
+    fi
     bats_pid=$!
   else
     printf '\n' >&2
