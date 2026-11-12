@@ -71,3 +71,5 @@ testpaths = [
     "platform/services/netbox/deployment/tests",
     "platform/services/caddy/deployment/tests",
 ]
+# pytest's defaults plus `target`, the Rust suite's build directory in platform/tests (plan 24).
+norecursedirs = ["*.egg", ".*", "_darcs", "build", "CVS", "dist", "node_modules", "venv", "{arch}", "target"]

@@ -31,13 +31,15 @@ UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
 BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
-# The bats-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
+# The bats-pinned workflow once the change detector and the retired jobs were removed; dev held it until Rust (tests).
 RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
+# The retired workflow plus the Rust (tests) job (plan 24); dev holds it after this merge.
+RUST_TESTS_WORKFLOW_BLOB_SHA = "fec0139560a9b9e845e1e7cc524b59489a980fff"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
     "Static Analysis", "Security Scan", *PYTHON_SHARDS,
-    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Version",
+    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Rust (tests)", "Version",
 }
 # Paths of the pinned historical workflow states only; the current workflow has no such job.
 GO_PATH = "platform/services/uhhcraft/deployment/"
@@ -141,7 +143,8 @@ class GitHub:
         # The paths changed by the same commits the count reads, <head>..<dev>. A three-dot diff would use one merge
         # base where there are several, and list files this head already holds. --diff-merges=combined lists only what a
         # merge commit changed beyond all its parents (a conflict fix or an edit made in the merge); the commits it
-        # brings in list their own. --no-renames lists both names of a rename, so a moved test file counts.
+        # brings in list their own. --no-renames lists both names of a rename, so a moved test file counts. -z keeps
+        # names unquoted: without it git quotes a path with unusual characters, which is_test_path would misread.
         log = self._git(failed, "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined", "-z",
                         f"{head_sha}..{dev_sha}")
         return int(behind), sorted({path for path in log.split("\0") if path})
@@ -279,7 +282,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False, versioned=False, sharded=False, retired=False):
+                          pi_moved=False, versioned=False, sharded=False, retired=False, rust_tests=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -299,6 +302,8 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         expected["node-pi-provider"] = "Node pi provider"
     if console or runs or pi_moved or versioned or sharded:
         expected["rust-console"] = "Rust (console)"
+    if rust_tests:
+        expected["rust-tests"] = "Rust (tests)"
     if runs or pi_moved or versioned:
         expected["python-playbook-runs"] = "Python Playbook Runs"
     if versioned or sharded:
@@ -599,11 +604,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Bats-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+            # Same jobs as retired plus the Rust (tests) job.
+            check_workflow_policy(base, sharded=True, retired=True)
+            check_workflow_policy(candidate, sharded=True, retired=True, rust_tests=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
-            raise Refusal("Workflow head is not the exact reviewed current workflow")
+            raise Refusal("Workflow head is not the exact reviewed retired workflow")
         check_workflow_policy(base, sharded=True, retired=True)
         if base != candidate or workflow_records:
-            raise Refusal("Current workflow may only remain byte-identical on subsequent PRs")
+            raise Refusal("Retired workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RUST_TESTS_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed Rust-tests workflow")
+        check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Rust-tests workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
@@ -906,8 +927,9 @@ def check_dev_drift(api, number, sha, dev_sha, acknowledged):
     if tests and not acknowledged:
         shown = ", ".join(tests[:5]) + (f" (+{len(tests) - 5} more)" if len(tests) > 5 else "")
         raise Refusal(f"dev {dev_sha[:12]} holds {behind} commits this head lacks, and they change test paths: "
-                      f"{shown}. Merge origin/dev into the branch and let CI run on the new head, or pass "
-                      "--dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
+                      f"{shown}. Merge origin/dev into the branch, run both review passes on the new head and post "
+                      "their statuses (docs/MISTAKES.md 5.25), get the new head reviewed, and let CI run on it, or "
+                      "pass --dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
 
 
 def validate(api, number, sha, receipt_path, dev_drift_acknowledged=False):
