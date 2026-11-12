@@ -70,6 +70,11 @@ The OIDC client secret is Authentik's (`secret/services/authentik:plane_oidc_cli
 injected into the provider by `blueprints/plane-oidc.yaml`). The deploy shared-reads it, only when
 `plane_authentik_base` is set, and never stores a copy under `secret/services/plane`.
 
+The provider registers two strict redirect URIs: the web callback `/auth/oidc/callback/` and the
+mobile app's `/auth/mobile/oidc/callback/`. The mobile app signs in through `/auth/mobile/oidc/`,
+which Plane's OIDC documentation does not list, and without that callback Authentik answers
+"Redirect URI Error" (AC-711).
+
 The Pro licence key is the operator's, at `plane_license_key`, and the deploy never generates it.
 Seed it through the isolated seed environment, with the value in a file, never in argv:
 
