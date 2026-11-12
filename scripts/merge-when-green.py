@@ -141,7 +141,8 @@ class GitHub:
         # The paths changed by the same commits the count reads, <head>..<dev>. A three-dot diff would use one merge
         # base where there are several, and list files this head already holds. --diff-merges=combined lists only what a
         # merge commit changed beyond all its parents (a conflict fix or an edit made in the merge); the commits it
-        # brings in list their own. --no-renames lists both names of a rename, so a moved test file counts.
+        # brings in list their own. --no-renames lists both names of a rename, so a moved test file counts. -z keeps
+        # names unquoted: without it git quotes a path with unusual characters, which is_test_path would misread.
         log = self._git(failed, "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined", "-z",
                         f"{head_sha}..{dev_sha}")
         return int(behind), sorted({path for path in log.split("\0") if path})
@@ -906,8 +907,9 @@ def check_dev_drift(api, number, sha, dev_sha, acknowledged):
     if tests and not acknowledged:
         shown = ", ".join(tests[:5]) + (f" (+{len(tests) - 5} more)" if len(tests) > 5 else "")
         raise Refusal(f"dev {dev_sha[:12]} holds {behind} commits this head lacks, and they change test paths: "
-                      f"{shown}. Merge origin/dev into the branch and let CI run on the new head, or pass "
-                      "--dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
+                      f"{shown}. Merge origin/dev into the branch, run both review passes on the new head and post "
+                      "their statuses (docs/MISTAKES.md 5.25), get the new head reviewed, and let CI run on it, or "
+                      "pass --dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
 
 
 def validate(api, number, sha, receipt_path, dev_drift_acknowledged=False):
