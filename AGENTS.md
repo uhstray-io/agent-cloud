@@ -558,6 +558,16 @@ the two, and it acts only on what these rules mark:
   without moving the item. Plane reads the title and description when a pull request is opened,
   edited, reviewed or closed, so a key added later is picked up on the next edit.
 - **A brief for any agent that may open a pull request names the work item's key.**
+- **Label every issue and work item with at least one area label.** These are this repository's areas. A shared `area:` name means the same thing in every Uhstray.io repository, so filter by it across projects. Create a new area label only after agreeing it with the repository owner, with the same name on GitHub and in Plane:
+  - `platform`: services, VMs, hosts and the edge
+  - `playbooks`: ansible playbooks and the task library
+  - `semaphore`: semaphore templates and orchestration
+  - `netbox`: netBox, IPAM and network discovery
+  - `area:docs`: internal docs and runbooks
+  - `area:ai`: models: transcription, diarisation, summaries, inference, prompts
+  - `area:auth`: sign-in, SSO, identity, sessions, access control
+  - `area:ui`: app and web interface: screens, components, design system
+  - `area:observability`: metrics, logs, traces, dashboards and alerts
 
 ### Branch Workflow
 
