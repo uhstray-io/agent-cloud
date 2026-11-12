@@ -342,7 +342,7 @@ jobs:
   test:
     name: Unit Tests
     if: always()
-    needs: [python, bats, rego, rust-console]
+    needs: [python, bats, rego, rust-console, rust-tests]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every test group to succeed
@@ -352,13 +352,64 @@ jobs:
           BATS_RESULT: ${{ needs.bats.result }}
           REGO_RESULT: ${{ needs.rego.result }}
           RUST_CONSOLE_RESULT: ${{ needs.rust-console.result }}
+          RUST_TESTS_RESULT: ${{ needs.rust-tests.result }}
         run: |
-          printf 'Python: %s\nBATS: %s\nRego: %s\nRust console: %s\n' \
-            "$PYTHON_RESULT" "$BATS_RESULT" "$REGO_RESULT" "$RUST_CONSOLE_RESULT"
+          printf 'Python: %s\nBATS: %s\nRego: %s\nRust console: %s\nRust tests: %s\n' \
+            "$PYTHON_RESULT" "$BATS_RESULT" "$REGO_RESULT" "$RUST_CONSOLE_RESULT" "$RUST_TESTS_RESULT"
           test "$PYTHON_RESULT" = success
           test "$BATS_RESULT" = success
           test "$REGO_RESULT" = success
           test "$RUST_CONSOLE_RESULT" = success
+          test "$RUST_TESTS_RESULT" = success
+
+  # Rust test suite (plan 24): the cargo-nextest crate in platform/tests that replaces
+  # pytest and BATS area by area. Not path-gated, for the same reason as rust-console below.
+  rust-tests:
+    name: Rust (tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: platform/tests
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history, so the lane script can diff the pull request against its base.
+          fetch-depth: 0
+          # The job runs code from the pull request; it needs no token after checkout.
+          persist-credentials: false
+
+      - name: Install Rust 1.96
+        run: |
+          rustup toolchain install 1.96 --profile minimal -c rustfmt,clippy
+          rustup override set 1.96
+
+      - name: Install verified cargo-nextest 0.9.151
+        env:
+          NEXTEST_SHA256: 1d4ce302b820c41f4b89c5fb9bce45f0f0c94882c1cf08fc360caf08be6e7df4
+        run: |
+          archive="$RUNNER_TEMP/cargo-nextest.tar.gz"
+          curl --fail --location --silent --show-error \
+            --retry 3 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 10 --max-time 120 \
+            --output "$archive" \
+            https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.151/cargo-nextest-0.9.151-x86_64-unknown-linux-gnu.tar.gz
+          echo "$NEXTEST_SHA256  $archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test (ci lane)
+        # Which tests run is the lane script's decision, so changing lanes never edits this
+        # workflow (plan 24, D8). BASE_REF is the pull request's base branch.
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: ./lane.sh ci
 
   # ── Rust: Dispatch Console (Dioxus fullstack crate in app/) ──────────
   # Not path-gated on purpose. `test` (Unit Tests) below requires every job in
