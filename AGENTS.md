@@ -566,9 +566,10 @@ environment before operations; a checked-in deploy path is not proof it is runni
 >   passing `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one
 >   that changes a release script or a workflow file), and a push or pull request in a repository
 >   outside this organisation. An agent running under an account with the repository-admin role
->   holds `protect-main`'s break-glass bypass, so for it GitHub refuses none of these on `main`;
->   asking is the control. An approval for one of these covers exactly the action it names, on the branch or
->   pull request it names (`docs/MISTAKES.md` 5.26, which supersedes 5.7's rule).
+>   holds `protect-main`'s break-glass bypass, so for it GitHub does not refuse a push, force push
+>   or deletion on `main`; asking is the control. An approval for one of these covers exactly the
+>   action it names, on the branch or pull request it names (`docs/MISTAKES.md` 5.26, which
+>   supersedes 5.7's rule).
 
 **Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev` without the operator's approval for that one push (`docs/MISTAKES.md` 5.26).**
 
@@ -610,7 +611,7 @@ requires `main` to be an ancestor of the PR head and refuses otherwise; clear it
 `main` into `dev` through a feature PR (`git merge --no-ff origin/main` on a branch cut from
 `dev`).
 
-**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` is protected only against deletion and force-push, by the `protect-dev` ruleset with no bypass actor — no PR or check rule, because the sync workflow pushes merge commits to it; `docs/MISTAKES.md` 3.13.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass). skynet's agents and automation PATs have no bypass path, but an agent session running under an account that holds the admin role (a Claude Code session on the operator's account, for one) holds the bypass, so for it the rules on `main` are held by convention (`docs/MISTAKES.md` 5.26). See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
+**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` is protected only against deletion and force-push, by the `protect-dev` ruleset with no bypass actor — no PR or check rule, because the sync workflow pushes merge commits to it; `docs/MISTAKES.md` 3.13.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass). skynet's agents, and automation PATs owned by an account without the admin role, have no bypass path, but an agent session running under an account that holds the admin role (a Claude Code session on the operator's account, for one) holds the bypass, so for it the rules on `main` are held by convention (`docs/MISTAKES.md` 5.26). See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
 ### Test check on push (`.githooks/pre-push`)
 
