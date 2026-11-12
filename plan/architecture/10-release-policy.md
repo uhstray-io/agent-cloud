@@ -115,7 +115,7 @@ flowchart TD
 | R9 checklist | review receipts, required checks, release notes | Partly enforced (required checks); the rest is convention |
 
 **Reading the budget.** Both gates print the counts they decide on. The dev merge guard prints a
-`BUDGET:` line on every run, including read-only runs and runs on pull requests only the operator may
+`BUDGET:` line on every run that reaches the count, including read-only runs and runs on pull requests only the operator may
 merge. The promotion check's `Release size` step prints the JSON it reads. To read the count directly,
 from an up-to-date clone:
 
@@ -157,8 +157,8 @@ The enforcement phases and the release roadmap live in
 
 - [plan 23 — Release train](../development/23-release-train.md): enforcement phases and the dependency-ordered release roadmap
 - [plan 20 — Semantic versioning](../development/20-semantic-versioning.md): how a release is numbered, tagged and published
-- [dev merge guard](../development/dev-merge-guard.md): where the intake gate is added
-- `.github/workflows/enforce-promotion-source.yml`: where the backstop is added
+- [dev merge guard](../development/dev-merge-guard.md): where the intake gate lives
+- `.github/workflows/enforce-promotion-source.yml`: where the backstop lives
 - [03 — Testing & CI Quality](03-testing-ci-quality.md)
 - Root `AGENTS.md` → "Branch Workflow"
 

@@ -1,7 +1,7 @@
 # 23 — Release train: iterative releases in dependency order
 
 **Date:** 2026-11-10
-**Status:** ACTIVE (Part A built 2026-11-12: #1081, #1093, #1083 and the docs; Part B and the release roadmap not started)
+**Status:** ACTIVE (Part A built 2026-11-12: #1081, #1093, #1083 and the docs; Release 1 in progress; Part B and Releases 2–8 not started)
 **Author:** Joseph A. Wisneski IV
 **Context:** [`plan/architecture/10-release-policy.md`](../architecture/10-release-policy.md)
 caps a release, one `dev` → `main` promotion, at 100 pull requests and 120 changed files.
@@ -93,7 +93,7 @@ flowchart TD
 | How intake counts the PR being merged | PRs: `prs + 1`. Files: the union of `git diff --name-only origin/main...<base>` and the PR's changed files, which the guard already reads (`changed_files()`); a rename counts once, under its new path (R3) | A union is conservative: a PR that restores a file to `main`'s content is still counted |
 | Where intake reads git | The guard calls only the GitHub API today (`gh api`, `gh pr merge`). The count needs git history with tags, so the guard fetches `main`, `dev` and the `v*` tags into the checkout it is run from and counts at the fetched `origin/dev`. It refuses unless that commit equals GitHub's live `dev` ref (`repos/{REPO}/git/ref/heads/dev`); the pull request's `base.sha` is not the reference (`check_release_budget`) | `base.sha` does not track `dev`'s tip: on 2026-11-12, 8 of 8 open pull requests had a stale `base.sha`, so comparing against it would refuse almost every pull request. Checking against the live ref is what makes the local count the release GitHub will merge into. The compare API was not chosen: its file-list cap is unverified |
 | The transition (R12) | The start tag, `v0.15.0`, is a constant beside the limits. Until that tag exists, `release-budget` reports `transition: true`, and neither gate refuses | One place encodes R12, so phases 2 and 3 can land in Release 1 without refusing the carry-over release itself |
-| What intake does when over | Refuses the merge, naming both counts, both limits and "release full: promote first" | Policy R4/R5 |
+| What intake does when over | Refuses the merge, naming the exceeded count, its limit and "promote the release first"; the `BUDGET:` line printed just before names both counts and both limits | Policy R4/R5 |
 | Backstop | A `Release size` step in the existing `Promotion source (dev -> main)` job | That job is already a required check on `protect-main`, so no ruleset change is needed |
 | Merges outside the guard | Operator merges (those that change `RELEASE_SCRIPTS` or other workflow files) run the guard read-only first, as the budget readout | The guard refuses those merges by design (plan 20, "Merging this change"). The readout keeps the budget honest anyway |
 
