@@ -4987,9 +4987,9 @@ replaced by a mechanical one: the passes are commit statuses the merge guard req
 launch-gate work of 1.21 occurrence 4) opened six PRs without either pass: #924, #932, #938, #939, #951 and #952,
 all opened 2026-11-09 to 11-10 (UTC). skynet#14 is not counted: the skynet repository's workflow has no such step.
 Each had one `pr-reviewer` round and green CI before it merged; #952's round requested two changes, both fixed
-before merge. Why the rule did not fire: as in occurrence 3, the review round and green checks read as the whole
-review, and the session did not reread step 4 before each PR. 5.25's guard would have refused all six heads, none
-of which carries either commit status, for merges that go through `scripts/merge-when-green.py`.
+before merge. Why the rule did not fire: as in occurrence 3; the session did not reread step 4 before each PR. None of
+the six heads carries either commit status, which 5.25's guard now requires of a merge through
+`scripts/merge-when-green.py`.
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
