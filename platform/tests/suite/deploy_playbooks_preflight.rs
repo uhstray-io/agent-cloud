@@ -41,6 +41,11 @@
 //! | checker: the repository's own inline guards are recognised | `the_repositorys_own_inline_guards_are_recognised` |
 //! | checker: an inline assert that an EMPTY group also passes does not count | `inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count` |
 //! | checker: each accepted positive comparison counts | `each_accepted_positive_comparison_counts` |
+//!
+//! Added after the port, with no BATS row: `a_legacy_key_wrapper_over_an_unguarded_inner_play_is_an_offender`
+//! and `a_legacy_key_assert_guard_is_recognised` (the `ansible.legacy.*` spellings ansible-core
+//! runs), `the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines`, and the
+//! `longer_name` row of `NOT_ACCEPTED` (the trailing word boundary in `covered_inline`).
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -52,8 +57,16 @@ use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{self, Node};
 use regex::Regex;
 
-const IMPORT_KEYS: [&str; 2] = ["ansible.builtin.import_playbook", "import_playbook"];
-const ASSERT_KEYS: [&str; 2] = ["ansible.builtin.assert", "assert"];
+// Every spelling ansible-core runs. The playbook key set is `C._ACTION_IMPORT_PLAYBOOK`
+// (ansible-core 2.20.8: import_playbook, ansible.builtin.import_playbook, ansible.legacy.import_playbook).
+// A task key `ansible.legacy.<action>` resolves to `<action>`: ansible/plugins/loader.py strips the
+// prefix. A wrapper written with the legacy spelling must be followed like the others.
+const IMPORT_KEYS: [&str; 3] = [
+    "ansible.builtin.import_playbook",
+    "ansible.legacy.import_playbook",
+    "import_playbook",
+];
+const ASSERT_KEYS: [&str; 3] = ["ansible.builtin.assert", "ansible.legacy.assert", "assert"];
 const TASK_LISTS: [&str; 7] = [
     "tasks",
     "pre_tasks",
@@ -328,21 +341,29 @@ fn tasks(node: Option<&Node>) -> Vec<&Node> {
     out
 }
 
+/// The names a ratchet lists: each line trimmed, with blank lines and `#` comments dropped. The
+/// BATS checker read the file with `read -r`, which strips the surrounding whitespace.
+fn ratchet_names(ratchet: &str) -> Vec<&str> {
+    ratchet
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect()
+}
+
 /// Each disagreement between the checker and the ratchet; empty when they agree. A new offender
 /// must be listed. A listed name must still be an offender, and must still exist.
 fn ratchet_disagreements(report: &Report, ratchet: &str, playbooks: &Path) -> Vec<String> {
+    let names = ratchet_names(ratchet);
     let mut bad = vec![];
     for (name, reason) in &report.offenders {
-        if !ratchet.lines().any(|line| line == name.as_str()) {
+        if !names.contains(&name.as_str()) {
             bad.push(format!(
                 "NEW deploy playbook without a pre-flight: {name} ({reason})"
             ));
         }
     }
-    for listed in ratchet.lines() {
-        if listed.is_empty() || listed.starts_with('#') {
-            continue;
-        }
+    for listed in names {
         if !playbooks.join(listed).is_file() {
             bad.push(format!(
                 "ratchet names a playbook that no longer exists: {listed}"
@@ -409,9 +430,10 @@ fn inline_fixture(cases: &[(&str, &str)]) -> tempfile::TempDir {
     fixture(&refs)
 }
 
-/// Inline asserts that are not exactly one accepted positive comparison. Each leaves its target
-/// unguarded, so each file is an offender. A fail-safe checker refuses what it does not recognise.
-const NOT_ACCEPTED: [(&str, &str); 10] = [
+/// Inline asserts that are not exactly one accepted positive comparison, or that name a longer
+/// identifier than the target. Each leaves its target unguarded, so each file is an offender. A
+/// fail-safe checker refuses what it does not recognise.
+const NOT_ACCEPTED: [(&str, &str); 11] = [
     ("ge0", "(groups.get(target_service, []) | length) >= 0"),
     ("gtneg", "(groups.get(target_service, []) | length) > -1"),
     (
@@ -433,6 +455,12 @@ const NOT_ACCEPTED: [(&str, &str); 10] = [
     (
         "fraction",
         "(groups.get(target_service, []) | length) > 0.5",
+    ),
+    // The target is `target_service`; the guard names `target_service_x`. Without the trailing
+    // word boundary in `covered_inline`, the prefix matches and the file counts as guarded.
+    (
+        "longer_name",
+        "(groups.get(target_service_x, []) | length) > 0",
     ),
 ];
 
@@ -778,4 +806,74 @@ fn each_accepted_positive_comparison_counts() {
     // Assert
     assert!(report.offenders.is_empty(), "{:?}", report.offenders);
     assert_eq!(report.checked, ACCEPTED.len());
+}
+
+#[test]
+fn a_legacy_key_wrapper_over_an_unguarded_inner_play_is_an_offender() {
+    // Arrange: the wrapper uses `ansible.legacy.import_playbook`, which ansible-core runs as an
+    // import. It must be followed, so the unguarded play in the inner playbook is refused. Under
+    // the short and FQCN keys alone the wrapper reads as a play with no hosts, and nothing counts.
+    let dir = fixture(&[
+        (
+            "inner.yml",
+            r#"- name: "Phase 1"
+  hosts: inner_svc
+  tasks: []
+"#,
+        ),
+        (
+            "deploy-legacy-wrapper.yml",
+            r#"- name: "Deploy inner"
+  ansible.legacy.import_playbook: inner.yml
+"#,
+        ),
+    ]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert!(
+        offender_names(&report).contains(&"deploy-legacy-wrapper.yml"),
+        "{:?}",
+        report.offenders
+    );
+    assert_eq!(report.checked, 1);
+}
+
+#[test]
+fn a_legacy_key_assert_guard_is_recognised() {
+    // Arrange: the populated-group guard written with `ansible.legacy.assert`, the spelling that
+    // loader.py resolves to the `assert` action. The same guard under the FQCN key is compliant.
+    let text = inline_playbook("(groups.get(target_service, []) | length) > 0")
+        .replace("ansible.builtin.assert:", "ansible.legacy.assert:");
+    let dir = fixture(&[("deploy-legacy-assert.yml", text.as_str())]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert!(report.offenders.is_empty(), "{:?}", report.offenders);
+    assert_eq!(report.checked, 1);
+}
+
+#[test]
+fn the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines() {
+    // Arrange: one offender, listed with surrounding whitespace, a comment and blank lines, as a
+    // hand-edited ratchet can be.
+    let dir = fixture(&[(
+        "deploy-bare.yml",
+        r#"- name: "Phase 1"
+  hosts: bare_svc
+  tasks: []
+"#,
+    )]);
+    let report = offenders(dir.path());
+    let padded = "  deploy-bare.yml  \n\n# a comment\n   \n";
+
+    // Act
+    let disagreements = ratchet_disagreements(&report, padded, dir.path());
+
+    // Assert
+    assert!(disagreements.is_empty(), "{disagreements:?}");
 }

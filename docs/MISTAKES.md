@@ -2506,6 +2506,8 @@ Widened in 2.25.
 
 **Status 2026-10-02.** The fleet-wide guard this entry proposes merged: `platform/tests/test_deploy_playbooks_preflight.bats`, with the playbooks still missing the import in the shrink-only `platform/tests/known_deploy_without_preflight.txt` (PR #387).
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/deploy_playbooks_preflight.rs::every_deploy_playbook_targeting_a_group_is_guarded_or_on_the_ratchet`, `platform/tests/suite/deploy_playbooks_preflight.rs::the_known_compliant_deploys_are_not_offenders`, `platform/tests/suite/deploy_playbooks_preflight.rs::check_playbook`, `platform/tests/suite/deploy_playbooks_preflight.rs::plays`, `platform/tests/suite/deploy_playbooks_preflight.rs::preflight_group`, `platform/tests/suite/deploy_playbooks_preflight.rs::inline_guard_items`, `platform/tests/suite/deploy_playbooks_preflight.rs::is_populated_group_check`, `platform/tests/suite/deploy_playbooks_preflight.rs::covered_inline` and `platform/tests/suite/deploy_playbooks_preflight.rs::ratchet_disagreements` are its replacements.
+
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
 **Occurrences: 4** — (first undated), 2026-11-08, 2026-11-10, 2026-11-10
