@@ -619,6 +619,8 @@ earns the words "works for the current values", nothing stronger.
 pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_dev_inventory.rs::bootstrap_emits_the_route_table_as_a_python_literal` is its replacement.
+
 
 ### 1.9 "A feature branch is invisible to the controller" held only in the web UI
 

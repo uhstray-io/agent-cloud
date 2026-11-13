@@ -870,6 +870,7 @@ Confirm the §P1 binding: the `semaphore` application has the `platform-member` 
 - [ ] **Step 5: Run the full static suite + lint**
 
 Run: `bats platform/tests/` → green.
+Run: `cd platform/tests && cargo nextest run --locked` → green. The 12A guards (formerly `test_bootstrap_12a.bats`) now run there as `bootstrap_12a::*`.
 Run: `yamllint -c .yamllint.yml platform/playbooks platform/semaphore platform/inventory` and `shellcheck -S warning scripts/*.sh` → clean.
 
 - [ ] **Step 6: (Optional, user-opted) cold test** — `make local-clean && make local-bootstrap` from an empty vault, then re-deploy stateful Tier-3. DESTRUCTIVE; only on explicit go-ahead.
