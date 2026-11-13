@@ -171,7 +171,7 @@ and why.
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) | Process | 1 | Convention (a ledger test requiring the note proposed) |
-| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree | Process | 1 | Convention (per-agent scratch directory in every brief) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5217,7 +5217,7 @@ a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and 
 
 **Occurrences: 1** — 2026-11-13
 
-**What happened.** Plan 24's BATS port deletes each ported file. Where `docs/MISTAKES.md` cites the
+**What happened.** The BATS port in `plan/development/24-rust-test-platform.md` deletes each ported file. Where `docs/MISTAKES.md` cites the
 file, the ledger's convention is a closing "**Enforcement moved — <date>.**" paragraph on the entry,
 naming the Rust tests that now enforce it: I wrote the first one myself, on entry 10.15, in #1118.
 The wave-1 port briefs (AC-872 to AC-877) all said "Never edit docs/MISTAKES.md" and asked only for a
@@ -5239,7 +5239,7 @@ cited test adds the "Enforcement moved" paragraph to each citing entry in the sa
 reason says the cited BATS file was deleted, requires an "**Enforcement moved**" paragraph on that
 entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this change.
 
-### 5.30 Parallel reviewers shared one scratch directory and reverted each other's mutations
+### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
 
 **Occurrences: 1** — 2026-11-13
 
@@ -5251,7 +5251,8 @@ extracted a whole repository tree into the scratchpad root with a mistyped `tar 
 collision. Their findings came from clean re-runs in their own directories, at the cost of a re-run.
 
 **Root cause.** The briefs named the scratch root, not a directory per agent. Agents running at the
-same time choose the same obvious names.
+same time choose the same obvious names. 5.14's rule (no writes in a checkout another task owns) was
+broken, but the reviewer could not know the tree was another agent's; 3.10 is the same rule for tests.
 
 **The rule.** Every brief for an agent that may run beside others names its own scratch directory,
 unique to that agent and item (`scratchpad/rv-<item>`, `scratchpad/w<n>`), and forbids writing
@@ -5545,7 +5546,7 @@ holds. When a guard elsewhere enforces the same property, the check must accept 
 on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
 `"no"` pass (mutation-checked).
 
-**Enforcement moved — 2026-11-13.** The BATS file cited above was ported to the Rust suite (plan 24) and deleted in #1118: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no` is its replacement. `test_persistence_accepts_only_what_boots` still enforces this entry's rule.
+**Enforcement moved — 2026-11-12.** The BATS file cited above was ported to the Rust suite (plan 24) and deleted in #1118: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no` replaces the compose guard this entry names, and the cited header comment is now the module doc of `platform/tests/suite/restart_policy.rs`. `test_persistence_accepts_only_what_boots` still enforces this entry's rule.
 
 ### 6.10 Acted on a merged plan as current state while a peer session was building the same scope
 
