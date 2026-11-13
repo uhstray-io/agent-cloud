@@ -68,7 +68,7 @@
       # Both put a `docker` at /usr/bin/docker and their packages conflict; apt would
       # remove whichever was installed first, and the result would depend on task order.
       # After the escalation and fact-gathering pair, which must open every play here
-      # (test_become_password_resolution.bats), and before anything is installed.
+      # (platform/tests/suite/become_password_resolution.rs), and before anything is installed.
       ansible.builtin.assert:
         that: not (_docker_cli and _docker_api_client)
         fail_msg: >-
