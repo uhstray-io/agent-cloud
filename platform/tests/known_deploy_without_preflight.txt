@@ -2,7 +2,7 @@
 # pre-flight (preflight-target-group.yml, or the inline group-membership assert) before
 # their first play against that group.
 #
-# A RATCHET, not an allow-list. platform/tests/test_deploy_playbooks_preflight.bats
+# A RATCHET, not an allow-list. platform/tests/suite/deploy_playbooks_preflight.rs
 # derives the offenders from the playbooks themselves and then requires:
 #   - every offender is named here           (a NEW gap cannot appear silently)
 #   - every name here is still an offender   (a fix cannot leave its exception behind)

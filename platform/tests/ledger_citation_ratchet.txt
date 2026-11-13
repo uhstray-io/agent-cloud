@@ -9,3 +9,5 @@
 2.22 test_the_clean_environment_rule_checks_the_endpoint # renamed to test_the_clean_environment_rule_refuses_any_address_pin in platform/tests/test_semaphore_seed_input.py by 03888eee (2026-09-25)
 6.9 platform/tests/test_restart_policy.bats:4-9 # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
 10.15 platform/tests/test_restart_policy.bats # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
+2.21 platform/tests/test_deploy_playbooks_preflight.bats # ported to platform/tests/suite/deploy_playbooks_preflight.rs (plan 24), BATS file deleted 2026-11-13
+Index test_deploy_playbooks_preflight.bats # ported to platform/tests/suite/deploy_playbooks_preflight.rs (plan 24), BATS file deleted 2026-11-13

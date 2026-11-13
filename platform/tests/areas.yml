@@ -26,7 +26,7 @@ ignore:
 # The security set: selected in every lane (static modules only in the commit lane). `ledger`
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
 always:
-  static: [ledger]
+  static: [deploy_playbooks_preflight, ledger, ledger_citation_hook]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
@@ -46,6 +46,12 @@ areas:
       - "platform/lib/common.sh"
     tiers:
       cli: [common_sh]
+
+  makefile:
+    paths:
+      - "Makefile"
+    tiers:
+      static: [makefile]
 
   # The suite's own tests. A change under platform/tests/ hits `full`, which is checked before
   # any area, so this area names no paths: it only gives these modules their one listing.
