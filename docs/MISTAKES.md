@@ -170,6 +170,8 @@ and why.
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
+| 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) | Process | 1 | Convention (a ledger test requiring the note proposed) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree | Process | 1 | Convention (per-agent scratch directory in every brief) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5211,6 +5213,53 @@ a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and 
 `_ih_rootless` (they read `local_mode`; the facts derived from them are read across hosts through
 `hostvars`). #1136 corrects plan 24's Context.
 
+### 5.29 Briefed six port workers never to edit the ledger, which forbade the note a deleted cited test needs (widens 5.28)
+
+**Occurrences: 1** — 2026-11-13
+
+**What happened.** Plan 24's BATS port deletes each ported file. Where `docs/MISTAKES.md` cites the
+file, the ledger's convention is a closing "**Enforcement moved — <date>.**" paragraph on the entry,
+naming the Rust tests that now enforce it: I wrote the first one myself, on entry 10.15, in #1118.
+The wave-1 port briefs (AC-872 to AC-877) all said "Never edit docs/MISTAKES.md" and asked only for a
+ratchet line in `platform/tests/ledger_citation_ratchet.txt`. The ratchet keeps the citation test
+green, so every gate passed. AC-877's review (#1147) caught the missing note; five PRs then needed a
+second commit and another review round for 18 entries. Entry 6.9, which cites the restart-policy BATS
+file deleted in #1118, had gone without the note since that PR.
+
+**Root cause.** The brief's prohibition protected an append-only file and was right for the entries'
+bodies, but it was written from the rule "the ledger is append-only" without checking what the change
+itself owes the ledger. The ratchet, the only mechanical check, proves a dead citation is acknowledged,
+not that the entry says where its rule is enforced now.
+
+**The rule.** A brief's prohibitions are checked against the conventions the change must follow,
+including the ones the briefing session followed itself in an earlier change. A port that deletes a
+cited test adds the "Enforcement moved" paragraph to each citing entry in the same pull request.
+
+**Enforced by.** Convention. Proposed: a `suite/ledger.rs` test that, for every ratchet line whose
+reason says the cited BATS file was deleted, requires an "**Enforcement moved**" paragraph on that
+entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this change.
+
+### 5.30 Parallel reviewers shared one scratch directory and reverted each other's mutations
+
+**Occurrences: 1** — 2026-11-13
+
+**What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
+only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
+`scratchpad/mut/`, `mutate.py` and `run.sh`. One ran `git checkout -q -- .` in the other's tree
+several times, reverting its in-flight mutations, and its `mutate.py` replaced the other's. One also
+extracted a whole repository tree into the scratchpad root with a mistyped `tar -C`. Both reported the
+collision. Their findings came from clean re-runs in their own directories, at the cost of a re-run.
+
+**Root cause.** The briefs named the scratch root, not a directory per agent. Agents running at the
+same time choose the same obvious names.
+
+**The rule.** Every brief for an agent that may run beside others names its own scratch directory,
+unique to that agent and item (`scratchpad/rv-<item>`, `scratchpad/w<n>`), and forbids writing
+elsewhere in the scratchpad and recursive deletes.
+
+**Enforced by.** Convention (the brief template). Applied to every brief from the AC-874 and AC-875
+delta reviews on.
+
 ## 6. Working from assumptions about files
 
 ### 6.1 Editing against an imagined structure
@@ -5495,6 +5544,8 @@ holds. When a guard elsewhere enforces the same property, the check must accept 
 **Enforced by.** Test: `test_persistence_accepts_only_what_boots` runs the real decision tasks
 on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
 `"no"` pass (mutation-checked).
+
+**Enforcement moved — 2026-11-13.** The BATS file cited above was ported to the Rust suite (plan 24) and deleted in #1118: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no` is its replacement. `test_persistence_accepts_only_what_boots` still enforces this entry's rule.
 
 ### 6.10 Acted on a merged plan as current state while a peer session was building the same scope
 
