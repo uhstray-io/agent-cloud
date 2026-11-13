@@ -1,117 +1,140 @@
 from __future__ import annotations
 
-import re
+import json
+import os
+import subprocess
+import tempfile
 from pathlib import Path
 
+import playbook_yaml
 import pytest
-import yaml
+from ansible_python import ansible_python
 
-TASK = Path(__file__).resolve().parents[1] / "playbooks" / "tasks" / "read-o11y-pbs-prior-task.yml"
-TEXT = TASK.read_text()
-TASKS = yaml.safe_load(TEXT)
-CONTRACTS = ["o11y-pbs-backup/v1", "o11y-pbs-verify/v1", "o11y-pbs-copy-sync/v1", "o11y-pbs-copy-ready/v1"]
-TRIM = "{{ (_pbs_task_semaphore_secret.url | default('', true) | string | trim) | regex_replace('/+$', '') }}"
+PLAYBOOK = Path(__file__).resolve().parents[1] / "playbooks" / "tasks" / "read-o11y-pbs-prior-task.yml"
+TEXT = PLAYBOOK.read_text()
+TASKS = playbook_yaml.load(PLAYBOOK)
+INPUT_CHECK = "Require the fixed PBS task ID and a known receipt contract"
+TRANSPORT = "Refuse public cleartext OpenBao access for PBS task authentication"
+LOOKUP = "Read Semaphore task API credentials from OpenBao"
+TRIM = "Take the Semaphore base URL without a trailing slash (hidden: it comes from the secret read)"
+URL_CHECK = "Require secret/services/semaphore to hold an https url (hidden: names the requirement only)"
+TOKEN_CHECK = "Require secret/services/semaphore to hold an api_token (hidden: names the requirement only)"
+
+# (stored value, endpoint the shipped trim must yield, whether the shipped https check accepts it)
+CASES = (
+    ("https://s.example.test", "https://s.example.test", True),
+    ("https://s.example.test/", "https://s.example.test", True),
+    ("https://s.example.test//", "https://s.example.test", True),
+    (" https://s.example.test:3000/ ", "https://s.example.test:3000", True),
+    ("http://s.example.test", "http://s.example.test", False),
+    ("https://s.example.test/api", "https://s.example.test/api", False),
+)
+
+# Renders the SHIPPED trim fact and the SHIPPED url assert through Ansible's Templar, as the precedent in
+# test_agentgateway_runtime_proof.py does. Runs in the interpreter ansible-playbook runs under (ansible_python).
+HARNESS = r"""
+import json
+import sys
+
+from ansible._internal._datatag._tags import TrustedAsTemplate
+from ansible.module_utils._internal._datatag import AnsibleTagHelper
+from ansible.parsing.dataloader import DataLoader
+from ansible.template import Templar
+
+request = json.loads(sys.stdin.read())
+loader = DataLoader()
+tasks = loader.load_from_file(request["playbook"])
+trim = next(t for t in tasks if t.get("name") == request["trim_name"])
+check = next(t for t in tasks if t.get("name") == request["url_name"])
+trim_expression = trim["ansible.builtin.set_fact"]["_pbs_task_semaphore_url"]
+check_expression = check["ansible.builtin.assert"]["that"][0]
+rows = []
+for stored in request["stored"]:
+    templar = Templar(
+        loader=loader, variables={"_pbs_task_semaphore_secret": {"url": stored, "api_token": "synthetic"}}
+    )
+    trimmed = templar.template(AnsibleTagHelper.tag(trim_expression, TrustedAsTemplate()))
+    templar = Templar(loader=loader, variables={"_pbs_task_semaphore_url": str(trimmed)})
+    verdict = templar.template(
+        AnsibleTagHelper.tag("{{ 'accepted' if (" + check_expression + ") else 'refused' }}", TrustedAsTemplate())
+    )
+    rows.append([stored, str(trimmed), str(verdict)])
+print("RESULT " + json.dumps(rows))
+"""
 
 
-def _find(pred, what):
-    found = [t for t in TASKS if pred(t)]
-    assert len(found) == 1, (what, [t.get("name") for t in found])
+def _named(name):
+    found = [t for t in TASKS if t.get("name") == name]
+    assert len(found) == 1, (name, len(found))
     return found[0]
 
 
-def _set_fact(name):
-    return _find(lambda t: name in t.get("ansible.builtin.set_fact", {}), f"set_fact {name}")
+def _index(name):
+    return TASKS.index(_named(name))
 
 
-def _assert_that(items):
-    return _find(lambda t: t.get("ansible.builtin.assert", {}).get("that") == items, f"assert {items}")
+def _temp_root():
+    return "/private/tmp" if Path("/private/tmp").is_dir() else tempfile.gettempdir()
 
 
-def test_the_stored_url_is_trimmed_once_and_hidden_before_any_use():
-    trim = _set_fact("_pbs_task_semaphore_url")
+@pytest.fixture(scope="module")
+def rendered():
+    python = ansible_python()
+    request = {
+        "playbook": str(PLAYBOOK),
+        "trim_name": TRIM,
+        "url_name": URL_CHECK,
+        "stored": [stored for stored, _, _ in CASES],
+    }
+    with tempfile.TemporaryDirectory(prefix="pbs-prior-templar-", dir=_temp_root()) as scratch:
+        env = os.environ.copy() | {"ANSIBLE_LOCAL_TEMP": scratch, "ANSIBLE_REMOTE_TEMP": scratch}
+        result = subprocess.run(
+            [python, "-c", HARNESS],
+            input=json.dumps(request),
+            cwd=scratch,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    assert result.returncode == 0, result.stderr[-2000:]
+    line = next(x for x in result.stdout.splitlines() if x.startswith("RESULT "))
+    return {stored: (trimmed, verdict) for stored, trimmed, verdict in json.loads(line[len("RESULT ") :])}
+
+
+def test_the_trim_and_both_checks_are_named_hidden_and_single_expression():
+    trim = _named(TRIM)
     assert trim["no_log"] is True
-    assert trim["ansible.builtin.set_fact"]["_pbs_task_semaphore_url"] == TRIM
-    # The raw stored url is read exactly once, inside the trim; every later use is the trimmed fact.
-    assert TEXT.count("_pbs_task_semaphore_secret.url") == 1
+    assert set(trim["ansible.builtin.set_fact"]) == {"_pbs_task_semaphore_url"}
+    for name in (URL_CHECK, TOKEN_CHECK):
+        check = _named(name)
+        assert check["no_log"] is True
+        assert check["ansible.builtin.assert"]["quiet"] is True
+        assert len(check["ansible.builtin.assert"]["that"]) == 1
 
 
-def test_the_url_check_is_hidden_https_only_and_runs_after_the_trim():
-    url_check = _assert_that(["_pbs_task_semaphore_url is match('^https://[^/]+$')"])
-    assert url_check["no_log"] is True
-    assert url_check["ansible.builtin.assert"]["fail_msg"] == (
-        "secret/services/semaphore must hold an https url with no path before the PBS task can be read."
-    )
-    assert url_check["ansible.builtin.assert"]["quiet"] is True
-    trim = _set_fact("_pbs_task_semaphore_url")
-    assert TASKS.index(trim) < TASKS.index(url_check)
-
-
-def test_the_api_token_check_is_hidden_and_names_only_the_requirement():
-    token_check = _assert_that(["(_pbs_task_semaphore_secret.api_token | default('', true)) | length > 0"])
-    assert token_check["no_log"] is True
-    assert token_check["ansible.builtin.assert"]["fail_msg"] == (
-        "secret/services/semaphore must hold an api_token before the PBS task can be read."
-    )
-    assert token_check["ansible.builtin.assert"]["quiet"] is True
-
-
-def test_the_task_input_check_is_visible_and_covers_id_and_contract():
-    inputs = _assert_that(
-        [
-            "_pbs_task_id is integer",
-            "_pbs_task_id > 0",
-            f"_pbs_task_contract in {CONTRACTS}",
-        ]
-    )
-    assert inputs.get("no_log") is not True
-    assert inputs["ansible.builtin.assert"]["fail_msg"] == (
-        "PBS task authentication requires its fixed task ID and a known receipt contract."
-    )
-    assert inputs["ansible.builtin.assert"]["quiet"] is True
-
-
-def test_the_three_checks_run_before_the_first_request_to_semaphore():
-    uris = [t for t in TASKS if "ansible.builtin.uri" in t]
-    assert len(uris) == 2
-    first_request = min(TASKS.index(t) for t in uris)
-    checks = [
-        _set_fact("_pbs_task_semaphore_url"),
-        _assert_that(["_pbs_task_semaphore_url is match('^https://[^/]+$')"]),
-        _assert_that(["(_pbs_task_semaphore_secret.api_token | default('', true)) | length > 0"]),
-        _assert_that(
-            [
-                "_pbs_task_id is integer",
-                "_pbs_task_id > 0",
-                f"_pbs_task_contract in {CONTRACTS}",
-            ]
-        ),
-    ]
-    positions = [TASKS.index(t) for t in checks]
+def test_the_visible_input_check_precedes_the_secret_read_and_the_secret_checks_precede_requests():
+    order = [INPUT_CHECK, TRANSPORT, LOOKUP, TRIM, URL_CHECK, TOKEN_CHECK]
+    positions = [_index(name) for name in order]
     assert positions == sorted(positions)
+    assert _named(INPUT_CHECK).get("no_log") is not True
+    first_request = min(i for i, t in enumerate(TASKS) if "ansible.builtin.uri" in t)
     assert positions[-1] < first_request
+
+
+def test_the_raw_stored_url_is_read_only_inside_the_trim():
+    assert TEXT.count("_pbs_task_semaphore_secret.url") == 1
 
 
 def test_both_requests_go_to_the_trimmed_url():
     uris = [t["ansible.builtin.uri"]["url"] for t in TASKS if "ansible.builtin.uri" in t]
     assert len(uris) == 2
-    for url in uris:
-        assert url.startswith("{{ _pbs_task_semaphore_url }}/api/project/"), url
+    assert all(url.startswith("{{ _pbs_task_semaphore_url }}/api/project/") for url in uris), uris
 
 
-@pytest.mark.parametrize(
-    ("stored", "verdict"),
-    [
-        ("https://s.example.test", "ok"),
-        ("https://s.example.test/", "ok"),
-        ("https://s.example.test//", "ok"),
-        (" https://s.example.test:3000/ ", "ok"),
-        ("http://s.example.test", "refused"),
-        ("https://s.example.test/api", "refused"),
-    ],
-)
-def test_the_trim_and_the_https_pattern_accept_and_refuse_the_stored_forms(stored, verdict):
-    from ansible.plugins.filter.core import regex_replace
-
-    assert _set_fact("_pbs_task_semaphore_url")["ansible.builtin.set_fact"]["_pbs_task_semaphore_url"] == TRIM
-    trimmed = regex_replace(stored.strip(), "/+$", "")
-    assert bool(re.match(r"^https://[^/]+$", trimmed)) == (verdict == "ok")
+@pytest.mark.parametrize(("stored", "endpoint", "accepted"), CASES)
+def test_the_shipped_trim_and_https_check_accept_and_refuse_each_stored_form(rendered, stored, endpoint, accepted):
+    trimmed, verdict = rendered[stored]
+    assert trimmed == endpoint
+    assert verdict == ("accepted" if accepted else "refused")

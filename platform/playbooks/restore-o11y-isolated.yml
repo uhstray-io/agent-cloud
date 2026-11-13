@@ -180,7 +180,6 @@
       ansible.builtin.set_fact:
         _restore_pve_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
         _restore_pbs_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/pbs', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
-        _restore_semaphore_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
       no_log: true
 
     - name: Retain fixed Proxmox and destination PBS connection fields
@@ -206,8 +205,6 @@
           - _restore_copy_token | length > 0
           - _restore_copy_fingerprint | length == 64
           - _restore_pbs_secret.o11y_copy_restore_datastore == 'o11y'
-          - _restore_semaphore_secret.url is match('^https://[^/]+$')
-          - _restore_semaphore_secret.api_token | length > 0
           - _restore_semaphore_project_id > 0
           - _restore_copy_vm_storage_id == _restore_copy_storage_id
         fail_msg: "Protected restore credentials or the declared copy endpoint are unavailable."

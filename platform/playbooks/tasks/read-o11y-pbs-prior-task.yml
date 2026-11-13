@@ -1,5 +1,15 @@
 # Authenticate one finished PBS workflow task using its explicit ID and the
 # Semaphore task/output rows. No search by commit/template is performed.
+# The fixed task ID and contract are checked first, so bad inputs refuse before any secret is read.
+- name: Require the fixed PBS task ID and a known receipt contract
+  ansible.builtin.assert:
+    that:
+      - _pbs_task_id is integer
+      - _pbs_task_id > 0
+      - _pbs_task_contract in ['o11y-pbs-backup/v1', 'o11y-pbs-verify/v1', 'o11y-pbs-copy-sync/v1', 'o11y-pbs-copy-ready/v1']
+    fail_msg: "PBS task authentication requires its fixed task ID and a known receipt contract."
+    quiet: true
+
 - name: Refuse public cleartext OpenBao access for PBS task authentication
   ansible.builtin.include_tasks: assert-bao-transport.yml
   vars:
@@ -10,10 +20,9 @@
     _pbs_task_semaphore_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore', url=_pbs_task_bao_url, auth_method='approle', role_id=_pbs_task_bao_role_id, secret_id=_pbs_task_bao_secret_id) }}"
   no_log: true
 
-# The reconcile writer (reconcile-semaphore-api-url.yml) stores the https root url as given, so a trailing slash is
-# normal. Trim it as the other readers of this path do (promote-semaphore-admins.yml, #604); a stricter pattern of its
-# own stopped the release-notes publish on this same value (Semaphore task 15360, PR #1100). https-only stays: the
-# writer stores only https.
+# Trim trailing slashes from the stored url, as promote-semaphore-admins.yml (#604) and release-notes-from-task.yml
+# (#1100) do. reconcile-semaphore-api-url.yml admits a trailing "/" and stores the url as given. https-only stays,
+# because reconcile admits only https.
 - name: "Take the Semaphore base URL without a trailing slash (hidden: it comes from the secret read)"
   ansible.builtin.set_fact:
     _pbs_task_semaphore_url: "{{ (_pbs_task_semaphore_secret.url | default('', true) | string | trim) | regex_replace('/+$', '') }}"
@@ -35,15 +44,6 @@
     fail_msg: "secret/services/semaphore must hold an api_token before the PBS task can be read."
     quiet: true
   no_log: true
-
-- name: Require the fixed PBS task ID and a known receipt contract
-  ansible.builtin.assert:
-    that:
-      - _pbs_task_id is integer
-      - _pbs_task_id > 0
-      - _pbs_task_contract in ['o11y-pbs-backup/v1', 'o11y-pbs-verify/v1', 'o11y-pbs-copy-sync/v1', 'o11y-pbs-copy-ready/v1']
-    fail_msg: "PBS task authentication requires its fixed task ID and a known receipt contract."
-    quiet: true
 
 - name: Read the exact completed PBS workflow task by its fixed ID
   ansible.builtin.uri:

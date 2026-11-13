@@ -1144,3 +1144,14 @@ def test_restore_and_cleanup_api_writes_follow_intent_handle_and_effect_order():
     fake_proxmox_calls.append(("DELETE", cleanup_sequence[1]))
     assert fake_proxmox_calls[-1] == ("DELETE", "Delete only the authenticated disconnected target")
     assert "expected_receipt_sha" not in (playbooks / "cleanup-o11y-isolated-restore.yml").read_text()
+
+
+def test_restore_hands_the_stored_semaphore_url_to_the_reader_without_its_own_check():
+    # The reader trims the stored url and checks it. A restore-side https check would refuse the trailing
+    # slash the reader accepts, so the restore reads no Semaphore secret and checks no Semaphore url itself.
+    path = Path(__file__).parents[1] / "playbooks" / "restore-o11y-isolated.yml"
+    text = path.read_text()
+    assert "tasks/read-o11y-pbs-prior-task.yml" in text
+    assert "_restore_semaphore_secret" not in text
+    assert "secret/data/services/semaphore" not in text
+    assert "[^/]+$" not in text
