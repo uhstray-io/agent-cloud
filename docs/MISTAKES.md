@@ -2136,7 +2136,7 @@ orchestrator runs playbooks from the integration and production branches and thi
 change is on neither yet. That is the same gap this entry is about, so it is named
 here instead of being called done.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::fact_gathering_is_off_in_every_play_that_uses_the_resolver` is the replacement that enforces this entry.
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::fact_gathering_is_off_in_every_play_that_uses_the_resolver` is its replacement.
 
 ### 2.14 One value, five resolution rules, and a verdict that lied because of it
 
@@ -2296,7 +2296,7 @@ in `platform/tests/test_become_password_resolution.bats`, proven against removin
 the include, moving the gather out of position, and moving the inline fetch off
 first position.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::the_first_task_of_every_escalating_play_resolves_the_password`, `platform/tests/suite/become_password_resolution.rs::the_first_task_check_rejects_a_later_play_without_the_resolver`, `platform/tests/suite/become_password_resolution.rs::the_first_task_check_rejects_gathering_before_the_resolver` and `platform/tests/suite/become_password_resolution.rs::explicit_gathering_comes_straight_after_the_resolver` are the replacements that enforce this entry.
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::the_first_task_of_every_escalating_play_resolves_the_password`, `platform/tests/suite/become_password_resolution.rs::the_first_task_check_rejects_a_later_play_without_the_resolver`, `platform/tests/suite/become_password_resolution.rs::the_first_task_check_rejects_gathering_before_the_resolver` and `platform/tests/suite/become_password_resolution.rs::explicit_gathering_comes_straight_after_the_resolver` are its replacements.
 
 ### 2.17 A keyword that is invalid at runtime and invisible to every static gate
 
@@ -2354,7 +2354,7 @@ makes it pass. The companion assertion in `become: the transport guard needs no
 privilege, and says so` now pins `become: false` on the guard's own task, because
 its previous form required the very construct that broke the runtime.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::no_dynamic_include_task_carries_become`, `platform/tests/suite/become_password_resolution.rs::the_transport_guard_is_a_single_assert_task` and `platform/tests/suite/become_password_resolution.rs::the_transport_guard_task_declares_become_false` are the replacements that enforce this entry.
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/become_password_resolution.rs::no_dynamic_include_task_carries_become`, `platform/tests/suite/become_password_resolution.rs::the_transport_guard_is_a_single_assert_task` and `platform/tests/suite/become_password_resolution.rs::the_transport_guard_task_declares_become_false` are its replacements.
 
 ### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
 
@@ -3227,7 +3227,7 @@ when the probe cannot run (explicit `allow_unverified_address` override only), a
 `test_destroy_vm.bats` asserts the guard's presence and position. ICMP silence is evidence, not
 proof; the authoritative allocation stays the IPAM lookup in `02-service-onboarding.md` Known Gaps.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/destroy_vm.rs::provision_vm_stops_on_an_answering_or_unprobeable_declared_address` and `platform/tests/suite/destroy_vm.rs::provision_vm_probes_after_the_existence_check_and_before_the_clone` are the replacements that enforce this entry.
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/destroy_vm.rs::provision_vm_stops_on_an_answering_or_unprobeable_declared_address` and `platform/tests/suite/destroy_vm.rs::provision_vm_probes_after_the_existence_check_and_before_the_clone` are its replacements.
 
 ### 3.7 A test's scratch repository was the real one, because the hook exported `GIT_DIR`
 
@@ -6059,7 +6059,7 @@ across every playbook in the repo — `lookup('pipe'/'url'/'random_choice')`,
 `lookup('file')` is deliberately allowed because re-reading a file gives the same
 answer. Both mutation-proven by reintroducing the exact original bug.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/backup_credentials.rs::no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, `platform/tests/suite/backup_credentials.rs::the_branch_name_is_frozen_by_a_set_fact_task`, `platform/tests/suite/backup_credentials.rs::the_frozen_branch_is_written_as_a_folded_scalar` and `platform/tests/suite/backup_credentials.rs::every_git_call_carrying_a_space_uses_argv_not_cmd` are the replacements that enforce this entry.
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/backup_credentials.rs::no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, `platform/tests/suite/backup_credentials.rs::the_branch_name_is_frozen_by_a_set_fact_task`, `platform/tests/suite/backup_credentials.rs::the_frozen_branch_is_written_as_a_folded_scalar` and `platform/tests/suite/backup_credentials.rs::every_git_call_carrying_a_space_uses_argv_not_cmd` are its replacements.
 
 ### 10.9 Local validation ran GitHub's code, not the working tree
 
@@ -6151,7 +6151,7 @@ when it round-trips today's keys correctly.
 direct write method to `secret/data` in manage-secrets and requires the shared
 merge include.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/manage_secrets.rs::the_store_back_goes_through_the_shared_merge_task` and `platform/tests/suite/manage_secrets.rs::no_task_writes_to_the_service_secret_path_directly` are the replacements that enforce this entry.
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/manage_secrets.rs::the_store_back_goes_through_the_shared_merge_task` and `platform/tests/suite/manage_secrets.rs::no_task_writes_to_the_service_secret_path_directly` are its replacements.
 
 ### 10.12 A numeric id crossed the Ansible→JSON boundary as a string, so an equality guard fired on everything
 
