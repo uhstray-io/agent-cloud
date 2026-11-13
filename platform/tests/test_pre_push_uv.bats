@@ -469,3 +469,30 @@ out_collection_and_failure() {
   : > "$T/release"
   [ ! -e "$T/child-finished" ] || { echo "a process BATS started outlived TERM to the hook"; false; }
 }
+
+# A fake platform/tests/lane.sh in the scratch checkout: records its arguments in
+# $T/lane.args and exits FAKE_LANE_RC. Whether cargo-nextest is installed is lane.sh's own
+# question (suite/lanes.rs tests it), so the hook only has to call it and read its status.
+fake_lane() {
+  cat > "$REPO/platform/tests/lane.sh" <<SH
+#!/usr/bin/env sh
+echo "\$*" > "$T/lane.args"
+exit "\${FAKE_LANE_RC:-0}"
+SH
+  chmod +x "$REPO/platform/tests/lane.sh"
+}
+
+@test "pre-push rust: the push lane of the Rust suite runs" {
+  fake_lane
+  run push "$T/fakebin"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "$(cat "$T/lane.args")" = push ] || { echo "lane.sh args were: $(cat "$T/lane.args")"; false; }
+}
+
+@test "pre-push rust: a failing Rust lane blocks the push even when the other suites pass" {
+  fake_lane
+  run push "$T/fakebin" FAKE_LANE_RC=1
+  [ "$status" -ne 0 ] || { echo "a failing Rust lane did not block: $output"; false; }
+  assert_contains "$output" 'Rust suite FAILED'
+  assert_contains "$output" 'PUSH BLOCKED'
+}
