@@ -260,6 +260,8 @@ a string literal, a template — say which, and check the output.
 — `every play that resolves an OpenBao URL includes the transport guard`
 in `platform/tests/test_credential_leaks.bats`.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
+
 ### 1.2 Asserting a gap without reading the file
 
 **What happened.** Reported that postiz was absent from the local Caddy route
@@ -1772,6 +1774,8 @@ public ones` (`platform/tests/test_credential_leaks.bats`): it decodes with
 `codecs.decode(..., 'unicode_escape')` before compiling, and a companion
 structural assertion pins the escaping form so the two cannot drift.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::transport_pattern_accepts_internal_endpoints_and_refuses_public_ones` and `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` are its two replacements.
+
 ### 2.2 A test that pinned the vulnerable form in place
 
 **What happened.** A pre-existing test asserted that a playbook's OpenBao guard
@@ -2406,6 +2410,8 @@ which now scans `platform/semaphore/**` too. Widening it went red on all four fi
 (mutation-checked: reverting the fix to `runtime-access.yml` fails the test), and all
 four were then retrofitted by hand. `setup-templates.yml --check` against local
 Semaphore reported changed=0, with templates and schedules byte-identical before and after.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 
@@ -4280,6 +4286,8 @@ guard` (`platform/tests/test_credential_leaks.bats`): asserts no playbook contai
 an inline copy, and that each playbook resolving an OpenBao URL has one include
 per declaration — counted per file, because a file-wide grep cannot tell three
 guarded plays from one.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
 
 ### 5.2 Committing with a failing test
 
