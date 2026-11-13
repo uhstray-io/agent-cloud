@@ -58,7 +58,7 @@ and why.
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
 | 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) | Unverified claim | 3 | Convention; guard proposed (count 3) |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) — **x14** (2026-11-12: a handoff said a full-catalog template publish creates the 54 missing templates and that its `--check` lists the changes; it creates 73 and an active schedule, and `--check` lists nothing) | Unverified claim | 14 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
@@ -1376,7 +1376,7 @@ place. Until the hook exists this entry stays at `Convention`, with this proposa
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 12** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11
+**Occurrences: 14** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11, 2026-11-12, 2026-11-12
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1522,6 +1522,28 @@ Fixed by trimming the URL as
 value felt like a guard, not a claim about the value, so its other consumers were not read. Guard proposal: a test that
 refuses an `assert` on a field read from a shared OpenBao path unless it is one of the shared checks for that field
 (`tasks/assert-bao-transport.yml` for a URL).
+
+**Occurrence 14 — 2026-11-12.** A session handoff for the last after-merge item of the v0.15.0 promotion
+(Plane AC-745: publish the `main`-bound templates still missing in production Semaphore) told the executor to run
+the full-catalog `platform/semaphore/setup-templates.yml` from `main`. It said that run "creates the 54 missing
+templates", and that the executor should read the `--check` output and list every existing template the check would
+change before the real run. Neither claim holds for the playbook at `main` `5621b6e3`. The full run publishes the
+whole catalog, the generated `(Dev)` variants included (`:90`, `:100`), so it would have created 73 templates, not 54.
+The other 19 were Dev-bound, and one of them, `Stock GitHub Runner JIT (Dev)`, comes with a declared schedule, which
+the schedule task (`:502`) would have created active, firing every 10 minutes. The run would also have rewritten the
+surveys of 30 existing templates. The create-or-update task (`:316`) is skipped under check mode (`:343`), and the
+only other output is the final `Report` (`:565`), a count. So `--check` lists no template and no change, and the
+listing the handoff required could not come from it. The executor caught this before any write. It compared
+`templates.yml` against the live API with its own read-only script, and then created exactly the 54 with one scoped
+create per template (`semaphore_allow_scoped_create`), which changes no existing template or schedule; the
+comparison was identical before and after. Why the rule did not fire: the handoff cited the playbook's lines for its
+write gates and its no-delete header, so it read like a brief written from the body. The count of 54 was a count of
+missing `main`-bound names, carried over as the scope of a run that publishes every name. The `not ansible_check_mode`
+gates show that a dry run writes nothing; they were taken as evidence that it reports what it would write. Guard
+proposal, for this playbook: its dry run reports the plan it would publish, the reporting that
+`plan/architecture/08-ansible-automation-standards.md:63` describes for check mode. That is the templates it would create, update or leave unchanged, and the schedules it would
+create, each by name. With that report the handoff's instruction would have been true, and the extra 19 creates and
+the schedule would have been visible before any write.
 
 The rule is widened in 1.36.
 
