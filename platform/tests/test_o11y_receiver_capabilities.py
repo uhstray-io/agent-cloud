@@ -3,6 +3,7 @@
 import ast
 import importlib.util
 import json
+import signal
 import sys
 from pathlib import Path
 
@@ -116,17 +117,34 @@ def test_malformed_missing_oversized_and_timed_out_probes_become_unknown(
 
 
 @pytest.mark.parametrize(
-    ("program", "expected_reason"),
+    ("program", "expected_reason", "timeout"),
     [
-        ("import time; time.sleep(1)", "probe_timeout"),
-        ("import sys; sys.stdout.buffer.write(b'x' * (65536 + 1))", "probe_oversized"),
-        ("raise SystemExit(7)", "probe_failed"),
+        ("import time; time.sleep(1)", "probe_timeout", 0.05),
+        ("import sys; sys.stdout.buffer.write(b'x' * (65536 + 1))", "probe_oversized", None),
+        ("raise SystemExit(7)", "probe_failed", None),
     ],
 )
-def test_run_enforces_timeout_output_bound_and_exit_status(monkeypatch, program, expected_reason):
-    monkeypatch.setattr(SURVEY, "PROBE_TIMEOUT", 0.05)
+def test_run_enforces_timeout_output_bound_and_exit_status(monkeypatch, program, expected_reason, timeout):
+    # Only the timeout case shortens the deadline: a 50 ms budget races interpreter
+    # startup under load and turned the oversized case into probe_timeout (~3% of
+    # runs at 0.05 s, 0 of 4800 at the 4 s default; measured 2026-11-12, AC-716).
+    if timeout is not None:
+        monkeypatch.setattr(SURVEY, "PROBE_TIMEOUT", timeout)
     with pytest.raises(SURVEY.ProbeError, match=expected_reason):
         SURVEY._run([sys.executable, "-c", program])
+
+
+@pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
+def test_kill_group_tolerates_a_group_that_is_already_gone_or_exiting(monkeypatch, error):
+    calls = []
+
+    def killpg(pid, sig):
+        calls.append((pid, sig))
+        raise error(1, "simulated")
+
+    monkeypatch.setattr(SURVEY.os, "killpg", killpg)
+    assert SURVEY._kill_group(12345) is None
+    assert calls == [(12345, signal.SIGKILL)]
 
 
 def test_identity_mismatch_skips_the_receiver_user_systemd_probe(monkeypatch):

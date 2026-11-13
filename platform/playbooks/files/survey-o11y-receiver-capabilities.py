@@ -28,9 +28,12 @@ class ProbeError(Exception):
 
 
 def _kill_group(pid: int) -> None:
+    # macOS killpg returns EPERM while the group leader is exiting (measured
+    # 35/4800 under load, 2026-11-12, AC-716). Ignoring it is safe: _run then
+    # waits 0.2 s and, if the child is still alive, kills and waits again.
     try:
         os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         pass
 
 
