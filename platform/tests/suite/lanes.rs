@@ -1,14 +1,16 @@
 //! Lane selection (plan 24, D3): `lanes::select` over the rules of `areas.yml`.
 //!
 //! The cases run over inline configurations, so an edit to the repository's `areas.yml` cannot
-//! change what they prove. Three tests read the repository itself: the invariant that every
-//! suite module is listed once, the refusal of a malformed file, and the `testsel` binary.
+//! change what they prove. The tests that read the repository itself are the invariant that
+//! every suite module is listed once, the pre-commit hook that runs the commit lane, and the
+//! `testsel` and `lane.sh` runs.
 
 use std::collections::BTreeSet;
 
 use agent_cloud_tests::lanes::{Config, Lane, Selection, select};
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::{self, Node};
 use proptest::prelude::*;
 use tempfile::TempDir;
 
@@ -437,4 +439,52 @@ fn testsel_reads_the_change_from_git_and_fails_open() {
         checkout.testsel("commit", None),
         "test(/^(?:ledger|restart_policy)::/)\n"
     );
+}
+
+#[test]
+fn lane_sh_skips_a_workstation_lane_without_nextest_and_refuses_a_ci_lane() {
+    // Arrange: a PATH with no cargo on it
+    let home = TempDir::new().expect("a temporary home");
+    let lane_sh = repo::path("platform/tests/lane.sh").display().to_string();
+    let without_cargo = |lane: &str| {
+        let mut cmd = process::scrubbed("bash", home.path());
+        cmd.env("PATH", "/usr/bin:/bin").arg(&lane_sh).arg(lane);
+        cmd
+    };
+
+    // Act / Assert: a hook's lane says why it did not run, and lets the commit or push go on
+    for lane in ["commit", "push"] {
+        without_cargo(lane)
+            .assert()
+            .success()
+            .stderr(predicates::str::contains("cargo-nextest is not installed"));
+    }
+    // Act / Assert: CI and the full lane never pass without running the suite
+    for lane in ["ci", "full"] {
+        without_cargo(lane).assert().code(1);
+    }
+}
+
+#[test]
+fn the_pre_commit_configuration_runs_the_commit_lane() {
+    let config = yaml::load_one(&repo::path(".pre-commit-config.yaml"))
+        .expect(".pre-commit-config.yaml has one document");
+    let hook = config
+        .get("repos")
+        .and_then(|repos| repos.as_seq())
+        .into_iter()
+        .flatten()
+        .filter_map(|repo| repo.get("hooks")?.as_seq())
+        .flatten()
+        .find(|hook| hook.get("id").and_then(|id| id.as_str()) == Some("rust-commit-lane"))
+        .expect("a rust-commit-lane hook");
+
+    let field = |key: &str| hook.get(key).cloned();
+    assert_eq!(
+        field("entry").as_ref().and_then(|n| n.as_str()),
+        Some("platform/tests/lane.sh commit")
+    );
+    // always_run: a staged change of any path, a deletion included, still runs the lane
+    assert_eq!(field("always_run"), Some(Node::Bool(true)));
+    assert_eq!(field("pass_filenames"), Some(Node::Bool(false)));
 }
