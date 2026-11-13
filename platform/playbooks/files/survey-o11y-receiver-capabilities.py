@@ -27,14 +27,17 @@ class ProbeError(Exception):
         self.reason = reason if reason in REASONS else "probe_failed"
 
 
-def _kill_group(pid: int) -> None:
+def _kill_group(process: subprocess.Popen[bytes]) -> None:
     # macOS killpg returns EPERM while the group leader is exiting (measured
-    # 35/4800 under load, 2026-11-12, AC-716). Ignoring it is safe: _run then
-    # waits 0.2 s and, if the child is still alive, kills and waits again.
+    # 35/4800 under load, 2026-11-12, AC-716). Then kill the leader directly, as
+    # survey-o11y-alloy-health.py does, so the wait that follows stays bounded.
     try:
-        os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
         pass
+    except PermissionError:
+        if process.poll() is None:
+            process.kill()
 
 
 def _run(argv: list[str]) -> str:
@@ -71,11 +74,11 @@ def _run(argv: list[str]) -> str:
                 reason = "probe_oversized"
                 break
         if reason:
-            _kill_group(process.pid)
+            _kill_group(process)
         try:
             return_code = process.wait(timeout=0.2)
         except subprocess.TimeoutExpired:
-            _kill_group(process.pid)
+            _kill_group(process)
             process.wait()
             reason = reason or "probe_timeout"
             return_code = 1

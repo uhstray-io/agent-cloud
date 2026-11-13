@@ -4,7 +4,9 @@ import ast
 import importlib.util
 import json
 import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -135,16 +137,46 @@ def test_run_enforces_timeout_output_bound_and_exit_status(monkeypatch, program,
 
 
 @pytest.mark.parametrize("error", [ProcessLookupError, PermissionError])
-def test_kill_group_tolerates_a_group_that_is_already_gone_or_exiting(monkeypatch, error):
-    calls = []
+def test_kill_group_returns_when_the_probe_has_already_exited(monkeypatch, error):
+    process = subprocess.Popen(["/bin/sh", "-c", "exit 0"], start_new_session=True)
+    assert process.wait(timeout=5) == 0
 
-    def killpg(pid, sig):
-        calls.append((pid, sig))
+    def refuse(_pid, _signal):
         raise error(1, "simulated")
 
-    monkeypatch.setattr(SURVEY.os, "killpg", killpg)
-    assert SURVEY._kill_group(12345) is None
-    assert calls == [(12345, signal.SIGKILL)]
+    monkeypatch.setattr(SURVEY.os, "killpg", refuse)
+    SURVEY._kill_group(process)
+    assert process.wait(timeout=5) == 0
+
+
+def test_kill_group_kills_the_leader_when_its_group_refuses_the_signal(monkeypatch):
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True
+    )
+    try:
+        def refuse(_pid, _signal):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(SURVEY.os, "killpg", refuse)
+        SURVEY._kill_group(process)
+        assert process.wait(timeout=5) == -signal.SIGKILL
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=5)
+
+
+def test_run_stays_bounded_when_killpg_refuses_the_group(monkeypatch):
+    def refuse(_pid, _signal):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(SURVEY.os, "killpg", refuse)
+    monkeypatch.setattr(SURVEY, "PROBE_TIMEOUT", 0.1)
+    started = time.monotonic()
+    with pytest.raises(SURVEY.ProbeError) as caught:
+        SURVEY._run([sys.executable, "-c", "import time; time.sleep(30)"])
+    assert caught.value.reason == "probe_timeout"
+    assert time.monotonic() - started < 5
 
 
 def test_identity_mismatch_skips_the_receiver_user_systemd_probe(monkeypatch):
