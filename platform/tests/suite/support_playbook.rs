@@ -10,7 +10,8 @@
 //! | `test_run_timeout_suppresses_captured_child_output` | `run_timeout_suppresses_captured_child_output` |
 //! | `test_run_enforces_subprocess_timeout` | `run_enforces_the_timeout` |
 //! | `test_run_gives_the_child_no_stdin` | `run_gives_the_child_no_stdin` |
-//! | `test_run_playbook_builds_the_command_environment_and_bound` | `ansible_playbook_builds_the_command_for_the_repository_root` |
+//! | `test_run_playbook_builds_the_command_environment_and_bound` (the command, its arguments and its explicit environment) | `ansible_playbook_builds_the_command_for_the_repository_root` |
+//! | `test_run_playbook_builds_the_command_environment_and_bound` (the ANSIBLE_CONFIG drop, as the child sees it) | `the_environment_reaches_the_playbook_as_specified` |
 //! | `test_run_playbook_runs_a_real_playbook` | `ansible_playbook_runs_a_real_playbook` |
 //! | `test_env_for_keeps_the_callers_collections_visible` | `playbook_env_keeps_the_callers_collections_visible` |
 //! | `test_a_playbook_run_through_the_harness_resolves_an_installed_collection` | `a_playbook_run_resolves_an_installed_collection` |
@@ -297,10 +298,17 @@ fn a_playbook_run_resolves_an_installed_collection() {
 
 #[test]
 fn a_sandboxed_playbook_cannot_write_outside_its_directory() {
-    // Confinement is proved only where a kernel sandbox exists. The Linux CI runner has no bwrap,
-    // so there the proof does not run, as harness_sandbox.py documents.
+    // On macOS sandbox-exec ships with the system, so a detector that finds none is broken, and
+    // the proof below must not pass for that reason. Elsewhere a missing sandbox is expected: the
+    // Linux CI runner has no bwrap, and the proof then does not run, as harness_sandbox.py documents.
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            process::sandbox(),
+            Some("sandbox-exec"),
+            "on macOS the confinement proof needs sandbox-exec, and sandbox() must find it"
+        );
+    }
     let Some(kind) = process::sandbox() else {
-        assert_eq!(process::sandbox(), None);
         return;
     };
     let dir = TempDir::new().unwrap();

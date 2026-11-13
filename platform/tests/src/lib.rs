@@ -562,7 +562,18 @@ pub mod process {
             }
             Some("bwrap") => {
                 let mut cmd = Command::new("bwrap");
-                cmd.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
+                // --die-with-parent: the sandboxed tree is SIGKILLed when bwrap's parent dies, so
+                // a killed or crashed runner leaves no ansible behind (bwrap.xml).
+                cmd.args([
+                    "--ro-bind",
+                    "/",
+                    "/",
+                    "--dev",
+                    "/dev",
+                    "--proc",
+                    "/proc",
+                    "--die-with-parent",
+                ]);
                 for root in &roots {
                     cmd.arg("--bind").arg(root).arg(root);
                 }
