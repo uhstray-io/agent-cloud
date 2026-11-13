@@ -36,7 +36,7 @@ config-as-code**. Do the work *through* those mechanisms — not around them:
 
 ### Feature-to-Dev pull-request merges
 
-Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, run both review passes on the new head and post their statuses (Branch Workflow steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). Merge only after one independent final-head approval, the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. With explicit authorization for that PR/head, use `--feedback-addressed --merge`; the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
+Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, run both review passes on the new head and post their statuses (Branch Workflow steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). Merge only after one independent final-head approval (a non-author approval on GitHub, or a review receipt passed with `--review-receipt`, whose independence from the author the guard does not check), the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. When they hold, use `--feedback-addressed --merge` (the Branch Workflow callout below says when an agent may do so without asking); the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
 
 `dev` intentionally has no required-check rule because the main-to-Dev sync workflow pushes directly to it. The CLI is therefore an operator gate, not GitHub-enforced protection; do not substitute `gh pr merge --auto`, `--admin`, or a direct merge command.
 
@@ -546,16 +546,32 @@ environment before operations; a checked-in deploy path is not proof it is runni
 
 ### Branch Workflow
 
-> **NEVER push, open a pull request, or merge one unless the user explicitly authorizes that
-> specific action — every push, every PR, every merge, every time.**
-> Agents may create a branch and commit locally, but **push, `gh pr create`, and `gh pr merge`
-> are each user-gated actions**: stop and ask ("branch ready — push it? open the PR?"). An
-> approval covers exactly the actions it names, on the branch/PR it names — a previously
-> approved sibling cycle authorizes nothing (`docs/MISTAKES.md` §5.7). This applies to
-> feature→`dev` PRs and `dev`→`main` promotion PRs alike, and to pushing follow-up commits
-> to a PR already under review.
+> **Pushes, pull requests and merges follow the operator's standing authorization**
+> (operator decisions of 2026-10-14, 2026-11-09 and 2026-11-10):
+>
+> - An agent may push a feature branch and open a pull request into `dev`, or a `dev` → `main`
+>   promotion pull request, without asking, then carry it through review: fix or answer every
+>   finding, push the fixes, and request review again.
+> - It merges a pull request into `dev` through `scripts/merge-when-green.py` once every gate listed
+>   under "Feature-to-Dev pull-request merges" holds, and no `dev` merge hold is in force
+>   (`docs/MISTAKES.md` 5.26 says what counts as one). A review receipt, `--feedback-addressed`
+>   and the `simplify` and `security-review` statuses are self-attested: the guard checks that
+>   they are present and well formed, not that the review ran or the feedback was handled, so
+>   each is a claim the agent must back.
+> - A `dev` → `main` promotion merges with `gh pr merge --merge --match-head-commit <sha>` after two
+>   completed review rounds of its final head, with every finding fixed or answered and the
+>   `Promotion source (dev -> main)` check passing.
+>   The two rounds are a convention: no check counts them.
+> - Still asked every time: a push straight to `main` or `dev`, any force push, any squash merge,
+>   passing `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one
+>   that changes a release script or a workflow file the guard does not accept), and a push or pull
+>   request in a repository outside this organisation. An agent running under an account with the
+>   repository-admin role holds `protect-main`'s break-glass bypass, so for it GitHub does not refuse
+>   a push, force push or deletion on `main`; asking is the control. An approval for one of these
+>   covers exactly the action it names, on the branch or pull request it names (`docs/MISTAKES.md`
+>   5.26, which supersedes 5.7's rule).
 
-**Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev`.**
+**Promotion cycle: `<feature-branch>` → `dev` → `main` (production). All changes go through pull requests — never push directly to `main` or `dev` without the operator's approval for that one push (`docs/MISTAKES.md` 5.26).**
 
 - `main` is the production branch — Semaphore deploys from it.
 - `dev` is the permanent integration branch — feature work merges here first and is validated (locally per `LOCAL-DEV-README.md` / `plan/development/00-foundation-local-dev.md`, and/or via prod branch deploys per `plan/architecture/03-testing-ci-quality.md`) before promotion to `main`.
@@ -578,8 +594,8 @@ environment before operations; a checked-in deploy path is not proof it is runni
 7. Wait for **all PR checks** (CodeRabbit, CI, linters) to complete
 8. Address all review findings and push fixes
 9. Confirm all checks pass after fixes
-10. Only then merge the PR into `dev` — use a **merge commit** (`gh pr merge --merge`), NOT squash. Preserving each feature branch's real commits on `dev` keeps `dev`↔`main` ancestry intact. **Squash a feature→`dev` merge only** to collapse a branch whose history accidentally contains something sensitive (secrets/credentials) you don't want preserved.
-11. **Promotion to production**: once the `dev` changes are validated, open a `dev` → `main` PR and merge it with a **merge commit** (`gh pr merge --merge`), NOT squash. Sharing `dev`'s real commits on `main` keeps the branches' ancestry intact, so promotions never diverge and you never hand back-merge. **Squash a promotion only** to scrub a branch whose history accidentally contains something sensitive. A GitHub Action (`.github/workflows/sync-main-to-dev.yml`) keeps `dev` current with `main` after every promotion (see "Why the auto-sync" below). From the release after v0.15.0 (the carry-over release, R12), a promotion carries at most 100 pull requests and 120 changed files ([`plan/architecture/10-release-policy.md`](plan/architecture/10-release-policy.md)). Two gates hold it: the dev merge guard prints the release budget on every run that reaches the count and refuses a merge that would take the release over a limit, and the `Release size` step of the `Promotion source (dev -> main)` check refuses an over-budget promotion. `git fetch --tags origin && python3 scripts/semver.py release-budget` prints the count (policy 10, "Reading the budget").
+10. Only then merge the PR into `dev`, through `scripts/merge-when-green.py --feedback-addressed --merge`, which issues one **merge commit** (`gh pr merge --merge --match-head-commit`), NOT squash; a plain `gh pr merge` skips the guard. Preserving each feature branch's real commits on `dev` keeps `dev`↔`main` ancestry intact. **Squash a feature→`dev` merge only**, and only as the operator's call (asked every time), to collapse a branch whose history accidentally contains something sensitive (secrets/credentials) you don't want preserved.
+11. **Promotion to production**: once the `dev` changes are validated, open a `dev` → `main` PR and merge it with a **merge commit** (`gh pr merge --merge --match-head-commit <sha>`, the head the review rounds covered), NOT squash. Sharing `dev`'s real commits on `main` keeps the branches' ancestry intact, so promotions never diverge and you never hand back-merge. **Squash a promotion only**, and only as the operator's call (asked every time), to scrub a branch whose history accidentally contains something sensitive. A GitHub Action (`.github/workflows/sync-main-to-dev.yml`) keeps `dev` current with `main` after every promotion (see "Why the auto-sync" below). From the release after v0.15.0 (the carry-over release, R12), a promotion carries at most 100 pull requests and 120 changed files ([`plan/architecture/10-release-policy.md`](plan/architecture/10-release-policy.md)). Two gates hold it: the dev merge guard prints the release budget on every run that reaches the count and refuses a merge that would take the release over a limit, and the `Release size` step of the `Promotion source (dev -> main)` check refuses an over-budget promotion. `git fetch --tags origin && python3 scripts/semver.py release-budget` prints the count (policy 10, "Reading the budget").
 
 **Never merge a PR before its checks have completed and passed.** This applies to all development — new features, bug fixes, plan updates, documentation changes — and to promotion PRs from `dev` to `main`.
 
@@ -595,7 +611,7 @@ requires `main` to be an ancestor of the PR head and refuses otherwise; clear it
 `main` into `dev` through a feature PR (`git merge --no-ff origin/main` on a branch cut from
 `dev`).
 
-**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` is protected only against deletion and force-push, by the `protect-dev` ruleset with no bypass actor — no PR or check rule, because the sync workflow pushes merge commits to it; `docs/MISTAKES.md` 3.13.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass) — AI agents (skynet, Claude Code) and automation PATs have no bypass path. See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
+**Enforcement.** On `main` this is no longer convention alone — it is mechanically enforced by the `protect-main` repository ruleset (config-as-code in `.github/rulesets/`): no direct or force pushes, no deletion, PR required, review conversations resolved, and the `Static Analysis` / `Security Scan` / `Unit Tests` checks must pass; merges into `main` allow **merge commits (the default) or squash**, and linear history is NOT required — so `dev` → `main` promotions are merge commits (use squash only to scrub accidental sensitive content). (`dev` is protected only against deletion and force-push, by the `protect-dev` ruleset with no bypass actor — no PR or check rule, because the sync workflow pushes merge commits to it; `docs/MISTAKES.md` 3.13.) (The checked-in ruleset declares `active`; this documentation review did not query remote enforcement.) The sole bypass actor is the Repository admin role (break-glass). skynet's agents, and automation PATs owned by an account without the admin role, have no bypass path, but an agent session running under an account that holds the admin role (a Claude Code session on the operator's account, for one) holds the bypass, so for it the rules on `main` are held by convention (`docs/MISTAKES.md` 5.26). See `.github/rulesets/README.md` and `plan/development/03-guardrails-governance.md`.
 
 ### Test check on push (`.githooks/pre-push`)
 
@@ -617,7 +633,13 @@ the fast and changed test files here; CI runs everything. Both suites run on the
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
 outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
-tools are on your `PATH`.
+tools are on your `PATH`. After both, the hook runs the Rust suite's **push lane**
+(`platform/tests/lane.sh push`, plan 24): every tier of the areas the push touches since
+`origin/dev`, and the security set. The pre-commit configuration runs its **commit lane**
+(`lane.sh commit`, hook `rust-commit-lane`): the static tests of the areas the staged change
+touches and the security set's static tests, ledger check included, in seconds once the crate
+is built (the first commit after a Rust change compiles it first). To skip that lane alone,
+for a reason you can defend in review: `SKIP=rust-commit-lane git commit`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
@@ -625,6 +647,7 @@ means the suites passed on your machine or were skipped, which is not evidence C
 pass — and CI never sees a push the hook stopped.
 
 It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
+`cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead), when
 the Python suite is not collectable because pytest or a test dependency is missing, and on
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
@@ -639,8 +662,8 @@ friction people route around with `--no-verify` — turning a gate into a habit 
 bypassing gates. Why it exists at all: `docs/MISTAKES.md` §5.2 records committing with a
 failing test, enforced only by convention, and §5.5/§5.6 record it recurring three more
 times. The pre-commit gates cover secrets, IPs, credentials, `.env`, whitespace, YAML and
-keys, and the ledger citation test when `docs/MISTAKES.md` or its citation ratchet is staged.
-Nothing else about tests, so there was no gate to pass.
+keys, the ledger citation test when `docs/MISTAKES.md` or its citation ratchet is staged, and
+the Rust suite's commit lane.
 
 Failing open is the deliberate opposite of the pre-commit secret gate, which fails closed.
 A leaked secret is irreversible; a red test is not, and CI blocks the merge either way.
