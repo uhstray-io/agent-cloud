@@ -23,7 +23,7 @@ import forgeries
 import pytest
 from ansible_python import needs_ansible
 from harness_sandbox import fake_bin
-from local_mode_inventories import PROD_INI, include_play, passed, refused, run, task_statuses
+from local_mode_inventories import IDENTITY_REFUSAL, PROD_INI, include_play, passed, refused, run, task_statuses
 
 REPO = Path(__file__).resolve().parents[2]
 TASKS = REPO / "platform/playbooks/tasks"
@@ -92,7 +92,10 @@ def test_enable_linger_takes_the_production_branch_past_the_identity_check(tmp_p
     # --check: "Enable lingering" and the boot-unit block are check-mode or stat guarded, so --check cannot
     # show them run; the three named here are reached under --check and report ok on the production branch.
     proc = run(tmp_path, PROD_INI, play, "-e", forge, "--check", env=fake_bin(tmp_path, {"getent": GETENT}))
-    passed(proc)
+    # Not passed(): what the run does after these tasks depends on the host. Where podman's user boot unit
+    # exists (a Linux runner), the boot-unit block runs and becomes the test account, which a runner cannot do.
+    # The claim is only that the identity check passed and the production-only tasks ran.
+    assert IDENTITY_REFUSAL not in proc.output, proc.output
     statuses = task_statuses(proc.stdout)
     for name in PROD_LINGER_REACHED:
         assert statuses.get(name) == "ok", (name, statuses, proc.output)
