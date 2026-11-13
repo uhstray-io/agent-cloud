@@ -101,22 +101,32 @@ fn include_position(tasks: &[Node], path: &str) -> usize {
         .unwrap_or_else(|| panic!("no task includes {path:?}"))
 }
 
-/// The module arguments of a task, under the module's fully qualified name.
-fn module<'a>(task: &'a Node, fq: &str) -> &'a Node {
-    task.get(fq)
-        .unwrap_or_else(|| panic!("task {:?} has no {fq}", name_of(task)))
+/// The spellings a module key may take: the short name, `ansible.builtin.<short>`, or
+/// `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check that reads one spelling alone is blind
+/// to a task written under another, so every module read goes through here.
+fn spellings(short: &str) -> [String; 3] {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
 }
 
-/// One field of a task's module arguments, as text.
-fn field<'a>(task: &'a Node, fq: &str, key: &str) -> Option<&'a str> {
-    task.get(fq)?.get(key)?.as_str()
+/// A task's module under any spelling, or `None` when the task has none of them.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    spellings(short).iter().find_map(|key| task.get(key))
 }
 
-/// The file an `include_tasks` task includes, under either spelling of the module.
+/// One field of a task's module arguments, under any spelling of the module.
+fn field<'a>(task: &'a Node, short: &str, key: &str) -> Option<&'a str> {
+    module(task, short)?.get(key)?.as_str()
+}
+
+/// The file an `include_tasks` or `import_tasks` task includes, under any spelling of either.
 fn includes(task: &Node) -> Option<&str> {
-    ["ansible.builtin.include_tasks", "include_tasks"]
+    ["include_tasks", "import_tasks"]
         .iter()
-        .find_map(|m| task.get(m).and_then(Node::as_str))
+        .find_map(|short| module(task, short).and_then(Node::as_str))
 }
 
 /// The `when:` conditions of a task, whether one string or a list.
@@ -130,31 +140,46 @@ fn when_list(task: &Node) -> Vec<&str> {
 
 /// The `that:` conditions of an assert task.
 fn that_list(task: &Node) -> Vec<&str> {
-    match module(task, "ansible.builtin.assert").get("that") {
+    match module(task, "assert").and_then(|a| a.get("that")) {
         Some(Node::Str(s)) => vec![s],
         Some(Node::Seq(items)) => items.iter().filter_map(Node::as_str).collect(),
         _ => vec![],
     }
 }
 
-/// The package names of an apt task: its `name:` as one string or a list.
+/// The package names of an apt or package task, under any spelling of either module: its `name:` as
+/// one string or a list.
 fn apt_names(task: &Node) -> Vec<&str> {
-    let Some(apt) = task.get("ansible.builtin.apt") else {
-        return vec![];
-    };
-    match apt.get("name") {
-        Some(Node::Str(s)) => vec![s],
-        Some(Node::Seq(items)) => items.iter().filter_map(Node::as_str).collect(),
-        _ => vec![],
-    }
+    ["apt", "package"]
+        .iter()
+        .filter_map(|short| module(task, short))
+        .flat_map(|m| match m.get("name") {
+            Some(Node::Str(s)) => vec![s.as_str()],
+            Some(Node::Seq(items)) => items.iter().filter_map(Node::as_str).collect(),
+            _ => vec![],
+        })
+        .collect()
 }
 
-/// The command a `command:` task runs, in its short or its long form.
-fn command_line(task: &Node) -> Option<&str> {
-    match task.get("ansible.builtin.command")? {
-        Node::Str(s) => Some(s.as_str()),
-        long => long.get("cmd").and_then(Node::as_str),
-    }
+/// The command a `command:` or `shell:` task runs, under any spelling: a string, or the long form's
+/// `cmd:` or its `argv:` joined with spaces.
+fn command_line(task: &Node) -> Option<String> {
+    ["command", "shell"].iter().find_map(|short| {
+        let found = module(task, short)?;
+        match found {
+            Node::Str(s) => Some(s.clone()),
+            long => match (long.get("cmd"), long.get("argv")) {
+                (Some(Node::Str(cmd)), _) => Some(cmd.clone()),
+                (_, Some(Node::Seq(argv))) => Some(
+                    argv.iter()
+                        .filter_map(Node::as_str)
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                _ => None,
+            },
+        }
+    })
 }
 
 /// The play whose name starts with `prefix`, as parsed (its `vars:` and its `tasks:`).
@@ -177,9 +202,7 @@ fn shim_tasks() -> (usize, Vec<String>) {
     let mut touched = 0;
     let mut ungated = vec![];
     for task in repo::tasks(PB).iter().filter(|t| is_task(t)) {
-        if task.get("ansible.builtin.assert").is_some()
-            || task.get("ansible.builtin.debug").is_some()
-        {
+        if module(task, "assert").is_some() || module(task, "debug").is_some() {
             continue;
         }
         if !touches.is_match(&text(task)) {
@@ -286,7 +309,7 @@ fn the_shim_package_and_its_banner_marker_are_both_handled() {
         .any(|t| apt_names(t).contains(&"podman-docker"));
     let marker = tasks
         .iter()
-        .any(|t| field(t, "ansible.builtin.file", "path") == Some("/etc/containers/nodocker"));
+        .any(|t| field(t, "file", "path") == Some("/etc/containers/nodocker"));
 
     // Assert
     assert!(package, "no task installs the podman-docker shim");
@@ -304,9 +327,9 @@ fn the_banner_marker_touch_is_idempotent() {
     // Act
     let touch = tasks
         .iter()
-        .find(|t| field(t, "ansible.builtin.file", "state") == Some("touch"))
+        .find(|t| field(t, "file", "state") == Some("touch"))
         .expect("no task touches the banner marker");
-    let file = module(touch, "ansible.builtin.file");
+    let file = module(touch, "file").expect("the banner touch is a file task");
 
     // Assert: a bare touch reports changed on every run.
     assert_eq!(
@@ -329,8 +352,10 @@ fn verification_checks_presence_not_a_rootful_engine_call() {
     // Act
     let presence = tasks
         .iter()
-        .any(|t| field(t, "ansible.builtin.stat", "path") == Some("/usr/bin/docker"));
-    let rootful_call = tasks.iter().any(|t| command_line(t) == Some("docker ps"));
+        .any(|t| field(t, "stat", "path") == Some("/usr/bin/docker"));
+    let rootful_call = tasks
+        .iter()
+        .any(|t| command_line(t).as_deref() == Some("docker ps"));
 
     // Assert: `docker ps` as root initialises rootful podman state and proves nothing about the caller.
     assert!(
@@ -371,7 +396,7 @@ fn waits_for_a_freshly_booted_host_before_installing() {
     assert!(
         wait_tasks
             .iter()
-            .any(|t| command_line(t) == Some("apt-get check")),
+            .any(|t| command_line(t).as_deref() == Some("apt-get check")),
         "the apt wait does not run apt-get check"
     );
     assert!(
@@ -474,12 +499,12 @@ fn the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim() {
     );
 
     // Act
-    let removed = field(remove, "ansible.builtin.apt", "name");
-    let removed_state = field(remove, "ansible.builtin.apt", "state");
+    let removed = field(remove, "apt", "name");
+    let removed_state = field(remove, "apt", "state");
     let removed_when = remove.get("when").and_then(Node::as_str);
-    let pin_name = field(pinned, "ansible.builtin.apt", "name");
-    let downgrade = module(pinned, "ansible.builtin.apt").get("allow_downgrade");
-    let recommends = module(pinned, "ansible.builtin.apt").get("install_recommends");
+    let pin_name = field(pinned, "apt", "name");
+    let downgrade = module(pinned, "apt").and_then(|a| a.get("allow_downgrade"));
+    let recommends = module(pinned, "apt").and_then(|a| a.get("install_recommends"));
     let version_var = install
         .get("vars")
         .and_then(|v| v.get("_docker_api_client_version"))
@@ -564,12 +589,11 @@ fn the_docker_apt_repository_is_one_shared_task_used_by_both_playbooks() {
 
     // Act
     let signed = repository.iter().any(|t| {
-        field(t, "ansible.builtin.apt_repository", "repo")
+        field(t, "apt_repository", "repo")
             .is_some_and(|r| r.contains("signed-by=/etc/apt/keyrings/docker.asc"))
     });
     let key = repository.iter().any(|t| {
-        field(t, "ansible.builtin.get_url", "url")
-            == Some("https://download.docker.com/linux/ubuntu/gpg")
+        field(t, "get_url", "url") == Some("https://download.docker.com/linux/ubuntu/gpg")
     });
 
     // Assert

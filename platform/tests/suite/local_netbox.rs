@@ -85,13 +85,27 @@ fn is_task(node: &Node) -> bool {
         .all(|key| node.get(key).is_none())
 }
 
-/// True when a map anywhere in `node` has `key`.
-fn has_key(node: &Node, key: &str) -> bool {
+/// The spellings a module key may take: the short name, `ansible.builtin.<short>`, or
+/// `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check that reads one spelling alone is blind
+/// to a task written under another, so every module read goes through here.
+fn spellings(short: &str) -> [String; 3] {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+}
+
+/// True when a map anywhere in `node` holds the module `short` under any spelling.
+fn has_module(node: &Node, short: &str) -> bool {
     match node {
-        Node::Map(entries) => entries
-            .iter()
-            .any(|(k, v)| k.as_str() == Some(key) || has_key(v, key)),
-        Node::Seq(items) => items.iter().any(|item| has_key(item, key)),
+        Node::Map(entries) => entries.iter().any(|(k, v)| {
+            spellings(short)
+                .iter()
+                .any(|name| k.as_str() == Some(name.as_str()))
+                || has_module(v, short)
+        }),
+        Node::Seq(items) => items.iter().any(|item| has_module(item, short)),
         Node::Str(_) | Node::Bool(_) | Node::Null => false,
     }
 }
@@ -131,17 +145,16 @@ fn include_position(tasks: &[Node], path: &str) -> usize {
         .unwrap_or_else(|| panic!("no task includes {path:?}"))
 }
 
-/// The module arguments of a task, under the module's fully qualified name.
-fn module<'a>(task: &'a Node, fq: &str) -> &'a Node {
-    task.get(fq)
-        .unwrap_or_else(|| panic!("task {:?} has no {fq}", name_of(task)))
+/// A task's module under any spelling, or `None` when the task has none of them.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    spellings(short).iter().find_map(|key| task.get(key))
 }
 
-/// The file an `include_tasks` task includes, under either spelling of the module.
+/// The file an `include_tasks` or `import_tasks` task includes, under any spelling of either.
 fn includes(task: &Node) -> Option<&str> {
-    ["ansible.builtin.include_tasks", "include_tasks"]
+    ["include_tasks", "import_tasks"]
         .iter()
-        .find_map(|m| task.get(m).and_then(Node::as_str))
+        .find_map(|short| module(task, short).and_then(Node::as_str))
 }
 
 /// The `when:` conditions of a task, whether one string or a list.
@@ -199,7 +212,7 @@ fn deploy_netbox_places_the_monorepo_through_the_shared_task() {
     let shared = tasks
         .iter()
         .any(|t| includes(t) == Some("tasks/place-monorepo.yml"));
-    let bare_clone = has_key(&doc(DEPLOY_NETBOX), "ansible.builtin.git");
+    let bare_clone = has_module(&doc(DEPLOY_NETBOX), "git");
 
     // Assert
     assert!(
@@ -307,10 +320,13 @@ fn orb_agent_local_dev_checks_the_discovery_scope_before_any_credential() {
         .flat_map(when_list)
         .filter(|c| *c == gate)
         .count();
-    let removes = text(module(
-        task(&tasks, "remove a previously started orb agent"),
-        "ansible.builtin.shell",
-    ));
+    let removes = text(
+        module(
+            task(&tasks, "remove a previously started orb agent"),
+            "shell",
+        )
+        .expect("the task runs a shell"),
+    );
 
     // Assert
     assert!(
@@ -336,7 +352,7 @@ fn orb_agent_local_dev_checks_the_discovery_scope_before_any_credential() {
         "the previously started agent is not removed by name"
     );
     assert!(
-        !has_key(&doc(DEPLOY_ORB_AGENT), "ansible.builtin.git"),
+        !has_module(&doc(DEPLOY_ORB_AGENT), "git"),
         "the orb-agent playbook clones the repository with a bare git task"
     );
 }
@@ -364,10 +380,13 @@ fn the_local_scope_guard_reads_the_live_engine_under_check() {
     let tasks = repo::tasks(DISCOVERY_SCOPE);
 
     // Act
-    let engine = text(module(
-        task(&tasks, "read the local engine's network subnets"),
-        "ansible.builtin.shell",
-    ));
+    let engine = text(
+        module(
+            task(&tasks, "read the local engine's network subnets"),
+            "shell",
+        )
+        .expect("the task runs a shell"),
+    );
     let scope_script = text(task(&tasks, "refuse any target outside local-dev"));
     let check_mode_off = tasks
         .iter()

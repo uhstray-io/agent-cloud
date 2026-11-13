@@ -420,7 +420,7 @@ command list; until then, `ruff check .; echo rc=$?` is the form.
 
 **Status 2026-10-02.** Repository side: `platform/tests/test_scripts_set_pipefail.bats` requires `pipefail` in committed scripts, with legacy ones in the shrink-only `platform/tests/known_scripts_without_pipefail.txt` (PR #391). Agent side: a user-level PreToolUse Bash hook (`bash-guards-text`, registered in the operator's Claude Code settings) refuses a status-bearing command piped onward unless the command mentions `pipefail` or `PIPESTATUS`; by its own header it cannot see pipes inside command substitution, `eval`, aliases or script files. That hook lives outside this repository, so the Index still reads Convention for agent sessions.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_netbox.rs::verify_service_persistence_selects_containers_by_deploy_dir` is its replacement.
+**Enforcement moved — 2026-11-13.** The BATS test this entry's narrative cites was ported to the Rust suite (plan 24): `platform/tests/suite/local_netbox.rs::verify_service_persistence_selects_containers_by_deploy_dir`.
 
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
@@ -5402,7 +5402,7 @@ by running it before calling the fix done.
 label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
 failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_netbox.rs::netbox_containers_are_found_by_compose_labels_not_a_guessed_name_separator` is its replacement.
+**Enforcement moved — 2026-11-13.** The BATS file for the local NetBox checks was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_netbox.rs::netbox_containers_are_found_by_compose_labels_not_a_guessed_name_separator` is its replacement.
 
 ### 6.9 Scoped a restart-policy fix to the runtime a review named, without reading the test that documents it
 
@@ -6728,7 +6728,7 @@ and `test_install_podman.bats` hold each of these, each assertion seen to fail o
 a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
 hosts").
 
-**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::the_docker_options_are_opt_in_and_default_off`, `platform/tests/suite/install_podman.rs::the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim` and `platform/tests/suite/install_podman.rs::the_docker_apt_repository_is_one_shared_task_used_by_both_playbooks` are its three replacements.
+**Enforcement moved — 2026-11-13.** The podman install BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::the_docker_options_are_opt_in_and_default_off`, `platform/tests/suite/install_podman.rs::the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim` and `platform/tests/suite/install_podman.rs::the_docker_apt_repository_is_one_shared_task_used_by_both_playbooks` are its three replacements.
 
 ### 10.30 Issue #604's fix was recorded as built; its template had never been published, so it never ran
 
