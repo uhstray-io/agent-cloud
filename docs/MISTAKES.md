@@ -420,6 +420,8 @@ command list; until then, `ruff check .; echo rc=$?` is the form.
 
 **Status 2026-10-02.** Repository side: `platform/tests/test_scripts_set_pipefail.bats` requires `pipefail` in committed scripts, with legacy ones in the shrink-only `platform/tests/known_scripts_without_pipefail.txt` (PR #391). Agent side: a user-level PreToolUse Bash hook (`bash-guards-text`, registered in the operator's Claude Code settings) refuses a status-bearing command piped onward unless the command mentions `pipefail` or `PIPESTATUS`; by its own header it cannot see pipes inside command substitution, `eval`, aliases or script files. That hook lives outside this repository, so the Index still reads Convention for agent sessions.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_netbox.rs::verify_service_persistence_selects_containers_by_deploy_dir` is its replacement.
+
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
 
@@ -2063,6 +2065,8 @@ because the guard is allowed exactly one module, which is why the allow-list for
 is available at all. This is the fourth entry in this section found that way
 (§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/configure_host_network.rs::validation_never_touches_the_live_etc_netplan` is its replacement.
+
 ### 2.13 A test that asserted the fix was present, on a configuration where it could not run
 
 **What happened.** Five playbooks escalated privilege at play level without
@@ -2240,6 +2244,8 @@ against `http://example.invalid` and URLs carrying credentials, and requires the
 refusal; the same mutation turns it red. Why the rule did not fire: it was applied to allow-lists and
 needles in Python, and a grep that proves a guard's text exists read as a guard test. A guard is
 tested by running it.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/configure_host_network.rs::validation_never_touches_the_live_etc_netplan` is its replacement.
 
 ### 2.16 A test whose population was selected by the presence of the fix
 
@@ -5180,6 +5186,8 @@ This entry previously cited that file before it existed — a dangling enforceme
 which is entry 8.2's mistake applied to a citation rather than an identifier. The test
 was written to make the claim true rather than the claim weakened to match.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::configures_no_podman_api_socket` and `platform/tests/suite/install_podman.rs::does_not_depend_on_systemctl_machine` are its two replacements.
+
 
 ### 6.3 §6.2 repeated — assumed a dependency was present on the host that runs it
 
@@ -5393,6 +5401,8 @@ by running it before calling the fix done.
 `postgres_volume_exists` and `wait_for_completed` against a stub engine that answers only
 label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
 failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_netbox.rs::netbox_containers_are_found_by_compose_labels_not_a_guessed_name_separator` is its replacement.
 
 ### 6.9 Scoped a restart-policy fix to the runtime a review named, without reading the test that documents it
 
@@ -6717,6 +6727,8 @@ real hooks through prepare, a step and cleanup, and fails unless the shim reprod
 and `test_install_podman.bats` hold each of these, each assertion seen to fail once under
 a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
 hosts").
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::the_docker_options_are_opt_in_and_default_off`, `platform/tests/suite/install_podman.rs::the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim` and `platform/tests/suite/install_podman.rs::the_docker_apt_repository_is_one_shared_task_used_by_both_playbooks` are its three replacements.
 
 ### 10.30 Issue #604's fix was recorded as built; its template had never been published, so it never ran
 
