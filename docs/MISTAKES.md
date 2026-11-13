@@ -5160,8 +5160,9 @@ written.
 
 **Enforced by.** Convention. Proposed (AC-865): `platform/tests/test_local_mode_reads.py` refuses a
 variable definition whose value contains `local_dev_inventory`, so the plan's rule fails a test, not
-a review. The instance: #1132 removes `_local`, `_rootless_podman` and `_ih_rootless`; AC-865
-removes `_skynet_local` and `_launch_gate_local_mode` and corrects plan 24's Context.
+a review. The instance: #1132 removes `_local` and `_rootless_podman`; AC-865 removes
+`_skynet_local`, `_launch_gate_local_mode` and `instrument-host-o11y.yml`'s `_ih_spec` and
+`_ih_rootless`, whose results other hosts read through `hostvars`. This PR corrects plan 24's Context.
 
 ## 6. Working from assumptions about files
 
