@@ -226,7 +226,7 @@ repo is placed.
 - Do not let the console call OPA itself. Its preview goes through `POST /v1/decide`: one OPA caller and one input
   builder, so the preview cannot disagree with the launch (plan 17, D51).
 - Do not put a token in `config.json`, in a template outside the `secrets` namespace, or in any committed file.
-  Templates use `secrets.*` and `_`-prefixed variables only. `test_credential_leaks.bats` is meant to check
+  Templates use `secrets.*` and `_`-prefixed variables only. `platform/tests/suite/credential_leaks.rs` is meant to check
   that, but its regex does not match `{{ name` written with a space. CI's GNU grep shows the same miss: run
   38731550214 (head 66c18f5b) passes that test while a template at that head has `{{ <variable> |`.
   `test_launch_gate_allowlist.py` therefore checks the parsed templates instead.

@@ -30,7 +30,7 @@ setup() {
 }
 
 # NOTE: the generic secret-file patterns (secrets/, *.secret, *.key, *.pem, and
-# runtime .env) are owned + asserted by test_credential_leaks.bats — not
+# runtime .env) are owned + asserted by platform/tests/suite/credential_leaks.rs — not
 # duplicated here (this file covers only the local-dev-specific entries).
 
 # ── Brewfile — developer toolchain ───────────────────────────────────────────

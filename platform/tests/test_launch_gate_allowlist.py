@@ -399,7 +399,7 @@ def test_config_template_holds_exactly_the_keys_load_config_accepts():
 
 
 def test_the_templates_draw_only_on_underscore_or_secrets_variables():
-    # test_credential_leaks.bats scans *.j2 for approved namespaces, but its regex `\{\{[\s]*` does not match
+    # platform/tests/suite/credential_leaks.rs scans *.j2 for approved namespaces, but its regex `\{\{[\s]*` does not match
     # `{{ name` written with a space: in a POSIX bracket `[\s]` is a backslash or an `s`, not whitespace. CI's
     # GNU grep agrees: run 38731550214 (head 66c18f5b, Bash Tests) reports `ok 200 credential leak: Jinja2
     # templates use approved variable namespaces` while a template at that head carries `{{ <variable> |`. So a
