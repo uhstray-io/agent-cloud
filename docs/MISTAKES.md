@@ -168,6 +168,7 @@ and why.
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.27 | A live service's change kept 76 of 83 tasks unticked; the Plane sync created even the ticked ones in Backlog, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done for a ticked task proposed) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5130,6 +5131,30 @@ convention: a `dev` merge hold, which nothing the guard reads records, a fast-fo
 to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the
 operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
 repositories, and the two promotion rounds, which no check counts.
+
+### 5.27 A live service's change kept its tasks unticked, so the tracker showed it as unstarted
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** The self-hosted runners have run jobs in production since at least 2026-10-12
+(Deploy GitHub Runner (Dev) task 4831), and container jobs since 2026-10-28 (Install Podman (Dev)
+task 9849, Deploy GitHub Runner (Dev) task 9856, site-config smoke run 40717453592). On 2026-11-12
+the `add-github-actions-runners` change's `tasks.md` had 7 of 83 tasks ticked, on both `main` and
+`dev`. Every one of the 81 Plane items the OpenSpec sync created from it on 2026-11-09 sat in
+Backlog or In Progress, the 7 ticked tasks included. Asked to put the runner fix in milestone
+v0.17.0, I could not scope the module from the tracker: six items were closed by hand against their
+evidence, and the rest went to a reconciliation item (AC-859).
+
+**Root cause.** The PRs and Semaphore runs that completed the tasks each cited the change, but none
+ticked the task it finished. Ticking is a convention nothing checks. The sync created even the
+ticked tasks in Backlog, so a tick on its own would not have reached the tracker either.
+
+**The rule.** A pull request or live run that completes a task ticks that task in `tasks.md`, citing
+its evidence, in the same change, and closes the task's Plane item. Before a change whose service is
+live goes into a milestone, reconcile its open items against the evidence.
+
+**Enforced by.** Convention. Proposed: the Plane sync sets a task's item to Done when the task is
+ticked on the default branch.
 
 ## 6. Working from assumptions about files
 
