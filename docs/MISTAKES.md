@@ -168,6 +168,7 @@ and why.
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.27 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5130,6 +5131,37 @@ convention: a `dev` merge hold, which nothing the guard reads records, a fast-fo
 to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the
 operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
 repositories, and the two promotion rounds, which no check counts.
+
+### 5.27 Wrote a design rule into a plan, then briefed and described code that broke it
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** Plan 24 (`plan/development/24-local-mode-from-inventory.md`, merged in #1131) decides
+that every reader takes local-dev mode inline from `(groups['all'] | local_dev_inventory)`, "with no
+intermediate variable", because an underscore play variable can be set with `-e` when the run-start
+guard is skipped (`--limit` excluding localhost, `--start-at-task`). The same day I briefed PR 1b's
+worker that "ensure-service-persistence's existing `_local` stays, its value changes", and the plan's
+Context said skynet and the launch gate "already read the mode this way (AC-784, #1127)". AC-784 had
+moved them to play variables (`_skynet_local` at `deploy-skynet.yml:119,407,494`,
+`_launch_gate_local_mode` at `deploy-launch-gate.yml:74,397,440`). PR #1132's security pass and review
+reproduced the bypass on a production inventory. `-e _local=true --limit alpha` skipped the rootful
+boot-unit task in `ensure-service-persistence.yml` (exit 0). `-e _rootless_podman=false --limit alpha`
+turned `verify-service-persistence.yml`'s failure into a pass.
+
+**Root cause.** The rule was written as the reason for a choice, in the plan's Decision section, and
+the briefs were written from each file's list of reads, never checked against that section. The
+plan's sentence about AC-784 was written from memory ("it reads groups now"), not from the shape of
+the merged code.
+
+**The rule.** Before dispatching a brief that implements a plan, check each decision in the brief
+against the plan's Decision bullets it implements, and name any it departs from. A plan's statement
+that existing code already complies is verified against that code's current form before it is
+written.
+
+**Enforced by.** Convention. Proposed (AC-865): `platform/tests/test_local_mode_reads.py` refuses a
+variable definition whose value contains `local_dev_inventory`, so the plan's rule fails a test, not
+a review. The instance: #1132 removes `_local`, `_rootless_podman` and `_ih_rootless`; AC-865
+removes `_skynet_local` and `_launch_gate_local_mode` and corrects plan 24's Context.
 
 ## 6. Working from assumptions about files
 
