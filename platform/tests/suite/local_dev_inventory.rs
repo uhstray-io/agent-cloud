@@ -153,6 +153,15 @@ fn route<'a>(routes: &[&'a Node], host: &str) -> Option<&'a Node> {
         .find(|r| r.get("host").and_then(Node::as_str) == Some(host))
 }
 
+/// Every route naming `host`, not the first only: a second route for the same host is served too.
+fn routes_named<'a>(routes: &[&'a Node], host: &str) -> Vec<&'a Node> {
+    routes
+        .iter()
+        .copied()
+        .filter(|r| r.get("host").and_then(Node::as_str) == Some(host))
+        .collect()
+}
+
 fn route_or_panic<'a>(routes: &[&'a Node], host: &str) -> &'a Node {
     route(routes, host).unwrap_or_else(|| panic!("no route for {host}"))
 }
@@ -260,13 +269,14 @@ fn local_mode_is_true_everywhere() {
 
 #[test]
 fn inventory_holds_no_secret_looking_value() {
-    // Arrange: a deny-list. Placeholders such as __REPO_DIR__ or LOCAL_FAKE_ values are fine, a
-    // value that looks like a real secret is not. A quoted or templated value is never a secret.
+    // Arrange: a deny-list. Placeholders such as __REPO_DIR__ or LOCAL_FAKE_ values are fine, and so
+    // is a double-quoted or templated value ({{ ... }}). A single-quoted value is checked like a bare
+    // one: quoting does not make a credential harmless.
     let text = text(INVENTORY);
     let patterns = [
-        r#"(?i)password\s*:\s*[^{"'][a-zA-Z0-9._-]{8,}"#,
-        r#"(?i)secret\s*:\s*[^{"'][a-zA-Z0-9._-]{16,}"#,
-        r#"(?i)token\s*:\s*[^{"'][a-zA-Z0-9._-]{16,}"#,
+        r#"(?i)password\s*:\s*[^{"][a-zA-Z0-9._-]{8,}"#,
+        r#"(?i)secret\s*:\s*[^{"][a-zA-Z0-9._-]{16,}"#,
+        r#"(?i)token\s*:\s*[^{"][a-zA-Z0-9._-]{16,}"#,
     ];
 
     // Act, Assert
@@ -625,35 +635,49 @@ fn mcp_route_opts_into_mcp_api_in_both_copies() {
 
 #[test]
 fn opa_route_is_a_plain_https_proxy_with_no_edge_gate() {
-    // Arrange: skynet trusts OPA's decisions, so the route carries no forward_auth, no api
-    // allowlist flag and no other gate. The example route has exactly host and upstream.
+    // Arrange: skynet trusts OPA's decisions, so every route naming the OPA host carries no
+    // forward_auth, no api allowlist flag and no other gate. The example's route has exactly host
+    // and upstream. Every route for the host is checked, not the first one.
     let example = document(INVENTORY);
     let bootstrap = document(BOOTSTRAP);
     let example_routes = routes_under(&example, "caddy_routes");
     let bootstrap_routes = routes_under(&bootstrap, "_caddy_routes");
 
     // Act
-    let example_opa = route_or_panic(&example_routes, "opa.agent-cloud.test");
-    let bootstrap_opa = route_or_panic(&bootstrap_routes, "opa.{{ _dev_zone }}");
+    let example_opa = routes_named(&example_routes, "opa.agent-cloud.test");
+    let bootstrap_opa = routes_named(&bootstrap_routes, "opa.{{ _dev_zone }}");
 
     // Assert
-    assert_eq!(
-        example_opa.as_map().map(<[_]>::len),
-        Some(2),
-        "extra keys on the OPA route"
+    assert!(
+        !example_opa.is_empty(),
+        "no route names the OPA host in the example"
     );
-    assert_eq!(
-        example_opa.get("upstream").and_then(Node::as_str),
-        Some("opa:8181")
+    for route in example_opa {
+        assert_eq!(
+            route.as_map().map(<[_]>::len),
+            Some(2),
+            "an OPA route has keys beyond host and upstream: {route:?}"
+        );
+        assert_eq!(
+            route.get("upstream").and_then(Node::as_str),
+            Some("opa:8181"),
+            "an OPA route does not reach opa:8181: {route:?}"
+        );
+    }
+    assert!(
+        !bootstrap_opa.is_empty(),
+        "no route names the OPA host in the bootstrap"
     );
-    assert_eq!(
-        bootstrap_opa,
-        &Node::Map(vec![
-            (s("host"), s("opa.{{ _dev_zone }}")),
-            (s("upstream"), s("opa:8181")),
-        ]),
-        "the bootstrap OPA route has more than host and upstream"
-    );
+    for route in bootstrap_opa {
+        assert_eq!(
+            route,
+            &Node::Map(vec![
+                (s("host"), s("opa.{{ _dev_zone }}")),
+                (s("upstream"), s("opa:8181")),
+            ]),
+            "a bootstrap OPA route has more than host and upstream"
+        );
+    }
 }
 
 #[test]

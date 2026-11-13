@@ -186,12 +186,24 @@ fn ini_section(ini: &str, header: &str) -> String {
     out
 }
 
-/// The value of `key` in one INI section, the text after the first `=` of its line.
-fn ini_value<'a>(section: &'a str, key: &str) -> Option<&'a str> {
-    section.lines().find_map(|line| {
-        let (k, v) = line.trim().split_once('=')?;
-        (k.trim_end() == key).then_some(v)
-    })
+/// The one value of `key` in one INI section, the text after the `=` of its line. A key that
+/// occurs twice is refused: ansible-inventory keeps the later definition (checked on ansible-core
+/// 2.21.0, `caddy_http_port` given twice reads back the second), so the first one checked would
+/// pass while the inventory carries another value.
+fn ini_single<'a>(section: &'a str, key: &str) -> &'a str {
+    let found: Vec<&str> = section
+        .lines()
+        .filter_map(|line| {
+            let (k, v) = line.trim().split_once('=')?;
+            (k.trim_end() == key).then_some(v)
+        })
+        .collect();
+    assert_eq!(
+        found.len(),
+        1,
+        "{key} must occur exactly once in its section: {found:?}"
+    );
+    found[0]
 }
 
 #[test]
@@ -575,20 +587,20 @@ fn genesis_sources_the_caddy_edge_ports_from_the_declaration_not_literals() {
 
     // Act + Assert: each port is the declared expression, which is never the literal default
     assert_eq!(
-        ini_value(&caddy, "caddy_http_port"),
-        Some("{{ _caddy_decl.caddy_http_port | default(8088, true) }}")
+        ini_single(&caddy, "caddy_http_port"),
+        "{{ _caddy_decl.caddy_http_port | default(8088, true) }}"
     );
     assert_eq!(
-        ini_value(&caddy, "caddy_https_port"),
-        Some("{{ _edge_https_port }}")
+        ini_single(&caddy, "caddy_https_port"),
+        "{{ _edge_https_port }}"
     );
     assert_eq!(
-        ini_value(&postiz, "postiz_public_url"),
-        Some("https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}")
+        ini_single(&postiz, "postiz_public_url"),
+        "https://postiz.{{ _dev_zone }}:{{ _edge_https_port }}"
     );
     assert_eq!(
-        ini_value(&postiz, "postiz_authentik_base"),
-        Some("https://auth.{{ _dev_zone }}:{{ _edge_https_port }}")
+        ini_single(&postiz, "postiz_authentik_base"),
+        "https://auth.{{ _dev_zone }}:{{ _edge_https_port }}"
     );
     assert!(
         !postiz.contains(":8443"),

@@ -456,7 +456,7 @@ PB="${REPO}/platform/playbooks"
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `bats platform/tests/test_bootstrap_12a.bats -f "fix #2"`
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'`
 Expected: both FAIL (eager form still present; lazy form absent).
 
 - [ ] **Step 3: Apply the mechanism fix**
@@ -471,7 +471,7 @@ grep -rl "'/home/' ~ ansible_user ~ '/agent-cloud'" platform/playbooks \
 
 - [ ] **Step 4: Verify the tests pass + nothing else moved**
 
-Run: `bats platform/tests/test_bootstrap_12a.bats -f "fix #2"` → PASS.
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → PASS.
 Run: `git diff --stat platform/playbooks` → only the expected files changed; spot-check `deploy-dns.yml:20`.
 
 - [ ] **Step 5: Commit**
@@ -505,7 +505,7 @@ Append to `platform/tests/test_bootstrap_12a.bats`:
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `bats platform/tests/test_bootstrap_12a.bats -f "fix #1"` → FAIL.
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → FAIL.
 
 - [ ] **Step 3: Add the passthrough to each foundation deploy's Phase-2 environment**
 
@@ -522,7 +522,7 @@ In each of the four playbooks, the Phase-2 "Run deploy.sh" task `environment:` b
 
 - [ ] **Step 4: Verify the test passes**
 
-Run: `bats platform/tests/test_bootstrap_12a.bats -f "fix #1"` → PASS.
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → PASS.
 Run: `ansible-playbook --syntax-check platform/playbooks/deploy-dns.yml` (and the other three) → no error.
 
 - [ ] **Step 5: Commit**
@@ -662,7 +662,7 @@ Append to `platform/tests/test_bootstrap_12a.bats`:
 
 - [ ] **Step 3: Run the tests**
 
-Run: `bats platform/tests/test_bootstrap_12a.bats` → all PASS (order test will currently fail if Semaphore tasks precede — confirm the loop sits above Stage 2).
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → all PASS (order test will currently fail if Semaphore tasks precede — confirm the loop sits above Stage 2).
 Run: `ansible-playbook --syntax-check -i platform/inventory/local-dev.yml platform/playbooks/bootstrap-local-dev.yml` → OK.
 
 - [ ] **Step 4: Commit**
@@ -794,7 +794,7 @@ Append to BATS:
 }
 ```
 
-Run: `bats platform/tests/test_bootstrap_12a.bats` → PASS.
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → PASS.
 Run: `ansible-playbook --syntax-check -i platform/inventory/local-dev.yml platform/playbooks/bootstrap-local-dev.yml` → OK.
 
 - [ ] **Step 5: Commit**
