@@ -97,13 +97,13 @@
       _exact_prometheus.stdout | default('') if expected_signal in ['metrics', 'health'] else
       _exact_traces.stdout | default('') if expected_signal == 'traces' else
       _exact_profiles.stdout | default('')
-    }}"
+      }}"
     _coverage_backend_rc: "{{
       _exact_logs.rc | default(127) if expected_signal == 'logs' else
       _exact_prometheus.rc | default(127) if expected_signal in ['metrics', 'health'] else
       _exact_traces.rc | default(127) if expected_signal == 'traces' else
       _exact_profiles.rc | default(127)
-    }}"
+      }}"
   no_log: true
 
 - name: Capture the strict observation time after the backend response
@@ -127,7 +127,7 @@
       'window_seconds': observation_window_seconds,
       'requested_freshness_seconds': freshness_seconds,
       'declared_freshness_seconds': _coverage_target.signals[expected_signal].freshness_seconds
-    } | to_json }}"
+      } | to_json }}"
   delegate_to: localhost
   register: _validated_observation
   changed_when: false
