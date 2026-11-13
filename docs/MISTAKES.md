@@ -168,7 +168,7 @@ and why.
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
-| 5.27 | A live service's change kept most tasks unticked, and the ticks it had were made on `dev` after the sync had imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
+| 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5162,9 +5162,9 @@ against their evidence, and the rest went to a reconciliation item (AC-859).
 
 **Root cause.** Two gaps, one behind the other:
 1. Most completed work never ticked its task. The PRs and runs cited the change, not the task.
-2. A tick that is made reaches Plane only if it is on `main` before the item exists. The sync
-   reads `main`, skips a task already ticked when first seen, and never writes status once an item
-   exists (`platform/services/plane/lib/openspec_to_plane.py`, `sync-plane-projects.yml`). Plane
+2. A tick that is made matters to Plane only if it is on `main` before the sync first sees the task;
+   then no item is created for it. The sync reads `main`, skips a task already ticked when first
+   seen, and never writes status once an item exists (`platform/services/plane/lib/openspec_to_plane.py`, `sync-plane-projects.yml`). Plane
    owns status from then on, so a tick made on `dev` and promoted later moves nothing.
 
 **The rule.** A pull request or live run that completes a task ticks that task in `tasks.md`,
