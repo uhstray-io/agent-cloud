@@ -163,3 +163,34 @@ fn a_quoted_merge_key_is_an_ordinary_key() {
     assert!(m.get("<<").is_some());
     assert!(m.get("x").is_none());
 }
+
+#[test]
+fn no_suite_test_starts_ansible_playbook_itself() {
+    // Rule 11 (03 Part 1): a playbook runs through `process::ansible_playbook` and `process::run`,
+    // which confine and bound it. The needles are assembled with concat! so that this file's own
+    // text does not contain them.
+    let needles = [
+        concat!("Command::new(\"ansible", "-playbook\")"),
+        concat!("scrubbed(\"ansible", "-playbook\""),
+    ];
+    let suite = repo::path("platform/tests/suite");
+    let mut found = Vec::new();
+    // Every file on disk, tracked or not: a new module is untracked until it is staged.
+    for entry in std::fs::read_dir(&suite).expect("suite/ reads") {
+        let path = entry.expect("a directory entry").path();
+        if path.extension().is_none_or(|ext| ext != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a suite file reads");
+        for (index, line) in text.lines().enumerate() {
+            if needles.iter().any(|needle| line.contains(needle)) {
+                found.push(format!("{}:{}", path.display(), index + 1));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these start ansible-playbook without process::ansible_playbook: {}",
+        found.join(", ")
+    );
+}

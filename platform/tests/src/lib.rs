@@ -3,7 +3,8 @@
 //! - [`repo`]: the repository root, `git ls-files`, and the playbook task walker;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
 //!   anchors, aliases, `<<` merge keys);
-//! - [`process`]: a bounded child process with a scrubbed environment (03 Part 1, rule 11);
+//! - [`process`]: bounded child processes with a scrubbed environment, and the confined
+//!   `ansible-playbook` runner (03 Part 1, rule 11);
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
 //!   `testsel` binary and `lane.sh` use it).
 
@@ -390,9 +391,20 @@ pub mod repo {
 }
 
 pub mod process {
-    use std::time::Duration;
+    //! Child processes (03 Part 1, rule 11): every program a test starts goes through here.
+    //! [`scrubbed`] and [`bash_with`] start a program with a scrubbed environment and a 30 s
+    //! bound. [`ansible_playbook`] starts `ansible-playbook` confined to one directory, and
+    //! [`run`] and [`run_for`] run any of these to completion, bounded and with no stdin.
+
+    use std::ffi::OsString;
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Output;
+    use std::time::{Duration, Instant};
 
     use assert_cmd::Command;
+
+    use crate::repo;
 
     /// A child bounded by a timeout, with an environment that holds only `PATH`, a C locale,
     /// and a `HOME` and `TMPDIR` inside the directory the caller owns. Nothing from the
@@ -419,6 +431,181 @@ pub mod process {
             ))
             .arg("bash");
         cmd
+    }
+
+    /// The bound on one playbook run: the Python harness's `DEFAULT_TIMEOUT_SECONDS`.
+    pub const PLAYBOOK_TIMEOUT: Duration = Duration::from_secs(120);
+
+    /// SIGKILL, the signal `assert_cmd` sends a child at its timeout (the same on Linux and macOS).
+    const SIGKILL: i32 = 9;
+
+    /// The kernel sandbox a playbook run is confined by: `sandbox-exec` on macOS and `bwrap` on
+    /// Linux, each when it is on PATH; `None` otherwise. Without one no write is refused by the
+    /// kernel, so a confinement proof must check for it and say so (`support_playbook.rs`).
+    pub fn sandbox() -> Option<&'static str> {
+        if cfg!(target_os = "macos") && on_path("sandbox-exec") {
+            Some("sandbox-exec")
+        } else if cfg!(target_os = "linux") && on_path("bwrap") {
+            Some("bwrap")
+        } else {
+            None
+        }
+    }
+
+    fn on_path(program: &str) -> bool {
+        std::env::var_os("PATH")
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+    }
+
+    /// The environment of a playbook run whose writable state is `dir`. `caller` reads the
+    /// caller's variables; the child gets exactly the list returned, never an inheritance. Ansible's
+    /// own state moves under `dir`. ANSIBLE_CONFIG is never set, so the repository's `ansible.cfg`
+    /// applies from the working directory. Collections stay where the caller's Ansible finds them:
+    /// moving ANSIBLE_HOME would hide the installed `ansible.posix` (`harness_sandbox.py`'s
+    /// `env_for`).
+    pub fn playbook_env(
+        dir: &Path,
+        caller: impl Fn(&str) -> Option<OsString>,
+    ) -> Vec<(&'static str, OsString)> {
+        let state = dir.join(".ansible-state");
+        let collections = caller("ANSIBLE_COLLECTIONS_PATH").unwrap_or_else(|| {
+            let mut home = caller("ANSIBLE_HOME")
+                .filter(|home| !home.is_empty())
+                .unwrap_or_else(|| {
+                    let mut home = caller("HOME").expect("HOME is set");
+                    home.push("/.ansible");
+                    home
+                });
+            home.push("/collections:/usr/share/ansible/collections");
+            home
+        });
+        vec![
+            ("PATH", caller("PATH").unwrap_or_default()),
+            ("LANG", "C".into()),
+            ("HOME", dir.into()),
+            ("TMPDIR", dir.into()),
+            ("ANSIBLE_HOME", state.join("home").into()),
+            ("ANSIBLE_LOCAL_TEMP", state.join("local").into()),
+            ("ANSIBLE_REMOTE_TEMP", state.join("remote").into()),
+            ("ANSIBLE_NOCOLOR", "1".into()),
+            ("ANSIBLE_COLLECTIONS_PATH", collections),
+        ]
+    }
+
+    /// The directories a sandboxed run may write: `dir`, the caller's temp root (TMPDIR, else
+    /// /tmp) and the process's temp directory, each resolved, without repeats.
+    fn writable_roots(dir: &Path) -> Vec<PathBuf> {
+        let caller_tmp = std::env::var_os("TMPDIR")
+            .filter(|tmp| !tmp.is_empty())
+            .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for path in [dir.to_path_buf(), caller_tmp, std::env::temp_dir()] {
+            let resolved = path
+                .canonicalize()
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            if !roots.contains(&resolved) {
+                roots.push(resolved);
+            }
+        }
+        roots
+    }
+
+    /// A sandbox-exec SBPL subpath for `root`. A quote or backslash would end the profile's
+    /// string, so such a path is refused rather than escaped.
+    fn subpath(root: &Path) -> String {
+        let text = root.display().to_string();
+        assert!(
+            !text.contains(['"', '\\']),
+            "{text}: a sandbox path cannot hold a quote or a backslash"
+        );
+        format!("(subpath \"{text}\")")
+    }
+
+    /// The `sandbox-exec` profile of harness_sandbox.py's `_profile`: default allow, every file
+    /// write denied, then the writable roots and /dev allowed.
+    fn sandbox_profile(roots: &[PathBuf]) -> String {
+        let mut profile =
+            String::from("(version 1)(allow default)(deny file-write*)(allow file-write*");
+        for root in roots {
+            profile.push(' ');
+            profile.push_str(&subpath(root));
+        }
+        profile.push_str(" (subpath \"/dev\"))");
+        profile
+    }
+
+    /// `ansible-playbook -i INVENTORY PLAYBOOK`, run from the repository root (so its
+    /// `ansible.cfg` applies), in the environment of [`playbook_env`] and bounded by
+    /// [`PLAYBOOK_TIMEOUT`]. Under a kernel sandbox (see [`sandbox`]) writes are allowed only in
+    /// `dir`, the temp roots and /dev. Run it with [`run`]; add arguments with `.arg`.
+    ///
+    /// Panics when `ansible-playbook` is not on PATH: a test that cannot run a playbook must fail,
+    /// never skip.
+    pub fn ansible_playbook(dir: &Path, inventory: &str, playbook: &str) -> Command {
+        assert!(
+            on_path("ansible-playbook"),
+            "ansible-playbook is not on PATH: run `uv sync --locked` and put .venv/bin first"
+        );
+        for sub in ["home", "local", "remote"] {
+            let path = dir.join(".ansible-state").join(sub);
+            std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        }
+        let roots = writable_roots(dir);
+        let mut cmd = match sandbox() {
+            None => Command::new("ansible-playbook"),
+            Some("sandbox-exec") => {
+                let mut cmd = Command::new("sandbox-exec");
+                cmd.arg("-p")
+                    .arg(sandbox_profile(&roots))
+                    .arg("ansible-playbook");
+                cmd
+            }
+            Some("bwrap") => {
+                let mut cmd = Command::new("bwrap");
+                cmd.args(["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]);
+                for root in &roots {
+                    cmd.arg("--bind").arg(root).arg(root);
+                }
+                cmd.args(["--", "ansible-playbook"]);
+                cmd
+            }
+            Some(other) => panic!("unknown sandbox `{other}`"),
+        };
+        cmd.args(["-i", inventory, playbook])
+            .current_dir(repo::root())
+            .env_clear()
+            .envs(playbook_env(dir, |name| std::env::var_os(name)))
+            .write_stdin(Vec::new())
+            .timeout(PLAYBOOK_TIMEOUT);
+        cmd
+    }
+
+    /// [`run_for`] with [`PLAYBOOK_TIMEOUT`]: the bound a playbook run is held to.
+    pub fn run(cmd: &mut Command) -> Output {
+        run_for(cmd, PLAYBOOK_TIMEOUT)
+    }
+
+    /// Runs `cmd` to completion with no stdin, killed once `timeout` has passed. A timeout panics
+    /// with its bound and nothing the child printed: captured output can hold fixture credentials
+    /// (`harness_sandbox.run`). `assert_cmd` returns a killed child as `Ok`, not as an error, so a
+    /// timeout is a SIGKILL that came at or after the bound. The bound covers the direct child
+    /// only: `assert_cmd` waits for the output pipes, so a grandchild (an Ansible worker) that
+    /// keeps them open holds the return until it exits. The Python harness does not wait for that.
+    pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
+        let started = Instant::now();
+        let output = cmd
+            .write_stdin(Vec::new())
+            .timeout(timeout)
+            .output()
+            .unwrap_or_else(|e| panic!("the test command did not start: {e}"));
+        let killed = output.status.signal() == Some(SIGKILL);
+        if killed && started.elapsed() >= timeout {
+            panic!(
+                "test command timed out after {}s; captured output suppressed",
+                timeout.as_secs_f64()
+            );
+        }
+        output
     }
 
     fn shell_quote(s: &str) -> String {
