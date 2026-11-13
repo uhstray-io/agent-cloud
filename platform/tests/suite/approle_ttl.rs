@@ -37,6 +37,12 @@ fn no_credential_ttl_is_zero_except_the_allow_listed_orchestrator() {
 
     // Act
     let hits = repo::grep(pattern, &["platform/playbooks", "platform/services"]);
+    // The orchestrator's sanctioned zero-TTL setting is in deploy.sh, so an empty scan means the
+    // pattern or the pathspecs broke, not that the repository is clean.
+    assert!(
+        !hits.is_empty(),
+        "the TTL scan found no zero-TTL setting; the pattern or the pathspecs are wrong"
+    );
     let mut offenders = vec![];
     for hit in &hits {
         // `grep -n` output: path, line, text. A setting with no exemption above it is an offender.

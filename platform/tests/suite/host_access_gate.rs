@@ -93,10 +93,28 @@ fn str_at<'a>(node: &'a Node, key: &str) -> Option<&'a str> {
     node.get(key).and_then(Node::as_str)
 }
 
+/// The arguments of module `short` in a task, under any spelling Ansible accepts for it: the
+/// short name, `ansible.builtin.<short>` or `ansible.legacy.<short>`. A check that reads one
+/// spelling alone is blind to a task written under another, so every module read goes through
+/// here.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+    .iter()
+    .find_map(|key| task.get(key))
+}
+
+/// The file an `include_tasks` task includes.
+fn included(task: &Node) -> Option<&str> {
+    module(task, "include_tasks").and_then(Node::as_str)
+}
+
 /// A value of an action or task key, e.g. `fact(task, "_target_port")` for a set_fact.
 fn fact<'a>(task: &'a Node, key: &str) -> Option<&'a str> {
-    task.get("ansible.builtin.set_fact")
-        .and_then(|facts| str_at(facts, key))
+    module(task, "set_fact").and_then(|facts| str_at(facts, key))
 }
 
 fn is_true(node: Option<&Node>) -> bool {
@@ -137,9 +155,9 @@ fn strings(node: &Node) -> Vec<&str> {
     out
 }
 
-/// The argv of a `ansible.builtin.command` task, one element per list item.
+/// The argv of a `command` task, one element per list item.
 fn argv(task: &Node) -> Vec<&str> {
-    task.get("ansible.builtin.command")
+    module(task, "command")
         .and_then(|command| command.get("argv"))
         .and_then(Node::as_seq)
         .unwrap_or_default()
@@ -205,14 +223,14 @@ fn verify_host_access_is_read_only() {
     // Arrange
     let tasks = repo::tasks(PLAYBOOK);
     let write_modules = [
-        "ansible.builtin.template",
-        "ansible.builtin.lineinfile",
-        "ansible.builtin.blockinfile",
-        "ansible.builtin.replace",
-        "ansible.builtin.service",
-        "ansible.builtin.systemd",
-        "ansible.builtin.user",
-        "ansible.builtin.authorized_key",
+        "template",
+        "lineinfile",
+        "blockinfile",
+        "replace",
+        "service",
+        "systemd",
+        "user",
+        "authorized_key",
     ];
 
     // Act
@@ -221,7 +239,7 @@ fn verify_host_access_is_read_only() {
         .filter(|task| {
             write_modules
                 .iter()
-                .any(|module| task.get(module).is_some())
+                .any(|short| module(task, short).is_some())
         })
         .map(name)
         .collect();
@@ -267,12 +285,7 @@ fn the_group_guard_is_a_localhost_play_that_runs_first() {
         .unwrap_or_default();
     let checks: Vec<&str> = guard_tasks
         .iter()
-        .flat_map(|task| {
-            texts(
-                task.get("ansible.builtin.assert")
-                    .and_then(|check| check.get("that")),
-            )
-        })
+        .flat_map(|task| texts(module(task, "assert").and_then(|check| check.get("that"))))
         .collect();
     let verify_hosts = str_at(&plays[verify_at], "hosts").unwrap_or_default();
     let undefined_default = Regex::new(r#"default\('ungrouped'\)|target_service: "ungrouped""#)
@@ -319,7 +332,7 @@ fn every_raw_probe_tolerates_failure_on_its_own() {
     // Act
     let raw: Vec<&Node> = tasks
         .iter()
-        .filter(|task| task.get("ansible.builtin.raw").is_some())
+        .filter(|task| module(task, "raw").is_some())
         .collect();
     let intolerant: Vec<&str> = raw
         .iter()
@@ -367,9 +380,9 @@ fn the_probe_pins_the_host_key_instead_of_accepting_any() {
     let pin_tasks = repo::tasks(PIN);
 
     // Act
-    let includes_pin = tasks.iter().any(|task| {
-        str_at(task, "ansible.builtin.include_tasks") == Some("tasks/pin-ssh-host-key.yml")
-    });
+    let includes_pin = tasks
+        .iter()
+        .any(|task| included(task) == Some("tasks/pin-ssh-host-key.yml"));
     let reads_the_host = pin_tasks.iter().any(|task| {
         name(task).contains("read the target's own host key over the existing connection")
     });
@@ -432,7 +445,7 @@ fn cleanup_removes_both_temp_files_always() {
 
     // Act
     let removes_key = always.iter().any(|task| {
-        str_at(task, "ansible.builtin.include_tasks") == Some("tasks/remove-ssh-key.yml")
+        included(task) == Some("tasks/remove-ssh-key.yml")
             && task
                 .get("vars")
                 .and_then(|vars| str_at(vars, "ssh_key_result_var"))
@@ -496,9 +509,11 @@ fn sshd_effective_config_is_read_not_the_main_file() {
     let tasks = repo::tasks(PLAYBOOK);
 
     // Act
-    let reads_effective_config = tasks
-        .iter()
-        .any(|task| str_at(task, "ansible.builtin.raw").is_some_and(|cmd| cmd.contains("sshd -T")));
+    let reads_effective_config = tasks.iter().any(|task| {
+        module(task, "raw")
+            .and_then(Node::as_str)
+            .is_some_and(|cmd| cmd.contains("sshd -T"))
+    });
 
     // Assert
     assert!(
@@ -694,7 +709,7 @@ fn known_hosts_uses_the_host_port_form_off_port_22() {
     // Act
     let content = pin
         .iter()
-        .filter_map(|task| task.get("ansible.builtin.copy"))
+        .filter_map(|task| module(task, "copy"))
         .find_map(|copy| str_at(copy, "content"))
         .unwrap_or_default();
     let line = pin
@@ -703,9 +718,7 @@ fn known_hosts_uses_the_host_port_form_off_port_22() {
         .unwrap_or_default();
     let include = tasks
         .iter()
-        .find(|task| {
-            str_at(task, "ansible.builtin.include_tasks") == Some("tasks/pin-ssh-host-key.yml")
-        })
+        .find(|task| included(task) == Some("tasks/pin-ssh-host-key.yml"))
         .expect("the gate includes the pin task");
     let port_handed_over = include
         .get("vars")
@@ -798,9 +811,9 @@ fn the_environment_secret_wins_over_the_extra_var() {
         && all
             .iter()
             .any(|s| s.contains("'login_password': _ssh_password"));
-    let includes_transport_guard = tasks.iter().any(|task| {
-        str_at(task, "ansible.builtin.include_tasks") == Some("tasks/assert-bao-transport.yml")
-    });
+    let includes_transport_guard = tasks
+        .iter()
+        .any(|task| included(task) == Some("tasks/assert-bao-transport.yml"));
     let template_slice = raw_section(
         &read(TEMPLATES),
         "  - name: Store SSH Password",
@@ -848,15 +861,13 @@ fn the_bootstrap_password_is_offered_only_when_one_exists() {
     let offer = named(&tasks, "Offer it as a password fallback");
 
     // Act
-    let password = offer
-        .get("ansible.builtin.add_host")
-        .and_then(|add| str_at(add, "ansible_password"));
+    let password = module(offer, "add_host").and_then(|add| str_at(add, "ansible_password"));
     let when = texts(offer.get("when"));
     let rescue_clears_it = tasks
         .iter()
         .filter_map(|task| task.get("rescue").and_then(Node::as_seq))
         .flatten()
-        .filter_map(|task| task.get("ansible.builtin.set_fact"))
+        .filter_map(|task| module(task, "set_fact"))
         .any(|facts| str_at(facts, "_bootstrap_pw") == Some(""));
 
     // Assert

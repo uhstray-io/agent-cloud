@@ -1,5 +1,5 @@
 //! `manage-github-runner-group.yml` converges the organisation's self-hosted runner group to its
-//! declared list of private repositories (static tier).
+//! declared list of private repositories (security set, static tier: it is `always` in areas.yml).
 //!
 //! This playbook IS the control that keeps the self-hosted plane away from public repositories.
 //! The organisation's pre-existing default group has visibility "all", so the failure mode is
@@ -118,17 +118,28 @@ fn named<'a>(items: &'a [Node], needle: &str) -> &'a Node {
         .unwrap_or_else(|| panic!("no task named like {needle:?}"))
 }
 
-/// The `uri` arguments of a task, when it makes an HTTP request.
-fn uri(task: &Node) -> Option<&Node> {
-    task.get("ansible.builtin.uri")
+/// The arguments of module `short` in a task, under any spelling Ansible accepts for it: the
+/// short name, `ansible.builtin.<short>` or `ansible.legacy.<short>`. A task written under one
+/// spelling is the same module, so a check that reads only one spelling can pass on a task it
+/// never saw.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+    .iter()
+    .find_map(|key| task.get(key))
 }
 
-/// The `ansible.builtin.assert` `that:` items of a task.
+/// The `uri` arguments of a task, when it makes an HTTP request.
+fn uri(task: &Node) -> Option<&Node> {
+    module(task, "uri")
+}
+
+/// The `assert` `that:` items of a task.
 fn asserts(task: &Node) -> Vec<&str> {
-    texts(
-        task.get("ansible.builtin.assert")
-            .and_then(|check| check.get("that")),
-    )
+    texts(module(task, "assert").and_then(|check| check.get("that")))
 }
 
 #[test]
@@ -157,8 +168,7 @@ fn a_public_repository_in_the_declaration_aborts_the_run() {
 
     // Act
     let checks = asserts(abort);
-    let message = abort
-        .get("ansible.builtin.assert")
+    let message = module(abort, "assert")
         .and_then(|check| str_at(check, "fail_msg"))
         .unwrap_or_default();
 
@@ -386,8 +396,7 @@ fn the_private_key_comes_from_the_secret_store() {
         .flat_map(strings)
         .any(|s| s.contains("app_private_key"));
     let includes_guard = tasks.iter().any(|task| {
-        task.get("ansible.builtin.include_tasks")
-            .and_then(Node::as_str)
+        module(task, "include_tasks").and_then(Node::as_str)
             == Some("tasks/assert-bao-transport.yml")
     });
     let readers: Vec<&Node> = tasks
