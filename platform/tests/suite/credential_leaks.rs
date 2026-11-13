@@ -11,13 +11,17 @@
 //! CAS-guarded, and the seed's read-only access check ends the play before any write.
 //! docs/MISTAKES.md 1.1, 2.1, 2.18 and 5.1 name these checks as their enforcement.
 //!
-//! Two BATS behaviours are kept as they were, and one is corrected:
+//! Three BATS behaviours are kept as they were, and one is corrected:
 //! - Kept: the Jinja scan reads the BATS bracket `[\s]`, which is a backslash or an `s`, not
 //!   whitespace. So it matches `{{name` and not `{{ name`. The intended `\s*` reports 412 names
 //!   in 58 templates on 2026-11-12, so the fix is a separate change. test_launch_gate_allowlist.py
 //!   records the same gap.
 //! - Kept: the BATS secret scans excluded comment lines with `^\s*#`, but grep -n puts `N:` in
 //!   front of every line, so that exclusion never applied. Comment lines are scanned.
+//! - Kept: the password and token scans skip a binary file (a NUL byte in its first 8000 bytes),
+//!   as the BATS grep scans did. The GNU grep rule itself is not re-checked here: the local grep
+//!   is not GNU. Checked 2026-11-13: 854 candidate files, 853 scanned, the one binary being
+//!   `.codebase-memory/graph.db.zst`.
 //! - Corrected: the BATS `["\x27]` is a bracket of `"`, `\`, `x`, `2` and `7`, not a quote. The
 //!   port reads an optional quote, `["']`. It adds no hits on the tree (checked 2026-11-12).
 //!
@@ -172,6 +176,32 @@ fn values_for_key(file: &str, key: &str) -> Vec<String> {
         .collect()
 }
 
+/// Every scalar that is an item of a sequence anywhere in `file`, at any depth: the parsed form of
+/// the BATS `^\s+- <item>` line match.
+fn list_items_anywhere(file: &str) -> Vec<String> {
+    fn collect(node: &Node, out: &mut Vec<String>) {
+        match node {
+            Node::Seq(items) => {
+                for item in items {
+                    if let Some(scalar) = item.as_str() {
+                        out.push(scalar.to_owned());
+                    }
+                    collect(item, out);
+                }
+            }
+            Node::Map(entries) => {
+                for (_, value) in entries {
+                    collect(value, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    collect(&load(file), &mut out);
+    out
+}
+
 /// Every item of every `that:` list in `file`.
 fn that_items(file: &str) -> Vec<String> {
     let doc = load(file);
@@ -323,8 +353,11 @@ fn committed_files() -> Vec<String> {
         .collect()
 }
 
-/// Each line of each file that matches `pattern` and holds none of `excluded`, as
+/// Each line of each text file that matches `pattern` and holds none of `excluded`, as
 /// `file:line:text`. A tracked path that is not a regular file is skipped, as `[ -f ]` skipped it.
+/// A binary file is skipped as well. The BATS scans ran on GNU grep, which treats a file with a
+/// NUL byte near its start as binary and prints no matching line for it. The first 8000 bytes
+/// are the window here. Only `.codebase-memory/graph.db.zst` is a tracked binary in the scanned set.
 fn line_hits(files: &[String], pattern: &Regex, excluded: &[&str]) -> Vec<String> {
     let mut hits = Vec::new();
     for file in files {
@@ -333,6 +366,9 @@ fn line_hits(files: &[String], pattern: &Regex, excluded: &[&str]) -> Vec<String
             continue;
         }
         let bytes = fs::read(&path).unwrap_or_else(|e| panic!("{file}: {e}"));
+        if bytes.iter().take(8000).any(|b| *b == 0) {
+            continue;
+        }
         let text = String::from_utf8_lossy(&bytes);
         for (index, line) in text.split('\n').enumerate() {
             if pattern.is_match(line) && !excluded.iter().any(|x| line.contains(*x)) {
@@ -976,8 +1012,17 @@ fn seed_openbao_key_merges_the_resolved_value_only() {
         that.iter().any(|t| t == "_bao_value | length > 0"),
         "the validation gate does not test the resolved value"
     );
+    // The BATS line match was `^\s+- bao_value is defined`: a list item anywhere in the file, at any
+    // depth. A `when:` holding the same scalar is refused as well.
+    let list_items = list_items_anywhere(SEED_KEY);
+    let scalar_when = values_for_key(SEED_KEY, "when");
     assert!(
-        !that.iter().any(|t| t.starts_with("bao_value is defined")),
+        !list_items
+            .iter()
+            .any(|t| t.trim().starts_with("bao_value is defined"))
+            && !scalar_when
+                .iter()
+                .any(|w| w.trim().starts_with("bao_value is defined")),
         "the validation gate tests the raw extra var"
     );
 }

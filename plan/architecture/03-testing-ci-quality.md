@@ -541,11 +541,11 @@ Validate that no credentials, private IPs, or secrets are committed to the repos
 
 | Test | Tool | Location |
 |------|------|----------|
-| RFC1918 IP detection | BATS + grep | `platform/tests/test_credential_leaks.bats` |
-| Hardcoded password detection | BATS + grep | `platform/tests/test_credential_leaks.bats` |
-| Template namespace validation | BATS + grep | `platform/tests/test_credential_leaks.bats` |
-| Gitignore coverage | BATS | `platform/tests/test_credential_leaks.bats` |
-| Tracked .env detection | BATS + git | `platform/tests/test_credential_leaks.bats` |
+| RFC1918 IP detection | Rust (nextest) | `platform/tests/suite/credential_leaks.rs` |
+| Hardcoded password detection | Rust (nextest) | `platform/tests/suite/credential_leaks.rs` |
+| Template namespace validation | Rust (nextest) | `platform/tests/suite/credential_leaks.rs` |
+| Gitignore coverage | Rust (nextest) | `platform/tests/suite/credential_leaks.rs` |
+| Tracked .env detection | Rust (nextest) | `platform/tests/suite/credential_leaks.rs` |
 | Verified secret scanning | trufflehog | CI security job |
 
 ### 1c. Validation Tests (compose, template, structure)
@@ -762,7 +762,7 @@ graph TD
 
 ### 4a. Standalone BATS Tests
 
-The file `platform/tests/test_credential_leaks.bats` contains repository-wide credential leak regression tests. These run in the CI test job alongside existing BATS tests.
+The file `platform/tests/suite/credential_leaks.rs` contains repository-wide credential leak regression tests (Rust, plan 24; the BATS file it replaced is deleted). They are in the security set, which every lane runs, so the CI `rust-tests` job (`lane.sh ci`) runs them.
 
 **Coverage:**
 
@@ -777,7 +777,7 @@ The file `platform/tests/test_credential_leaks.bats` contains repository-wide cr
 
 ### 4b. RFC1918 IP Detection (expanded)
 
-The CI security job currently only checks `192.168.x.x` in diffs. The standalone BATS test expands to all RFC1918 ranges:
+The CI security job currently only checks `192.168.x.x` in diffs. The standalone Rust test (`platform/tests/suite/credential_leaks.rs`) expands to all RFC1918 ranges:
 
 | Range | CIDR | Use |
 |-------|------|-----|
@@ -914,7 +914,7 @@ Add `pytest-cov` for Python and TAP output for BATS:
 
 #### Credential Leak BATS Tests
 
-The `platform/tests/test_credential_leaks.bats` file should run as part of the existing BATS step:
+Historical (2026-04 design, superseded): the credential leak tests were to run in the BATS step below. They run in the Rust suite instead (`platform/tests/suite/credential_leaks.rs`, `rust-tests` job), and the step below runs only the remaining `.bats` files:
 
 ```yaml
 - name: Run Bash tests
@@ -935,7 +935,7 @@ platform/
     test_common.bats                  # Shared lib tests
     test_netbox_common.bats           # NetBox lib tests
     test_playbook_rendering.bats      # Playbook structure tests
-    test_credential_leaks.bats        # Credential leak regression tests
+    suite/credential_leaks.rs         # Credential leak regression tests (Rust, plan 24)
     test_service_<name>.bats          # Per-service validation (future)
   services/<name>/deployment/
     tests/                            # Service-specific unit tests
@@ -959,8 +959,8 @@ platform/
 # Run all BATS tests
 bats platform/tests/
 
-# Run a single BATS file
-bats platform/tests/test_credential_leaks.bats
+# Run the credential leak module (Rust suite, plan 24)
+cd platform/tests && cargo nextest run --locked -E 'test(/^credential_leaks::/)'
 
 # Run all Python tests
 cd platform/services/netbox/deployment

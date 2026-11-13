@@ -1,6 +1,6 @@
 # Plays that resolve an OpenBao URL and do NOT yet include tasks/assert-bao-transport.yml.
 #
-# A RATCHET, not an allow-list. platform/tests/platform/tests/suite/credential_leaks.rs derives the
+# A RATCHET, not an allow-list. platform/tests/suite/credential_leaks.rs derives the
 # set of OpenBao-reaching plays from the playbooks themselves and then requires:
 #   - every unguarded play is named here        (a NEW gap cannot appear silently)
 #   - every play named here is still unguarded  (a fix cannot leave its exception behind)
