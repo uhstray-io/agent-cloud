@@ -32,6 +32,20 @@ const BAO_URL: &str = "{{ _bao_url }}";
 const PURGE_URL: &str = "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1";
 const SWEEP_URL: &str = "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ (item | split(':'))[0] }}/content/{{ item | urlencode }}";
 
+/// A task's module under any of the three spellings Ansible accepts for a module key: the short
+/// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
+/// that reads one spelling alone is blind to a task written under another, so every module read
+/// goes through here.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+    .iter()
+    .find_map(|key| task.get(key))
+}
+
 fn task_name(task: &Node) -> &str {
     task.get("name").and_then(Node::as_str).unwrap_or("")
 }
@@ -52,10 +66,7 @@ fn starting<'a>(tasks: &'a [Node], prefix: &str) -> &'a Node {
 
 /// The `that:` expressions of an assert, whether written as one scalar or a list.
 fn that_items(task: &Node) -> Vec<&str> {
-    match task
-        .get("ansible.builtin.assert")
-        .and_then(|a| a.get("that"))
-    {
+    match module(task, "assert").and_then(|a| a.get("that")) {
         Some(Node::Str(s)) => vec![s.as_str()],
         Some(Node::Seq(items)) => items.iter().filter_map(Node::as_str).collect(),
         _ => vec![],
@@ -64,32 +75,28 @@ fn that_items(task: &Node) -> Vec<&str> {
 
 /// The file a task includes, under either spelling of the keyword.
 fn include_target(task: &Node) -> Option<&str> {
-    ["include_tasks", "ansible.builtin.include_tasks"]
-        .iter()
-        .find_map(|key| task.get(key).and_then(Node::as_str))
+    module(task, "include_tasks").and_then(Node::as_str)
 }
 
-/// The playbook a task imports, under either spelling of the keyword.
+/// The playbook a task imports.
 fn import_target(task: &Node) -> Option<&str> {
-    ["import_playbook", "ansible.builtin.import_playbook"]
-        .iter()
-        .find_map(|key| task.get(key).and_then(Node::as_str))
+    module(task, "import_playbook").and_then(Node::as_str)
 }
 
 fn url_of(task: &Node) -> Option<&str> {
-    task.get("ansible.builtin.uri")?.get("url")?.as_str()
+    module(task, "uri")?.get("url")?.as_str()
 }
 
 /// The HTTP method of a uri task. Other tasks report GET, so filter on `url_of` as well.
 fn method_of(task: &Node) -> &str {
-    task.get("ansible.builtin.uri")
+    module(task, "uri")
         .and_then(|uri| uri.get("method"))
         .and_then(Node::as_str)
         .unwrap_or("GET")
 }
 
-fn module_arg<'a>(task: &'a Node, module: &str, arg: &str) -> Option<&'a str> {
-    task.get(module)?.get(arg)?.as_str()
+fn module_arg<'a>(task: &'a Node, module_name: &str, arg: &str) -> Option<&'a str> {
+    module(task, module_name)?.get(arg)?.as_str()
 }
 
 #[test]
@@ -275,7 +282,7 @@ fn destroy_vm_frees_leftovers_only_on_active_image_storages() {
 
     let select = named(&tasks, "Select the storages to sweep for leftovers");
     assert!(
-        module_arg(select, "ansible.builtin.set_fact", "_sweep_storages")
+        module_arg(select, "set_fact", "_sweep_storages")
             .is_some_and(|expr| expr.contains("selectattr('active', 'equalto', 1)")),
         "the sweep must select only ACTIVE storages"
     );
@@ -313,19 +320,19 @@ fn destroy_vm_verifies_the_destroy_and_the_vmid_absence() {
 
     let verify = named(&tasks, "Verify the destroy task succeeded");
     assert!(
-        verify.get("ansible.builtin.fail").is_some(),
+        module(verify, "fail").is_some(),
         "the destroy's task result is checked by a fail"
     );
 
     let gone = starting(&tasks, "Confirm the vmid is gone");
     assert!(
-        gone.get("ansible.builtin.uri").is_some(),
+        module(gone, "uri").is_some(),
         "the vmid's absence is confirmed by a cluster query"
     );
 
     let end = named(&tasks, "End play when the VM is already gone");
     assert_eq!(
-        end.get("ansible.builtin.meta").and_then(Node::as_str),
+        module(end, "meta").and_then(Node::as_str),
         Some("end_play"),
         "an absent vmid ends the play"
     );

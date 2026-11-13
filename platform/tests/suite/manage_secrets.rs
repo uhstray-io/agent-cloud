@@ -23,17 +23,30 @@ const MANAGE: &str = "platform/playbooks/tasks/manage-secrets.yml";
 const MERGE_TASK: &str = "bao-merge-keys.yml";
 const SERVICE_PATH: &str = "secret/data";
 
-/// The URL of a uri task, if the task is one.
-fn url_of(task: &Node) -> Option<&str> {
-    task.get("ansible.builtin.uri")?.get("url")?.as_str()
+/// A task's module under any of the three spellings Ansible accepts for a module key: the short
+/// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
+/// that reads one spelling alone is blind to a task written under another, so every module read
+/// goes through here.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+    .iter()
+    .find_map(|key| task.get(key))
 }
 
-/// The HTTP method of a uri task. The module defaults to GET.
-fn method_of(task: &Node) -> &str {
-    task.get("ansible.builtin.uri")
-        .and_then(|uri| uri.get("method"))
-        .and_then(Node::as_str)
-        .unwrap_or("GET")
+/// A string at any depth, in a key or a value: a task names a path wherever it does so.
+fn any_string(node: &Node, pred: &dyn Fn(&str) -> bool) -> bool {
+    match node {
+        Node::Str(s) => pred(s),
+        Node::Seq(items) => items.iter().any(|item| any_string(item, pred)),
+        Node::Map(entries) => entries
+            .iter()
+            .any(|(k, v)| any_string(k, pred) || any_string(v, pred)),
+        Node::Null | Node::Bool(_) => false,
+    }
 }
 
 #[test]
@@ -42,11 +55,9 @@ fn the_store_back_goes_through_the_shared_merge_task() {
     let tasks = repo::tasks(MANAGE);
 
     // Act
-    let includes_merge = tasks.iter().any(|task| {
-        ["include_tasks", "ansible.builtin.include_tasks"]
-            .iter()
-            .any(|key| task.get(key).and_then(Node::as_str) == Some(MERGE_TASK))
-    });
+    let includes_merge = tasks
+        .iter()
+        .any(|task| module(task, "include_tasks").and_then(Node::as_str) == Some(MERGE_TASK));
 
     // Assert
     assert!(
@@ -57,26 +68,32 @@ fn the_store_back_goes_through_the_shared_merge_task() {
 
 #[test]
 fn no_task_writes_to_the_service_secret_path_directly() {
-    // Arrange: the tasks that read or write the KV-v2 data path.
+    // Arrange: a task names the KV-v2 data path wherever it does so, in its url, its vars, or any
+    // other scalar. Selecting on the url alone let a write through with the path in a task var.
     let tasks = repo::tasks(MANAGE);
     let on_secret_path: Vec<&Node> = tasks
         .iter()
-        .filter(|task| url_of(task).is_some_and(|url| url.contains(SERVICE_PATH)))
+        .filter(|task| any_string(task, &|s: &str| s.contains(SERVICE_PATH)))
         .collect();
     assert!(
         !on_secret_path.is_empty(),
         "{MANAGE} has no task on {SERVICE_PATH}; the check would pass for nothing"
     );
 
-    // Act / Assert: every such task is a GET (fetch existing, shared reads). A write goes through
-    // the merge task.
+    // Act / Assert: every such task is a uri GET (fetch existing, shared reads), under whichever
+    // spelling of the uri module it uses. A method left out is GET, as the module defaults.
     for task in on_secret_path {
-        let method = method_of(task);
-        assert_eq!(
-            method,
-            "GET",
-            "a task on {SERVICE_PATH} writes with {method}: {}",
-            url_of(task).unwrap_or_default()
+        let name = task
+            .get("name")
+            .and_then(Node::as_str)
+            .unwrap_or("(unnamed)");
+        let Some(uri) = module(task, "uri") else {
+            panic!("{MANAGE}: task {name:?} names {SERVICE_PATH} but is not a uri read");
+        };
+        let method = uri.get("method").and_then(Node::as_str).unwrap_or("GET");
+        assert!(
+            method.eq_ignore_ascii_case("GET"),
+            "{MANAGE}: task {name:?} reads {SERVICE_PATH} with method {method}, not GET"
         );
     }
 }

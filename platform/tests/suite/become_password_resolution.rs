@@ -44,7 +44,54 @@ const RESOLVER: &str = "resolve-become-password";
 const RESOLVER_FILE: &str = "resolve-become-password.yml";
 const GUARD_FILE: &str = "assert-bao-transport.yml";
 const PASSWORD: &str = "become_password";
-const INCLUDE_KEYS: [&str; 2] = ["include_tasks", "ansible.builtin.include_tasks"];
+/// Ansible's task keywords: the keys of a task that are not a module call. Any other key of a task
+/// names the module it calls. `action` and `local_action` are left out on purpose: they name a
+/// module as their value, so they count as calls. `with_*` loop keys are matched by prefix.
+const TASK_KEYWORDS: &[&str] = &[
+    "name",
+    "args",
+    "any_errors_fatal",
+    "async",
+    "become",
+    "become_exe",
+    "become_flags",
+    "become_method",
+    "become_user",
+    "block",
+    "always",
+    "changed_when",
+    "check_mode",
+    "collections",
+    "connection",
+    "debugger",
+    "delay",
+    "delegate_facts",
+    "delegate_to",
+    "diff",
+    "environment",
+    "failed_when",
+    "ignore_errors",
+    "ignore_unreachable",
+    "listen",
+    "loop",
+    "loop_control",
+    "module_defaults",
+    "no_log",
+    "notify",
+    "poll",
+    "port",
+    "register",
+    "remote_user",
+    "rescue",
+    "retries",
+    "run_once",
+    "tags",
+    "throttle",
+    "timeout",
+    "until",
+    "vars",
+    "when",
+];
 
 /// The top-level playbooks, the files `ansible-playbook` is launched on. A `*` pathspec would also
 /// match `tasks/*.yml`, so only entries with no further `/` after the directory are kept.
@@ -109,14 +156,35 @@ fn mentions_any(node: &Node, needles: &[&str]) -> bool {
     needles.iter().any(|needle| mentions(node, needle))
 }
 
-/// Whether a mapping has the key directly or at any depth.
-fn has_key(node: &Node, key: &str) -> bool {
+/// A task's module under any of the three spellings Ansible accepts for a module key: the short
+/// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
+/// that reads one spelling alone is blind to a task written under another, so every module read
+/// goes through here.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+    .iter()
+    .find_map(|key| task.get(key))
+}
+
+/// Whether a key spells the module `short`, under any of the three spellings.
+fn is_spelling(key: &str, short: &str) -> bool {
+    key == short
+        || key.strip_prefix("ansible.builtin.") == Some(short)
+        || key.strip_prefix("ansible.legacy.") == Some(short)
+}
+
+/// Whether a module is called anywhere in a node, under any spelling of its key.
+fn has_module(node: &Node, short: &str) -> bool {
     match node {
-        Node::Map(entries) => entries
-            .iter()
-            .any(|(k, v)| k.as_str() == Some(key) || has_key(v, key)),
-        Node::Seq(items) => items.iter().any(|item| has_key(item, key)),
-        _ => false,
+        Node::Map(entries) => entries.iter().any(|(k, v)| {
+            k.as_str().is_some_and(|k| is_spelling(k, short)) || has_module(v, short)
+        }),
+        Node::Seq(items) => items.iter().any(|item| has_module(item, short)),
+        Node::Str(_) | Node::Bool(_) | Node::Null => false,
     }
 }
 
@@ -342,22 +410,29 @@ fn explicit_gathering_comes_straight_after_the_resolver() {
 
     // Act
     let mut offenders = Vec::new();
+    let mut gathering_plays = 0;
     for file in files.iter().filter(|f| f.as_str() != KNOWN_GAP) {
         for play in plays(file) {
-            if !escalates(&play) || !has_key(&play, "ansible.builtin.setup") {
+            if !escalates(&play) || !has_module(&play, "setup") {
                 continue;
             }
+            gathering_plays += 1;
             let second = play
                 .get("tasks")
                 .and_then(Node::as_seq)
                 .and_then(|tasks| tasks.get(1));
-            if !second.is_some_and(|task| has_key(task, "ansible.builtin.setup")) {
+            if second.is_none_or(|task| module(task, "setup").is_none()) {
                 offenders.push(format!("{file}: {}", play_name(&play)));
             }
         }
     }
 
-    // Assert
+    // Assert: the check is conditional on gathering, so it must find some gathering play, or it
+    // passes for nothing.
+    assert!(
+        gathering_plays > 0,
+        "no escalating play gathers facts, so the check would pass for nothing"
+    );
     assert!(
         offenders.is_empty(),
         "these gather facts but not in the task straight after the resolver:\n{}",
@@ -403,22 +478,30 @@ fn the_transport_guard_is_a_single_assert_task() {
     // A closed allow-list: exactly one module belongs in it.
     let tasks = leaf_tasks(GUARD_TASK);
 
-    let modules: BTreeSet<&str> = tasks.iter().flat_map(module_keys).collect();
+    let called: BTreeSet<String> = tasks.iter().flat_map(called_modules).collect();
 
     assert_eq!(
-        modules.into_iter().collect::<Vec<_>>(),
-        vec!["ansible.builtin.assert"],
-        "the transport guard must contain only ansible.builtin.assert"
+        called.into_iter().collect::<Vec<_>>(),
+        vec!["assert".to_owned()],
+        "the transport guard must call only assert, under any spelling"
     );
 }
 
-/// The `ansible.builtin.` module keys of one task.
-fn module_keys(task: &Node) -> Vec<&str> {
+/// The modules a task calls: every key that is not a task keyword, with its `ansible.builtin.` or
+/// `ansible.legacy.` prefix removed. A key is a call whatever the module is, so a `ping:` or an
+/// `ansible.legacy.command:` added to the guard shows up here.
+fn called_modules(task: &Node) -> Vec<String> {
     match task {
         Node::Map(entries) => entries
             .iter()
             .filter_map(|(k, _)| k.as_str())
-            .filter(|k| k.starts_with("ansible.builtin."))
+            .filter(|k| !TASK_KEYWORDS.contains(k) && !k.starts_with("with_"))
+            .map(|k| {
+                k.strip_prefix("ansible.builtin.")
+                    .or_else(|| k.strip_prefix("ansible.legacy."))
+                    .unwrap_or(k)
+                    .to_owned()
+            })
             .collect(),
         _ => vec![],
     }
@@ -448,7 +531,7 @@ fn include_with_become(node: &Node, file: &str, out: &mut Vec<String>) {
     match node {
         Node::Seq(items) => {
             for item in items {
-                let include = INCLUDE_KEYS.iter().any(|key| item.get(key).is_some());
+                let include = module(item, "include_tasks").is_some();
                 if include && item.get("become").is_some() {
                     out.push(format!("{file}: {}", task_name(item)));
                 }

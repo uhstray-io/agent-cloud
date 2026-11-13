@@ -43,7 +43,19 @@ const PUSH: &str = "platform/playbooks/tasks/site-config-push.yml";
 const GUARD_INCLUDE: &str = "tasks/assert-bao-transport.yml";
 const CLONE_INCLUDE: &str = "tasks/site-config-clone.yml";
 const KEY_PATH: &str = "secret/data/services/ssh/site-config";
-const INCLUDE_KEYS: [&str; 2] = ["include_tasks", "ansible.builtin.include_tasks"];
+/// A task's module under any of the three spellings Ansible accepts for a module key: the short
+/// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
+/// that reads one spelling alone is blind to a task written under another, so every module read
+/// goes through here.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+    .iter()
+    .find_map(|key| task.get(key))
+}
 
 fn load(rel: &str) -> Node {
     yaml::load_one(&repo::path(rel)).unwrap_or_else(|| panic!("{rel}: empty document"))
@@ -120,18 +132,17 @@ fn starting<'a>(tasks: &'a [Node], prefix: &str) -> &'a Node {
 
 /// The file an include task names, under either spelling of the keyword.
 fn include_target(node: &Node) -> Option<&str> {
-    INCLUDE_KEYS
-        .iter()
-        .find_map(|key| node.get(key).and_then(Node::as_str))
+    module(node, "include_tasks").and_then(Node::as_str)
 }
 
-fn args<'a>(task: &'a Node, module: &str) -> Option<&'a Node> {
-    task.get(module)
+/// The arguments of the module a task calls, under any spelling of its key.
+fn args<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    module(task, short)
 }
 
 /// The ansible `that:` expressions of an assert task, whether written as one scalar or a list.
 fn that_items(task: &Node) -> Vec<&str> {
-    match args(task, "ansible.builtin.assert").and_then(|a| a.get("that")) {
+    match args(task, "assert").and_then(|a| a.get("that")) {
         Some(Node::Str(s)) => vec![s.as_str()],
         Some(Node::Seq(items)) => items.iter().filter_map(Node::as_str).collect(),
         _ => vec![],
@@ -139,9 +150,7 @@ fn that_items(task: &Node) -> Vec<&str> {
 }
 
 fn fail_msg(task: &Node) -> Option<&str> {
-    args(task, "ansible.builtin.assert")?
-        .get("fail_msg")?
-        .as_str()
+    args(task, "assert")?.get("fail_msg")?.as_str()
 }
 
 /// A block that includes the shared clone task and whose `always:` wipes the scratch directory.
@@ -155,7 +164,7 @@ fn wipes_scratch_after_clone(block_map: &Node) -> bool {
 fn always_wipes_scratch(always: &Node) -> bool {
     always.as_seq().is_some_and(|items| {
         items.iter().any(|task| {
-            args(task, "ansible.builtin.file").is_some_and(|file| {
+            args(task, "file").is_some_and(|file| {
                 file.get("state").and_then(Node::as_str) == Some("absent")
                     && file
                         .get("path")
@@ -230,7 +239,7 @@ fn the_branch_name_is_frozen_by_a_set_fact_task() {
 
     // Act
     let freeze = starting(&tasks, "Freeze the branch name");
-    let facts = args(freeze, "ansible.builtin.set_fact").expect("the freeze task is a set_fact");
+    let facts = args(freeze, "set_fact").expect("the freeze task is a set_fact");
 
     // Assert: set_fact evaluates the pipe lookup once and stores it.
     let branch = facts
@@ -271,7 +280,7 @@ fn every_git_call_carrying_a_space_uses_argv_not_cmd() {
     assert!(!has_key(commit, "cmd"), "the commit task uses cmd:");
     assert!(!has_key(stage, "cmd"), "the stage task uses cmd:");
 
-    let argv: Option<Vec<&str>> = args(identify, "ansible.builtin.command")
+    let argv: Option<Vec<&str>> = args(identify, "command")
         .and_then(|c| c.get("argv"))
         .and_then(Node::as_seq)
         .and_then(|items| items.iter().map(Node::as_str).collect());
@@ -303,9 +312,15 @@ fn no_debug_task_prints_a_secret_field_value() {
     // counts and paths, never an indexed read of the secret payload, which is what a value is.
     let tasks = repo::tasks(PB);
 
+    let debug_tasks = tasks.iter().filter(|t| args(t, "debug").is_some()).count();
+    assert!(
+        debug_tasks > 0,
+        "{PB} has no debug task, so the check would pass for nothing"
+    );
+
     let leaks: Vec<&str> = tasks
         .iter()
-        .filter(|t| args(t, "ansible.builtin.debug").is_some())
+        .filter(|t| args(t, "debug").is_some())
         .filter(|t| mentions(t, "_secret.json.data.data["))
         .map(task_name)
         .collect();
@@ -394,7 +409,7 @@ fn the_materialised_key_is_0600_no_log_under_the_scratch_dir() {
     let tasks = repo::tasks(CLONE);
 
     let freeze = starting(&tasks, "Freeze the branch name");
-    let key_path = args(freeze, "ansible.builtin.set_fact")
+    let key_path = args(freeze, "set_fact")
         .and_then(|f| f.get("_sc_key"))
         .and_then(Node::as_str);
     assert_eq!(
@@ -409,7 +424,7 @@ fn the_materialised_key_is_0600_no_log_under_the_scratch_dir() {
         Some(&Node::Bool(true)),
         "the key write must be no_log"
     );
-    let copy = args(write, "ansible.builtin.copy").expect("the key is written by copy");
+    let copy = args(write, "copy").expect("the key is written by copy");
     assert_eq!(copy.get("mode").and_then(Node::as_str), Some("0600"));
     assert_eq!(
         copy.get("dest").and_then(Node::as_str),
