@@ -637,7 +637,9 @@ tools are on your `PATH`. After both, the hook runs the Rust suite's **push lane
 (`platform/tests/lane.sh push`, plan 24): every tier of the areas the push touches since
 `origin/dev`, and the security set. The pre-commit configuration runs its **commit lane**
 (`lane.sh commit`, hook `rust-commit-lane`): the static tests of the areas the staged change
-touches and the security set's static tests, ledger check included, in seconds.
+touches and the security set's static tests, ledger check included, in seconds once the crate
+is built (the first commit after a Rust change compiles it first). To skip that lane alone,
+for a reason you can defend in review: `SKIP=rust-commit-lane git commit`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push

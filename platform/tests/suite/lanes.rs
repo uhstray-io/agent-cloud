@@ -461,8 +461,51 @@ fn lane_sh_skips_a_workstation_lane_without_nextest_and_refuses_a_ci_lane() {
     }
     // Act / Assert: CI and the full lane never pass without running the suite
     for lane in ["ci", "full"] {
-        without_cargo(lane).assert().code(1);
+        without_cargo(lane)
+            .assert()
+            .code(1)
+            .stderr(predicates::str::contains("needs cargo and cargo-nextest"));
     }
+}
+
+#[test]
+fn lane_sh_gives_testsel_the_hooks_index_and_runs_the_tests_without_git_variables() {
+    // Arrange: a fake cargo that answers the version probe, prints a filterset for the testsel
+    // run while recording GIT_INDEX_FILE, and records every GIT_ variable nextest would inherit
+    let dir = TempDir::new().expect("a temporary directory");
+    let log = dir.path().join("cargo.log");
+    let cargo = dir.path().join("cargo");
+    std::fs::write(
+        &cargo,
+        "#!/bin/sh\n\
+         case \"$1 $2\" in\n\
+         \"nextest --version\") exit 0 ;;\n\
+         \"run --locked\") echo \"testsel GIT_INDEX_FILE=${GIT_INDEX_FILE-unset}\" >> \"$FAKE_LOG\"; echo 'none()' ;;\n\
+         \"nextest run\") env | grep '^GIT_' | sed 's/^/nextest /' >> \"$FAKE_LOG\"; echo 'nextest ran' >> \"$FAKE_LOG\" ;;\n\
+         *) exit 3 ;;\n\
+         esac\n",
+    )
+    .expect("fake cargo");
+    std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("executable fake cargo");
+
+    // Act: the commit lane, with the variables a git hook exports
+    process::scrubbed("bash", dir.path())
+        .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
+        .env("FAKE_LOG", &log)
+        .env("GIT_DIR", "/nonexistent/.git")
+        .env("GIT_WORK_TREE", "/nonexistent")
+        .env("GIT_INDEX_FILE", "/nonexistent/.git/index.lock")
+        .arg(repo::path("platform/tests/lane.sh"))
+        .arg("commit")
+        .assert()
+        .success();
+
+    // Assert: testsel read the hook's index; nextest started with no git variable at all
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("the fake cargo ran"),
+        "testsel GIT_INDEX_FILE=/nonexistent/.git/index.lock\nnextest ran\n"
+    );
 }
 
 #[test]
@@ -487,4 +530,9 @@ fn the_pre_commit_configuration_runs_the_commit_lane() {
     // always_run: a staged change of any path, a deletion included, still runs the lane
     assert_eq!(field("always_run"), Some(Node::Bool(true)));
     assert_eq!(field("pass_filenames"), Some(Node::Bool(false)));
+    // A stage other than pre-commit would drop the lane from .githooks/pre-commit's run
+    assert_eq!(
+        field("stages"),
+        Some(Node::Seq(vec![Node::Str("pre-commit".to_owned())]))
+    );
 }
