@@ -90,7 +90,7 @@ Start with read-only validation:
 python3 scripts/merge-when-green.py --pr 532 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 ```
 
-After review and explicit authorization for that PR/head, attest feedback is addressed and request one merge:
+After review, under the standing authorization in `AGENTS.md` (Branch Workflow), attest feedback is addressed and request one merge:
 
 ```sh
 python3 scripts/merge-when-green.py --pr 532 --head aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --feedback-addressed --merge
