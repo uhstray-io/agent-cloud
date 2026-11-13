@@ -25,6 +25,12 @@
 //! - Corrected: the BATS `["\x27]` is a bracket of `"`, `\`, `x`, `2` and `7`, not a quote. The
 //!   port reads an optional quote, `["']`. It adds no hits on the tree (checked 2026-11-12).
 //!
+//! Module keys are read in all three spellings Ansible accepts: the short name, `ansible.builtin.<short>`
+//! and `ansible.legacy.<short>` (`module`). The BATS reads matched `ansible.builtin.` and, for includes, the
+//! short name, never `ansible.legacy.`; the port reads all three, so it is wider, not narrower. No tracked
+//! playbook spells uri, include_tasks, import_tasks, meta or assert in
+//! the short or `ansible.legacy.` form (checked 2026-11-13, 345 playbook files), so no result changes.
+//!
 //! Replaces platform/tests/test_credential_leaks.bats (plan 24, Phase 4).
 //!
 //! Port map
@@ -81,14 +87,9 @@ const SEED_ACCESS: &str = "platform/playbooks/tasks/assert-bao-seed-access.yml";
 const BAO_MERGE: &str = "platform/playbooks/tasks/bao-merge-keys.yml";
 const TEMPLATES: &str = "platform/semaphore/templates.yml";
 const RATCHET: &str = "platform/tests/known_unguarded_bao_plays.txt";
-const INCLUDE_KEYS: [&str; 4] = [
-    "ansible.builtin.import_tasks",
-    "ansible.builtin.include_tasks",
-    "import_tasks",
-    "include_tasks",
-];
-/// The include keys the BATS line matches named (`include_tasks:`), not `import_tasks:`.
-const INCLUDE_TASKS: [&str; 2] = ["ansible.builtin.include_tasks", "include_tasks"];
+/// The module shorts that include a task file. Each is read through `module`, under all three
+/// spellings. The BATS guard match read `include_tasks:` alone; `import_tasks:` is read as well.
+const INCLUDE_SHORTS: [&str; 2] = ["include_tasks", "import_tasks"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -236,10 +237,24 @@ fn when_items(file: &str) -> Vec<String> {
         .collect()
 }
 
-/// The file a task includes, for `include_tasks: x` and the mapping form `{file: x, ...}`.
-fn include_target<'a>(map: &'a Node, keys: &[&str]) -> Option<&'a str> {
-    keys.iter().find_map(|key| {
-        let value = map.get(key)?;
+/// A task's module under any of the three spellings Ansible accepts for a module key: the short
+/// name, `ansible.builtin.<short>` or `ansible.legacy.<short>`. A check that reads one spelling
+/// alone is blind to a task written under another, so every module read goes through here.
+fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ]
+    .iter()
+    .find_map(|key| task.get(key))
+}
+
+/// The file a task includes, for `include_tasks: x` and the mapping form `{file: x, ...}`, under
+/// any of the `shorts` and any spelling of each.
+fn include_target<'a>(map: &'a Node, shorts: &[&str]) -> Option<&'a str> {
+    shorts.iter().find_map(|short| {
+        let value = module(map, short)?;
         match value {
             Node::Map(_) => value.get("file").and_then(Node::as_str),
             other => other.as_str(),
@@ -251,13 +266,24 @@ fn position(maps: &[&Node], pred: impl Fn(&Node) -> bool) -> Option<usize> {
     maps.iter().position(|m| pred(m))
 }
 
-fn set_key(node: &mut Node, key: &str, value: Node) {
-    let Node::Map(entries) = node else {
-        panic!("set_key on a node that is not a mapping");
+/// Sets a module's value on a task under whichever spelling the task already uses. A task with no
+/// spelling of the module gets the `ansible.builtin.` one.
+fn set_module(task: &mut Node, short: &str, value: Node) {
+    let Node::Map(entries) = task else {
+        panic!("set_module on a node that is not a mapping");
     };
-    match entries.iter_mut().find(|(k, _)| k.as_str() == Some(key)) {
+    let spellings = [
+        short.to_owned(),
+        format!("ansible.builtin.{short}"),
+        format!("ansible.legacy.{short}"),
+    ];
+    let found = entries.iter_mut().find(|(k, _)| {
+        k.as_str()
+            .is_some_and(|k| spellings.iter().any(|spelling| spelling == k))
+    });
+    match found {
         Some(slot) => slot.1 = value,
-        None => entries.push((Node::Str(key.to_owned()), value)),
+        None => entries.push((Node::Str(format!("ansible.builtin.{short}")), value)),
     }
 }
 
@@ -1063,9 +1089,9 @@ fn netbox_token_bootstrap_guards_transport_before_login() {
 
     // Act
     let guard = position(&maps, |m| {
-        include_target(m, &INCLUDE_TASKS) == Some(GUARD_REL)
+        include_target(m, &INCLUDE_SHORTS) == Some(GUARD_REL)
     });
-    let first_uri = position(&maps, |m| m.get("ansible.builtin.uri").is_some());
+    let first_uri = position(&maps, |m| module(m, "uri").is_some());
 
     // Assert
     let guard = guard.expect("the transport guard is not included");
@@ -1132,7 +1158,7 @@ fn every_openbao_play_includes_the_transport_guard() {
     );
     let guard_doc = load(GUARD);
     let refusal = maps_in_order(&guard_doc).into_iter().any(|m| {
-        m.get("ansible.builtin.assert")
+        module(m, "assert")
             .and_then(|a| a.get("fail_msg"))
             .and_then(Node::as_str)
             .is_some_and(|msg| msg.contains("Refusing to send secret material"))
@@ -1218,9 +1244,9 @@ fn every_openbao_play_includes_the_transport_guard() {
                 == Some("Refuse public cleartext OpenBao transport")
         })
         .expect("the survey names its transport guard task");
-    set_key(
+    set_module(
         guard_task,
-        "ansible.builtin.include_tasks",
+        "include_tasks",
         Node::Str("missing-guard.yml".to_owned()),
     );
     let mut removed = Guard::new(HashMap::from([(survey_tasks_path, mutated)]));
@@ -1329,8 +1355,8 @@ impl Guard {
             if task.as_map().is_none() {
                 continue;
             }
-            for key in INCLUDE_KEYS {
-                let Some(target) = include_target(task, &[key]) else {
+            for short in INCLUDE_SHORTS {
+                let Some(target) = include_target(task, &[short]) else {
                     continue;
                 };
                 if target.contains("{{") {
@@ -1509,13 +1535,9 @@ fn bao_merge_keys_creates_a_path_only_under_cas() {
 
     // Act
     let create = task_named(&tasks, "Create the new path");
-    let create_uri = create
-        .get("ansible.builtin.uri")
-        .expect("the create task is a uri request");
+    let create_uri = module(create, "uri").expect("the create task is a uri request");
     let race = task_named(&tasks, "Losing the create race");
-    let race_uri = race
-        .get("ansible.builtin.uri")
-        .expect("the lost-race task is a uri request");
+    let race_uri = module(race, "uri").expect("the lost-race task is a uri request");
 
     // Assert: a create is refused on an existing path (cas 0), and a refusal of that is merged.
     assert_eq!(
@@ -1558,13 +1580,13 @@ fn seed_access_check_ends_the_play_before_any_write() {
 
     // Act
     let access = position(&seed_maps, |m| {
-        include_target(m, &INCLUDE_TASKS) == Some("tasks/assert-bao-seed-access.yml")
+        include_target(m, &INCLUDE_SHORTS) == Some("tasks/assert-bao-seed-access.yml")
     });
     let merge = position(&seed_maps, |m| {
-        include_target(m, &INCLUDE_TASKS) == Some("tasks/bao-merge-keys.yml")
+        include_target(m, &INCLUDE_SHORTS) == Some("tasks/bao-merge-keys.yml")
     });
     let end = position(&seed_maps, |m| {
-        m.get("ansible.builtin.meta").and_then(Node::as_str) == Some("end_play")
+        module(m, "meta").and_then(Node::as_str) == Some("end_play")
     });
 
     // Assert: the access check and the end of play both come before the merge.
@@ -1601,8 +1623,7 @@ fn seed_access_check_ends_the_play_before_any_write() {
     let access_doc = load(SEED_ACCESS);
     let access_maps = maps_in_order(&access_doc);
     assert!(
-        access_maps.iter().any(|m| m
-            .get("ansible.builtin.uri")
+        access_maps.iter().any(|m| module(m, "uri")
             .and_then(|u| u.get("url"))
             .and_then(Node::as_str)
             .is_some_and(|url| url.contains("/v1/sys/capabilities-self"))),
