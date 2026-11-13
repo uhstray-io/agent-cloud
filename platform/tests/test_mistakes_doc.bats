@@ -126,18 +126,22 @@ print('OK' if not problems else '; '.join(problems))
   # DELIBERATELY NOT exhaustive over every path the document mentions. The file is
   # appended to by more than one line of work at a time, so an exhaustive check
   # fails on another author's in-flight entry rather than on anything here. The
-  # four below are the ones this branch is responsible for.
+  # four below are the ones this branch is responsible for: three are BATS tests,
+  # and the fourth was ported to the Rust suite by plan 24 (Phase 4), so it is
+  # checked there instead.
   local suite
   suite=$(cat "$REPO_ROOT"/platform/tests/*.bats | tr '\n' ' ')
   local n
   for n in \
     "every play that resolves an OpenBao URL includes the transport guard" \
     "the transport pattern accepts internal endpoints and refuses public ones" \
-    "postiz: the seed playbook uses the shared cleartext OpenBao guard" \
-    "install-podman: configures no podman API socket"; do
+    "postiz: the seed playbook uses the shared cleartext OpenBao guard"; do
     # named in the doc ...
     assert_contains "$(tr '\n' ' ' < "$DOC")" "$n"
     # ... and present in the suite
     assert_contains "$suite" "@test \"$n\""
   done
+  # The ported test: the doc still names it, and the Rust suite defines it.
+  assert_contains "$(tr '\n' ' ' < "$DOC")" "install-podman: configures no podman API socket"
+  assert_grep -qE '^\s*fn configures_no_podman_api_socket\(' "$REPO_ROOT/platform/tests/suite/install_podman.rs"
 }
