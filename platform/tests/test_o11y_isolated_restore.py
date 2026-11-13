@@ -1154,4 +1154,9 @@ def test_restore_hands_the_stored_semaphore_url_to_the_reader_without_its_own_ch
     assert "tasks/read-o11y-pbs-prior-task.yml" in text
     assert "_restore_semaphore_secret" not in text
     assert "secret/data/services/semaphore" not in text
-    assert "[^/]+$" not in text
+    # Scoped to the Semaphore context: other hosts in this play may hold their own host-only checks.
+    for task in playbook_yaml.tasks(playbook_yaml.load(path)):
+        # A play or block holds its children's text, so only leaf tasks are judged.
+        if any(key in task for key in playbook_yaml.TASK_LISTS) or "semaphore" not in repr(task).lower():
+            continue
+        assert "[^/]+$" not in repr(task), task.get("name")

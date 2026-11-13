@@ -176,7 +176,7 @@
         quiet: true
       no_log: true
 
-    - name: Read OpenBao-backed Proxmox, PBS, and Semaphore credentials
+    - name: Read OpenBao-backed Proxmox and PBS credentials
       ansible.builtin.set_fact:
         _restore_pve_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/proxmox', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
         _restore_pbs_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/pbs', url=_restore_bao_url, auth_method='approle', role_id=_restore_bao_role_id, secret_id=_restore_bao_secret_id) }}"
