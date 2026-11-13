@@ -489,14 +489,23 @@ fn lane_sh_gives_testsel_the_hooks_index_and_runs_the_tests_without_git_variable
     std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
         .expect("executable fake cargo");
 
-    // Act: the commit lane, with the variables a git hook exports
-    process::scrubbed("bash", dir.path())
-        .env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
+    // Act: the commit lane, with every variable lane.sh clears set, as a git hook can set them
+    let mut lane = process::scrubbed("bash", dir.path());
+    lane.env("PATH", format!("{}:/usr/bin:/bin", dir.path().display()))
         .env("FAKE_LOG", &log)
-        .env("GIT_DIR", "/nonexistent/.git")
-        .env("GIT_WORK_TREE", "/nonexistent")
-        .env("GIT_INDEX_FILE", "/nonexistent/.git/index.lock")
-        .arg(repo::path("platform/tests/lane.sh"))
+        .env("GIT_INDEX_FILE", "/nonexistent/.git/index.lock");
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_NAMESPACE",
+    ] {
+        lane.env(name, "/nonexistent");
+    }
+    lane.arg(repo::path("platform/tests/lane.sh"))
         .arg("commit")
         .assert()
         .success();
