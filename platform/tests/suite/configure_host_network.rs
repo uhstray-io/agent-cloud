@@ -60,13 +60,6 @@ fn text(node: &Node) -> String {
     out.join("\n")
 }
 
-/// A play or import, or a block: a node that holds other tasks. Its own text is not one task's.
-fn is_task(node: &Node) -> bool {
-    ["hosts", "block", "tasks"]
-        .iter()
-        .all(|key| node.get(key).is_none())
-}
-
 /// The first task whose name contains `needle`. The name is the selector: a task is named.
 fn task<'a>(tasks: &'a [Node], needle: &str) -> &'a Node {
     tasks
@@ -119,15 +112,65 @@ fn play_tasks(prefix: &str) -> Vec<Node> {
         .to_vec()
 }
 
-/// The `dest:` of every module argument map of one task.
-fn dests(task: &Node) -> Vec<&str> {
-    let Some(entries) = task.as_map() else {
-        return vec![];
-    };
-    entries
-        .iter()
-        .filter_map(|(_, value)| value.get("dest").and_then(Node::as_str))
-        .collect()
+/// The sections that hold other tasks. A play's or block's own text leaves them out: each child
+/// task is scanned on its own, so a parent never stands in for a task that comes after the stop.
+const CHILD_SECTIONS: [&str; 7] = [
+    "tasks",
+    "pre_tasks",
+    "post_tasks",
+    "handlers",
+    "block",
+    "rescue",
+    "always",
+];
+
+fn is_child_section(key: &Node) -> bool {
+    key.as_str().is_some_and(|k| CHILD_SECTIONS.contains(&k))
+}
+
+/// Every scalar a node holds itself, keys and values, depth first, without its child tasks. A
+/// play's `vars:` are its own text; a task's text is all of the task.
+fn own_strings<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
+    match node {
+        Node::Str(s) => out.push(s),
+        Node::Seq(items) => items.iter().for_each(|item| own_strings(item, out)),
+        Node::Map(entries) => {
+            for (key, value) in entries {
+                if is_child_section(key) {
+                    continue;
+                }
+                own_strings(key, out);
+                own_strings(value, out);
+            }
+        }
+        Node::Null | Node::Bool(_) => {}
+    }
+}
+
+/// Every `dest:` value at any depth of a node's own text: a module argument, a loop item, a nested
+/// map, a play var that names a destination.
+fn dests(node: &Node) -> Vec<&str> {
+    let mut out = vec![];
+    collect_dests(node, &mut out);
+    out
+}
+
+fn collect_dests<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
+    match node {
+        Node::Map(entries) => {
+            for (key, value) in entries {
+                if is_child_section(key) {
+                    continue;
+                }
+                if let (Some("dest"), Some(dest)) = (key.as_str(), value.as_str()) {
+                    out.push(dest);
+                }
+                collect_dests(value, out);
+            }
+        }
+        Node::Seq(items) => items.iter().for_each(|item| collect_dests(item, out)),
+        Node::Str(_) | Node::Null | Node::Bool(_) => {}
+    }
 }
 
 #[test]
@@ -431,14 +474,18 @@ fn a_dry_run_leaves_nothing_behind_on_the_host() {
     );
     assert!(stop < backup, "the dry-run stop comes after the backup");
     assert!(stop < install, "the dry-run stop comes after the install");
-    for before in tasks[..stop].iter().filter(|t| is_task(t)) {
+    // Nothing before the stop writes under /etc/netplan or stages a file: each node's own text, the
+    // play's vars included, at any depth.
+    for before in &tasks[..stop] {
+        let mut scalars = vec![];
+        own_strings(before, &mut scalars);
         assert!(
             !dests(before).iter().any(|d| d.starts_with("/etc/netplan")),
             "{:?} writes under /etc/netplan before the dry-run stop",
             name_of(before)
         );
         assert!(
-            !text(before).contains(".staged"),
+            !scalars.iter().any(|s| s.contains(".staged")),
             "{:?} stages a file before the dry-run stop",
             name_of(before)
         );
@@ -497,18 +544,21 @@ fn the_rendered_config_is_validated_before_it_can_be_applied() {
     let tasks = repo::tasks(PB);
 
     // Act
-    let validate = module(
-        task(
-            &tasks,
-            "Validate the rendered configuration in an isolated root",
-        ),
-        "ansible.builtin.shell",
+    let validate_at = position(
+        &tasks,
+        "Validate the rendered configuration in an isolated root",
     );
+    let install_at = position(&tasks, "Install the validated configuration");
+    let validate = module(&tasks[validate_at], "ansible.builtin.shell");
 
     // Assert
     assert!(
         text(validate).contains("netplan generate"),
         "the rendered config is never validated with netplan generate"
+    );
+    assert!(
+        validate_at < install_at,
+        "the config is installed (task {install_at}) before it is validated (task {validate_at})"
     );
 }
 

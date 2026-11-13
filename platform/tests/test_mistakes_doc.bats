@@ -144,4 +144,7 @@ print('OK' if not problems else '; '.join(problems))
   # The ported test: the doc still names it, and the Rust suite defines it.
   assert_contains "$(tr '\n' ' ' < "$DOC")" "install-podman: configures no podman API socket"
   assert_grep -qE '^\s*fn configures_no_podman_api_socket\(' "$REPO_ROOT/platform/tests/suite/install_podman.rs"
+  # ... and the line directly above it is #[test]: nextest runs only a fn that carries the attribute.
+  awk 'prev == "#[test]" && $0 ~ /^[[:space:]]*fn configures_no_podman_api_socket\(/ { found = 1 } { prev = $0 } END { exit !found }' \
+    "$REPO_ROOT/platform/tests/suite/install_podman.rs"
 }

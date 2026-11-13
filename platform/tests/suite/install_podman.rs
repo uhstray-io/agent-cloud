@@ -522,16 +522,19 @@ fn the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim() {
         version_var.starts_with("{{ podman_docker_api_client_version | default('"),
         "the client version is not a declared default: {version_var:?}"
     );
-    // No Docker engine: no leaf task installs docker-ce, containerd.io or docker.io.
-    for installer in tasks.iter().filter(|t| is_task(t)) {
-        for package in apt_names(installer) {
-            assert!(
-                !matches!(package, "docker-ce" | "containerd.io" | "docker.io"),
-                "{:?} installs the Docker engine package {package}",
-                name_of(installer)
-            );
-        }
-    }
+    // No Docker engine: a deny-list over every parsed scalar (03 Part 1), so an engine package named
+    // under any module, a loop or a list is refused, not only an apt `name:`.
+    let whole = doc(PB);
+    let mut all = vec![];
+    strings(&whole, &mut all);
+    let engine: Vec<&str> = all
+        .into_iter()
+        .filter(|s| matches!(s.trim(), "docker-ce" | "containerd.io" | "docker.io"))
+        .collect();
+    assert!(
+        engine.is_empty(),
+        "the playbook names a Docker engine package: {engine:?}"
+    );
     assert!(
         conditions
             .iter()
