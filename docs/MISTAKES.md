@@ -5164,8 +5164,9 @@ against their evidence, and the rest went to a reconciliation item (AC-859).
 1. Most completed work never ticked its task. The PRs and runs cited the change, not the task.
 2. A tick that is made matters to Plane only if it is on `main` before the sync first sees the task;
    then no item is created for it. The sync reads `main`, skips a task already ticked when first
-   seen, and never writes status once an item exists (`platform/services/plane/lib/openspec_to_plane.py`, `sync-plane-projects.yml`). Plane
-   owns status from then on, so a tick made on `dev` and promoted later moves nothing.
+   seen, and never writes status once an item exists
+   (`platform/services/plane/lib/openspec_to_plane.py`, `sync-plane-projects.yml`). Plane owns
+   status from then on, so a tick made on `dev` and promoted later moves nothing.
 
 **The rule.** A pull request or live run that completes a task ticks that task in `tasks.md`,
 citing its evidence, in the same change, and sets the task's Plane item to Done itself, because no
