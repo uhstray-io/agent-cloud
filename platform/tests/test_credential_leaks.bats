@@ -702,11 +702,11 @@ def expand(name):
 pat = expand('_pat_strict')
 pat_https = expand('_pat_https')
 pat_single = expand('_pat_single_label')
-# The single-label branch must be gated on local_mode in the assert expression —
+# The single-label branch must be gated on a local-dev inventory in the assert expression —
 # unconditional single-label acceptance is what the resolver search-suffix
-# refusal below exists to prevent.
+# refusal below exists to prevent. The mode is read from groups, not local_mode (plan 24).
 code = '\n'.join(l for l in src.splitlines() if not l.lstrip().startswith('#'))
-assert re.search(r\"local_mode \| default\(false\) \| bool\)\s+and \(groups\['all'\] \| local_dev_inventory\)\s+and _assert_bao_url is match\(_pat_single_label\)\", code), 'single-label branch not gated on local_mode and a local-dev inventory (comments excluded)'
+assert re.search(r\"or \(\(groups\['all'\] \| local_dev_inventory\)\s+and _assert_bao_url is match\(_pat_single_label\)\", code), 'single-label branch not gated on a local-dev inventory (comments excluded)'
 
 # Generic RFC1918 examples, deliberately NOT the platform's real endpoint —
 # that address is site data and lives in site-config, not here.

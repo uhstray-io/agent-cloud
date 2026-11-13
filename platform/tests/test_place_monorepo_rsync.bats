@@ -67,7 +67,7 @@ run_check() { run env PATH="$STUBS:/usr/bin:/bin" bash "$CHECK"; }
   grep -qF 'scripts/require-gnu-rsync.sh"' "$PM"
   assert_precedes "$PM" '^- name: "Refuse an rsync that ignores' 'rsync -rlpti'
   # Scoped like the copy it guards: local mode, not a dry run.
-  sed -n '/^- name: "Refuse an rsync that ignores/,/^- name: /p' "$PM" | grep -qF -- '- local_mode | default(false) | bool'
+  sed -n '/^- name: "Refuse an rsync that ignores/,/^- name: /p' "$PM" | grep -qF -- "- (groups['all'] | local_dev_inventory)"
   sed -n '/^- name: "Refuse an rsync that ignores/,/^- name: /p' "$PM" | grep -qF -- '- not ansible_check_mode'
 }
 
