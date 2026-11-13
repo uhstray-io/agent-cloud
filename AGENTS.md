@@ -633,7 +633,13 @@ the fast and changed test files here; CI runs everything. Both suites run on the
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
 outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
-tools are on your `PATH`.
+tools are on your `PATH`. After both, the hook runs the Rust suite's **push lane**
+(`platform/tests/lane.sh push`, plan 24): every tier of the areas the push touches since
+`origin/dev`, and the security set. The pre-commit configuration runs its **commit lane**
+(`lane.sh commit`, hook `rust-commit-lane`): the static tests of the areas the staged change
+touches and the security set's static tests, ledger check included, in seconds once the crate
+is built (the first commit after a Rust change compiles it first). To skip that lane alone,
+for a reason you can defend in review: `SKIP=rust-commit-lane git commit`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
@@ -641,6 +647,7 @@ means the suites passed on your machine or were skipped, which is not evidence C
 pass — and CI never sees a push the hook stopped.
 
 It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
+`cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead), when
 the Python suite is not collectable because pytest or a test dependency is missing, and on
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
@@ -655,8 +662,8 @@ friction people route around with `--no-verify` — turning a gate into a habit 
 bypassing gates. Why it exists at all: `docs/MISTAKES.md` §5.2 records committing with a
 failing test, enforced only by convention, and §5.5/§5.6 record it recurring three more
 times. The pre-commit gates cover secrets, IPs, credentials, `.env`, whitespace, YAML and
-keys, and the ledger citation test when `docs/MISTAKES.md` or its citation ratchet is staged.
-Nothing else about tests, so there was no gate to pass.
+keys, the ledger citation test when `docs/MISTAKES.md` or its citation ratchet is staged, and
+the Rust suite's commit lane.
 
 Failing open is the deliberate opposite of the pre-commit secret gate, which fails closed.
 A leaked secret is irreversible; a red test is not, and CI blocks the merge either way.
