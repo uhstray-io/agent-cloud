@@ -37,7 +37,6 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
-    _local: "{{ groups['all'] | local_dev_inventory }}"
     _rootful: "{{ podman_rootful | default(false) | bool }}"
 
   tasks:
@@ -55,7 +54,7 @@
       when:
         - _engine == 'podman'
         - _rootful
-        - not _local
+        - not (groups['all'] | local_dev_inventory)
 
     - name: "Docker: the engine starts at boot"
       ansible.builtin.systemd_service:
@@ -64,7 +63,7 @@
       become: true
       when:
         - _engine == 'docker'
-        - not _local
+        - not (groups['all'] | local_dev_inventory)
 
     - name: "Podman: list the service's containers"
       ansible.builtin.include_tasks: tasks/list-service-containers.yml
@@ -162,7 +161,7 @@
       when:
         - _engine == 'podman'
         - _rootful
-        - not _local
+        - not (groups['all'] | local_dev_inventory)
         - _needs_unit | length > 0
 
     - name: "Rootful podman: enable it at boot (not started now)"
@@ -176,7 +175,7 @@
       when:
         - _engine == 'podman'
         - _rootful
-        - not _local
+        - not (groups['all'] | local_dev_inventory)
         - _needs_unit | length > 0
         - not ansible_check_mode
 
@@ -188,7 +187,7 @@
       when:
         - _engine == 'podman'
         - _rootful
-        - not _local
+        - not (groups['all'] | local_dev_inventory)
         - _needs_unit | length == 0
 
     - name: "Rootful podman: remove it, now no container needs it"
@@ -217,6 +216,6 @@
           boot start {{ 'would be ' if ansible_check_mode else '' }}ensured.
           {{- (' ' ~ _boot_unit_name ~ (' would start: ' if ansible_check_mode else ' starts: ')
                ~ ((_needs_unit | default([])) | join(', ') or 'none (no unit)') ~ '.')
-              if (_engine == 'podman' and _rootful and not _local) else '' }}
+              if (_engine == 'podman' and _rootful and not (groups['all'] | local_dev_inventory)) else '' }}
           {{- (' Not running now: ' ~ (_not_running | join(', ')) ~ '.') if (_not_running | default([]) | length > 0) else '' }}
           Check it with Verify Service Persistence.

@@ -522,6 +522,11 @@ FAKE_GIT_DRIFT = (
 DRIFT_REFUSAL = "the controller's console deploy inputs differ from what the console runs"
 
 
+# Coverage of the two spellings in rotate-console-credentials.yml. [context] renders the honest value while the play's
+# name says "Refuse" (forgeries.templated_forgeries matches `(?i)refuse`). The drift gate is the play named "Refuse a
+# rotation the controller cannot reproduce..." (line 122), so [context] exercises only the pin play (lines 73-121,
+# its `when`s at 102, 113, 119). [plain] forges every play, and is the spelling that reaches the drift tasks (`when`s
+# at 140, 167, 179).
 @needs_ansible
 @pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True)[:2])
 def test_the_drift_gate_refuses_before_a_mint_on_production_whatever_local_mode_says(tmp_path, forge):

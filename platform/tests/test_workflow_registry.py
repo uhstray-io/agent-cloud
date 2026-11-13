@@ -460,8 +460,7 @@ def test_production_collector_refuses_missing_or_mismatched_host_destination(tmp
         env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path),
                    ANSIBLE_STDOUT_CALLBACK="default", ANSIBLE_NOCOLOR="1")
         result = subprocess.run(
-            ["ansible-playbook", "-i", str(inventory_path), str(playbook),
-             "-e", json.dumps({"local_mode": False})],
+            ["ansible-playbook", "-i", str(inventory_path), str(playbook)],
             cwd=REPO, env=env, capture_output=True, text=True, timeout=30,
         )
         output = result.stdout + result.stderr
@@ -496,7 +495,7 @@ UNPARSED = "The inventory could not be parsed or contained no hosts"
 def test_production_collector_names_an_unparsed_inventory(tmp_path):
     """Task 2858: an unreadable inventory emptied every group and surfaced as an OTLP mismatch."""
     rc, output = _run_with_broken_inventory(
-        tmp_path, "platform/playbooks/collect-service-conformance.yml", {"local_mode": False})
+        tmp_path, "platform/playbooks/collect-service-conformance.yml")
     assert rc != 0
     assert UNPARSED in output
     assert "Production conformance delivery requires collector_otlp_url" not in output
@@ -622,7 +621,6 @@ def test_otlp_delivery_is_reported_before_a_generic_failure(tmp_path, response, 
         "connection": "local",
         "gather_facts": False,
         "vars": {
-            "local_mode": False,
             "_otlp": response,
             "_completion_ready": True,
             "_completion_publish_ready": False,

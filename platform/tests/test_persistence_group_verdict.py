@@ -147,3 +147,38 @@ def test_ensure_runs_the_production_system_boot_unit_task_under_a_forged_local_m
     proc = _production_run(tmp_path, True, "-e", forge(tmp_path), "--check", playbook=ENSURE)
     statuses = task_statuses(proc.stdout)
     assert statuses.get("Rootful podman: the system boot unit") not in (None, "skipping"), proc.stdout[-3000:]
+
+
+# --- the removed mode variables stay removed (AC-726, plan 24) ----------------------------------------------------
+# An underscore extra var is refused by the run-start guard, but a --limit that excludes localhost skips that play,
+# so a forged name reaches the gates. Plan 24 inlines the filter at each use: no variable holds the mode, so a
+# forged old name is read by nothing. Each forged name runs on a production inventory (no -local host).
+
+
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("_local", honest=False, forged=True)[:2])
+def test_ensure_forged_local_under_limit_still_runs_the_production_boot_unit(tmp_path, forge):
+    proc = _production_run(tmp_path, True, "-e", forge(tmp_path), "--limit", "alpha", "--check", playbook=ENSURE)
+    statuses = task_statuses(proc.stdout)
+    assert statuses.get("Rootful podman: the system boot unit") not in (None, "skipping"), proc.stdout[-3000:]
+
+
+@pytest.mark.parametrize("forge", forgeries.by_name("_local", honest=False, forged=True))
+def test_ensure_forged_local_without_limit_is_refused_at_run_start(tmp_path, forge):
+    proc = _production_run(tmp_path, True, "-e", forge(tmp_path), "--check", playbook=ENSURE)
+    assert proc.returncode != 0, proc.stdout[-3000:]
+    assert "Refusing to run: _local set from outside the playbook" in proc.stdout, proc.stdout[-3000:]
+    assert "Rootful podman: the system boot unit" not in task_statuses(proc.stdout), proc.stdout[-3000:]
+
+
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("_rootless_podman", honest=True, forged=False)[:2])
+def test_verify_forged_rootless_podman_under_limit_still_fails_the_production_linger_check(tmp_path, forge):
+    result = _result(_production_run(tmp_path, False, "-e", forge(tmp_path), "--limit", "alpha").stdout)
+    assert result["status"] == "fail", result
+    assert "podman-restart.service is not enabled for the deploying user" in result["error"], result
+
+
+@pytest.mark.parametrize("forge", forgeries.by_name("_rootless_podman", honest=True, forged=False))
+def test_verify_forged_rootless_podman_without_limit_is_refused_at_run_start(tmp_path, forge):
+    proc = _production_run(tmp_path, False, "-e", forge(tmp_path))
+    assert proc.returncode != 0, proc.stdout[-3000:]
+    assert "Refusing to run: _rootless_podman set from outside the playbook" in proc.stdout, proc.stdout[-3000:]

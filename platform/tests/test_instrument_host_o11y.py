@@ -617,18 +617,25 @@ PRODUCTION_BUDGETS = {
 }
 
 
-def _production_inventory(estate, binds=None) -> Path:
+def _production_inventory(estate, binds=None, fake_alpha=False) -> Path:
     """The two service hosts and the receiver of _inventory, on a production inventory: no host is named -local and
     local_mode is false, so the playbook takes the production branch (plan 24). `binds` overrides a host's exporter
-    bind; both default to an unrouted private address."""
+    bind; both default to an unrouted private address. `fake_alpha` gives alpha the fake engine too (its calls land in
+    engine-alpha.log), so a test can assert on alpha's engine calls; by default alpha runs the real podman."""
     tmp = estate["tmp"]
     engine = tmp / "engine-beta"
     engine.write_text(FAKE_ENGINE)
     engine.chmod(0o755)
+    alpha_engine = "podman"
+    if fake_alpha:
+        alpha_fake = tmp / "engine-alpha"
+        alpha_fake.write_text(FAKE_ENGINE)
+        alpha_fake.chmod(0o755)
+        alpha_engine = str(alpha_fake)
     binds = binds or {}
     lines = [
         "[demo_svc]",
-        "alpha ansible_connection=local container_engine=podman ansible_user=tester "
+        f"alpha ansible_connection=local container_engine={alpha_engine} ansible_user=tester "
         f"o11y_host_exporter_bind={binds.get('alpha', PRIVATE_UNROUTED)} "
         f"o11y_host_exporter_port={PRODUCTION_PORTS['alpha']}",
         f"beta ansible_connection=local container_engine={engine} "
@@ -745,12 +752,14 @@ def test_refuses_a_target_it_must_not_instrument(estate, target):
 
 @needs_ansible
 def test_production_budget_failure_on_distinct_receiver_stops_exporter_play(estate):
-    proc = _run(estate, receiver_vars="local_mode=false")
+    # A production inventory (plan 24): no host is named -local, so the budget check's production branch is taken by
+    # the inventory alone. Both service hosts run the fake engine, so the empty engine-call logs are a real claim.
+    proc = _run_inventory(_production_inventory(estate, fake_alpha=True))
 
     assert proc.returncode != 0, proc.stdout[-4000:]
     assert "Production o11y scrape budgets require" in proc.stdout, proc.stdout[-4000:]
-    assert _engine_calls(estate, "alpha-local") == []
-    assert _engine_calls(estate, "beta-local") == []
+    assert _engine_calls(estate, "alpha") == []
+    assert _engine_calls(estate, "beta") == []
 
 
 def _defined_names() -> set[str]:
