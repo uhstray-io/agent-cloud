@@ -37,7 +37,7 @@
   become: false
   vars:
     _engine: "{{ container_engine | default('podman') }}"
-    _local: "{{ local_mode | default(false) | bool }}"
+    _local: "{{ groups['all'] | local_dev_inventory }}"
     _rootful: "{{ podman_rootful | default(false) | bool }}"
 
   tasks:

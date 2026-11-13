@@ -60,7 +60,7 @@
     # labelled one that failed did not finish its job (PR 253 Codex reviews).
     _restart_ok: [always]
     _rootless_podman: >-
-      {{ _engine == 'podman' and not (local_mode | default(false) | bool)
+      {{ _engine == 'podman' and not (groups['all'] | local_dev_inventory)
          and not (podman_rootful | default(false) | bool) }}
 
   tasks:
@@ -128,7 +128,7 @@
       when:
         - _engine == 'podman'
         - podman_rootful | default(false) | bool
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
 
     # ensure-service-persistence.yml gives a rootful service whose containers are not on
     # `always` one boot unit that `podman start`s them by name.
@@ -142,7 +142,7 @@
       when:
         - _engine == 'podman'
         - podman_rootful | default(false) | bool
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
 
     - name: "Rootful podman: which containers does it start?"
       # The file ensure-service-persistence.yml wrote; its ExecStart= line is that playbook's.

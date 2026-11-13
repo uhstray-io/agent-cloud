@@ -17,10 +17,13 @@ import re
 import subprocess
 from pathlib import Path
 
+import forgeries
 import harness_sandbox
 import jinja2
 import playbook_yaml
+import pytest
 import yaml
+from ansible_python import needs_ansible
 
 REPO = Path(__file__).resolve().parents[2]
 POLICIES = REPO / "platform/services/openbao/deployment/config/policies"
@@ -431,13 +434,13 @@ def test_a_refused_store_write_destroys_the_minted_secret_id_only_when_the_store
     assert {_when(t) for t in fails} == {"not _console_store_holds_new | bool", "_console_store_holds_new | bool"}
 
 
-def test_the_pin_is_skipped_only_for_local_mode():
+def test_the_pin_is_skipped_only_on_a_local_dev_inventory():
     # The template's service_branch field (required by test_placement_branch_guard.py) must not skip the pin:
     # a web-form run would then redeploy the branch head instead of the deployed commit.
     pins = [t for t in _tasks_of(_play(PIN)) if "when" in t]
     assert pins, "the pin play has no guarded tasks"
     for task in pins:
-        assert "local_mode" in _when(task) and "service_branch" not in _when(task), task["name"]
+        assert "local_dev_inventory" in _when(task) and "service_branch" not in _when(task), task["name"]
 
 
 def test_the_pin_reaches_the_deploy_through_an_internal_name_only():
@@ -494,10 +497,44 @@ def test_the_drift_refusal_is_visible_names_the_short_pin_and_says_nothing_was_m
     assert "Nothing was rotated" in msg
 
 
-def test_every_drift_task_is_skipped_under_local_mode_and_without_a_pin():
+def test_every_drift_task_is_skipped_on_a_local_dev_inventory_and_without_a_pin():
     for task in _tasks_of(_play(DRIFT)):
         when = _when(task)
-        assert "local_mode" in when and "_drift_pin | length > 0" in when, task.get("name")
+        assert "local_dev_inventory" in when and "_drift_pin | length > 0" in when, task.get("name")
+
+
+# The drift gate on a PRODUCTION inventory with local_mode forged (AC-726, plan 24). The pin and the drift check are
+# skipped on a local-dev inventory only, so a forged local_mode must not skip them. The fake git answers the three
+# commands the pin and the drift check run: a commit for HEAD, the pin exists, and the console's inputs differ.
+CONSOLE_PROD_INI = (
+    "localhost ansible_connection=local\n"
+    "console-prod ansible_connection=local\n\n"
+    "[console_svc]\nconsole-prod ansible_connection=local\n"
+)
+FAKE_GIT_DRIFT = (
+    'case "$*" in\n'
+    '  *"rev-parse HEAD"*) echo 0123456789abcdef0123456789abcdef01234567 ;;\n'
+    '  *"cat-file"*) exit 0 ;;\n'
+    '  *"diff --quiet"*) exit 1 ;;\n'
+    "  *) exit 1 ;;\n"
+    "esac\n"
+)
+DRIFT_REFUSAL = "the controller's console deploy inputs differ from what the console runs"
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True)[:2])
+def test_the_drift_gate_refuses_before_a_mint_on_production_whatever_local_mode_says(tmp_path, forge):
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text(CONSOLE_PROD_INI)
+    proc = harness_sandbox.run_playbook(
+        ROTATE, tmp_path, "-e", forge(tmp_path), "--check", inventory=inventory,
+        env=harness_sandbox.fake_bin(tmp_path, {"git": FAKE_GIT_DRIFT}),
+    )
+    output = " ".join((proc.stdout + proc.stderr).split())
+    assert proc.returncode != 0, output
+    assert DRIFT_REFUSAL in output, output
+    assert MINT not in output, "the run reached the mint"
 
 
 # Hooks and some shells export GIT_DIR and friends. A test repo must never inherit them, or the drift
