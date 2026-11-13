@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x7** | Unverified claim | 7 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x8** | Unverified claim | 8 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -168,6 +168,7 @@ and why.
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -275,7 +276,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 7** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07
+**Occurrences: 8** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -359,6 +360,18 @@ passed. Why the rule did not fire: no file was grepped. The gap was read from a 
 that lists possible causes, and the stored artifact the claim was about was never opened. A guard's
 fail message names what it checks, not what is missing; the cause of a failure comes from the
 failing task's full output and the artifact it names.
+
+**Occurrence 8 — 2026-11-12 (a mechanism inferred from the tracker's state).** Entry 5.27, as
+first written in PR #1134, said the Plane sync "created even the ticked tasks in Backlog" and that no
+change "ticked the task it finished". I inferred both from Plane showing tasks 1.1 to 1.5 in Backlog
+while `tasks.md` on `main` had them ticked. I told the operator the first, and wrote both into the
+entry. Both were false. The sync skips a task already ticked when first seen; 1.1 to 1.5 were ticked
+on `dev` only when the sync first read `main`; and `21ad7e8bc`, my own commit, had ticked 1.5. The
+independent review found it by reading `openspec_to_plane.py` and the git history. Why the rule did
+not fire: no file was grepped. The behaviour was read from the tracker's present state, and the code
+that made that state, and the history of the ticks, were never opened. A tracker's state is an
+output: its cause comes from the code that wrote it and from what that code read, on the branch
+and at the time it read it.
 
 ### 1.3 A masked exit code reported as success
 
@@ -5130,6 +5143,39 @@ convention: a `dev` merge hold, which nothing the guard reads records, a fast-fo
 to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the
 operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
 repositories, and the two promotion rounds, which no check counts.
+
+### 5.27 A live service's tasks stayed unticked, and a late tick never reached the tracker
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** The self-hosted runners have run jobs in production since at least 2026-10-12
+(Deploy GitHub Runner (Dev) task 4831), and container jobs since 2026-10-28 (Install Podman (Dev)
+task 9849, Deploy GitHub Runner (Dev) task 9856, site-config smoke run 40717453592). On 2026-11-12
+the `add-github-actions-runners` change's `tasks.md` had 7 of 83 tasks ticked, on both `main` and
+`dev`, and its 81 Plane items were all in Backlog or In Progress. Five of the seven ticks (1.1 to
+1.4 in `ee14db326`, 1.5 in `21ad7e8bc`) were made on `dev`. When the OpenSpec sync first ran, on
+2026-11-09, it read `main`, where only 3.1 and 3.2 were ticked. It skipped those two and imported
+the other 81 tasks as open items, 1.1 to 1.5 included. The five ticks reached `main` with the
+promotion in #1003 on 2026-11-10, and their items stayed in Backlog. Asked to put the runner fix
+in milestone v0.17.0, I could not scope the module from the tracker: six items were closed by hand
+against their evidence, and the rest went to a reconciliation item (AC-859).
+
+**Root cause.** Two gaps, one behind the other:
+1. Most completed work never ticked its task. The PRs and runs cited the change, not the task.
+2. A tick that is made matters to Plane only if it is on `main` before the sync first sees the task;
+   then no item is created for it. The sync reads `main`, skips a task already ticked when first
+   seen, and never writes status once an item exists
+   (`platform/services/plane/lib/openspec_to_plane.py`, `sync-plane-projects.yml`). Plane owns
+   status from then on, so a tick made on `dev` and promoted later moves nothing.
+
+**The rule.** A pull request or live run that completes a task ticks that task in `tasks.md`,
+citing its evidence, in the same change, and sets the task's Plane item to Done itself, because no
+sync will. Before a change whose service is live goes into a milestone, reconcile its open items
+against the evidence.
+
+**Enforced by.** Convention. Proposed: the sync sets an item to Done when its task becomes ticked
+on `main`. That reverses the sync's rule that Plane owns status once an item exists, so it needs
+that decision first.
 
 ## 6. Working from assumptions about files
 
