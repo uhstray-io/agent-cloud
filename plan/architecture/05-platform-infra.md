@@ -1401,11 +1401,17 @@ Before merging, verify on both a Docker host (NetBox VM) and a Podman host (all 
 
 Status: **Decided by the operator on 2026-11-12. Not built.** The build is tracked as AC-740, milestone v0.17.0. The decision is D6 in [plan 24, the Rust test platform](../development/24-rust-test-platform.md).
 
-Some helper scripts run on a target host, not on the Semaphore controller. Ansible copies them to the host and runs them there, as it does with `grow-root-lvm.py` through `tasks/grow-root-lvm.yml`. A Rust replacement for a helper of this kind is a binary, and the binary has to reach each host architecture. The operator chose pinned release binaries:
+Some helper scripts run on a target host, not on the Semaphore controller. They reach the host in three ways today:
+
+- **`script:`**: Ansible copies the file and runs it, as `manage-caddy-sites.yml` does with `executable: python3`.
+- **stdin**: the controller reads the file and pipes it to `python3 -` on the host, so no copy is written there. `tasks/grow-root-lvm.yml` and `diagnose-o11y-grafana-auth.yml` work this way.
+- **From the placed monorepo**: the host runs the file from its clone, as `deploy-agentgateway.yml` does for `check-agentgateway-rendered-image.py`.
+
+A Rust replacement for any of these is a binary, and the binary has to reach each host architecture. A binary cannot be piped to an interpreter, so a stdin-fed helper gains a copy step. For the root-filesystem grow, that copy has to land on tmpfs, because the root may be full. The operator chose pinned release binaries:
 
 1. CI builds static musl binaries for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
 2. The binaries are attached to the GitHub Release of the version.
-3. A deploy fetches the binary for the host's architecture, verifies it against a sha256 pinned in the repository, and copies it to the host. The copy runs in place of the `.py` helper that is copied today.
+3. A deploy fetches the binary for the host's architecture, verifies it against a sha256 pinned in the repository, and copies it to the host, where it runs in place of the `.py` helper.
 
 Step 3 follows the pattern Deploy Plane uses for Plane's Compose and variables files. Those files are fetched for the pinned release, each is checked against its sha256, and neither is committed ([`AGENTS.md`](../../AGENTS.md), the "Deploy Plane" row of the Independent Workflows table).
 
@@ -1413,11 +1419,11 @@ The alternatives lost for these reasons:
 
 - **Building on the controller** needs a Rust toolchain in the Semaphore image.
 - **Building on the host** is not an option, because a target host has no Rust toolchain.
-- **Keeping host-side helpers in Python** keeps a second language in the repository, and the subprocess test lane that plan 24 retires (Phases 5 and 10).
+- **Keeping host-side helpers in Python** keeps a second language in the repository, and the subprocess Python tests that plan 24 retires (Phases 5 and 10).
 
 Three questions are left open for AC-740 to settle. This decision does not answer them:
 
-- **Which job builds the binaries and attaches them.** GitHub Releases are created by the `Release Version (Dev)` template, which creates the Release of the newest release tag when it has none ([`AGENTS.md`](../../AGENTS.md), Independent Workflows table).
+- **Which job builds the binaries and attaches them.** GitHub Releases are created by the release-version templates: `Release Version (Dev)` creates the Release of the newest release tag when it has none, and `Release Major Version (Dev)` runs the same flow for a major ([`AGENTS.md`](../../AGENTS.md), Independent Workflows table).
 - **How a `(Dev)` template gets its binaries.** A `(Dev)` template runs the code of the `dev` branch ([`AGENTS.md`](../../AGENTS.md), "Using Semaphore: local vs production"). `dev` carries `vX.Y.Z-dev.N` tags, and plan 20 keeps a GitHub Release per `main` version ([`20-semantic-versioning.md`](../development/20-semantic-versioning.md), "Where the version lives").
 - **Where the sha256 pins live.**
 
