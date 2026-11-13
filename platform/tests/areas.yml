@@ -26,7 +26,7 @@ ignore:
 # The security set: selected in every lane (static modules only in the commit lane). `ledger`
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
 always:
-  static: [ledger]
+  static: [approle_ttl, host_access_gate, ledger]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
@@ -46,6 +46,13 @@ areas:
       - "platform/lib/common.sh"
     tiers:
       cli: [common_sh]
+
+  manage_github_runner_group:
+    paths:
+      - "platform/playbooks/manage-github-runner-group.yml"
+      - "platform/semaphore/templates.yml"
+    tiers:
+      static: [manage_github_runner_group]
 
   # The suite's own tests. A change under platform/tests/ hits `full`, which is checked before
   # any area, so this area names no paths: it only gives these modules their one listing.
