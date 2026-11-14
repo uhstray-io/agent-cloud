@@ -143,12 +143,27 @@ setup() {
   assert_precedes "$PLAYBOOK" 'name: "Add each other declared rule' 'ufw --force enable'
 }
 
-@test "firewall: the default outbound policy is still allow (denials are specific)" {
-  # Egress containment must be a set of specific denials evaluated ahead of the default
-  # policy — NOT a flip to default-deny outbound, which would break package fetches,
-  # DNS, and NTP on every host this shared playbook touches.
-  grep -qF 'ufw default allow outgoing' "$PLAYBOOK"
-  ! grep -qF 'ufw default deny outgoing' "$PLAYBOOK"
+@test "firewall: the default outbound policy is allow unless an enforced allowlist proves itself" {
+  # Egress containment is a set of specific denials evaluated ahead of the default policy,
+  # NOT a flip to default-deny outbound, which would break package fetches, DNS and NTP on
+  # every host this shared playbook touches. The one exception is an enforced
+  # firewall_allow_egress: its deny is applied only inside the rescued probe block, after
+  # enable and the fresh-handshake SSH verify (behaviour: test_apply_firewall_convergence.py).
+  assert_grep -qF 'ufw default allow outgoing' "$PLAYBOOK"
+  [ "$(grep -cF 'ufw default deny outgoing' "$PLAYBOOK")" -eq 1 ]
+  local blk
+  blk=$(task_block "$PLAYBOOK" "Prove the enforced outbound allowlist")
+  assert_grep -qF 'ufw default deny outgoing' <<<"$blk"
+  assert_precedes "$PLAYBOOK" 'name: "Verify SSH still works after enabling' 'ufw default deny outgoing'
+}
+
+@test "firewall: the package index is refreshed only when ufw is missing" {
+  # Under an enforced outbound allowlist `apt-get update` needs the mirror's port; refreshing
+  # on every run would stop each later run at the install, before any rule or mode change.
+  local blk
+  blk=$(task_block "$PLAYBOOK" "Install ufw")
+  assert_grep -qF "update_cache: \"{{ 'install ok installed' not in _ufw_installed.stdout }}\"" <<<"$blk"
+  assert_precedes "$PLAYBOOK" 'name: "Read whether ufw is installed"' 'name: "Install ufw"'
 }
 
 @test "apply-firewall: the upstream source may be a LIST, and a bare string still works" {
@@ -196,6 +211,7 @@ tasks.append({"name": "Show the rule commands",
               "ansible.builtin.debug": {"msg": "{{ _fw_desired | map(attribute='cmd') | list }}"}})
 play = {"hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars": {"_ssh_cidrs": ["192.0.2.0/24"], "_rules": [], "_route_rules": [], "_deny_egress": [],
+                 "_allow_egress": [], "_egress_enforce": False,
                  "_rootful": True, "_detected": {"stdout_lines": ["443 tcp", "53 udp"]}},
         "tasks": tasks}
 with open(sys.argv[2], "w") as target:

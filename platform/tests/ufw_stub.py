@@ -13,6 +13,8 @@ on, read from the ufw 0.36.2 source (git.launchpad.net/ufw, tag 0.36.2):
   ("Could not delete non-existent rule"). Deleted prints "Rule deleted" ("Rules updated"
   when inactive).
 - A comment containing "'" is refused (src/parser.py).
+- A rule may be given in the short form `allow [in|out] PORT[/PROTO]` (src/parser.py parse).
+  ufw prints a rule to and from any address that way, so a delete by spec replays it.
 - `status verbose` prints "Status: inactive" alone while inactive.
 - Addresses are stored normalised (src/util.py normalize_address): a host mask (/32,
   /255.255.255.255, /128) is dropped and an IPv4 CIDR is masked to its network.
@@ -37,7 +39,13 @@ simulating a delete that took more than it named), PODMAN_STUB (JSON:
 import ipaddress
 import json
 import os
+import re
 import sys
+
+# The short form `allow [in|out] PORT[/PROTO]` (src/parser.py parse, nargs == 2 once the comment
+# is stripped), accepted only as the whole rule. A route rule takes it too: the route parser
+# hands the rule to the same parser (UFWCommandRouteRule.parse).
+_SHORT_FORM = re.compile(r"\d[\d,:]*(/(tcp|udp))?")
 
 
 def _load(path):
@@ -66,7 +74,7 @@ def _normalise(addr):
 def _parse(tokens):
     """[route] [delete] allow|deny [in|out] [on IFACE] ... -> (remove, rule dict)."""
     t = list(tokens)
-    rule = {"route": False, "direction": "in", "iface": "", "proto": "any",
+    rule = {"route": False, "direction": "in", "iface": "", "proto": "any", "log": "",
             "src": "any", "sport": "any", "dst": "any", "dport": "any", "comment": ""}
     remove = False
     if t and t[0] == "route":
@@ -83,6 +91,11 @@ def _parse(tokens):
         if t and t[0] == "on":
             t.pop(0)
             rule["iface"] = t.pop(0)
+    if t and t[0] in ("log", "log-all"):
+        rule["log"] = t.pop(0)
+    if t and _SHORT_FORM.fullmatch(t[0]) and t[1:2] in ([], ["comment"]):
+        rule["dport"], _, proto = t.pop(0).partition("/")
+        rule["proto"] = proto or "any"
     last = None
     while t:
         word = t.pop(0)
@@ -107,7 +120,7 @@ def _command(r):
     """src/parser.py get_command, for the shapes the playbook emits."""
     res = r["action"]
     if (r["dst"] == "any" and r["src"] == "any" and r["sport"] == "any" and not r["iface"]
-            and r["dport"] != "any"):
+            and r["dport"] != "any" and not r["log"]):
         if r["direction"] == "out":
             res += " out"
         res += f" {r['dport']}" + (f"/{r['proto']}" if r["proto"] != "any" else "")
@@ -116,6 +129,9 @@ def _command(r):
             res += f" {r['direction']} on {r['iface']}"
         elif r["direction"] == "out":
             res += " out"
+        if r["log"]:
+            # `allow out log to any` as ufw 0.36.2 prints it (measured 2026-11-09)
+            res += f" {r['log']}"
         for loc, port, word in ((r["src"], r["sport"], "from"), (r["dst"], r["dport"], "to")):
             if loc != "any" or port != "any":
                 res += f" {word} {loc}" + (f" port {port}" if port != "any" else "")

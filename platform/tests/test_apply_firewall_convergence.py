@@ -10,20 +10,26 @@ differ only in their inputs share one run over several hosts (_run_many), each h
 its own stub state, since every ansible-playbook spawn costs seconds.
 """
 
+import contextlib
 import json
 import re
+import socket
 import sys
 from pathlib import Path
 
 import harness_sandbox
 import playbook_yaml
+import pytest
+import ufw_stub
 import yaml
+from fake_http import refused_port
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-firewall.yml"
 STUB = Path(__file__).with_name("ufw_stub.py")
 FIRST = "Refuse to proceed without SSH allow CIDRs (anti-lockout)"
-SKIPPED = {"Install ufw", "Dry run, ufw not installed: report", "Dry run, ufw not installed: record the verdict",
+SKIPPED = {"Read whether ufw is installed", "Install ufw", "Dry run, ufw not installed: report",
+           "Dry run, ufw not installed: record the verdict",
            "Dry run, ufw not installed: stop this host"}
 SSH = "192.0.2.0/24"
 CONTROLLER = {"firewall_controller_cidr": SSH}
@@ -508,7 +514,7 @@ def test_an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added
     r, states = _run_many(tmp_path, hosts)
     assert r.returncode != 0
     for name in bad:
-        assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
+        assert re.search(rf"\b{re.escape(name)}\s*:.*failed=1", r.stdout), name
         assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], name
         assert states[name] is None, name  # the stub never ran a write: no state file
     assert re.search(r"\bgood\s*:.*failed=0", r.stdout), r.stdout
@@ -548,3 +554,170 @@ def test_a_real_run_over_untagged_equivalent_rules_adds_the_tagged_ones_and_pass
     assert _tag("in", "22/tcp", SSH) in _rules(state).values()
     v = _verdict(r)
     assert v["errors"] == [] and v["would_change"] == [], v
+
+
+# ── Outbound allowlist (firewall_allow_egress, firewall_egress_mode, firewall_egress_probes) ──
+
+ALLOW_OUT = [{"port": 443}, {"port": 53, "proto": "udp"}]
+AUDIT = "allow out log to any"
+
+
+@contextlib.contextmanager
+def _listening():
+    """A TCP port on 127.0.0.1 that accepts connections inside the block."""
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        yield listener.getsockname()[1]
+
+
+def _enforce(port, **probe):
+    """Host vars: ALLOW_OUT enforced, proven by one probe to 127.0.0.1:`port`."""
+    return {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
+            "firewall_egress_probes": [{"host": "127.0.0.1", "port": port, **probe}]}
+
+
+def test_audit_adds_the_allowlist_then_the_audit_rule_last_and_keeps_outgoing_allowed(tmp_path):
+    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    assert r.returncode == 0, r.stdout + r.stderr
+    specs = [rule[0] for rule in state["rules"]]
+    assert specs[-3:] == ["allow out 443/tcp", "allow out 53/udp", AUDIT]
+    assert _rules(state)[AUDIT] == _tag("out-audit", "any", "any")
+    assert state["outgoing"] == "allow"
+    assert _verdict(r)["errors"] == []
+    # converged: a second run changes nothing and leaves the audit rule where it is
+    r2, state2 = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    assert _changed(r2) == 0, r2.stdout
+    assert [rule[0] for rule in state2["rules"]] == specs
+
+
+def test_a_newly_declared_allow_lands_before_the_audit_rule(tmp_path):
+    _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    r, state = _run(tmp_path, {"firewall_allow_egress": [*ALLOW_OUT, {"port": 80}]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert [rule[0] for rule in state["rules"]][-2:] == ["allow out 80/tcp", AUDIT]
+
+
+def test_enforce_denies_outgoing_drops_the_audit_rule_and_passes_its_probe(tmp_path):
+    _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
+    with _listening() as port:
+        r, state = _run(tmp_path, _enforce(port))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state["outgoing"] == "deny"
+    assert AUDIT not in _rules(state)
+    assert {"allow out 443/tcp", "allow out 53/udp"} <= set(_rules(state))
+    assert _verdict(r)["errors"] == []
+
+
+def test_enforce_denies_outgoing_only_after_enabling_and_converges(tmp_path):
+    # From an inactive host: the deny lands inside the rescued probe block, after `ufw --force
+    # enable` and the SSH verify, so a run that stops before the probes never leaves outgoing
+    # denied and unproven. A second run changes nothing.
+    with _listening() as port:
+        r, state = _run(tmp_path, _enforce(port))
+        assert r.returncode == 0, r.stdout + r.stderr
+        log = _log(tmp_path)
+        enable = log.index('["ufw", "--force", "enable"]')
+        deny = log.index('["ufw", "default", "deny", "outgoing"]')
+        assert enable < deny, log
+        assert '["ufw", "default", "allow", "outgoing"]' not in log, log
+        assert state["outgoing"] == "deny"
+        r2, state2 = _run(tmp_path, _enforce(port))
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    assert _changed(r2) == 0, r2.stdout
+    assert state2["outgoing"] == "deny"
+
+
+def test_enforce_puts_outgoing_back_to_allow_when_a_probe_cannot_be_reached(tmp_path):
+    r, state = _run(tmp_path, _enforce(refused_port(), timeout=2))
+    assert r.returncode != 0
+    assert "a declared probe could not be reached (127.0.0.1)" in r.stdout, r.stdout
+    assert state["outgoing"] == "allow"
+    assert {"allow out 443/tcp", "allow out 53/udp"} <= set(_rules(state))  # the allows are kept
+
+
+def test_a_narrowed_allowlist_on_an_enforcing_host_is_proven_again_or_outgoing_is_allowed_again(tmp_path):
+    # The stale allow is pruned while outgoing stays denied, so this run never applies the
+    # deny; the probes run all the same, and prove the narrowed list or restore default-allow.
+    enforcing = {"active": True, "outgoing": "deny", "rules": [
+        [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
+        *[[f"allow out {port}", _tag("out-allow", port, "any")] for port in ("443/tcp", "53/udp", "80/tcp")]]}
+    with _listening() as port:
+        r, states = _run_many(tmp_path, {
+            "proven": {"vars": _enforce(port), "state": enforcing},
+            "unproven": {"vars": _enforce(refused_port(), timeout=1), "state": enforcing}})
+    assert re.search(r"\bproven\s*:.*failed=0", r.stdout), r.stdout
+    assert re.search(r"\bunproven\s*:.*failed=1", r.stdout), r.stdout
+    for name in ("proven", "unproven"):
+        assert "allow out 80/tcp" not in _rules(states[name]), name  # pruned while outgoing is denied
+        assert '["ufw", "default", "deny", "outgoing"]' not in _log(tmp_path, name), name
+    assert states["proven"]["outgoing"] == "deny"
+    assert states["unproven"]["outgoing"] == "allow"
+
+
+def test_the_stub_takes_the_short_rule_form_only_as_a_whole_rule():
+    # ufw prints a rule to and from any address as `allow [out] PORT[/PROTO]`, a route rule
+    # included, so a delete by spec replays that form and the stub must read back what it prints.
+    for words, spec in (("delete allow out 80/tcp", "allow out 80/tcp"), ("allow 443", "allow 443"),
+                        ("route delete allow 9000/tcp", "route allow 9000/tcp"),
+                        ("allow out 53/udp comment x", "allow out 53/udp")):
+        assert ufw_stub._command(ufw_stub._parse(words.split())[1]) == spec
+    for words in ("allow proto tcp 443", "allow 192.0.2.1", "allow 443 to any", "allow 443 22", "allow 80/icmp"):
+        with pytest.raises(SystemExit):
+            ufw_stub._parse(words.split())
+
+
+def test_an_enforced_allowlist_without_dns_or_a_probe_is_refused_before_any_rule_is_added(tmp_path):
+    hosts = {"no_dns": {"vars": {"firewall_allow_egress": [{"port": 443}], "firewall_egress_mode": "enforce",
+                                 "firewall_egress_probes": [{"host": "127.0.0.1", "port": 9}]}},
+             "no_probe": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce"}},
+             "bad_mode": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "block"}},
+             "empty_enforce": {"vars": {"firewall_allow_egress": [], "firewall_egress_mode": "enforce"}}}
+    r, states = _run_many(tmp_path, hosts)
+    assert r.returncode != 0
+    for name in hosts:
+        assert re.search(rf"\b{re.escape(name)}\s*:.*failed=1", r.stdout), name
+        assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], name
+        assert states[name] is None, name
+    assert "must allow 53/udp out" in r.stdout and "needs firewall_egress_probes" in r.stdout
+    assert "'block' is not audit or enforce" in r.stdout
+    assert "enforce needs a non-empty firewall_allow_egress" in r.stdout
+
+
+def test_a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would(tmp_path):
+    r, state = _run(tmp_path, _enforce(9),
+                    state={"active": True, "outgoing": "allow", "rules": [
+                        [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)]]},
+                    check=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state["outgoing"] == "allow"
+    assert not [line for line in _log(tmp_path) if MUTATING.search(line)], _log(tmp_path)
+    assert '"would_set_defaults_or_enable": true' in r.stdout
+    assert any("default outgoing policy is not deny" in w for w in _verdict(r)["would_change"])
+
+
+def test_a_host_without_an_allowlist_keeps_outgoing_allowed_and_no_outbound_allow(tmp_path):
+    r, state = _run(tmp_path, {})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state["outgoing"] == "allow"
+    assert not [s for s in _rules(state) if s.startswith("allow out")]
+
+
+def test_a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_new_ones(tmp_path):
+    # ufw appends and the first match wins, so a denial added after held allows (or after the
+    # audit rule, which allows everything) would never match what they admit: refused, nothing
+    # changed. Declared together with a new allowlist, the denial is added first.
+    deny = [{"to": "198.51.100.1"}]
+    held = [["allow out 443/tcp", _tag("out-allow", "443/tcp", "any")],
+            ["allow out 53/udp", _tag("out-allow", "53/udp", "any")], [AUDIT, _tag("out-audit", "any", "any")]]
+    r, states = _run_many(tmp_path, {
+        "held": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": deny},
+                 "state": {"active": True, "outgoing": "allow", "rules": held}},
+        "fresh": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": deny}}})
+    assert re.search(r"\bheld\s*:.*failed=1", r.stdout), r.stdout
+    assert "adds deny out to 198.51.100.1, but the host already holds outbound allows" in r.stdout, r.stdout
+    assert not [line for line in _log(tmp_path, "held") if MUTATING.search(line)], _log(tmp_path, "held")
+    assert re.search(r"\bfresh\s*:.*failed=0", r.stdout), r.stdout
+    specs = [rule[0] for rule in states["fresh"]["rules"]]
+    assert specs.index("deny out to 198.51.100.1") < specs.index("allow out 443/tcp") < specs.index(AUDIT)
