@@ -122,6 +122,8 @@ agent-cloud/
       postiz/             Social publishing (app + Temporal workflow engine)
       agentgateway/       Inference edge gateway (per-client keys, token budgets)
       github-runner/      Self-hosted GitHub Actions runners
+      weft-door/          weft's front door: identity across companies, one VM per environment
+      weft-workspace/     weft workspace: one VM per company, signed images by digest
       opa/                Policy engine (Rego policy-as-code)
       erpnext/            ERP (composable slim local tier)
       a2a-registry/       Placeholder, no deployment
