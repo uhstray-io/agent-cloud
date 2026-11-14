@@ -1,0 +1,71 @@
+---
+# stand-up-weft-workspace.yml — put weft on a NEW rack workspace VM and route its hostname
+# ("Stand Up weft Workspace"; a person runs it with the workspace's inventory host).
+#
+# The order is forced by weft (docs/deployment.md, "Standing a workspace up"): the front door
+# mints the workspace's id when somebody creates the workspace there, and only then can a
+# deployment be configured with it. So, before this runs:
+#
+#   1. the workspace exists on the front door, and its id is in site-config as the host's
+#      weft_workspace_id, with the rest of its declaration and its weft_release pin, which is the
+#      front door's (README.md in the service directory)
+#   2. the VM exists and is hardened, through the platform's usual workflow, each its own
+#      template: Provision VM (vm_cpu must give it AVX2: x86-64-v3 or host), Distribute SSH Keys,
+#      Harden SSH, Apply Firewall
+#
+# Then this:
+#   - re-renders weft's Caddy fragment for the rack (weft-edge.yml), so <name>.<domain> reaches the
+#     new VM; the front door itself is not redeployed
+#   - deploys the new workspace to its pin
+#
+# Afterwards the workspace's admin signs in and enters its model keys and forge token on
+# Settings > Credentials; they are sealed in its catalog and never pass through Semaphore or
+# OpenBao (weft's D539). Until then its orchestrator has no model to call and says so.
+#
+# Staging's one workspace is deployed by Deploy weft Staging.
+#
+# Input: target_host — the workspace's inventory host, in weft_workspaces.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+- name: "Stand up: which workspace"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - vars/weft.yml
+
+  tasks:
+    - name: "Require a declared rack workspace host, pinned to its front door's release"
+      ansible.builtin.assert:
+        that:
+          - target_host | default('') in (groups['weft_workspaces'] | default([]))
+          - hostvars[target_host].weft_workspace_id is defined
+          - hostvars[target_host].weft_workspace_name is defined
+          - groups['weft_door'] | default([]) | length == 1
+          - hostvars[target_host].weft_release | default('') == hostvars[groups['weft_door'][0]].weft_release | default('')
+        fail_msg: >-
+          target_host must name a host declared in weft_workspaces, with its weft_workspace_id (the
+          id the front door minted), weft_workspace_name (the company name its admin chose) and a
+          weft_release pin equal to the front door's, so a new workspace never starts on a version
+          the rest of the rack does not run. Nothing was changed.
+
+    - name: "Queue the new workspace"
+      ansible.builtin.add_host:
+        name: "{{ target_host }}"
+        groups: weft_standup
+
+- name: "Stand up: route the new workspace's hostname"
+  ansible.builtin.import_playbook: weft-edge.yml
+  vars:
+    weft_door_hosts: weft_door
+    weft_edge_workspace_hosts: weft_workspaces
+
+- name: "Stand up: deploy the new workspace"
+  ansible.builtin.import_playbook: weft-workspace.yml
+  vars:
+    weft_workspace_hosts: weft_standup

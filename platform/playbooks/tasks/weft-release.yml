@@ -1,0 +1,247 @@
+---
+# weft-release.yml — on the target VM: prove the release.json a host is pinned to was signed by
+# weft's images.yml on main, read it, and verify and pull every image it names, by digest.
+#
+# A rack host's pin is site-config's `weft_release`: `<version>@sha256:<digest>`, the version a
+# person chose and the digest of its release.json artifact. Changing it is a site-config pull
+# request and an inventory sync, made by a person; nothing here or in the weft repository writes
+# it. The digest is what is verified and fetched, so a tag moved after the pin changes nothing.
+# Staging alone also takes a bare full commit (Deploy weft Staging), resolved here to the digest
+# of weft-release:<commit>, whose signature is then checked like any pin's.
+#
+# release.json is never written to disk: the manifest and the release.json blob are fetched by
+# digest to stdout, and hashed on the controller against the digest asked for.
+#
+# Caller passes:
+#   weft_release     the host's pin (or, on staging, a full commit)
+#   _weft_role       workspace | door
+#   _weft_state_dir  the role's state directory on the VM
+#   _weft_workspace_dir  (a workspace) the directory its containers mount
+# with vars/weft.yml loaded. Sets:
+#   _weft_release_json    the verified release.json
+#   _weft_release_name    its version, or its commit when it has none (staging)
+#   _weft_images          {image name: <registry>/<image>@sha256:...} from it
+#   _weft_role_refs       this role's images (tasks/weft-verify-images.yml)
+#
+# Under --check nothing is fetched or pulled (each step runs a container); the caller reports
+# what it would deploy and stops.
+
+# Every deploy and every rollback reaches this first, so the rule lives here once: the directory
+# that holds weft.toml must not be one a container can write, so it may be neither the directory
+# the role's containers mount nor anywhere inside it.
+- name: "Refuse a state directory a container mounts"
+  vars:
+    _mounted: "{{ _weft_data_dir | regex_replace('/+$', '') }}"
+    _state: "{{ _weft_state_dir | regex_replace('/+$', '') }}"
+  ansible.builtin.assert:
+    that:
+      - _state is match('^/')
+      - "'..' not in _state.split('/')"
+      - not (_state ~ '/').startswith(_mounted ~ '/')
+    fail_msg: >-
+      The deploy's state directory {{ _state }} is {{ _mounted }} or inside it, and the
+      {{ _weft_role }}'s containers mount that directory. weft.toml decides what the orchestrator
+      runs, so no container may write it: set weft_state_root apart from weft_root and
+      weft_door_dir. Nothing was changed.
+
+# A person rollback on staging names the commit or pin in its survey (rollback-weft-host.yml).
+- name: "Take the pin"
+  ansible.builtin.set_fact:
+    _weft_pin: "{{ (_weft_pin_override if _weft_pin_override is defined else (weft_release | default(''))) | string }}"
+
+- name: "Require a pin: a version or commit, and its release.json digest"
+  ansible.builtin.assert:
+    that:
+      # The rack runs releases only: a version and its digest.
+      - >-
+        (_weft_pin | default('') | string is match(_weft_pin_pattern)
+         and (weft_environment | default('') != 'rack' or _weft_pin | string is match('^v')))
+        or (weft_environment | default('') == 'staging' and _weft_pin | default('') | string is match(_weft_commit_pattern))
+    fail_msg: >-
+      {{ inventory_hostname }}'s weft_release is '{{ _weft_pin | default('') }}'. A rack host is
+      pinned to <version>@sha256:<64 hex>, the digest of that version's signed weft-release
+      artifact, set in site-config by a person; staging also takes <commit>@sha256:<64 hex> or a
+      full 40-hex commit. A tag, a branch or a short commit is a name that can move, and is
+      refused. Nothing has changed on this host.
+
+- name: "Split the pin into its name and its digest"
+  ansible.builtin.set_fact:
+    _weft_pinned_name: "{{ (_weft_pin | string).split('@')[0] }}"
+    _weft_pinned_digest: "{{ (_weft_pin | string).split('@', 1)[1] if '@' in (_weft_pin | string) else '' }}"
+
+- name: "Registry login for weft's private images"
+  ansible.builtin.include_tasks: registry-login.yml
+  when: not (_weft_local | bool)
+
+- name: "Read the deploy user's id (rootless podman keeps its registry login under it)"
+  ansible.builtin.command: id -u
+  register: _weft_uid
+  changed_when: false
+  check_mode: false
+
+- name: "Locate the registry login the containers below borrow"
+  ansible.builtin.set_fact:
+    _weft_auth_file: "/run/user/{{ _weft_uid.stdout }}/containers/auth.json"
+    _weft_release_repo: "{{ _weft_registry }}/weft-release"
+
+# The verifiers (oras here, cosign in verify-cosign.yml) run as root, from root's image store. The
+# deploy user's rootless store is one a compromised orchestrator can write through its podman
+# socket, and podman does not re-verify the layers of a digest-pinned image already stored, so a
+# verifier run from it could be one that lies. And oras is not trusted even so: what it fetches is
+# hashed here, on the controller, against the digest asked for. Both come back base64-encoded,
+# because the command module strips a trailing newline from stdout and the hash is over the
+# exact bytes.
+#
+# Staging only, for a bare commit: a resolve that lies can only name another digest, and cosign
+# checks that digest's signature, the manifest is hashed against it, and release.json must name
+# the commit asked for.
+- name: "Staging: resolve weft-release:{{ _weft_pinned_name }} to a digest"
+  ansible.builtin.command:
+    argv: >-
+      {{ [container_engine | default('podman'), 'run', '--rm', '--user=0',
+           '-v', _weft_auth_file ~ ':/auth/config.json:ro', _weft_oras_image]
+         + ['resolve', '--registry-config', '/auth/config.json', _weft_release_repo ~ ':' ~ _weft_pinned_name] }}
+  register: _weft_resolved
+  become: true
+  changed_when: false
+  failed_when: >-
+    _weft_resolved.rc != 0
+    or not (_weft_resolved.stdout | trim is match('^sha256:[0-9a-f]{64}$'))
+  when:
+    - not ansible_check_mode
+    - _weft_pinned_digest | length == 0
+
+- name: "Take the release.json digest"
+  ansible.builtin.set_fact:
+    _weft_release_digest: "{{ _weft_pinned_digest if _weft_pinned_digest | length > 0 else (_weft_resolved.stdout | default('') | trim) }}"
+
+- name: "Verify release.json was signed by weft's images.yml on main"
+  ansible.builtin.include_tasks: verify-cosign.yml
+  vars:
+    _cosign_refs: ["{{ _weft_release_repo }}@{{ _weft_release_digest }}"]
+    _cosign_identity: "{{ _weft_signer }}"
+    _cosign_issuer: "{{ _weft_issuer }}"
+    _cosign_auth_file: "{{ _weft_auth_file }}"
+  when: not ansible_check_mode
+
+- name: "Fetch the verified manifest by its digest"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ ([container_engine | default('podman'), 'run', '--rm', '--user=0',
+           '-v', _weft_auth_file ~ ':/auth/config.json:ro', _weft_oras_image]
+          + ['manifest', 'fetch', '--registry-config', '/auth/config.json',
+             _weft_release_repo ~ '@' ~ _weft_release_digest]) | map('quote') | join(' ') }} | base64 -w0
+    executable: /bin/bash
+  register: _weft_manifest
+  become: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "Refuse a manifest that is not the digest cosign verified"
+  ansible.builtin.assert:
+    that:
+      - ('sha256:' ~ (_weft_manifest.stdout | b64decode | hash('sha256'))) == _weft_release_digest
+    fail_msg: >-
+      The manifest fetched for {{ _weft_pin }} does not hash to {{ _weft_release_digest }},
+      the digest whose signature was verified. Nothing has changed on this host.
+  when: not ansible_check_mode
+
+# The manifest is the one cosign verified, so its layers are trusted; the layer is chosen by
+# the title oras gives a pushed file, and only by digest after that.
+- name: "Take the layer titled release.json"
+  ansible.builtin.set_fact:
+    _weft_release_blob: >-
+      {{ (_weft_manifest.stdout | b64decode | from_json).layers | default([])
+         | map('to_json')
+         | select('search', '"org\.opencontainers\.image\.title": "release\.json"')
+         | map('from_json') | map(attribute='digest') | list }}
+  when: not ansible_check_mode
+
+- name: "Require exactly one release.json layer, by digest"
+  ansible.builtin.assert:
+    that:
+      - _weft_release_blob | length == 1
+      - _weft_release_blob[0] is match('^sha256:[0-9a-f]{64}$')
+    fail_msg: >-
+      The verified weft-release artifact for {{ _weft_pin }} does not hold exactly one layer
+      titled release.json. Nothing has changed on this host.
+  when: not ansible_check_mode
+
+- name: "Fetch release.json by its digest, to stdout"
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail;
+      {{ ([container_engine | default('podman'), 'run', '--rm', '--user=0',
+           '-v', _weft_auth_file ~ ':/auth/config.json:ro', _weft_oras_image]
+          + ['blob', 'fetch', '--registry-config', '/auth/config.json', '--output', '-',
+             _weft_release_repo ~ '@' ~ _weft_release_blob[0]]) | map('quote') | join(' ') }} | base64 -w0
+    executable: /bin/bash
+  register: _weft_release_raw
+  become: true
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "Refuse a release.json that is not the blob the manifest names"
+  ansible.builtin.assert:
+    that:
+      - ('sha256:' ~ (_weft_release_raw.stdout | b64decode | hash('sha256'))) == _weft_release_blob[0]
+    fail_msg: >-
+      release.json fetched for {{ _weft_pin }} does not hash to {{ _weft_release_blob[0] }}, the
+      layer the verified manifest names. Nothing has changed on this host.
+  when: not ansible_check_mode
+
+- name: "Parse release.json"
+  ansible.builtin.set_fact:
+    _weft_release_json: "{{ _weft_release_raw.stdout | b64decode | from_json }}"
+  when: not ansible_check_mode
+
+- name: "Refuse a release.json that is not the one pinned"
+  # The signature proves who wrote the file; these prove it is the file the pin names. A release
+  # names its version, and its commit is the one main published; a commit names itself.
+  ansible.builtin.assert:
+    that:
+      - _weft_release_json.format == 1
+      - _weft_release_json.commit is match(_weft_commit_pattern)
+      - >-
+        (_weft_pinned_name == _weft_release_json.commit) if (_weft_pinned_name is match(_weft_commit_pattern))
+        else (_weft_pinned_name == _weft_release_json.version)
+    fail_msg: >-
+      release.json at {{ _weft_release_digest }} does not describe {{ _weft_pinned_name }}: its
+      format, commit or version is not what the pin names. Nothing has changed on this host.
+  when: not ansible_check_mode
+
+# The signer, the role's images, the registry and every image's signature: the same check a
+# rollback runs on the release it goes back to.
+- name: "Verify the release's images for this role"
+  ansible.builtin.include_tasks: weft-verify-images.yml
+  vars:
+    _wvi_release: "{{ _weft_release_json }}"
+  when: not ansible_check_mode
+
+- name: "Take the release's images"
+  ansible.builtin.set_fact:
+    _weft_images: "{{ _weft_release_json.images }}"
+    _weft_release_name: "{{ _weft_release_json.version or _weft_release_json.commit }}"
+  when: not ansible_check_mode
+
+- name: "Workspace: the board's client address header, by what the release's loader accepts"
+  ansible.builtin.include_tasks: weft-board-header.yml
+  when:
+    - not ansible_check_mode
+    - _weft_role == 'workspace'
+
+- name: "Pull the verified images by digest"
+  ansible.builtin.command:
+    argv: ["{{ container_engine | default('podman') }}", pull, "{{ item }}"]
+  loop: "{{ _weft_role_refs }}"
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "Report the release"
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('check mode: would fetch, verify and pull weft ' ~ _weft_pin) if ansible_check_mode
+         else ('weft ' ~ _weft_release_name ~ ' (commit ' ~ _weft_release_json.commit ~ ', release.json '
+               ~ _weft_release_digest ~ '): release.json and ' ~ (_weft_role_refs | length)
+               ~ ' image(s) verified and pulled for the ' ~ _weft_role ~ '.') }}

@@ -1,0 +1,20 @@
+---
+# weft-workspace-files.yml — weft.toml for the release a workspace is being started on, naming the
+# release's agent images. Included by the deploy and by a person's rollback after the stop, so it
+# renders from the same release.json the images came from (_weft_release_json / _weft_images); the
+# whisper model it names was fetched before the stop (weft-whisper-model.yml).
+#
+# weft.toml names the agent images, the orchestrator's command and the checkout and clone paths
+# the orchestrator runs through the podman socket, so it decides what runs as surely as any image
+# does. It is rendered into the root-owned state directory, never the workspace directory the board
+# mounts read-write, and bind-mounted read-only into the containers that read it (vars/weft.yml).
+# 0644: it holds no credential (weft D539), and the containers' mapped user must read it.
+
+- name: "Render weft.toml for this release"
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../services/weft-workspace/deployment/templates/weft.toml.j2"
+    dest: "{{ _weft_workspace_config }}"
+    owner: "{{ _weft_state_owner }}"
+    group: "{{ _weft_state_group }}"
+    mode: "0644"
+  become: true

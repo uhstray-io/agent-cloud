@@ -1,0 +1,117 @@
+---
+# deploy-weft-staging.yml — deploy one weft commit or release to staging ("Deploy weft Staging"). A
+# person launches it with the commit, or the pin, in its survey; nothing schedules it.
+#
+#   1. refuse a value that is not a full commit or <commit|version>@sha256:<digest>
+#   2. the staging front door, then the staging workspace: each the same deploy as the rack's
+#      (verify, back up, start, health through the edge, a 15-minute watch)
+#   3. both healthy: record a GitHub deployment, environment `staging`, state `success`, on the
+#      commit release.json names. weft's release.yml releases only a commit whose `staging`
+#      deployment succeeded, so this record is what lets it be released. The token is a GitHub App
+#      installation token minted for this run alone, scoped to weft's repository and to
+#      deployments (tasks/weft-github-app-token.yml)
+#
+# A failure fails the run and records nothing on GitHub: a commit that did not run healthily on
+# staging cannot be released.
+#
+# Inventory: weft_staging_door (one host) and weft_staging_workspace (one host), with
+# weft_environment=staging and weft_secret_root=weft-staging.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# Inline rather than preflight-target-group.yml: the plays below target the templated
+# weft_door_hosts and weft_workspace_hosts, which are the names the guard must check.
+- name: "Pre-flight: the staging pair is declared and populated"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    weft_door_hosts: weft_staging_door
+    weft_workspace_hosts: weft_staging_workspace
+  tasks:
+    - name: "Refuse an empty or undeclared staging group"
+      ansible.builtin.assert:
+        that:
+          - groups[weft_door_hosts] | default([]) | length > 0
+          - groups[weft_workspace_hosts] | default([]) | length > 0
+        fail_msg: >-
+          {{ weft_door_hosts }} and {{ weft_workspace_hosts }} must both be populated inventory
+          groups, or this deploy would do nothing and report success. Declare them in site-config.
+
+- name: "Staging: what to deploy"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  # A refused value ends the run here; without this the plays below would still run on staging.
+  any_errors_fatal: true
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _staging: "{{ (groups['weft_staging_door'] | default([])) + (groups['weft_staging_workspace'] | default([])) }}"
+
+  tasks:
+    - name: "Require a commit or a pin"
+      ansible.builtin.assert:
+        that:
+          - >-
+            weft_staging_release | default('') | string is match(_weft_pin_pattern)
+            or weft_staging_release | default('') | string is match(_weft_commit_pattern)
+        fail_msg: >-
+          weft_staging_release is '{{ weft_staging_release | default('') }}'. Give a full 40-hex
+          commit main published, or <commit|version>@sha256:<64 hex>. Nothing was changed.
+
+    - name: "Require every staging host to be staging's"
+      ansible.builtin.assert:
+        that: hostvars[item].weft_environment | default('') == 'staging'
+        fail_msg: "{{ item }} is not declared weft_environment=staging. Nothing was changed."
+      loop: "{{ _staging }}"
+
+- name: "Staging: the front door"
+  ansible.builtin.import_playbook: weft-door.yml
+  vars:
+    weft_release: "{{ weft_staging_release }}"
+    weft_door_hosts: weft_staging_door
+    weft_edge_workspace_hosts: weft_staging_workspace
+
+- name: "Staging: the workspace"
+  ansible.builtin.import_playbook: weft-workspace.yml
+  vars:
+    weft_release: "{{ weft_staging_release }}"
+    weft_workspace_hosts: weft_staging_workspace
+
+- name: "Staging: record the healthy commit on GitHub"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
+    _staging_workspace: "{{ (groups['weft_staging_workspace'] | default([])) | first | default('') }}"
+
+  tasks:
+    - name: "Take the commit staging verified"
+      ansible.builtin.set_fact:
+        _weft_staging_commit: "{{ hostvars[_staging_workspace]._weft_release_json.commit | default('') }}"
+
+    - name: "Require it (check mode verifies nothing, so records nothing)"
+      ansible.builtin.meta: end_play
+      when: ansible_check_mode or _weft_staging_commit | length == 0
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "Mint a token for weft's deployments alone"
+      ansible.builtin.include_tasks: tasks/weft-github-app-token.yml
+
+    - name: "Record the staging deployment"
+      ansible.builtin.include_tasks: tasks/weft-github-deployment.yml
+      vars:
+        _wgd_sha: "{{ _weft_staging_commit }}"
+        _wgd_description: "Staging is healthy on {{ _weft_staging_commit[:12] }}"

@@ -1,0 +1,41 @@
+---
+# weft-whisper-model.yml — the whisper model a workspace's release pins, fetched into its directory
+# and checked against the sum in the SIGNED release.json, BEFORE anything stops. A model that cannot
+# be had, or does not match, fails the deploy while the running release is untouched. Included by
+# the deploy and by a person's rollback, for the release the host is pinned to.
+#
+# The model is fetched by the deploy rather than baked into the image (148 MB per model, and the
+# workspace chooses which), so the release pins the model as it pins the code. A file already
+# present is re-checked, not trusted.
+#
+# The model stays in the workspace directory, which the board can write: a declared cost
+# (openspec add-weft-service, design.md D4). Between deploys a compromised board could swap it,
+# and weft-whisper would parse the swapped file; it chooses no image and no command, and every
+# deploy and rollback checks it against the signed sum again.
+#
+# Caller passes _weft_release_json (verified) and _weft_workspace_dir. Sets _weft_whisper_model,
+# which weft.toml names.
+
+- name: "Choose the whisper model"
+  ansible.builtin.set_fact:
+    _weft_whisper_model: "{{ weft_whisper_model | default(_weft_release_json.whisper.default) }}"
+
+- name: "Require a model the release pins"
+  ansible.builtin.assert:
+    that: _weft_whisper_model in _weft_release_json.whisper.models
+    fail_msg: >-
+      weft_whisper_model '{{ _weft_whisper_model }}' is not one release.json pins
+      ({{ _weft_release_json.whisper.models.keys() | list | join(', ') }}). Nothing was stopped.
+
+- name: "Make the models directory"
+  ansible.builtin.file:
+    path: "{{ _weft_workspace_dir }}/models"
+    state: directory
+    mode: "0700"
+
+- name: "Fetch the model, checked against the release's sum"
+  ansible.builtin.get_url:
+    url: "{{ _weft_release_json.whisper.models[_weft_whisper_model].url }}"
+    dest: "{{ _weft_workspace_dir }}/models/{{ _weft_release_json.whisper.models[_weft_whisper_model].file }}"
+    checksum: "sha256:{{ _weft_release_json.whisper.models[_weft_whisper_model].sha256 }}"
+    mode: "0600"
