@@ -939,7 +939,7 @@ def check_dev_drift(api, number, sha, dev_sha, acknowledged):
                       "pass --dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
 
 
-def validate(api, number, sha, receipt_path, dev_drift_acknowledged=False, budget_acknowledged=False):
+def validate(api, number, sha, receipt_path, *, dev_drift_acknowledged=False, budget_acknowledged=False):
     pr = get_pr(api, number)
     base_sha = check_pr(pr, number, sha)
     files, file_records = changed_files(api, number)
@@ -986,8 +986,9 @@ def main(argv=None, api=None):
         parser.error("--merge requires --feedback-addressed attestation")
     api = api or GitHub()
     try:
-        evidence = validate(api, args.pr, args.head, args.review_receipt, args.dev_drift_acknowledged,
-                            args.budget_acknowledged)
+        evidence = validate(api, args.pr, args.head, args.review_receipt,
+                            dev_drift_acknowledged=args.dev_drift_acknowledged,
+                            budget_acknowledged=args.budget_acknowledged)
         print(f"PASS: PR {args.pr} head {args.head}; {len(evidence['checks'])} expected checks; "
               f"approval={'receipt' if evidence['receipt'] else 'GitHub'}; "
               f"{evidence['comments']} conversation comments read")
@@ -995,8 +996,9 @@ def main(argv=None, api=None):
             print("Read-only validation only; no feedback attestation supplied and no merge attempted.")
             return 0
         # Re-read every gate immediately before the single mutating command.
-        refreshed = validate(api, args.pr, args.head, args.review_receipt, args.dev_drift_acknowledged,
-                             args.budget_acknowledged)
+        refreshed = validate(api, args.pr, args.head, args.review_receipt,
+                             dev_drift_acknowledged=args.dev_drift_acknowledged,
+                             budget_acknowledged=args.budget_acknowledged)
         if (refreshed["base_sha"] != evidence["base_sha"]
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
