@@ -101,7 +101,7 @@
 
     - name: Collect sanitized Alloy health fields
       ansible.builtin.command:
-        argv: [python3, -]
+        argv: [python3, "-"]
         stdin: "{{ _alloy_health_helper }}"
         stdin_add_newline: false
       register: _alloy_health_result

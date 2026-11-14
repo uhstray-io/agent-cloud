@@ -32,7 +32,7 @@
 
 - name: "Plan the grow (reads only)"
   ansible.builtin.command:
-    argv: [python3, -, plan]
+    argv: [python3, "-", plan]
     stdin: "{{ _helper }}"
   register: _grow_plan_raw
   become: true
@@ -73,7 +73,7 @@
 
 - name: "Grow partition, PV and root LV with its filesystem"
   ansible.builtin.command:
-    argv: [python3, -, apply]
+    argv: [python3, "-", apply]
     stdin: "{{ _helper }}"
   register: _grow_apply_raw
   become: true
@@ -109,7 +109,7 @@
 # Standalone verification: a fresh plan, after any grow, must have nothing left to do.
 - name: "Re-read the chain"
   ansible.builtin.command:
-    argv: [python3, -, plan]
+    argv: [python3, "-", plan]
     stdin: "{{ _helper }}"
   register: _grow_final_raw
   become: true
