@@ -51,10 +51,10 @@ site-config.
 
 `plane_admin_role: owner` is not a per-person setting: the reconcile gives that role to **every**
 member of `platform-admins` (`reconcile-plane-members.yml:113`). Task 14302 applied it to the three
-pending admin invitations. Whether Plane keeps the owner role when an invitation is accepted, and
-whether its member API accepts a later `PATCH` to `role_slug: owner` for an active member
-(`reconcile_members.py:114`), are **unverified**; the production sign-in check is task 2.8 of
-`deploy-plane-work-management`. The playbook header records the production setting
+admins: one active member, whose `PATCH` to `role_slug: owner` (`reconcile_members.py:114`) held
+(Plane's member list reads `owner`, tasks.md 2.5), and two pending invitations. Whether Plane keeps
+the owner role when an invitation is accepted is **unverified**; the production sign-in check is
+task 2.8 of `deploy-plane-work-management`. The playbook header records the production setting
 (`reconcile-plane-members.yml:8-10`).
 
 Plane's sign-in is admitted for `platform-admins`, `platform-developers` and `platform-business`, plus
