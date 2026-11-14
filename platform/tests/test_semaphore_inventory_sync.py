@@ -12,11 +12,11 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import harness_sandbox
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "semaphore-sync-inventory.py"
@@ -114,17 +114,12 @@ def fake_api():
         "bao_logins": 0, "bao_reads": 0, "hold_collection_get": False,
         "request_held": threading.Event(), "release_request": threading.Event(),
     }
-    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeSemaphore)
-    # A short poll keeps shutdown from waiting out the default half-second select interval.
-    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}", FakeSemaphore.state
-    finally:
-        FakeSemaphore.state["release_request"].set()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    with serve(FakeSemaphore) as url:
+        try:
+            yield url, FakeSemaphore.state
+        finally:
+            # A held request must be released before serve() shuts the server down.
+            FakeSemaphore.state["release_request"].set()
 
 
 VALID = f"""\
@@ -158,6 +153,13 @@ def _load_script(name):
     return module
 
 
+_FRONTEND = _load_script("sync_inventory_bounds")
+# The bound on a frontend run sits above the frontend's own deadline for its Ansible child plus the
+# cleanup it then does, so the frontend, not this timeout, ends a slow child. Killing the frontend
+# first would leave the child, which runs in its own session, behind (#1055 review).
+FRONTEND_TIMEOUT = _FRONTEND.CHILD_TIMEOUT_SECONDS + _FRONTEND.CHILD_CLEANUP_TIMEOUT_SECONDS + 60
+
+
 def _sync_env(tmp_path, path_prefix, temp_prefix, base=None):
     """Environment for one sync run: private Ansible temp dirs and a sync-owned TMPDIR under tmp_path.
 
@@ -187,6 +189,7 @@ def run_sync(tmp_path, url, inventory, *options, token=TOKEN, path=None, env_ove
         [str(SCRIPT), "--url", url, "--inventory", str(source), "--name", "production",
          "--project", "1", *options],
         input=token + "\n", text=True, capture_output=True, env=env, cwd=ROOT, check=False,
+        timeout=FRONTEND_TIMEOUT,
     )
 
 
@@ -517,6 +520,7 @@ def test_inherited_ansible_debug_and_log_path_cannot_leak_preview_inventory(
     result = subprocess.run(
         [str(SCRIPT), "--url", url, "--inventory", str(source)],
         input=TOKEN + "\n", text=True, capture_output=True, env=env, cwd=ROOT, check=False,
+        timeout=FRONTEND_TIMEOUT,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert state["gets"] == state["readbacks"] == 1
@@ -663,17 +667,13 @@ def test_defined_empty_or_nonstring_sync_token_never_falls_back_to_environment(t
     url, state = fake_api
     source = tmp_path / "invalid-sync-token.yml"
     source.write_text(VALID)
-    env = os.environ.copy()
-    env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{env.get('PATH', '')}"
-    env["SEMAPHORE_TOKEN"] = TOKEN
+    env = {"SEMAPHORE_TOKEN": TOKEN}
+    env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{os.environ.get('PATH', '')}"
     extra = json.dumps({
         "semaphore_url": url, "semaphore_project_id": 1, "inventory_name": "production",
         "inventory_source": str(source), "sync_inventory_token": token,
     })
-    result = subprocess.run(
-        [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--extra-vars", extra],
-        text=True, capture_output=True, env=env, cwd=ROOT, check=False,
-    )
+    result = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "--extra-vars", extra, env=env)
     assert result.returncode != 0
     assert state["gets"] == state["puts"] == 0
     assert_clean(result)
@@ -701,6 +701,7 @@ def test_sync_token_route_refuses_cleartext_transport_before_any_request(monkeyp
         [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--check",
          "--extra-vars", "@" + str(payload)],
         text=True, capture_output=True, env=env, cwd=ROOT, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode != 0
     assert "Set semaphore_url or SEMAPHORE_URL to HTTPS or loopback HTTP" in result.stdout + result.stderr
@@ -720,17 +721,13 @@ def test_existing_environment_token_route_still_runs_canonical_play(tmp_path, fa
     url, state = fake_api
     source = tmp_path / "existing-route.yml"
     source.write_text(VALID)
-    env = os.environ.copy()
-    env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{env.get('PATH', '')}"
-    env["SEMAPHORE_TOKEN"] = TOKEN
+    env = {"SEMAPHORE_TOKEN": TOKEN}
+    env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{os.environ.get('PATH', '')}"
     extra = json.dumps({
         "semaphore_url": url, "semaphore_project_id": 1, "inventory_name": "production",
         "inventory_source": str(source),
     })
-    result = subprocess.run(
-        [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--extra-vars", extra],
-        text=True, capture_output=True, env=env, cwd=ROOT, check=False,
-    )
+    result = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "--extra-vars", extra, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert state["puts"] == 1 and state["readbacks"] == 1
     assert_clean(result)
@@ -740,19 +737,15 @@ def test_direct_play_api_error_uses_repository_redaction_callback(tmp_path, fake
     url, state = fake_api
     source = tmp_path / "direct-api-error.yml"
     source.write_text(VALID)
-    env = os.environ.copy()
-    env["ANSIBLE_CONFIG"] = str(ROOT / "ansible.cfg")
-    env["SEMAPHORE_TOKEN"] = "WRONG_DIRECT_TOKEN_CANARY"
-    env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{env.get('PATH', '')}"
+    # run_playbook drops ANSIBLE_CONFIG and runs from the repository root, where ansible.cfg applies.
+    env = {"SEMAPHORE_TOKEN": "WRONG_DIRECT_TOKEN_CANARY"}
+    env["PATH"] = f"{Path(ansible_bin('ansible-playbook')).parent}:{os.environ.get('PATH', '')}"
     env["ANSIBLE_LOCAL_TEMP"] = str(tmp_path / "direct-local")
     env["ANSIBLE_REMOTE_TEMP"] = str(tmp_path / "direct-remote")
     Path(env["ANSIBLE_LOCAL_TEMP"]).mkdir()
     Path(env["ANSIBLE_REMOTE_TEMP"]).mkdir()
     extra = json.dumps({"semaphore_url": url, "inventory_source": str(source)})
-    result = subprocess.run(
-        [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--extra-vars", extra],
-        text=True, capture_output=True, env=env, cwd=ROOT, check=False,
-    )
+    result = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "--extra-vars", extra, env=env)
     raw = result.stdout + result.stderr
     assert result.returncode != 0
     assert state["api_requests"] == 1 and state["puts"] == 0
@@ -775,6 +768,7 @@ def test_existing_controller_approle_route_still_resolves_and_syncs(tmp_path, fa
     result = subprocess.run(
         [ansible_bin("ansible-playbook"), "-i", "localhost,", str(PLAYBOOK), "--extra-vars", extra],
         text=True, capture_output=True, env=env, cwd=ROOT, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert state["bao_logins"] == state["bao_reads"] == 1
@@ -841,6 +835,7 @@ def test_shared_runtime_access_relative_include_and_sync_token_isolation(
     result = subprocess.run(
         [ansible_bin("ansible-playbook"), "-i", "localhost,", str(playbook_path), "--extra-vars", extra],
         text=True, capture_output=True, env=env, cwd=caller_dir, check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert TOKEN not in result.stdout + result.stderr

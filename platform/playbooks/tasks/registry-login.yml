@@ -1,8 +1,7 @@
 ---
 # registry-login.yml — idempotent container-registry login on the target host so
-# private GHCR images (honcho, wisbot) can be pulled by the deploy. Encodes the
-# previously-manual `podman login ghcr.io` step (the wisbot VM was logged in by
-# hand — an unencoded step this task replaces going forward).
+# private GHCR images (honcho, skynet) can be pulled by the deploy. Encodes what
+# was a manual `podman login ghcr.io` on the VM.
 #
 # The credential is the GitHub PAT already managed at OpenBao
 # secret/services/github (it must carry read:packages scope for GHCR pulls).

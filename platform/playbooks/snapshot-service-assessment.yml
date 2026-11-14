@@ -5,7 +5,7 @@
 # its running containers, its agent practices and the registry entries for this step and the
 # steps it feeds, and records them with set_stats under `snapshot`. No credential values.
 #
-# Usage (Semaphore): -e target_service=tududi_svc
+# Usage (Semaphore): -e target_service=honcho_svc
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).

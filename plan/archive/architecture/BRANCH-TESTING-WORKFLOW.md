@@ -49,11 +49,8 @@ Every deploy playbook reads `service_branch` with a fallback to `main`:
 Playbooks with `service_branch` support:
 - `deploy-all.yml`
 - `deploy-openbao.yml`
-- `deploy-nocodb.yml`
-- `deploy-n8n.yml`
 - `deploy-semaphore.yml`
 - `deploy-netbox.yml`
-- `deploy-nemoclaw.yml`
 - `clean-deploy-netbox.yml`
 - `deploy-orb-agent.yml`
 

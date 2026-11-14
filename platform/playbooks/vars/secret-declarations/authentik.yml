@@ -41,7 +41,6 @@ _static_secret_definitions:
   - { name: erpnext_oidc_client_secret, type: random, length: 40 }
   - { name: semaphore_oidc_client_secret, type: random, length: 40 }
   - { name: openbao_oidc_client_secret, type: random, length: 40 }
-  - { name: tududi_oidc_client_secret, type: random, length: 40 }
   - { name: console_oidc_client_secret, type: random, length: 40 }
   # The Dispatch Console's VIEW-ONLY directory token (console-oidc.yaml: svc-console-directory,
   # role = view_user + view_group). Its own value, never the platform service account's token.

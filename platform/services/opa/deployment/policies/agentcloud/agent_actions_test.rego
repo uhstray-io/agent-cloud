@@ -6,23 +6,11 @@ import rego.v1
 
 import data.agentcloud
 
-test_nemoclaw_read_nocodb_allowed if {
-	agentcloud.allow with input as {"agent": "nemoclaw", "action": "read", "service": "nocodb"}
-}
-
-test_nemoclaw_nmap_denied if {
-	not agentcloud.allow with input as {"agent": "nemoclaw", "action": "scan_subnet", "service": "nmap"}
-}
-
-test_netclaw_snmp_poll_allowed if {
-	agentcloud.allow with input as {"agent": "netclaw", "action": "poll", "service": "snmp"}
-}
-
 # --- Build #1 (netbox-device-add) + skynet orchestration identity (X1) ---
 
-# The logical device-create gate skynet queries (as the netclaw role).
-test_netclaw_netbox_create_allowed if {
-	agentcloud.allow with input as {"agent": "netclaw", "action": "create", "service": "netbox"}
+# The logical device-create gate skynet queries (as the infra-agent role).
+test_infra_agent_netbox_create_allowed if {
+	agentcloud.allow with input as {"agent": "infra-agent", "action": "create", "service": "netbox"}
 }
 
 # X1: skynet's own identity may request a (non-destructive) Semaphore run.
@@ -48,7 +36,7 @@ test_skynet_check_task_allowed if {
 }
 
 # Boundary: skynet's orchestration identity has NO netbox actions — the device
-# create is authorized as netclaw, not skynet (least-privilege, no super-identity).
+# create is authorized as infra-agent, not skynet (least-privilege, no super-identity).
 test_skynet_netbox_create_denied if {
 	not agentcloud.allow with input as {"agent": "skynet", "action": "create", "service": "netbox"}
 }
@@ -64,19 +52,9 @@ test_skynet_destructive_run_task_denied if {
 	}
 }
 
-test_destructive_template_blocked_without_approval if {
-	not agentcloud.allow with input as {
-		"agent": "nemoclaw",
-		"action": "run_task",
-		"service": "semaphore",
-		"template_name": "Clean Deploy NetBox",
-		"human_approved": false,
-	}
-}
-
 test_destructive_template_allowed_with_approval if {
 	agentcloud.allow with input as {
-		"agent": "nemoclaw",
+		"agent": "skynet",
 		"action": "run_task",
 		"service": "semaphore",
 		"template_name": "Clean Deploy NetBox",
@@ -88,7 +66,7 @@ test_destructive_template_allowed_with_approval if {
 # prefix rule covers it even though it was once missing from the explicit list.
 test_clean_deploy_erpnext_blocked if {
 	not agentcloud.allow with input as {
-		"agent": "nemoclaw",
+		"agent": "skynet",
 		"action": "run_task",
 		"service": "semaphore",
 		"template_name": "Clean Deploy ERPNext",
@@ -99,7 +77,7 @@ test_clean_deploy_erpnext_blocked if {
 # The "(Local)" template-name variant is blocked by the prefix rule as well.
 test_clean_deploy_local_variant_blocked if {
 	not agentcloud.allow with input as {
-		"agent": "nemoclaw",
+		"agent": "skynet",
 		"action": "run_task",
 		"service": "semaphore",
 		"template_name": "Clean Deploy ERPNext (Local)",
@@ -112,7 +90,7 @@ test_clean_deploy_local_variant_blocked if {
 # missing/blank name) and could pass `allow`. Covers absent, null, and blank names.
 test_run_task_missing_template_name_denied if {
 	not agentcloud.allow with input as {
-		"agent": "nemoclaw",
+		"agent": "skynet",
 		"action": "run_task",
 		"service": "semaphore",
 		"human_approved": false,
@@ -121,7 +99,7 @@ test_run_task_missing_template_name_denied if {
 
 test_run_task_null_template_name_denied if {
 	not agentcloud.allow with input as {
-		"agent": "nemoclaw",
+		"agent": "skynet",
 		"action": "run_task",
 		"service": "semaphore",
 		"template_name": null,
@@ -131,7 +109,7 @@ test_run_task_null_template_name_denied if {
 
 test_run_task_blank_template_name_denied if {
 	not agentcloud.allow with input as {
-		"agent": "nemoclaw",
+		"agent": "skynet",
 		"action": "run_task",
 		"service": "semaphore",
 		"template_name": "   ",
@@ -140,9 +118,9 @@ test_run_task_blank_template_name_denied if {
 }
 
 test_unknown_agent_denied if {
-	not agentcloud.allow with input as {"agent": "rogue-agent", "action": "read", "service": "nocodb"}
+	not agentcloud.allow with input as {"agent": "rogue-agent", "action": "read", "service": "netbox"}
 }
 
 test_known_agent_unknown_action_denied if {
-	not agentcloud.allow with input as {"agent": "nemoclaw", "action": "delete", "service": "nocodb"}
+	not agentcloud.allow with input as {"agent": "infra-agent", "action": "delete", "service": "netbox"}
 }

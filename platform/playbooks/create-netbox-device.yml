@@ -1,8 +1,8 @@
 ---
 # create-netbox-device.yml — Build #1 executor (N1 + N2).
 #
-# Idempotent NetBox device create + verify, run on behalf of the `netclaw` role.
-# skynet's orchestrator gates the logical action (netclaw, netbox, create) in its
+# Idempotent NetBox device create + verify, run on behalf of the `infra-agent` role.
+# skynet's orchestrator gates the logical action (infra-agent, netbox, create) in its
 # OPA call, then *requests* this run; agent-cloud's Semaphore executes it under the
 # automation token's own NetBox permissions (N3 = model A.2 + X1).
 #

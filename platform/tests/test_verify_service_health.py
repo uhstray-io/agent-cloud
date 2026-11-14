@@ -5,16 +5,16 @@ health_status_codes admits e.g. OpenBao's sealed 503 for the fleet overview; the
 criterion is 200 and must not inherit that (PR 203 Codex review). Requires ansible-playbook.
 """
 
-import http.server
-import os
 import shutil
 import ssl
 import subprocess
-import threading
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
+import harness_sandbox
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 from strict_chain import assert_strict_chain
 
 REPO = Path(__file__).resolve().parents[2]
@@ -53,6 +53,7 @@ needs_tls = pytest.mark.skipif(shutil.which("openssl") is None or shutil.which("
                                reason="needs openssl and curl")
 
 
+@contextmanager
 def _serve(status: int):
     class Handler(DrainingHandler):
         def do_GET(self):  # noqa: N802 - the stdlib's name
@@ -62,30 +63,22 @@ def _serve(status: int):
         def log_message(self, *args):
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
+    with serve(Handler) as url:
+        yield url
 
 
 def _run(tmp_path, status: int, health_path: str = "/health", via_health_url: bool = False,
          host_vars: str = ""):
-    server = _serve(status)
-    try:
+    with _serve(status) as base:
         inventory = tmp_path / "inventory.ini"
-        where = (f"health_url=http://127.0.0.1:{server.server_port}/health\n" if via_health_url else
-                 f"service_url=http://127.0.0.1:{server.server_port}\nhealth_path={health_path}\n")
+        where = (f"health_url={base}/health\n" if via_health_url else
+                 f"service_url={base}\nhealth_path={health_path}\n")
         inventory.write_text(
             f"[demo_svc]\ndemo ansible_connection=local {host_vars}\n\n[demo_svc:vars]\n"
             f"service_name=demo\n{where}health_status_codes=[200, 503]\n"
         )
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        return subprocess.run(
-            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-        )
-    finally:
-        server.shutdown()
+        return harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc",
+                                            inventory=inventory)
 
 
 def test_200_passes(tmp_path):
@@ -113,7 +106,7 @@ def test_health_url_alone_is_a_declared_contract(tmp_path):
 
 
 def test_health_probe_on_host_runs_the_probe_on_the_target(tmp_path):
-    # Production tududi/honcho/n8n publish on loopback or firewall the port to Caddy, so the
+    # Production honcho publishes on loopback or firewalls the port to Caddy, so the
     # executor's probe answered -1 for healthy services. The target here has no usable Python:
     # a probe delegated to the executor still passes, one that runs on the target cannot.
     broken = "ansible_python_interpreter=/nonexistent/python"
@@ -137,12 +130,7 @@ def test_a_target_group_with_no_hosts_fails(tmp_path):
     # PR 203 Codex review: a play whose hosts: matched nothing exited 0 with no step result.
     inventory = tmp_path / "inventory.ini"
     inventory.write_text("[demo_svc]\ndemo ansible_connection=local\n")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=typo_svc"],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-    )
+    done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=typo_svc", inventory=inventory)
     assert done.returncode != 0
     assert "matches no hosts in this inventory" in done.stdout
 
@@ -150,24 +138,18 @@ def test_a_target_group_with_no_hosts_fails(tmp_path):
 def test_one_failing_host_fails_the_recorded_result(tmp_path):
     # PR 203 Codex review: emit-step-result records once per play, and recorded the first host's
     # verdict; a healthy first host hid a failing second one.
-    good, bad = _serve(200), _serve(503)
-    try:
+    with ExitStack() as stack:
+        good = stack.enter_context(_serve(200))
+        bad = stack.enter_context(_serve(503))
         inventory = tmp_path / "inventory.ini"
         inventory.write_text(
             "[demo_svc]\n"
-            f"demo1 ansible_connection=local health_url=http://127.0.0.1:{good.server_port}/health\n"
-            f"demo2 ansible_connection=local health_url=http://127.0.0.1:{bad.server_port}/health\n"
+            f"demo1 ansible_connection=local health_url={good}/health\n"
+            f"demo2 ansible_connection=local health_url={bad}/health\n"
             "\n[demo_svc:vars]\nservice_name=demo\n"
         )
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        done = subprocess.run(
-            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-        )
-    finally:
-        good.shutdown()
-        bad.shutdown()
+        done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc",
+                                            inventory=inventory)
     assert done.returncode != 0
     recorded = done.stdout.split("CUSTOM STATS", 1)[-1]
     assert '"status": "fail"' in recorded and "answered 503" in recorded, recorded[-1500:]
@@ -180,7 +162,8 @@ def _tls_material(directory: Path):
     (directory / "leaf.cnf").write_text(LEAF_CNF)
 
     def run(*args):
-        subprocess.run([openssl, *args], cwd=directory, check=True, capture_output=True, stdin=subprocess.DEVNULL)
+        subprocess.run([openssl, *args], cwd=directory, check=True, capture_output=True, stdin=subprocess.DEVNULL,
+                       timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
 
     run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", "ca.key", "-out", "ca.pem", "-days", "2",
         "-config", "ca.cnf", "-extensions", "ca")
@@ -191,6 +174,7 @@ def _tls_material(directory: Path):
     assert_strict_chain(directory / "ca.pem", directory / "leaf.pem")
 
 
+@contextmanager
 def _serve_tls(status: int, directory: Path):
     class Handler(DrainingHandler):
         def do_GET(self):  # noqa: N802 - the stdlib's name
@@ -200,13 +184,11 @@ def _serve_tls(status: int, directory: Path):
         def log_message(self, *args):
             pass
 
-    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(directory / "leaf.pem", directory / "leaf.key")
-    server.socket = context.wrap_socket(server.socket, server_side=True)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
+    with serve(Handler, ssl_context=context) as url:
+        yield url
 
 
 def _run_tls(tmp_path, status: int, host_vars: str = "", *, trust: bool = True, pin: bool = True,
@@ -214,9 +196,8 @@ def _run_tls(tmp_path, status: int, host_vars: str = "", *, trust: bool = True, 
     """Run the playbook against a local HTTPS server. Returns (completed process, health URL)."""
     if not (tmp_path / "leaf.pem").exists():
         _tls_material(tmp_path)
-    server = _serve_tls(status, tmp_path)
-    try:
-        url = f"https://{url_host}:{server.server_port}/health"
+    with _serve_tls(status, tmp_path) as base:
+        url = f"https://{url_host}:{urlsplit(base).port}/health"
         declared = [f"health_url={url}"]
         if trust:
             declared.append(f"health_ca_path={tmp_path / 'ca.pem'}")
@@ -227,15 +208,9 @@ def _run_tls(tmp_path, status: int, host_vars: str = "", *, trust: bool = True, 
             f"[demo_svc]\ndemo ansible_connection=local {host_vars}\n\n[demo_svc:vars]\n"
             f"service_name=demo\n" + "\n".join(declared) + "\n"
         )
-        env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-        env["ANSIBLE_NOCOLOR"] = "1"
-        done = subprocess.run(
-            ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-            cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-        )
+        done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc",
+                                            inventory=inventory)
         return done, url
-    finally:
-        server.shutdown()
 
 
 @needs_tls
@@ -288,12 +263,7 @@ def test_a_pinned_address_needs_an_http_url_with_a_host(tmp_path):
         "[demo_svc]\ndemo ansible_connection=local\n\n[demo_svc:vars]\nservice_name=demo\n"
         "health_url=/health\nhealth_resolve_address=127.0.0.1\n"
     )
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(PLAYBOOK), "-e", "target_service=demo_svc"],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL,
-    )
+    done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "-e", "target_service=demo_svc", inventory=inventory)
     assert done.returncode != 0
     assert "health_resolve_address needs an http or https health URL with a host, not /health" in done.stdout
     # The contract error is the whole verdict: no probe ran, so there is no "answered" line.

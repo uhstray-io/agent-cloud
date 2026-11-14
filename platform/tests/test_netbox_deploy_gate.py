@@ -14,11 +14,10 @@ is test_netbox_change_aware.bats; this file holds the playbook half:
 """
 
 import json
-import os
 import re
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import jinja2
 import playbook_yaml
 import pytest
@@ -89,13 +88,8 @@ def _eval_gate(tmp_path, tasks, host_vars, check=False):
     (tmp_path / "play.yml").write_text(json.dumps(play))
     inv = {"all": {"children": {"svc": {"hosts": {"h1": {"ansible_connection": "local", **host_vars}}}}}}
     (tmp_path / "inv.yml").write_text(json.dumps(inv))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    cmd = ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml")]
-    proc = subprocess.run(
-        [*cmd, *(["--check"] if check else [])],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False,
-    )
+    proc = harness_sandbox.run_playbook(tmp_path / "play.yml", tmp_path, *(["--check"] if check else []),
+                                        inventory=tmp_path / "inv.yml")
     assert proc.returncode == 0, proc.stdout[-3000:]
     return set(re.findall(r'"msg": "RAN (\w+)"', proc.stdout))
 

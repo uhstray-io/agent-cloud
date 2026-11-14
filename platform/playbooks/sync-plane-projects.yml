@@ -304,3 +304,116 @@
           {{ 'would update' if ansible_check_mode else 'updated' }} {{ (_sync_summary.would_update if ansible_check_mode else _sync_summary.updated) | default({}) }};
           repairs {{ _sync_summary.repairs | default([]) }};
           {{ hostvars['localhost']._skipped_count }} task lines not imported (done, superseded or unnumbered).
+
+# ── Play 3: link each project to its GitHub repository ───────────────────────
+# Every declared project that names a repository gets the two records Plane's own GitHub settings
+# create (link_github_repos.py): the "Project Issue Sync" link, so a GitHub issue labelled `plane`
+# reaches its project and a work item labelled `github` reaches its repository, and the "Pull
+# Request State Mapping", so a pull request naming a work item moves it. Only with the GitHub integration declared
+# (plane_github_app_id) and its organization connected in Plane. Create-only: an existing link is
+# left alone, and one that points elsewhere is reported and refused, never re-pointed. Silo
+# authenticates by session, so this signs in as the automation account with the password Play 2
+# already read; the dry run (--check) reads and reports what it would link.
+- name: "Link the declared projects to their GitHub repositories"
+  hosts: plane_svc
+  gather_facts: false
+  become: false
+  vars:
+    _engine: "{{ container_engine | default('podman') }}"
+    _session_src: "{{ playbook_dir }}/../services/plane/deployment/plane_session.py"
+    _link_src: "{{ playbook_dir }}/../services/plane/deployment/link_github_repos.py"
+  tasks:
+    - name: "No GitHub integration declared: report"
+      ansible.builtin.debug:
+        msg: "plane_github_app_id is not declared; projects are not linked to repositories"
+      when: plane_github_app_id is not defined
+
+    - name: "Link projects to repositories"
+      when: plane_github_app_id is defined
+      block:
+        - name: "Assemble the link input"
+          ansible.builtin.set_fact:
+            _link_input:
+              base: http://localhost:8000
+              host: "{{ plane_public_url | urlsplit('hostname') }}"
+              origin: "{{ plane_public_url }}"
+              email: "{{ plane_automation_email }}"
+              password: "{{ _plane_secret.json.data.data.plane_automation_password }}"
+              workspace_slug: "{{ plane_workspace_slug }}"
+              silo_base: http://proxy:80/silo
+              projects: >-
+                {%- set out = [] -%}
+                {%- for p in hostvars['localhost']._desired_projects if not p.repo.startswith('project:') -%}
+                {%- set _ = out.append({'identifier': p.identifier, 'repo': p.repo}) -%}
+                {%- endfor -%}
+                {{ out }}
+          no_log: true
+
+        # Credential tasks: the automation password goes to the script on stdin; the script prints
+        # identifiers and counts only, judged below so a refusal is visible while these stay no_log.
+        - name: "Count what is missing (read-only; also the dry run)"
+          ansible.builtin.command:
+            argv: &link_argv
+              - "{{ _engine }}"
+              - exec
+              - -i
+              - plane-api
+              - python
+              - -c
+              - "{{ lookup('file', _session_src) ~ '\n' ~ lookup('file', _link_src) }}"
+            stdin: "{{ _link_input | combine({'apply': false}) | to_json }}"
+          register: _link_plan
+          changed_when: false
+          failed_when: false
+          no_log: true
+          check_mode: false
+
+        - name: "Link what is missing"
+          ansible.builtin.command:
+            argv: *link_argv
+            stdin: "{{ _link_input | combine({'apply': true}) | to_json }}"
+          register: _link_apply
+          changed_when: >-
+            (_link_apply.stdout_lines | default([''], true) | last).startswith('{')
+            and ((((_link_apply.stdout_lines | last) | from_json).linked | default([]))
+                 + (((_link_apply.stdout_lines | last) | from_json).pr_linked | default([]))) | length > 0
+          failed_when: false
+          no_log: true
+          when:
+            - not ansible_check_mode
+            - (_link_plan.stdout_lines | default([''], true) | last).startswith('{')
+            - ((_link_plan.stdout_lines | last) | from_json).error is not defined
+
+        - name: "Keep only the link summary"
+          ansible.builtin.set_fact:
+            # The exit code only: a command result carries its stdin (the password) under invocation.
+            _link_rc: "{{ (_link_apply if (_link_apply is defined and _link_apply is not skipped) else _link_plan).rc }}"
+            _link_summary: >-
+              {%- set r = _link_apply if (_link_apply is defined and _link_apply is not skipped) else _link_plan -%}
+              {%- set last = r.stdout_lines | default([''], true) | last -%}
+              {{ (last | from_json) if last.startswith('{') else {'error': 'the link script printed no summary (exit ' ~ r.rc ~ ')'} }}
+          no_log: true
+
+        - name: "Links converged"
+          ansible.builtin.assert:
+            that:
+              - _link_rc | int == 0
+              - _link_summary.error is not defined
+            # default(): fail_msg is rendered even when the assertion holds (MISTAKES 10.36).
+            fail_msg: >-
+              plane repository links: {{ _link_summary.error | default('exit ' ~ _link_rc) }}{{
+              ('; conflicts: ' ~ (_link_summary.conflicts | join('; '))) if _link_summary.conflicts | default([]) else '' }}{{
+              ('; linked before the failure: ' ~ (_link_summary.linked | join(', '))) if _link_summary.linked | default([]) else '' }}{{
+              ('; pull request mapping added before the failure: ' ~ (_link_summary.pr_linked | join(', '))) if _link_summary.pr_linked | default([]) else '' }}
+            quiet: true
+
+        - name: "Report"
+          ansible.builtin.debug:
+            msg: >-
+              {{ 'DRY RUN (--check), would link' if ansible_check_mode else 'Linked' }}:
+              {{ (_link_summary.would_link if ansible_check_mode else _link_summary.linked) | default([]) | join(', ') or 'none' }};
+              already linked {{ _link_summary.present | default([]) | join(', ') or 'none' }};
+              pull request automation {{ 'would be added for' if ansible_check_mode else 'added for' }}
+              {{ (_link_summary.pr_would_link if ansible_check_mode else _link_summary.pr_linked) | default([]) | join(', ') or 'none' }},
+              already set {{ _link_summary.pr_present | default([]) | join(', ') or 'none' }}{{
+              ('; not yet in Plane: ' ~ (_link_summary.missing_projects | join(', '))) if _link_summary.missing_projects | default([]) else '' }}

@@ -23,13 +23,12 @@ import re
 import shutil
 import socket
 import subprocess
-import threading
-from http.server import ThreadingHTTPServer
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
 import yaml
-from fake_http import DrainingHandler, refused_port
+from fake_http import DrainingHandler, refused_port, serve
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/probe-console-sources.yml"
@@ -373,9 +372,7 @@ def _serve(answer):
         def log_message(self, *args):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
+    return serve(Handler)
 
 
 def _recording(answer, seen):
@@ -447,25 +444,24 @@ def _netbox(status=200, refuse_token=False):
 
 @pytest.fixture
 def probe_run(tmp_path):
-    servers = []
+    stack = ExitStack()
 
     def run(netbox_stored, proxmox_open, verbosity=None, netbox_url=None, proxmox_url=None, bao_seen=None,
             netbox_status=200, netbox_refuses_token=False, openbao_url=None):
-        bao = _serve(_recording(_openbao(netbox_stored), bao_seen))
-        nb = _serve(_netbox(netbox_status, netbox_refuses_token))
-        servers.extend([bao, nb])
+        bao_url = stack.enter_context(_serve(_recording(_openbao(netbox_stored), bao_seen)))
+        nb_url = stack.enter_context(_serve(_netbox(netbox_status, netbox_refuses_token)))
         listener = socket.socket()
+        stack.callback(listener.close)
         listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         listener.bind(("127.0.0.1", 0))
         listener.listen()
-        servers.append(listener)
         pve_port = listener.getsockname()[1] if proxmox_open else refused_port()
         inventory = {"all": {"children": {"console_svc": {"hosts": {"console-probe": {
             "ansible_connection": "local",
-            "openbao_addr": openbao_url or f"http://127.0.0.1:{bao.server_address[1]}",
+            "openbao_addr": openbao_url or bao_url,
             "bao_role_id": "fake-role-id",
             "bao_secret_id": "fake-secret-id",
-            "console_netbox_url": netbox_url or f"http://127.0.0.1:{nb.server_address[1]}",
+            "console_netbox_url": netbox_url or nb_url,
             "console_proxmox_url": proxmox_url or f"https://127.0.0.1:{pve_port}",
             "monorepo_deploy_path": "platform/services/console/deployment",
             "local_monorepo_dir": str(tmp_path),
@@ -478,12 +474,7 @@ def probe_run(tmp_path):
         return subprocess.run(cmd, cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=300)
 
     yield run
-    for s in servers:
-        if isinstance(s, socket.socket):
-            s.close()
-        else:
-            s.shutdown()
-            s.server_close()
+    stack.close()
 
 
 @NEEDS_ANSIBLE
@@ -641,13 +632,9 @@ def test_a_cleartext_public_proxmox_url_is_refused_before_any_openbao_request(pr
 def test_a_loopback_http_proxmox_url_is_refused_by_name_before_any_request(probe_run):
     # Loopback http passes the transport guard (it is a local address), so the https check is what refuses it.
     bao_seen, pve_seen = [], []
-    pve = _serve(_recording(_proxmox_json, pve_seen))
-    try:
+    with _serve(_recording(_proxmox_json, pve_seen)) as pve_url:
         proc = probe_run(netbox_stored=True, proxmox_open=True,
-                         proxmox_url=f"http://127.0.0.1:{pve.server_address[1]}", bao_seen=bao_seen)
-    finally:
-        pve.shutdown()
-        pve.server_close()
+                         proxmox_url=pve_url, bao_seen=bao_seen)
     out = proc.stdout + proc.stderr
     assert proc.returncode != 0, out
     assert "console_proxmox_url must use the https scheme" in out, out

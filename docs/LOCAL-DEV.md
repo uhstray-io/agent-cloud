@@ -19,8 +19,8 @@ make local-tls-trust                         # local CA trust (sudo)
 ```
 
 `make local-all` attempts a fixed subset after bootstrap: o11y, OPA, ERPNext,
-the legacy direct NetBox app helper, and best-effort n8n, then Mac DNS/TLS wiring.
-It does not deploy the full service catalog or fail when n8n alone fails. Use
+the legacy direct NetBox app helper, then Mac DNS/TLS wiring.
+It does not deploy the full service catalog. Use
 `make local-deploy-<service>` for supported Semaphore profiles and
 `make local-validate` for current checks. NetBox production discovery is the
 current validation target; local Docker setup for NetBox is not established.
@@ -90,8 +90,8 @@ State lands in `~/.agent-cloud-local/credentials.env` (0600, outside the repo).
 Use the existing worktree-bound dispatcher instead of hand-building task requests:
 
 ```bash
-./scripts/local-dev.sh run check-secrets '{"target_service":"uhhcraft_svc"}'
-make local-deploy-n8n
+./scripts/local-dev.sh run check-secrets '{"target_service":"honcho_svc"}'
+make local-deploy-erpnext
 make local-validate
 ```
 
@@ -117,8 +117,9 @@ Four facts that have each cost a session (`docs/MISTAKES.md` 4.10, 10.9):
   does not run a branch you are editing in another worktree. The local catalog also
   holds the shared templates (no suffix) and their `(Dev)` copies. Those stay bound
   to their GitHub records, `main` and `dev`, and so do their schedules: a scheduled
-  shared template (for example `Collect Service Conformance`, beside its `(Local)`
-  twin) validates `main`, not your working tree. `run` picks the worktree-bound
+  shared template (for example `Collect Service Conformance (Dev)`, which is bound to
+  the `dev` record and sits beside its `(Local)` twin) validates `dev`, not your
+  working tree. `run` picks the worktree-bound
   template. When a playbook has none, it falls back to a repository-bound one and
   prints a `WARN`, and that run executes the record's branch, not your working tree.
 - **Reading a task.** `run` prints the last 40 lines. `./scripts/local-dev.sh output
@@ -161,11 +162,11 @@ policy. A re-run changes nothing; `DRY_RUN=1 ./scripts/local-dev.sh run stop-loc
   service is an outage.
 - **Restarting.** Run the service's own Deploy (`make local-deploy-<service>`). What it
   does with a stopped container depends on that service's `deploy.sh`:
-  - authentik, honcho, o11y, openhands and tududi use `compose_up_if_changed`, where a
+  - authentik, honcho and o11y use `compose_up_if_changed`, where a
     not-running container is the reason "container not running" (`lib/common.sh`
     `_compose_recreate_reason`), so the project is recreated. agentgateway has its own
     copy of that comparison, and caddy runs `compose up -d --force-recreate` every time.
-  - dns, step-ca, opa, n8n, erpnext, uhhcraft, netbox and postiz (and the other services
+  - dns, step-ca, opa, erpnext, netbox and postiz (and the other services
     whose `deploy.sh` runs plain `compose up -d`) depend on `compose up -d` starting an
     existing stopped container. unverified: that podman-compose does that. The local
     Semaphore installs podman-compose with an unpinned `pip3 install podman-compose`
@@ -212,9 +213,6 @@ health inventory. Check the rendered configuration for the selected environment.
 |---|---|---|
 | OpenBao (persistent) | 127.0.0.1:8200 | containers reach it at `http://local-openbao:8200` on the `local-dev` network |
 | Semaphore | 127.0.0.1:3000 | prod-typical port; Mac-side port is `local_semaphore_port` in the working inventory |
-| UhhCraft | 127.0.0.1:3001 | shifted from 3000 via `${UHHCRAFT_PORT:-3001}` |
-| n8n (P2) | 127.0.0.1:5678 | |
-| NocoDB (P2) | 127.0.0.1:8181 | compose default (`8181:8080`); its Postgres maps 5433 |
 | NetBox | 127.0.0.1:8000 | App-only Podman helper exists; no current local Docker validation. Do not feed containers directly into IPAM as VMs |
 | Postiz (P2) | 127.0.0.1:5001 | shifted — macOS AirPlay Receiver squats :5000 |
 | hickory-dns | 127.0.0.1:5300 | declared profile; authoritative for `*.agent-cloud.test`; udp+tcp → :53 in-container; `make local-dns-resolver` points `/etc/resolver/<zone>` here |
@@ -222,7 +220,7 @@ health inventory. Check the rendered configuration for the selected environment.
 | Caddy | 127.0.0.1:8088 / 8443 | declared profile; serves the step-ca `*.agent-cloud.test` wildcard, reverse-proxies the control plane by name. `:8443` by default; `make local-https` adds a persistent root forwarder for clean port-free `https://semaphore.agent-cloud.test` (443→8443, 80→8088) |
 | Authentik | 127.0.0.1:9300 | declared profile; central IdP/SSO (server+worker+Postgres+Redis). Container `:9000` (step-ca owns host `:9000` → debug maps to `:9300`); Caddy reaches `authentik-server:9000` on `local-dev`. `make local-deploy-authentik`. Gates Grafana (OIDC) + NetBox (forward_auth) — see SSO section below |
 | ERPNext (P4) | 127.0.0.1:8080 | frontend; slim tier |
-| OPA | 127.0.0.1:8281 | declared profile; Guardrail-layer policy engine. Agents/control-plane reach it as `opa:8181` on local-dev; host diagnostics on 8281 (8181 is NocoDB's bind). Policy-as-code in `policies/`; `make local-deploy-opa`. Phase 1 unauthenticated (returns decisions, not secrets) |
+| OPA | 127.0.0.1:8281 | declared profile; Guardrail-layer policy engine. Agents/control-plane reach it as `opa:8181` on local-dev; host diagnostics on 8281. Policy-as-code in `policies/`; `make local-deploy-opa`. Phase 1 unauthenticated (returns decisions, not secrets) |
 | o11y | 3002 / 9090 / 3100 | declared profile; grafana / prometheus / loki / alloy. Grafana behind Caddy at `grafana.agent-cloud.test` with Authentik OIDC. `make local-deploy-o11y` |
 
 ## Engine split
@@ -270,7 +268,7 @@ the production privileged-discovery path.
   local-mode deploys copy the working tree there (not `~/agent-cloud`) — so the
   compose project dir is identical on both sides and host mounts resolve. The DNS
   service is the first to need this (its zone files); services using only named
-  volumes + `env_file` (uhhcraft) don't. Containers reading those mounts also need
+  volumes + `env_file` don't. Containers reading those mounts also need
   `security_opt: [label=disable]` (SELinux) — in `compose.local.yml`, never prod.
 - **`ansible_user` must be defined in local inventories** even with
   `ansible_connection=local`: playbook defaults like
@@ -294,10 +292,6 @@ the production privileged-discovery path.
   `make local-https` installs a persistent root LaunchDaemon (`socat`) that
   forwards `443→8443` + `80→8088` — the one privileged hop for port-free URLs,
   idempotent + reboot-persistent. Default (`:8443`) needs none of it.
-- **`ghcr.io/uhstray-io/uhhcraft` is private** — anonymous pulls 403 before
-  the arch question is even observable. Local deploys of owned images need a
-  `read:packages` PAT (or a local build override); backing images
-  (postgres/redis/minio) pull fine through the mounted socket.
 
 ## SSO (Authentik)
 
@@ -365,7 +359,7 @@ not establish production discovery readiness.
 | Bootstrap fails at "Assert podman machine" | `podman machine start` |
 | NetBox/Grafana login redirect points at `0.0.0.0:9000` | Embedded outpost `authentik_host` unset — re-run `make local-deploy-authentik` (blueprint sets it) |
 | NetBox SSO not gating (loads without login) | `make local-deploy-caddy` (renders the forward_auth route from inventory); confirm `caddy_routes` netbox entry has `forward_auth` |
-| Bootstrap fails at "Wait for Semaphore API" with a 404, or a port-in-use error | Another local app holds `127.0.0.1:3000` (Semaphore) or `:8088` (Caddy HTTP). Set `local_semaphore_port` (under `all.vars`) or `caddy_http_port` (on `caddy-local`) in the gitignored `platform/inventory/local-dev.yml` and re-run `make local-bootstrap`; an existing Semaphore container is recreated to pick up the new port. `./scripts/local-dev.sh` reads the resulting URL from the state file, so nothing else changes. Pick a port the stack does not already use: 3001 (UhhCraft with `UHHCRAFT_PORT=3001`), 3002 (Grafana), 3100 (Loki, and the collector's Loki URL), 3402 (tududi), 5678 (n8n), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca) |
+| Bootstrap fails at "Wait for Semaphore API" with a 404, or a port-in-use error | Another local app holds `127.0.0.1:3000` (Semaphore) or `:8088` (Caddy HTTP). Set `local_semaphore_port` (under `all.vars`) or `caddy_http_port` (on `caddy-local`) in your gitignored working inventory `platform/inventory/local-dev.yml` (create it with `make local-init` from the committed `platform/inventory/local-dev.yml.example`; an existing file is kept unless you run `REFRESH=1 make local-init`) and re-run `make local-bootstrap`; an existing Semaphore container is recreated to pick up the new port. `./scripts/local-dev.sh` reads the resulting URL from the state file, so nothing else changes. Pick a port the stack does not already use: 3002 (Grafana), 3100 (Loki, and the collector's Loki URL), 8088/8443 (Caddy), 8200 (OpenBao), 9000 (step-ca) |
 | Semaphore container exits (2) | `podman logs local-semaphore` — dialect/image regression; keep the pinned tag |
 | Task fails at OpenBao auth | Re-run bootstrap (regenerates AppRole secret-id + environment) |
 | Task: "no hosts matched" | The static inventory in Semaphore is managed by bootstrap — re-run it; don't hand-edit |

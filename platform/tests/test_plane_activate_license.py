@@ -5,16 +5,14 @@ stdin. The stub serves the sign-in redirect, the plan read and the activation ro
 the v3.3.3 image answers with (plane/payment/views/license_activate.py, product.py).
 """
 
-import http.server
 import json
 import pathlib
 import subprocess
 import sys
-import threading
 
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "platform/services/plane/deployment"
@@ -71,10 +69,8 @@ class StubPlane(DrainingHandler):
 def plane():
     StubPlane.state = {"calls": [], "posted": [], "plans": ["FREE", "PRO"], "plan_status": 200,
                        "activate_status": 200, "activate_body": {"status": "ok"}}
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubPlane)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield StubPlane.state, f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
+    with serve(StubPlane) as base:
+        yield StubPlane.state, base
 
 
 def run(base):
@@ -157,7 +153,8 @@ def test_the_licence_play_runs_after_the_service_token_and_before_verify():
     names = [p.get("name", "") for p in _plays()]
     lic = names.index("Phase 3c: Licence")
     assert names[lic - 1] == "Phase 3b: Workspace service token"
-    assert names[lic + 1].startswith("Phase 4")
+    # Before verify; later phases (3d, the GitHub App webhook) may sit between them.
+    assert next(i for i, n in enumerate(names) if n.startswith("Phase 4")) > lic
 
 
 def test_activation_is_skipped_in_check_mode_and_without_a_key_and_the_key_task_is_no_log():

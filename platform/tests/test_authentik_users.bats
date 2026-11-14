@@ -95,9 +95,9 @@ _env_names() {
 
 @test "authentik users: no user is placed in a group the access gate denies" {
   # platform-user is a declared group that the platform-member gate does NOT
-  # admit, so a user placed in it alone reaches no tier-member app — tududi
-  # included. That is a legitimate group to declare and a mistake to assign
-  # alone, which is exactly the kind of thing a diff does not show.
+  # admit, so a user placed in it alone reaches no tier-member app. That is a
+  # legitimate group to declare and a mistake to assign alone, which is exactly the
+  # kind of thing a diff does not show.
   local gate="${BATS_TEST_DIRNAME}/../services/authentik/deployment/templates/zz-sso-bindings.yaml.j2"
   [ -f "$gate" ]
   # Read the admitted set out of the gate itself rather than restating it here;
@@ -558,8 +558,8 @@ PY_ORDER
   gather_facts: false
   vars:
     _shared_blueprints: [platform-groups.yaml, platform-users.yaml]
-    _enabled_apps: [tududi]
-    authentik_app_catalog: { tududi: { file: tududi-oidc.yaml } }
+    _enabled_apps: [grafana]
+    authentik_app_catalog: { grafana: { file: grafana-oidc.yaml } }
     _active_usernames: [alice]
     _retired_usernames: []
     _platform_admins: [{username: alice}]
@@ -596,13 +596,13 @@ PY
   local alice='{"username":"alice","is_active":true,"groups_obj":[{"name":"platform-admins"}]}'
   local ok='{"path":"custom/platform-groups.yaml","status":"successful"}'
   local users_ok='{"path":"custom/platform-users.yaml","status":"successful"}'
-  local tududi_ok='{"path":"custom/tududi-oidc.yaml","status":"successful"}'
+  local grafana_ok='{"path":"custom/grafana-oidc.yaml","status":"successful"}'
   local sso_ok='{"path":"custom/zz-sso-bindings.yaml","status":"successful"}'
   local adm_ok='{"path":"custom/platform-admins.yaml","status":"successful"}'
   local grp='{"name":"platform-admins","users_obj":[{"username":"alice"}]}'
 
   # PASSES when every placed file has a successful instance and the account is right.
-  printf '{"blueprints":[%s,%s,%s,%s,%s],"users":[%s],"groups":[%s]}' "$ok" "$users_ok" "$tududi_ok" "$sso_ok" "$adm_ok" "$alice" "$grp" \
+  printf '{"blueprints":[%s,%s,%s,%s,%s],"users":[%s],"groups":[%s]}' "$ok" "$users_ok" "$grafana_ok" "$sso_ok" "$adm_ok" "$alice" "$grp" \
     > "$BATS_TEST_TMPDIR/all.json"
   run run_verifier "$BATS_TEST_TMPDIR/all.json"
   [ "$status" -eq 0 ]
@@ -610,7 +610,7 @@ PY
 
   # FAILS when platform-users.yaml was placed but never discovered — its siblings
   # are all successful, which is exactly the state the old check waved through.
-  printf '{"blueprints":[%s,%s,%s,%s],"users":[%s],"groups":[%s]}' "$ok" "$tududi_ok" "$sso_ok" "$adm_ok" "$alice" "$grp" \
+  printf '{"blueprints":[%s,%s,%s,%s],"users":[%s],"groups":[%s]}' "$ok" "$grafana_ok" "$sso_ok" "$adm_ok" "$alice" "$grp" \
     > "$BATS_TEST_TMPDIR/missing.json"
   run run_verifier "$BATS_TEST_TMPDIR/missing.json"
   [ "$status" -eq 2 ]

@@ -13,8 +13,8 @@ The script is idempotent (safe to re-run) and performs 7 steps:
 2. Initialize (1-of-1 Shamir, Raft storage)
 3. Unseal
 4. Enable secrets engines (KV v2 + database)
-5. Write policies (nemoclaw-read/rotate, nocodb/n8n/semaphore-write, semaphore-read)
-6. Create AppRoles (nemoclaw, nocodb, n8n, semaphore)
+5. Write policies (every `*.hcl` in `config/policies/`)
+6. Create the semaphore AppRole
 7. Seed placeholder secrets
 
 ## Environment Variables
@@ -22,8 +22,6 @@ The script is idempotent (safe to re-run) and performs 7 steps:
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `OPENBAO_LISTEN` | `0.0.0.0` through `deploy.sh`; `127.0.0.1` in Compose alone | Host bind address for port 8200 |
-| `NOCODB_URL` | placeholder | NocoDB service URL for seed secrets |
-| `N8N_URL` | placeholder | n8n service URL for seed secrets |
 | `SEMAPHORE_URL` | placeholder | Semaphore service URL for seed secrets |
 | `PROXMOX_URL` | placeholder | Proxmox API URL for seed secrets |
 | `PROXMOX_TOKEN_ID` | placeholder | Proxmox API token ID for seed secrets |

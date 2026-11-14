@@ -1,10 +1,152 @@
 # 03 — Testing, CI & Quality Gates
-> **Consolidates:** TESTING-AND-LINTING-PLAN.md, CI-TESTING-SPECIFICATION.md, LINTING-AND-TESTING.md, SECURITY-TESTING-STANDARDS.md, BRANCH-TESTING-WORKFLOW.md, OPENSSF-SCORECARD-PLAN.md (originals archived in `plan/archive/`)
+> **Consolidates:** TESTING-AND-LINTING-PLAN.md, CI-TESTING-SPECIFICATION.md, LINTING-AND-TESTING.md, SECURITY-TESTING-STANDARDS.md, BRANCH-TESTING-WORKFLOW.md, OPENSSF-SCORECARD-PLAN.md (originals archived in `plan/archive/architecture/`; OPENSSF-SCORECARD-PLAN.md in `plan/archive/development/`)
 >
 > **Depends on:** 00, 01
 >
-> Part of the dependency-ordered `plan/architecture/` set (00–07). Source docs
-> merged verbatim below under provenance dividers to preserve all detail.
+> Part of the dependency-ordered `plan/architecture/` set (00–09). **Part 1** below is the
+> authoritative statement of how this repository tests. **Part 2** is the consolidated record:
+> the source docs, merged verbatim under provenance dividers. Where Part 2 conflicts with Part 1,
+> Part 1 wins. Part 2's BATS and pytest guidance applies to the existing suites until
+> [plan 24](../development/24-rust-test-platform.md) retires them.
+
+**Date:** 2026-11-12 (Part 1 rewritten); 2026-11-04 (Part 2)
+**Status:** ACTIVE
+**Author:** Joseph A. Wisneski IV
+
+---
+
+# Part 1 — Testing principles
+
+A test exists to fail when the behaviour it names breaks, quickly enough that someone runs it. Every
+rule below serves one of those two halves. The suite is moving to Rust, run by `cargo-nextest`
+([plan 24](../development/24-rust-test-platform.md)). The rules are written for that suite, and apply to the
+pytest and BATS files until they are ported.
+
+## What earns a test
+
+Testing effort goes where a defect is expensive, silent or irreversible. In priority order:
+
+1. **Security invariants.** Secret handling (`no_log` scope, the redaction callback, no protected result
+   in a visible loop), the extra-var guard, transport guards, destructive-action confirmations, and
+   credential-leak scans. A regression here leaks a credential or destroys state, so these tests, with
+   those of item 2, form the **security set**, which runs in every lane (in the commit lane, its static
+   tests).
+2. **Rules the mistakes ledger enforces.** Every `docs/MISTAKES.md` entry whose "Enforced by" names a test.
+   That test is the rule; deleting or weakening it reopens the mistake.
+3. **Release and promotion logic.** Version computation, release notes, the merge guard and the release
+   budget. They run unattended and publish.
+4. **Parsers, resolvers and renderers with many inputs.** Caddyfile parsing, extra-var name resolution,
+   compose overlay merging, YAML scalar resolution. These get property tests (`proptest`), not a
+   hand-picked handful of cases.
+5. **Shared building blocks.** The composable task library and shared libraries, where one defect
+   reaches every caller. Test the contract once, at the shared piece, never per caller.
+
+Write these **test-first**: the failing test lands before, or with, the fix or feature. For anything
+else, a test is written when it would catch a defect a reader cannot see in review.
+
+**What does not earn a test:**
+
+- A line of a playbook, README or doc, matched as text. Assert the parsed structure or the behaviour.
+  The one exception is a deny-list: a forbidden string anywhere, such as `--restart unless-stopped`.
+- A property another test or a static proof already establishes. Prove it once, at the cheapest tier.
+- An implementation detail a refactor would change while behaviour stays the same (over-specification).
+- A live service's health. That is Semaphore's job (`Verify Service Health`, the probes), not CI's.
+
+## Rules for writing a test
+
+1. **One behaviour per test, named for it.** The name states the behaviour and the expectation:
+   `refuses_a_forged_internal_name`, not `test_guard_3`. A reader learns what broke from the name alone.
+2. **Arrange, Act, Assert.** Three visible blocks, in that order, with one Act. Setup that two tests share
+   moves into a support function. Hidden ordering between tests does not exist: every test runs alone and
+   in parallel (nextest starts one process per test).
+3. **Parametrize, do not copy.** The same logic over many inputs is one test over a table of cases, each
+   case named, so a failure names its row. Over a generated input space, use a `proptest` strategy.
+4. **Test the edges.** Empty, missing, maximum, one-past-maximum, the wrong type, and the value that is
+   almost valid. The happy path is one case among them, not the test.
+5. **Fast and deterministic.** A unit test runs in milliseconds. It touches no network, uses no wall
+   clock it does not control, and has no randomness it does not seed. Never assert a property of a random
+   value: assert the generator's deterministic properties instead (`docs/MISTAKES.md` §2).
+6. **No fixed waits.** Wait on a condition with a bound, never `sleep`. A retry or deadline in the code
+   under test is a public knob the test sets low, as `renew_proof_retries` and `renew_proof_delay` are.
+7. **Isolate only what is external.** Fake the network, OpenBao, Semaphore and the container engine: an
+   HTTP fake (`wiremock`) or a fake executable on `PATH`. Never mock the code under test or the
+   repository's own files. A test that mocks so much that it can only pass is worse than no test.
+8. **Scope every assertion to its construct.** Parse the playbook and select the task. Assert on that
+   task, never on the whole file, where a comment or an unrelated task can satisfy the match.
+9. **Watch it fail once.** Before a test is merged, break the code it guards and see it go red. A test
+   never seen failing is indistinguishable from a comment. For the security set, this is a review
+   requirement.
+10. **Snapshots for output, not for logic.** `insta` snapshots pin a rendered file, a refusal message or a
+    report shape, where the whole output is the contract. Review every snapshot change as code.
+11. **Bound every process.** A test that starts `ansible-playbook`, bash or Python goes through the
+    support library's runner. That runner scrubs the environment, keeps state in the test's temporary
+    directory and enforces a timeout. Never call `Command::new("ansible-playbook")` directly.
+12. **Tests are code.** They are reviewed and refactored with the code they test. A test whose code under
+    test was deleted is deleted with it.
+
+Rules 5, 8 and 9 come from incidents in `docs/MISTAKES.md` §2. The BATS mechanics that enforce them
+(`refute_grep`, scoping by `sed` range, the assertion ratchet) are in `CONTRIBUTING.md`, "Writing BATS Tests".
+
+## Tiers: the cheapest test that can fail
+
+Each test belongs to exactly one tier. Choose the cheapest tier at which the behaviour can break.
+
+| Tier | Reaches | Cost per test (target; playbook measured in plan 21) | Use for |
+|---|---|---|---|
+| `static` | Repository files, parsed | under 10 ms | Structure and policy of playbooks, compose files, templates, the Semaphore catalog, inventory templates |
+| `unit` | Rust functions, in-process | under 10 ms | Ported helper logic, parsers, resolvers (property tests) |
+| `cli` | One process: bash, a Rust CLI, a framework-bound Python script | 10 to 200 ms | Scripts' contracts: arguments, exit status, output, files written. Fake executables on `PATH` stand in for engines |
+| `http` | A process against `wiremock` | 50 to 500 ms | Clients of OpenBao, Semaphore, NetBox, GitHub, Plane |
+| `playbook` | `ansible-playbook` | about 1 s to 10 s | Behaviour that exists only when Ansible runs: guards, check-mode semantics, rendered results, plugin behaviour. One run per behaviour, with cases looped inside it |
+| `live` | Real services, through Semaphore | minutes | Health and readiness. Not in CI |
+
+A static proof replaces a process proof wherever the property is in the file. "Every launchable playbook
+imports the guard first" is a static test over 244 playbooks. Starting each playbook to see the guard
+refuse proves the same property 244 times, at about a second each.
+
+## Lanes: run what the change can break
+
+A change runs only the tests it can break, and the security set runs in every lane. The lanes, their
+triggers and time budgets are in [plan 24](../development/24-rust-test-platform.md), "Lanes"; the area map
+that selects tests is its decision D3.
+
+## Where tests live and how they run
+
+- The Rust suite is planned as one crate at `platform/tests/` with one test binary; each module belongs to
+  one area and one tier (plan 24, Phase 1; plan 24's "Crate layout" gives the run commands).
+- The Dispatch Console crate (`platform/services/console/app/`) keeps its own tests, under these rules.
+- Rego policies keep `opa test` (Rego Tests job); Rego is the policy language, not a test harness choice.
+- Linters and scanners (ruff, shellcheck, ansible-lint, yamllint, hadolint, trufflehog, bandit) are not
+  tests and stay in Static Analysis and Security Scan.
+
+## Coverage is a map, not a percentage
+
+The suite's coverage is the map from each item in "What earns a test" to the tests that guard it. A port
+or deletion pull request lists every removed test and its replacement, or the reason it was dropped. Line
+coverage is not a merge gate. A line-coverage number rewards tests that execute code without asserting
+anything, which rule 9 exists to prevent.
+
+## Sources
+
+The rules above adapt the repository's own incident record (`docs/MISTAKES.md` §2, the BATS rules in
+`CONTRIBUTING.md`) and these references, read 2026-11-12:
+
+- Codacy, "7 best practices for writing great software tests": independence and parallelism, refactoring
+  tests with code, condition waits over sleeps, boundary testing.
+  <https://blog.codacy.com/7-best-practices-for-writing-great-software-tests>
+- TestRail, "Test optimization": small focused suites, parametrization, prioritisation, replacing fixed
+  sleeps, investigating flaky tests rather than deleting them, choosing the right test level and time.
+  <https://www.testrail.com/blog/test-optimization/>
+- The wethinkapp article on unit-testing efficiency could not be read (HTTP 403 on 2026-11-12) and is not
+  a source here.
+
+---
+
+# Part 2 — Consolidated record
+
+The sections below are the source documents as merged on 2026-11-04. They record the history of the
+suite and its security standards. Their testing-practice guidance is superseded by Part 1 where the two
+differ.
 
 
 <!-- ======================= source: TESTING-AND-LINTING-PLAN.md ======================= -->
@@ -13,16 +155,27 @@
 
 **Date:** 2026-04-21
 **Updated:** 2026-05-06
-**Status:** ACTIVE — Phases 1-5 implemented for NetBox. Coverage gaps remain for 11 services and 3 agents.
+**Status:** ACTIVE — Phases 1-5 implemented for NetBox. Coverage gaps remain for 7 services.
 **Contributors:** Architecture, Automation, Security, and Testing review agents
 
 ---
 
-## Coverage Assessment (2026-05-06)
+## Current CI
+
+Source: `.github/workflows/lint-and-test.yml`. It defines these jobs and runs on `pull_request` to `main` and `dev`, with `permissions: contents: read` at the top level.
+
+- Jobs: `version` (reads the pull request title and predicts the version the merge would produce; see [`plan/development/20-semantic-versioning.md`](../development/20-semantic-versioning.md)), `lint` (Static Analysis), `security` (Security Scan), `python` (one matrix job, eight shards named `Python (1/8)` to `Python (8/8)`; each runs the root pytest collection with `PYTEST_SHARD=k/8`, and the root `conftest.py` skips the test files assigned to other shards, bin-packed from `platform/tests/test_durations.json`; plan 21), `bats` (files in parallel with `--jobs 4 --no-parallelize-within-files`), `rego`, `test` (Unit Tests), `rust-console`.
+- `test` (Unit Tests) runs `if: always()` and needs four jobs: `python`, `bats`, `rego` and `rust-console`. It fails unless every one of them succeeded; a matrix job's result is `failure` when any shard fails.
+- Required on `main`: `.github/rulesets/protect-main.json` (`enforcement: active`) requires the contexts `Static Analysis`, `Security Scan`, `Unit Tests` and `Promotion source (dev -> main)`. `.github/rulesets/protect-dev.json` (`enforcement: active`) defines no required status check.
+- Remote ruleset state was not queried in this review; the checked-in files are the evidence.
+
+## Coverage Assessment (2026-05-06, historical)
+
+> **Historical snapshot.** The counts and CI layout in this section are as of 2026-05-06. The *Current CI* block above is the current job list.
 
 ### What Exists
 
-The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linters on every PR to main. Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provide functional coverage for NetBox workers and shared libraries.
+The CI pipeline (`.github/workflows/lint-and-test.yml`) runs the jobs listed in *Current CI* above on every pull request to `main` and `dev`. As of 2026-05-06, Python unit tests (79 cases) and BATS bash tests (39 cases across 3 files) provided functional coverage for NetBox workers and shared libraries.
 
 | Component | Test Coverage | Notes |
 |-----------|---------------|-------|
@@ -33,9 +186,7 @@ The CI pipeline (`.github/workflows/lint-and-test.yml`) runs 3 jobs with 8 linte
 
 ### What Is Missing
 
-**11 services with zero tests:** caddy, inference, n8n, nextcloud, nocodb, o11y, openbao, postiz, semaphore, wikijs, a2a-registry
-
-**3 agents with zero tests:** nemoclaw, netclaw, cowork
+**7 services with zero tests:** caddy, inference, o11y, openbao, postiz, semaphore, a2a-registry
 
 **No tests exist for:**
 - Compose file validation (valid YAML, required services, no hardcoded credentials)
@@ -98,11 +249,10 @@ ignore = ["BLE001"]  # blind except is intentional in worker error handling
 
 ### 1b. Shell Linting — ShellCheck
 
-**Scope:** 28 shell scripts across the repo
+**Scope:** 47 shell scripts across the repo
 - `platform/lib/common.sh`, `platform/lib/bao-client.sh`
 - `platform/services/*/deployment/deploy.sh`
 - `platform/services/netbox/deployment/lib/common.sh`, `lib/generate-secrets.sh`
-- `agents/nemoclaw/deployment/deploy.sh`, `update.sh`, `validate.sh`
 
 **Tool:** `shellcheck` (install via `brew install shellcheck` or CI action). Scans the entire repo (excluding `netbox-docker/`).
 
@@ -145,9 +295,9 @@ exclude_paths:
 
 ### 1g. HCL Policy Validation
 
-**Scope:** 8 HCL files in `platform/services/openbao/deployment/config/`
+**Scope:** 5 HCL files in `platform/services/openbao/deployment/config/`
 - `openbao.hcl` (server config)
-- `policies/*.hcl` (7 AppRole policies: semaphore-read, semaphore-write, orb-agent, nemoclaw-read, nemoclaw-rotate, nocodb-write, n8n-write)
+- `policies/*.hcl` (AppRole policies: semaphore-read, semaphore-write, orb-agent, console)
 
 **Tool:** `openbao policy fmt -check` or `terraform fmt -check` for syntax validation. These are security-critical files — invalid policy syntax could lock out services.
 
@@ -694,8 +844,8 @@ graph TD
 #### Python core runs in parallel (2026-10-02)
 
 The `Python core` job runs pytest with `-n auto --dist worksteal` (pytest-xdist, pinned
-in `platform/requirements-test.txt`, the one test-dependency manifest every CI test job
-installs). Serially, the suite had grown to 12–20 minutes on CI, against
+in the `test` dependency group of `pyproject.toml`, locked in `uv.lock`, which every CI test job
+installs with `uv sync --locked`). Serially, the suite had grown to 12–20 minutes on CI, against
 a 20-minute job cap. Green runs reached 19.9 minutes, and run 37048305528 was cancelled
 at 20m5s. Most of that time is ansible-playbook subprocesses, which are independent, so
 spreading them across cores fixes the cause. Raising the cap only would have moved the
@@ -747,8 +897,7 @@ Add `j2lint` as a dedicated linting step:
 ```yaml
 - name: Jinja2 template lint
   run: |
-    pip install j2lint
-    find platform/services -name "*.j2" -exec j2lint {} +
+    find platform/services -name "*.j2" -exec uvx j2lint {} +
 ```
 
 #### Coverage Reporting
@@ -891,7 +1040,7 @@ Every PR triggers three GitHub Actions jobs:
 ### Python (Ruff)
 
 ```bash
-pip install ruff
+uv tool install ruff
 ruff check .                    # Check all Python files
 ruff check --fix .              # Auto-fix safe issues
 ruff check --fix --unsafe-fixes .  # Fix all (review changes)
@@ -915,7 +1064,7 @@ find . -name '*.sh' ! -path '*/netbox-docker/*' -exec shellcheck -S warning {} +
 ### Ansible (ansible-lint)
 
 ```bash
-pip install ansible-lint
+uv tool install ansible-lint
 ansible-lint platform/playbooks/
 ```
 
@@ -924,7 +1073,7 @@ Configuration is in `.ansible-lint`. Skips `command-instead-of-module` and `no-c
 ### YAML (yamllint)
 
 ```bash
-pip install yamllint
+uv tool install yamllint
 yamllint -c .yamllint.yml .
 ```
 
@@ -1078,7 +1227,7 @@ Tests use `@pytest.mark.parametrize` for composability — each function covers 
 | `test_proxmox_helpers.py` | `_int`, `_mb_to_gb`, `_bytes_to_gb`, `_should_skip_iface`, `_iface_type`, `_prefix_len`, `_sanitize_description`, `_pick_primary_ipv4` | 66 |
 | `test_pfsense_helpers.py` | `_is_valid_ip` | 13 |
 
-**Requires:** Python 3.12+ and `pip install -r platform/requirements-test.txt`.
+**Requires:** `uv sync --locked` (installs Python 3.12 and the locked test dependencies).
 
 The `conftest.py` stubs the orb-agent runtime modules (`worker.backend`, `worker.models`) that aren't pip-installable. The real Diode SDK is installed for entity constructor validation.
 
@@ -1155,7 +1304,7 @@ Pre-commit hooks are the first line of defense. They run automatically on every 
 
 **Installation (one-time):**
 ```bash
-pip install pre-commit
+uv tool install pre-commit
 pre-commit install
 ```
 
@@ -1577,11 +1726,8 @@ Every deploy playbook reads `service_branch` with a fallback to `main`:
 Playbooks with `service_branch` support:
 - `deploy-all.yml`
 - `deploy-openbao.yml`
-- `deploy-nocodb.yml`
-- `deploy-n8n.yml`
 - `deploy-semaphore.yml`
 - `deploy-netbox.yml`
-- `deploy-nemoclaw.yml`
 - `clean-deploy-netbox.yml`
 - `deploy-orb-agent.yml`
 
@@ -1676,7 +1822,7 @@ After branch validation succeeds:
 
 **Never merge a PR before its checks have completed and passed.**
 
-On `main` these rules are codified in the `protect-main` repository ruleset (`.github/rulesets/`), not just procedurally — currently in `evaluate`/dry-run (logging would-be violations, not yet blocking) until flipped to `active`: required status checks (`Static Analysis` / `Security Scan` / `Unit Tests`) and conversation resolution block the merge button, and force-push and deletion are rejected. The rollback story above ("re-deploy from `main`") stays valid precisely because `main` history can never be rewritten.
+On `main` these rules are codified in the `protect-main` repository ruleset (`.github/rulesets/`), not just procedurally — the checked-in file declares `enforcement: active` (remote state not queried in this review): required status checks (`Static Analysis` / `Security Scan` / `Unit Tests`) and conversation resolution block the merge button, and force-push and deletion are rejected. The rollback story above ("re-deploy from `main`") stays valid precisely because `main` history can never be rewritten.
 
 <!-- ======================= source: OPENSSF-SCORECARD-PLAN.md (was in plan/development/) ======================= -->
 

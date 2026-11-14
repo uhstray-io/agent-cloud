@@ -83,13 +83,13 @@ test_branch_near_miss_spellings_denied if {
 	}
 }
 
-# Frozen agents are covered too: a launch is an agent launch whoever sends it.
-test_branch_feature_branch_denied_for_a_legacy_agent if {
+# A launch is an agent launch whoever sends it: skynet's run is held to main or dev too.
+test_branch_feature_branch_denied_for_skynet if {
 	_branch_denied({
-		"agent": "nemoclaw",
+		"agent": "skynet",
 		"service": "semaphore",
 		"action": "run_task",
-		"template_name": "Deploy tududi",
+		"template_name": "Deploy Postiz",
 		"git_branch": "feat/x",
 	})
 }
@@ -329,7 +329,7 @@ test_mutation_missing_declarations_fail_closed if {
 test_destructive_template_wrong_type_approval_denied if {
 	every a in ["true", "false", 1] {
 		d := agentcloud.decision with input as {
-			"agent": "nemoclaw",
+			"agent": "skynet",
 			"service": "semaphore",
 			"action": "run_task",
 			"template_name": "Clean Deploy NetBox",

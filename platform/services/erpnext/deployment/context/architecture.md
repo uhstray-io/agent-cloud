@@ -1,7 +1,7 @@
 # ERPNext — architecture (deployment + how it fits the platform)
 
 ERPNext is the platform's first **stateful financial system of record** — the
-books for UhhCraft revenue, marketplace payouts, and Zord license sales. It runs
+books for storefront revenue, marketplace payouts, and Zord license sales. It runs
 Frappe/ERPNext (frontend + backend + workers + scheduler + websocket) over
 MariaDB and a Redis cache/queue pair, deployed by the standard composable
 pattern (OpenBao → manage-secrets → `.env` → deploy.sh).

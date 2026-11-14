@@ -301,8 +301,8 @@ def select(registry: list[dict], templates: list[dict], by_group: dict,
 
 
 def _service_of(task: dict, by_group: dict) -> str | None:
-    """The service a task ran for: the launch's target_service (a group such as tududi_svc,
-    or a service name such as tududi, as provision-vm and the address steps take it), else
+    """The service a task ran for: the launch's target_service (a group such as honcho_svc,
+    or a service name such as honcho, as provision-vm and the address steps take it), else
     the group a per-service deploy playbook is named after. None when neither names an
     inventory group (a phantom such as deploy-all.yml)."""
     try:

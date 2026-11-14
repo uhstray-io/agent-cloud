@@ -14,6 +14,9 @@
 #
 # Both variables are required (:?), so compose refuses to start without them rather than starting
 # with no mapping and failing later at the OPA call.
+#
+# user and userns keep-id are not set here. They are in compose.prod-tls.yml, which deploy.sh loads
+# only with the HTTPS listener, because the mapping is needed only to read the listener's key.
 
 services:
   skynet:

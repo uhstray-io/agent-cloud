@@ -15,7 +15,7 @@
 #
 #   Consequence to know about: while core.hooksPath is set, `pre-commit
 #   install` refuses to run ("cowardly refusing"). That is expected — you do
-#   not need it. Install the CLI only: pip install pre-commit (or brew).
+#   not need it. Install the CLI only: uv tool install pre-commit (or brew).
 #
 # Gate 2: the repo-memory mechanical lint (vendor-agnostic). No-ops unless
 #   .claude/memory/ files are staged AND scripts/repo-memory-lint.ts exists.
@@ -47,7 +47,7 @@ if [ -f .pre-commit-config.yaml ]; then
     printf '  AGENTS.md makes this audit mandatory before every commit (trufflehog,\n' >&2
     printf '  private-IP detection, credential patterns, .env blocking).\n' >&2
     printf '\n' >&2
-    printf '  Install it:   pip install pre-commit    (or: brew install pre-commit)\n' >&2
+    printf '  Install it:   uv tool install pre-commit    (or: brew install pre-commit)\n' >&2
     printf '  And:          brew install trufflehog\n' >&2
     printf '\n' >&2
     printf '  Do NOT run `pre-commit install` — this repo sets core.hooksPath, so this\n' >&2

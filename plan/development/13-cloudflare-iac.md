@@ -6,13 +6,22 @@
 > **Status:** **Phases 1-2 DONE** — the WAF ruleset (`waf.tf`) and the 14
 > platform DNS records (`dns.tf`) are adopted into OpenTofu at zero-diff, state
 > in Cloudflare R2. CF secrets seeded to OpenBao + `uhstray-tfstate` R2 bucket
-> created. REMAINING: the Semaphore `tofu` template for steady-state plan/apply
-> (bootstrap was run locally in a tofu container against the R2 backend), and
-> Phase 3. **Phase 3 opened 2026-09-14** with the first `http_ratelimit`
+> created. Bootstrap was run locally in a tofu container against the R2 backend.
+> The Semaphore template **Apply Cloudflare Tofu** is present
+> (`platform/semaphore/templates.yml`, added in commit `46806b31` on 2026-07-09);
+> its `tofu_action` survey value is `plan` (default) or `apply`.
+> **Phase 3 (in progress)** opened 2026-09-14 with the first `http_ratelimit`
 > ruleset (`ratelimit.tf`: per-source ceiling on `inference.uhstray.io/v1/*`,
-> log twin + block; the zone is Pro, so two rules and a 10 s period are the
-> legal bounds) — declared in code, apply pending through **Apply Cloudflare
-> Tofu**. The managed set is now `http_request_firewall_custom`, platform DNS,
+> 10 requests per 10 s, 10 s mitigation; the zone is Pro, so two rules and a
+> 10 s period are the legal bounds). The `ratelimit.tf` rollout record says the
+> first apply was log-only on 2026-09-15 (Semaphore task 885), that the block
+> rule was then enabled and proven live the same night, and that the log twin
+> was removed to free the second Pro rule slot. AGENTS.md records the same
+> 2026-09-15 date for the live rate limit (tasks 884–886). The block rule was enabled on 2026-09-15 (`AGENTS.md:527`), brought forward from
+> a 2026-09-28 target (task 906, `ratelimit.tf:30-37`). These
+> are repo records and have not been checked against the live zone. A second
+> rule, `mcp-api-ratelimit-log` (`/mcp`, log mode, provisional), is declared in
+> `ratelimit.tf`; the repo does not record whether it has been applied. The managed set is now `http_request_firewall_custom`, platform DNS,
 > and `http_ratelimit`. **Owner:** uhstray-io.
 
 **Goal:** manage Cloudflare **as code** — OpenTofu roots run through Semaphore —
@@ -63,15 +72,14 @@ flowchart TD
   README/imports). Store the CF API token (Zone Read + WAF/Rulesets Edit + DNS
   Edit) at OpenBao `secret/services/cloudflare:api_token` and the R2 state keys
   at `:r2_access_key_id` / `:r2_secret_access_key` (via `seed-openbao-key.yml`).
-  Create the R2 state bucket. Add the Semaphore `tofu` template (repo=agent-cloud,
-  subdir=`platform/infra/cloudflare`, environment = token + R2 keys + zone id).
+  Create the R2 state bucket. The Semaphore template is **Apply Cloudflare Tofu** (see the status above).
 - **Phase 1 — Adopt the WAF ruleset.** Import the existing
   `http_request_firewall_custom` entrypoint (3 geo/AI block rules + the honcho
   `/health`+`/v3` skip rule created via API) with `-generate-config-out`; move
   the generated HCL into `waf.tf`; `plan` MUST be zero-diff. No apply needed —
   pure adoption.
 - **Phase 2 — Migrate platform DNS.** Import each Caddy-origin platform A-record
-  (`auth/canvas/memory/n8n/netbox/nocodb/o11y/semaphore/todo/...`) the same way;
+  (`auth/memory/netbox/o11y/semaphore/...`) the same way;
   `plan` zero-diff; then retire `manage-cloudflare-records.yml` (leave a pointer).
   External/email/ACME records stay unmanaged.
 - **Phase 3 — Zone settings + future.** Bring settings (security level, SBFM

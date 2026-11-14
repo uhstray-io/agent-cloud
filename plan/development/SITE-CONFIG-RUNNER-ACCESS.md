@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-11
 **Status:** ACTIVE
+> **Parent plan:** [Guardrails and governance](03-guardrails-governance.md)
+
 **Context:** Add the private `site-config` repository to the declared access list for the existing `uhstray-selfhosted` runner group so its workflow can use the platform runners.
 
 ## Problem

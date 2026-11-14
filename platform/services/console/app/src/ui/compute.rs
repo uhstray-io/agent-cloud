@@ -308,7 +308,7 @@ mod tests {
                     name: "pve-prod".into(),
                     nodes: vec![node],
                     vms: vec![Vm {
-                        name: "tududi".into(),
+                        name: "postiz".into(),
                         status: "active".into(),
                         live_status: None,
                         vcpus: Some(2.0),
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn two_vms_of_one_name_in_one_cluster_get_distinct_rows() {
         let first = Vm {
-            name: "tududi".into(),
+            name: "postiz".into(),
             vmid: Some(101),
             rag: "red".into(),
             ..Vm::default()

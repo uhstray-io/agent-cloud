@@ -19,7 +19,7 @@ Apply these BEFORE pushing a PR. Each is a finding CodeRabbit or CI has flagged 
 CodeRabbit reviews `plan/**/*.md` for internal consistency — a new section that contradicts the same doc's existing body, or an index whose status disagrees with the source's frontmatter, gets flagged. Check these before pushing a docs PR:
 
 - **A new section must not contradict the doc's own body.** PR #40's biggest catch was self-inflicted: an appendix table cell claimed `depends_on: condition: service_healthy` makes the app "wait for postgres/redis/minio to report healthy" — directly contradicting the **same file's §4**, which says podman-compose 1.0.6 parses but does NOT enforce it. When you add an appendix/example to an existing doc, re-read the sections it touches and align claims.
-- **Index status must match the source doc's frontmatter.** `architecture-reference.md` listed `WEBSMITH-INTEGRATION-PLAN.md` as `IMPLEMENTED` while the plan's own `**Status:**` was `ACTIVE` and it was 9/11. Don't mark a multi-phase plan "IMPLEMENTED" until it's done — mirror the source's status + note the phase count.
+- **Index status must match the source doc's frontmatter.** `architecture-reference.md` listed a plan as `IMPLEMENTED` while the plan's own `**Status:**` was `ACTIVE` and it was 9/11. Don't mark a multi-phase plan "IMPLEMENTED" until it's done — mirror the source's status + note the phase count.
 - **Use the canonical section names, not one-off variants.** The deviation headings are exactly `## Alignment with agent-cloud conventions` and `## Tracking future deviations` — not `## Deviations from Spec`. Grep the repo for the existing heading before inventing a near-synonym.
 
 ## Ansible (ansible-lint — CI hard-fails on these)
@@ -42,7 +42,7 @@ CodeRabbit reviews `plan/**/*.md` for internal consistency — a new section tha
 - **Distinguish engine/container faults from config-parse errors.** A non-zero `<engine> exec ... validate` rc can mean "container down", not "bad config". Do a reachability pre-check (`caddy version`); on an engine fault **fail without rolling back** (the fragment is probably fine — a false rollback silently reverts a good change). Only roll back when validate fails *after* confirmed reachability.
 - **Coordinate cross-service endpoints in INVENTORY, not via silent fact fallbacks.** Don't compute another service's upstream as `hostvars[...].ansible_default_ipv4 | default('127.0.0.1')` — a missing fact renders a valid-but-wrong fragment routing to loopback. Require an explicit inventory var (`<svc>_minio_upstream`) and `assert` it. A play only gathers its own hosts' facts anyway.
 - **Guard path-traversal on any name concatenated into a delegated dest path.** `assert` it's a safe basename, e.g. `name is match('^[a-z0-9][a-z0-9-]*\.caddy$')`.
-- **HSTS baseline:** `Strict-Transport-Security max-age=15552000;` — do NOT add `includeSubDomains`/`preload` prematurely (preload is hard to reverse; per UhhCraft SPEC it's deferred to post-launch). Keep fragments consistent with the central Caddyfile.
+- **HSTS baseline:** `Strict-Transport-Security max-age=15552000;` — do NOT add `includeSubDomains`/`preload` prematurely (preload is hard to reverse and is deferred to post-launch). Keep fragments consistent with the central Caddyfile.
 
 ## Ansible secrets ↔ env templates (platform convention)
 
@@ -80,7 +80,7 @@ CodeRabbit reviews `plan/**/*.md` for internal consistency — a new section tha
 
 ## Process
 
-- Run the relevant linters locally before pushing: `ansible-lint`, `templ generate && go build ./... && go vet ./...`, `ruff check`, `python -m py_compile`, `yaml.safe_load`. Then the secret/IP audit covering all RFC1918 ranges (see above) + no literal creds.
+- Run the relevant linters locally before pushing: `ansible-lint`, `ruff check`, `python -m py_compile`, `yaml.safe_load`. Then the secret/IP audit covering all RFC1918 ranges (see above) + no literal creds.
 
 ## Working with CodeRabbit reviews (triage discipline)
 

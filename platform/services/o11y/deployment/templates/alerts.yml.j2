@@ -9,7 +9,8 @@ groups:
     interval: 60s
     rules:
 {% set _availability_projection = _o11y_availability | default({}) %}
-{% set _availability_targets = _availability_projection.get('targets', []) %}
+{# An absent drill moves its target to alert_only_targets: it has no probe or Alloy component, but its rules stay. #}
+{% set _availability_targets = _availability_projection.get('targets', []) + _availability_projection.get('alert_only_targets', []) %}
 {% set _availability_uids = ['o11y_endpoint_probe_failed', 'o11y_endpoint_probe_missing'] %}
 {% set _availability_on = _availability_projection.get('enabled', false) | bool
    and _availability_targets | length > 0

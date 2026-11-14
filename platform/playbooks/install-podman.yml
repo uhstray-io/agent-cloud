@@ -34,7 +34,7 @@
 # The two Docker options both provide /usr/bin/docker and their packages conflict
 # (podman-docker declares `Conflicts: docker-ce-cli`), so at most one may be on.
 #
-# Usage: ansible-playbook install-podman.yml -e "target_service=uhhcraft_svc"
+# Usage: ansible-playbook install-podman.yml -e "target_service=opa_svc"
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).

@@ -6,14 +6,12 @@ import base64
 import importlib.util
 import json
 import shutil
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import harness_sandbox
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 from playbook_yaml import REPO
 
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -209,40 +207,36 @@ def _run_fixture(tmp_path: Path, *, capabilities=None, stored_policy=None, check
                 return self._reply({"data": {"name": "semaphore-read", "policy": value, "rules": value}})
             return self._reply({"errors": ["unexpected path"]}, 404)
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), FakeBao)
-    server.daemon_threads = True
-    address = f"http://127.0.0.1:{server.server_port}"
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    files = tmp_path / "files"
-    files.mkdir(exist_ok=True)
-    shutil.copy2(PLAYBOOKS / "files/verify_o11y_restore_capabilities.py", files / "verify_o11y_restore_capabilities.py")
-    inventory = tmp_path / "inventory.yml"
-    inventory.write_text(yaml.safe_dump({
-        "all": {
-            "hosts": {"localhost": {"ansible_connection": "local"}},
-            "vars": {"openbao_addr": address},
-            "children": {"openbao_svc": {"hosts": {"openbao-test": {"service_url": address}}}},
-        }
-    }))
-    play = tmp_path / "play.yml"
-    payload = base64.b64encode(POLICY.read_bytes()).decode("ascii")
-    play.write_text(yaml.safe_dump([{
-        "hosts": "localhost",
-        "connection": "local",
-        "gather_facts": False,
-        "vars": {
-            "expected_repository_sha": REVIEWED_SHA,
-            "_reviewed_checkout_payloads": {
-                "platform/services/openbao/deployment/config/policies/semaphore-read.hcl": payload,
+    with serve(FakeBao) as address:
+        files = tmp_path / "files"
+        files.mkdir(exist_ok=True)
+        shutil.copy2(PLAYBOOKS / "files/verify_o11y_restore_capabilities.py",
+                     files / "verify_o11y_restore_capabilities.py")
+        inventory = tmp_path / "inventory.yml"
+        inventory.write_text(yaml.safe_dump({
+            "all": {
+                "hosts": {"localhost": {"ansible_connection": "local"}},
+                "vars": {"openbao_addr": address},
+                "children": {"openbao_svc": {"hosts": {"openbao-test": {"service_url": address}}}},
+            }
+        }))
+        play = tmp_path / "play.yml"
+        payload = base64.b64encode(POLICY.read_bytes()).decode("ascii")
+        play.write_text(yaml.safe_dump([{
+            "hosts": "localhost",
+            "connection": "local",
+            "gather_facts": False,
+            "vars": {
+                "expected_repository_sha": REVIEWED_SHA,
+                "_reviewed_checkout_payloads": {
+                    "platform/services/openbao/deployment/config/policies/semaphore-read.hcl": payload,
+                },
             },
-        },
-        "tasks": [{"name": "Run the exact shared verification", "ansible.builtin.include_tasks": str(TASK)}],
-    }], sort_keys=False))
-    env = harness_sandbox.env_for(tmp_path)
-    env.update(BAO_ROLE_ID="synthetic-role-id", BAO_SECRET_ID="synthetic-role-secret")
-    publisher_done = None
-    try:
+            "tasks": [{"name": "Run the exact shared verification", "ansible.builtin.include_tasks": str(TASK)}],
+        }], sort_keys=False))
+        env = harness_sandbox.env_for(tmp_path)
+        env.update(BAO_ROLE_ID="synthetic-role-id", BAO_SECRET_ID="synthetic-role-secret")
+        publisher_done = None
         if publish:
             publisher_play = tmp_path / "publisher.yml"
             publisher_play.write_text(yaml.safe_dump([{
@@ -274,10 +268,6 @@ def _run_fixture(tmp_path: Path, *, capabilities=None, stored_policy=None, check
             cwd=REPO,
             env=env,
         )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
     return done, FakeBao.requests, publisher_done
 
 

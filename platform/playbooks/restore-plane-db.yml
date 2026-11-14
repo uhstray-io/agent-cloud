@@ -1,6 +1,6 @@
 ---
 # restore-plane-db.yml — DESTRUCTIVE: overwrite Plane's database with a named pg_dump.
-# The paired backup is backup-plane-db.yml. Modelled on restore-n8n-db.yml.
+# The paired backup is backup-plane-db.yml.
 #
 # The dump file is REQUIRED and EXPLICIT (-e plane_dump_file=<path>) — never "the latest one",
 # which two runs a minute apart would resolve differently.

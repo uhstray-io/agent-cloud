@@ -11,8 +11,7 @@ locals {
   # pointing at the Caddy origin. Add a service here to bring its record under
   # management (then import it).
   platform_subdomains = [
-    "auth",   # Authentik IdP
-    "canvas", # OpenHands
+    "auth", # Authentik IdP
     "console",
     "devlog",
     "inference", # vLLM on the DGX Spark pair (adopted 2026-09-15; waf.tf + ratelimit.tf govern it)
@@ -25,7 +24,6 @@ locals {
     "mcp",    # agentgateway MCP endpoint (NEW record, created by apply; waf.tf + ratelimit.tf)
     "memory", # honcho
     "mixpost",
-    "n8n",
     "netbox",
     "o11y",      # Grafana
     "plane",     # Plane work tracker (NEW record; native Authentik OIDC in-app)
@@ -33,8 +31,6 @@ locals {
     "postiz",
     "pve", # Proxmox
     "semaphore",
-    "todo", # tududi
-    "wisbot",
   ]
 }
 

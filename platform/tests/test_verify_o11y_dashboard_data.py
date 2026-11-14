@@ -10,22 +10,20 @@ import hashlib
 import importlib.util
 import io
 import json
-import os
 import re
 import shutil
 import socket
-import subprocess
 import sys
-import threading
-from http.server import ThreadingHTTPServer
+from contextlib import ExitStack
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 import forgeries
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/verify-o11y-dashboard-data.yml"
@@ -70,9 +68,11 @@ class FakePrometheus:
             def log_message(self, *args):
                 pass
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self._serving = ExitStack()
+        self.url = self._serving.enter_context(serve(Handler))
+
+    def close(self):
+        self._serving.close()
 
     def answer(self, path, form):
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "data")
@@ -134,13 +134,11 @@ class FakeLoki:
             def log_message(self, *args):
                 pass
 
-        server_type = ThreadingHTTPServer
-        if ":" in host:
-            server_type = type("IPv6ThreadingHTTPServer", (ThreadingHTTPServer,), {"address_family": socket.AF_INET6})
-        self.server = server_type((host, 0), Handler)
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        url_host = f"[{host}]" if ":" in host else host
-        self.url = f"http://{url_host}:{self.server.server_address[1]}"
+        self._serving = ExitStack()
+        self.url = self._serving.enter_context(serve(Handler, host=host))
+
+    def close(self):
+        self._serving.close()
 
     def answer(self, path, form):
         behaviour = next((b for key, b in self.rules.items() if key in form["query"]), "streams")
@@ -181,14 +179,14 @@ class FakeLoki:
 def loki():
     fake = FakeLoki()
     yield fake
-    fake.server.shutdown()
+    fake.close()
 
 
 @pytest.fixture
 def prometheus():
     fake = FakePrometheus()
     yield fake
-    fake.server.shutdown()
+    fake.close()
 
 
 def _payload(uid, **extra):
@@ -1922,23 +1920,16 @@ def receiver(tmp_path, prometheus, loki):
         "[o11y_svc]\n"
         f"receiver ansible_connection=local ansible_python_interpreter=auto_silent "
         f"local_monorepo_dir={repo} monorepo_deploy_path=platform/services/o11y/deployment "
-        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={prometheus.server.server_address[1]} "
-        f"o11y_loki_bind=127.0.0.1 o11y_loki_port={loki.server.server_address[1]}\n"
+        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={urlsplit(prometheus.url).port} "
+        f"o11y_loki_bind=127.0.0.1 o11y_loki_port={urlsplit(loki.url).port}\n"
     )
     return {"inventory": inventory, "prometheus": prometheus, "loki": loki}
 
 
 def _run(receiver, *extra):
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(
-        ["ansible-playbook", "-i", str(receiver["inventory"]), str(PLAYBOOK), *extra],
-        cwd=REPO,
-        env=env,
-        text=True,
-        capture_output=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
+    # The receiver's inventory sits in the test's own temporary directory, which is the run's tmp_path.
+    return harness_sandbox.run_playbook(
+        PLAYBOOK, receiver["inventory"].parent, *extra, inventory=receiver["inventory"],
     )
 
 
@@ -1955,11 +1946,11 @@ def _ipv6_loki_or_skip():
 
 
 def _set_loki_inventory(receiver, bind, loki):
-    previous_port = receiver["loki"].server.server_address[1]
+    previous_port = urlsplit(receiver["loki"].url).port
     inventory = receiver["inventory"]
     contents = inventory.read_text().replace("o11y_loki_bind=127.0.0.1", f"o11y_loki_bind={bind}")
     contents = contents.replace(
-        f"o11y_loki_port={previous_port}", f"o11y_loki_port={loki.server.server_address[1]}"
+        f"o11y_loki_port={previous_port}", f"o11y_loki_port={urlsplit(loki.url).port}"
     )
     inventory.write_text(contents)
     receiver["loki"] = loki

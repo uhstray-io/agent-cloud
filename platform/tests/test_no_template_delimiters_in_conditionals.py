@@ -99,7 +99,8 @@ def test_the_scan_flags_the_shape_that_broke_task_4995():
 
 
 def _core_version() -> tuple[int, int]:
-    out = subprocess.run(["ansible-playbook", "--version"], text=True, capture_output=True, check=False).stdout
+    out = subprocess.run(["ansible-playbook", "--version"], text=True, capture_output=True, check=False,
+                         timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS).stdout
     match = re.search(r"\[core (\d+)\.(\d+)", out)
     assert match, out
     print(f"ansible-core {match.group(1)}.{match.group(2)} ({out.splitlines()[0]})")
