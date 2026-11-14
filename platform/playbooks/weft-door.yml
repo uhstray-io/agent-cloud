@@ -1,0 +1,154 @@
+---
+# weft-door.yml — the plays of deploy-weft-door.yml, without its empty-group guard. Imported by that
+# launcher ("Deploy weft Front Door", which refuses an empty group first), and by Roll Out weft
+# Release and Deploy weft Staging.
+#
+# What it does — deploy a front door (the rack's or staging's) to the release it is pinned to.
+#
+# The front door is identity across companies and a URL per workspace; it redirects and never
+# proxies, and it is deployed FIRST in every rollout, because it must keep accepting the
+# previous release's boards while the workspaces move one at a time.
+#
+#   Phase 1  place the repo; the signing key (generated once into OpenBao, 0600 file on the VM)
+#            and its public half (stored beside it for the workspaces' deploys to read)
+#   Phase 2  the edge (weft-edge.yml): weft's Caddy fragment for this environment
+#   Phase 3  one deploy (tasks/weft-deploy.yml): verify, stop, back up, start, health through
+#            the edge, watch. A failure fails the run and leaves the host as it is.
+#
+# Inputs:
+#   weft_release      the host's pin, from site-config; staging takes it from Deploy weft
+#                     Staging's survey
+#   weft_door_hosts   the inventory group (default weft_door; staging: weft_staging_door)
+#   weft_edge_workspace_hosts  the same environment's workspaces, all of them, for the Caddy
+#                     fragment (default weft_workspaces; staging: weft_staging_workspace)
+# Group vars from site-config: weft_domain, weft_environment (rack | staging),
+# weft_secret_root (weft | weft-staging), monorepo_deploy_path.
+#
+# Run through Semaphore, never by hand on the VM.
+
+- name: "Front door: repo, signing key and public key"
+  hosts: "{{ weft_door_hosts | default('weft_door') }}"
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _branch: "{{ service_branch | default('main') }}"
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _bao_role_id: "{{ bao_role_id | default(lookup('env', 'BAO_ROLE_ID')) }}"
+    _bao_secret_id: "{{ bao_secret_id | default(lookup('env', 'BAO_SECRET_ID')) }}"
+
+  tasks:
+    - name: "Require one front door per environment, its domain and its pin"
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - weft_domain | default('') | length > 0
+          - weft_environment | default('') in ['rack', 'staging']
+          - weft_release | default('') | length > 0
+        fail_msg: >-
+          Declare exactly one host in {{ weft_door_hosts | default('weft_door') }}, with weft_domain,
+          weft_environment (rack or staging) and its weft_release pin.
+
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    # The state directory is root's (vars/weft.yml), so every deploy escalates; on a host not yet
+    # hardened that needs the sudo password, read from OpenBao as every escalating play does.
+    - name: "Resolve the sudo password (host may not be hardened yet)"
+      ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+
+    - name: "Place the monorepo + ensure podman/compose"
+      ansible.builtin.include_tasks: tasks/place-monorepo.yml
+
+    - name: "Make the records' directory on the VM's own disk"
+      ansible.builtin.file:
+        path: "{{ _weft_door_dir }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        mode: "0700"
+      become: true
+
+    # The deploy's record of how its last run here ended (tasks/weft-deploy.yml): root's, mounted
+    # by no container.
+    - name: "Make the deploy's state directory, root's"
+      ansible.builtin.file:
+        path: "{{ _weft_door_state_dir }}"
+        state: directory
+        owner: "{{ _weft_state_owner }}"
+        group: "{{ _weft_state_group }}"
+        mode: "0755"
+      become: true
+
+    - name: "The signing key (generated once, reused forever) as a 0600 file"
+      # Generated once: a new key makes every workspace's [front_door] public_key wrong, and
+      # every sign-in fails at once.
+      ansible.builtin.include_tasks: tasks/manage-secrets.yml
+      vars:
+        service_name: "{{ _weft_secrets }}/door"
+        monorepo_deploy_path: "{{ _weft_service_dir_by_role.door }}"
+        _templates_src: "{{ playbook_dir }}/../services/weft-door/deployment/templates"
+        _secret_definitions:
+          - { name: signing_key, type: hex, length: 64 }
+        _env_templates:
+          - { src: door.key.j2, dest: door.key, mode: "0600" }
+
+    - name: "Derive the public key on the controller (key on stdin)"
+      ansible.builtin.command:
+        argv: [python3, "{{ playbook_dir }}/../services/weft-door/deployment/lib/door_public_key.py"]
+        stdin: "{{ _resolved.signing_key }}"
+      register: _weft_door_public
+      changed_when: false
+      check_mode: false
+      delegate_to: localhost
+      no_log: true
+
+    - name: "Store the public key beside it, for the workspaces' weft.toml"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url }}"
+        _bm_token: "{{ _bao_auth.json.auth.client_token }}"
+        _bm_path: "services/{{ _weft_secrets }}/door"
+        _bm_data:
+          public_key: "{{ _weft_door_public.stdout | trim }}"
+      no_log: true
+
+- name: "Front door: the edge"
+  ansible.builtin.import_playbook: weft-edge.yml
+
+- name: "Front door: deploy to its pin"
+  hosts: "{{ weft_door_hosts | default('weft_door') }}"
+  gather_facts: false
+  become: false
+  # A failed front door ends the run: the workspaces' plays after it must not start.
+  any_errors_fatal: true
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _bao_url: "{{ openbao_addr | default('') }}"
+    _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
+    _weft_role: door
+    _weft_state_dir: "{{ _weft_door_state_dir }}"
+    _weft_deploy_dir: "{{ _monorepo_dir }}/{{ _weft_service_dir_by_role.door }}"
+    _weft_label: front door
+    _weft_deploy_env:
+      CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
+      LOCAL_MODE: "{{ 'true' if (_weft_local | bool) else '' }}"
+      COMPOSE_CMD: "{{ local_compose_cmd | default('') }}"
+    # Asks every workspace on the records whether it agrees about its id; one that names
+    # another id fails it, one that does not answer yet is only reported (its row exists
+    # before its VM does).
+    _weft_health_argv: [bash, deploy.sh, health]
+
+  tasks:
+    - name: "Refuse a cleartext OpenBao endpoint"
+      ansible.builtin.include_tasks: tasks/assert-bao-transport.yml
+      vars:
+        _assert_bao_url: "{{ _bao_url }}"
+
+    - name: "One deploy"
+      ansible.builtin.include_tasks: tasks/weft-deploy.yml

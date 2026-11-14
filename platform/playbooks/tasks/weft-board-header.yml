@@ -1,0 +1,28 @@
+---
+# weft-board-header.yml — whether a workspace's weft.toml may name the board's client address
+# header, decided by the release it will run, before anything stops.
+#
+# From the weft release that carries weft #511 the board refuses trusted_proxies without
+# client_address_header, and a release before it refuses client_address_header as a key it does
+# not know. The signed release.json lists every key its loader accepts (deployment_file_keys; null
+# means nobody listed them), so the release itself says whether the header may be written. A host
+# that trusts a proxy on a release that does not list it is refused here: either way it would
+# render a weft.toml its board cannot start on.
+#
+# Caller passes the verified _weft_release_json, from tasks/weft-release.yml. Sets
+# _weft_board_header_known, which weft.toml.j2 reads.
+
+- name: "May weft.toml name the board's client address header"
+  ansible.builtin.set_fact:
+    _weft_board_header_known: "{{ 'board.client_address_header' in ((_weft_release_json.deployment_file_keys | default(none)) or []) }}"
+
+- name: "Refuse trusted proxies the pinned release cannot name a client for"
+  ansible.builtin.assert:
+    that:
+      - (weft_board_trusted_proxies | default([]) | length == 0) or (_weft_board_header_known | bool)
+    fail_msg: >-
+      {{ inventory_hostname }} sets weft_board_trusted_proxies, but the pinned release
+      {{ _weft_release_json.version or _weft_release_json.commit }} predates weft's client-address
+      header (its release.json does not list board.client_address_header), so its board could not
+      be told which header carries the client. Pin a newer release, or clear
+      weft_board_trusted_proxies. Nothing has changed on this host.

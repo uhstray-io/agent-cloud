@@ -1,0 +1,3 @@
+# Rendered per deploy by weft-workspace.yml. Never committed.
+# .env holds the release's image digests and paths (no secret).
+.env
