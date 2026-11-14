@@ -1,0 +1,67 @@
+---
+# converge-local-catalog.yml — publish the local Semaphore's template catalog, then apply the
+# template retirements. Local-dev runs this after every publish: the "Register templates and
+# apply retirements" step of bootstrap-local-dev.yml, and scripts/local-dev.sh templates.
+#
+# Why one entry point. setup-templates.yml publishes and never deletes, and
+# retire-semaphore-templates.yml deletes what platform/semaphore/retired-templates.yml declares.
+# Retiring was a manual launch per instance, so the local catalog drifted from the declaration and
+# a retired template kept its schedule firing (#955, #956). Here the retirement follows every
+# publish, so a renamed template is created before its old name is deleted.
+#
+# Local only, by construction:
+#   - the first entry is the internal-extra-vars guard, as the first entry of every launched
+#     playbook is; a forged underscore extra var is refused before anything is set;
+#   - play 2 refuses any controller but loopback (SEMAPHORE_URL), any semaphore_url extra var
+#     (setup-templates.yml reads that override ahead of SEMAPHORE_URL), and a run without
+#     semaphore_include_local_templates, all before anything is published;
+#   - the retirement runs only when SEMAPHORE_URL is exactly the destination retire sends its
+#     token to. On any other port it is skipped with a visible notice, not a failure:
+#     local_semaphore_port is a documented option, and failing there would break it.
+#
+# Production is not wired here. It keeps setup-templates.yml, and its retirements stay a manual
+# launch: "Retire Semaphore Templates (Dev)", Dry run first (platform/semaphore/README.md).
+#
+# Usage, from the repository root:
+#   SEMAPHORE_URL=http://127.0.0.1:3000 SEMAPHORE_TOKEN=... ansible-playbook \
+#     platform/semaphore/converge-local-catalog.yml -e semaphore_project_id=N \
+#     -e semaphore_inventory_id=N -e semaphore_environment_id=N -e semaphore_include_local_templates=true
+
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: ../playbooks/refuse-internal-extra-vars.yml
+
+- name: "Refuse anything but a local controller"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: "Require a loopback SEMAPHORE_URL, no semaphore_url override, and the local-template flag"
+      ansible.builtin.assert:
+        that:
+          - lookup('env', 'SEMAPHORE_URL') is match('^http://(127\.0\.0\.1|localhost):[0-9]+$')
+          - semaphore_url is not defined
+          - semaphore_include_local_templates | default(false) | bool
+        fail_msg: >-
+          Refusing: the local catalog publishes local-only templates and retires templates on the
+          LOCAL Semaphore alone. SEMAPHORE_URL must be http://127.0.0.1:PORT or
+          http://localhost:PORT (it is "{{ lookup('env', 'SEMAPHORE_URL') }}"), no semaphore_url
+          extra var may override it, and semaphore_include_local_templates must be true.
+
+    - name: "Say when retirements are not applied on this controller"
+      ansible.builtin.debug:
+        msg: >-
+          Retirements NOT applied: retire-semaphore-templates.yml sends its token only to
+          http://127.0.0.1:3000, and this controller is at {{ lookup('env', 'SEMAPHORE_URL') }}.
+          Run "Retire Semaphore Templates (Dev)" in this Semaphore, Dry run first.
+      when: lookup('env', 'SEMAPHORE_URL') != 'http://127.0.0.1:3000'
+
+- name: "Publish the shared and local-only templates"
+  ansible.builtin.import_playbook: setup-templates.yml
+
+- name: "Apply the template retirements (only at the retire playbook's fixed destination)"
+  ansible.builtin.import_playbook: ../playbooks/retire-semaphore-templates.yml
+  # Imported after the publish has set facts, which the guard would find in hostvars and refuse.
+  # The flag says the guard above already covered this run (test_executor_internal_overrides.py).
+  vars:
+    _extra_var_guard_nested: true
+  when: lookup('env', 'SEMAPHORE_URL') == 'http://127.0.0.1:3000'
