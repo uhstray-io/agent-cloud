@@ -1395,13 +1395,11 @@ e61782c (2026-11-11). Its report named the branch and said it was unverified whe
 deployed site matched it. I relayed its three "conflicts" to Joe as findings and wrote them into
 the Plane brand-profile item for Zerds: the favicon still used the old accent, the docs gave the
 audience three ways, and `zerds.ai` was hard-coded although the domain was not bought. Joe asked
-for them as GitHub issues. Re-read at `origin/main` before filing: the audience is settled in
-`docs/spec/SPEC.md:34-40` (owner decision, deviation #8), and the conflicting lines sit in docs now
-archived; `CLAUDE.md:78` says `zerds.ai` is owned, and `api.zerds.ai` has been live since
-2026-11-03; only the favicon (`index.html:27`, `#00694E`) still holds, and it is already zerds-website
-issue #64. No issue was filed, and the Plane item was corrected. Why the rule did not fire: the scout
-disclosed its ref, and I read the disclosure as provenance attached to a fact, not as a reason to stop.
-The ref was a local branch, not the default branch's tip. The proposed hook would not have caught
+for them as GitHub issues. Re-read at `origin/main` before filing: the audience and the domain
+were both settled on `main`, and only the favicon still held, already tracked as an open issue in
+that repository. No issue was filed, and the Plane item was corrected. Why the rule did not fire:
+the scout disclosed its ref, and I read the disclosure as provenance attached to a fact, not as a
+reason to stop. The proposed hook would not have caught
 this: the claim reached a reply and a tracker, not a PR comment. Guard proposal, extending the
 one above: a scout brief names the ref to read (`origin/<default>` after a fetch, via `git show`
 or `git grep <ref>`), and its report states that ref and whether it equals the default branch's tip.
