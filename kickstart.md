@@ -317,9 +317,9 @@ You don't.  Semaphore does.
 
 You:
 
-1. Push your branch (only with your explicit go-ahead).
-2. Open a PR (only with your explicit go-ahead); CI runs the lint + security + test jobs.
-3. After the merge you approve (or for branch-testing), the Semaphore task template for that service is what actually pulls the repo and runs the playbook.
+1. Push your branch (the standing authorization in AGENTS.md, Branch Workflow, covers this).
+2. Open a PR into `dev` (covered the same way); CI runs the lint + security + test jobs.
+3. After the merge (or for branch-testing), the Semaphore task template for that service is what actually pulls the repo and runs the playbook.
 
 Invoke the declared Semaphore deployment template. `deploy.sh` is an internal
 container-lifecycle step consuming rendered files; it does not fetch OpenBao
@@ -357,12 +357,12 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 # 6. Commit (conventional commits, no AI attribution)
 git commit -m "feat(<scope>): <short summary>"
 
-# 7. Push and open a PR — each is user-gated: ask first
-git push -u origin feat/<short-description>   # only after explicit approval
-gh pr create                                  # only after explicit approval
+# 7. Push and open a PR into dev (the standing authorization in AGENTS.md, Branch Workflow)
+git push -u origin feat/<short-description>
+gh pr create --base dev
 ```
 
-**Wait for all PR checks to pass before merging.** This applies equally to code, plans, and docs. CodeRabbit + the three CI jobs (static analysis, security, unit tests) are gating. The unit-tests job includes the Dispatch Console's Rust checks (`Rust (console)`). Merging needs your explicit approval for that PR.
+**Wait for all PR checks to pass before merging.** This applies equally to code, plans, and docs. CodeRabbit + the three CI jobs (static analysis, security, unit tests) are gating. The unit-tests job includes the Dispatch Console's Rust checks (`Rust (console)`). A merge into `dev` goes through `scripts/merge-when-green.py` once the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold, one independent approval of the final head among them.
 
 ### Common gotchas
 

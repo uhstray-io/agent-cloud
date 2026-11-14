@@ -180,7 +180,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [20-semantic-versioning.md](../development/20-semantic-versioning.md) | PROPOSED | Semantic versioning from pull request titles: a `Version` check on every pull request, `vX.Y.Z-dev.N` tags on `dev` and `vX.Y.Z` tags plus Releases on `main`, starting at v0.13.0 (16 tags backfilled from past promotions); 1.0.0 and every later major only through an approved manual release. |
 | [21-test-suite-runtime.md](../development/21-test-suite-runtime.md) | PROPOSED | Test suite runtime and redundancy: measured CI baseline (Python core ~20 min, 11,318 Python worker-seconds), the forged-extra-var matrix reduced only where the guard reads names, fixed waits given public knobs, self-balancing pytest shards from a committed durations file, a shared playbook runner with timeouts, GNU parallel for BATS, a pre-push fast lane. |
 | [22-console-access-requests.md](../development/22-console-access-requests.md) | PROPOSED | Console access requests and the skynet iam-agent: requests become site-config pull requests, Plane membership follows Authentik groups, decisions A1–A8 and questions Q1–Q6 pending the operator |
-| [23-release-train.md](../development/23-release-train.md) | PROPOSED | Release train: the gates that enforce policy 10 (budget count, intake refusal, promotion backstop), the per-release loop, and an eight-release roadmap of the active OpenSpec changes in dependency order. |
+| [23-release-train.md](../development/23-release-train.md) | ACTIVE | Release train: the gates that enforce policy 10 (budget count, intake refusal, promotion backstop), the per-release loop, and the release roadmap of the active OpenSpec changes in dependency order. |
 
 ### Archived Plans
 

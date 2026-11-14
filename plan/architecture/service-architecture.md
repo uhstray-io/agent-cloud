@@ -113,7 +113,7 @@ flowchart TD
     CADDY ~~~ NB
     CA ~~~ O11Y
     DNS ~~~ PVE
-    SKYNET -.->|"launch request (wired; no launch yet)"| LG
+    SKYNET -.->|"launch request (wired)"| LG
     LG -->|"asks OPA for a decision"| OPA
     LG -->|"Semaphore task on allow"| SEM
     AI --> GR --> AUTO --> PLAT
@@ -139,9 +139,9 @@ the service; the network path itself is in the companion document. The runtime c
 | agentgateway | Inference edge gateway with per-identity keys and budgets | AI | Podman, gateway + its own Postgres | API key per identity; UI by gateway OIDC (admins) | LIVE since 2026-10-14 [16] | `agentgateway/context/architecture.md` |
 | OPA | Agent-action authorization (Rego) | Guardrail | Podman | None in Phase 1 (decisions, not secrets) | LIVE; production since 2026-10-29 [17] | `opa/deployment/context/architecture.md` |
 | GitHub runners | Self-hosted CI for private repos | Automation | Host service; jobs run on the host unless a job declares a rootless podman container | None (outbound only) | LIVE, two hosts [18] | `github-runner/CLAUDE.md` |
-| skynet | Orchestration API: runs the onboarding workflow, asks OPA, calls the model through agentgateway. Its launches through Semaphore are refused since svc-skynet became `guest` on 2026-10-31; its launch path is now the launch gate, and no skynet-initiated launch through it is recorded yet | AI | Podman, API + its own Postgres | agentgateway key + skynet bearer | LIVE API since 2026-10-30; no production route; Semaphore launches refused since 2026-10-31; launch gate wired, no skynet-initiated launch recorded [19][39][42] | `skynet/deployment/CLAUDE.md` |
+| skynet | Orchestration API: runs the onboarding workflow, asks OPA, calls the model through agentgateway. Its launches through Semaphore are refused since svc-skynet became `guest` on 2026-10-31; its launch path is now the launch gate | AI | Podman, API + its own Postgres | agentgateway key + skynet bearer | LIVE API since 2026-10-30; no production route; Semaphore launches refused since 2026-10-31; launch gate wired; skynet launch through it proven in local-dev, not yet in production [19][39][42] | `skynet/deployment/CLAUDE.md` |
 | Dispatch Console | Operator administration UI (Rust) | Operator app | Podman, image built on the host | Native OIDC | BUILT; a production build and start are recorded, and that deploy failed its health check; no later passing production verify is cited in the repo [20][41] | `console/deployment/CLAUDE.md` |
-| Launch gate | Only identity that asks Semaphore to launch an agent's task: authenticates the caller, checks the agent and template allowlist, asks OPA, then launches | Guardrail | Podman (deploy playbooks and templates) | Caller bearer token; agent and template checks | LIVE in production since 2026-11-09; no skynet-initiated launch recorded [39] | `launch-gate/deployment/CLAUDE.md` |
+| Launch gate | Only identity that asks Semaphore to launch an agent's task: authenticates the caller, checks the agent and template allowlist, asks OPA, then launches | Guardrail | Podman (deploy playbooks and templates) | Caller bearer token; agent and template checks | LIVE in production since 2026-11-09; skynet-initiated launch proven in local-dev, not yet in production [39] | `launch-gate/deployment/CLAUDE.md` |
 | plane-mcp | Plane's MCP server for harnesses | Auxiliary | Podman, own compose project beside Plane | API-key endpoint for service identities; OAuth endpoint for people | BUILT; production edge not in place [40] | `plane-mcp/deployment/CLAUDE.md` |
 | honcho | Memory API for team memory | Auxiliary | Rootless podman, 4 containers | JWT on `/v3`; Authentik forward_auth on `/docs` | LIVE [21] | `honcho/deployment/CLAUDE.md` |
 | Plane | Work tracker | Auxiliary | Podman (production placement unverified) | Authentik OIDC (blueprint and catalog entry in repo) | Production deploy run recorded (task 11139); live state UNVERIFIED [22][43] | `plan/development/16-plane-work-management.md` |
@@ -291,7 +291,10 @@ readable.
 flowchart LR
     SKY["skynet"] -->|"policy decision"| OPA["OPA"]
     SKY -->|"model calls"| AGW["agentgateway"]
-    SKY -.->|"launch templates, refused since 2026-10-31"| SEM["Semaphore"]
+    SKY -.->|"direct launches, refused since 2026-10-31"| SEM["Semaphore"]
+    SKY -.->|"launch request (wired)"| LG["launch gate"]
+    LG -->|"policy decision"| OPA
+    LG -->|"Semaphore task on allow"| SEM
     AGW -->|"completions"| VLLM["vLLM"]
     AGW -->|"hosted models, when declared"| OR["OpenRouter"]
     AGW -->|"budgets"| AGWDB["gateway Postgres"]
@@ -311,8 +314,9 @@ Notable edges, each recorded where it lives:
   svc-skynet became `guest`, so its Semaphore launches are refused [19]. skynet's own client asks OPA before
   each launch it makes, and Semaphore does not ask OPA. skynet's launch path is the launch gate, which asks
   OPA itself and creates the Semaphore task only on an allow. The gate has been live in production since
-  2026-11-09, and skynet's wiring to it is deployed, but no skynet-initiated launch through it is recorded
-  yet (OpenSpec change `skynet-launch-containment`, task 4.4 open) [39].
+  2026-11-09, and skynet's wiring to it is deployed. A skynet-initiated launch through the gate is
+  proven in local-dev (OpenSpec change `skynet-launch-containment`, task 4.4, local task 14202) but not
+  yet in production [39].
 - **agentgateway to OpenRouter.** A model declared with `provider: openrouter` is served through the
   gateway with a key only the gateway holds; it is optional and absent unless declared [16].
 - **Semaphore to NetBox.** A device creation proposed by skynet and allowed by OPA is executed by
@@ -331,6 +335,7 @@ sequenceDiagram
     participant SK as skynet (AI layer)
     participant GW as agentgateway
     participant OPA as OPA (guardrail)
+    participant LG as launch gate (guardrail)
     participant SEM as Semaphore (automation)
     participant T as Target VM
     H->>SK: start a run for a declared service
@@ -342,7 +347,10 @@ sequenceDiagram
         SK-->>H: proposal recorded, nothing executed
     else allowed
         OPA-->>SK: allow
-        SK->>SEM: launch the step's template
+        SK->>LG: launch request (caller token, exact values)
+        LG->>OPA: may this launch run, with these values?
+        OPA-->>LG: allow (a deny refuses the request, and no task is created)
+        LG->>SEM: launch the step's template
         SEM->>T: idempotent playbook run
         SEM-->>SK: step result
     end
@@ -351,14 +359,15 @@ sequenceDiagram
 The five agent roles that may act are infrastructure, security, observability, service and network, each an
 OPA identity; destructive actions also need `human_approved` [31]. In production this path is not
 connected yet: skynet has no production route [19][32].
-The OPA decision in the diagram is the one skynet's own client makes; Semaphore does not ask OPA. Direct
+skynet's client asks OPA first; the gate asks again before it creates the task. Semaphore does not ask OPA. Direct
 launches by svc-skynet are refused while it is `guest` (since 2026-10-31) [42]: a guest has no run permission,
 and the launch probe expects HTTP 403 (`platform/playbooks/provision-skynet-semaphore-access.yml`). Launches
 through the launch gate use a different identity, svc-launch-gate, which holds `task_runner` [39], so that refusal
 does not apply to them. The gate's allow path was probed by `Probe launch-gate (Dev)` task 14117 [39]. The
 server-side gate that asks OPA
-before each agent launch has been live in production since 2026-11-09; no skynet-initiated launch through it
-is recorded yet (OpenSpec change `skynet-launch-containment`, task 4.4 open) [39].
+before each agent launch has been live in production since 2026-11-09. A skynet-initiated launch through it is
+proven in local-dev (OpenSpec change `skynet-launch-containment`, task 4.4, local task 14202) but not yet in
+production [39].
 
 ### 8. The service deployment workflow
 
@@ -643,7 +652,7 @@ document; for long, frequently edited documents the section name is given as wel
 36. `plan/development/17-dispatch-console.md:30-60` (Decisions D1 to D21)
 37. `platform/playbooks/deploy-{o11y,skynet,agentgateway,console,postiz,erpnext}.yml`, each playbook's `_shared_reads`
 38. `platform/services/opa/deployment/policies/agentcloud/data.json:71-160` (infra-, security-, o11y-, service- and network-agent identities)
-39. `platform/services/launch-gate/deployment/CLAUDE.md:1-12` (status and the gate's request path); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
+39. `platform/services/launch-gate/deployment/CLAUDE.md:1-36` (the gate's request path and its status); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
 40. `platform/services/plane-mcp/deployment/CLAUDE.md:104` ("Production edge (not yet in place)"); `AGENTS.md`, Sub-directory Documentation (plane-mcp row)
 41. `platform/services/console/deployment/CLAUDE.md:196-200` (credentials; production order; the production start and its health probe)
 42. `AGENTS.md`, Deployment Status, skynet entry (prod, 2026-10-30); `platform/services/skynet/deployment/CLAUDE.md:10-16` (launch steps refused while svc-skynet is guest); `docs/MISTAKES.md` line 437 (the 2026-10-31 launcher narrowing; a separate Semaphore project is not a security control)
@@ -654,6 +663,7 @@ document; for long, frequently edited documents the section name is given as wel
 
 | Date | Change |
 |---|---|
+| 2026-11-12 | skynet-initiated launch through the launch gate recorded as proven in local-dev (task 4.4), not yet in production, in the catalog rows and the skynet and AI-path prose; the runtime and AI-path diagrams now route skynet's launches through the gate, which asks OPA again before it creates the task |
 | 2026-11-10 | Removed retired platforms from the catalog, diagrams, edges, decision criteria, phases, secrets map and references |
 | 2026-11-09 | Corrected the launch gate to live in production since 2026-11-09 across the diagrams, the catalog, the skynet and AI-path prose, the security notes and the references; OPA's status moved from local-dev to production (since 2026-10-29); the agentgateway tier moved to AI; the collector's `(Dev)` schedule wording aligned with section 8; the Target Outcome note aligned with the same wording |
 | 2026-11-05 | Corrected the conformance collector's wording: its `(Dev)` template declares a 15-minute schedule in `platform/semaphore/templates.yml` (no main-bound copy published), so it is no longer described as hand-launched; whether the schedule is live in production is not verified from this repository; collector edges remain dashed |

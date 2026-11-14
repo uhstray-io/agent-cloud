@@ -53,7 +53,7 @@
   vars:
     # podman-restart.service, rootful and rootless alike, starts only `always` containers at
     # boot, so `unless-stopped` stays down after a reboot; Docker honours `always` too. The one
-    # exception the compose guard allows (test_restart_policy.bats) is "no" for a one-shot init
+    # exception the compose guard allows (suite/restart_policy.rs) is "no" for a one-shot init
     # container: accepted only from a container that DECLARES itself one-shot (label
     # agent-cloud.one-shot=true, which the guard requires on every such service) and has
     # exited 0. Neither alone is enough: a long-running "no" container can exit 0, and a

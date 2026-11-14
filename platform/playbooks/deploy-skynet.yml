@@ -113,28 +113,16 @@
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
     _skynet_server_leaf: "{{ skynet_server_leaf | default('skynet-server') | string }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
-    # Local mode follows the hosts of this play, not a variable: it holds only when every host is named
-    # <name>-local. ansible_play_hosts_all is set by the run and -e cannot set it (tasks/clean-service.yml:85-89
-    # relies on the same rule). inventory_hostname is not used: -e can set it. The mode check, the first
-    # refusal in Phase 1, refuses a local_mode that disagrees with the hosts.
-    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
-    # The public variable, read once: only the mode check below compares it with the hosts.
-    _skynet_mode_set: "{{ local_mode | default('unset') }}"
+    # Local mode follows the inventory, not a variable: local-dev is every host but localhost, each named <name>-local.
+    # It is read from groups (filter_plugins/local_dev.py), which -e cannot set. The shared check below refuses a
+    # local_mode that disagrees with it.
+    _skynet_local: "{{ groups['all'] | local_dev_inventory }}"
 
   tasks:
-    # The first task: the hosts decide local mode (_skynet_local), so a local_mode that disagrees with them,
-    # or a local-dev host with none, is refused before the transport guard and anything below.
-    - name: "Refuse a local_mode that disagrees with the hosts' identity"
-      ansible.builtin.assert:
-        that:
-          - _skynet_mode_set != 'unset' or not _skynet_local
-          - _skynet_mode_set == 'unset' or (_skynet_mode_set | bool) == _skynet_local
-        fail_msg: >-
-          Refusing: local_mode is {{ _skynet_mode_set }}, but the hosts of this play are
-          {{ 'all' if _skynet_local else 'not all' }} local-dev hosts (named <service>-local).
-          The mode follows the hosts, not the variable, and a local-dev inventory sets local_mode: true
-          (the shared tasks still read it). Nothing changed.
-        quiet: true
+    # The first task: the shared check refuses a local_mode that disagrees with the inventory, before the transport
+    # guard and anything below.
+    - name: "Refuse a local_mode that disagrees with the inventory's identity"
+      ansible.builtin.include_tasks: tasks/assert-local-mode-identity.yml
 
     # Read-only check of the credential path before anything is written: a refused
     # run must not have already placed the repo or written a secret.
@@ -334,34 +322,11 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
-    # Production with the HTTPS listener: keep-id (compose.prod-tls.yml) needs podman 4.3 or later. This read runs
-    # after placement, because placement installs podman (tasks/place-monorepo.yml), so a fresh VM has one to read.
-    # Read-only. Undeclared, and in local mode, neither task runs.
-    - name: "Read the podman version for keep-id (production)"
-      ansible.builtin.command:
-        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
-      register: _skynet_podman_version
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      when:
-        - not _skynet_local
-        - _skynet_tls
-
-    - name: "Refuse a production run on a podman older than 4.3 (userns keep-id)"
-      ansible.builtin.assert:
-        that:
-          # The read must succeed first: a missing podman prints no version, and the comparison would then fail on ''.
-          - _skynet_podman_version.rc | default(1) == 0
-          # keep-id is a podman option: another engine's version number would pass the comparison.
-          - (container_engine | default('podman')) == 'podman'
-          - _skynet_podman_version.stdout is version('4.3', '>=')
-        fail_msg: >-
-          Production skynet needs podman 4.3 or later for the userns keep-id mapping (compose.prod-tls.yml), which the
-          HTTPS listener requires. This host runs
-          {{ container_engine | default('podman') }} {{ _skynet_podman_version.stdout | default('(no version read)') | trim }}
-          (read rc {{ _skynet_podman_version.rc | default('unset') }}). Run Install Podman on this host, then re-run this deploy.
-        quiet: true
+    # keep-id (compose.prod-tls.yml): tasks/assert-podman-keep-id.yml. Undeclared, and in local mode, it does not run.
+    - name: "Refuse a podman older than 4.3 for userns keep-id"
+      ansible.builtin.include_tasks: tasks/assert-podman-keep-id.yml
+      vars:
+        _apk_for: "Production skynet's HTTPS listener (compose.prod-tls.yml)"
       when:
         - not _skynet_local
         - _skynet_tls
@@ -439,7 +404,7 @@
     # Same resolution as Phase 1, so the guard checks the endpoint the play actually uses.
     _bao_url: "{{ openbao_addr | default(lookup('env', 'OPENBAO_ADDR'), true) | default('', true) }}"
     # Same definition as Phase 1 (_skynet_local): deploy.sh's LOCAL_MODE is set from it.
-    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    _skynet_local: "{{ groups['all'] | local_dev_inventory }}"
 
   tasks:
     - name: "Transport guard: the OpenBao endpoint must not be cleartext public"
@@ -525,8 +490,8 @@
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     _skynet_tls: "{{ skynet_tls | default(false) | bool }}"
-    # Same definition as Phase 1 (_skynet_local): the probes take the local endpoints only for a -local host.
-    _skynet_local: "{{ (ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\Z') | list | length == 0) }}"
+    # Same definition as Phase 1 (_skynet_local): the probes take the local endpoints only on a local-dev inventory.
+    _skynet_local: "{{ groups['all'] | local_dev_inventory }}"
     _skynet_tls_name: "{{ skynet_tls_server_name | default('skynet.' ~ (dns_site | default('')) ~ '.' ~ (dns_zone | default(''))) | string }}"
     _skynet_bind: "{{ skynet_bind | default('127.0.0.1') | string }}"
     _skynet_port: "{{ skynet_port | default(8443) | string }}"

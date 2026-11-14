@@ -19,8 +19,10 @@ All changes go through feature branches and pull requests — never push directl
 2. Make your changes            edit files, add tests
 3. Update documentation         README.md, relevant CLAUDE.md, sub-READMEs
 4. Run linters locally          see "Pre-PR Checklist" below
-5. Run /simplify + /security-review  (if using Claude Code)
-6. Push the branch              git push -u origin feat/<description>
+5. Run /simplify + /security-review  (commit any fixes they make, then run both again until a
+                                round changes nothing)
+6. Push the branch              git push -u origin feat/<description>, then post each pass as a
+                                commit status on the pushed head (AGENTS.md, Branch Workflow step 5)
 7. Create a PR                  gh pr create
 8. Wait for CI checks           lint, security, test jobs must pass
 9. Address review findings      CodeRabbit + human review
@@ -150,8 +152,17 @@ it is collectable, with the same test paths, working directory and `PYTHONPATH` 
 via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
 so you do not need to remember them.
 
-`bats platform/tests/` runs the same files as CI, serially; CI runs them with `--jobs 4
---no-parallelize-within-files` (plan 21, D4). Both suites run on the locked environment
+The hook runs a **fast lane**, not the full suite (plan 21, D6). pytest runs, by whole file,
+every test file the push changes against `<remote>/dev`, every file holding a test the
+durations file (`platform/tests/test_durations.json`) does not record, and every file whose
+recorded tests all ran under 0.25 s in CI with none skipped (`PYTEST_FAST=1`, selected in
+the root `conftest.py`). BATS runs in full, beside pytest, with `--jobs 4
+--no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it), each
+job run through `platform/tests/bin/parallel-job-shell` (GNU parallel starts its jobs with
+SIGALRM ignored, which breaks Ansible task timeouts; the wrapper restores it), and serially
+otherwise. When the pushed commit has no merge base with `<remote>/dev`, the hook
+runs the full Python suite and says why. A change to a playbook or helper therefore runs only
+the fast and changed test files here; CI runs everything. Both suites run on the locked environment
 when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
 `PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
 outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
@@ -238,6 +249,30 @@ fail: it may go down and may not go up. A second check in the same file keeps a 
 list of the `grep -v ... -q` form (every spelling, including those flags handed to
 `assert_grep`/`refute_grep`) and of `<assertion> || true`, and fails on any new one
 ("no new grep -v -q or || true assertions outside the ratchet").
+
+## Writing Rust Tests
+
+The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
+([plan 24](plan/development/24-rust-test-platform.md)). The rules are
+`plan/architecture/03-testing-ci-quality.md` Part 1. In short:
+
+- One module per area in `platform/tests/suite/`, declared in `suite/main.rs`.
+- List each new module once in `platform/tests/areas.yml`: under an area's tier, or under `always`
+  for the security set. The tier decides which lanes run it (plan 24, D3). The repository test
+  `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
+- Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
+  bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
+  anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.
+- Start a process only through `agent_cloud_tests::process`: a scrubbed environment and a
+  30-second bound.
+- Arrange, Act, Assert; several input cases are one test over a table.
+- Mutate the guarded code once and watch the test fail before you merge it.
+
+```bash
+cd platform/tests
+cargo nextest run                                  # everything
+cargo nextest run -E 'test(/^restart_policy::/)'  # one area
+```
 
 ## Writing Python Tests
 

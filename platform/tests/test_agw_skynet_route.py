@@ -442,17 +442,20 @@ def test_the_transport_check_runs_before_secrets_and_only_while_the_route_is_on(
 
 
 @pytest.mark.parametrize(
-    "backend, local, passes",
+    "backend, local, host, passes",
     [
-        ("skynet.example.com:8080", False, False),  # a public name: the bearer would cross in cleartext
+        ("skynet.example.com:8080", False, "gw", False),  # a public name: the bearer would cross in cleartext
         # A synthetic RFC1918 address, built from parts so no literal sits in the repo.
-        (".".join(["10", "20", "30", "40"]) + ":8080", False, True),
-        ("127.0.0.1:8080", False, True),  # loopback
-        ("skynet:8080", True, True),  # a container name on the local podman network
-        ("skynet:8080", False, False),  # a bare name outside local-dev can resolve to a public FQDN
+        (".".join(["10", "20", "30", "40"]) + ":8080", False, "gw", True),
+        ("127.0.0.1:8080", False, "gw", True),  # loopback
+        ("skynet:8080", True, "gw-local", True),  # a container name on the local-dev podman network
+        # local_mode alone is not local-dev: the inventory must be one (AC-696), so a forged
+        # `-e local_mode=true` on a production inventory does not admit a bare name.
+        ("skynet:8080", True, "gw", False),
+        ("skynet:8080", False, "gw", False),  # a bare name outside local-dev can resolve to a public FQDN
     ],
 )
-def test_a_cleartext_backend_is_refused_unless_private(tmp_path, backend, local, passes):
+def test_a_cleartext_backend_is_refused_unless_private(tmp_path, backend, local, host, passes):
     hv = {"agw_skynet_route_enabled": True, "agw_skynet_backend": backend, "local_mode": local}
-    r = _ansible(tmp_path, hv, [_transport_task()])
+    r = _ansible(tmp_path, hv, [_transport_task()], host=host)
     assert (r.returncode == 0) is passes, r.stdout[-2000:]

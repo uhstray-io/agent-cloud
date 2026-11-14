@@ -433,6 +433,36 @@ def test_endpoint_probe_success_readiness_uses_the_unchanged_predicate():
     assert _expression(task["until"], context)
 
 
+def test_endpoint_absent_readiness_reads_the_absent_series_as_zero_with_its_labels():
+    # The absent drill's readiness query is absent_over_time(probe selector [30s]) - 1: one series
+    # carrying the selector's own labels, value 0, once the probe series has stopped. The unchanged
+    # predicate must accept exactly that shape and reject an empty answer (the series still present).
+    probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
+    task = _task(probe, "Wait for the declared failed scrape")
+    absent_series = {
+        "metric": {
+            "job": "o11y-availability",
+            "instance": ENDPOINT_TARGET,
+            "target_id": ENDPOINT_TARGET,
+            "service": ENDPOINT_SERVICE,
+            "cluster": "prod-a",
+            "environment": "prod",
+        },
+        "value": ["0", "0"],
+    }
+    context = {
+        "_probe_scrapes": {"rc": 0, "stdout": json.dumps({"data": {"result": [absent_series]}})},
+        "_probe_expected_instances": [ENDPOINT_TARGET],
+        "_drill_cluster": "prod-a",
+        "_drill_environment": "prod",
+        "expected_instance": ENDPOINT_TARGET,
+        "o11y_grouped_probe": True,
+    }
+    assert _expression(task["until"], context)
+    context["_probe_scrapes"]["stdout"] = json.dumps({"data": {"result": []}})
+    assert not _expression(task["until"], context)
+
+
 def test_endpoint_discord_receipt_with_one_instance_needs_instance_lines_off():
     probe = _tasks("platform/playbooks/tasks/o11y-alert-probe.yml")
     wait = _task(probe, "Wait for the matching Discord webhook message")

@@ -69,6 +69,8 @@ See proposal.md (Why). Facts that shape the approach:
    policy can bind decisions to what actually runs; the agent field is the one the caller's token is
    allowed to act as. Caller-supplied `proposal` and `context` are forwarded unchanged (OPA judges them).
    A task in this change confirms the current rego ignores the added field (opa test stays green).
+   *2026-11-12 note:* that held when task 1.2 ran; the rego has since bounded some `settings` keys on agent
+   launches (`agent_actions.rego`, "Agent launches: survey input bounds").
 7. **Caller auth:** one 48-character bearer per caller, generated once by the gate's deploy into
    `secret/services/launch-gate:caller_<name>_token`; skynet's deploy shared-reads its own
    (`caller_skynet_token`). The caller→agents map is a deploy default in the repo
@@ -88,9 +90,22 @@ See proposal.md (Why). Facts that shape the approach:
 11. **Placement** (Joseph, 2026-10-31): own VM `launch_gate_svc`, 2 vCPU / 2 GB, firewall admits the
     API port from `skynet_svc` and `console_svc` only; the gate's VM is added to OPA's
     `firewall_allow_groups`.
+12. **Local-dev's working-tree branch** (Joseph, 2026-11-09): local-dev's repository record declares `HEAD`,
+    the developer's checked-out tree, and OPA allows agent launches only from `main` or `dev`, so a local gate
+    refused every agent launch (found by the local skynet launch probe, local task 14161). In local mode only,
+    the gate reads `HEAD` as `dev` before pinning `service_branch` and asking OPA, which matches skynet's local
+    catalog. Rejected, untested: declaring the local record as `dev` (`local_repo_branch` in `bootstrap-local-dev.yml`),
+    on the concern that Semaphore would then check out `dev` in the read-only in-place mount and stop running the
+    working tree; and proving 4.4 in production instead, which
+    would leave local-dev unable to launch any agent task. Outside local mode `HEAD` still reaches OPA and is
+    refused.
 
 ## Risks / Trade-offs
 
+- [In local mode OPA judges the working tree as `dev`] → Decision 12: a local gate reads the record's `HEAD`
+  as `dev`, so any checked-out branch or uncommitted edit passes OPA's main-or-dev rule. Accepted for
+  local-dev only: `local_mode` comes from the deploy's host names, a disagreeing extra var is refused, and
+  outside local mode OPA refuses `HEAD`.
 - [The gate's token can still launch any project template] → The gate is a ~500-line service on its own
   VM with one open port, no shell-outs, no templating of inputs and no other workloads; its token never
   leaves OpenBao and the gate's `.env`.

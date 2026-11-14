@@ -245,7 +245,7 @@ PY
 
 # ── Deploy playbook: refusals (behavioural) ──────────────────────────────────
 
-@test "skynet: the nineteen refusals are present as named assert tasks; eighteen sit before the repo is placed, and the podman refusal follows placement" {
+@test "skynet: the seventeen refusals are present as named assert tasks, all before the repo is placed; the local-mode check is the shared include, first in Phase 1; the keep-id check is a shared include after placement" {
   local refusals
   refusals=$(python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -257,9 +257,20 @@ names = [t["name"] for t in play1["tasks"] if "ansible.builtin.assert" in t]
 print("\n".join(names))
 PY
 )
-  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 19 ]
-  # The mode check is the first refusal: it compares the public local_mode with the hosts before any other input is checked.
-  assert_grep -qx "Refuse a local_mode that disagrees with the hosts' identity" <<<"$refusals"
+  [ "$(grep -c '^Refuse ' <<<"$refusals")" -eq 17 ]
+  # The mode check is not an assert task here: it is the shared include. It is the first task of Phase 1.
+  refute_grep -qx "Refuse a local_mode that disagrees with the inventory's identity" <<<"$refusals"
+  first=$(python3 - "$PLAYBOOK" <<'PY'
+import sys
+import yaml
+
+plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
+play1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
+t = play1["tasks"][0]
+print(t.get("name"), t.get("ansible.builtin.include_tasks"), "when" in t)
+PY
+)
+  [ "$first" = "Refuse a local_mode that disagrees with the inventory's identity tasks/assert-local-mode-identity.yml False" ]
   assert_precedes "$PLAYBOOK" 'Refuse a local_mode that disagrees' 'Refuse skynet_image unless'
   # It is the first task of Phase 1, ahead of the transport guard.
   assert_precedes "$PLAYBOOK" 'Refuse a local_mode that disagrees' 'Transport guard: the OpenBao endpoint'
@@ -285,12 +296,10 @@ PY
   assert_grep -qx 'Refuse a TLS deploy whose internal_leaves does not declare the skynet server leaf for this host' <<<"$refusals"
   assert_grep -qx 'Refuse a TLS production skynet_bind unless it is declared as one non-wildcard, non-loopback IPv4 address' <<<"$refusals"
   assert_grep -qx 'Refuse skynet_port unless it is a whole port number from 1024 to 65535 and not skynet_publish_port' <<<"$refusals"
-  assert_grep -qx 'Refuse a production run on a podman older than 4.3 (userns keep-id)' <<<"$refusals"
   assert_precedes "$PLAYBOOK" 'Refuse a TLS deploy whose internal_leaves' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse a TLS production skynet_bind unless' 'tasks/place-monorepo\.yml'
   assert_precedes "$PLAYBOOK" 'Refuse skynet_port unless it is a whole port' 'tasks/place-monorepo\.yml'
-  assert_precedes "$PLAYBOOK" 'Place the monorepo \+ ensure podman/compose' 'Read the podman version for keep-id'
-  assert_precedes "$PLAYBOOK" 'Refuse a production run on a podman older' 'tasks/manage-secrets\.yml'
+  assert_precedes "$PLAYBOOK" 'tasks/assert-podman-keep-id\.yml' 'tasks/manage-secrets\.yml'
   # The svc-skynet token has no refusal here: it is an existing secret, and manage-secrets refuses
   # the run by name after the placement and before any OpenBao write (the Deploy console precedent).
   refute_grep -qiE 'semaphore (api )?token' <<<"$refusals"
@@ -323,6 +332,7 @@ PY
 extract_refusals() {
   python3 - "$PLAYBOOK" "$BATS_TEST_TMPDIR" <<'PY'
 import json
+import os
 import sys
 import yaml
 
@@ -333,12 +343,22 @@ tasks = [
     t for t in play1["tasks"]
     if "ansible.builtin.assert" in t and t["name"].startswith("Refuse ")
 ]
-if len(tasks) != 19:
-    sys.exit(f"expected 19 refusal asserts in Phase 1, found {len(tasks)}")
+if len(tasks) != 17:
+    sys.exit(f"expected 17 refusal asserts in Phase 1, found {len(tasks)}")
+# The local-mode check is the shared include and the first Phase 1 task. Its path is relative to the playbook, but the
+# extracted file lives in the test's tmpdir, so the copy names the shared file by its absolute path.
+first = play1["tasks"][0]
+inc = first.get("ansible.builtin.include_tasks")
+if not inc or first["name"] != "Refuse a local_mode that disagrees with the inventory's identity":
+    sys.exit("the first Phase 1 task is not the shared local-mode identity check")
+shared = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(src)), inc))
+if not os.path.isfile(shared):
+    sys.exit(f"shared identity check not found at {shared}")
+mode_check = {"name": first["name"], "ansible.builtin.include_tasks": shared}
 # The play's own vars come too: the TLS refusals read the _skynet_* names Phase 1 defines.
 # "all", not "localhost": the -i host is the one the run uses (skynet-local for local mode; MISTAKES 2.21).
 play = [{"name": "extracted refusals", "hosts": "all", "connection": "local",
-         "gather_facts": False, "vars": play1.get("vars", {}), "tasks": tasks}]
+         "gather_facts": False, "vars": play1.get("vars", {}), "tasks": [mode_check] + tasks}]
 with open(f"{out}/refusals.yml", "w", encoding="utf-8") as fh:
     yaml.safe_dump(play, fh, sort_keys=False)
 base = {
@@ -351,8 +371,6 @@ base = {
     "skynet_model": "test-model",
     # Local mode skips the production refusals, so the baseline needs no CA host and no OPA address.
     "local_mode": True,
-    # The podman version the production check reads (deploy-skynet.yml). A stub, so no test needs a podman.
-    "_skynet_podman_version": {"rc": 0, "stdout": "4.9.3"},
 }
 with open(f"{out}/base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
@@ -569,28 +587,28 @@ prod_accepted() {
   [ "$status" -eq 0 ]
 }
 
-# Local mode follows the hosts, as tasks/clean-service.yml decides it: `-e local_mode=true` on a production host is not
+# Local mode follows the inventory, as the shared identity check decides it: `-e local_mode=true` on a production host is not
 # local mode, and `-e inventory_hostname=` cannot make a production host read as a -local one. A local_mode that
-# disagrees with the hosts is refused by the first Phase 1 check, so no production refusal is reached.
-@test "skynet: a local_mode that disagrees with the hosts is refused first; -e inventory_hostname cannot forge a -local host" {
+# disagrees with the inventory is refused by the first Phase 1 check, so no production refusal is reached.
+@test "skynet: a local_mode that disagrees with the inventory is refused first; -e inventory_hostname cannot forge a -local host" {
   command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
   extract_refusals
   printf 'skynet-prod ansible_connection=local\n' > "$BATS_TEST_TMPDIR/forged-prod.ini"
-  # (a) local_mode=true on a production host: the hosts are not all local-dev, so the mode check refuses it.
+  # (a) local_mode=true on a production inventory: it is not local-dev, so the shared check refuses it.
   run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true
   [ "$status" -ne 0 ]
-  assert_contains "$output" "The mode follows the hosts"
-  # (b) the same run with inventory_hostname forged to a -local name: the play's hosts still decide, so it is refused the same way.
+  assert_contains "$output" "The mode follows the inventory, not the variable"
+  # (b) the same run with inventory_hostname forged to a -local name: the inventory still decides, so it is refused the same way.
   run ansible-playbook -i "$BATS_TEST_TMPDIR/forged-prod.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=true -e inventory_hostname=skynet-local
   [ "$status" -ne 0 ]
-  assert_contains "$output" "The mode follows the hosts"
-  # (c) a -local host with local_mode=false: the hosts are local-dev, so the false disagrees and is refused.
+  assert_contains "$output" "The mode follows the inventory, not the variable"
+  # (c) a -local inventory with local_mode=false: it is local-dev, so the false disagrees and is refused.
   run ansible-playbook -i skynet-local, -c local "$BATS_TEST_TMPDIR/refusals.yml" \
     -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false
   [ "$status" -ne 0 ]
-  assert_contains "$output" "The mode follows the hosts"
+  assert_contains "$output" "The mode follows the inventory, not the variable"
   # (d) a -local host with no local_mode: refused, because the shared tasks this play includes still read it.
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("local_mode"); json.dump(d, open(sys.argv[2], "w"))' \
     "$BATS_TEST_TMPDIR/base.json" "$BATS_TEST_TMPDIR/base-unset.json"
@@ -599,15 +617,16 @@ prod_accepted() {
   assert_contains "$output" "a local-dev inventory sets local_mode: true"
 }
 
-@test "skynet: local mode follows the play's hosts: three _skynet_local definitions read ansible_play_hosts_all, and only the mode check reads local_mode" {
-  # Phase 1 (refusals, secrets, env), Phase 2 (deploy.sh LOCAL_MODE) and Phase 3 (probe endpoints). The hosts' identity is
-  # ansible_play_hosts_all, which -e cannot set. inventory_hostname can be forged with -e, so it must not decide the mode.
+@test "skynet: local mode follows the inventory: three _skynet_local definitions read groups, and the playbook reads local_mode only through the shared check" {
+  # Phase 1 (refusals, secrets, env), Phase 2 (deploy.sh LOCAL_MODE) and Phase 3 (probe endpoints). The inventory's identity
+  # is groups['all'], which -e cannot set. inventory_hostname can be forged with -e, so it must not decide the mode.
   [ "$(grep -c '^ *_skynet_local: ' "$PLAYBOOK")" -eq 3 ]
-  [ "$(grep -cF "(ansible_play_hosts_all | length > 0) and (ansible_play_hosts_all | reject('match', '^[A-Za-z0-9._-]+-local\\\\Z') | list | length == 0)" "$PLAYBOOK")" -eq 3 ]
+  [ "$(grep -cF "_skynet_local: \"{{ groups['all'] | local_dev_inventory }}\"" "$PLAYBOOK")" -eq 3 ]
+  refute_grep -qF 'ansible_play_hosts_all' "$PLAYBOOK"
   refute_grep -qF 'inventory_hostname is match' "$PLAYBOOK"
-  # local_mode is read once, by the mode check: a second read could disagree with it.
-  [ "$(grep -cF 'local_mode | default(' "$PLAYBOOK")" -eq 1 ]
-  assert_grep -qF "_skynet_mode_set: \"{{ local_mode | default('unset') }}\"" "$PLAYBOOK"
+  # The playbook reads local_mode nowhere itself: the shared check it includes first is the one read.
+  [ "$(grep -cF 'local_mode | default(' "$PLAYBOOK")" -eq 0 ]
+  refute_grep -qF '_skynet_mode_set' "$PLAYBOOK"
   refute_grep -q 'when:.*local_mode' "$PLAYBOOK"
   refute_grep -q 'LOCAL_MODE: .*local_mode' "$PLAYBOOK"
 }
@@ -639,7 +658,7 @@ base = {"skynet_tls": True, "dns_site": "dc1", "dns_zone": "example.test", "loca
 with open(f"{out}/tls-base.json", "w", encoding="utf-8") as fh:
     json.dump(base, fh)
 # Production: the same declaration on the production inventory host (localhost, prod_inventory), whose leaf must name it,
-# and local_mode false: the mode follows the hosts, and localhost is not a -local host.
+# and local_mode false: the mode follows the inventory, and an inventory of only localhost is not local-dev.
 prod = dict(base, local_mode=False, internal_leaves=[dict(leaf, host="localhost")])
 with open(f"{out}/tls-prod-base.json", "w", encoding="utf-8") as fh:
     json.dump(prod, fh)
@@ -745,35 +764,6 @@ tls_prod_value() {
   [ "$status" -eq 0 ]
 }
 
-# Production without the TLS listener, the object's keys applied last. Output is kept (prod_accepted discards it),
-# so a test can name the refusal that fired.
-prod_loud() {
-  prod_inventory
-  printf '%s' "$1" > "$BATS_TEST_TMPDIR/prod-loud.json"
-  ansible-playbook -i "$BATS_TEST_TMPDIR/prod-inventory.ini" "$BATS_TEST_TMPDIR/refusals.yml" \
-    -e "@$BATS_TEST_TMPDIR/base.json" -e local_mode=false -e skynet_opa_ip=203.0.113.20 \
-    -e skynet_publish_bind=203.0.113.10 -e "@$BATS_TEST_TMPDIR/prod-loud.json"
-}
-
-@test "skynet: with skynet_tls in production, a podman older than 4.3 or a failed read is refused; without TLS or in local mode the version is not checked" {
-  command -v ansible-playbook >/dev/null 2>&1 || skip "ansible-playbook not available"
-  extract_refusals
-  write_tls_leaf_cases
-  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
-  [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
-  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 1, "stdout": ""}}'
-  [ "$status" -ne 0 ]
-  assert_contains "$output" 'Refuse a production run on a podman older than 4.3'
-  run tls_prod_value '{"skynet_bind": "203.0.113.30", "_skynet_podman_version": {"rc": 0, "stdout": "4.3.0"}}'
-  [ "$status" -eq 0 ]
-  # Without the listener the version is not checked, so a plain-API production deploy on 4.2.1 is accepted as before.
-  run prod_loud '{"_skynet_podman_version": {"rc": 0, "stdout": "4.2.1"}}'
-  [ "$status" -eq 0 ]
-  run accepted _skynet_podman_version '{"rc": 0, "stdout": "4.2.1"}'
-  [ "$status" -eq 0 ]
-}
-
 @test "skynet: the HTTPS leaf is issued after the trust bundle and before the symlink, gated on skynet_tls; local re-issues only a leaf expiring within 7 days" {
   python3 - "$PLAYBOOK" <<'PY'
 import sys
@@ -806,28 +796,6 @@ assert mint_task["vars"]["_mint_reissue"] == "{{ _skynet_local and (_skynet_leaf
 fresh_task = tasks[fresh]
 assert fresh_task["ansible.builtin.command"]["argv"][2:4] == ["-checkend", "604800"], fresh_task
 assert fresh_task["when"] == ["_skynet_tls", "_skynet_local"], fresh_task.get("when")
-PY
-}
-
-@test "skynet: the production podman check reads the version after the monorepo is placed, gated on local mode and on skynet_tls" {
-  python3 - "$PLAYBOOK" <<'PY'
-import json
-import sys
-
-import yaml
-
-plays = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
-play1 = next(p for p in plays if str(p.get("name", "")).startswith("Phase 1"))
-tasks = play1["tasks"]
-names = [t.get("name", "") for t in tasks]
-read = tasks[names.index("Read the podman version for keep-id (production)")]
-check = tasks[names.index("Refuse a production run on a podman older than 4.3 (userns keep-id)")]
-assert read["register"] == "_skynet_podman_version", read
-assert read["ansible.builtin.command"]["argv"][0] == "{{ container_engine | default('podman') }}", read
-assert read["failed_when"] is False and read["check_mode"] is False, read
-assert read["when"] == ["not _skynet_local", "_skynet_tls"], read.get("when")
-assert check["when"] == ["not _skynet_local", "_skynet_tls"], check.get("when")
-assert names.index("Place the monorepo + ensure podman/compose") < names.index("Read the podman version for keep-id (production)") < names.index(check["name"]) < names.index("Manage secrets and template env file"), names
 PY
 }
 

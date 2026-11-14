@@ -106,9 +106,9 @@ flowchart LR
 - The gate checks survey values for shape and length only (`launch_gate.py`, `_survey`). OPA bounds
   two survey values, `target_service` and `target_host` (`agent_actions.rego:324-347`); nothing bounds
   `Reconcile Plane Members`' `apply` or `allow_mass_removal` (`templates.yml:2054,2060`).
-- Groups are read once at login and kept in the session for 8 hours of inactivity
-  (`server/auth.rs:195,199`, `server/mod.rs:269-277`). A revoked admin keeps console rights until the
-  session ends.
+- Groups are read once at login and kept in the session until 8 hours of inactivity or 12 hours
+  after sign-in, whichever comes first (`server/auth.rs` `callback`, `current_user`; `server/mod.rs`
+  `session_layer`; AC-747). A revoked admin keeps console rights until the session ends, at most 12 hours.
 - The console's own sign-in is tier `member` (`app-catalog.yml:117-120`), so developers and business
   users can sign in; only admins can make proposals.
 

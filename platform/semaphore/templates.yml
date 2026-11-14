@@ -721,6 +721,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate OPA even when its policies and image match (reloads the policies)"
+        type: string
+        required: false
+        default_value: "false"
 
   # The skynet orchestration API (OpenSpec service-deployment-workflow, task 3.7). Its Semaphore token is
   # the svc-skynet account's, written to secret/services/skynet by "Provision skynet Semaphore Access":
@@ -1029,9 +1035,10 @@ templates:
         required: false
 
   # Read-only allow-path probe of the launch gate (skynet-launch-containment task 5.5): one dry-run
-  # Snapshot Service Assessment (Dev) launch as the probe identity (skynet, acting as service-agent), then the
-  # same request again at once, which the gate must refuse already_running. Runs inside the gate's container;
-  # never prints the caller token. Dev-bound until promotion.
+  # Snapshot Service Assessment launch as the probe identity (skynet, acting as service-agent), then the
+  # same request again at once, which the gate must refuse already_running. The variant survey picks the
+  # (Dev) copy (default) or the base template. Runs inside the gate's container; never prints the caller
+  # token. Dev-bound until promotion.
   - name: Probe launch-gate (Dev)
     playbook: platform/playbooks/probe-launch-gate.yml
     repository: agent-cloud dev
@@ -1041,6 +1048,15 @@ templates:
         description: "Inventory group the probe snapshots, a populated <name>_svc group (blank for opa_svc)"
         type: string
         required: false
+      - name: probe_template_variant
+        title: "Template variant"
+        description: "Which Snapshot Service Assessment the probe launches: the (Dev) copy, or the base template on main"
+        type: enum
+        required: true
+        default_value: dev
+        values:
+          - { name: "Snapshot Service Assessment (Dev)", value: "dev" }
+          - { name: "Snapshot Service Assessment (base, main)", value: "base" }
 
   - name: Probe skynet Launch (Dev)
     playbook: platform/playbooks/probe-skynet-launch.yml
@@ -1387,7 +1403,8 @@ templates:
   # model input.
   - name: Snapshot Firewall
     playbook: platform/playbooks/snapshot-firewall.yml
-    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks fw-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1400,7 +1417,8 @@ templates:
   # assessment's only model input.
   - name: Snapshot Service Assessment
     playbook: platform/playbooks/snapshot-service-assessment.yml
-    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks service-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1411,7 +1429,8 @@ templates:
 
   - name: Snapshot Access
     playbook: platform/playbooks/snapshot-access.yml
-    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks access-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -2095,9 +2114,11 @@ templates:
         required: true
 
   # Sends a REAL Discord alert. The endpoint availability rule fires for the one named
-  # target, whose health probe is failed on purpose with a status code it never returns.
-  # Tell the operator before launching. A second deploy restores the projection; an
-  # interrupted run is recovered with Recover o11y Endpoint Drill (Dev).
+  # target: its health probe is either failed on purpose with a status code it never returns
+  # (fail, the default), or its probe series is removed so only its missing-data rule can fire
+  # (absent). An absent drill waits about the target's freshness window plus four minutes, so it
+  # runs longer. Tell the operator before launching. A second deploy restores the projection;
+  # an interrupted run is recovered with Recover o11y Endpoint Drill (Dev).
   - name: Drill o11y Endpoint Availability (Dev)
     playbook: platform/playbooks/drill-o11y-endpoint-availability.yml
     repository: agent-cloud dev
@@ -2115,9 +2136,18 @@ templates:
         default_value: "dev"
       - name: availability_drill_target_id
         title: "Availability target id"
-        description: "One reviewed availability target_id; its health probe is failed on purpose"
+        description: "One reviewed availability target_id; its health probe is failed or removed on purpose"
         type: string
         required: true
+      - name: availability_drill_mode
+        title: "Drill mode"
+        description: "fail: the probe reads a status code the target never returns. absent: the target's probe series is removed, so only its missing-data rule can fire"
+        type: enum
+        required: true
+        default_value: fail
+        values:
+          - { name: "Fail the probe (599)", value: "fail" }
+          - { name: "Remove the probe series", value: "absent" }
       - name: deploy_force_recreate
         title: "Force container recreate"
         description: "true to recreate every container even when inputs and images match"
@@ -3000,7 +3030,8 @@ templates:
 
   # Copies the OpenBao KV-v2 fields that platform/playbooks/vars/copied-secret-fields.yml declares, from one
   # path to another, inside the store: the value never leaves OpenBao on the way. It refuses, before any
-  # write, a copy whose source is missing or whose target holds a different value. Run the Dev variant in
+  # write, a copy whose source is missing (unless that source field is listed as retired and the target
+  # already holds a value, which is reported done) or whose target holds a different value. Run the Dev variant in
   # Semaphore's Dry run first: it lists each copy's state and writes nothing. Removing the source is a
   # separate step (Retire OpenBao Fields), run only after the copy has landed. No survey: the declaration
   # is the input.
@@ -3461,7 +3492,9 @@ templates:
   # where the gateway answers. An operator launches it with an existing release tag typed. It tags, pushes and creates no
   # Release, and it refuses a tag with no Release. Check mode prints the new notes and rewrites nothing. No schedule: a
   # refresh is a one-off correction, and a schedule cannot answer the survey. Dev-bound for the reason the two templates
-  # above give.
+  # above give. The optional release_notes_from_task publishes a reviewed check run's printed notes exactly, instead of
+  # generating new ones (the run must be a successful check-mode run of this template for the same tag; the playbook
+  # checks the id's form, and tasks/release-notes-from-task.yml's helper checks the run itself).
   - name: Refresh Release Notes (Dev)
     playbook: platform/playbooks/release-version.yml
     repository: agent-cloud dev
@@ -3471,6 +3504,11 @@ templates:
         description: "An existing release tag, for example v0.14.0. Rewrites that GitHub Release's notes in the categorised format; check mode prints the new notes and changes nothing."
         type: string
         required: true
+      - name: release_notes_from_task
+        title: "Publish a reviewed check run (task id)"
+        description: "Optional. The id of a successful check-mode run of this template for the same tag; its printed notes are published exactly, instead of generating new ones."
+        type: integer
+        required: false
 
   # The Dispatch Console's monthly credential rotation (plan 17, D27): a new secret_id for the console AppRole (its
   # role_id is unchanged), the Grafana Viewer token renewed under its 30-day threshold, a redeploy that carries the new

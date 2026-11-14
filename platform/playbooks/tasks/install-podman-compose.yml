@@ -97,7 +97,7 @@
     - podman_compose_version is defined
     - ansible_system == 'Linux'
     # Local-dev runs inside the Semaphore container (no sudo, no apt), whose own composer is used.
-    - not (local_mode | default(false) | bool)
+    - not (groups['all'] | local_dev_inventory)
   vars:
     # One entry per release a caller may ask for: version -> the wheel's sha256 on PyPI.
     _podman_compose_wheels:
