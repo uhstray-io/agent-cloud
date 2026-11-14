@@ -758,14 +758,17 @@
         - not ansible_check_mode
         - "'Status: active' not in _fw_state.stdout or 'deny (incoming)' not in _fw_state.stdout"
 
-    # allow, unless an enforced outbound allowlist is declared (firewall_egress_mode).
-    - name: "Default outgoing policy"  # noqa: command-instead-of-module
-      ansible.builtin.command: "ufw default {{ _out_policy }} outgoing"
+    # An enforced outbound allowlist denies outgoing only inside "Prove the enforced outbound
+    # allowlist" below, after the fresh SSH handshake has passed, so a run that stops before
+    # the probes never leaves outgoing denied and unproven.
+    - name: "Default-allow outgoing"  # noqa: command-instead-of-module
+      ansible.builtin.command: "ufw default allow outgoing"
       register: _dout
       changed_when: "'changed' in _dout.stdout"
       when:
         - not ansible_check_mode
-        - "'Status: active' not in _fw_state.stdout or (_out_policy ~ ' (outgoing)') not in _fw_state.stdout"
+        - not (_egress_enforce | bool)
+        - "'Status: active' not in _fw_state.stdout or 'allow (outgoing)' not in _fw_state.stdout"
 
     - name: "Enable UFW"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw --force enable"
@@ -794,12 +797,22 @@
     # TCP connect from the target (name resolution included), so a missing DNS, port or
     # address in the allowlist fails here instead of surfacing later as a service that quietly
     # cannot reach its licence server or API. A failure restores `default allow outgoing` and
-    # fails the run: the rules stay, only the default deny is withdrawn.
+    # fails the run: the rules stay, only the default deny is withdrawn. The deny is applied
+    # here, over the connection the SSH verify above just proved, so it and the probes share
+    # this rescue. Denying outgoing cannot cut that connection: ufw's before.rules accepts
+    # RELATED,ESTABLISHED in ufw-before-output. Not covered: the control connection lost for
+    # another reason mid-probe, which no Ansible rescue can reach.
     - name: "Prove the enforced outbound allowlist"
       when:
         - not ansible_check_mode
         - _egress_enforce | bool
       block:
+        - name: "Default-deny outgoing"  # noqa: command-instead-of-module
+          ansible.builtin.command: "ufw default deny outgoing"
+          register: _dout_deny
+          changed_when: "'changed' in _dout_deny.stdout"
+          when: "'Status: active' not in _fw_state.stdout or 'deny (outgoing)' not in _fw_state.stdout"
+
         - name: "Reach each declared probe from the host"
           ansible.builtin.wait_for:
             host: "{{ item.host }}"
@@ -831,7 +844,8 @@
       check_mode: false
       when: >-
         _fw_add_ssh is changed or _fw_add is changed or _fwprune is changed
-        or _din is changed or _dout is changed or _en is changed or _fw_audit_moved is changed
+        or _din is changed or _dout is changed or _dout_deny is changed or _en is changed
+        or _fw_audit_moved is changed
 
     - name: "Report"
       ansible.builtin.debug:

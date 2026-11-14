@@ -508,7 +508,7 @@ def test_an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added
     r, states = _run_many(tmp_path, hosts)
     assert r.returncode != 0
     for name in bad:
-        assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
+        assert re.search(rf"\b{re.escape(name)}\s*:.*failed=1", r.stdout), name
         assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], name
         assert states[name] is None, name  # the stub never ran a write: no state file
     assert re.search(r"\bgood\s*:.*failed=0", r.stdout), r.stdout
@@ -603,6 +603,30 @@ def test_enforce_denies_outgoing_drops_the_audit_rule_and_passes_its_probe(tmp_p
     assert _verdict(r)["errors"] == []
 
 
+def test_enforce_denies_outgoing_only_after_enabling_and_converges(tmp_path):
+    # From an inactive host: the deny lands inside the rescued probe block, after `ufw --force
+    # enable` and the SSH verify, so a run that stops before the probes never leaves outgoing
+    # denied and unproven. A second run changes nothing.
+    listener = _listening()
+    enforce = {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
+               "firewall_egress_probes": [{"host": "127.0.0.1", "port": listener.getsockname()[1]}]}
+    try:
+        r, state = _run(tmp_path, enforce)
+        assert r.returncode == 0, r.stdout + r.stderr
+        log = _log(tmp_path)
+        enable = log.index('["ufw", "--force", "enable"]')
+        deny = log.index('["ufw", "default", "deny", "outgoing"]')
+        assert enable < deny, log
+        assert '["ufw", "default", "allow", "outgoing"]' not in log, log
+        assert state["outgoing"] == "deny"
+        r2, state2 = _run(tmp_path, enforce)
+    finally:
+        listener.close()
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+    assert _changed(r2) == 0, r2.stdout
+    assert state2["outgoing"] == "deny"
+
+
 def test_enforce_puts_outgoing_back_to_allow_when_a_probe_cannot_be_reached(tmp_path):
     r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
                                "firewall_egress_probes": [{"host": "127.0.0.1", "port": 9, "timeout": 2}]})
@@ -616,15 +640,17 @@ def test_an_enforced_allowlist_without_dns_or_a_probe_is_refused_before_any_rule
     hosts = {"no_dns": {"vars": {"firewall_allow_egress": [{"port": 443}], "firewall_egress_mode": "enforce",
                                  "firewall_egress_probes": [{"host": "127.0.0.1", "port": 9}]}},
              "no_probe": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce"}},
-             "bad_mode": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "block"}}}
+             "bad_mode": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "block"}},
+             "empty_enforce": {"vars": {"firewall_allow_egress": [], "firewall_egress_mode": "enforce"}}}
     r, states = _run_many(tmp_path, hosts)
     assert r.returncode != 0
     for name in hosts:
-        assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
+        assert re.search(rf"\b{re.escape(name)}\s*:.*failed=1", r.stdout), name
         assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], name
         assert states[name] is None, name
     assert "must allow 53/udp out" in r.stdout and "needs firewall_egress_probes" in r.stdout
     assert "'block' is not audit or enforce" in r.stdout
+    assert "enforce needs a non-empty firewall_allow_egress" in r.stdout
 
 
 def test_a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would(tmp_path):

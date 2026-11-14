@@ -143,12 +143,18 @@ setup() {
   assert_precedes "$PLAYBOOK" 'name: "Add each other declared rule' 'ufw --force enable'
 }
 
-@test "firewall: the default outbound policy is still allow (denials are specific)" {
-  # Egress containment must be a set of specific denials evaluated ahead of the default
-  # policy — NOT a flip to default-deny outbound, which would break package fetches,
-  # DNS, and NTP on every host this shared playbook touches.
-  grep -qF 'ufw default allow outgoing' "$PLAYBOOK"
-  ! grep -qF 'ufw default deny outgoing' "$PLAYBOOK"
+@test "firewall: the default outbound policy is allow unless an enforced allowlist proves itself" {
+  # Egress containment is a set of specific denials evaluated ahead of the default policy,
+  # NOT a flip to default-deny outbound, which would break package fetches, DNS and NTP on
+  # every host this shared playbook touches. The one exception is an enforced
+  # firewall_allow_egress: its deny is applied only inside the rescued probe block, after
+  # enable and the fresh-handshake SSH verify (behaviour: test_apply_firewall_convergence.py).
+  assert_grep -qF 'ufw default allow outgoing' "$PLAYBOOK"
+  [ "$(grep -cF 'ufw default deny outgoing' "$PLAYBOOK")" -eq 1 ]
+  local blk
+  blk=$(awk '/name: "Prove the enforced outbound allowlist"/,/rescue:/' "$PLAYBOOK")
+  grep -qF 'ufw default deny outgoing' <<<"$blk"
+  assert_precedes "$PLAYBOOK" 'name: "Verify SSH still works after enabling' 'ufw default deny outgoing'
 }
 
 @test "apply-firewall: the upstream source may be a LIST, and a bare string still works" {

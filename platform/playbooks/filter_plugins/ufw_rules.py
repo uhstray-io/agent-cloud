@@ -385,6 +385,14 @@ def ufw_desired_rules(ssh_cidrs, allow_rules=(), route_rules=(), detected=(), up
     return unique
 
 
+def _whole(value, lo, hi=None):
+    """True when `value` is a whole number (int or ASCII digits) in [lo, hi]."""
+    text = str(value).strip()
+    if isinstance(value, bool) or not (text.isascii() and text.isdigit()):
+        return False
+    return lo <= int(text) and (hi is None or int(text) <= hi)
+
+
 def ufw_allow_egress_problems(allow_egress, mode="audit", probes=()):
     """Every reason a firewall_allow_egress declaration must be refused, one string each; [] when
     it may be applied (apply-firewall.yml, "Validate the outbound allowlist").
@@ -403,6 +411,8 @@ def ufw_allow_egress_problems(allow_egress, mode="audit", probes=()):
     if mode not in ("audit", "enforce"):
         problems.append(f"firewall_egress_mode {mode!r} is not audit or enforce")
     if not entries:
+        if mode == "enforce":
+            problems.append("firewall_egress_mode enforce needs a non-empty firewall_allow_egress")
         return problems
     for entry in entries:
         if not isinstance(entry, dict):
@@ -428,8 +438,11 @@ def ufw_allow_egress_problems(allow_egress, mode="audit", probes=()):
                             "to prove it after enabling")
         for probe in probes or []:
             if not isinstance(probe, dict) or not str(probe.get("host", "")).strip() \
-                    or not str(probe.get("port", "")).isdigit():
-                problems.append(f"{probe!r}: a probe is a mapping with `host` and a numeric `port`")
+                    or not _whole(probe.get("port"), 1, 65535):
+                problems.append(f"{probe!r}: a probe is a mapping with `host` and a `port` 1-65535")
+            elif "timeout" in probe and not _whole(probe["timeout"], 1):
+                # the playbook applies `| int`, which turns a non-number into 0 and fails the probe
+                problems.append(f"{probe!r}: a probe `timeout` is a whole number of seconds, at least 1")
     return problems
 
 

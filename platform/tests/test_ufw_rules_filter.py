@@ -437,5 +437,18 @@ def test_enforcing_needs_dns_out_and_a_probe():
     assert no_dns == ["an enforced allowlist must allow 53/udp out, or the host cannot resolve names"]
     no_probe = rules.ufw_allow_egress_problems([dns], "enforce", [])
     assert no_probe == ["an enforced allowlist needs firewall_egress_probes [{host, port}] to prove it after enabling"]
-    bad = rules.ufw_allow_egress_problems([dns], "enforce", [{"host": "x"}, "x:443"])
-    assert len(bad) == 2 and all("a probe is a mapping" in p for p in bad)
+    bad = rules.ufw_allow_egress_problems([dns], "enforce", [{"host": "x"}, "x:443", {"host": "x", "port": 0}])
+    assert len(bad) == 3 and all("a probe is a mapping" in p for p in bad)
+
+
+def test_enforcing_an_empty_allowlist_is_refused():
+    assert rules.ufw_allow_egress_problems([], "enforce") == [
+        "firewall_egress_mode enforce needs a non-empty firewall_allow_egress"]
+
+
+@pytest.mark.parametrize("timeout,ok", [(5, True), ("30", True), (0, False), ("ten", False), (-1, False),
+                                        (True, False)])
+def test_a_probe_timeout_is_a_whole_number_of_seconds(timeout, ok):
+    probe = [{"host": "prime.plane.so", "port": 443, "timeout": timeout}]
+    problems = rules.ufw_allow_egress_problems([{"port": 53, "proto": "udp"}], "enforce", probe)
+    assert (problems == []) is ok, problems
