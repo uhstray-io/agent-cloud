@@ -33,8 +33,10 @@ SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
 BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
 # The bats-pinned workflow once the change detector and the retired jobs were removed; dev held it until Rust (tests).
 RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
-# The retired workflow plus the Rust (tests) job (plan 24); dev holds it after this merge.
+# The retired workflow plus the Rust (tests) job (plan 24); dev held it until the job's Python setup.
 RUST_TESTS_WORKFLOW_BLOB_SHA = "fec0139560a9b9e845e1e7cc524b59489a980fff"
+# Rust (tests) plus the locked Python environment and Ansible collections (plan 24); dev holds it after this merge.
+RUST_ANSIBLE_WORKFLOW_BLOB_SHA = "bc97004798ad7e65c9b1b394fc39410068985547"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
@@ -620,11 +622,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Retired workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUST_ANSIBLE_WORKFLOW_BLOB_SHA:
+            # Same jobs as Rust (tests); the job's setup steps install the locked Python environment.
+            check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
+            check_workflow_policy(candidate, sharded=True, retired=True, rust_tests=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != RUST_TESTS_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed Rust-tests workflow")
         check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
         if base != candidate or workflow_records:
             raise Refusal("Rust-tests workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUST_ANSIBLE_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RUST_ANSIBLE_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed Rust-ansible workflow")
+        check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Rust-ansible workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
