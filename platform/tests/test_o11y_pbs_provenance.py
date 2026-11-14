@@ -3,9 +3,20 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
+import playbook_yaml
 import pytest
 
 FILE = Path(__file__).resolve().parents[1] / "playbooks/files/inspect_o11y_pbs_provenance.py"
+PROVENANCE_TASK = Path(__file__).resolve().parents[1] / "playbooks/tasks/o11y-pbs-inventory-provenance.yml"
+TRIM = "Take the Semaphore base URL without a trailing slash (hidden: it comes from the secret read)"
+GUARD = "Refuse cleartext Semaphore transport"
+PRESENCE = "Require OpenBao values without revealing them"
+SEMAPHORE_READS = (
+    "Read current production inventory records",
+    "Read current template records",
+    "Read current repository records",
+)
+RAW_URL = "_pbs_prov_semaphore_secret.url"
 SPEC = importlib.util.spec_from_file_location("inspect_o11y_pbs_provenance", FILE)
 provenance = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -108,3 +119,35 @@ def test_duplicate_semaphore_identities_refuse() -> None:
     candidate["templates"] = candidate["templates"] * 2
     result = provenance.evaluate(candidate)
     assert result["reason"] == "identity_ambiguous"
+
+
+def _leaves() -> list[dict]:
+    return [task for task in playbook_yaml.tasks(playbook_yaml.load(PROVENANCE_TASK)) if "block" not in task]
+
+
+def test_provenance_takes_the_trimmed_semaphore_url_once_and_hidden() -> None:
+    trim = [task for task in _leaves() if task.get("name") == TRIM]
+    assert len(trim) == 1
+    assert trim[0]["no_log"] is True
+    expression = trim[0]["ansible.builtin.set_fact"]["_pbs_prov_semaphore_url"]
+    assert "| trim" in expression
+    assert "regex_replace('/+$', '')" in expression
+    # The raw stored url is read only inside the trim; the presence check, the guard and every request use the trim.
+    assert [task["name"] for task in _leaves() if RAW_URL in repr(task)] == [TRIM]
+
+
+def test_provenance_trims_before_its_presence_check_guard_and_requests() -> None:
+    names = [task.get("name") for task in _leaves()]
+    assert names.index(TRIM) < names.index(PRESENCE) < names.index(GUARD)
+    assert names.index(GUARD) < min(names.index(name) for name in SEMAPHORE_READS)
+
+
+def test_provenance_guard_and_every_semaphore_request_use_the_trimmed_url() -> None:
+    leaves = _leaves()
+    guard = next(task for task in leaves if task.get("name") == GUARD)
+    assert guard["ansible.builtin.include_tasks"] == "assert-bao-transport.yml"
+    assert guard["vars"]["_assert_bao_url"] == "{{ _pbs_prov_semaphore_url }}"
+    requests = [task for task in leaves if "/api/project/" in str(task.get("ansible.builtin.uri", {}).get("url", ""))]
+    assert sorted(task["name"] for task in requests) == sorted(SEMAPHORE_READS)
+    for task in requests:
+        assert task["ansible.builtin.uri"]["url"].startswith("{{ _pbs_prov_semaphore_url }}/api/project/"), task["name"]

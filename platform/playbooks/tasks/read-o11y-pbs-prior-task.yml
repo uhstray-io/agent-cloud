@@ -1,5 +1,15 @@
 # Authenticate one finished PBS workflow task using its explicit ID and the
 # Semaphore task/output rows. No search by commit/template is performed.
+# The fixed task ID and contract are checked first, so bad inputs refuse before any secret is read.
+- name: Require the fixed PBS task ID and a known receipt contract
+  ansible.builtin.assert:
+    that:
+      - _pbs_task_id is integer
+      - _pbs_task_id > 0
+      - _pbs_task_contract in ['o11y-pbs-backup/v1', 'o11y-pbs-verify/v1', 'o11y-pbs-copy-sync/v1', 'o11y-pbs-copy-ready/v1']
+    fail_msg: "PBS task authentication requires its fixed task ID and a known receipt contract."
+    quiet: true
+
 - name: Refuse public cleartext OpenBao access for PBS task authentication
   ansible.builtin.include_tasks: assert-bao-transport.yml
   vars:
@@ -10,21 +20,34 @@
     _pbs_task_semaphore_secret: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/semaphore', url=_pbs_task_bao_url, auth_method='approle', role_id=_pbs_task_bao_role_id, secret_id=_pbs_task_bao_secret_id) }}"
   no_log: true
 
-- name: Require a private HTTPS Semaphore endpoint and API token
+# Trim trailing slashes from the stored url, as promote-semaphore-admins.yml (#604) and release-notes-from-task.yml
+# (#1100) do. reconcile-semaphore-api-url.yml admits a trailing "/" and stores the url as given. https-only stays,
+# because reconcile admits only https.
+- name: "Take the Semaphore base URL without a trailing slash (hidden: it comes from the secret read)"
+  ansible.builtin.set_fact:
+    _pbs_task_semaphore_url: "{{ (_pbs_task_semaphore_secret.url | default('', true) | string | trim) | regex_replace('/+$', '') }}"
+  no_log: true
+
+# Asserts are split so a refusal names the missing field; the values stay hidden either way.
+- name: "Require secret/services/semaphore to hold an https url (hidden: names the requirement only)"
   ansible.builtin.assert:
     that:
-      - _pbs_task_semaphore_secret.url is match('^https://[^/]+$')
-      - _pbs_task_semaphore_secret.api_token | length > 0
-      - _pbs_task_id is integer
-      - _pbs_task_id > 0
-      - _pbs_task_contract in ['o11y-pbs-backup/v1', 'o11y-pbs-verify/v1', 'o11y-pbs-copy-sync/v1', 'o11y-pbs-copy-ready/v1']
-    fail_msg: "PBS task authentication requires its fixed task ID and protected Semaphore API credentials."
+      - _pbs_task_semaphore_url is match('^https://[^/]+$')
+    fail_msg: "secret/services/semaphore must hold an https url with no path before the PBS task can be read."
+    quiet: true
+  no_log: true
+
+- name: "Require secret/services/semaphore to hold an api_token (hidden: names the requirement only)"
+  ansible.builtin.assert:
+    that:
+      - (_pbs_task_semaphore_secret.api_token | default('', true)) | length > 0
+    fail_msg: "secret/services/semaphore must hold an api_token before the PBS task can be read."
     quiet: true
   no_log: true
 
 - name: Read the exact completed PBS workflow task by its fixed ID
   ansible.builtin.uri:
-    url: "{{ _pbs_task_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _pbs_task_id }}"
+    url: "{{ _pbs_task_semaphore_url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _pbs_task_id }}"
     method: GET
     headers:
       Authorization: "Bearer {{ _pbs_task_semaphore_secret.api_token }}"
@@ -41,7 +64,7 @@
 
 - name: Read all bounded output rows for the exact PBS task
   ansible.builtin.uri:
-    url: "{{ _pbs_task_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _pbs_task_id }}/output"
+    url: "{{ _pbs_task_semaphore_url }}/api/project/{{ estate_coverage_semaphore_project_id }}/tasks/{{ _pbs_task_id }}/output"
     method: GET
     headers:
       Authorization: "Bearer {{ _pbs_task_semaphore_secret.api_token }}"
