@@ -346,7 +346,8 @@ and their schedules kept failing. The retirement step runs only when the local
 Semaphore is at `http://127.0.0.1:3000`, the one address the retirement
 playbook sends its token to. With a different `local_semaphore_port`, the run
 prints a notice and skips it, so run **Retire Semaphore Templates (Dev)** in the
-local Semaphore instead.
+local Semaphore instead. That variant runs `dev`'s playbook and retirement list,
+not this worktree's.
 
 Before any API call, the playbook refuses a name that `templates.yml` or
 `templates-local.yml` still declares. Before any deletion, it refuses a name that

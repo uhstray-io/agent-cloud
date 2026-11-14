@@ -13,13 +13,14 @@ sent, or is a loopback port with no listener.
 
 from __future__ import annotations
 
-import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
+from ansible_python import needs_ansible
+from fake_http import refused_port
+from harness_sandbox import run_playbook
 
 REPO = Path(__file__).resolve().parents[2]
 CONVERGE = REPO / "platform/semaphore/converge-local-catalog.yml"
@@ -34,7 +35,6 @@ NESTED = "_extra_var_guard_nested"
 REFUSAL = "Refusing: the local catalog"
 PUBLISH_STARTED = "TASK [Resolve approved Semaphore runtime access]"
 NOT_APPLIED = "Retirements NOT applied"
-ANSIBLE = shutil.which("ansible-playbook")
 
 
 def _code(path: Path) -> str:
@@ -114,49 +114,34 @@ def test_local_callers_run_the_entry_point_and_not_the_publisher(path):
 # ── (d) functional: the refusals, run by ansible-playbook ────────────────────
 
 
-def _run(url: str, *extra: str, token: str | None = None) -> subprocess.CompletedProcess:
-    if ANSIBLE is None:
-        pytest.skip("ansible-playbook is not on PATH")
-    env = {k: v for k, v in os.environ.items()
-           if k not in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "ANSIBLE_CONFIG",
-                        "SEMAPHORE_URL", "SEMAPHORE_TOKEN", "OPENBAO_ADDR")}
-    env.update(ANSIBLE_NOCOLOR="1", SEMAPHORE_URL=url)
-    if token is not None:
-        env["SEMAPHORE_TOKEN"] = token
-    return subprocess.run([ANSIBLE, "-i", "localhost,", str(CONVERGE), *extra],
-                          cwd=REPO, env=env, text=True, capture_output=True, check=False, timeout=180)
+def _run(tmp_path: Path, url: str, *extra: str, token: str = "") -> subprocess.CompletedProcess:
+    # run_playbook overlays the environment and cannot unset a key; an empty value reads as unset.
+    env = {"SEMAPHORE_URL": url, "SEMAPHORE_TOKEN": token, "OPENBAO_ADDR": ""}
+    return run_playbook(CONVERGE, tmp_path, *extra, env=env, timeout=180)
 
 
-def test_a_remote_controller_is_refused_before_anything_is_published():
-    proc = _run("https://semaphore.example.com", "-e", "semaphore_include_local_templates=true")
+@needs_ansible
+@pytest.mark.parametrize("url, extra", [
+    ("https://semaphore.example.com", ["-e", "semaphore_include_local_templates=true"]),
+    ("http://127.0.0.1:3000", []),
+    ("http://127.0.0.1:3000", ["-e", "semaphore_include_local_templates=true",
+                               "-e", "semaphore_url=https://semaphore.example.com"]),
+], ids=["remote-controller", "no-local-flag", "semaphore-url-override"])
+def test_a_refused_run_stops_before_anything_is_published(tmp_path, url, extra):
+    proc = _run(tmp_path, url, *extra)
     out = proc.stdout + proc.stderr
     assert proc.returncode != 0, out
     assert REFUSAL in out, out
     assert PUBLISH_STARTED not in out, "the publish started before the refusal"
 
 
-def test_a_loopback_controller_without_the_local_flag_is_refused():
-    proc = _run("http://127.0.0.1:3000")
-    out = proc.stdout + proc.stderr
-    assert proc.returncode != 0, out
-    assert REFUSAL in out, out
-    assert PUBLISH_STARTED not in out, "the publish started before the refusal"
-
-
-def test_a_semaphore_url_override_is_refused_even_with_a_loopback_environment():
-    proc = _run("http://127.0.0.1:3000", "-e", "semaphore_include_local_templates=true",
-                "-e", "semaphore_url=https://semaphore.example.com")
-    out = proc.stdout + proc.stderr
-    assert proc.returncode != 0, out
-    assert REFUSAL in out, out
-    assert PUBLISH_STARTED not in out, "the publish started before the refusal"
-
-
-@pytest.mark.parametrize("url", ["http://127.0.0.1:9", "http://localhost:9"])
-def test_a_loopback_controller_on_another_port_is_accepted_and_skips_the_retirement(url):
-    # Port 9 has no listener, so the publish stops at its first request, after the refusal and the
-    # notice. The token goes only to this loopback port, and nothing else is contacted.
-    proc = _run(url, "-e", "semaphore_include_local_templates=true", token="not-a-real-token")
+@needs_ansible
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost"])
+def test_a_loopback_controller_on_another_port_is_accepted_and_skips_the_retirement(tmp_path, host):
+    # Nothing listens on refused_port(), so the publish stops at its first request, after the refusal
+    # and the notice. The token goes only to this loopback port, and nothing else is contacted.
+    proc = _run(tmp_path, f"http://{host}:{refused_port()}", "-e", "semaphore_include_local_templates=true",
+                token="not-a-real-token")
     out = proc.stdout + proc.stderr
     assert REFUSAL not in out, out
     assert NOT_APPLIED in out, out
