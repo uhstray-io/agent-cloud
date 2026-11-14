@@ -498,7 +498,7 @@
                detected=_detected.stdout_lines | default([]), upstreams=_upstream_sources,
                rootful=_rootful | bool, bridges=_bridges.stdout_lines | default([]),
                deny_egress=_deny_egress, allow_egress=_allow_egress,
-               egress_audit=(_allow_egress | length > 0) and not (_egress_enforce | bool)) }}
+               egress_audit=not (_egress_enforce | bool)) }}
 
     - name: "Name the declared tags and specs"
       ansible.builtin.set_fact:
@@ -534,6 +534,30 @@
         # with both halves stored ufw prints "Skipping adding existing rule" (not a change).
         _fw_to_add: "{{ _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added, reassert_dual_family=true) }}"
 
+    # ufw evaluates rules in order and the first match wins (ufw(8), release 0.36: "Rule
+    # ordering is important and the first match wins"), and a plain add places a new rule
+    # after those held; `insert NUM` and `prepend` exist to place one earlier. A denial added
+    # while outbound allows (or the audit rule, which allows everything) are already held
+    # would land behind them and never match the traffic they admit. Reordering the held
+    # allows would open a window with them missing, which under an enforced allowlist cuts
+    # DNS and every declared port, so refuse before any rule changes instead.
+    - name: "Refuse a new outbound denial behind held outbound allows"
+      ansible.builtin.assert:
+        that:
+          - _fw_new_denials | length == 0 or _fw_held_out_allows | length == 0
+        fail_msg: >-
+          {{ inventory_hostname }}: firewall_deny_egress adds {{ _fw_new_denials | join(', ') }}, but the host
+          already holds outbound allows ({{ _fw_held_out_allows | join(', ') }}). ufw appends a new rule and the
+          first match wins, so the denial would not apply to the ports those allows admit. Nothing was changed.
+          To apply it: run once with firewall_allow_egress removed (the outbound allows and the audit rule are
+          pruned), then once with both lists declared, so the denials are added first.
+      vars:
+        _fw_absent_now: "{{ _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added) }}"
+        _fw_new_denials: "{{ _fw_absent_now | selectattr('family', 'equalto', 'out-deny') | map(attribute='spec') | list }}"
+        _fw_held_out_allows: >-
+          {{ _fw_desired | selectattr('family', 'in', ['out-allow', 'out-audit'])
+             | reject('in', _fw_absent_now) | map(attribute='spec') | list }}
+
     - name: "Allow SSH (22/tcp) from each admin CIDR the host lacks — BEFORE enabling"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw {{ item.cmd }} comment '{{ item.tag }}'"
       register: _fw_add_ssh
@@ -548,13 +572,15 @@
     # outbound allow is genuinely missing (not just re-asserted) and the audit rule is held,
     # delete it here; the add below then appends it again after the new allow.
     - name: "Move the outbound audit rule behind a newly declared allow"  # noqa: command-instead-of-module
-      ansible.builtin.command: "ufw delete allow out log to any"
+      ansible.builtin.command: "ufw {{ _fw_audit_spec | ufw_delete_args }}"
       register: _fw_audit_moved
       changed_when: true
+      vars:
+        _fw_audit_spec: "{{ _fw_desired | selectattr('family', 'equalto', 'out-audit') | map(attribute='spec') | first | default('') }}"
       when:
         - not ansible_check_mode
-        - _fw_desired | selectattr('family', 'equalto', 'out-audit') | list | length > 0
-        - "'allow out log to any' in (_fw_added.stdout_lines | ufw_parse_added | map(attribute='spec') | list)"
+        - _fw_audit_spec | length > 0
+        - _fw_audit_spec in (_fw_added.stdout_lines | ufw_parse_added | map(attribute='spec') | list)
         - _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added)
           | selectattr('family', 'equalto', 'out-allow') | list | length > 0
 

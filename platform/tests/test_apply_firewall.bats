@@ -152,8 +152,8 @@ setup() {
   assert_grep -qF 'ufw default allow outgoing' "$PLAYBOOK"
   [ "$(grep -cF 'ufw default deny outgoing' "$PLAYBOOK")" -eq 1 ]
   local blk
-  blk=$(awk '/name: "Prove the enforced outbound allowlist"/,/rescue:/' "$PLAYBOOK")
-  grep -qF 'ufw default deny outgoing' <<<"$blk"
+  blk=$(task_block "$PLAYBOOK" "Prove the enforced outbound allowlist")
+  assert_grep -qF 'ufw default deny outgoing' <<<"$blk"
   assert_precedes "$PLAYBOOK" 'name: "Verify SSH still works after enabling' 'ufw default deny outgoing'
 }
 
