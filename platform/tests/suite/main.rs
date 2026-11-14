@@ -4,7 +4,10 @@
 //! Run one area:   `cargo nextest run -E 'test(/^restart_policy::/)'`.
 
 mod common_sh;
+mod configure_host_network;
+mod install_podman;
 mod lanes;
 mod ledger;
+mod local_netbox;
 mod restart_policy;
 mod support;
