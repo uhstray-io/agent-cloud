@@ -89,7 +89,7 @@
 
     - name: Collect and normalize receiver host storage diagnostics
       ansible.builtin.command:
-        argv: [python3, -]
+        argv: [python3, "-"]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/diagnose-o11y-host-storage.py') }}"
       register: _host_storage_diagnostic
       changed_when: false
@@ -112,7 +112,7 @@
 
     - name: Collect privileged root LVM readback
       ansible.builtin.command:
-        argv: [python3, -, root-lvm]
+        argv: [python3, "-", root-lvm]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/diagnose-o11y-host-storage.py') }}"
       register: _privileged_root_lvm
       become: true
