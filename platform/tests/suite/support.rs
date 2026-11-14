@@ -206,9 +206,10 @@ fn no_suite_test_starts_ansible_playbook_itself() {
     );
 
     // A playbook run outside a `*_playbook` module escapes the `playbook` test-group, which caps
-    // concurrent runs, and the playbook tier lanes select it by (#1141 review). The needle is built
+    // concurrent runs, and the playbook tier lanes select it by (#1141 review). The needle has no
+    // `process::` prefix, so an imported, bare call is caught too. It is built
     // with concat! so this file's own text does not match.
-    let call = concat!("process::ansible_playbook", "(");
+    let call = concat!("ansible_playbook", "(");
     let misplaced: Vec<String> = files
         .iter()
         .filter(|path| {

@@ -15,11 +15,39 @@ use agent_cloud_tests::yaml::Node;
 
 const PLAYBOOK: &str = "platform/playbooks/install-qemu-guest-agent.yml";
 
+/// The tasks of a playbook in the order Ansible runs them: play by play, each play's `pre_tasks`,
+/// then `tasks`, then `post_tasks`, with a block's `block`, `rescue` and `always` in place.
+fn execution_order(rel: &str) -> Vec<Node> {
+    fn flatten(items: &[Node], out: &mut Vec<Node>) {
+        for item in items {
+            out.push(item.clone());
+            for section in ["block", "rescue", "always"] {
+                if let Some(children) = item.get(section).and_then(Node::as_seq) {
+                    flatten(children, out);
+                }
+            }
+        }
+    }
+    let mut out = vec![];
+    for play in repo::tasks(rel)
+        .iter()
+        .filter(|node| node.get("hosts").is_some())
+    {
+        for section in ["pre_tasks", "tasks", "post_tasks"] {
+            if let Some(items) = play.get(section).and_then(Node::as_seq) {
+                flatten(items, &mut out);
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn the_virtio_port_check_runs_before_the_package_install() {
-    // Task order, not line order: the first task that installs a package must come after the
-    // task that looks for the guest-agent port.
-    let tasks = repo::tasks(PLAYBOOK);
+    // Execution order, not line or walk order: the first task that installs a package must come
+    // after the task that looks for the guest-agent port. `repo::tasks` visits `tasks` before
+    // `pre_tasks`, so a walk would pass with the install moved to `pre_tasks` (#1141 review).
+    let tasks = execution_order(PLAYBOOK);
     let position = |matches: &dyn Fn(&Node) -> bool| {
         tasks
             .iter()

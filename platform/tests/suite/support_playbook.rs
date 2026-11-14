@@ -318,6 +318,15 @@ fn a_playbook_run_resolves_an_installed_collection() {
     assert!(out.status.success(), "{}", stdout_and_stderr(&out));
 }
 
+/// Removes the one file a confinement proof was supposed to be unable to create, on any exit.
+struct RemoveOnDrop(std::path::PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 #[test]
 fn a_sandboxed_playbook_cannot_write_outside_its_directory() {
     // On macOS sandbox-exec ships with the system, so a detector that finds none is broken, and
@@ -334,7 +343,18 @@ fn a_sandboxed_playbook_cannot_write_outside_its_directory() {
         return;
     };
     let dir = TempDir::new().unwrap();
-    let outside = repo::path(".sandbox-probe-playbook");
+    // A unique name, removed when the guard drops, so a panic after an escaped write cannot
+    // leave a file that fails the next run's existence check (#1141 review). The repository
+    // root is outside every writable root a run is given.
+    let outside = repo::path(&format!(
+        ".sandbox-probe-playbook-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("the clock is after the epoch")
+            .as_nanos()
+    ));
+    let _cleanup = RemoveOnDrop(outside.clone());
     assert!(
         !outside.exists(),
         "{} exists before the run, so the run cannot prove anything",
@@ -357,10 +377,6 @@ fn a_sandboxed_playbook_cannot_write_outside_its_directory() {
     ));
 
     let escaped = outside.exists();
-    if escaped {
-        // Remove only the one file this run was supposed to be unable to create.
-        let _ = std::fs::remove_file(&outside);
-    }
     assert!(
         !escaped,
         "{kind} let a playbook write {}",
