@@ -12,4 +12,4 @@
 # so this restores SIGALRM and hands the job to /bin/sh. Perl is always present where GNU
 # parallel runs: parallel is itself a perl script.
 $SIG{ALRM} = "DEFAULT";
-exec "/bin/sh", @ARGV;
+exec "/bin/sh", @ARGV or die "parallel-job-shell: exec /bin/sh: $!\n";
