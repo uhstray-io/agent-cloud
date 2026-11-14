@@ -1850,6 +1850,22 @@ def run_guard(api, *extra):
     return result, out.getvalue(), err.getvalue()
 
 
+def move_dev_after_two_reads(api):
+    # Both validations read GitHub's dev at the tip the budget counts; the third read, just before the merge call,
+    # sees dev moved. Returns the list of reads, so a test can assert the third one happened.
+    original, reads = api.api, []
+
+    def moving(endpoint, fields=()):
+        if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+            reads.append(endpoint)
+            sha = api.dev_tip if len(reads) <= 2 else "f" * 40
+            return {"ref": "refs/heads/dev", "object": {"sha": sha, "type": "commit"}}
+        return original(endpoint, fields)
+
+    api.api = moving
+    return reads
+
+
 class ReleaseBudgetTests(unittest.TestCase):
     def test_readout_prints_on_a_passing_read_only_run(self):
         api = FakeGitHub()
@@ -1964,16 +1980,7 @@ class ReleaseBudgetTests(unittest.TestCase):
     def test_dev_moving_after_the_count_refuses_the_merge(self):
         # Both validations count at the tip GitHub reported; a merge into dev before the merge call is refused.
         api = FakeGitHub()
-        original, reads = api.api, []
-
-        def moving(endpoint, fields=()):
-            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
-                reads.append(endpoint)
-                sha = api.dev_tip if len(reads) <= 2 else "f" * 40
-                return {"ref": "refs/heads/dev", "object": {"sha": sha, "type": "commit"}}
-            return original(endpoint, fields)
-
-        api.api = moving
+        reads = move_dev_after_two_reads(api)
         run_refusal(self, api, "dev moved after the release budget was counted")
         self.assertEqual(len(reads), 3)
 
@@ -2025,6 +2032,14 @@ class BudgetAcknowledgedTests(unittest.TestCase):
         self.assertIn("is not GitHub's dev", err)
         self.assertNotIn("BUDGET", out)
         self.assertEqual(api.merge_calls, [])
+
+    def test_with_the_flag_dev_moving_after_the_count_still_refuses_the_merge(self):
+        # The waiver covers the limits only; a merge into dev after the count would leave it, and drift, stale.
+        api = FakeGitHub()
+        set_budget(api, before=(5, 120), after=(6, 121))
+        reads = move_dev_after_two_reads(api)
+        run_refusal(self, api, "dev moved after the release budget was counted", "--budget-acknowledged")
+        self.assertEqual(len(reads), 3)
 
     def test_under_the_limit_or_in_the_transition_the_flag_changes_nothing(self):
         # Under R12's transition no limit applies yet, so there is nothing for the operator to acknowledge.
