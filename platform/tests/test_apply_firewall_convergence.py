@@ -697,6 +697,16 @@ def test_a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would(tm
     assert any("default outgoing policy is not deny" in w for w in _verdict(r)["would_change"])
 
 
+def test_a_dry_run_reports_outgoing_denied_on_a_host_that_declares_no_allowlist(tmp_path):
+    # A real run would put default-allow back (an enforced allowlist was removed, say), so the
+    # dry run must count it: with it left out, the step would record pass instead of skip.
+    r, state = _run(tmp_path, {}, check=True, state={"active": True, "outgoing": "deny", "rules": [
+        [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)]]})
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert state["outgoing"] == "deny"
+    assert _verdict(r)["would_change"] == ["default outgoing policy is not allow"]
+
+
 def test_a_host_without_an_allowlist_keeps_outgoing_allowed_and_no_outbound_allow(tmp_path):
     r, state = _run(tmp_path, {})
     assert r.returncode == 0, r.stdout + r.stderr
@@ -708,16 +718,25 @@ def test_a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_bes
     # ufw appends and the first match wins, so a denial added after held allows (or after the
     # audit rule, which allows everything) would never match what they admit: refused, nothing
     # changed. Declared together with a new allowlist, the denial is added first.
+    # Held is read from the host, whatever the tag: an untagged allow that this run would
+    # adopt keeps its place (ufw updates the comment, it does not move the rule), and one no
+    # declaration names is kept, so both stay ahead of a denial added now.
     deny = [{"to": "198.51.100.1"}]
+    both = {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": deny}
     held = [["allow out 443/tcp", _tag("out-allow", "443/tcp", "any")],
             ["allow out 53/udp", _tag("out-allow", "53/udp", "any")], [AUDIT, _tag("out-audit", "any", "any")]]
-    r, states = _run_many(tmp_path, {
-        "held": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": deny},
-                 "state": {"active": True, "outgoing": "allow", "rules": held}},
-        "fresh": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": deny}}})
-    assert re.search(r"\bheld\s*:.*failed=1", r.stdout), r.stdout
+    refused = {
+        "held": {"vars": both, "state": {"active": True, "outgoing": "allow", "rules": held}},
+        "adopted": {"vars": both, "state": {"active": True, "outgoing": "allow", "rules": [["allow out 443/tcp", ""]]}},
+        "by_hand": {"vars": {"firewall_deny_egress": deny},
+                    "state": {"active": True, "outgoing": "allow", "rules": [["allow out 8443/tcp", ""]]}}}
+    r, states = _run_many(tmp_path, {**refused, "fresh": {"vars": both}})
+    for name, spec in refused.items():
+        assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
+        assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], _log(tmp_path, name)
+        assert states[name] == spec["state"], name
     assert "adds deny out to 198.51.100.1, but the host already holds outbound allows" in r.stdout, r.stdout
-    assert not [line for line in _log(tmp_path, "held") if MUTATING.search(line)], _log(tmp_path, "held")
+    assert "(allow out 8443/tcp)" in r.stdout, r.stdout
     assert re.search(r"\bfresh\s*:.*failed=0", r.stdout), r.stdout
     specs = [rule[0] for rule in states["fresh"]["rules"]]
     assert specs.index("deny out to 198.51.100.1") < specs.index("allow out 443/tcp") < specs.index(AUDIT)

@@ -179,11 +179,14 @@
 #                            declaration is measured before anything is denied. ufw rate-limits
 #                            each rule's log (3/min, burst 10; src/backend_iptables.py, release
 #                            0.36), so the log is a sample: audit long enough to see rare
-#                            destinations. enforce: `default deny outgoing`; only the allowlist
-#                            passes for traffic the host itself sends (OUTPUT). Traffic a rootful
-#                            podman or Docker host forwards for bridged containers crosses
-#                            FORWARD, which this does not restrict. Enforce refuses an empty
-#                            allowlist, one without 53/udp, or no probes.
+#                            destinations. An untagged outbound allow already on the host is
+#                            kept and matches first, so what it admits is never logged, and
+#                            still passes under enforce (the report lists untagged rules).
+#                            enforce: `default deny outgoing`; only the allowlist passes for
+#                            traffic the host itself sends (OUTPUT). Traffic a rootful podman
+#                            or Docker host forwards for bridged containers crosses FORWARD,
+#                            which this does not restrict. Enforce refuses an empty allowlist,
+#                            one without 53/udp, or no probes.
 #   firewall_egress_probes   [{host, port}] reached FROM the host after enabling an enforced
 #                            allowlist (TCP connect). One that fails puts `default allow
 #                            outgoing` back and fails the run: verify before hardening.
@@ -563,7 +566,9 @@
     # allows would open a window with them missing, which under an enforced allowlist cuts
     # DNS and every declared port; placing the denial with `insert`/`prepend` (documented in
     # ufw(8)) has not been exercised on the hosts and is not modelled by the test stub. So
-    # refuse before any rule changes.
+    # refuse before any rule changes. Held is read from the host, whatever the tag: an untagged
+    # allow this run would adopt keeps its place (ufw updates the comment, it does not move the
+    # rule), and one no declaration names is kept, so both stay ahead of the denial.
     - name: "Refuse a new outbound denial behind held outbound allows"
       ansible.builtin.assert:
         that:
@@ -573,13 +578,13 @@
           already holds outbound allows ({{ _fw_held_out_allows | join(', ') }}). ufw appends a new rule and the
           first match wins, so the denial would not apply to the ports those allows admit. Nothing was changed.
           To apply it: without the new denial, first run in audit mode if the host is enforced (outgoing is
-          allowed again), then run with firewall_allow_egress and firewall_egress_mode removed (the outbound
-          allows and the audit rule are pruned), then declare both lists, so the denials are added first.
+          allowed again), then run with firewall_allow_egress and firewall_egress_mode removed (the tagged
+          outbound allows and the audit rule are pruned; delete an untagged one by hand), then declare both
+          lists, so the denials are added first.
       vars:
         _fw_new_denials: "{{ _fw_absent_now | selectattr('family', 'equalto', 'out-deny') | map(attribute='spec') | list }}"
         _fw_held_out_allows: >-
-          {{ _fw_desired | selectattr('family', 'in', ['out-allow', 'out-audit'])
-             | reject('in', _fw_absent_now) | map(attribute='spec') | list }}
+          {{ _fw_added.stdout_lines | ufw_parse_added | map(attribute='spec') | select('match', 'allow out ') | list }}
 
     - name: "Allow SSH (22/tcp) from each admin CIDR the host lacks — BEFORE enabling"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw {{ item.cmd }} comment '{{ item.tag }}'"
@@ -932,8 +937,7 @@
         _fw_gaps: >-
           {{ (['ufw is not active'] if 'Status: active' not in _fw_final else [])
              + (['default incoming policy is not deny'] if 'deny (incoming)' not in _fw_final else [])
-             + (['default outgoing policy is not ' ~ _out_policy]
-                if (_allow_egress | length > 0 and (_out_policy ~ ' (outgoing)') not in _fw_final) else [])
+             + (['default outgoing policy is not ' ~ _out_policy] if (_out_policy ~ ' (outgoing)') not in _fw_final else [])
              + (['declared rules not held: ' ~ (_fw_missing | join(', '))] if _fw_missing else [])
              + (['stale tagged rules present: ' ~ (_fw_prune | map(attribute='tag') | join(', '))]
                 if (ansible_check_mode and _fw_prune) else []) }}
