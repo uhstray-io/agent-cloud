@@ -159,8 +159,13 @@ Plane roles SHALL follow Authentik group membership under decision D3. Members o
 
 #### Scenario: Removed member loses access on apply
 
-- **WHEN** a Plane member is no longer in any member group, and the reconcile playbook applies with `apply=true`
+- **WHEN** a Plane member who is not an Owner is no longer in any member group, and the reconcile playbook applies with `apply=true`
 - **THEN** that member is removed from Plane
+
+#### Scenario: Owner who left the groups is kept and named
+
+- **WHEN** a Plane Owner other than the automation account is no longer desired as an Owner, and the reconcile playbook runs
+- **THEN** that Owner keeps its role and membership, and the reconcile names it under `owners_unmanaged` for an operator to offboard by hand
 
 #### Scenario: Reconcile is read-only without apply
 

@@ -80,7 +80,7 @@ flowchart LR
    account, cutting the person off from every app.
 2. **Plane is derived.** `reconcile_members.py` builds the wanted roster from Authentik groups and
    removes anyone outside it, with a guard against removing most of the workspace at once. An applying
-   run is scheduled hourly (`templates.yml:2073-2077`, `Reconcile Plane Members Scheduled (Dev)`, cron
+   run is scheduled hourly (`templates.yml:1839-1843`, `Reconcile Plane Members Scheduled (Dev)`, cron
    `23 * * * *`), so an edit made directly in Plane is reverted within the hour. **Owners are outside
    its reach:** it never demotes or removes one (`reconcile_members.py:23,73,78,89`). With
    `plane_admin_role: owner`, that now covers every admin.
@@ -105,7 +105,7 @@ flowchart LR
   and both callers, `skynet` and `console`, may act as `security-agent`.
 - The gate checks survey values for shape and length only (`launch_gate.py`, `_survey`). OPA bounds
   two survey values, `target_service` and `target_host` (`agent_actions.rego:324-347`); nothing bounds
-  `Reconcile Plane Members`' `apply` or `allow_mass_removal` (`templates.yml:2054,2060`).
+  `Reconcile Plane Members`' `apply` or `allow_mass_removal` (`templates.yml:1820,1826`).
 - Groups are read once at login and kept in the session until 8 hours of inactivity or 12 hours
   after sign-in, whichever comes first (`server/auth.rs` `callback`, `current_user`; `server/mod.rs`
   `session_layer`; AC-747). A revoked admin keeps console rights until the session ends, at most 12 hours.
