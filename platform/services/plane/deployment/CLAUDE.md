@@ -85,8 +85,8 @@ scripts/semaphore-seed-input.py --template "Seed OpenBao Key" --variant dev \
 ```
 
 Phase 3c of `deploy-plane.yml` (`activate_license.py`) then signs in as the workspace owner (the
-automation account; billing needs owner or Admin, and Admin needs the licence, so no person needs
-Admin first), reads the plan,
+automation account; billing needs owner or Admin, and Admin is a Business and Enterprise feature,
+refused on Pro, so no person needs Admin first), reads the plan,
 and only when it is not `plane_license_plan` (default `PRO`) posts the key to
 `/api/payments/workspaces/<slug>/licenses/` — the route the Billing page calls; Plane documents
 no other — and reads the plan back. No key stored: the phase reports that and skips. A refusal
@@ -176,8 +176,11 @@ address; `private_ranges` locally), `plane_bind`, `plane_port`, `plane_automatio
 `plane_company_name`, `plane_workspace_slug`, `plane_workspace_name`. Optional:
 `plane_version` (default `v3.3.3`); `plane_authentik_base` (the IdP's base URL) turns sign-in
 through Authentik on, and leaving it unset switches it OFF on the next deploy. `plane_admin_role`
-(default `admin`) is the role `platform-admins` get from the member reconcile; local-dev sets
-`member`, because the Admin role is a plan feature (`WORKSPACE_ADMIN_ROLE`) the Free plan lacks.
+(default `admin`) is the role `platform-admins` get from the member reconcile. Production sets
+`owner`: Plane's Admin role is a Business and Enterprise feature (`WORKSPACE_ADMIN_ROLE`) and was
+refused with the Pro licence active. Local-dev sets `member` (Free plan). The reconcile never
+demotes or removes an owner; one the groups no longer make an owner is reported under
+`owners_unmanaged` ("owners left alone") and is offboarded by hand.
 `plane_github_app_id`, `plane_github_app_name` and `plane_github_client_id` turn the GitHub
 integration on (see Credentials).
 
