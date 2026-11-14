@@ -57,7 +57,7 @@ and why.
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
-| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) | Unverified claim | 3 | Convention; guard proposed (count 3) |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) — **x4** (2026-11-12: relayed three website-repo "conflicts" from a scout that read a stale branch into a reply and a Plane item; on `main` two were resolved and the third already tracked) | Unverified claim | 4 | Convention; guard proposed (count ≥ 3) |
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
@@ -1324,7 +1324,7 @@ its merge date, or say the origin is unverified.
 
 ### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
 
-**Occurrences: 3** — 2026-10-31, 2026-11-11, 2026-11-12
+**Occurrences: 4** — 2026-10-31, 2026-11-11, 2026-11-12, 2026-11-12
 
 **What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
 `[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
@@ -1387,6 +1387,23 @@ about what is deployed or registered is a live-state claim, whatever file it was
 The hook does not replace the recheck in The rule: a `repo:` line names a file at a ref, not
 proof that the lead re-read it against the claim, so the recheck stays required with the hook in
 place. Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
+
+**Occurrence 4 — 2026-11-12** (1.25's stale-checkout shape). Planning the social-content work,
+I sent read-only scouts to extract the brand design from three website repositories. The Zerds
+scout read the primary checkout, which was on a feature branch about eleven weeks behind
+`origin/main`. Its report named the branch and said it was unverified whether the deployed site
+matched it. I relayed its three "conflicts" to Joe as findings and wrote them into the Plane
+brand-profile item for Zerds: the favicon still used the old accent, the docs gave the audience
+three ways, and the product domain was hard-coded although not yet owned. Joe asked for them as
+GitHub issues. Re-read at `origin/main` before filing: the audience and the domain were both
+settled on `main`, and only the favicon still held, already tracked as an open issue in that
+repository. No issue was filed, and the Plane item was corrected. Why the rule did not fire: the
+scout disclosed its ref, and I read the disclosure as provenance attached to a fact, not as a
+reason to stop. The proposed hook would not have caught this: the claim reached a reply and a
+tracker, not a PR comment. Guard proposal, extending the
+one above: a scout brief names the ref to read (`origin/<default>` after a fetch, via `git show`
+or `git grep <ref>`), and its report states that ref and whether it equals the default branch's tip.
+A report on any other ref goes to Joe labelled `unverified:` until re-read at the tip.
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
