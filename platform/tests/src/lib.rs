@@ -562,8 +562,10 @@ pub mod process {
             }
             Some("bwrap") => {
                 let mut cmd = Command::new("bwrap");
-                // --die-with-parent: the sandboxed tree is SIGKILLed when bwrap's parent dies, so
-                // a killed or crashed runner leaves no ansible behind (bwrap.xml).
+                // --die-with-parent: bwrap and its direct child, ansible-playbook, are SIGKILLed when
+                // bwrap's parent dies (bwrap.xml, PR_SET_PDEATHSIG). A process ansible-playbook forks
+                // does not inherit that signal (it is cleared on fork), so a worker can outlive a
+                // killed runner; AC-882 tracks a process-group kill.
                 cmd.args([
                     "--ro-bind",
                     "/",
