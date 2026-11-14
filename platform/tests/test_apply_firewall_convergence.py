@@ -19,6 +19,8 @@ from pathlib import Path
 
 import harness_sandbox
 import playbook_yaml
+import pytest
+import ufw_stub
 import yaml
 from fake_http import refused_port
 
@@ -636,11 +638,8 @@ def test_enforce_puts_outgoing_back_to_allow_when_a_probe_cannot_be_reached(tmp_
 
 
 def test_a_narrowed_allowlist_on_an_enforcing_host_is_proven_again_or_outgoing_is_allowed_again(tmp_path):
-    # A host already enforcing keeps `deny (outgoing)` while the stale allow of a narrowed
-    # allowlist is pruned, so this run never applies the deny. The probes run all the same
-    # (every enforced run, not only the one that applies the deny): the narrowed list is
-    # proven, or the rescue puts default-allow back. A narrowing run that stopped between the
-    # prune and its probes is recovered the same way, by the next run.
+    # The stale allow is pruned while outgoing stays denied, so this run never applies the
+    # deny; the probes run all the same, and prove the narrowed list or restore default-allow.
     enforcing = {"active": True, "outgoing": "deny", "rules": [
         [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
         *[[f"allow out {port}", _tag("out-allow", port, "any")] for port in ("443/tcp", "53/udp", "80/tcp")]]}
@@ -655,6 +654,18 @@ def test_a_narrowed_allowlist_on_an_enforcing_host_is_proven_again_or_outgoing_i
         assert '["ufw", "default", "deny", "outgoing"]' not in _log(tmp_path, name), name
     assert states["proven"]["outgoing"] == "deny"
     assert states["unproven"]["outgoing"] == "allow"
+
+
+def test_the_stub_takes_the_short_rule_form_only_as_a_whole_rule():
+    # ufw prints a rule to and from any address as `allow [out] PORT[/PROTO]`, a route rule
+    # included, so a delete by spec replays that form and the stub must read back what it prints.
+    for words, spec in (("delete allow out 80/tcp", "allow out 80/tcp"), ("allow 443", "allow 443"),
+                        ("route delete allow 9000/tcp", "route allow 9000/tcp"),
+                        ("allow out 53/udp comment x", "allow out 53/udp")):
+        assert ufw_stub._command(ufw_stub._parse(words.split())[1]) == spec
+    for words in ("allow proto tcp 443", "allow 192.0.2.1", "allow 443 to any", "allow 443 22", "allow 80/icmp"):
+        with pytest.raises(SystemExit):
+            ufw_stub._parse(words.split())
 
 
 def test_an_enforced_allowlist_without_dns_or_a_probe_is_refused_before_any_rule_is_added(tmp_path):

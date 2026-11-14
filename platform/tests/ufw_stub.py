@@ -13,6 +13,8 @@ on, read from the ufw 0.36.2 source (git.launchpad.net/ufw, tag 0.36.2):
   ("Could not delete non-existent rule"). Deleted prints "Rule deleted" ("Rules updated"
   when inactive).
 - A comment containing "'" is refused (src/parser.py).
+- A rule may be given in the short form `allow [in|out] PORT[/PROTO]` (src/parser.py parse).
+  ufw prints a rule to and from any address that way, so a delete by spec replays it.
 - `status verbose` prints "Status: inactive" alone while inactive.
 - Addresses are stored normalised (src/util.py normalize_address): a host mask (/32,
   /255.255.255.255, /128) is dropped and an IPv4 CIDR is masked to its network.
@@ -37,7 +39,13 @@ simulating a delete that took more than it named), PODMAN_STUB (JSON:
 import ipaddress
 import json
 import os
+import re
 import sys
+
+# The short form `allow [in|out] PORT[/PROTO]` (src/parser.py parse, nargs == 2 once the comment
+# is stripped), accepted only as the whole rule. A route rule takes it too: the route parser
+# hands the rule to the same parser (UFWCommandRouteRule.parse).
+_SHORT_FORM = re.compile(r"\d[\d,:]*(/(tcp|udp))?")
 
 
 def _load(path):
@@ -85,6 +93,9 @@ def _parse(tokens):
             rule["iface"] = t.pop(0)
     if t and t[0] in ("log", "log-all"):
         rule["log"] = t.pop(0)
+    if t and _SHORT_FORM.fullmatch(t[0]) and t[1:2] in ([], ["comment"]):
+        rule["dport"], _, proto = t.pop(0).partition("/")
+        rule["proto"] = proto or "any"
     last = None
     while t:
         word = t.pop(0)
@@ -100,11 +111,6 @@ def _parse(tokens):
             if "'" in rule["comment"]:
                 print("ERROR: Comment may not contain \"'\"")
                 raise SystemExit(1)
-        elif last is None and rule["dport"] == "any" and word[:1].isdigit():
-            # The short form `allow [in|out] PORT[/PROTO]` (src/parser.py parse, nargs == 2). It
-            # is how ufw prints a rule to and from any address, so a delete by spec replays it.
-            rule["dport"], _, proto = word.partition("/")
-            rule["proto"] = proto or "any"
         else:
             raise SystemExit(f"stub ufw: unsupported token {word!r} in {tokens}")
     return remove, rule
