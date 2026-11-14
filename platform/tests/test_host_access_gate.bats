@@ -317,7 +317,7 @@ print(f'{n}|' + (';'.join(bad) if bad else 'ALL_TOLERANT'))
 
   # Credentials cross this connection, so public cleartext is refused. The rule now
   # lives in ONE shared task (tasks/assert-bao-transport.yml) rather than a copy
-  # per playbook; the pattern itself is tested in test_credential_leaks.bats.
+  # per playbook; the pattern itself is tested in platform/tests/suite/credential_leaks.rs.
   grep -qE "include_tasks: tasks/assert-bao-transport\.yml" "$pb"
 
   # And the operator-facing template must not still teach the leaking form.

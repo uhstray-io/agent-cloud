@@ -453,7 +453,7 @@ PYTHON
   # Two runs racing a first-time seed both see 404; without CAS the later POST
   # replaces the earlier writer's keys. The seed writes through the shared merge task,
   # which owns the CAS-0 create and the create-race merge (asserted, block-scoped, in
-  # test_credential_leaks.bats; proven against a store in test_postiz_seed_write.py).
+  # platform/tests/suite/credential_leaks.rs; proven against a store in test_postiz_seed_write.py).
   assert_grep -q 'include_tasks: tasks/bao-merge-keys.yml' "$f"
   refute_grep -qE 'method: (PATCH|POST)' <<<"$(sed -n '/Merge the supplied credentials/,$p' "$f")"
 }
@@ -466,7 +466,7 @@ PYTHON
   # pinning the vulnerable form in place.
   #
   # The rule now lives in exactly one file and its behaviour (18 URL cases,
-  # including four userinfo bypasses) is asserted in test_credential_leaks.bats.
+  # including four userinfo bypasses) is asserted in platform/tests/suite/credential_leaks.rs.
   # Duplicating the pattern here is what let the fix miss this playbook, so this
   # test only checks that the playbook delegates to the shared guard.
   local f="$REPO_ROOT/platform/playbooks/seed-postiz-secrets.yml"

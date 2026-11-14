@@ -117,6 +117,36 @@ print('OK' if not problems else '; '.join(problems))
   [ "$output" = "OK" ]
 }
 
+# A name the doc cites for a Rust test (plan 24). Suite modules keep their port map as
+# `| <name> | <fn> |` rows (the BATS name in the first cell, backticks allowed). The fn named
+# in the row must carry #[test] on the line directly above `fn <fn>(`. Adjacency is awk's,
+# not a line window: test_no_line_window_assertions refuses grep -A/-B and head/tail counts.
+_rust_port_test_named() {
+  local name="$1" file fn
+  for file in "$REPO_ROOT"/platform/tests/suite/*.rs; do
+    while IFS= read -r fn; do
+      [ -n "$fn" ] || continue
+      if awk -v fn="$fn" '
+        prev ~ /^[ \t]*#\[test\][ \t]*$/ && $0 ~ ("^[ \t]*fn " fn "\\(") { found = 1 }
+        { prev = $0 }
+        END { exit(found ? 0 : 1) }
+      ' "$file"; then
+        return 0
+      fi
+    done < <(awk -v want="$name" '
+      /^\/\/!/ && index($0, "|") {
+        n = split($0, cell, "|")
+        if (n < 3) next
+        first = cell[2]; gsub(/^[ \t`]+|[ \t`]+$/, "", first)
+        if (first != want) next
+        fn = cell[3]; gsub(/`/, "", fn); sub(/^[ \t]+/, "", fn); sub(/[ \t(].*$/, "", fn)
+        print fn
+      }
+    ' "$file")
+  done
+  return 1
+}
+
 @test "mistakes doc: the four tests named below exist" {
   # Entry 8.2 is an invented cross-reference. This lists the names explicitly
   # rather than discovering them: an auto-discovering version needed enough regex
@@ -127,6 +157,9 @@ print('OK' if not problems else '; '.join(problems))
   # appended to by more than one line of work at a time, so an exhaustive check
   # fails on another author's in-flight entry rather than on anything here. The
   # four below are the ones this branch is responsible for.
+  #
+  # A name may live in a BATS file (`@test "<name>"`) or, after plan 24's port, in a
+  # Rust suite module: a port-map row `| <name> | <fn> |` whose fn is marked #[test].
   local suite
   suite=$(cat "$REPO_ROOT"/platform/tests/*.bats | tr '\n' ' ')
   local n
@@ -137,7 +170,10 @@ print('OK' if not problems else '; '.join(problems))
     "install-podman: configures no podman API socket"; do
     # named in the doc ...
     assert_contains "$(tr '\n' ' ' < "$DOC")" "$n"
-    # ... and present in the suite
-    assert_contains "$suite" "@test \"$n\""
+    # ... and present in the suite: a BATS @test, or a Rust port-map row whose fn is #[test]
+    if assert_contains "$suite" "@test \"$n\"" 2>/dev/null; then
+      continue
+    fi
+    _rust_port_test_named "$n" || { echo "no BATS @test and no Rust port-map #[test] fn for: $n" >&2; false; }
   done
 }
