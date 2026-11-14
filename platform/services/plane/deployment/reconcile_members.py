@@ -4,11 +4,12 @@ Run by reconcile-plane-members.yml INSIDE the plane-api container, after plane_s
 with one JSON document on stdin:
 
   {base, host, origin,                  plane_session.py
-   email, password,                     the automation account, the workspace's creator (role admin)
+   email, password,                     the automation account, the workspace's creator
    workspace_slug,
-   desired: {email: role_slug},         "admin" for platform-admins (inventory may say "member"
-                                        where the plan lacks the Admin role), "member" for
-                                        developers and business users; platform-user is never in it
+   desired: {email: role_slug},         plane_admin_role for platform-admins ("owner" in production:
+                                        Plane's Admin role is Business and Enterprise only; "member"
+                                        locally), "member" for developers and business users;
+                                        platform-user is never in it
    apply: bool,
    allow_mass_removal: bool}            see the guard below
 
@@ -19,9 +20,12 @@ pending invitations with `desired`:
   set role      a member, or a pending invitation, whose role_slug differs from the desired one
   remove        a member, or a pending invitation, whose email is not desired
 
-Never touched: the automation account, any owner (Plane refuses to demote or remove one), and
-bots (`membership_type=people`). Plane v3.3.3 removes a member by deactivating the row, so an
-inactive row counts as absent and a returning person is invited again.
+Never touched: the automation account, any owner, and bots (`membership_type=people`). Plane lets
+an owner manage another owner (permissions/system_roles.py:373-375 in the v3.3.3 image), so
+leaving owners alone is this script's policy: an owner who is no longer desired as one is listed
+under `owners_unmanaged` instead, for an operator to offboard by hand. Plane v3.3.3 removes a
+member by deactivating the row, so an inactive row counts as absent and a returning person is
+invited again.
 
 Without `apply` it changes nothing and reports the plan; with it, it applies the plan. An apply
 that would remove more than one person and more than half of the removable roster, or that was
@@ -120,4 +124,9 @@ if cfg.get("apply"):
         done.append(f"removed {p['email']}")
 
 summary = {k: [p["email"] + (f" ({p['role']})" if "role" in p else "") for p in v] for k, v in plan.items()}
-print(json.dumps({"changed": bool(done), "applied": bool(cfg.get("apply")), "plan": summary, "actions": done}))
+# Owners are never demoted or removed here, so one the groups no longer make an owner would keep
+# full control unnoticed: name them, so the manual offboarding has a trigger.
+unmanaged = [f"{e} (desired {desired[e]})" if e in desired else f"{e} (in no member group)"
+             for e in sorted(owners - {me}) if desired.get(e) != "owner"]
+print(json.dumps({"changed": bool(done), "applied": bool(cfg.get("apply")), "plan": summary, "actions": done,
+                  "owners_unmanaged": unmanaged}))

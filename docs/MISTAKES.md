@@ -68,6 +68,7 @@ and why.
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
+| 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1776,6 +1777,37 @@ the code makes into that library to where the setting is finally read, not by se
 caller for the setter. Name the line that reads the setting.
 
 **Enforced by.** Convention. The corrected 2.1 note cites the library lines that set the list.
+
+### 1.39 Promised a role from a licence tier without reading the vendor's plan matrix
+
+**Occurrences: 1** — 2026-11-09
+
+**What happened.** Plane refused the Admin workspace role with "Admin role is not available on
+this plan", and the read-only flag check showed `WORKSPACE_ADMIN_ROLE` off. From the flag's name
+and that refusal I told the operator, more than once, that activating the purchased Pro licence
+would make Admin available, and set up the change for it: site-config #169 switched
+`plane_admin_role` to `admin`, to be merged once the licence was active. The licence activated
+(Semaphore task 14291, "workspace plan PRO (activated now)"), and the reconcile still got the same
+403 for the one active member (task 14293). Plane's own documentation
+(docs.plane.so/roles-and-permissions/overview, plan table) offers the Workspace Admin role on
+Business and Enterprise only. The two other "successful" promotions in that run were pending
+invitations, whose update route never checks the flag (`invite.py:228` in the v3.3.3 image), so
+they briefly made it look like a per-person problem. The hourly reconcile failed every run until
+site-config #174 mapped `platform-admins` to Owner.
+
+**Root cause.** A plan gate's name says that something is gated, not which plan opens it. I
+treated "not on this plan" as "not on Free" and never read the vendor's plan matrix, which was one
+fetch away. The earlier spike note "Plane has no Owner role" also went unchallenged for the
+v3.3.3 image, where Owner is a role above Admin.
+
+**The rule.** Before saying a purchase, licence or tier will unlock a feature, read the vendor's
+own plan matrix for that feature by name, and quote it. A gate in the code establishes only that a
+gate exists. When a change is staged on that assumption, label it unverified until the first run
+proves it, and run it read-only first against a row the gate actually applies to (an active
+member, not a pending invitation).
+
+**Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
+by measurement); this is the reverse, a capability assumed without the documentation.
 
 ## 2. Tests that would have passed for the wrong reason
 
