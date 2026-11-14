@@ -47,9 +47,17 @@ areas:
     tiers:
       cli: [common_sh]
 
+  install_qemu_guest_agent:
+    paths:
+      - "platform/playbooks/install-qemu-guest-agent.yml"
+    tiers:
+      static: [install_qemu_guest_agent]
+      playbook: [install_qemu_guest_agent_playbook]
+
   # The suite's own tests. A change under platform/tests/ hits `full`, which is checked before
   # any area, so this area names no paths: it only gives these modules their one listing.
   test_platform:
     paths: []
     tiers:
       static: [lanes, support]
+      playbook: [support_playbook]

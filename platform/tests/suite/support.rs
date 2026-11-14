@@ -163,3 +163,45 @@ fn a_quoted_merge_key_is_an_ordinary_key() {
     assert!(m.get("<<").is_some());
     assert!(m.get("x").is_none());
 }
+
+/// Every `.rs` file under `dir`, at any depth, tracked or not: a new module is untracked until it
+/// is staged, and a nested one is still compiled if a `mod` line reaches it.
+fn rust_files_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.expect("a directory entry").path();
+        if path.is_dir() {
+            rust_files_under(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
+#[test]
+fn no_suite_test_starts_ansible_playbook_itself() {
+    // Rule 11 (03 Part 1): a playbook runs through `process::ansible_playbook` and `process::run`,
+    // which confine and bound it. The pattern spans line breaks, so a call split across lines is
+    // caught. It is written with an escaped parenthesis, so this file's own text does not match.
+    let spawn = regex::Regex::new(r#"(?:Command::new|scrubbed)\(\s*"ansible-playbook""#)
+        .expect("a valid pattern");
+    let mut files = Vec::new();
+    rust_files_under(&repo::path("platform/tests/suite"), &mut files);
+    assert!(
+        files.iter().any(|path| path.ends_with("main.rs")),
+        "the walk found no suite/main.rs: the guard would pass for the wrong reason"
+    );
+
+    let mut found = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("a suite file reads");
+        for hit in spawn.find_iter(&text) {
+            let line = text[..hit.start()].matches('\n').count() + 1;
+            found.push(format!("{}:{line}", path.display()));
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these start ansible-playbook without process::ansible_playbook: {}",
+        found.join(", ")
+    );
+}

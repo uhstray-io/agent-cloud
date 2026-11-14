@@ -265,6 +265,11 @@ The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
   anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.
 - Start a process only through `agent_cloud_tests::process`: a scrubbed environment and a
   30-second bound.
+- A playbook-tier module ends in `_playbook` and runs `ansible-playbook` only through
+  `process::ansible_playbook` and `process::run`, which confine and bound it. The `playbook`
+  test-group caps those tests at four at a time (`.config/nextest.toml`).
+- Playbook tests need `ansible-playbook` on `PATH`: run `uv sync --locked`, then put the
+  repository's `.venv/bin` first. They panic without it; they never skip.
 - Arrange, Act, Assert; several input cases are one test over a table.
 - Mutate the guarded code once and watch the test fail before you merge it.
 

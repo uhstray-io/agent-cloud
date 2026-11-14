@@ -8,6 +8,18 @@ nextest-version = { recommended = "0.9.151" }
 # A test running past 30 s is reported; at 120 s it is killed and fails.
 slow-timeout = { period = "30s", terminate-after = 4 }
 
+# Playbook tests (modules named `<area>_playbook`, plan 24) run ansible-playbook, each run bounded at
+# PLAYBOOK_TIMEOUT (120 s) by the runner, which reports the timeout with a sanitized message. The
+# 180 s slow-timeout is a backstop beyond that bound. Four at a time keeps a runner from being
+# starved by Ansible's own forks.
+[test-groups]
+playbook = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = 'test(/^[a-z0-9_]+_playbook::/)'
+test-group = 'playbook'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 [profile.ci]
 fail-fast = false
 failure-output = "immediate-final"
