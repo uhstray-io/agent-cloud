@@ -167,7 +167,7 @@ setup() {
   local f="$PB/bootstrap-local-dev.yml"
   local repos tmpl
   repos=$(grep -n "bootstrap-semaphore-repositories.yml" "$f" | head -1 | cut -d: -f1)
-  tmpl=$(grep -n "semaphore/setup-templates.yml" "$f" | head -1 | cut -d: -f1)
+  tmpl=$(grep -n "semaphore/converge-local-catalog.yml" "$f" | head -1 | cut -d: -f1)
   [ -n "$repos" ]
   [ -n "$tmpl" ]
   [ "$repos" -lt "$tmpl" ]
