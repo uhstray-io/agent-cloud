@@ -468,8 +468,8 @@ PY
   # still open. Each playbook must put the env lookup first.
   local pb="$REPO_ROOT/platform/playbooks"
 
-  # store-ssh-password.yml's own ordering is asserted in test_host_access_gate.bats,
-  # which lands with that change; this file covers the two seed playbooks.
+  # store-ssh-password.yml's own ordering is asserted in platform/tests/suite/host_access_gate.rs
+  # (the_environment_secret_wins_over_the_extra_var); this file covers the two seed playbooks.
   grep -qE "_bao_value:.*lookup\('env', *'BAO_VALUE'\) *\| *default\(bao_value" \
     "$pb/seed-openbao-key.yml"
   grep -qE "lookup\('env', *_env_name\) *$" "$pb/seed-postiz-secrets.yml"
@@ -516,7 +516,7 @@ PY
   grep -q "BAO_VALUE" "$t"
   grep -q "SEED_X_API_KEY" "$t"
   # NOTE: the Store SSH Password template's own correction (SSH_PASSWORD) is
-  # asserted in test_host_access_gate.bats, which lands with that change.
+  # asserted in platform/tests/suite/host_access_gate.rs (the_environment_secret_wins_over_the_extra_var).
 }
 
 # ── The OpenBao transport guard ───────────────────────────────────────────────

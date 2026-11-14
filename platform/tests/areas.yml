@@ -26,7 +26,7 @@ ignore:
 # The security set: selected in every lane (static modules only in the commit lane). `ledger`
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
 always:
-  static: [ledger]
+  static: [approle_ttl, host_access_gate, ledger, manage_github_runner_group]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
