@@ -173,7 +173,7 @@ scope is re-sized from the real diff when each release is planned.
 | Check | Passes when |
 |---|---|
 | Gate exists | The guard refuses a merge into `dev` that would make 101 PRs or 121 files, and the promotion check fails an over-limit promotion |
-| Releases fit | Every promotion after Release 1 (v0.15.0, the carry-over release) is ≤ 100 PRs and ≤ 120 files with no break-glass |
+| Releases fit | Every promotion after Release 1 (v0.15.0, the carry-over release) is ≤ 100 PRs and ≤ 120 files, or goes over a limit only through a break-glass the operator approved for that release, with the reason given in its release notes (policy 10, R10). v0.16.0 is the first such release (2026-11-13) |
 | Order holds | No release's code waits on a later release. A gate that slips moves its work down the table and pulls the next ready release forward. The order is not violated |
 | Cadence | Promotions land days apart, not weeks |
 | Runs follow | Each change's live gates run within the next release window after its code merges, and each finished change is archived with a Hindsight outcome retained |
@@ -207,3 +207,4 @@ scope is re-sized from the real diff when each release is planned.
 | 2026-11-12 | Part A built: phase 1 #1081, phase 2 #1093, phase 3 #1083, phase 4 this documentation. Intake reads git at the fetched `origin/dev`, verified against GitHub's live `dev` ref, not the pull request's `base.sha`: `base.sha` does not track `dev` (each of the 8 open pull requests that `gh pr list -L 8` returned was stale on 2026-11-12). Phase 2's acceptance follows. |
 | 2026-11-12 | Release 1 shipped as v0.15.0 (#1112); the pull requests that missed the cut move to Release 2. Operator decision: Release 2 is the Rust test platform foundation, planned to R7's 90 files; old Releases 2–8 are now 3–9, and Part B moves with the trust foundation to Release 3. |
 | 2026-11-13 | Release 2 widened by operator decision: Rust wave 1, small fixes and docs, and three carried pull requests join v0.16.0, over policy 10's limit; the merge guard gains --budget-acknowledged (AC-893) and the promotion merges through R10's break-glass. Release 3 is unchanged. |
+| 2026-11-14 | Validation criterion "Releases fit" allows a release over a limit only through an operator-approved break-glass, with the reason given in its release notes (R10), replacing "with no break-glass": v0.16.0 goes over its limit by operator decision. |
