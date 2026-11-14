@@ -23,6 +23,16 @@
 - name: "Take the deploy lock on {{ _weft_label }}"
   when: _wl_action == 'take' and not ansible_check_mode
   block:
+    # The lock must outlast the deploy it guards, or a slow watch would run unlocked at its end.
+    - name: "Require the lock to outlast a deploy"
+      ansible.builtin.assert:
+        that:
+          - (_weft_lock_minutes | int) > (_weft_health_minutes | int) + (_weft_watch_minutes | int) + 15
+        fail_msg: >-
+          weft_lock_minutes ({{ _weft_lock_minutes }}) must be more than the health window
+          ({{ _weft_health_minutes }}), the watch ({{ _weft_watch_minutes }}) and 15 minutes for the
+          backup and the start, or the lock would end before the deploy does. Nothing has changed.
+
     - name: "Name this run's hold"
       ansible.builtin.set_fact:
         _weft_lock_id: "{{ 999999999999 | random(seed=inventory_hostname ~ now().isoformat()) }}"
@@ -89,7 +99,15 @@
         argv:
           - sh
           - -c
-          - 'mine="$2"; set -- $(cat "$1"); [ "$1" = "$mine" ] && kill "$2" 2>/dev/null; true'
+          # Only while that pid is still this lock's sleep under flock: a run that outlived
+          # weft_lock_minutes has a holder that already exited, and its pid may be another
+          # process's by now, which this root kill must never reach.
+          - >-
+            mine="$2"; set -- $(cat "$1");
+            [ "$1" = "$mine" ]
+            && [ "$(cat /proc/$2/comm 2>/dev/null)" = sleep ]
+            && [ "$(cat /proc/$(awk '{print $4}' /proc/$2/stat 2>/dev/null)/comm 2>/dev/null)" = flock ]
+            && kill "$2" 2>/dev/null; true
           - sh
           - "{{ _weft_lock_owner }}"
           - "{{ _weft_lock_id }}"

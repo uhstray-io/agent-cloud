@@ -167,20 +167,21 @@
       vars:
         _wl_action: take
 
-    # The deploy's record (tasks/weft-deploy.yml): until this rollback comes back healthy, a
-    # re-launched deploy must not take the host for one already on its pin.
-    - name: "Mark this host deploying {{ _weft_release_digest }}"
-      ansible.builtin.copy:
-        content: "deploying {{ _weft_release_digest }}\n"
-        dest: "{{ _weft_state_dir }}/deploy.state"
-        owner: "{{ _weft_state_owner }}"
-        group: "{{ _weft_state_group }}"
-        mode: "0644"
-      become: true
-      when: not ansible_check_mode
-
     - name: "Restore and start {{ _weft_to }}"
       block:
+        # The deploy's record (tasks/weft-deploy.yml): until this rollback comes back healthy, a
+        # re-launched deploy must not take the host for one already on its pin. Inside the block,
+        # so a failure here still reaches the rescue that releases the lock.
+        - name: "Mark this host deploying {{ _weft_release_digest }}"
+          ansible.builtin.copy:
+            content: "deploying {{ _weft_release_digest }}\n"
+            dest: "{{ _weft_state_dir }}/deploy.state"
+            owner: "{{ _weft_state_owner }}"
+            group: "{{ _weft_state_group }}"
+            mode: "0644"
+          become: true
+          when: not ansible_check_mode
+
         - name: "Stop every container of {{ _weft_label }}"
           ansible.builtin.command:
             argv: [bash, deploy.sh, stop]
