@@ -17,6 +17,8 @@ Every step is launched by a person; no weft template has a schedule.
 - **Deploy weft Staging** (`deploy-weft-staging.yml`): staging's front door, then staging's workspace.
 - **Roll Back weft Host** (`rollback-weft-host.yml`): a front door is one of the hosts it takes.
 
+Don't launch a deploy and a rollback of the same host at once; check Semaphore's running tasks first.
+
 Each runs `weft-door.yml`:
 
 1. place the repository; generate the signing key once into OpenBao and render it as `door.key`

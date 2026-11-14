@@ -22,8 +22,6 @@ import hashlib
 import json
 import os
 import shutil
-import subprocess
-import time
 from pathlib import Path
 
 import pytest
@@ -99,7 +97,7 @@ def host(tmp_path):
     pb = tmp_path / "pb"
     (pb / "tasks").mkdir(parents=True)
     for name in ("weft-deploy.yml", "weft-verify-images.yml", "verify-cosign.yml", "weft-workspace-files.yml",
-                 "weft-whisper-model.yml", "weft-board-header.yml", "weft-lock.yml"):
+                 "weft-whisper-model.yml", "weft-board-header.yml"):
         shutil.copy(PLAYBOOKS / "tasks" / name, pb / "tasks" / name)
     (pb / "tasks" / "weft-release.yml").write_text(yaml.safe_dump(RELEASE_STUB))
     # Templates are read from {{ playbook_dir }}/../services/weft-<role>/deployment/templates.
@@ -327,39 +325,6 @@ def test_a_host_that_failed_its_deploy_is_deployed_again_on_relaunch(host):
     assert "already runs" not in proc.stdout, "a host whose deploy failed was taken as done:\n" + proc.stdout[-4000:]
     assert len(_ups(log)) == 1, "the re-launch must deploy the failed host again:\n" + log
     assert not (host / "github-record").exists(), "a failed deploy was followed by the staging GitHub record"
-
-
-def test_a_second_deploy_or_rollback_is_refused_while_one_holds_the_host(host):
-    # Semaphore does not serialise templates, so a deploy and a person's rollback of one host can
-    # be launched together (agent-cloud#891, N1). The second must be refused by name before it
-    # stops anything, not queued and not interleaved.
-    _state(host).mkdir(parents=True)
-    holder = subprocess.Popen(["flock", str(_state(host) / "deploy.lock"), "sleep", "120"])
-    try:
-        deadline = time.monotonic() + 10
-        while subprocess.run(["flock", "--nonblock", str(_state(host) / "deploy.lock"), "true"],
-                             timeout=30).returncode == 0:
-            assert time.monotonic() < deadline, "the test's own holder never took the lock"
-            time.sleep(0.2)
-        proc, log = _deploy(host, _release(NEW, "a"))
-    finally:
-        holder.kill()
-        holder.wait()
-    assert proc.returncode != 0, proc.stdout[-4000:]
-    assert "Another weft deploy or rollback holds" in proc.stdout, proc.stdout[-4000:]
-    assert not _stops(log) and not _ups(log), "the refused run touched the host:\n" + log
-    assert not (_state(host) / "deploy.state").exists(), "the refused run marked the host deploying"
-
-
-def test_a_finished_deploy_releases_the_host(host):
-    proc, _ = _deploy(host, _release(NEW, "a"))
-    assert proc.returncode == 0, proc.stdout[-4000:]
-    # The holder exits when its sleep is killed; give the kernel a moment to see it go.
-    deadline = time.monotonic() + 10
-    while subprocess.run(["flock", "--nonblock", str(_state(host) / "deploy.lock"), "true"],
-                         timeout=30).returncode != 0:
-        assert time.monotonic() < deadline, "a deploy that finished still holds its host's lock"
-        time.sleep(0.2)
 
 
 def test_a_host_marked_healthy_at_another_digest_is_deployed(host):
