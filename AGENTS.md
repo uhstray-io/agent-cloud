@@ -36,7 +36,7 @@ config-as-code**. Do the work *through* those mechanisms — not around them:
 
 ### Feature-to-Dev pull-request merges
 
-Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, run both review passes on the new head and post their statuses (Branch Workflow steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). Merge only after one independent final-head approval (a non-author approval on GitHub, or a review receipt passed with `--review-receipt`, whose independence from the author the guard does not check), the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. When they hold, use `--feedback-addressed --merge` (the Branch Workflow callout below says when an agent may do so without asking); the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
+Before merging a feature PR into `dev`, run `python3 scripts/merge-when-green.py --pr PR_NUMBER --head FULL_HEAD_SHA` and review the exact-head evidence. The command is read-only toward GitHub unless `--merge` is supplied; its release-budget count fetches `main`, `dev` and the `v*` tags into the checkout it runs from, and its dev-drift check fetches the pull request's head (`refs/pull/<n>/head`). It refuses a head when `dev` holds commits the head lacks that change test paths: merge `dev` into the branch, run both review passes on the new head and post their statuses (Branch Workflow steps 4 and 5), get the new head reviewed, and let CI run on it, or pass `--dev-drift-acknowledged` (`docs/MISTAKES.md` 5.23). It refuses a merge over a policy 10 limit unless `--budget-acknowledged` is passed for a release the operator approved going over it (R10). Merge only after one independent final-head approval (a non-author approval on GitHub, or a review receipt passed with `--review-receipt`, whose independence from the author the guard does not check), the `simplify` and `security-review` statuses on the final head (`docs/MISTAKES.md` 5.25), all final-head CI jobs pass, no `dev` commit the head lacks changes a test path (unless `--dev-drift-acknowledged`), review threads are resolved, outstanding changes requests are cleared, and actionable feedback is addressed. When they hold, use `--feedback-addressed --merge` (the Branch Workflow callout below says when an agent may do so without asking); the CLI repeats the gates and supplies `--match-head-commit` to one merge command. See [plan/development/dev-merge-guard.md](plan/development/dev-merge-guard.md).
 
 `dev` intentionally has no required-check rule because the main-to-Dev sync workflow pushes directly to it. The CLI is therefore an operator gate, not GitHub-enforced protection; do not substitute `gh pr merge --auto`, `--admin`, or a direct merge command.
 
@@ -377,7 +377,7 @@ Each deployment concern is its own playbook — independently runnable and retry
 | Migrate VM | `migrate-vm.yml` | Moves ONE existing declared VM OFFLINE to its inventory's `vm_node` (target + `vm_disk_storage`, as code): a running guest is shut down, moved, and started on the new node; `start_after` (default true) also starts a stopped guest and ends a stopped VM already there running. Inventory-first like Destroy VM; refuses unless the live VM matches vmid+name, the launch names the vmid in `confirm_migrate` (no default), Proxmox's migrate precondition allows the destination, the VM is not HA-managed, and it carries no local device or non-cloud-init CD drive; a configured or declared `vm_cpu` the destination cannot back is refused before shutdown. Recovery starts only a guest it was running, on the source or the declared node, bounded by `start_wait_retries`. Does not change the CPU model (Resize VM does, after) |
 | Apply Firewall | `apply-firewall.yml` | Default-deny inbound + optional declarative `firewall_deny_egress` for a semi-trusted host, and an optional outbound port allowlist `firewall_allow_egress`: `firewall_egress_mode: audit` (default) keeps outgoing allowed and logs every new connection the list does not name; `enforce` refuses an empty list, a list without 53/udp or without `firewall_egress_probes`, sets default-deny outgoing (for traffic the host sends, not what a rootful host forwards for containers) only after enable and the SSH verify, and restores default-allow outgoing if a probe cannot be reached from the host; a new `firewall_deny_egress` entry on a host already holding outbound allows is refused, because it would land behind them. Anti-lockout: SSH allows precede enable, then a fresh handshake is forced. Converges on tagged rules: adds only the declared rules the host does not hold by tag and spec, re-asserting rules that name no address (a converged host is two reads plus one skipped add per such rule), prunes the tagged rules no longer declared, keeps untagged ones, and refuses to prune SSH-admitting rules without `firewall_controller_cidr`. Full mechanics and guards: `platform/playbooks/README.md` |
 | Collect Service Conformance (Dev) | `collect-service-conformance.yml` | The service deployment workflow's ONLY status writer. Only the `(Dev)` template exists: bound to `dev` (repository record `agent-cloud dev`), with a declared 15-minute schedule (`*/15 * * * *`, in `platform/semaphore/templates.yml`). No `main`-bound copy is published, so production runs the collector only through the `(Dev)` template until promotion; whether that schedule is live in production is not verified from this repository. It reads each workflow template's own Semaphore history (its newest 1000 tasks; a template that fills that window is reported as `history_window_full` and marks the services it can hide as `history_incomplete`) → newest result per service and step (a failure that recorded none counts as `fail` with its last 20 lines), with each VM's status already in NetBox merged underneath as `retained` so a result older than the window stays in NetBox, the report and Loki alike → NetBox VM custom fields with a scoped view/change-VM token, and Loki for the `service-conformance` Grafana dashboard. Its dry run is the read-only failure report. A host that sets `service_conformance_tracked: false` (default true) is skipped when hosts are mapped to services (a group takes its service from its first tracked host), so a non-service host carrying a `service_name` never becomes a phantom "never run" service. First production run 2026-09-25 (Semaphore task 1341) updated the workflow custom fields on seven existing VM records |
-| Retire Semaphore Templates | `retire-semaphore-templates.yml` | Deletes the templates that `platform/semaphore/retired-templates.yml` declares retired, with their schedules; refuses a name still declared in `templates.yml` or `templates-local.yml`, and a name matching more than one live template; run the `(Dev)` variant in Dry run first. The only removal path, since `setup-templates.yml` never deletes. Before each delete it drains that template's task history, because a delete over thousands of runs timed out |
+| Retire Semaphore Templates | `retire-semaphore-templates.yml` | Deletes the templates that `platform/semaphore/retired-templates.yml` declares retired, with their schedules; refuses a name still declared in `templates.yml` or `templates-local.yml`, and a name matching more than one live template; run the `(Dev)` variant in Dry run first. The only removal path, since `setup-templates.yml` never deletes. In production it is a manual launch; local-dev runs it after every publish through `platform/semaphore/converge-local-catalog.yml` (`make local-bootstrap`, `./scripts/local-dev.sh templates`). Before each delete it drains that template's task history, because a delete over thousands of runs timed out |
 | Retire OpenBao Fields | `retire-openbao-fields.yml` | Removes the OpenBao fields that its declaration lists as retired from the current KV-v2 version, with a merge-patch null; earlier versions keep their values until KV history is destroyed. A dry run reports the field names only, never their values. Refuses a field that the checked-out branch still declares for its own path (`secret-declarations/<svc>.yml` or `deploy-<svc>.yml`); it cannot see `main`, so run it only after the declaration's removal is promoted, or a main-bound deploy regenerates the field |
 | Copy OpenBao Fields | `copy-openbao-fields.yml` | Copies the OpenBao KV-v2 fields that its declaration (`platform/playbooks/vars/copied-secret-fields.yml`) lists, from one path to another, inside the store: the value is read and written by the playbook and never printed. Refuses, before any write, a copy whose source is missing (a source retired in `vars/retired-secret-fields.yml` is a no-op once it is gone, while its target holds a value) or whose target holds a different value. A dry run lists each copy's state by name only. Removing the source is `Retire OpenBao Fields`, run after the copy has landed |
 | Snapshot Service Assessment / Snapshot Firewall / Snapshot Access | `snapshot-*.yml` | The one input each light-blue reasoning step (plan 15) reads: names and metadata only, never secret values; read-only and identical under `--check` |
@@ -544,6 +544,40 @@ environment before operations; a checked-in deploy path is not proof it is runni
 - **No instance details** in new docs, skills or guides: Uhstray.io's hostnames, workspace names and contacts go to site-config, with placeholders here (see "Standing convention" under Repository Overview)
 - IPs and real credentials belong exclusively in site-config (private)
 
+### Plane work tracking
+
+This repository's work is tracked in Plane, project `AC`. Plane's GitHub integration links
+the two, and it acts only on what these rules mark:
+
+- **An issue reaches Plane only with the `plane` label.** Adding the label imports the issue as an
+  `AC` work item, and the Plane app comments on the issue with its key. After that, edits and
+  comments sync both ways. An unlabelled issue is never imported, and existing issues are not
+  backfilled. A Plane work item reaches GitHub only with the `github` label.
+- **Every pull request names its work item.** Put exactly one Plane key in brackets in the pull
+  request title, for example `fix(scope): short description [AC-12]`. Plane links the pull
+  request to that item and moves the item with the pull request's state (the mapping is
+  `PR_STATES` in `platform/services/plane/deployment/link_github_repos.py`). Mention any other
+  item without brackets (`AC-34`): that links the pull request without moving the item. Plane
+  reads the title and description on every pull request event except a push, so a key added to
+  the title later is picked up on the next such event.
+- **A brief for any agent that may open a pull request names the work item's key.**
+- **Label every issue and work item with at least one area label.** These are the area labels
+  this repository uses. An `area:` name and its description are shared: it means the same thing
+  in every repository in this organisation, so filter by it across projects. Plane's area labels
+  are kept by hand: Sync Plane Projects declares only the labels every project carries
+  (`platform/services/plane/schema.yml`), so a work item the OpenSpec sync creates arrives with
+  `openspec` alone, and whoever works it adds its area label. Create a new area label only after
+  agreeing it with the repository owner, with the same name on GitHub and in Plane:
+  - `platform`: services, VMs, hosts and the edge
+  - `playbooks`: Ansible playbooks and the task library
+  - `semaphore`: Semaphore templates and orchestration
+  - `netbox`: NetBox, IPAM and network discovery
+  - `area:docs`: internal docs and runbooks
+  - `area:ai`: models: transcription, diarisation, summaries, inference, prompts
+  - `area:auth`: sign-in, SSO, identity, sessions, access control
+  - `area:ui`: app and web interface: screens, components, design system
+  - `area:observability`: metrics, logs, traces, dashboards and alerts
+
 ### Branch Workflow
 
 > **Pushes, pull requests and merges follow the operator's standing authorization**
@@ -563,8 +597,9 @@ environment before operations; a checked-in deploy path is not proof it is runni
 >   `Promotion source (dev -> main)` check passing.
 >   The two rounds are a convention: no check counts them.
 > - Still asked every time: a push straight to `main` or `dev`, any force push, any squash merge,
->   passing `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one
->   that changes a release script or a workflow file the guard does not accept), and a push or pull
+>   passing `--dev-drift-acknowledged` or `--budget-acknowledged`, merging a pull request the guard
+>   leaves to the operator (one that changes a release script or a workflow file the guard does not
+>   accept), and a push or pull
 >   request in a repository outside this organisation. An agent running under an account with the
 >   repository-admin role holds `protect-main`'s break-glass bypass, so for it GitHub does not refuse
 >   a push, force push or deletion on `main`; asking is the control. An approval for one of these
