@@ -565,7 +565,8 @@ pub mod process {
                 // --die-with-parent: bwrap and its direct child, ansible-playbook, are SIGKILLed when
                 // bwrap's parent dies (bwrap.xml, PR_SET_PDEATHSIG). A process ansible-playbook forks
                 // does not inherit that signal (it is cleared on fork), so a worker can outlive a
-                // killed runner; AC-882 tracks a process-group kill.
+                // killed runner, as it can on every runner path (`run_for`); AC-882 tracks a
+                // process-group kill.
                 cmd.args([
                     "--ro-bind",
                     "/",
@@ -601,9 +602,10 @@ pub mod process {
     /// Runs `cmd` to completion with no stdin, killed once `timeout` has passed. A timeout panics
     /// with its bound and nothing the child printed: captured output can hold fixture credentials
     /// (`harness_sandbox.run`). `assert_cmd` returns a killed child as `Ok`, not as an error, so a
-    /// timeout is a SIGKILL that came at or after the bound. The bound covers the direct child
-    /// only: `assert_cmd` waits for the output pipes, so a grandchild (an Ansible worker) that
-    /// keeps them open holds the return until it exits. The Python harness does not wait for that.
+    /// timeout is a SIGKILL that came at or after the bound. The kill reaches the direct child
+    /// only. A worker `ansible-playbook` forked is not killed and can outlive the timeout on every
+    /// runner path: sandboxed under `sandbox-exec` or `bwrap`, unconfined without either. The Python
+    /// harness has the same limit; AC-882 tracks a process-group kill.
     pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
         let started = Instant::now();
         let output = cmd

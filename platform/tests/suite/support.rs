@@ -182,7 +182,7 @@ fn no_suite_test_starts_ansible_playbook_itself() {
     // Rule 11 (03 Part 1): a playbook runs through `process::ansible_playbook` and `process::run`,
     // which confine and bound it. The pattern spans line breaks, so a call split across lines is
     // caught. It is written with an escaped parenthesis, so this file's own text does not match.
-    let spawn = regex::Regex::new(r#"(?:Command::new|scrubbed)\(\s*"ansible-playbook""#)
+    let spawn = regex::Regex::new(r#"(?:Command::new|scrubbed)\(\s*"(?:[^"]*/)?ansible-playbook""#)
         .expect("a valid pattern");
     let mut files = Vec::new();
     rust_files_under(&repo::path("platform/tests/suite"), &mut files);
@@ -203,5 +203,29 @@ fn no_suite_test_starts_ansible_playbook_itself() {
         found.is_empty(),
         "these start ansible-playbook without process::ansible_playbook: {}",
         found.join(", ")
+    );
+
+    // A playbook run outside a `*_playbook` module escapes the `playbook` test-group, which caps
+    // concurrent runs, and the playbook tier lanes select it by (#1141 review). The needle is built
+    // with concat! so this file's own text does not match.
+    let call = concat!("process::ansible_playbook", "(");
+    let misplaced: Vec<String> = files
+        .iter()
+        .filter(|path| {
+            !path
+                .file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().ends_with("_playbook"))
+        })
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .expect("a suite file reads")
+                .contains(call)
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    assert!(
+        misplaced.is_empty(),
+        "these run a playbook outside a *_playbook module: {}",
+        misplaced.join(", ")
     );
 }

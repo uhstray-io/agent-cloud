@@ -12,6 +12,7 @@
 //! | `test_run_gives_the_child_no_stdin` | `run_gives_the_child_no_stdin` |
 //! | `test_run_playbook_builds_the_command_environment_and_bound` (the command, its arguments and its explicit environment) | `ansible_playbook_builds_the_command_for_the_repository_root` |
 //! | `test_run_playbook_builds_the_command_environment_and_bound` (the ANSIBLE_CONFIG drop, as the child sees it) | `the_environment_reaches_the_playbook_as_specified` |
+//! | `test_run_playbook_builds_the_command_environment_and_bound` (the bound, `seen["timeout"]`) | `a_playbook_run_is_held_to_the_harness_bound` |
 //! | `test_run_playbook_runs_a_real_playbook` | `ansible_playbook_runs_a_real_playbook` |
 //! | `test_env_for_keeps_the_callers_collections_visible` | `playbook_env_keeps_the_callers_collections_visible` |
 //! | `test_a_playbook_run_through_the_harness_resolves_an_installed_collection` | `a_playbook_run_resolves_an_installed_collection` |
@@ -126,6 +127,27 @@ fn run_gives_the_child_no_stdin() {
     assert!(out.status.success(), "{}", stdout_and_stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "rc=1");
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_playbook_run_is_held_to_the_harness_bound() {
+    // The Python harness bounds a playbook run at DEFAULT_TIMEOUT_SECONDS, 120, and its test checks
+    // the bound reaches the run. The constant alone is not enough: `run` must pass it on, or a hung
+    // playbook is held only by nextest's slow-timeout (#1141 review). Waiting out 120 s in a test
+    // is not an option, so the forwarding is read from the source.
+    assert_eq!(process::PLAYBOOK_TIMEOUT, Duration::from_secs(120));
+    let lib =
+        std::fs::read_to_string(repo::path("platform/tests/src/lib.rs")).expect("lib.rs reads");
+    let body = lib
+        .split("pub fn run(cmd: &mut Command) -> Output {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("process::run is defined in src/lib.rs");
+    assert_eq!(
+        body.trim(),
+        "run_for(cmd, PLAYBOOK_TIMEOUT)",
+        "process::run is not held to PLAYBOOK_TIMEOUT"
+    );
 }
 
 #[test]
