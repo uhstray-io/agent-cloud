@@ -80,8 +80,3 @@ _weft_secrets: "{{ weft_secret_root | default('weft') }}"
 # it is; going back is a person's (rollback-weft-host.yml).
 _weft_health_minutes: "{{ weft_health_minutes | default(5) }}"
 _weft_watch_minutes: "{{ weft_watch_minutes | default(15) }}"
-
-# The longest one deploy or rollback holds its host's lock (tasks/weft-lock.yml): the health window,
-# the watch and the backup with room to spare. A run killed without releasing frees the host after
-# this long at most.
-_weft_lock_minutes: "{{ weft_lock_minutes | default(60) }}"

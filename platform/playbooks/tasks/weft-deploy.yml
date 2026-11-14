@@ -124,26 +124,18 @@
   ansible.builtin.include_tasks: weft-whisper-model.yml
   when: _weft_role == 'workspace'
 
-# Before the stop, and after every check that changes nothing: a second deploy or a person's
-# rollback of this host is refused here, by name, with nothing stopped (tasks/weft-lock.yml).
-- name: "Take the deploy lock"
-  ansible.builtin.include_tasks: weft-lock.yml
-  vars:
-    _wl_action: take
+- name: "Mark this host deploying {{ _weft_release_digest }}"
+  ansible.builtin.copy:
+    content: "deploying {{ _weft_release_digest }}\n"
+    dest: "{{ _weft_state_dir }}/deploy.state"
+    owner: "{{ _weft_state_owner }}"
+    group: "{{ _weft_state_group }}"
+    mode: "0644"
+  become: true
+  when: not ansible_check_mode
 
 - name: "Stop and back up"
   block:
-    # Inside the block, so a failure here still reaches the rescue that releases the lock.
-    - name: "Mark this host deploying {{ _weft_release_digest }}"
-      ansible.builtin.copy:
-        content: "deploying {{ _weft_release_digest }}\n"
-        dest: "{{ _weft_state_dir }}/deploy.state"
-        owner: "{{ _weft_state_owner }}"
-        group: "{{ _weft_state_group }}"
-        mode: "0644"
-      become: true
-      when: not ansible_check_mode
-
     # Unconditional, and safe on a fresh host: .env is rendered further down, and `deploy.sh stop`
     # with no .env says nothing runs and exits 0 (agent-cloud#890 B1).
     - name: "Stop {{ _weft_label }}"
@@ -171,10 +163,6 @@
       when: _weft_data.stat.exists
 
   rescue:
-    - name: "Keep the step that failed"
-      ansible.builtin.set_fact:
-        _weft_failed_step: "{{ ansible_failed_task.name | default('unknown step') }}"
-
     - name: "Start what was running again"
       ansible.builtin.command:
         argv: [bash, deploy.sh, up]
@@ -185,15 +173,10 @@
         - _weft_from != 'none'
         - not ansible_check_mode
 
-    - name: "Release the deploy lock (backup failed)"
-      ansible.builtin.include_tasks: weft-lock.yml
-      vars:
-        _wl_action: release
-
     - name: "Fail: the backup did not verify"
       ansible.builtin.fail:
         msg: >-
-          {{ _weft_label }} was not deployed to {{ _weft_to }}: '{{ _weft_failed_step }}'
+          {{ _weft_label }} was not deployed to {{ _weft_to }}: '{{ ansible_failed_task.name | default('unknown step') }}'
           failed before anything changed. It is still on {{ _weft_from }}.
 
 - name: "Note when the deploy started (health counts passes after this)"
@@ -290,11 +273,6 @@
       become: true
       when: not ansible_check_mode
 
-    - name: "Release the deploy lock"
-      ansible.builtin.include_tasks: weft-lock.yml
-      vars:
-        _wl_action: release
-
     - name: "Report {{ _weft_label }}"
       ansible.builtin.debug:
         msg: "{{ _weft_label }} is on {{ _weft_to }} (from {{ _weft_from }}), healthy after a {{ _weft_watch_minutes }}-minute watch."
@@ -303,19 +281,10 @@
     # No automatic rollback: the previous release is the host's previous pin, a person's choice
     # in site-config, and going back restores data. The host is left as it is, and the run fails so
     # a rollout goes no further.
-    - name: "Keep the step that failed"
-      ansible.builtin.set_fact:
-        _weft_failed_step: "{{ ansible_failed_task.name | default('unknown step') }}"
-
-    - name: "Release the deploy lock (deploy failed)"
-      ansible.builtin.include_tasks: weft-lock.yml
-      vars:
-        _wl_action: release
-
     - name: "Fail: {{ _weft_to }} failed on {{ _weft_label }}"
       ansible.builtin.fail:
         msg: >-
-          {{ _weft_label }}: {{ _weft_to }} failed '{{ _weft_failed_step }}'
+          {{ _weft_label }}: {{ _weft_to }} failed '{{ ansible_failed_task.name | default('unknown step') }}'
           and is left as it is; nothing was rolled back and nothing was deleted.
           {{ ('The backup taken before it is ' ~ _weft_backup_set ~ '. ') if (_weft_backup_set | default('') | length > 0) else '' }}To
           go back to {{ _weft_from }}: revert this host's weft_release in site-config, sync the

@@ -1122,6 +1122,7 @@ templates:
     # The front door, then every workspace one at a time, each to its pin; refuses a rack host
     # not pinned to <version>@sha256:<digest> before anything changes. Re-launching continues a
     # rollout where it stopped.
+    description: "Don't launch a deploy and a rollback of the same host at once; check Semaphore's running tasks first."
     dev_variant: true
     survey_vars:
       - name: service_branch
@@ -1155,6 +1156,7 @@ templates:
     # DESTRUCTIVE to what was written since the named backup (set aside, never deleted). Revert
     # the host's weft_release in site-config and sync the inventory first: this goes back to what
     # the host is pinned to now.
+    description: "Don't launch a deploy and a rollback of the same host at once; check Semaphore's running tasks first."
     dev_variant: true
     survey_vars:
       - name: weft_rollback_host

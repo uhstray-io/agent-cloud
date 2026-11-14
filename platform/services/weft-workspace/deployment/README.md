@@ -77,6 +77,8 @@ The run prints the backup set it took and how to go back:
 On staging, which has no pin in site-config, the rollback takes the commit or pin to go back to in
 its survey.
 
+Don't launch a deploy and a rollback of the same host at once; check Semaphore's running tasks first.
+
 ## Files
 
 ```text
