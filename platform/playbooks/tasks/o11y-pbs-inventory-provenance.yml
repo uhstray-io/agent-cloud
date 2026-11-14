@@ -75,11 +75,18 @@
           {{ (((_pbs_prov_secret_reads.results | default([]) | selectattr('item', 'equalto', 'ssh/site-config') | list | first | default({})).get('json', {})).get('data', {})).get('data', {}) }}
       no_log: true
 
+    # Trim trailing slashes from the stored url before it builds a request path, as the PBS task reader does
+    # (tasks/read-o11y-pbs-prior-task.yml; #604). Every request below and the transport guard use the trimmed value.
+    - name: "Take the Semaphore base URL without a trailing slash (hidden: it comes from the secret read)"
+      ansible.builtin.set_fact:
+        _pbs_prov_semaphore_url: "{{ (_pbs_prov_semaphore_secret.url | default('', true) | string | trim) | regex_replace('/+$', '') }}"
+      no_log: true
+
     - name: Require OpenBao values without revealing them
       ansible.builtin.assert:
         that:
           - _pbs_prov_bao_auth.json.auth.client_token | default('') | length > 0
-          - _pbs_prov_semaphore_secret.url | default('') | length > 0
+          - _pbs_prov_semaphore_url | length > 0
           - _pbs_prov_semaphore_secret.api_token | default('') | length > 0
           - _pbs_prov_site_config_secret.private_key | default('') | length > 0
         fail_msg: "PBS inventory provenance could not read its required OpenBao values."
@@ -89,12 +96,12 @@
     - name: Refuse cleartext Semaphore transport
       ansible.builtin.include_tasks: assert-bao-transport.yml
       vars:
-        _assert_bao_url: "{{ _pbs_prov_semaphore_secret.url }}"
+        _assert_bao_url: "{{ _pbs_prov_semaphore_url }}"
         _assert_url_label: Semaphore
 
     - name: Read current production inventory records
       ansible.builtin.uri:
-        url: "{{ _pbs_prov_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/inventory"
+        url: "{{ _pbs_prov_semaphore_url }}/api/project/{{ estate_coverage_semaphore_project_id }}/inventory"
         headers:
           Authorization: "Bearer {{ _pbs_prov_semaphore_secret.api_token }}"
         unredirected_headers: [Authorization]
@@ -110,7 +117,7 @@
 
     - name: Read current template records
       ansible.builtin.uri:
-        url: "{{ _pbs_prov_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/templates"
+        url: "{{ _pbs_prov_semaphore_url }}/api/project/{{ estate_coverage_semaphore_project_id }}/templates"
         headers:
           Authorization: "Bearer {{ _pbs_prov_semaphore_secret.api_token }}"
         unredirected_headers: [Authorization]
@@ -126,7 +133,7 @@
 
     - name: Read current repository records
       ansible.builtin.uri:
-        url: "{{ _pbs_prov_semaphore_secret.url }}/api/project/{{ estate_coverage_semaphore_project_id }}/repositories"
+        url: "{{ _pbs_prov_semaphore_url }}/api/project/{{ estate_coverage_semaphore_project_id }}/repositories"
         headers:
           Authorization: "Bearer {{ _pbs_prov_semaphore_secret.api_token }}"
         unredirected_headers: [Authorization]
