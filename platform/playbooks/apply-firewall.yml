@@ -543,8 +543,9 @@
     # while outbound allows (or the audit rule, which allows everything) are already held
     # would land behind them and never match the traffic they admit. Reordering the held
     # allows would open a window with them missing, which under an enforced allowlist cuts
-    # DNS and every declared port; placing the denial with `insert`/`prepend` is unverified on
-    # the hosts' ufw and unmodelled by the test stub. So refuse before any rule changes.
+    # DNS and every declared port; placing the denial with `insert`/`prepend` (documented in
+    # ufw(8)) has not been exercised on the hosts and is not modelled by the test stub. So
+    # refuse before any rule changes.
     - name: "Refuse a new outbound denial behind held outbound allows"
       ansible.builtin.assert:
         that:
