@@ -533,6 +533,9 @@
         # and `show added` prints the pair as one line, so a lost half cannot be seen there;
         # with both halves stored ufw prints "Skipping adding existing rule" (not a change).
         _fw_to_add: "{{ _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added, reassert_dual_family=true) }}"
+        # Only the rules genuinely missing: _fw_to_add also re-asserts held dual-family rules
+        # (the outbound allows and the audit rule among them), so it cannot tell held from new.
+        _fw_absent_now: "{{ _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added) }}"
 
     # ufw evaluates rules in order and the first match wins (ufw(8), release 0.36: "Rule
     # ordering is important and the first match wins"), and a plain add places a new rule
@@ -540,7 +543,8 @@
     # while outbound allows (or the audit rule, which allows everything) are already held
     # would land behind them and never match the traffic they admit. Reordering the held
     # allows would open a window with them missing, which under an enforced allowlist cuts
-    # DNS and every declared port, so refuse before any rule changes instead.
+    # DNS and every declared port; placing the denial with `insert`/`prepend` is unverified on
+    # the hosts' ufw and unmodelled by the test stub. So refuse before any rule changes.
     - name: "Refuse a new outbound denial behind held outbound allows"
       ansible.builtin.assert:
         that:
@@ -549,10 +553,10 @@
           {{ inventory_hostname }}: firewall_deny_egress adds {{ _fw_new_denials | join(', ') }}, but the host
           already holds outbound allows ({{ _fw_held_out_allows | join(', ') }}). ufw appends a new rule and the
           first match wins, so the denial would not apply to the ports those allows admit. Nothing was changed.
-          To apply it: run once with firewall_allow_egress removed (the outbound allows and the audit rule are
-          pruned), then once with both lists declared, so the denials are added first.
+          To apply it: without the new denial, first run in audit mode if the host is enforced (outgoing is
+          allowed again), then run with firewall_allow_egress and firewall_egress_mode removed (the outbound
+          allows and the audit rule are pruned), then declare both lists, so the denials are added first.
       vars:
-        _fw_absent_now: "{{ _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added) }}"
         _fw_new_denials: "{{ _fw_absent_now | selectattr('family', 'equalto', 'out-deny') | map(attribute='spec') | list }}"
         _fw_held_out_allows: >-
           {{ _fw_desired | selectattr('family', 'in', ['out-allow', 'out-audit'])
@@ -581,8 +585,7 @@
         - not ansible_check_mode
         - _fw_audit_spec | length > 0
         - _fw_audit_spec in (_fw_added.stdout_lines | ufw_parse_added | map(attribute='spec') | list)
-        - _fw_desired | ufw_absent(_fw_added.stdout_lines | ufw_parse_added)
-          | selectattr('family', 'equalto', 'out-allow') | list | length > 0
+        - _fw_absent_now | selectattr('family', 'equalto', 'out-allow') | list | length > 0
 
     # Every other declared rule the host lacks — static and detected INPUT allows, FORWARD
     # (route) allows for rootful podman / Docker, podman bridge DNS, egress denials — still

@@ -674,20 +674,20 @@ def test_a_host_without_an_allowlist_keeps_outgoing_allowed_and_no_outbound_allo
     assert not [s for s in _rules(state) if s.startswith("allow out")]
 
 
-def test_a_new_denial_behind_held_outbound_allows_is_refused_before_any_change(tmp_path):
+def test_a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_new_ones(tmp_path):
     # ufw appends and the first match wins, so a denial added after held allows (or after the
-    # audit rule, which allows everything) would never match what they admit.
-    _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
-    before = len(_log(tmp_path))
-    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": [{"to": "198.51.100.1"}]})
-    assert r.returncode != 0
+    # audit rule, which allows everything) would never match what they admit: refused, nothing
+    # changed. Declared together with a new allowlist, the denial is added first.
+    deny = [{"to": "198.51.100.1"}]
+    held = [["allow out 443/tcp", _tag("out-allow", "443/tcp", "any")],
+            ["allow out 53/udp", _tag("out-allow", "53/udp", "any")], [AUDIT, _tag("out-audit", "any", "any")]]
+    r, states = _run_many(tmp_path, {
+        "held": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": deny},
+                 "state": {"active": True, "outgoing": "allow", "rules": held}},
+        "fresh": {"vars": {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": deny}}})
+    assert re.search(r"\bheld\s*:.*failed=1", r.stdout), r.stdout
     assert "adds deny out to 198.51.100.1, but the host already holds outbound allows" in r.stdout, r.stdout
-    assert not [line for line in _log(tmp_path)[before:] if MUTATING.search(line)], _log(tmp_path)[before:]
-    assert "deny out to 198.51.100.1" not in _rules(state)
-
-
-def test_denials_declared_with_a_new_allowlist_land_before_it(tmp_path):
-    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_deny_egress": [{"to": "198.51.100.1"}]})
-    assert r.returncode == 0, r.stdout + r.stderr
-    specs = [rule[0] for rule in state["rules"]]
+    assert not [line for line in _log(tmp_path, "held") if MUTATING.search(line)], _log(tmp_path, "held")
+    assert re.search(r"\bfresh\s*:.*failed=0", r.stdout), r.stdout
+    specs = [rule[0] for rule in states["fresh"]["rules"]]
     assert specs.index("deny out to 198.51.100.1") < specs.index("allow out 443/tcp") < specs.index(AUDIT)
