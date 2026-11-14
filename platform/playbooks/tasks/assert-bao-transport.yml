@@ -10,9 +10,10 @@
 # on an internal VLAN and is reached at an http:// address. Requiring https
 # outright would break every real run.
 #
-# Single-label http:// names and host.containers.internal pass ONLY under local_mode on a local-dev
-# inventory (filter_plugins/local_dev.py): an extra var outranks the inventory, and a bare name can
-# resolve publicly. The trailing delimiter still refuses http://name@host (name before @ is userinfo).
+# Single-label http:// names and host.containers.internal pass ONLY on a local-dev inventory
+# (filter_plugins/local_dev.py, read from `groups`, plan 24): an extra var cannot open them on
+# production, and a bare name can resolve publicly. The trailing delimiter still refuses
+# http://name@host (name before @ is userinfo).
 #
 # The same local-dev branch accepts exactly one dotted name: host.containers.internal, the
 # name podman gives a container for its engine host. A local controller reaches services
@@ -77,8 +78,7 @@
         (_assert_bao_url is match(_pat_strict)
          and (_assert_bao_url is not match('^https://')
               or _assert_bao_url is match(_pat_https)))
-        or ((local_mode | default(false) | bool)
-            and (groups['all'] | local_dev_inventory)
+        or ((groups['all'] | local_dev_inventory)
             and _assert_bao_url is match(_pat_single_label))
     fail_msg: >-
       Refusing to send secret material to {{ _assert_url_label | default('OpenBao') }}

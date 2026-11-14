@@ -721,6 +721,12 @@ templates:
         type: string
         required: false
         default_value: "main"
+      - name: deploy_force_recreate
+        title: "Force container recreate"
+        description: "true to recreate OPA even when its policies and image match (reloads the policies)"
+        type: string
+        required: false
+        default_value: "false"
 
   # The skynet orchestration API (OpenSpec service-deployment-workflow, task 3.7). Its Semaphore token is
   # the svc-skynet account's, written to secret/services/skynet by "Provision skynet Semaphore Access":
@@ -1029,9 +1035,10 @@ templates:
         required: false
 
   # Read-only allow-path probe of the launch gate (skynet-launch-containment task 5.5): one dry-run
-  # Snapshot Service Assessment (Dev) launch as the probe identity (skynet, acting as service-agent), then the
-  # same request again at once, which the gate must refuse already_running. Runs inside the gate's container;
-  # never prints the caller token. Dev-bound until promotion.
+  # Snapshot Service Assessment launch as the probe identity (skynet, acting as service-agent), then the
+  # same request again at once, which the gate must refuse already_running. The variant survey picks the
+  # (Dev) copy (default) or the base template. Runs inside the gate's container; never prints the caller
+  # token. Dev-bound until promotion.
   - name: Probe launch-gate (Dev)
     playbook: platform/playbooks/probe-launch-gate.yml
     repository: agent-cloud dev
@@ -1041,6 +1048,15 @@ templates:
         description: "Inventory group the probe snapshots, a populated <name>_svc group (blank for opa_svc)"
         type: string
         required: false
+      - name: probe_template_variant
+        title: "Template variant"
+        description: "Which Snapshot Service Assessment the probe launches: the (Dev) copy, or the base template on main"
+        type: enum
+        required: true
+        default_value: dev
+        values:
+          - { name: "Snapshot Service Assessment (Dev)", value: "dev" }
+          - { name: "Snapshot Service Assessment (base, main)", value: "base" }
 
   - name: Probe skynet Launch (Dev)
     playbook: platform/playbooks/probe-skynet-launch.yml
@@ -1387,7 +1403,8 @@ templates:
   # model input.
   - name: Snapshot Firewall
     playbook: platform/playbooks/snapshot-firewall.yml
-    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks fw-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1400,7 +1417,8 @@ templates:
   # assessment's only model input.
   - name: Snapshot Service Assessment
     playbook: platform/playbooks/snapshot-service-assessment.yml
-    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks service-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service
@@ -1411,7 +1429,8 @@ templates:
 
   - name: Snapshot Access
     playbook: platform/playbooks/snapshot-access.yml
-    # Not on main until the service deployment workflow is promoted; dev-bound meanwhile.
+    # The base runs on main, the (Dev) copy on dev. skynet launches the base only while its copy of
+    # platform/workflows/service-onboarding/registry.yml marks access-assess reviewed, else the (Dev) copy.
     dev_variant: true
     survey_vars:
       - name: target_service

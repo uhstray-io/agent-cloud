@@ -282,7 +282,6 @@ def _run_guards(tmp_path, name, token_id):
             "_restore_copy_token_id": "o11y-copy-restore@pbs!pve-restore",
             "_restore_copy_token": "synthetic-restore-reader",
             "_restore_copy_fingerprint": "c" * 64,
-            "_restore_semaphore_secret": {"url": "https://semaphore.test", "api_token": "synthetic"},
             "_restore_semaphore_project_id": 1,
             "_restore_copy_vm_storage_id": "pbs-vm-store",
             "_restore_copy_storage_id": "pbs-vm-store",

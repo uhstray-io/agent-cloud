@@ -31,7 +31,9 @@ setup() {
   LOG="$T/python.log"
   mkdir -p "$T/fakebin" "$T/nouv" "$T/tmp"
   git init -q "$REPO"
-  mkdir -p "$REPO/platform/tests"
+  mkdir -p "$REPO/platform/tests/bin"
+  # The hook runs BATS in parallel only with this job shell in the checkout (AC-743).
+  cp "$REPO_ROOT/platform/tests/bin/parallel-job-shell" "$REPO/platform/tests/bin/"
   : > "$REPO/pyproject.toml"
   : > "$REPO/uv.lock"
 
@@ -466,4 +468,31 @@ out_collection_and_failure() {
   sleep 3
   : > "$T/release"
   [ ! -e "$T/child-finished" ] || { echo "a process BATS started outlived TERM to the hook"; false; }
+}
+
+# A fake platform/tests/lane.sh in the scratch checkout: records its arguments in
+# $T/lane.args and exits FAKE_LANE_RC. Whether cargo-nextest is installed is lane.sh's own
+# question (suite/lanes.rs tests it), so the hook only has to call it and read its status.
+fake_lane() {
+  cat > "$REPO/platform/tests/lane.sh" <<SH
+#!/usr/bin/env sh
+echo "\$*" > "$T/lane.args"
+exit "\${FAKE_LANE_RC:-0}"
+SH
+  chmod +x "$REPO/platform/tests/lane.sh"
+}
+
+@test "pre-push rust: the push lane of the Rust suite runs" {
+  fake_lane
+  run push "$T/fakebin"
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  [ "$(cat "$T/lane.args")" = push ] || { echo "lane.sh args were: $(cat "$T/lane.args")"; false; }
+}
+
+@test "pre-push rust: a failing Rust lane blocks the push even when the other suites pass" {
+  fake_lane
+  run push "$T/fakebin" FAKE_LANE_RC=1
+  [ "$status" -ne 0 ] || { echo "a failing Rust lane did not block: $output"; false; }
+  assert_contains "$output" 'Rust suite FAILED'
+  assert_contains "$output" 'PUSH BLOCKED'
 }

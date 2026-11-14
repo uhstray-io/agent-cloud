@@ -13,7 +13,7 @@ import json
 import re
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urlencode
 
 REPO = "uhstray-io/agent-cloud"
@@ -31,13 +31,15 @@ UV_WORKFLOW_BLOB_SHA = "d7c68269b4a60aa560a3e6d3c6c57d78328d7a18"
 RUNNER_PINNED_WORKFLOW_BLOB_SHA = "7e7cc79402c43d48a5433f56db15daa94c13435e"
 SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
 BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
-# The bats-pinned workflow once the change detector and the retired jobs were removed; dev holds it after this merge.
+# The bats-pinned workflow once the change detector and the retired jobs were removed; dev held it until Rust (tests).
 RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
+# The retired workflow plus the Rust (tests) job (plan 24); dev holds it after this merge.
+RUST_TESTS_WORKFLOW_BLOB_SHA = "fec0139560a9b9e845e1e7cc524b59489a980fff"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
     "Static Analysis", "Security Scan", *PYTHON_SHARDS,
-    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Version",
+    "Bash Tests", "Rego Tests", "Unit Tests", "Rust (console)", "Rust (tests)", "Version",
 }
 # Paths of the pinned historical workflow states only; the current workflow has no such job.
 GO_PATH = "platform/services/uhhcraft/deployment/"
@@ -97,30 +99,55 @@ class GitHub:
         except (OSError, subprocess.CalledProcessError) as error:
             raise Refusal("SHA-bound merge command returned an error; read PR state before retrying") from error
 
+    def _git(self, failure, *args):
+        # Every local-git read: an argv list run in this checkout, recorded in calls; a failure is the caller's refusal.
+        command = ["git", "-C", str(self.repo_root), *args]
+        self.calls.append(command)
+        try:
+            return subprocess.run(command, capture_output=True, text=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError, UnicodeDecodeError) as error:
+            raise Refusal(failure) from error
+
     def release_budget(self, extra_files):
         # The one local-git read of the intake. It updates this checkout's remote-tracking refs and its release
         # tags; it writes nothing to GitHub. Returns the fetched dev tip with the budget before and after this PR.
         # The caller compares that tip with GitHub's live dev ref.
-        root = str(self.repo_root)
-        fetch = ["git", "-C", root, "fetch", "--no-tags", "origin",
-                 "+refs/heads/main:refs/remotes/origin/main",
-                 "+refs/heads/dev:refs/remotes/origin/dev",
-                 "+refs/tags/v*:refs/tags/v*"]
-        self.calls.append(fetch)
+        failed = f"Release budget: git failed in {self.repo_root}"
+        self._git("Release budget: fetching main, dev and the release tags failed",
+                  "fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main",
+                  "+refs/heads/dev:refs/remotes/origin/dev", "+refs/tags/v*:refs/tags/v*")
+        dev_sha = self._git(failed, "rev-parse", "--verify", "origin/dev^{commit}").strip()
         try:
-            subprocess.run(fetch, capture_output=True, text=True, check=True)
-        except (OSError, subprocess.CalledProcessError) as error:
-            raise Refusal("Release budget: fetching main, dev and the release tags failed") from error
-        rev_parse = ["git", "-C", root, "rev-parse", "--verify", "origin/dev^{commit}"]
-        self.calls.append(rev_parse)
-        try:
-            dev_sha = subprocess.run(rev_parse, capture_output=True, text=True, check=True).stdout.strip()
             before = semver.release_budget(self.repo_root, "origin/main", dev_sha)
             after = semver.release_budget(self.repo_root, "origin/main", dev_sha,
                                           extra_prs=1, extra_files=extra_files)
         except (OSError, subprocess.CalledProcessError) as error:
-            raise Refusal(f"Release budget: git failed in {root}") from error
+            raise Refusal(failed) from error
         return dev_sha, before, after
+
+    def dev_drift(self, number, head_sha, dev_sha):
+        # 5.23: CI proves the pull request head, not that head merged into the current dev. This reads dev's changes
+        # the head lacks from local git, after fetching the head itself; it writes nothing to GitHub. dev_sha is
+        # already local: validate runs the release budget's fetch first. The head goes to its own namespace, which
+        # no fetch refspec of the checkout writes to.
+        failed = f"Dev drift: git failed in {self.repo_root}"
+        self._git("Dev drift: fetching the pull request head failed",
+                  "fetch", "--no-tags", "origin", f"+refs/pull/{number}/head:refs/merge-guard/pull/{number}")
+        fetched = self._git(failed, "rev-parse", "--verify", f"refs/merge-guard/pull/{number}^{{commit}}").strip()
+        if fetched != head_sha:
+            raise Refusal(f"Dev drift: the fetched pull request head {fetched[:12]} is not the expected head "
+                          f"{head_sha[:12]}")
+        behind = self._git(failed, "rev-list", "--count", f"{head_sha}..{dev_sha}").strip()
+        if not behind.isdigit():
+            raise Refusal(failed)
+        # The paths changed by the same commits the count reads, <head>..<dev>. A three-dot diff would use one merge
+        # base where there are several, and list files this head already holds. --diff-merges=combined lists only what a
+        # merge commit changed beyond all its parents (a conflict fix or an edit made in the merge); the commits it
+        # brings in list their own. --no-renames lists both names of a rename, so a moved test file counts. -z keeps
+        # names unquoted: without it git quotes a path with unusual characters, which is_test_path would misread.
+        log = self._git(failed, "log", "--format=", "--name-only", "--no-renames", "--diff-merges=combined", "-z",
+                        f"{head_sha}..{dev_sha}")
+        return int(behind), sorted({path for path in log.split("\0") if path})
 
 
 def paged(api, endpoint, key):
@@ -255,7 +282,7 @@ def workflow_bytes(api, commit_sha):
 
 
 def check_workflow_policy(source, partitioned=False, agw=False, node=False, console=False, runs=False,
-                          pi_moved=False, versioned=False, sharded=False, retired=False):
+                          pi_moved=False, versioned=False, sharded=False, retired=False, rust_tests=False):
     try:
         source = source.decode("utf-8")
     except UnicodeDecodeError as error:
@@ -275,6 +302,8 @@ def check_workflow_policy(source, partitioned=False, agw=False, node=False, cons
         expected["node-pi-provider"] = "Node pi provider"
     if console or runs or pi_moved or versioned or sharded:
         expected["rust-console"] = "Rust (console)"
+    if rust_tests:
+        expected["rust-tests"] = "Rust (tests)"
     if runs or pi_moved or versioned:
         expected["python-playbook-runs"] = "Python Playbook Runs"
     if versioned or sharded:
@@ -575,11 +604,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Bats-pinned workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RETIRED_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+            # Same jobs as retired plus the Rust (tests) job.
+            check_workflow_policy(base, sharded=True, retired=True)
+            check_workflow_policy(candidate, sharded=True, retired=True, rust_tests=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != RETIRED_WORKFLOW_BLOB_SHA:
-            raise Refusal("Workflow head is not the exact reviewed current workflow")
+            raise Refusal("Workflow head is not the exact reviewed retired workflow")
         check_workflow_policy(base, sharded=True, retired=True)
         if base != candidate or workflow_records:
-            raise Refusal("Current workflow may only remain byte-identical on subsequent PRs")
+            raise Refusal("Retired workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RUST_TESTS_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed Rust-tests workflow")
+        check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Rust-tests workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
@@ -835,7 +880,7 @@ def live_dev_sha(api):
     return live_sha
 
 
-def check_release_budget(api, file_records):
+def check_release_budget(api, file_records, acknowledged=False):
     # Policy 10 R4, R5: a merge may not take its release past 100 pull requests, or past 120 changed files when it
     # adds a path; R12 suspends both until the carry-over tag exists. The count is taken at the dev tip GitHub
     # reports now. The pull request's base.sha is not that tip: it was stale on each of the 8 open pull
@@ -854,31 +899,59 @@ def check_release_budget(api, file_records):
         readout += f" (transition: policy 10 R12, no limit applies before {semver.TRANSITION_TAG})"
     elif after["warn"]:
         readout += " (warn: 80% of a limit)"
+    # R5: a pull request adding no new path may pass the file limit; only the pull request limit binds it.
+    over_prs = after["prs"] > limits["prs"]
+    over_files = after["files"] > limits["files"] and after["files"] > before["files"]
+    # R10: the operator may approve a named release going over a limit at dev intake (--budget-acknowledged).
+    waived = acknowledged and not after["transition"] and (over_prs or over_files)
+    if waived:
+        readout += " (over the limit: acknowledged by the operator, policy 10 R10)"
     print(readout)
-    if after["transition"]:
+    if after["transition"] or waived:
         return after
-    if after["prs"] > limits["prs"]:
+    if over_prs:
         raise Refusal(f"Release full: this merge makes {after['prs']} pull requests (limit {limits['prs']}) "
                       f"since {since}; promote the release first (policy 10 R4, R5)")
-    if after["files"] > limits["files"] and after["files"] > before["files"]:
+    if over_files:
         raise Refusal(f"Release full: this merge makes {after['files']} changed files (limit {limits['files']}) "
                       f"since {since}; promote the release first (policy 10 R4, R5). A pull request that adds no "
                       "new path, such as a revert, may still merge")
     return after
 
 
-def validate(api, number, sha, receipt_path):
+def is_test_path(path):
+    # The paths counted as test code: any tests/ directory (each pytest testpath and the BATS suite), any conftest.py,
+    # and pyproject.toml. Not counted: uv.lock, and Rust tests written in src/ (#[cfg(test)]), which cargo test runs.
+    posix = PurePosixPath(path)
+    return "tests" in posix.parts[:-1] or posix.name == "conftest.py" or path == "pyproject.toml"
+
+
+def check_dev_drift(api, number, sha, dev_sha, acknowledged):
+    # docs/MISTAKES.md 5.23: a green head that lacks test-path changes already on dev is merged into dev untested.
+    behind, paths = api.dev_drift(number, sha, dev_sha)
+    tests = sorted(path for path in paths if is_test_path(path))
+    print(f"DEV: this head lacks {behind} commits of dev {dev_sha[:12]}; {len(tests)} test paths among their changes")
+    if tests and not acknowledged:
+        shown = ", ".join(tests[:5]) + (f" (+{len(tests) - 5} more)" if len(tests) > 5 else "")
+        raise Refusal(f"dev {dev_sha[:12]} holds {behind} commits this head lacks, and they change test paths: "
+                      f"{shown}. Merge origin/dev into the branch, run both review passes on the new head and post "
+                      "their statuses (docs/MISTAKES.md 5.25), get the new head reviewed, and let CI run on it, or "
+                      "pass --dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
+
+
+def validate(api, number, sha, receipt_path, *, dev_drift_acknowledged=False, budget_acknowledged=False):
     pr = get_pr(api, number)
     base_sha = check_pr(pr, number, sha)
     files, file_records = changed_files(api, number)
     # The readout prints on every run that reaches the count, release-script PRs included, so the budget comes before
     # the path refusals. A budget refusal still names a protected path first: that is the operator-merge answer.
     try:
-        budget = check_release_budget(api, file_records)
+        budget = check_release_budget(api, file_records, budget_acknowledged)
     except Refusal:
         check_protected_paths(files)
         raise
     check_protected_paths(files)
+    check_dev_drift(api, number, sha, budget["dev_ref"], dev_drift_acknowledged)
     check_workflow_change(api, base_sha, sha, file_records)
     comments = paged(api, f"repos/{REPO}/issues/{number}/comments", "")
     if any(not isinstance(comment, dict) or not isinstance(comment.get("body"), str) for comment in comments):
@@ -901,6 +974,11 @@ def main(argv=None, api=None):
     parser.add_argument("--feedback-addressed", action="store_true",
                         help="attest actionable review and ordinary-comment feedback is addressed")
     parser.add_argument("--review-receipt", help="JSON receipt for an independent Sol/Claude review")
+    parser.add_argument("--dev-drift-acknowledged", action="store_true",
+                        help="merge although dev holds test-path changes this head lacks (docs/MISTAKES.md 5.23)")
+    parser.add_argument("--budget-acknowledged", action="store_true",
+                        help="merge although the release is over a policy 10 limit; the operator approves it per "
+                             "release (R10)")
     args = parser.parse_args(argv)
     if not SHA.fullmatch(args.head):
         parser.error("--head must be a full 40-character lowercase SHA")
@@ -908,7 +986,9 @@ def main(argv=None, api=None):
         parser.error("--merge requires --feedback-addressed attestation")
     api = api or GitHub()
     try:
-        evidence = validate(api, args.pr, args.head, args.review_receipt)
+        evidence = validate(api, args.pr, args.head, args.review_receipt,
+                            dev_drift_acknowledged=args.dev_drift_acknowledged,
+                            budget_acknowledged=args.budget_acknowledged)
         print(f"PASS: PR {args.pr} head {args.head}; {len(evidence['checks'])} expected checks; "
               f"approval={'receipt' if evidence['receipt'] else 'GitHub'}; "
               f"{evidence['comments']} conversation comments read")
@@ -916,7 +996,9 @@ def main(argv=None, api=None):
             print("Read-only validation only; no feedback attestation supplied and no merge attempted.")
             return 0
         # Re-read every gate immediately before the single mutating command.
-        refreshed = validate(api, args.pr, args.head, args.review_receipt)
+        refreshed = validate(api, args.pr, args.head, args.review_receipt,
+                             dev_drift_acknowledged=args.dev_drift_acknowledged,
+                             budget_acknowledged=args.budget_acknowledged)
         if (refreshed["base_sha"] != evidence["base_sha"]
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
