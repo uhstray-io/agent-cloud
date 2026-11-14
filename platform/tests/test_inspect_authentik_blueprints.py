@@ -1,11 +1,10 @@
 """The Authentik blueprint inspector is read-only and never prints a token."""
 
-import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -87,11 +86,8 @@ def test_check_mode_run_reports_each_section(tmp_path, damaged):
     inv = tmp_path / "inv.ini"
     inv.write_text(f"[authentik_svc]\nak ansible_connection=local\n\n[authentik_svc:vars]\n"
                    f"container_engine={engine}\ncompose_working_dir={deploy}\n")
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env.update(ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_NOCOLOR="1")
-    done = subprocess.run(["ansible-playbook", "--check", "-i", str(inv), str(PLAYBOOK)],
-                          cwd=REPO, env=env, text=True, capture_output=True,
-                          stdin=subprocess.DEVNULL)
+    done = harness_sandbox.run_playbook(PLAYBOOK, tmp_path, "--check", inventory=inv,
+                                        env={"ANSIBLE_LOCAL_TEMP": str(tmp_path)})
     assert done.returncode == 0, done.stdout[-3000:]
     if damaged:
         assert "compose.yml could not be parsed" in done.stdout

@@ -21,15 +21,13 @@ import os
 import re
 import shutil
 import subprocess
-import threading
 from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -37,10 +35,10 @@ PLAYBOOK = PLAYBOOKS / "retire-openbao-fields.yml"
 DECLARATION = PLAYBOOKS / "vars/retired-secret-fields.yml"
 REFUSE = PLAYBOOKS / "refuse-internal-extra-vars.yml"
 TASKS = PLAYBOOKS / "tasks"
-# The single-host OpenBao address expression; tasks/guard-o11y-restore-target.yml:14 uses the same one.
-SINGLE_HOST_BAO_URL = (
-    "{{ hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') "
-    "if (groups['openbao_svc'] | default([]) | length == 1) else '' }}"
+# openbao_addr first (the shared environment sets it), else the inventory's single openbao_svc host.
+OPENBAO_URL_EXPRESSION = (
+    "{{ openbao_addr | default(hostvars[(groups['openbao_svc'] | default([]) | first)].service_url | default('') "
+    "if (groups['openbao_svc'] | default([]) | length == 1) else '', true) }}"
 )
 TEMPLATES = REPO / "platform/semaphore/templates.yml"
 
@@ -51,6 +49,41 @@ SEEDED = {
     ("services/authentik", "tududi_oidc_client_secret"),
     ("services/github", "tududi_sync_app_key"),
     ("services/github", "tududi_sync_app_client_id"),
+    ("services/n8n", "db_admin_password"),
+    ("services/n8n", "db_user_password"),
+    ("services/n8n", "encryption_key"),
+    ("services/n8n", "owner_password"),
+    ("services/n8n", "owner_totp_secret"),
+    ("services/n8n", "n8n_api_key"),
+    ("services/n8n", "api_key"),
+    ("services/n8n", "url"),
+    ("services/nocodb", "api_token"),
+    ("services/nocodb", "url"),
+    ("services/uhhcraft", "postgres_password"),
+    ("services/uhhcraft", "redis_password"),
+    ("services/uhhcraft", "minio_root_user"),
+    ("services/uhhcraft", "minio_root_password"),
+    ("services/uhhcraft", "session_secret"),
+    ("services/uhhcraft", "stripe_secret_key"),
+    ("services/uhhcraft", "stripe_publishable_key"),
+    ("services/uhhcraft", "stripe_webhook_secret"),
+    ("services/uhhcraft", "resend_api_key"),
+    ("services/uhhcraft", "discord_orders_webhook_url"),
+    ("services/uhhcraft", "discord_ops_webhook_url"),
+    ("services/uhhcraft", "usps_client_id"),
+    ("services/uhhcraft", "usps_client_secret"),
+    ("services/uhhcraft", "printify_api_key"),
+    ("services/uhhcraft", "printify_shop_id"),
+    ("services/uhhcraft", "hubs_api_key"),
+    ("services/uhhcraft", "url"),
+    ("services/inference-comfyui", "minio_root_user"),
+    ("services/inference-comfyui", "minio_root_password"),
+    ("services/inference-comfyui", "url"),
+    ("services/inference-hunyuan3d", "minio_root_user"),
+    ("services/inference-hunyuan3d", "minio_root_password"),
+    ("services/inference-hunyuan3d", "url"),
+    ("services/wisbot", "discord_token"),
+    ("services/nemoclaw", "gemini_api_key"),
 }
 # The playbook's refusal matches a field as a whole word. The same pattern is used here, so the real-tree
 # scan and the playbook agree.
@@ -212,12 +245,12 @@ def test_the_refusal_scans_only_the_paths_own_two_files_as_whole_words():
     assert "(?<![A-Za-z0-9_])' ~ field ~ '(?![A-Za-z0-9_])" in text
 
 
-def test_openbao_url_is_the_single_host_pattern():
+def test_openbao_url_prefers_openbao_addr_then_the_single_host():
     def bao_url(path: Path) -> str:
         play = next(play for play in playbook_yaml.plays(path) if "_bao_url" in (play.get("vars") or {}))
         return play["vars"]["_bao_url"]
 
-    assert bao_url(PLAYBOOK) == SINGLE_HOST_BAO_URL
+    assert bao_url(PLAYBOOK) == OPENBAO_URL_EXPRESSION
 
 
 def test_reads_are_check_mode_reads_with_both_statuses_and_no_log():
@@ -378,14 +411,8 @@ def _handler(vault: _Vault):
 @contextmanager
 def _bao(paths: dict):
     vault = _Vault(paths)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(vault))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield vault, f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
+    with serve(_handler(vault)) as url:
+        yield vault, url
 
 
 def _tree(

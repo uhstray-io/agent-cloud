@@ -461,8 +461,9 @@
     _ih_prom: "http://{{ o11y_prom_bind | default('127.0.0.1') }}:{{ o11y_prom_port | default(9090) }}"
     # Prometheus scrapes every 15s (prometheus.yml.j2) and spreads first scrapes across one
     # interval after a reload; 8 x 5s covers two intervals plus the reload itself.
-    _ih_wait_retries: 8
-    _ih_wait_delay: 5
+    # Tests pass ih_wait_delay to shorten the wait; a shorter wait only fails sooner.
+    _ih_wait_retries: "{{ ih_wait_retries | default(8) | int }}"
+    _ih_wait_delay: "{{ ih_wait_delay | default(5) | int }}"
 
   tasks:
     - name: "Skip the receiver while a host of the group failed"

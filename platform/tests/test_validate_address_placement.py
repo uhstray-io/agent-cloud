@@ -8,12 +8,11 @@ fixtures use neutral names and RFC 5737 addresses: this repository is public.
 """
 
 import json
-import os
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -49,10 +48,9 @@ def _run(tmp_path, tasks, variables, expression):
                 "tasks": [*tasks, {"ansible.builtin.debug": {"msg": "PROBE {{ " + expression + " | to_json }}"}}]}]
     path = tmp_path / "placement.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    out = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                         text=True, capture_output=True, check=True).stdout
+    done = harness_sandbox.run_playbook(path, tmp_path)
+    done.check_returncode()
+    out = done.stdout
     line = next(ln for ln in out.splitlines() if "PROBE " in ln)
     return json.loads(json.loads(line.split('"msg": ', 1)[1]).split("PROBE ", 1)[1])
 
@@ -63,10 +61,7 @@ def _run_allow_failure(tmp_path, tasks, variables):
                 "tasks": tasks}]
     path = tmp_path / "require.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    done = harness_sandbox.run_playbook(path, tmp_path)
     return done.returncode, done.stdout + done.stderr
 
 

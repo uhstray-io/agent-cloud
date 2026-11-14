@@ -8,18 +8,18 @@ run also proves the token was sent.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 HELPER = Path(__file__).resolve().parents[2] / "platform/playbooks/files/semaphore_drain_template.py"
 TOKEN = "SYNTHETIC_DRAIN_TOKEN_CANARY_4b7e"
@@ -103,7 +103,7 @@ class FakeSemaphore(DrainingHandler):
 
 @pytest.fixture
 def fake():
-    servers = []
+    servers = contextlib.ExitStack()
 
     def start(templates, delete_reply=None, redirect=(), endless=()):
         state = {
@@ -115,16 +115,11 @@ def fake():
             "served": 0,
         }
         handler = type("Handler", (FakeSemaphore,), {"state": state})
-        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
-        threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
-        servers.append(httpd)
-        port = httpd.server_address[1]
-        return SimpleNamespace(state=state, port=port, url=f"http://127.0.0.1:{port}")
+        url = servers.enter_context(serve(handler))
+        return SimpleNamespace(state=state, port=urlsplit(url).port, url=url)
 
-    yield start
-    for httpd in servers:
-        httpd.shutdown()
-        httpd.server_close()
+    with servers:
+        yield start
 
 
 def drain(tmp_path, url, *extra, token_text=TOKEN, env=None, timeout=60):

@@ -28,6 +28,7 @@ import textwrap
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -190,7 +191,8 @@ def _version(binary) -> tuple:
     with tempfile.TemporaryDirectory() as local_temp:
         env.update(ANSIBLE_LOCAL_TEMP=local_temp, TMPDIR=local_temp)
         out = subprocess.run(
-            [binary, "--version"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL
+            [binary, "--version"], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         ).stdout
     return tuple(int(n) for n in re.search(r"core (\d+)\.(\d+)", out).groups())
 

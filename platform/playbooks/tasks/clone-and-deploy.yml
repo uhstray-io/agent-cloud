@@ -3,8 +3,8 @@
 #
 # Expected variables (from inventory or extra vars):
 #   monorepo_repo         — HTTPS git URL (public repo, no credentials needed)
-#   monorepo_deploy_path  — Path within monorepo (e.g., platform/services/nocodb/deployment)
-#   service_name          — Short name for the service (e.g., nocodb)
+#   monorepo_deploy_path  — Path within monorepo (e.g., platform/services/plane/deployment)
+#   service_name          — Short name for the service (e.g., plane)
 #   service_url           — Base URL for health check (optional)
 #   health_path           — Health endpoint path (optional)
 #   health_status_codes   — Accepted HTTP codes (default [200])
@@ -50,8 +50,6 @@
     OPENBAO_ADDR: "{{ _bao_url }}"
     BAO_ROLE_ID: "{{ _bao_role_id | default('') }}"
     BAO_SECRET_ID: "{{ _bao_secret_id | default('') }}"
-    NOCODB_URL: "{{ nocodb_url | default('') }}"
-    N8N_URL: "{{ n8n_url | default('') }}"
     SEMAPHORE_URL: "{{ semaphore_url | default('') }}"
     PROXMOX_URL: "{{ proxmox_url | default('') }}"
     PROXMOX_TOKEN_ID: "{{ proxmox_token_id | default('') }}"

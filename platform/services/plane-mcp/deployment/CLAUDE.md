@@ -2,7 +2,7 @@
 
 Author: Joseph A. Wisneski IV
 
-plane-mcp — Plane's MCP server (`makeplane/plane-mcp-server`, pinned tag) run as its own compose project, beside Plane. One container, `plane-mcp`, on Plane's stack network. Container lifecycle only: the OAuth credentials come from OpenBao through Ansible, never from this directory.
+plane-mcp — Plane's MCP server (`makeplane/plane-mcp-server`, pinned tag) run as its own compose project, beside Plane. One container, `plane-mcp`, on Plane's stack network. Container lifecycle only: the OAuth credentials come from OpenBao through Ansible, never from this directory. Source references to `plane_mcp/` below are in the upstream `makeplane/plane-mcp-server` repository, not this repository.
 
 ## Why it is a separate project
 

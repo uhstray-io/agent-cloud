@@ -38,7 +38,7 @@ window.AC = (() => {
       { id: "commerce", name: "Commerce", sites: [
         { id: "site-hq-c", name: "site-hq", envs: ["prod"], clusters: [
           { id: "pve-a-c", name: "pve-cluster-a", kind: "Proxmox (shared)", hosts: [
-            { id: "uhhcraft-vm", name: "uhhcraft", st: "ok" } ] } ] } ] } ] },
+            { id: "plane-c", name: "plane", st: "ok" } ] } ] } ] } ] },
     { id: "kestrel", name: "Kestrel Robotics", synthetic: true, orgs: [
       { id: "research", name: "Research", sites: [
         { id: "site-k1", name: "site-k1", envs: ["prod", "dev"], clusters: [
@@ -57,14 +57,14 @@ window.AC = (() => {
     { id: "openbao", name: "OpenBao", layer: "guard", kind: "Secrets", st: "ok", host: "bao-vm", icon: "key-round" },
     { id: "opa", name: "OPA", layer: "guard", kind: "Policy engine", st: "ok", host: "opa-vm", icon: "scale" },
     { id: "semaphore", name: "Semaphore", layer: "auto", kind: "Automation", st: "ok", host: "semaphore-vm", icon: "workflow" },
-    { id: "n8n", name: "n8n", layer: "auto", kind: "Workflows", st: "ok", host: "n8n-vm", icon: "git-fork" },
+    { id: "launch-gate", name: "launch-gate", layer: "auto", kind: "Agent launch gate", st: "ok", host: "launch-gate-vm", icon: "shield-check" },
     { id: "gha", name: "GitHub Actions", layer: "auto", kind: "CI/CD + 2 runners", st: "ok", host: "gh-runner-01/02", icon: "git-pull-request-arrow" },
     { id: "proxmox", name: "Proxmox", layer: "plat", kind: "Virtualization", st: "warn", why: "pve-a2 memory 88%", host: "pve-cluster-a", icon: "server" },
     { id: "netbox", name: "NetBox", layer: "plat", kind: "Inventory / IPAM", st: "warn", why: "Discovery last ran 26h ago", host: "netbox-vm", icon: "network" },
     { id: "caddy", name: "Caddy", layer: "plat", kind: "Reverse proxy", st: "ok", host: "caddy-vm", icon: "globe" },
     { id: "o11y", name: "o11y", layer: "plat", kind: "Grafana · Prom · Loki", st: "ok", host: "o11y-vm", icon: "activity" },
     { id: "postiz", name: "Postiz", layer: "plat", kind: "Social publishing", st: "crit", why: "Temporal search node restarting (3× in 10m)", host: "postiz-vm", icon: "send" },
-    { id: "tududi", name: "tududi", layer: "plat", kind: "Tasks", st: "ok", host: "tududi-vm", icon: "list-checks" },
+    { id: "plane", name: "Plane", layer: "plat", kind: "Work tracker", st: "ok", host: "plane-vm", icon: "list-checks" },
   ];
 
   // where each service lives: [Proxmox VM ID(s), node, IP]. null VM = not a VM (bare metal or the hypervisor itself).
@@ -72,12 +72,12 @@ window.AC = (() => {
   const placement = {
     skynet: ["140", "pve-a1", "192.0.2.40"], agentgateway: ["131", "pve-a3", "192.0.2.31"], vllm: [null, "spark-1", "192.0.2.60"], honcho: ["133", "pve-a3", "192.0.2.33"],
     authentik: ["104", "pve-a1", "192.0.2.14"], openbao: ["102", "pve-a1", "192.0.2.12"], opa: ["106", "pve-a2", "192.0.2.16"],
-    semaphore: ["101", "pve-a1", "192.0.2.11"], n8n: ["112", "pve-a2", "192.0.2.22"], gha: ["121–122", "pve-a3", "192.0.2.51–52"],
-    proxmox: [null, "pve-a1 · a2 · a3", "192.0.2.2–4"], netbox: ["110", "pve-a2", "192.0.2.20"], caddy: ["103", "pve-a1", "192.0.2.13"], o11y: ["115", "pve-a3", "192.0.2.25"], postiz: ["125", "pve-a2", "192.0.2.35"], tududi: ["127", "pve-a3", "192.0.2.37"],
+    semaphore: ["101", "pve-a1", "192.0.2.11"], "launch-gate": ["112", "pve-a2", "192.0.2.22"], gha: ["121–122", "pve-a3", "192.0.2.51–52"],
+    proxmox: [null, "pve-a1 · a2 · a3", "192.0.2.2–4"], netbox: ["110", "pve-a2", "192.0.2.20"], caddy: ["103", "pve-a1", "192.0.2.13"], o11y: ["115", "pve-a3", "192.0.2.25"], postiz: ["125", "pve-a2", "192.0.2.35"], plane: ["127", "pve-a3", "192.0.2.37"],
   };
   // business domain each service serves (example mapping; the real one belongs in the service inventory)
-  const domainOf = { postiz: "Products", agentgateway: "Products", vllm: "Products", honcho: "Professional Services", tududi: "Professional Services",
-    skynet: "Automation", semaphore: "Automation", n8n: "Automation", gha: "Automation",
+  const domainOf = { postiz: "Products", agentgateway: "Products", vllm: "Products", honcho: "Professional Services", plane: "Professional Services",
+    skynet: "Automation", semaphore: "Automation", "launch-gate": "Automation", gha: "Automation",
     authentik: "Administration", openbao: "Administration", opa: "Administration", proxmox: "IT", netbox: "IT", caddy: "IT", o11y: "IT" };
   const domains = [["Products", "package"], ["Professional Services", "briefcase"], ["Automation", "workflow"], ["Administration", "shield-check"], ["IT", "server"]];
   const dnsOverride = { gha: "gh-runner-0{1,2}.site-hq.example", proxmox: "pve-a{1,2,3}.site-hq.example" };
@@ -102,9 +102,9 @@ window.AC = (() => {
     ["authentik", "semaphore", "oidc", "SSO"],
     ["authentik", "agentgateway", "oidc", "Operator UI"],
     ["authentik", "o11y", "oidc", "Grafana SSO"],
-    ["authentik", "tududi", "oidc", "SSO"],
-    ["n8n", "tududi", "api", "GitHub sync"],
-    ["n8n", "postiz", "api", "Scheduled posts"],
+    ["authentik", "plane", "oidc", "SSO"],
+    ["semaphore", "plane", "api", "Projects sync"],
+    ["skynet", "postiz", "api", "Scheduled posts"],
     ["gha", "semaphore", "api", "Promotion triggers"],
     // data flow, split by signal: logs → Loki (via Alloy), metrics → Prometheus, traces → Tempo (planned prod addition; Alloy OTLP receiver is Phase 2)
     ["caddy", "o11y", "logs", "Access logs → Loki"],
@@ -172,11 +172,11 @@ window.AC = (() => {
       opa: { decision: "deny", rule: "Device role gpu-node is not in the skynet action catalog" },
       steps: [["Parse request", "done"], ["Plan", "done"], ["Policy (OPA)", "fail"], ["Create device", "todo"], ["Verify", "todo"]],
       tasks: [{ name: "Create device record", wf: "Create NetBox Device", st: "todo" }] },
-    { key: "AC-1172", title: "Upgrade n8n to the next minor", state: "queued", st: "idle",
-      scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "n8n", agent: "skynet", by: "you", via: "Natural language", age: "2h",
+    { key: "AC-1172", title: "Upgrade Plane to the next minor", state: "queued", st: "idle",
+      scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "plane", agent: "skynet", by: "you", via: "Natural language", age: "2h",
       opa: { decision: "allow", rule: "Image bump with a fresh database dump first" },
       steps: [["Plan", "done"], ["Policy (OPA)", "done"], ["Back up DB", "todo"], ["Deploy", "todo"], ["Verify", "todo"]],
-      tasks: [{ name: "Timestamped pg_dump", wf: "Back Up n8n DB", st: "todo" }, { name: "Deploy pinned image", wf: "Deploy n8n", st: "todo" }] },
+      tasks: [{ name: "Timestamped pg_dump", wf: "Back Up Plane DB", st: "todo" }, { name: "Deploy pinned image", wf: "Deploy Plane", st: "todo" }] },
     { key: "AC-1170", title: "Service conformance sweep", state: "running", st: "run",
       scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "semaphore", agent: "schedule", by: "schedule", via: "Every 15 min", age: "2m", sem: 6216, pct: 30,
       opa: { decision: "allow", rule: "Read-only collector" },
@@ -188,11 +188,11 @@ window.AC = (() => {
       steps: [["Plan", "done"], ["Policy (OPA)", "done"], ["Apply", "fail"], ["Verify", "todo"]],
       tasks: [{ name: "Apply default-deny + egress list", wf: "Apply Firewall", st: "fail", sem: 6190 }],
       log: [["", "TASK [Allow SSH before enable] ok"], ["", "TASK [Enable firewall] changed"], ["err", "TASK [Force fresh SSH handshake] FAILED"], ["err", "  anti-lockout check failed; firewall rolled back"]] },
-    { key: "AC-1176", title: "Rotate the n8n API key", state: "done", st: "ok",
-      scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "n8n", agent: "skynet", by: "you", via: "Natural language", age: "5h", sem: 6177,
+    { key: "AC-1176", title: "Rotate the Postiz API key", state: "done", st: "ok",
+      scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "postiz", agent: "skynet", by: "you", via: "Natural language", age: "5h", sem: 6177,
       opa: { decision: "allow", rule: "Credential rotation, value never printed" },
       steps: [["Plan", "done"], ["Policy", "done"], ["Mint + capture", "done"], ["Verify", "done"]],
-      tasks: [{ name: "Mint and store key", wf: "Store n8n API Key", st: "done", sem: 6177 }] },
+      tasks: [{ name: "Mint and store key", wf: "Store Postiz API Key", st: "done", sem: 6177 }] },
     { key: "AC-1175", title: "Route the gateway admin UI through Caddy", state: "done", st: "ok",
       scope: ["Uhstray.io", "Platform", "site-hq", "prod"], target: "caddy", agent: "skynet", by: "ari", via: "Form", age: "1d", sem: 6150,
       opa: { decision: "allow", rule: "Declared route in caddy_managed_sites" },
@@ -217,10 +217,9 @@ window.AC = (() => {
       { name: "service-agent", domain: "Service delivery", role: "Deploys, upgrades and service lifecycle", initials: "SV", color: "#4f4fb0", dynamic: true },
       { name: "o11y-agent", domain: "Observability", role: "Verifies health from metrics, logs and conformance", initials: "OA", color: "#2f7a55", dynamic: true },
       { name: "net-agent", domain: "Networking", role: "Planned: network, IPAM and firewall changes; infra-agent covers this today", initials: "NA", color: "#6b7480", dynamic: true, planned: true } ] },
-    { name: "Chat", gateway: "prod", client: "wisbot", note: "Discord-facing assistant", members: [
-      { name: "WisBot", role: "Answers and files requests from Discord", st: "idle", color: "#8a4b14", icon: "message-circle" } ] },
+    { name: "Chat", gateway: "prod", client: "discord-assistant", note: "Discord-facing assistant", members: [
+      { name: "Discord assistant (example)", role: "Example: answers and files requests from Discord", st: "idle", color: "#8a4b14", icon: "message-circle" } ] },
     { name: "Task", gateway: "prod", client: "platform-team", note: "agents built for tool calling and scheduled automation, not chat", members: [
-      // plan/development/15 D7: netclaw and nemoclaw are not used as agents going forward; member name is an example
       { name: "task-agent", role: "Example: tool calling and scheduled automation, read-only unless approved", st: "idle", color: "#0e7f6a", icon: "cog" } ] },
     // development gateway: developer workflows and agents (member names are examples)
     { name: "Developer", gateway: "dev", client: "local-dev", note: "coding agents and a local skynet on developer machines", members: [
@@ -239,7 +238,7 @@ window.AC = (() => {
   const secrets = [
     { path: "secret/services/agentgateway", fields: 9, rotated: "6d", readers: ["semaphore"], note: "client_* keys, upstream key" },
     { path: "secret/services/authentik", fields: 14, rotated: "21d", readers: ["semaphore", "shared-read: 6 services"] },
-    { path: "secret/services/n8n", fields: 7, rotated: "5h", readers: ["semaphore"] },
+    { path: "secret/services/plane", fields: 7, rotated: "5h", readers: ["semaphore"] },
     { path: "secret/services/postiz", fields: 11, rotated: "30d", readers: ["semaphore"] },
     { path: "secret/services/o11y", fields: 2, rotated: "12d", readers: ["semaphore"] },
     { path: "secret/services/ssh/<service>", fields: 26, rotated: "—", readers: ["semaphore"], note: "per-service keypairs" },
@@ -259,7 +258,7 @@ window.AC = (() => {
 
   const llmClients = [
     { name: "skynet", agent: "skynet", owner: "skynet (agent)", budget: 600, used: 418, models: 2, st: "ok" },
-    { name: "wisbot", agent: "WisBot", owner: "WisBot (Discord)", budget: 100, used: 91, models: 1, st: "warn" },
+    { name: "discord-assistant", agent: "Discord assistant (example)", owner: "Discord assistant (example)", budget: 100, used: 91, models: 1, st: "warn" },
     { name: "platform-team", agent: null, owner: "platform-maintainers", budget: 250, used: 64, models: 2, st: "ok" },
     { name: "local-dev", agent: null, owner: "You", budget: 50, used: 0, models: 1, st: "idle" },
   ];
@@ -274,11 +273,11 @@ window.AC = (() => {
 
   // approved services that can be requested into a scope; deploy templates are the real Semaphore template names (AGENTS.md)
   const catalog = [
-    { id: "tududi", name: "tududi", what: "To-do and task tracking", template: "Deploy tududi" },
+    { id: "plane", name: "Plane", what: "Work tracker", template: "Deploy Plane" },
     { id: "honcho", name: "honcho", what: "Team memory API", template: "Deploy honcho" },
     { id: "postiz", name: "Postiz", what: "Social publishing", template: "Deploy Postiz" },
-    { id: "n8n", name: "n8n", what: "Workflow automation", template: "Deploy n8n" },
-    { id: "openhands", name: "OpenHands", what: "Agent canvas", template: "Deploy OpenHands" },
+    { id: "launch-gate", name: "launch-gate", what: "Agent launch gate", template: "Deploy launch-gate" },
+    { id: "console", name: "Dispatch Console", what: "Administration UI", template: "Deploy console" },
     { id: "netbox", name: "NetBox", what: "Inventory and IPAM", template: "Deploy NetBox" },
     { id: "agentgateway", name: "agentgateway", what: "Inference edge gateway", template: "Deploy agentgateway" },
     { id: "gha", name: "GitHub runner", what: "Self-hosted CI runner", template: "Deploy GitHub Runner" },

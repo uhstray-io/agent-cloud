@@ -1,27 +1,27 @@
 """Execute the real controller playbook against disposable provider fixtures."""
 
+import contextlib
 import copy
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "platform/tests"))
-from fake_http import DrainingHandler  # noqa: E402 - the shared fake-server base
+from fake_http import DrainingHandler, serve  # noqa: E402 - the shared fake-server base
 from fake_semaphore import template_write  # noqa: E402 - the shared v2.19 template-write rule
 
 sys.path.insert(0, str(ROOT / "platform/semaphore/filter_plugins"))
 from publication import survey_enum_option_problems  # noqa: E402
 
-NAME = "Store n8n API Key (Dev)"
+NAME = "Store Postiz API Key (Dev)"
 CONFORMANCE_NAME = "Collect Service Conformance (Dev)"
 TEMPLATE = {
     "id": 206,
@@ -31,9 +31,9 @@ TEMPLATE = {
     "inventory_id": 37,
     "environment_id": 42,
     "environment_ids": [42],
-    "playbook": "platform/playbooks/store-n8n-api-key.yml",
+    "playbook": "platform/playbooks/store-postiz-api-key.yml",
     "app": "ansible",
-    "arguments": '["--limit", "tududi"]',
+    "arguments": '["--limit", "postiz"]',
     "autorun": False,
     "view_id": 9,
     "survey_vars": [],
@@ -41,7 +41,7 @@ TEMPLATE = {
 
 
 # The survey tests publish one declared survey whose first default is "true". The real
-# catalog no longer declares NAME (its tududi survey was retired 2026-11-07), so they pass
+# catalog declares NAME without a survey, so they pass
 # this declaration explicitly through _all_templates.
 SURVEY_DECLARATION = {
     "name": NAME,
@@ -168,24 +168,16 @@ class ScopedPublicationTests(unittest.TestCase):
                     cls.records[0] = value
                 return self.reply({})
 
-        # socketserver's default listen backlog is 5. A playbook issues requests in quick
-        # bursts, and on a loaded machine a queued connect can be reset. The larger queue
-        # alone did not end the "Connection reset by peer" flake: the unread login body in
-        # do_POST was the rest of it. A fixture must not be the flaky part of the test.
-        class Server(ThreadingHTTPServer):
-            request_queue_size = 128
-            daemon_threads = True
-
-        cls.server = Server(("127.0.0.1", 0), Handler)
-        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
-        cls.thread.start()
-        cls.endpoint = f"http://127.0.0.1:{cls.server.server_port}"
+        # serve() listens with a 128-deep backlog (socketserver's default of 5 let a playbook's
+        # request bursts be reset on a loaded machine), and DrainingHandler reads each request
+        # body before dispatch (the unread login body was the rest of that flake). A fixture
+        # must not be the flaky part of the test.
+        cls.servers = contextlib.ExitStack()
+        cls.endpoint = cls.servers.enter_context(serve(Handler))
 
     @classmethod
     def tearDownClass(cls):
-        cls.server.shutdown()
-        cls.server.server_close()
-        cls.thread.join()
+        cls.servers.close()
         cls.scratch.cleanup()
 
     def setUp(self):
@@ -465,31 +457,10 @@ class ScopedPublicationTests(unittest.TestCase):
                               if v["name"] == "service_branch")
                 self.assertEqual(branch["default_value"], expected_branch)
 
-    def test_all_generated_dev_branch_surveys_preserve_other_fields(self):
-        declarations = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
-        self.assertIn("Deploy GitHub Runner", {
-            template["name"] for template in declarations
-            if template.get("dev_variant") and any(
-                survey["name"] == "service_branch" for survey in template.get("survey_vars", []))
-        })
-        for base in declarations:
-            surveys = base.get("survey_vars", [])
-            if not base.get("dev_variant") or not any(v["name"] == "service_branch" for v in surveys):
-                continue
-            with self.subTest(name=base["name"]):
-                self.setUp()
-                name = base["name"] + " (Dev)"
-                self.records[0].update(name=name, repository_id=5, playbook=base["playbook"],
-                                       survey_vars=copy.deepcopy(surveys))
-                expected = copy.deepcopy(surveys)
-                branch = next(v for v in expected if v["name"] == "service_branch")
-                self.assertEqual(branch["default_value"], "main")
-                branch.update(default_value="dev",
-                              description="Target branch for this Dev-bound template (use dev for reviewed Dev code)")
-                code, output = self.run_play(selection=[name])
-                self.assertEqual(code, 0, output)
-                self.assertEqual(len(self.template_payloads), 1)
-                self.assertEqual(self.template_payloads[0]["survey_vars"], expected)
+    def test_dev_branch_survey_set_includes_github_runner(self):
+        names = {template["name"] for template in _dev_branch_declarations()}
+        self.assertTrue(names, "no Dev-branch survey declarations found")
+        self.assertIn("Deploy GitHub Runner", names)
 
     def test_scoped_surveys_do_not_create_or_change_declared_environment(self):
         declaration = {"name": NAME, "repository": "agent-cloud dev", "playbook": TEMPLATE["playbook"],
@@ -938,6 +909,49 @@ class ScopedPublicationTests(unittest.TestCase):
         code, _ = self.run_play(_semaphore_url="http://semaphore.example.test", _all_templates=[SURVEY_DECLARATION])
         self.assertNotEqual(code, 0)
         self.assertEqual(self.requests, [])
+
+
+def _dev_branch_declarations():
+    """Base templates whose generated (Dev) variant takes a service_branch survey."""
+    declarations = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    return [
+        template for template in declarations
+        if template.get("dev_variant")
+        and any(survey["name"] == "service_branch" for survey in template.get("survey_vars", []))
+    ]
+
+
+def _dev_branch_slug(name):
+    return re.sub(r"[^a-z0-9]+", "_", name.lower())
+
+
+def _make_case(base):
+    """One Dev-branch survey case: publish the (Dev) variant and check the saved survey."""
+    def case(self):
+        surveys = base.get("survey_vars", [])
+        name = base["name"] + " (Dev)"
+        self.records[0].update(name=name, repository_id=5, playbook=base["playbook"],
+                               survey_vars=copy.deepcopy(surveys))
+        expected = copy.deepcopy(surveys)
+        branch = next(v for v in expected if v["name"] == "service_branch")
+        self.assertEqual(branch["default_value"], "main")
+        branch.update(default_value="dev",
+                      description="Target branch for this Dev-bound template (use dev for reviewed Dev code)")
+        code, output = self.run_play(selection=[name])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(len(self.template_payloads), 1)
+        self.assertEqual(self.template_payloads[0]["survey_vars"], expected)
+
+    case.__name__ = f"test_dev_branch_survey_preserved_{_dev_branch_slug(base['name'])}"
+    return case
+
+
+# One test method per declaration, so pytest-xdist spreads the (slow, one-ansible-run-each) cases.
+_DEV_BRANCH_CASES = [_make_case(base) for base in _dev_branch_declarations()]
+_DEV_BRANCH_NAMES = [case.__name__ for case in _DEV_BRANCH_CASES]
+assert len(set(_DEV_BRANCH_NAMES)) == len(_DEV_BRANCH_NAMES), "Dev-branch survey test names collide"
+for _case in _DEV_BRANCH_CASES:
+    setattr(ScopedPublicationTests, _case.__name__, _case)
 
 
 if __name__ == "__main__":

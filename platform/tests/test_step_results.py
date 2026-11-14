@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -27,7 +28,7 @@ TEMPLATES = [
     {"id": 6, "name": "Deploy step-ca", "playbook": "platform/playbooks/deploy-step-ca.yml"},
     {"id": 7, "name": "Deploy postiz", "playbook": "platform/playbooks/deploy-postiz.yml"},
 ]
-GROUPS = {"tududi_svc": "tududi", "honcho_svc": "honcho", "step_ca_svc": "step-ca"}  # postiz is not in this inventory
+GROUPS = {"plane_svc": "plane", "honcho_svc": "honcho", "step_ca_svc": "step-ca"}  # postiz is not in this inventory
 # The closed per-service deploy list the collector reads from OPA's data (not a "Deploy " prefix).
 DEPLOYS = frozenset(json.loads((REPO / "platform/services/opa/deployment/policies/agentcloud/data.json").read_text())
                     ["catalog"]["service-agent"]["service_deploy_templates"])
@@ -37,7 +38,7 @@ def _run_line(result: dict) -> str:
     return "\tRUN: " + json.dumps({"step_result": result})
 
 
-def _task(tid, status, template_id, output="", service="tududi", **extra):
+def _task(tid, status, template_id, output="", service="plane", **extra):
     return {"id": tid, "status": status, "end": "2026-10-11T12:00:00Z", "template_id": template_id,
             "service": service, "output": output, **extra}
 
@@ -45,7 +46,8 @@ def _task(tid, status, template_id, output="", service="tududi", **extra):
 def _call(payload: dict) -> dict:
     """Run the parser as the collector does: one JSON object on stdin, JSON on stdout."""
     done = subprocess.run([sys.executable, str(REPO / "platform/workflows/service-onboarding/lib/step_results.py")],
-                          input=json.dumps(payload), text=True, capture_output=True, check=True)
+                          input=json.dumps(payload), text=True, capture_output=True, check=True,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     return json.loads(done.stdout)
 
 
@@ -72,16 +74,16 @@ def test_a_foundation_deploy_is_never_the_service_deploy_step():
 
 def test_a_recorded_result_is_read_through_ansi_colour():
     out = "CUSTOM STATS: ****\n\x1b[0;32m" + _run_line(
-        {"service": "tududi", "step": "secrets-approle", "status": "pass"}) + "\x1b[0m"
+        {"service": "plane", "step": "secrets-approle", "status": "pass"}) + "\x1b[0m"
     agg = _agg(_task(1, "success", 1, out))
-    assert agg["status_by_service"] == {"tududi": {"secrets-approle": "pass"}}
-    assert agg["failed_steps"] == {"tududi": []}
+    assert agg["status_by_service"] == {"plane": {"secrets-approle": "pass"}}
+    assert agg["failed_steps"] == {"plane": []}
 
 
 def test_a_failure_without_a_result_is_recorded_with_its_tail():
     # Spec scenario "A failure with no result is still recorded".
     out = "\n".join(f"line {i}" for i in range(30))
-    rec = _agg(_task(2, "error", 2, out))["services"]["tududi"]["fw-harden"]
+    rec = _agg(_task(2, "error", 2, out))["services"]["plane"]["fw-harden"]
     assert rec["status"] == "fail"
     assert rec["error"].splitlines() == [f"line {i}" for i in range(10, 30)]
 
@@ -96,19 +98,19 @@ def test_per_service_deploy_template_maps_to_service_deploy():
 
 def test_pick_keeps_the_newest_finished_task_per_template_and_service():
     rows = [
-        {"id": 10, "status": "success", "template_id": 1, "environment": '{"target_service": "tududi_svc"}'},
-        {"id": 12, "status": "error", "template_id": 1, "environment": '{"target_service": "tududi_svc"}'},
-        {"id": 13, "status": "running", "template_id": 1, "environment": '{"target_service": "tududi_svc"}'},
+        {"id": 10, "status": "success", "template_id": 1, "environment": '{"target_service": "plane_svc"}'},
+        {"id": 12, "status": "error", "template_id": 1, "environment": '{"target_service": "plane_svc"}'},
+        {"id": 13, "status": "running", "template_id": 1, "environment": '{"target_service": "plane_svc"}'},
         {"id": 11, "status": "success", "template_id": 1, "environment": '{"target_service": "step_ca_svc"}'},
     ]
     picked = step_results.pick([rows], GROUPS)
-    assert [(t["id"], t["service"]) for t in picked] == [(11, "step-ca"), (12, "tududi")]
+    assert [(t["id"], t["service"]) for t in picked] == [(11, "step-ca"), (12, "plane")]
 
 
 def test_aggregate_lets_the_newest_real_result_win():
-    older_pass = _task(10, "success", 1, _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"}))
-    newer_fail = _task(12, "error", 1, _run_line({"service": "tududi", "step": "secrets-approle", "status": "fail"}))
-    assert _agg(newer_fail, older_pass)["status_by_service"]["tududi"]["secrets-approle"] == "fail"
+    older_pass = _task(10, "success", 1, _run_line({"service": "plane", "step": "secrets-approle", "status": "pass"}))
+    newer_fail = _task(12, "error", 1, _run_line({"service": "plane", "step": "secrets-approle", "status": "fail"}))
+    assert _agg(newer_fail, older_pass)["status_by_service"]["plane"]["secrets-approle"] == "fail"
 
 
 def _dual_line(result: dict) -> str:
@@ -119,17 +121,17 @@ def _dual_line(result: dict) -> str:
 def test_newest_wins_across_legacy_and_list_output_in_either_order():
     # History mixes tasks recorded before the list existed with tasks recorded after it.
     def res(status):
-        return {"service": "tududi", "step": "secrets-approle", "status": status}
+        return {"service": "plane", "step": "secrets-approle", "status": status}
 
     # Each newer task SUCCEEDED, so a result the parser failed to read could not be stood in
     # for by the collector's synthesized failure.
     legacy_old = _task(10, "error", 1, _run_line(res("fail")))
     list_new = _task(12, "success", 1, _dual_line(res("pass")))
-    rec = _agg(list_new, legacy_old)["services"]["tududi"]["secrets-approle"]
+    rec = _agg(list_new, legacy_old)["services"]["plane"]["secrets-approle"]
     assert (rec["status"], rec["task_id"]) == ("pass", 12)
     list_old = _task(10, "error", 1, _dual_line(res("fail")))
     legacy_new = _task(12, "success", 1, _run_line(res("pass")))
-    rec = _agg(legacy_new, list_old)["services"]["tududi"]["secrets-approle"]
+    rec = _agg(legacy_new, list_old)["services"]["plane"]["secrets-approle"]
     assert (rec["status"], rec["task_id"]) == ("pass", 12)
 
 
@@ -145,30 +147,30 @@ def test_service_comes_from_inventory_not_string_surgery():
 def test_a_passing_snapshot_is_an_input_never_the_assessment_passing():
     # PR 195 Codex review: Snapshot Access recorded access-assess `pass` and the collector
     # published it, though no proposal had been validated against the step's criteria.
-    out = _run_line({"service": "tududi", "step": "access-assess", "status": "pass"})
+    out = _run_line({"service": "plane", "step": "access-assess", "status": "pass"})
     agg = _agg(_task(21, "success", 4, out))
     assert agg["services"] == {} and agg["failed_steps"] == {}
-    assert agg["inputs"]["tududi"]["access-assess"]["status"] == "pass"
+    assert agg["inputs"]["plane"]["access-assess"]["status"] == "pass"
     # by the template's role, not the status: a snapshot's skip is not the assessment either
-    skip = _run_line({"service": "tududi", "step": "access-assess", "status": "skip"})
+    skip = _run_line({"service": "plane", "step": "access-assess", "status": "skip"})
     skipped = _agg(_task(23, "success", 4, skip))
-    assert skipped["services"] == {} and skipped["inputs"]["tududi"]["access-assess"]["status"] == "skip"
+    assert skipped["services"] == {} and skipped["inputs"]["plane"]["access-assess"]["status"] == "skip"
     # the same result from a template that is NOT the step's snapshot still counts
-    assert _agg(_task(22, "success", 1, _run_line({"service": "tududi", "step": "secrets-approle",
+    assert _agg(_task(22, "success", 1, _run_line({"service": "plane", "step": "secrets-approle",
                                                      "status": "pass"})))["services"]
 
 
 def test_a_failed_snapshot_without_a_result_is_charged_to_its_service():
-    row = {"id": 20, "status": "error", "template_id": 4, "end": "t", "environment": '{"target_service": "tududi_svc"}'}
+    row = {"id": 20, "status": "error", "template_id": 4, "end": "t", "environment": '{"target_service": "plane_svc"}'}
     (picked,) = step_results.pick([[row]], GROUPS)
     agg = _agg(dict(picked, output="no hosts matched"))
-    assert agg["failed_steps"] == {"tududi": ["access-assess"]}
+    assert agg["failed_steps"] == {"plane": ["access-assess"]}
 
 
 def test_report_lists_failed_steps_with_their_context_and_unreviewed_steps():
     # Spec: the report lists criteria not met, error context, undo and the task, and every
     # unreviewed step for every service.
-    entry = _agg(_task(9, "error", 2, "denied"))["report"]["tududi"]
+    entry = _agg(_task(9, "error", 2, "denied"))["report"]["plane"]
     fw = next(s for s in REGISTRY if s["id"] == "fw-harden")
     assert entry["failed"] == [{"step": "fw-harden", "criteria": fw["criteria"], "error": "denied",
                                 "task_id": 9, "undo": fw["undo"]}]
@@ -184,8 +186,8 @@ def test_completion_time_requires_a_valid_timezone_aware_timestamp():
 
 def test_retained_and_missing_completion_provenance_is_explicitly_unknown():
     retained = step_results.aggregate(
-        REGISTRY, TEMPLATES, [], ["tududi"], DEPLOYS,
-        retained={"tududi": {"fw-harden": "fail"}},
+        REGISTRY, TEMPLATES, [], ["plane"], DEPLOYS,
+        retained={"plane": {"fw-harden": "fail"}},
     )
     retained_stream = next(s for s in step_results.loki_streams(retained, 1)
                            if s["stream"]["step"] == "fw-harden")
@@ -195,7 +197,7 @@ def test_retained_and_missing_completion_provenance_is_explicitly_unknown():
     assert retained_body["retained"] is True
 
     missing_time = _task(8, "success", 2, _run_line(
-        {"service": "tududi", "step": "fw-harden", "status": "pass"}), end="invalid")
+        {"service": "plane", "step": "fw-harden", "status": "pass"}), end="invalid")
     agg = _agg(missing_time)
     stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
     body = json.loads(stream["values"][0][1])
@@ -205,13 +207,13 @@ def test_retained_and_missing_completion_provenance_is_explicitly_unknown():
 
 def test_latest_pass_replaces_an_older_failure_with_its_own_provenance():
     failure = _task(10, "error", 2, _run_line(
-        {"service": "tududi", "step": "fw-harden", "status": "fail"}),
+        {"service": "plane", "step": "fw-harden", "status": "fail"}),
         end="2026-10-11T11:00:00Z")
     success = _task(11, "success", 2, _run_line(
-        {"service": "tududi", "step": "fw-harden", "status": "pass"}),
+        {"service": "plane", "step": "fw-harden", "status": "pass"}),
         end="2026-10-11T12:00:00Z")
     agg = _agg(failure, success)
-    assert agg["status_by_service"]["tududi"]["fw-harden"] == "pass"
+    assert agg["status_by_service"]["plane"]["fw-harden"] == "pass"
     stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
     assert stream["stream"]["status"] == "pass"
     assert json.loads(stream["values"][0][1])["task_id"] == 11
@@ -219,11 +221,11 @@ def test_latest_pass_replaces_an_older_failure_with_its_own_provenance():
 
 
 def test_loki_streams_label_every_result():
-    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
+    out = _run_line({"service": "plane", "step": "secrets-approle", "status": "pass"})
     streams = step_results.loki_streams(_agg(_task(8, "success", 1, out)), 1700000000000000000)
     result = next(stream for stream in streams if stream["stream"]["step"] != "none")
     assert result == {
-        "stream": {"job": "agent-cloud-conformance", "service": "tududi",
+        "stream": {"job": "agent-cloud-conformance", "service": "plane",
                    "step": "secrets-approle", "status": "pass"},
         "values": [["1700000000000000000", json.dumps(
             {"check_mode": False, "completed_at_seconds": 1791720000, "error": None,
@@ -232,7 +234,7 @@ def test_loki_streams_label_every_result():
 
 
 def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
-    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "fail",
+    out = _run_line({"service": "plane", "step": "secrets-approle", "status": "fail",
                      "error": "task output detail"})
     agg = _agg(_task(8, "error", 1, out))
     streams = step_results.loki_streams(agg, 1700000000000000000)
@@ -242,7 +244,7 @@ def test_otlp_logs_keep_payload_in_body_and_only_bounded_loki_labels():
                   == "secrets-approle")
     attributes = {entry["key"]: entry["value"]["stringValue"] for entry in record["attributes"]}
     assert {key: attributes[key] for key in ("job", "service", "step", "status")} == {
-        "job": "agent-cloud-conformance", "service": "tududi",
+        "job": "agent-cloud-conformance", "service": "plane",
         "step": "secrets-approle", "status": "fail",
     }
     assert set(attributes) == {"job", "service", "step", "status"}
@@ -272,7 +274,7 @@ def test_completion_receipt_rejects_every_other_shape_and_status():
     receipt = step_results.completion_receipt_stream(1)
     for labels in (
         {"job": "agent-cloud-conformance", "kind": "run", "status": "fail"},
-        {"job": "agent-cloud-conformance", "kind": "run", "status": "success", "service": "tududi"},
+        {"job": "agent-cloud-conformance", "kind": "run", "status": "success", "service": "plane"},
         {"job": "other", "kind": "run", "status": "success"},
     ):
         with pytest.raises(ValueError):
@@ -280,13 +282,13 @@ def test_completion_receipt_rejects_every_other_shape_and_status():
 
 
 def test_data_delivery_batch_never_contains_the_final_receipt():
-    history = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi", "step-ca"], DEPLOYS,
-                                     incomplete={"tududi"})
+    history = step_results.aggregate(REGISTRY, TEMPLATES, [], ["plane", "step-ca"], DEPLOYS,
+                                     incomplete={"plane"})
     streams = step_results.loki_streams(history, 1700000000000000000)
     payload = step_results.otlp_logs_payload(streams)
     assert all(s["stream"].get("kind") != "run" for s in streams)
     assert next(s["stream"]["status"] for s in streams
-                if s["stream"].get("service") == "tududi") == "history_incomplete"
+                if s["stream"].get("service") == "plane") == "history_incomplete"
     assert next(s["stream"]["status"] for s in streams if s["stream"].get("service") == "step-ca") == "no_history"
     assert len(payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]) == len(streams)
 
@@ -430,7 +432,7 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
     agg = step_results.aggregate(
         REGISTRY, TEMPLATES,
         [_task(8, "success", 1, _run_line(
-            {"service": "tududi", "step": "secrets-approle", "status": "pass"}))],
+            {"service": "plane", "step": "secrets-approle", "status": "pass"}))],
         ["step-ca"], DEPLOYS)
     payload = step_results.otlp_logs_payload(step_results.loki_streams(agg, 1700000000000000000))
     records = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
@@ -442,7 +444,7 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
                       and attributes["step"] == step)
         return json.loads(record["body"]["stringValue"])
 
-    assert body_for("tududi", "secrets-approle")["state_code"] == 1
+    assert body_for("plane", "secrets-approle")["state_code"] == 1
     marker = body_for("step-ca", "none")
     assert marker["inventory_code"] == 0
     assert marker["marker_time_seconds"] == 1700000000
@@ -495,15 +497,15 @@ def test_conformance_json_body_format_matches_loki_dashboard_extraction():
 
 
 def test_groups_map_to_their_hosts_service_name():
-    groups = {"all": ["a", "b"], "tududi_svc": ["a"], "step_ca_svc": ["b"], "ungrouped": [], "misc": ["c"]}
-    assert step_results.group_services(groups, {"a": "tududi", "b": "step-ca"}) == {
-        "tududi_svc": "tududi", "step_ca_svc": "step-ca"}
+    groups = {"all": ["a", "b"], "plane_svc": ["a"], "step_ca_svc": ["b"], "ungrouped": [], "misc": ["c"]}
+    assert step_results.group_services(groups, {"a": "plane", "b": "step-ca"}) == {
+        "plane_svc": "plane", "step_ca_svc": "step-ca"}
 
 
 def test_implicit_groups_never_map_to_a_service():
-    groups = {"all": ["a", "b"], "ungrouped": ["a"], "tududi_svc": ["a"]}
-    by_group = step_results.group_services(groups, {"a": "tududi", "b": "step-ca"})
-    assert by_group == {"tududi_svc": "tududi"}
+    groups = {"all": ["a", "b"], "ungrouped": ["a"], "plane_svc": ["a"]}
+    by_group = step_results.group_services(groups, {"a": "plane", "b": "step-ca"})
+    assert by_group == {"plane_svc": "plane"}
     # a launch whose target_service fell back to "ungrouped" stays unattributed
     task = {"environment": json.dumps({"target_service": "ungrouped"})}
     assert step_results._service_of(task, by_group) is None
@@ -527,37 +529,37 @@ def test_a_group_takes_its_service_from_its_first_tracked_host():
 
 
 def test_main_runs_the_three_modes_as_the_collector_calls_them():
-    inv = {"groups": {"tududi_svc": ["h"], "honcho_svc": ["d"], "step_ca_svc": ["s"]},
-           "host_services": {"h": "tududi", "d": "honcho", "s": "step-ca"}}
+    inv = {"groups": {"plane_svc": ["h"], "honcho_svc": ["d"], "step_ca_svc": ["s"]},
+           "host_services": {"h": "plane", "d": "honcho", "s": "step-ca"}}
     deploys = sorted(DEPLOYS)
     selected = _call({"mode": "select", "registry": REGISTRY, "templates": TEMPLATES,
                      "deploy_templates": deploys, **inv})
     assert selected["template_ids"] == [1, 2, 3, 4]
     # the service list the NetBox lookup loops, keyed as the aggregate keys them
-    assert selected["inventory_services"] == ["honcho", "step-ca", "tududi"]
+    assert selected["inventory_services"] == ["honcho", "plane", "step-ca"]
     row = {"id": 5, "status": "success", "template_id": 1, "end": "t",
-           "environment": '{"target_service": "tududi_svc"}'}
-    picked = _call({"mode": "pick", "groups": {"tududi_svc": ["h"]}, "host_services": {"h": "tududi"},
+           "environment": '{"target_service": "plane_svc"}'}
+    picked = _call({"mode": "pick", "groups": {"plane_svc": ["h"]}, "host_services": {"h": "plane"},
                    "histories": [[row]]})["tasks"]
-    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})
+    out = _run_line({"service": "plane", "step": "secrets-approle", "status": "pass"})
     agg = _call({"mode": "aggregate", "registry": REGISTRY, "templates": TEMPLATES, "now_ns": 1,
                 "deploy_templates": deploys,
                 "fetched": [{"item": picked[0], "content": out, "status": 200}]})
-    assert agg["status_by_service"] == {"tududi": {"secrets-approle": "pass"}}
+    assert agg["status_by_service"] == {"plane": {"secrets-approle": "pass"}}
     assert len(agg["loki_streams"]) == 2  # one inventory marker plus one step record
 
 
 def test_pick_passes_on_only_the_fields_the_later_steps_read():
     # PR 274 Codex review: pick returned whole history rows into the visible task output.
     row = {"id": 5, "status": "success", "template_id": 1, "end": "t", "params": {"dry_run": False},
-           "environment": '{"target_service": "tududi_svc"}', "tpl_playbook": "p.yml", "message": "long",
+           "environment": '{"target_service": "plane_svc"}', "tpl_playbook": "p.yml", "message": "long",
            "user_name": "someone", "tpl_alias": "Some Template"}
     (picked,) = step_results.pick([[row]], GROUPS)
     assert picked == {"id": 5, "status": "success", "template_id": 1, "end": "t", "params": {"dry_run": False},
-                      "service": "tududi"}
+                      "service": "plane"}
     # and the aggregate still reads everything it needs from that row
-    agg = _agg(dict(picked, output=_run_line({"service": "tududi", "step": "secrets-approle", "status": "pass"})))
-    assert agg["status_by_service"]["tududi"] == {"secrets-approle": "pass"}
+    agg = _agg(dict(picked, output=_run_line({"service": "plane", "step": "secrets-approle", "status": "pass"})))
+    assert agg["status_by_service"]["plane"] == {"secrets-approle": "pass"}
 
 
 def test_pick_reports_a_template_whose_history_filled_the_window():
@@ -574,10 +576,10 @@ def test_pick_reports_a_template_whose_history_filled_the_window():
 
 
 def test_target_service_may_name_the_service_or_its_group():
-    # Snapshots take the group (tududi_svc); provision-vm and the address steps the service.
-    rows = [{"id": 1, "status": "error", "template_id": 4, "environment": '{"target_service": "tududi"}'},
+    # Snapshots take the group (plane_svc); provision-vm and the address steps the service.
+    rows = [{"id": 1, "status": "error", "template_id": 4, "environment": '{"target_service": "plane"}'},
             {"id": 2, "status": "error", "template_id": 1, "environment": '{"target_service": "step_ca_svc"}'}]
-    assert {t["id"]: t["service"] for t in step_results.pick([rows], GROUPS)} == {1: "tududi", 2: "step-ca"}
+    assert {t["id"]: t["service"] for t in step_results.pick([rows], GROUPS)} == {1: "plane", 2: "step-ca"}
 
 
 # ── check mode never sets conformance (review of PR #195) ─────────────────────
@@ -588,26 +590,26 @@ DRY = {"params": {"dry_run": True, "diff": True}}
 def test_a_passing_check_after_a_failed_real_run_does_not_clear_the_failure():
     failed_real = _task(20, "error", 2, "\n".join(f"line {i}" for i in range(5)))
     passing_check = _task(21, "success", 2, _run_line(
-        {"service": "tududi", "step": "fw-harden", "status": "pass", "check_mode": True}), **DRY)
+        {"service": "plane", "step": "fw-harden", "status": "pass", "check_mode": True}), **DRY)
     agg = _agg(failed_real, passing_check)
-    assert agg["status_by_service"]["tududi"]["fw-harden"] == "fail"
-    assert agg["failed_steps"]["tududi"] == ["fw-harden"]
-    assert agg["validation"]["tududi"]["fw-harden"]["status"] == "pass"
-    assert agg["validation"]["tududi"]["fw-harden"]["task_id"] == 21
+    assert agg["status_by_service"]["plane"]["fw-harden"] == "fail"
+    assert agg["failed_steps"]["plane"] == ["fw-harden"]
+    assert agg["validation"]["plane"]["fw-harden"]["status"] == "pass"
+    assert agg["validation"]["plane"]["fw-harden"]["task_id"] == 21
 
 
 def test_a_result_contradicting_its_row_is_an_anomaly_kept_out_of_conformance():
-    out = _run_line({"service": "tududi", "step": "secrets-approle", "status": "pass", "check_mode": True})
+    out = _run_line({"service": "plane", "step": "secrets-approle", "status": "pass", "check_mode": True})
     agg = _agg(_task(22, "success", 1, out))
     assert agg["status_by_service"] == {}
-    assert agg["validation"]["tududi"]["secrets-approle"]["check_mode"] is True
-    assert agg["anomalies"] == [{"task_id": 22, "service": "tududi", "step": "secrets-approle",
+    assert agg["validation"]["plane"]["secrets-approle"]["check_mode"] is True
+    assert agg["anomalies"] == [{"task_id": 22, "service": "plane", "step": "secrets-approle",
                                  "row_check_mode": False, "result_check_mode": True}]
 
 
 def test_the_last_real_run_survives_any_number_of_dry_runs():
     # Review of PR #229: one real run, then five (or more) check-mode runs.
-    env = '{"target_service": "tududi_svc"}'
+    env = '{"target_service": "plane_svc"}'
     real = {"id": 30, "status": "error", "template_id": 2, "environment": env}
     dry = [dict(real, id=31 + i, status="success", **DRY) for i in range(6)]
     assert [t["id"] for t in step_results.pick([[real, *dry]], GROUPS)] == [30, 36]
@@ -616,7 +618,7 @@ def test_the_last_real_run_survives_any_number_of_dry_runs():
 def test_a_real_row_failing_without_a_result_is_a_real_failure():
     # The row is the run-mode signal: a real row's failure with no result is a real fail.
     agg = _agg(_task(40, "error", 2, "boom"))
-    assert agg["status_by_service"]["tududi"]["fw-harden"] == "fail"
+    assert agg["status_by_service"]["plane"]["fw-harden"] == "fail"
     assert agg["anomalies"] == []
 
 
@@ -634,8 +636,8 @@ def test_no_template_can_inject_check_mode_outside_the_task_row():
 
 
 def test_an_inventoried_service_with_no_history_still_gets_a_report_row():
-    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca", "tududi"])
-    assert set(agg["report"]) == {"step-ca", "tududi"}
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["step-ca", "plane"])
+    assert set(agg["report"]) == {"step-ca", "plane"}
     assert agg["report"]["step-ca"]["no_history"] is True
     assert agg["report"]["step-ca"]["failed"] == []
     assert agg["report"]["step-ca"]["unreviewed"] == [s["id"] for s in REGISTRY if not s.get("reviewed")]
@@ -657,13 +659,13 @@ def test_a_no_history_service_reaches_netbox_and_the_dashboard():
 
 
 def test_inventory_markers_transition_to_the_newest_bounded_state_each_run():
-    no_history = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi"])
+    no_history = step_results.aggregate(REGISTRY, TEMPLATES, [], ["plane"])
     has_history = step_results.aggregate(
         REGISTRY, TEMPLATES,
-        [_task(50, "success", 2, _run_line({"service": "tududi", "step": "fw-harden", "status": "pass"}))],
-        ["tududi"], DEPLOYS)
-    incomplete = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi"], DEPLOYS,
-                                        window_full=[3], incomplete={"tududi"})
+        [_task(50, "success", 2, _run_line({"service": "plane", "step": "fw-harden", "status": "pass"}))],
+        ["plane"], DEPLOYS)
+    incomplete = step_results.aggregate(REGISTRY, TEMPLATES, [], ["plane"], DEPLOYS,
+                                        window_full=[3], incomplete={"plane"})
 
     def inventory_record(agg):
         records = [stream for stream in step_results.loki_streams(agg, 1)
@@ -685,8 +687,8 @@ def test_step_records_carry_numeric_state_codes_and_otlp_accepts_has_history():
         agg = step_results.aggregate(
             REGISTRY, TEMPLATES,
             [_task(60 + code, "success", 2,
-                   _run_line({"service": "tududi", "step": "fw-harden", "status": status}))],
-            ["tududi"], DEPLOYS)
+                   _run_line({"service": "plane", "step": "fw-harden", "status": status}))],
+            ["plane"], DEPLOYS)
         stream = next(s for s in step_results.loki_streams(agg, 1) if s["stream"]["step"] == "fw-harden")
         assert stream["stream"]["status"] == status
         assert json.loads(stream["values"][0][1])["state_code"] == code
@@ -694,8 +696,8 @@ def test_step_records_carry_numeric_state_codes_and_otlp_accepts_has_history():
     agg = step_results.aggregate(
         REGISTRY, TEMPLATES,
         [_task(70, "success", 2,
-               _run_line({"service": "tududi", "step": "fw-harden", "status": "pass"}))],
-        ["tududi"], DEPLOYS)
+               _run_line({"service": "plane", "step": "fw-harden", "status": "pass"}))],
+        ["plane"], DEPLOYS)
     streams = step_results.loki_streams(agg, 1)
     payload = step_results.otlp_logs_payload(streams)
     records = payload["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
@@ -708,17 +710,17 @@ def test_step_records_carry_numeric_state_codes_and_otlp_accepts_has_history():
 def test_a_retained_snapshot_failure_clears_when_the_snapshot_succeeds():
     # PR 258 Codex review: a failed Snapshot Access was recorded as access-assess fail; its
     # successful retry lands in inputs, so the old failure came back from NetBox for good.
-    ok = _run_line({"service": "tududi", "step": "access-assess", "status": "pass"})
-    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(30, "success", 4, ok)], ["tududi"], DEPLOYS,
-                                 retained={"tududi": {"access-assess": "fail", "fw-harden": "fail"}})
-    assert agg["status_by_service"] == {"tududi": {"fw-harden": "fail"}}
-    assert agg["inputs"]["tududi"]["access-assess"]["status"] == "pass"
+    ok = _run_line({"service": "plane", "step": "access-assess", "status": "pass"})
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(30, "success", 4, ok)], ["plane"], DEPLOYS,
+                                 retained={"plane": {"access-assess": "fail", "fw-harden": "fail"}})
+    assert agg["status_by_service"] == {"plane": {"fw-harden": "fail"}}
+    assert agg["inputs"]["plane"]["access-assess"]["status"] == "pass"
     # a CHECK-MODE success clears nothing: no real run superseded the failure (PR 258 Codex review)
-    dry = _run_line({"service": "tududi", "step": "access-assess", "status": "pass", "check_mode": True})
-    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(31, "success", 4, dry, **DRY)], ["tududi"], DEPLOYS,
-                                 retained={"tududi": {"access-assess": "fail"}})
-    assert agg["status_by_service"] == {"tududi": {"access-assess": "fail"}}
-    assert agg["validation"]["tududi"]["access-assess"]["status"] == "pass" and agg["inputs"] == {}
+    dry = _run_line({"service": "plane", "step": "access-assess", "status": "pass", "check_mode": True})
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(31, "success", 4, dry, **DRY)], ["plane"], DEPLOYS,
+                                 retained={"plane": {"access-assess": "fail"}})
+    assert agg["status_by_service"] == {"plane": {"access-assess": "fail"}}
+    assert agg["validation"]["plane"]["access-assess"]["status"] == "pass" and agg["inputs"] == {}
 
 
 def test_a_full_window_marks_only_the_services_it_can_hide():
@@ -742,27 +744,27 @@ def test_a_full_window_marks_only_the_services_it_can_hide():
 def test_a_retained_step_the_registry_no_longer_holds_is_dropped():
     # Grounding review of PR 258: a renamed or removed step's last status came back from NetBox
     # on every run, a stale failure no run could ever clear.
-    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["tududi"], DEPLOYS,
-                                 retained={"tududi": {"fw-harden": "fail", "old-renamed-step": "fail"}})
-    assert agg["status_by_service"] == {"tududi": {"fw-harden": "fail"}}
-    assert agg["failed_steps"] == {"tududi": ["fw-harden"]}
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [], ["plane"], DEPLOYS,
+                                 retained={"plane": {"fw-harden": "fail", "old-renamed-step": "fail"}})
+    assert agg["status_by_service"] == {"plane": {"fw-harden": "fail"}}
+    assert agg["failed_steps"] == {"plane": ["fw-harden"]}
 
 
 def test_a_status_older_than_the_window_is_reported_and_streamed_not_only_kept():
     # PR 258 Codex review: NetBox kept a failure whose run fell out of the window, but the
     # report and Loki dropped it. The retained status is merged UNDER this run's results.
-    out = _run_line({"service": "tududi", "step": "vm-provision", "status": "fail", "error": "new"})
-    retained = {"tududi": {"fw-harden": "fail", "vm-provision": "pass", "fw-assess": "bogus"}}
-    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(8, "error", 1, out)], ["tududi"], DEPLOYS,
+    out = _run_line({"service": "plane", "step": "vm-provision", "status": "fail", "error": "new"})
+    retained = {"plane": {"fw-harden": "fail", "vm-provision": "pass", "fw-assess": "bogus"}}
+    agg = step_results.aggregate(REGISTRY, TEMPLATES, [_task(8, "error", 1, out)], ["plane"], DEPLOYS,
                                  retained=retained)
     # this run wins where it has a result; the older failure survives; an unknown value is dropped
-    assert agg["status_by_service"] == {"tududi": {"vm-provision": "fail", "fw-harden": "fail"}}
-    assert agg["failed_steps"] == {"tududi": ["fw-harden", "vm-provision"]}
-    failed = {f["step"]: f for f in agg["report"]["tududi"]["failed"]}
+    assert agg["status_by_service"] == {"plane": {"vm-provision": "fail", "fw-harden": "fail"}}
+    assert agg["failed_steps"] == {"plane": ["fw-harden", "vm-provision"]}
+    failed = {f["step"]: f for f in agg["report"]["plane"]["failed"]}
     assert failed["fw-harden"]["error"] == step_results.RETAINED_ERROR and failed["fw-harden"]["task_id"] is None
     kept = [st for st in step_results.loki_streams(agg, 1) if st["stream"]["step"] == "fw-harden"]
     assert kept[0]["stream"]["status"] == "fail" and json.loads(kept[0]["values"][0][1])["retained"] is True
-    assert agg["report"]["tududi"]["no_history"] is False
+    assert agg["report"]["plane"]["no_history"] is False
 
 
 def test_the_collector_passes_the_window_to_the_aggregate():
@@ -785,7 +787,7 @@ def test_a_dry_run_failing_without_a_result_is_validation_not_an_anomaly():
     # Review of PR #229: the synthesized failure takes its run mode from the row.
     agg = _agg(_task(41, "error", 2, "boom", **DRY))
     assert agg["status_by_service"] == {}
-    assert agg["validation"]["tududi"]["fw-harden"]["status"] == "fail"
+    assert agg["validation"]["plane"]["fw-harden"]["status"] == "fail"
     assert agg["anomalies"] == []
 
 

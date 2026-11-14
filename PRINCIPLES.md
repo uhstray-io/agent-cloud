@@ -127,10 +127,8 @@ and thereafter reused. Env files are templated fresh every deploy (mode 0600), g
 secret-generating `deploy.sh`, an on-VM `secrets/` dir, a token written back from `deploy.sh`) is a
 defect.
 *Why: generate-if-missing/reuse-always is the cure for the original NetBox failure (deploy.sh
-regenerated secrets, drifting passwords against live DB volumes). As-built: `nocodb` deploy.sh still
-`source`s `bao-client.sh` (a violation to retire); `semaphore` is genesis-exempt per the
-bootstrap-services principle below. Retiring nocodb's self-fetch is the concrete acceptance test that
-this principle is real.*
+regenerated secrets, drifting passwords against live DB volumes). As-built: `semaphore` is
+genesis-exempt per the bootstrap-services principle below.*
 
 **deploy.sh is container-lifecycle-only; the credential boundary is Ansible.** A `deploy.sh` may
 verify env files exist, pull/build images, run `compose up`, wait for health, and run migrations. It
@@ -149,9 +147,7 @@ local deployment** they generate and manage their own credentials (committed as 
 **provisioning a new tenant or service from it MUST follow the strict boundary** (OpenBao -> Ansible
 -> Jinja -> `.env`; `deploy.sh` never touches OpenBao).
 *Why: the chicken-and-egg of trust is real and must be named, not smuggled in per-service. As-built:
-`semaphore` deploy.sh sourcing `bao-client.sh` is defensible as genesis; `nocodb` deploy.sh doing so
-is NOT - it is a normal service provisioned from a running instance, so refactor it to the strict
-boundary. The proposed repository-wide lint must allowlist only the genesis services (OpenBao, Semaphore);
+`semaphore` deploy.sh sourcing `bao-client.sh` is defensible as genesis. The proposed repository-wide lint must allowlist only the genesis services (OpenBao, Semaphore);
 that blanket lint and allowlist are not implemented.*
 
 **One authority per concern; reflections are read-only and never invert authority.** Each
@@ -186,8 +182,7 @@ gets an AppRole scoped to the exact OpenBao paths it needs, enumerated in `.hcl`
 `secret/data/services/*` is reserved for the Semaphore orchestrator alone; new services never inherit
 the wildcard.
 *Why: a per-service AppRole means a compromise reads one service's secrets, not the platform's.
-As-built: `nemoclaw-read.hcl` grants the wildcard to an AI agent - tighten it, and add a CI lint over
-`policies/*.hcl` flagging any `services/*` grant except the allowlisted semaphore policy.*
+A CI lint over `policies/*.hcl` should flag any `services/*` grant except the allowlisted semaphore policy.*
 
 **Human access is provisioned by role, never granted by hand.** Identity decomposes as
 **Organization > Department > Team > Role**, with an orthogonal **Access Level** privilege tier -
@@ -226,7 +221,7 @@ a CI gate (trufflehog + RFC1918 + credential-pattern grep). Log-value redaction 
 grep is a human backstop, never the primary control. A new service without leak tests cannot merge.
 *Why: on a public repo a leaked credential is exposed the instant it's pushed; one skippable gate is
 not enough. Note: commit `aecd47d` committed dev-test `.env` files to public history; **verified
-2026-06-28 to hold only placeholders** (`POSTGRES_PASSWORD=abc123456xyz`, `nocodb.example.com`) - NOT
+2026-06-28 to hold only placeholders** (`POSTGRES_PASSWORD=abc123456xyz`, a `*.example.com` host) - NOT
 a breach, no real credential/IP/domain exposed, and current prod uses unrelated OpenBao-managed creds.
 The lesson still stands: the pre-commit/CI gate must reject committing ANY `.env` at all, so the next
 one - which might be real - never lands.*
@@ -245,7 +240,7 @@ structural and low-false-positive; the denylist targets actual leaks.*
 ## 4. The AI Invariant
 
 **AI proposes, guardrails validate, automation executes - and never the inverse.** An AI agent
-(NemoClaw, NetClaw, Cowork, WebSmith, Wisbot) may only emit desired-state proposals into
+(a skynet agent role: `infra-agent`, `security-agent`, `o11y-agent`, `service-agent`, `network-agent` or `skynet-eval`) may only emit desired-state proposals into
 trigger-converged or one-time pipelines that pass through the guardrail layer (OpenBao, OPA, Kyverno)
 before the automation layer executes them. An agent **may recommend improvements to agent-cloud
 itself** - including to its own pipelines, prompts, and configuration - **but may never apply them
@@ -323,13 +318,31 @@ persist. Tagging reversibility makes the one-way risk visible at launch, not aft
 Caddy is the sole HTTPS ingress and only TLS terminator. Internal traffic is plain HTTP unless a
 backend protocol genuinely requires TLS (prefer the internal CA over `tls_insecure_skip_verify`).
 Plain-HTTP backends are permitted **only** on a host where `apply-firewall.yml`'s default-deny-inbound
-(except Caddy + mgmt SSH) is applied and verified by `validate-all.yml`.
+(except Caddy + mgmt SSH) is applied and verified. The verification is the playbook's own: after
+converging it re-reads `ufw show added` and asserts every declared rule landed and no stale tagged
+rule or declared SSH allow is missing, forces a fresh SSH handshake through the live firewall, and
+raises a per-host verdict that the run fails unless UFW is active with default-deny incoming
+(`validate-all.yml` checks service health only and performs no firewall check).
+A passing verdict does not prove that access is exclusive. The playbook leaves untagged rules alone
+(`platform/playbooks/apply-firewall.yml:66-72`), and an untagged rule may admit traffic that the declared
+policy does not describe. An operator must read the untagged rules that the run lists in its report before
+treating the network as trusted.
 *Why: terminating once keeps the cert surface to one place and avoids unrotated self-signed sprawl.
 But "trusted network" is a security claim only a firewall can back. As-built caveat (updated
 2026-10-27): the host firewall is applied through Semaphore on the DNS, internal-CA, o11y and CI-runner
 hosts, but is not yet declared for every service host (none is recorded for the Caddy host) - finish
 the rollout and make it a mandatory onboarding step (Phase 1) before relying on the trust boundary
 for any new service.*
+
+**EXCEPTION (recorded 2026-11-05, review by 2027-02-05): the gateway-to-vLLM hop is plain HTTP and
+carries the vLLM API key in clear.** On the inference path the agentgateway-to-vLLM hop (the DGX
+Spark host) does not meet the rule above: it is plain HTTP and the upstream key travels unencrypted.
+Compensating control: the GPU host's firewall admits only the gateway host to the vLLM port - that
+control is enforced outside this repository and is not verifiable from this checkout. Fix: internal-CA
+TLS for that hop, decided 2026-10-16 (dgx-spark ADR-0017, as cited in
+[plan/architecture/network-architecture.md](plan/architecture/network-architecture.md)), pending - the
+agent-cloud build is not started. This exception ends when that TLS lands, and it must be reviewed no
+later than 2027-02-05. The rule above is unchanged.
 
 **Consume public TLS, run a private CA; never become a public CA.** Browser-trusted certs via Caddy +
 CloudFlare DNS-01 (incl. On-Demand TLS for SaaS tenant domains); internal/LAN certs from the step-ca

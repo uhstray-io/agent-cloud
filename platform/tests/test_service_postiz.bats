@@ -397,7 +397,7 @@ setup() {
 @test "postiz: local Caddy route has NO forward_auth gate" {
   local f="$REPO_ROOT/platform/inventory/local-dev.yml.example"
   grep -qE 'host: "postiz\.agent-cloud\.test", upstream: "postiz:5000"' "$f"
-  # An edge gate would also gate /api/public/v1 and break n8n's API-key calls.
+  # An edge gate would also gate /api/public/v1 and break API-key calls.
   refute_grep -qE 'postiz\.agent-cloud\.test.*forward_auth' "$f"
 }
 

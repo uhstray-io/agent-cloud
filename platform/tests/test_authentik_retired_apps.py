@@ -7,8 +7,8 @@ so it must be placed on every deploy (not per app), must hold deletions only, an
 object by the identifiers its original blueprint used. A blueprint file that no deploy places is
 dead config, so that is checked too.
 
-The entries pin tududi, the first app retired this way. When its tombstone has run in prod, the
-entries may be removed, and these tests change with them.
+The entries pin tududi, n8n and openhands, the apps retired this way. When their tombstones have run
+in prod, the entries may be removed, and these tests change with them.
 """
 
 from pathlib import Path
@@ -74,6 +74,39 @@ def test_tududi_has_no_catalog_entry_blueprint_env_or_secret_left():
     assert not list(BLUEPRINTS.glob("*tududi*"))
     assert "TUDUDI_" not in ENV_TEMPLATE.read_text()
     assert "tududi_oidc_client_secret" not in SECRET_DECLARATIONS.read_text()
+
+
+def test_n8n_application_and_provider_are_tombstoned_application_first():
+    keys = [(e["model"], tuple(sorted(e["identifiers"].items()))) for e in _entries()]
+    application = ("authentik_core.application", (("slug", "n8n"),))
+    provider = ("authentik_providers_proxy.proxyprovider", (("name", "n8n"),))
+    assert application in keys, f"no absent entry for the n8n application: {keys}"
+    assert provider in keys, f"no absent entry for the n8n provider: {keys}"
+    assert keys.index(application) < keys.index(provider), (
+        "the application references the provider, so it is deleted first"
+    )
+
+
+def test_openhands_application_and_provider_are_tombstoned_application_first():
+    keys = [(e["model"], tuple(sorted(e["identifiers"].items()))) for e in _entries()]
+    application = ("authentik_core.application", (("slug", "openhands"),))
+    provider = ("authentik_providers_proxy.proxyprovider", (("name", "openhands"),))
+    assert application in keys, f"no absent entry for the openhands application: {keys}"
+    assert provider in keys, f"no absent entry for the openhands provider: {keys}"
+    assert keys.index(application) < keys.index(provider), (
+        "the application references the provider, so it is deleted first"
+    )
+
+
+def test_n8n_and_openhands_have_no_catalog_entry_blueprint_or_env_left():
+    catalog = _catalog()
+    assert "n8n" not in catalog
+    assert "openhands" not in catalog
+    assert not list(BLUEPRINTS.glob("*n8n*"))
+    assert not list(BLUEPRINTS.glob("*openhands*"))
+    template = ENV_TEMPLATE.read_text()
+    assert "OPENHANDS_" not in template
+    assert "N8N_" not in template
 
 
 def test_every_blueprint_file_is_placed_by_a_deploy():

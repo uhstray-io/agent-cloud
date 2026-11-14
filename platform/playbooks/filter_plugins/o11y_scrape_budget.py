@@ -122,6 +122,14 @@ NATIVE_SOURCE_REFUSAL_REASONS = frozenset({
     "native_component_unhealthy", "native_debug_unavailable", "native_debug_invalid",
     "native_debug_stale", "native_debug_mismatch", "native_readback_timeout", "native_target_mismatch",
     "native_module_mismatch", "native_limits_mismatch", "namespace_unverified",
+    # Decision points of the post-apply candidate binding and source transition.
+    "native_binding_digest_invalid", "native_binding_started_before_apply", "native_binding_argv",
+    "native_binding_compose", "native_binding_image", "native_binding_config_digest",
+    "native_binding_config_bytes", "native_binding_components", "native_binding_mounts",
+    "native_source_identity_changed", "native_source_transition_unproven", "native_source_internal_error",
+    # Decision points of the current-producer identity and the Prometheus targets read.
+    "native_identity_podman_unavailable", "native_identity_alloy_count", "native_identity_alloy_not_running",
+    "native_targets_invalid", "native_targets_unavailable",
 })
 SOURCE_GATE_REFUSAL_REASONS = READBACK_REASONS | SOURCE_READBACK_REASONS | NATIVE_SOURCE_REFUSAL_REASONS
 SOURCE_JOB_CATEGORIES = {
@@ -761,6 +769,14 @@ def o11y_availability_source_coverage(readback: Any, allow_self_only: bool = Fal
     }
 
 
+# The producer helper runs through ansible's script action over ssh: no stdin, sudoable, so
+# ansible adds -tt, and ControlPersist keeps the session multiplexed. OpenSSH's mux client then
+# prints this one line on the local ssh stderr when the shared session closes (the string is in
+# the ssh binary). It is transport noise, not producer output, so exactly one such line is
+# accepted; any other stderr still counts as producer_stderr_present.
+_SSH_MUX_CLOSE_STDERR = re.compile(r"Shared connection to [A-Za-z0-9._:\[\]-]{1,253} closed\.\r?\n?")
+
+
 def o11y_availability_source_gate_diagnostic(result: Any) -> str:
     """Reduce a protected Ansible command result to one fixed diagnostic category."""
     fallback = "producer_evidence_invalid"
@@ -803,7 +819,7 @@ def o11y_availability_source_gate_diagnostic(result: Any) -> str:
         ):
             return readback["reason"]
         coverage = o11y_availability_source_coverage(readback, allow_self_only=True)
-        if stderr != "":
+        if stderr != "" and not (isinstance(stderr, str) and _SSH_MUX_CLOSE_STDERR.fullmatch(stderr)):
             return "producer_stderr_present"
         if rc == 0 and coverage.get("status") == "observed":
             return "producer_observed" if coverage.get("matches_intended") is True else "producer_mismatch"

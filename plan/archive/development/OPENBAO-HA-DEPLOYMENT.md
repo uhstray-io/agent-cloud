@@ -206,7 +206,7 @@ flowchart LR
 #### Phase B5 — OpenBao Agent rollout
 
 - **Files:** Agent config per service host (`auto_auth` approle reading a **response-wrapped** secret_id, `cache { persist }`, `template`/`env_template` rendering `.env` or injecting env vars), incrementally replacing `bao-client.sh` runtime calls [2].
-- Start with one service (e.g. n8n), prove auto-renew across token expiry, then fan out.
+- Start with one service, prove auto-renew across token expiry, then fan out.
 - **Acceptance:** a service's secrets refresh without a redeploy when rotated in OpenBao; no service-side login/renew code.
 
 #### Phase B6 — Hardening
@@ -239,7 +239,7 @@ flowchart LR
 - **Seal-service SPOF** — auto-unseal makes the Transit seal vault a hard dependency: its permanent loss makes the cluster unrecoverable *even from backups* [seal-concept]. Mitigations: the seal vault is itself snapshotted (B4), and **recovery keys** provide break-glass root-token generation / seal migration.
 - **TLS everywhere (B0)** closes the current plaintext-secret-on-LAN exposure (Problem #4) and is mandatory for Raft cluster traffic.
 - **Least privilege** — `config/policies/*.hcl` applied in **both** environments (A6); the `semaphore-read` super-policy (`sys/policies/acl/*` + `auth/approle/role/*`) stays scoped to the orchestrator only.
-- **Audit + root revocation (B6)** — given read-all policies exist (`nemoclaw-read`, `semaphore-read`), an audit device and a revoked genesis root token are required to bound blast radius.
+- **Audit + root revocation (B6)** — given read-all policies exist (`semaphore-read`), an audit device and a revoked genesis root token are required to bound blast radius.
 - **Break-glass genesis** — OpenBao's own deploy can't fetch its GitHub deploy key from itself; the documented `-e github_deploy_key=` extra-var is the *only* sanctioned manual injection, scoped to first deploy.
 
 ---

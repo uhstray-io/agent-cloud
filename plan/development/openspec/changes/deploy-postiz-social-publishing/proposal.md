@@ -8,7 +8,7 @@ configuration exists only as a loose `.env` on a developer machine, which is exa
 the drift this platform's conventions exist to prevent.
 
 Standing Postiz up properly gives two things at once: a self-hosted publishing plane
-for social content, and an API surface that n8n can drive to automate the creation,
+for social content, and an API surface that automation can drive for the creation,
 upload, and scheduling of posts — moving social publishing from a manual chore into
 the automation layer where the rest of the platform already lives.
 
@@ -25,14 +25,12 @@ the automation layer where the rest of the platform already lives.
   port from the reverse proxy.
 - **Authentik as the identity provider for Postiz**, via Postiz's native generic-OIDC
   support rather than an edge `forward_auth` gate — so the automation API path stays
-  usable by n8n with an API key.
+  usable by automation with an API key.
 - **A public route** at `postiz.uhstray.io` through the central Caddy, with TLS via
   the existing Cloudflare DNS-01 flow.
 - **Pre-existing social-platform credentials are moved into OpenBao** (Discord,
   LinkedIn, X, YouTube) instead of living in a plaintext file, and are consumed from
   there on every deploy.
-- **A documented n8n integration contract** — endpoint, auth model, and rate ceiling —
-  so the automation can be built against a stable surface. No n8n changes here.
 - **BREAKING (local only):** the committed `compose.yml` for this service is rewritten
   and is no longer runnable standalone; it now requires the Ansible-rendered
   configuration files. Nothing consumes it today, so no deployed system is affected.
@@ -68,7 +66,7 @@ None — this store has no existing specs.
 - **New**: a service deployment directory (compose base and local overlay, lifecycle
   script, two config templates, docs), three playbooks (deploy, clean-deploy, secret
   seeding), an identity-provider client blueprint, Semaphore templates for local and
-  production, an integration-contract document, and shell tests.
+  production, and shell tests.
 - **Modified**: the existing service `compose.yml` (credentials removed,
   env-parameterized); inventory in three files (local, public placeholder, and the
   private site-config repo); the identity provider's deploy playbook, to inject the
@@ -82,7 +80,7 @@ None — this store has no existing specs.
 - **Dependencies**: adds a Temporal workflow engine and a second Postgres to the
   service host — the largest single cost of this change, and the reason the upstream
   reference topology is trimmed rather than adopted wholesale.
-- **Not affected**: n8n receives no configuration or deployment change; the identity
+- **Not affected**: the identity
   provider and reverse proxy are extended through their existing config-as-code
   mechanisms, not modified structurally.
 

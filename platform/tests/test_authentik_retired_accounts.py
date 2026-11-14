@@ -24,6 +24,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
@@ -65,7 +66,8 @@ def _ansible(tmp: Path, play: dict, extra: dict, check: bool = False) -> subproc
     cmd = ["ansible-playbook", "-i", "localhost,", str(tmp / "playbooks/play.yml"), "-e", json.dumps(extra)]
     if check:
         cmd.append("--check")
-    return subprocess.run(cmd, cwd=tmp, env=env, text=True, capture_output=True, check=False)
+    return subprocess.run(cmd, cwd=tmp, env=env, text=True, capture_output=True, check=False,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
 
 
 def _facts(tmp: Path, inventory: dict) -> tuple[subprocess.CompletedProcess, dict]:

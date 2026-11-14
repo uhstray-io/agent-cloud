@@ -5,15 +5,13 @@ the Semaphore log, so it must never print a credential, on success or on failure
 run the real script against a stub HTTP server that records every PATCH.
 """
 
-import http.server
 import json
 import pathlib
 import subprocess
 import sys
-import threading
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 DEPLOY = pathlib.Path(__file__).resolve().parents[2] / "platform/services/plane/deployment"
 # The playbook runs plane_session.py and the script joined, exactly as here.
@@ -72,10 +70,8 @@ def plane():
         "config": {"ENABLE_SIGNUP": "1", "IS_OIDC_ENABLED": "0", "OIDC_CLIENT_SECRET": ""},
         "patches": [],
     }
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubPlane)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield StubPlane.state, f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
+    with serve(StubPlane) as base:
+        yield StubPlane.state, base
 
 
 def run(base, settings):

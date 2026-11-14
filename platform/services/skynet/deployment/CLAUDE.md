@@ -4,7 +4,7 @@ skynet — the Tier 2 orchestration API (`skynet`, :8080 on the container networ
 Postgres for LangGraph checkpoints (`skynet-db`, internal only). Two podman containers. `skynet`
 publishes its API on the declared host bind (`skynet_publish_bind`:`skynet_publish_port`, loopback
 `127.0.0.1:8380` by default); `skynet-db` publishes nothing. Its design is DESIGN-DECISIONS §17 in the skynet
-repository; its variables are listed in `deploy/tier2/README.md` there.
+repository; its variables are listed in the skynet repository's `deploy/tier2/README.md`.
 
 ## What this service is
 
@@ -74,7 +74,7 @@ Ansible renders `.env` (gitignored). `deploy.sh` only reads it.
 The image ref comes from the inventory (`skynet_image`), pinned by digest. It is not built on
 the VM.
 
-skynet publishes the image from its `.github/workflows/publish-tier2.yml` (merged 45fd869, skynet
+The skynet repository publishes the image from its `.github/workflows/publish-tier2.yml` (merged 45fd869, skynet
 PR #10) to GHCR as `ghcr.io/uhstray-io/skynet-tier2`. The inventory pins that digest in
 `skynet_image`.
 
@@ -82,7 +82,7 @@ PR #10) to GHCR as `ghcr.io/uhstray-io/skynet-tier2`. The inventory pins that di
 
 skynet calls OPA, the gateway and Semaphore over HTTPS. `SSL_CERT_FILE` replaces the process's
 whole trust store, so each overlay names a bundle that holds everything skynet must verify. The
-base `compose.yml` never sets `SSL_CERT_FILE`.
+base `compose.yml` never sets `SSL_CERT_FILE`. Which of the two bullets applies is decided by the inventory, not by a variable: local mode holds only when every host but `localhost` is named `<service>-local` (`_skynet_local` in `deploy-skynet.yml`, read from `groups`), and a `local_mode` that disagrees with it is refused before anything changes (`tasks/assert-local-mode-identity.yml`).
 
 - **Local-dev** (`compose.local.yml`, loaded when LOCAL_MODE=true): every local endpoint is a
   step-ca leaf. The bundle is `./certs/step-ca-bundle.crt`, the root and intermediate, written by
@@ -166,7 +166,7 @@ their identity changes, so a renewal needs no restart.
   containers. An unchanged re-run recreates nothing. The local bring-up on a locally built image
   is tolerated by `step_pull_images`, as honcho does.
 - **`restart: always`** on both services. Podman's boot unit starts only `always` containers
-  (enforced by `platform/tests/test_restart_policy.bats`).
+  (enforced by `platform/tests/suite/restart_policy.rs`).
 - **Healthchecks use `CMD-SHELL`**, the same form honcho uses, because podman-compose mis-quotes
   exec-form `CMD` lists.
 - **`skynet-db` gets no `env_file`.** It takes only `POSTGRES_*` from the compose environment, so
@@ -188,7 +188,7 @@ their identity changes, so a renewal needs no restart.
 
 ## Related
 
-- skynet repository, `deploy/tier2/README.md`: the variables and the API surface.
+- skynet repository's `deploy/tier2/README.md`: the variables and the API surface.
 - OpenSpec change `service-deployment-workflow`, task 3.7 (`plan/development/openspec/changes/service-deployment-workflow/tasks.md`).
 - Platform plan: `plan/development/15-service-deployment-workflow-agents.md`.
 - Gateway route and its key policy: `platform/services/agentgateway/deployment/`.

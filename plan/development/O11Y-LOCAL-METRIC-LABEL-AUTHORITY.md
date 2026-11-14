@@ -1,5 +1,8 @@
 # Local Alloy metric label authority
 
+**Status:** IMPLEMENTED (source and focused tests; live acceptance remains open)
+> **Parent plan:** [Observability](05-observability.md)
+
 ## Goal
 
 Make validated o11y inventory values authoritative for `cluster` and

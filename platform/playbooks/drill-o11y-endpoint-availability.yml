@@ -1,10 +1,15 @@
 ---
-# Production drill for the endpoint availability alert (rule o11y_endpoint_probe_failed).
-# It fails ONE reviewed availability target's health probe on purpose: the census takes a
-# status code the target never returns (599, census drill input), a second deploy restores
-# the normal projection, and the drill proves the rule fired and the Discord receipt names
-# that target. It sends a real Discord alert. An interruption leaves a marker outside the
-# checkout; Recover o11y Endpoint Drill (Dev) clears it after a normal deploy.
+# Production drill for the endpoint availability alert. It breaks ONE reviewed availability
+# target on purpose, in the mode the survey names (availability_drill_mode, default fail):
+#   fail    the census takes a status code the target never returns (599). The target's probe
+#           fails, and the rule o11y_endpoint_probe_failed must fire for it.
+#   absent  the census moves the target out of the probe projection (alert_only_targets), so
+#           no probe series exists. The rule o11y_endpoint_probe_missing must fire for it once
+#           its freshness window and its for-window have passed.
+# A second deploy restores the normal projection, and the drill proves the rule fired and the
+# Discord receipt names that target. It sends a real Discord alert. An interruption leaves a
+# marker outside the checkout; Recover o11y Endpoint Drill (Dev) clears it after a normal
+# deploy. Recovery and the marker are the same in both modes.
 #
 # deploy-o11y.yml does not refuse on that marker on purpose: a deploy is the recovery path.
 
@@ -86,6 +91,17 @@
           - availability_drill_target_id | default('') is match('^[a-z0-9:._/-]+$')
         fail_msg: "Name one reviewed availability target_id in the survey field availability_drill_target_id."
 
+    - name: Require a known availability drill mode
+      ansible.builtin.assert:
+        that: (availability_drill_mode | default('fail')) in ['fail', 'absent']
+        fail_msg: "Choose the survey field availability_drill_mode: fail (status 599) or absent (probe series removed)."
+
+    # Mode-dependent values. The rule uid and the readiness query are facts. The census input is
+    # built inline at its two uses, the prepare include and the drilled import, from one expression.
+    - name: Bind the endpoint rule the drill mode proves
+      ansible.builtin.set_fact:
+        _endpoint_drill_rule_uid: "{{ 'o11y_endpoint_probe_missing' if (availability_drill_mode | default('fail')) == 'absent' else 'o11y_endpoint_probe_failed' }}"
+
     - name: Inspect the unfinished paused-canary markers
       ansible.builtin.stat:
         path: "{{ item }}"
@@ -132,7 +148,7 @@
           - -c
           - >-
             printf 'user = "admin:%s"\n' "$GF_SECURITY_ADMIN_PASSWORD" |
-            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/o11y_endpoint_probe_failed
+            curl -fsS --config - http://127.0.0.1:3000/api/v1/provisioning/alert-rules/{{ _endpoint_drill_rule_uid }}
       register: _endpoint_rule
       changed_when: false
       check_mode: false
@@ -141,7 +157,7 @@
     - name: Require the endpoint availability rule to be provisioned and active
       ansible.builtin.assert:
         that:
-          - (_endpoint_rule.stdout | from_json).uid == 'o11y_endpoint_probe_failed'
+          - (_endpoint_rule.stdout | from_json).uid == _endpoint_drill_rule_uid
           - not ((_endpoint_rule.stdout | from_json).isPaused | bool)
         fail_msg: "The endpoint availability rule is absent or paused; no fault was injected. Deploy a reviewed availability target first."
       no_log: true
@@ -187,14 +203,15 @@
     - name: Validate the named target through the bounded availability projection
       ansible.builtin.include_tasks: tasks/prepare-o11y-availability.yml
       vars:
-        _o11y_availability_drill:
-          target_id: "{{ availability_drill_target_id }}"
-          status_code: 599
+        _o11y_availability_drill: "{{ {'target_id': availability_drill_target_id, 'status_code': 599}
+          if (availability_drill_mode | default('fail')) == 'fail'
+          else {'target_id': availability_drill_target_id, 'mode': 'absent'} }}"
 
+    # An absent drill moved the target to alert_only_targets, so it is collected from both lists.
     - name: Collect the one drilled target from the validated projection
       ansible.builtin.set_fact:
         _endpoint_drill_matches: >-
-          {{ _o11y_availability.targets |
+          {{ (_o11y_availability.targets + (_o11y_availability.alert_only_targets | default([]))) |
              selectattr('target_id', 'equalto', availability_drill_target_id) | list }}
       no_log: true
 
@@ -212,6 +229,14 @@
       ansible.builtin.set_fact:
         _endpoint_probe_query: >-
           probe_success{job="o11y-availability",instance="{{ _endpoint_drill_target.target_id }}",service="{{ _endpoint_drill_target.service_identity }}",target_id="{{ _endpoint_drill_target.target_id }}",environment="{{ _endpoint_drill_target.environment }}",cluster="{{ _endpoint_drill_target.cluster }}"}
+
+    # The readiness wait of the drill proof. Fail waits for the probe to read 0. Absent waits for
+    # the probe series to be gone: absent_over_time is 1 with no sample in its window, so minus 1
+    # is 0 and the series keeps the probe's own labels. The probe series itself is still the
+    # pre-claim health check and the recovery wait, both of which stay on _endpoint_probe_query.
+    - name: Bind the endpoint readiness query the drill mode waits for
+      ansible.builtin.set_fact:
+        _endpoint_ready_query: "{{ ('absent_over_time(' ~ _endpoint_probe_query ~ '[30s]) - 1') if (availability_drill_mode | default('fail')) == 'absent' else _endpoint_probe_query }}"
 
     # Read-only health checks before the claim: a drill on a target that is already failing or
     # alerting cannot prove its own alert, and its recovery proof would be meaningless.
@@ -275,14 +300,15 @@
       changed_when: true
       when: not ansible_check_mode
 
-# The drilled deploy: the one census change is the named target's expected status code.
+# The drilled deploy: the one census change is the named target's drill, a status code the
+# target never returns (fail) or its removal from the probe projection (absent).
 - name: Deploy the endpoint drill projection
   ansible.builtin.import_playbook: deploy-o11y.yml
   vars:
     _extra_var_guard_nested: true
-    _o11y_availability_drill:
-      target_id: "{{ availability_drill_target_id }}"
-      status_code: 599
+    _o11y_availability_drill: "{{ {'target_id': availability_drill_target_id, 'status_code': 599}
+      if (availability_drill_mode | default('fail')) == 'fail'
+      else {'target_id': availability_drill_target_id, 'mode': 'absent'} }}"
 
 - name: Prove the endpoint alert fires and reaches Discord
   hosts: o11y_svc
@@ -301,6 +327,13 @@
       ansible.builtin.set_fact:
         _endpoint_drill_outcome: not-run
 
+    # An absent drill's missing-data rule needs the freshness window to pass, then its for-window
+    # (2 minutes) to hold, so its fire wait gets that budget. The fail mode keeps the probe's default.
+    - name: Give an absent drill the fire wait its freshness window and for-window need
+      ansible.builtin.set_fact:
+        _alert_probe_fire_retries: "{{ (((_endpoint_drill_target.freshness_seconds | int) + 240) / 10) | round(0, 'ceil') | int }}"
+      when: (availability_drill_mode | default('fail')) == 'absent'
+
     - name: Prove the endpoint alert fires and the Discord receipt names the target
       block:
         - name: Run the shared failed-target, active-rule, and Discord receipt checks
@@ -313,8 +346,8 @@
             o11y_probe_expected_instances:
               - "{{ _endpoint_drill_target.target_id }}"
             _alert_probe_kind: endpoint
-            _alert_probe_rule_uid: o11y_endpoint_probe_failed
-            _alert_probe_ready_query: "{{ _endpoint_probe_query }}"
+            _alert_probe_rule_uid: "{{ _endpoint_drill_rule_uid }}"
+            _alert_probe_ready_query: "{{ _endpoint_ready_query }}"
             _alert_probe_instance_lines: false
 
         - name: Record the endpoint proof as passed

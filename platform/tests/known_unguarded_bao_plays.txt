@@ -13,35 +13,25 @@
 # into the change that found it.
 #
 # One filename per line. Remove a line in the same commit that adds the guard.
-apply-policy-inference-comfyui.yml
-apply-policy-inference-hunyuan3d.yml
-apply-policy-nemoclaw.yml
 apply-policy-orb-agent.yml
 apply-policy-semaphore.yml
-apply-policy-uhhcraft.yml
 check-secrets.yml
 create-netbox-device.yml
 deploy-all.yml
 deploy-authentik.yml
 deploy-erpnext.yml
 deploy-honcho.yml
-deploy-inference-comfyui.yml
-deploy-inference-hunyuan3d.yml
-deploy-n8n.yml
 deploy-netbox.yml
 deploy-o11y.yml
 deploy-orb-agent.yml
 deploy-postiz.yml
 deploy-service.yml
-deploy-uhhcraft.yml
-deploy-wisbot.yml
 harden-ssh.yml
 mint-honcho-team-jwt.yml
 promote-semaphore-admins.yml
 provision-orb-agent-approle.yml
 proxmox-validate.yml
 seed-discovery-credentials.yml
-seed-n8n-secrets.yml
 sync-secrets-to-openbao.yml
 update-proxmox-token.yml
 validate-secrets.yml

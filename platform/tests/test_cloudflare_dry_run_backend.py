@@ -5,11 +5,10 @@ whatever file the workspace already held, or none. Runs the real write and dry-r
 --check against a scratch directory. Requires ansible-playbook.
 """
 
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 import yaml
 
@@ -38,10 +37,7 @@ def _dry_run(tmp_path, existing):
     }]
     path = tmp_path / "dry.yml"
     path.write_text(yaml.safe_dump(harness))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", "--check", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, stdin=subprocess.DEVNULL).stdout
+    return harness_sandbox.run_playbook(path, tmp_path, "--check").stdout
 
 
 def test_a_stale_backend_stops_the_dry_run(tmp_path):

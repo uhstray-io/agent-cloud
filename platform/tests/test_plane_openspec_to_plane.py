@@ -6,18 +6,17 @@ bytes, and the CLI output must equal parse_repo's output for them, plus the comm
 mode.
 """
 
-import http.server
 import importlib.util
+import itertools
 import json
 import pathlib
 import re
 import subprocess
 import sys
-import threading
 import urllib.parse
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 LIB_PATH = REPO_ROOT / "platform/services/plane/lib/openspec_to_plane.py"
@@ -175,6 +174,24 @@ def test_task_id_shapes_are_exact():
         (f"{REPO}/delta/8.0b", "8.0b open after a struck id is imported"),
     ]
     assert out["skipped"] == [{"change": "delta", "line": 9, "reason": "superseded"}]
+
+
+def test_task_id_patterns_accept_exactly_what_the_ambiguous_ones_did():
+    # The patterns were rewritten to remove polynomial backtracking (CodeQL py/redos). Every string up to length 7
+    # over an alphabet that exercises each branch must get the same answer from the old and the new pattern.
+    old_task = re.compile(r"^(\d+[A-Z]?(?:\.\d+[a-z0-9]*)+)(?=\s|$)")
+    old_struck = re.compile(r"^~~(\d+[A-Z]?(?:\.\d+[a-z0-9]*)+)~~(?=\s|$)")
+    alphabet = "0a1Z. "
+    for length in range(1, 8):
+        for chars in itertools.product(alphabet, repeat=length):
+            text = "".join(chars)
+            for old, new in ((old_task, lib.TASK_ID), (old_struck, lib.STRUCK_ID)):
+                subject = f"~~{text}" if old is old_struck else text
+                got_old, got_new = old.match(subject), new.match(subject)
+                assert (got_old and got_old.group(1)) == (got_new and got_new.group(1)), subject
+            struck_subject = f"~~{text}~~ x"
+            got_old, got_new = old_struck.match(struck_subject), lib.STRUCK_ID.match(struck_subject)
+            assert (got_old and got_old.group(1)) == (got_new and got_new.group(1)), struck_subject
 
 
 def test_continuation_nesting_and_stops_are_exact():
@@ -341,11 +358,8 @@ def github():
     StubGitHub.state = {"tree": [], "truncated": False, "tree_status": 200, "commit_status": 200,
                         "commit_body": json.dumps({"sha": SHA}).encode(), "raw": {}, "raw_fail": {},
                         "redirects": {}, "seen": []}
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubGitHub)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield StubGitHub.state, f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
-    server.server_close()
+    with serve(StubGitHub) as base:
+        yield StubGitHub.state, base
 
 
 def publish(state, files):

@@ -30,6 +30,13 @@ Usage:
     github_app_token.py jit-config      ... --group <name> --label <l>... --prefix <p> --count <n>
     github_app_token.py list-runners    ... --prefix <p>
     github_app_token.py prune-runners   ... --prefix <p> [--keep <name>]... [--retire <name>]
+    github_app_token.py set-hook-secret  --issuer <id> --hook-url <url>
+
+set-hook-secret converges the App's own webhook (PATCH /app/hook/config, App assertion): URL,
+JSON payloads, TLS verification on, and the signing secret. Its stdin is one JSON object,
+{"key_b64": <base64 of the PEM>, "secret": <webhook secret>}, because both are credentials and
+argv is not. GitHub never returns the secret, so it is set on every run; the output is
+{"url", "content_type", "secret_set"}, never the value.
 
 jit-config prints one JSON object per line, {"name", "id", "encoded_jit_config"}: the
 encoded configuration is a credential for one runner and goes to stdout only, like a token.
@@ -428,6 +435,22 @@ def prune(token: str, org: str, prefix: str, keep: list[str], retire: str | None
     return {"deleted": sorted(deleted), "retired": retired, **summarise(remaining)}
 
 
+def set_hook_secret(issuer: str, hook_url: str, raw: bytes) -> dict:
+    try:
+        data = json.loads(raw)
+        key_pem = base64.b64decode(data["key_b64"], validate=True)
+        secret = data["secret"]
+    except (ValueError, KeyError, TypeError):
+        die('set-hook-secret: stdin must be {"key_b64": <base64 PEM>, "secret": <string>}', 2)
+    if not secret or not hook_url.startswith("https://"):
+        die("set-hook-secret: needs a non-empty secret and an https:// --hook-url", 2)
+    body = {"url": hook_url, "content_type": "json", "insecure_ssl": "0", "secret": secret}
+    got = api("/app/hook/config", sign_assertion(issuer, key_pem), method="PATCH", body=body)
+    if not isinstance(got, dict):
+        die("set-hook-secret: /app/hook/config returned an unexpected response")
+    return {"url": got.get("url"), "content_type": got.get("content_type"), "secret_set": bool(got.get("secret"))}
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -440,10 +463,11 @@ def main() -> None:
             "jit-config",
             "list-runners",
             "prune-runners",
+            "set-hook-secret",
         ],
     )
     ap.add_argument("--issuer", required=True, help="App client id (recommended) or app id")
-    ap.add_argument("--org", required=True)
+    ap.add_argument("--org", help="the App's organisation (every action but set-hook-secret)")
     ap.add_argument("--key", default="-", help="private key path, or '-' for stdin (default)")
     ap.add_argument("--group", help="jit-config: runner group name")
     ap.add_argument("--label", action="append", default=[], help="jit-config: a label (repeat)")
@@ -464,10 +488,13 @@ def main() -> None:
         default=[],
         help="installation-token: a repository name the token must cover exactly (repeat)",
     )
+    ap.add_argument("--hook-url", help="set-hook-secret: the webhook URL the App delivers to")
     args = ap.parse_args()
     if (args.permissions is not None or args.repository) and args.action != "installation-token":
         die("--permissions and --repository apply to installation-token only", 2)
 
+    if args.action != "set-hook-secret" and not args.org:
+        die("--org is required for this action", 2)
     if args.action in ("jit-config", "list-runners", "prune-runners"):
         prefix = check_prefix(args.prefix or "")
         if args.action == "jit-config" and not args.group:
@@ -481,6 +508,10 @@ def main() -> None:
         else:
             result = prune(token, args.org, prefix, args.keep, args.retire, args.grace_minutes)
             sys.stdout.write(json.dumps(result))
+        return
+
+    if args.action == "set-hook-secret":
+        sys.stdout.write(json.dumps(set_hook_secret(args.issuer, args.hook_url or "", sys.stdin.buffer.read())))
         return
 
     key_pem = read_key(args.key)

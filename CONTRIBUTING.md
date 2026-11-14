@@ -19,8 +19,10 @@ All changes go through feature branches and pull requests — never push directl
 2. Make your changes            edit files, add tests
 3. Update documentation         README.md, relevant CLAUDE.md, sub-READMEs
 4. Run linters locally          see "Pre-PR Checklist" below
-5. Run /simplify + /security-review  (if using Claude Code)
-6. Push the branch              git push -u origin feat/<description>
+5. Run /simplify + /security-review  (commit any fixes they make, then run both again until a
+                                round changes nothing)
+6. Push the branch              git push -u origin feat/<description>, then post each pass as a
+                                commit status on the pushed head (AGENTS.md, Branch Workflow step 5)
 7. Create a PR                  gh pr create
 8. Wait for CI checks           lint, security, test jobs must pass
 9. Address review findings      CodeRabbit + human review
@@ -83,21 +85,12 @@ cd platform/services/netbox/deployment
 PYTHONPATH=workers/proxmox_discovery:workers/pfsense_sync python3.12 -m pytest tests/ -v
 cd -
 
-# Bash tests
-bats platform/tests/
+# Bash tests (CI runs files in parallel; `--jobs` needs GNU parallel, in the Brewfile)
+bats --jobs 4 --no-parallelize-within-files platform/tests/
 
 # Go (required for the full Python test/pre-push suite; Go 1.26+)
 # The native Podman-template regression in the Python suite executes Go's text/template.
 # `brew bundle` from the repository root installs the Go toolchain from Brewfile.
-
-# UhhCraft-only generators and static analysis
-cd platform/services/uhhcraft/deployment
-templ generate              # regenerate *_templ.go from .templ source
-sqlc generate               # regenerate internal/db/sqlcdb/ from db/queries/*.sql
-golangci-lint run ./...     # config in .golangci.yml
-gosec -exclude=G104,G304,G704,G710 -exclude-dir=web/templates -exclude-dir=internal/db/sqlcdb ./...
-go test -race -count=1 ./...
-cd -
 
 # Secret scan
 git diff --staged | grep -iE '^\+.*192\.168\.' | grep -v 'target\|host:\|subnet\|scope\|example'
@@ -108,20 +101,24 @@ git diff --staged | grep -iE '^\+.*password\s*[:=]\s*[A-Za-z0-9]{8}|^\+.*secret_
 
 ```bash
 # macOS
-pip install ruff ansible-lint yamllint bandit
-brew install shellcheck bats-core hadolint
+brew install uv              # Python dependencies and tools are managed with uv
+uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
+brew install shellcheck bats-core parallel hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
 
-# Python 3.12 (required for tests)
-brew install python@3.12
-# The test suites' dependencies, declared once and installed by CI from the same file.
-# It includes pytest-xdist, which the pre-push hook uses to run the suite in parallel.
-pip3.12 install -r platform/requirements-test.txt
-
-# Controller packages — cryptography is needed by the BATS suite, which signs a real
-# GitHub App assertion with a throwaway key and verifies it. Without it those tests SKIP
-# with a reason rather than failing, but they are then not verifying anything.
-pip3.12 install -r platform/requirements-controller.txt
+# The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
+# `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,
+# exactly as CI does; the pre-push hook runs the same command itself. The `controller`
+# group's cryptography is needed by the BATS suite, which signs a real GitHub App
+# assertion with a throwaway key; without it those tests SKIP rather than verify.
+uv sync --locked
+# The playbooks' Ansible collections, as every CI Python shard installs them. Tests that run a
+# whole playbook through harness_sandbox.run_playbook resolve them from ~/.ansible/collections.
+uv run --locked ansible-galaxy collection install -r collections/requirements.yml
+# To run a suite by hand on the locked versions (the playbook tests find ansible-playbook
+# on PATH, so swapping the interpreter alone is not enough):
+#   PATH="$PWD/.venv/bin:$PATH" pytest -q
+#   PATH="$PWD/.venv/bin:$PATH" bats platform/tests/
 
 # The complete BATS suite also requires a usable existing Podman or Docker engine
 # for its native PromQL test; do not start a daemon or VM just for the test.
@@ -129,13 +126,8 @@ pip3.12 install -r platform/requirements-controller.txt
 # HCL formatting (optional, for OpenBao policy changes)
 brew install terraform
 
-# Go toolchain (required for UhhCraft changes)
+# Go toolchain (required for the Python test suite)
 brew install go@1.26
-go install github.com/a-h/templ/cmd/templ@v0.3.1020
-go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1
-go install github.com/pressly/goose/v3/cmd/goose@v3.27.1
-brew install golangci-lint   # v2.x — config is .golangci.yml `version: "2"`
-brew install gosec
 ```
 
 ---
@@ -143,9 +135,8 @@ brew install gosec
 ## CI Pipeline
 
 Every PR triggers these GitHub Actions jobs automatically. The three below are the gates
-that must pass; a PR also runs change detection, CodeQL analysis per language, the
-conditional Go jobs for uhhcraft, a CodeRabbit review, and — on a `dev` → `main` PR — a
-promotion-source check:
+that must pass; a PR also runs change detection, CodeQL analysis per language, a
+CodeRabbit review, and — on a `dev` → `main` PR — a promotion-source check:
 
 | Job | Tools | Fails on |
 | --- | ----- | -------- |
@@ -161,9 +152,21 @@ it is collectable, with the same test paths, working directory and `PYTHONPATH` 
 via the repo's `core.hooksPath` with no install step — the commands below are what it runs,
 so you do not need to remember them.
 
-`bats platform/tests/` is byte-identical to CI's; the pytest run is not — CI pins Python
-3.12 and installs the test dependencies, while the hook uses whatever `python3` is on your
-`PATH`.
+The hook runs a **fast lane**, not the full suite (plan 21, D6). pytest runs, by whole file,
+every test file the push changes against `<remote>/dev`, every file holding a test the
+durations file (`platform/tests/test_durations.json`) does not record, and every file whose
+recorded tests all ran under 0.25 s in CI with none skipped (`PYTEST_FAST=1`, selected in
+the root `conftest.py`). BATS runs in full, beside pytest, with `--jobs 4
+--no-parallelize-within-files` when GNU `parallel` is installed (the Brewfile has it), each
+job run through `platform/tests/bin/parallel-job-shell` (GNU parallel starts its jobs with
+SIGALRM ignored, which breaks Ansible task timeouts; the wrapper restores it), and serially
+otherwise. When the pushed commit has no merge base with `<remote>/dev`, the hook
+runs the full Python suite and says why. A change to a playbook or helper therefore runs only
+the fast and changed test files here; CI runs everything. Both suites run on the locked environment
+when `uv` is installed: the hook runs `uv sync --locked` and puts `.venv/bin` first on
+`PATH`, as CI does. Without uv, when the sync fails, or when `UV_PROJECT_ENVIRONMENT` points
+outside the checkout's `.venv`, it falls back, with a warning, to whatever `python3` and
+tools are on your `PATH`.
 
 **Two different gates, on two different things.** The hook blocks *your push* when a suite
 runs and fails. CI blocks *the merge*. Neither substitutes for the other: a green push
@@ -184,7 +187,7 @@ and a lock left by a push that has exited is reclaimed automatically (`docs/MIST
 
 ## Adding a New Service
 
-Follow the [Service Integration Plan](plan/architecture/SERVICE-INTEGRATION-PLAN.md) for the complete onboarding checklist. At minimum:
+Follow the [Service Integration Plan](plan/architecture/02-service-onboarding.md) for the complete onboarding checklist. At minimum:
 
 1. Create `platform/services/<name>/deployment/` with `deploy.sh`, `compose.yml`, and Jinja2 templates
 2. `deploy.sh` handles container lifecycle only — no secret generation or OpenBao interaction
@@ -247,6 +250,59 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 `assert_grep`/`refute_grep`) and of `<assertion> || true`, and fails on any new one
 ("no new grep -v -q or || true assertions outside the ratchet").
 
+## Writing Rust Tests
+
+The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
+([plan 24](plan/development/24-rust-test-platform.md)). The rules are
+`plan/architecture/03-testing-ci-quality.md` Part 1. In short:
+
+- One module per area in `platform/tests/suite/`, declared in `suite/main.rs`.
+- List each new module once in `platform/tests/areas.yml`: under an area's tier, or under `always`
+  for the security set. The tier decides which lanes run it (plan 24, D3). The repository test
+  `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
+- Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
+  bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
+  anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.
+- Start a process only through `agent_cloud_tests::process`: a scrubbed environment and a
+  30-second bound.
+- Arrange, Act, Assert; several input cases are one test over a table.
+- Mutate the guarded code once and watch the test fail before you merge it.
+
+```bash
+cd platform/tests
+cargo nextest run                                  # everything
+cargo nextest run -E 'test(/^restart_policy::/)'  # one area
+```
+
+## Writing Python Tests
+
+Most of the Python suite's time is spent starting `ansible-playbook`, about a second per
+run in CI (plan 21). Four rules keep that cost and its failure modes down:
+
+1. **Run a playbook with `harness_sandbox.run_playbook(playbook, tmp_path, *args)`**, never
+   your own `subprocess.run(["ansible-playbook", ...])`. It runs from the repository root, so
+   the repository `ansible.cfg` applies. It keeps Ansible's state inside `tmp_path`, gives the
+   child no stdin, and stops it after 120 seconds (pass `timeout=` for a longer play). Where
+   `sandbox-exec` or `bwrap` exists, it also confines writes to `tmp_path`. CI has neither, so
+   a test that writes outside `tmp_path` fails only on a sandboxed workstation.
+   `test_playbook_spawns_are_bounded.py` refuses a new direct spawn and a new unbounded one. Its
+   lists must match exactly, and adding to them is the change review refuses.
+2. **Pick the forgery spellings by what the refusal reads.** A refusal by the run-start guard
+   reads names only, so one spelling proves it: `forgeries.by_name(name, honest, forged)`,
+   with an assert of the guard's own message. A refusal that reads the value, a gate run
+   without the guard, and a connection variable keep all three:
+   `forgeries.templated_forgeries(name, honest, forged)`.
+   `test_extra_var_refusal_tests.py` enforces which one a test may use.
+3. **A playbook wait a test must sit through gets a public knob** with the production default,
+   for example `ih_wait_retries` in `instrument-host-o11y.yml`. A shorter wait can only fail
+   sooner, so it adds no forgery risk. Underscore names stay internal.
+4. **Start a fixture server with `fake_http.serve(handler)`** (`ssl_context=` for HTTPS, `host=` for a
+   `0.0.0.0` or IPv6 `::1` bind; read the port with `urlsplit(url).port`), on a
+   handler built on `fake_http.DrainingHandler`. It listens on an ephemeral port (loopback unless `host=`
+   says otherwise) with a
+   deep backlog and stops quickly; `test_fake_http.py` refuses a new hand-built server. The
+   handler takes its delays as parameters, so a test can shorten them without a copy of it.
+
 ## Code Standards
 
 ### Python
@@ -291,10 +347,10 @@ list of the `grep -v ... -q` form (every spelling, including those flags handed 
 | -------- | ------- |
 | `CLAUDE.md` | AI agent guidance (conventions, deployment rules, secrets management) |
 | `plan/architecture/01-automation-model.md` | Composable Ansible task architecture |
-| `plan/architecture/CREDENTIAL-LIFECYCLE-PLAN.md` | Secret generation, storage, rotation |
-| `plan/architecture/SERVICE-INTEGRATION-PLAN.md` | New service onboarding checklist |
-| `plan/architecture/TESTING-AND-LINTING-PLAN.md` | Testing strategy and implementation status |
-| `plan/architecture/BRANCH-TESTING-WORKFLOW.md` | Branch deploy and validation workflow |
+| `plan/architecture/04-credentials-access.md` | Secret generation, storage, rotation |
+| `plan/architecture/02-service-onboarding.md` | New service onboarding checklist |
+| `plan/architecture/03-testing-ci-quality.md` | Testing strategy and implementation status |
+| `plan/architecture/03-testing-ci-quality.md` (section "Branch Testing Workflow") | Branch deploy and validation workflow |
 
 ---
 

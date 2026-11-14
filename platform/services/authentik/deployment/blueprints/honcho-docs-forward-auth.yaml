@@ -3,8 +3,7 @@
 # honcho's /v3 API is JWT-authenticated in-app; only the interactive docs
 # surface (/docs, /redoc, /openapi.json) on memory.uhstray.io is gated by the
 # central Caddy's path-scoped forward_auth against the embedded outpost. No
-# client secret — the proxy provider self-manages its tokens (same mechanism
-# as openhands-forward-auth.yaml).
+# client secret — the proxy provider self-manages its tokens.
 #
 # external_host MUST match the public URL the browser uses or the auth
 # redirect breaks — prod value via !Env (HONCHO_EXTERNAL_HOST from the

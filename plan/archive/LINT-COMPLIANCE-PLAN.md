@@ -14,17 +14,16 @@ The CI pipeline (ruff, shellcheck, yamllint, trufflehog) catches real issues. Se
 
 ## Shell Script Violations (ShellCheck)
 
-**5 warnings across 4 files:**
+**4 warnings across 3 files:**
 
 | File | Line | Code | Issue | Fix |
 | ---- | ---- | ---- | ----- | --- |
 | `platform/services/semaphore/deployment/deploy.sh` | 53 | SC2064 | Trap expands variable now, not when signalled | Use single quotes around the trap string |
 | `platform/services/semaphore/deployment/deploy.sh` | 57 | SC2034 | `login_response` appears unused | Remove or export the variable |
-| `platform/services/n8n/deployment/deploy.sh` | 73 | SC2064 | Trap expands variable now, not when signalled | Use single quotes around the trap string |
 | `platform/services/netbox/deployment/lib/common.sh` | 29 | SC2034 | `LIB_DIR` appears unused | Verify usage or remove |
 | `platform/services/netbox/deployment/deploy.sh` | 41 | SC2034 | `DEFAULT_TIMEOUT` appears unused | Verify usage or remove |
 
-**Effort:** Low — 5 one-line fixes across 4 files.
+**Effort:** Low — 4 one-line fixes across 3 files.
 
 ---
 
