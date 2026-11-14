@@ -388,7 +388,7 @@ def ufw_desired_rules(ssh_cidrs, allow_rules=(), route_rules=(), detected=(), up
 def _whole(value, lo, hi=None):
     """True when `value` is a whole number (int or ASCII digits) in [lo, hi]."""
     text = str(value).strip()
-    if isinstance(value, bool) or not (text.isascii() and text.isdigit()):
+    if not (text.isascii() and text.isdigit()):  # str(True) is not digits either
         return False
     return lo <= int(text) and (hi is None or int(text) <= hi)
 

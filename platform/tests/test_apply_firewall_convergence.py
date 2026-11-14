@@ -10,8 +10,10 @@ differ only in their inputs share one run over several hosts (_run_many), each h
 its own stub state, since every ansible-playbook spawn costs seconds.
 """
 
+import contextlib
 import json
 import re
+import socket
 import sys
 from pathlib import Path
 
@@ -558,13 +560,19 @@ ALLOW_OUT = [{"port": 443}, {"port": 53, "proto": "udp"}]
 AUDIT = "allow out log to any"
 
 
+@contextlib.contextmanager
 def _listening():
-    """A TCP port on 127.0.0.1 that accepts connections for the rest of the test."""
-    import socket
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    s.listen()
-    return s
+    """A TCP port on 127.0.0.1 that accepts connections inside the block."""
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        yield listener.getsockname()[1]
+
+
+def _enforce(port, **probe):
+    """Host vars: ALLOW_OUT enforced, proven by one probe to 127.0.0.1:`port`."""
+    return {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
+            "firewall_egress_probes": [{"host": "127.0.0.1", "port": port, **probe}]}
 
 
 def test_audit_adds_the_allowlist_then_the_audit_rule_last_and_keeps_outgoing_allowed(tmp_path):
@@ -591,13 +599,8 @@ def test_a_newly_declared_allow_lands_before_the_audit_rule(tmp_path):
 
 def test_enforce_denies_outgoing_drops_the_audit_rule_and_passes_its_probe(tmp_path):
     _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT})
-    listener = _listening()
-    try:
-        r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
-                                   "firewall_egress_probes": [{"host": "127.0.0.1",
-                                                               "port": listener.getsockname()[1]}]})
-    finally:
-        listener.close()
+    with _listening() as port:
+        r, state = _run(tmp_path, _enforce(port))
     assert r.returncode == 0, r.stdout + r.stderr
     assert state["outgoing"] == "deny"
     assert AUDIT not in _rules(state)
@@ -609,11 +612,8 @@ def test_enforce_denies_outgoing_only_after_enabling_and_converges(tmp_path):
     # From an inactive host: the deny lands inside the rescued probe block, after `ufw --force
     # enable` and the SSH verify, so a run that stops before the probes never leaves outgoing
     # denied and unproven. A second run changes nothing.
-    listener = _listening()
-    enforce = {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
-               "firewall_egress_probes": [{"host": "127.0.0.1", "port": listener.getsockname()[1]}]}
-    try:
-        r, state = _run(tmp_path, enforce)
+    with _listening() as port:
+        r, state = _run(tmp_path, _enforce(port))
         assert r.returncode == 0, r.stdout + r.stderr
         log = _log(tmp_path)
         enable = log.index('["ufw", "--force", "enable"]')
@@ -621,21 +621,40 @@ def test_enforce_denies_outgoing_only_after_enabling_and_converges(tmp_path):
         assert enable < deny, log
         assert '["ufw", "default", "allow", "outgoing"]' not in log, log
         assert state["outgoing"] == "deny"
-        r2, state2 = _run(tmp_path, enforce)
-    finally:
-        listener.close()
+        r2, state2 = _run(tmp_path, _enforce(port))
     assert r2.returncode == 0, r2.stdout + r2.stderr
     assert _changed(r2) == 0, r2.stdout
     assert state2["outgoing"] == "deny"
 
 
 def test_enforce_puts_outgoing_back_to_allow_when_a_probe_cannot_be_reached(tmp_path):
-    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
-                               "firewall_egress_probes": [{"host": "127.0.0.1", "port": refused_port(), "timeout": 2}]})
+    r, state = _run(tmp_path, _enforce(refused_port(), timeout=2))
     assert r.returncode != 0
     assert "a declared probe could not be reached (127.0.0.1)" in r.stdout, r.stdout
     assert state["outgoing"] == "allow"
     assert {"allow out 443/tcp", "allow out 53/udp"} <= set(_rules(state))  # the allows are kept
+
+
+def test_a_narrowed_allowlist_on_an_enforcing_host_is_proven_again_or_outgoing_is_allowed_again(tmp_path):
+    # A host already enforcing keeps `deny (outgoing)` while the stale allow of a narrowed
+    # allowlist is pruned, so this run never applies the deny. The probes run all the same
+    # (every enforced run, not only the one that applies the deny): the narrowed list is
+    # proven, or the rescue puts default-allow back. A narrowing run that stopped between the
+    # prune and its probes is recovered the same way, by the next run.
+    enforcing = {"active": True, "outgoing": "deny", "rules": [
+        [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)],
+        *[[f"allow out {port}", _tag("out-allow", port, "any")] for port in ("443/tcp", "53/udp", "80/tcp")]]}
+    with _listening() as port:
+        r, states = _run_many(tmp_path, {
+            "proven": {"vars": _enforce(port), "state": enforcing},
+            "unproven": {"vars": _enforce(refused_port(), timeout=1), "state": enforcing}})
+    assert re.search(r"\bproven\s*:.*failed=0", r.stdout), r.stdout
+    assert re.search(r"\bunproven\s*:.*failed=1", r.stdout), r.stdout
+    for name in ("proven", "unproven"):
+        assert "allow out 80/tcp" not in _rules(states[name]), name  # pruned while outgoing is denied
+        assert '["ufw", "default", "deny", "outgoing"]' not in _log(tmp_path, name), name
+    assert states["proven"]["outgoing"] == "deny"
+    assert states["unproven"]["outgoing"] == "allow"
 
 
 def test_an_enforced_allowlist_without_dns_or_a_probe_is_refused_before_any_rule_is_added(tmp_path):
@@ -656,8 +675,7 @@ def test_an_enforced_allowlist_without_dns_or_a_probe_is_refused_before_any_rule
 
 
 def test_a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would(tmp_path):
-    r, state = _run(tmp_path, {"firewall_allow_egress": ALLOW_OUT, "firewall_egress_mode": "enforce",
-                               "firewall_egress_probes": [{"host": "127.0.0.1", "port": 9}]},
+    r, state = _run(tmp_path, _enforce(9),
                     state={"active": True, "outgoing": "allow", "rules": [
                         [f"allow from {SSH} to any port 22 proto tcp", _tag("in", "22/tcp", SSH)]]},
                     check=True)

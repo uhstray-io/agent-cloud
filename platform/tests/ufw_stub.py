@@ -100,6 +100,11 @@ def _parse(tokens):
             if "'" in rule["comment"]:
                 print("ERROR: Comment may not contain \"'\"")
                 raise SystemExit(1)
+        elif last is None and rule["dport"] == "any" and word[:1].isdigit():
+            # The short form `allow [in|out] PORT[/PROTO]` (src/parser.py parse, nargs == 2). It
+            # is how ufw prints a rule to and from any address, so a delete by spec replays it.
+            rule["dport"], _, proto = word.partition("/")
+            rule["proto"] = proto or "any"
         else:
             raise SystemExit(f"stub ufw: unsupported token {word!r} in {tokens}")
     return remove, rule

@@ -806,9 +806,12 @@
         - not ansible_check_mode
         - "'Status: active' not in _fw_state.stdout or 'deny (incoming)' not in _fw_state.stdout"
 
-    # An enforced outbound allowlist denies outgoing only inside "Prove the enforced outbound
-    # allowlist" below, after the fresh SSH handshake has passed, so a run that stops before
-    # the probes never leaves outgoing denied and unproven.
+    # An enforced outbound allowlist turns outgoing to deny only inside "Prove the enforced
+    # outbound allowlist" below, after the fresh SSH handshake has passed, so a run that stops
+    # before the probes never newly denies outgoing unproven. A host ALREADY enforcing keeps
+    # its deny through the run: if its allowlist was narrowed and the run stops between the
+    # prune above and the probes, the narrowed list is unproven until the next run, whose
+    # probes run every time (they are not gated on a change).
     - name: "Default-allow outgoing"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw default allow outgoing"
       register: _dout
