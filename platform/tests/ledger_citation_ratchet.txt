@@ -6,6 +6,7 @@
 # The list may only shrink: an entry that resolves again, or is no longer cited, fails the test
 # until its line is deleted. A new unresolved citation is fixed in the ledger, not added here,
 # unless it is historical in the same sense.
+1.8 platform/tests/test_local_dev_inventory.bats # ported to platform/tests/suite/local_dev_inventory.rs (plan 24), BATS file deleted 2026-11-13
 2.22 test_the_clean_environment_rule_checks_the_endpoint # renamed to test_the_clean_environment_rule_refuses_any_address_pin in platform/tests/test_semaphore_seed_input.py by 03888eee (2026-09-25)
 6.9 platform/tests/test_restart_policy.bats:4-9 # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
 10.15 platform/tests/test_restart_policy.bats # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
