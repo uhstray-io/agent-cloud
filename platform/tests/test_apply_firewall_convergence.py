@@ -729,14 +729,16 @@ def test_a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_bes
         "held": {"vars": both, "state": {"active": True, "outgoing": "allow", "rules": held}},
         "adopted": {"vars": both, "state": {"active": True, "outgoing": "allow", "rules": [["allow out 443/tcp", ""]]}},
         "by_hand": {"vars": {"firewall_deny_egress": deny},
-                    "state": {"active": True, "outgoing": "allow", "rules": [["allow out 8443/tcp", ""]]}}}
+                    "state": {"active": True, "outgoing": "allow", "rules": [["allow out 8443/tcp", ""]]}},
+        "limited": {"vars": {"firewall_deny_egress": deny},
+                    "state": {"active": True, "outgoing": "allow", "rules": [["limit out 25/tcp", ""]]}}}
     r, states = _run_many(tmp_path, {**refused, "fresh": {"vars": both}})
     for name, spec in refused.items():
         assert re.search(rf"\b{name}\s*:.*failed=1", r.stdout), name
         assert not [line for line in _log(tmp_path, name) if MUTATING.search(line)], _log(tmp_path, name)
         assert states[name] == spec["state"], name
     assert "adds deny out to 198.51.100.1, but the host already holds outbound allows" in r.stdout, r.stdout
-    assert "(allow out 8443/tcp)" in r.stdout, r.stdout
+    assert "(allow out 8443/tcp)" in r.stdout and "(limit out 25/tcp)" in r.stdout, r.stdout
     assert re.search(r"\bfresh\s*:.*failed=0", r.stdout), r.stdout
     specs = [rule[0] for rule in states["fresh"]["rules"]]
     assert specs.index("deny out to 198.51.100.1") < specs.index("allow out 443/tcp") < specs.index(AUDIT)
