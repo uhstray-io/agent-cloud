@@ -9,3 +9,9 @@
 2.22 test_the_clean_environment_rule_checks_the_endpoint # renamed to test_the_clean_environment_rule_refuses_any_address_pin in platform/tests/test_semaphore_seed_input.py by 03888eee (2026-09-25)
 6.9 platform/tests/test_restart_policy.bats:4-9 # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
 10.15 platform/tests/test_restart_policy.bats # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
+10.11 platform/tests/test_manage_secrets.bats # ported to platform/tests/suite/manage_secrets.rs (plan 24), BATS file deleted 2026-11-13
+10.8 platform/tests/test_backup_credentials.bats # ported to platform/tests/suite/backup_credentials.rs (plan 24), BATS file deleted 2026-11-13
+2.13 platform/tests/test_become_password_resolution.bats # ported to platform/tests/suite/become_password_resolution.rs (plan 24), BATS file deleted 2026-11-13
+2.16 platform/tests/test_become_password_resolution.bats # ported to platform/tests/suite/become_password_resolution.rs (plan 24), BATS file deleted 2026-11-13
+2.17 platform/tests/test_become_password_resolution.bats # ported to platform/tests/suite/become_password_resolution.rs (plan 24), BATS file deleted 2026-11-13
+3.6 test_destroy_vm.bats # ported to platform/tests/suite/destroy_vm.rs (plan 24), BATS file deleted 2026-11-13

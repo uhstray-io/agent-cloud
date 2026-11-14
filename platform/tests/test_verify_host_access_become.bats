@@ -51,7 +51,7 @@ setup() {
 
 @test "access gate: it carries no second copy of the credential fetch" {
   # The credential fetch and its no_log live in the shared resolver (asserted in
-  # test_become_password_resolution.bats). The gate must not reintroduce its own
+  # platform/tests/suite/become_password_resolution.rs). The gate must not reintroduce its own
   # set_fact of ansible_become_password, which would be a second declaration that
   # can drift from the one harden-ssh agrees with.
   refute_grep -qE '^\s*ansible_become_password:' "$PB"
