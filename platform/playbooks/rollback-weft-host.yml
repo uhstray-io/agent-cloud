@@ -160,6 +160,13 @@
       ansible.builtin.include_tasks: tasks/weft-whisper-model.yml
       when: _weft_role == 'workspace'
 
+    # The same lock a deploy takes (tasks/weft-lock.yml): a rollback and a deploy of one host never
+    # run together, and a second is refused before anything stops.
+    - name: "Take the deploy lock"
+      ansible.builtin.include_tasks: tasks/weft-lock.yml
+      vars:
+        _wl_action: take
+
     # The deploy's record (tasks/weft-deploy.yml): until this rollback comes back healthy, a
     # re-launched deploy must not take the host for one already on its pin.
     - name: "Mark this host deploying {{ _weft_release_digest }}"
@@ -230,6 +237,11 @@
           become: true
           when: not ansible_check_mode
 
+        - name: "Release the deploy lock"
+          ansible.builtin.include_tasks: tasks/weft-lock.yml
+          vars:
+            _wl_action: release
+
         - name: "Rolled back"
           ansible.builtin.debug:
             msg: >-
@@ -237,6 +249,10 @@
               {{ _weft_leaving }} is kept beside the database as its failed-{{ _weft_leaving }} copy.
 
       rescue:
+        - name: "Keep the step that failed"
+          ansible.builtin.set_fact:
+            _weft_failed_step: "{{ ansible_failed_task.name | default('unknown step') }}"
+
         - name: "Stop everything and leave every file where it is"
           ansible.builtin.command:
             argv: [bash, deploy.sh, stop]
@@ -246,10 +262,15 @@
           failed_when: false
           when: not ansible_check_mode
 
+        - name: "Release the deploy lock (rollback failed)"
+          ansible.builtin.include_tasks: tasks/weft-lock.yml
+          vars:
+            _wl_action: release
+
         - name: "Fail: the rollback did not come back healthy"
           ansible.builtin.fail:
             msg: >-
               {{ _weft_label }}: going back to {{ _weft_to }} failed at
-              '{{ ansible_failed_task.name | default('unknown step') }}'. Every container is stopped
+              '{{ _weft_failed_step }}'. Every container is stopped
               and no file was deleted. Look at the containers' logs before anything else; a Proxmox
               snapshot of the VM, if one was taken before the rollout, is the last resort.
