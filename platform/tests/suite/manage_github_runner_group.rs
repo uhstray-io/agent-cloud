@@ -118,8 +118,9 @@ fn named<'a>(items: &'a [Node], needle: &str) -> &'a Node {
         .unwrap_or_else(|| panic!("no task named like {needle:?}"))
 }
 
-/// The arguments of module `short` in a task, under any spelling Ansible accepts for it: the
-/// short name, `ansible.builtin.<short>` or `ansible.legacy.<short>`. A task written under one
+/// The arguments of module `short` in a task, under each task key that names that builtin
+/// module: the short name, `ansible.builtin.<short>` or `ansible.legacy.<short>` (ansible-core's
+/// `add_internal_fqcns`). It does not read the `action:` or `local_action:` forms. A task written under one
 /// spelling is the same module, so a check that reads only one spelling can pass on a task it
 /// never saw.
 fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {

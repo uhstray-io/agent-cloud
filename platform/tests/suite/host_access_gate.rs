@@ -93,8 +93,9 @@ fn str_at<'a>(node: &'a Node, key: &str) -> Option<&'a str> {
     node.get(key).and_then(Node::as_str)
 }
 
-/// The arguments of module `short` in a task, under any spelling Ansible accepts for it: the
-/// short name, `ansible.builtin.<short>` or `ansible.legacy.<short>`. A check that reads one
+/// The arguments of module `short` in a task, under each task key that names that builtin
+/// module: the short name, `ansible.builtin.<short>` or `ansible.legacy.<short>` (ansible-core's
+/// `add_internal_fqcns`). It does not read the `action:` or `local_action:` forms. A check that reads one
 /// spelling alone is blind to a task written under another, so every module read goes through
 /// here.
 fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
