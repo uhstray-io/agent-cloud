@@ -172,7 +172,7 @@ scope is re-sized from the real diff when each release is planned.
 
 | Check | Passes when |
 |---|---|
-| Gate exists | The guard refuses a merge into `dev` that would make 101 PRs or 121 files unless `--budget-acknowledged` is passed (R10: only for the pull requests an operator approval names; the guard does not verify the approval), and the promotion check fails an over-limit promotion |
+| Gate exists | The guard refuses a merge into `dev` that would make 101 PRs, or 121 files when the merge adds a new path (a merge adding none passes the file limit, R5), unless `--budget-acknowledged` is passed (R10: only for the pull requests an operator approval names; the guard does not verify the approval), and the promotion check fails an over-limit promotion |
 | Releases fit | Every promotion after Release 1 (v0.15.0, the carry-over release) is ≤ 100 PRs and ≤ 120 files, or goes over a limit only through R10's operator-approved break-glass, with the reason given in its release notes |
 | Order holds | No release's code waits on a later release. A gate that slips moves its work down the table and pulls the next ready release forward. The order is not violated |
 | Cadence | Promotions land days apart, not weeks |
