@@ -337,8 +337,10 @@
     # outbound allowlist, `apt-get update` would need the mirror's port, which the allowlist need
     # not name, and a failed refresh would stop every later run here, before the run that could
     # change the allowlist or the mode.
-    - name: "Read whether ufw is installed"  # noqa: command-instead-of-module
-      ansible.builtin.command: "dpkg-query -W -f=${Status} ufw"
+    - name: "Read whether ufw is installed"
+      ansible.builtin.command:
+        argv: [dpkg-query, -W, "-f=${Status}", ufw]
+        expand_argument_vars: false
       register: _ufw_installed
       changed_when: false
       failed_when: false
