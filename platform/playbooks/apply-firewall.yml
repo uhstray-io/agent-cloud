@@ -569,7 +569,9 @@
     # refuse before any rule changes. Held is read from the host, whatever the tag: an untagged
     # allow this run would adopt keeps its place (ufw updates the comment, it does not move the
     # rule), and one no declaration names is kept, so both stay ahead of the denial. `limit`
-    # counts: it is an allow with a rate limit (ufw(8)).
+    # counts: it is an allow with a rate limit (ufw(8)). The same goes for a declared denial:
+    # one the host already stores ahead of every held outbound allow keeps that place when it
+    # is adopted, so it is not new; one stored behind an allow would stay behind it.
     - name: "Refuse a new outbound denial behind held outbound allows"
       ansible.builtin.assert:
         that:
@@ -583,9 +585,13 @@
           outbound allows and the audit rule are pruned; delete an untagged one by hand), then declare both
           lists, so the denials are added first.
       vars:
-        _fw_new_denials: "{{ _fw_absent_now | selectattr('family', 'equalto', 'out-deny') | map(attribute='spec') | list }}"
-        _fw_held_out_allows: >-
-          {{ _fw_added.stdout_lines | ufw_parse_added | map(attribute='spec') | select('match', '(allow|limit) out ') | list }}
+        _fw_stored_specs: "{{ _fw_added.stdout_lines | ufw_parse_added | map(attribute='spec') | list }}"
+        _fw_held_out_allows: "{{ _fw_stored_specs | select('match', '(allow|limit) out ') | list }}"
+        _fw_ahead_of_allows: >-
+          {{ _fw_stored_specs[:_fw_stored_specs.index(_fw_held_out_allows | first)] if _fw_held_out_allows else [] }}
+        _fw_new_denials: >-
+          {{ _fw_absent_now | selectattr('family', 'equalto', 'out-deny') | map(attribute='spec')
+             | reject('in', _fw_ahead_of_allows) | list }}
 
     - name: "Allow SSH (22/tcp) from each admin CIDR the host lacks — BEFORE enabling"  # noqa: command-instead-of-module
       ansible.builtin.command: "ufw {{ item.cmd }} comment '{{ item.tag }}'"
