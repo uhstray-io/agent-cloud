@@ -2026,6 +2026,14 @@ class BudgetAcknowledgedTests(unittest.TestCase):
         self.assertNotIn("BUDGET", out)
         self.assertEqual(api.merge_calls, [])
 
+    def test_in_the_transition_the_flag_adds_nothing(self):
+        # R12: no limit applies yet, so there is nothing for the operator to acknowledge.
+        api = FakeGitHub()
+        set_budget(api, before=(299, 899), after=(300, 900), transition=True)
+        plain = run_guard(api)
+        self.assertEqual(run_guard(api, "--budget-acknowledged"), plain)
+        self.assertNotIn("acknowledged", plain[1])
+
     def test_under_the_limit_the_flag_changes_nothing(self):
         api = FakeGitHub()
         set_budget(api, before=(5, 119), after=(6, 120))
