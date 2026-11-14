@@ -96,6 +96,11 @@ templates:
   - name: "Deploy skynet (Local)"
     playbook: platform/playbooks/deploy-skynet.yml
 
+  # Launch-path probe for skynet's own client: one bounded service-validate run, then the tagged task must exist once.
+  # Read-only apart from that one check-mode task (probe-skynet-launch.yml).
+  - name: "Probe skynet Launch (Local)"
+    playbook: platform/playbooks/probe-skynet-launch.yml
+
   # agentgateway - inference edge gateway (gateway + its own budget Postgres;
   # locally fronts the public edge as identity local-gateway, or the DGX on the LAN).
   - name: "Deploy agentgateway (Local)"

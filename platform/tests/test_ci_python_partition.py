@@ -44,7 +44,8 @@ def _testpaths():
 
 def _collect(env, *args):
     """Node IDs pytest collects from the repository root with the shard job's environment."""
-    environment = {key: value for key, value in os.environ.items() if key != "PYTEST_SHARD"}
+    # The selection variables of an outer run (a shard, or the pre-push fast lane) must not reach this one.
+    environment = {key: value for key, value in os.environ.items() if key not in shards.SELECTION_ENV}
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *args],
         cwd=REPO, env={**environment, **env}, text=True, capture_output=True, check=False,
@@ -140,9 +141,9 @@ def test_no_job_runs_the_pi_provider_that_moved_to_the_harness_repository():
 def test_unit_tests_aggregate_requires_every_test_group_to_succeed():
     aggregate = _jobs()["test"]
     assert aggregate["if"] == "always()"
-    assert aggregate["needs"] == ["python", "bats", "rego", "rust-console"]
+    assert aggregate["needs"] == ["python", "bats", "rego", "rust-console", "rust-tests"]
     gate = aggregate["steps"][0]
-    required = {"PYTHON_RESULT", "BATS_RESULT", "REGO_RESULT", "RUST_CONSOLE_RESULT"}
+    required = {"PYTHON_RESULT", "BATS_RESULT", "REGO_RESULT", "RUST_CONSOLE_RESULT", "RUST_TESTS_RESULT"}
     assert set(gate["env"]) == required
     assert gate["env"]["PYTHON_RESULT"] == "${{ needs.python.result }}"
     for name in required:

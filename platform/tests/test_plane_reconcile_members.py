@@ -6,16 +6,14 @@ v3.3.3's shapes: a cursor-paginated member roster with `role_slug` and `is_activ
 invitation list, and `role_slug` on PATCH.
 """
 
-import http.server
 import json
 import pathlib
 import subprocess
 import sys
-import threading
 import urllib.parse
 
 import pytest
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 DEPLOY = pathlib.Path(__file__).resolve().parents[2] / "platform/services/plane/deployment"
 # The playbook runs plane_session.py and the script joined, exactly as here.
@@ -89,10 +87,8 @@ class StubPlane(DrainingHandler):
 @pytest.fixture
 def plane():
     StubPlane.state = {"members": [], "invites": [], "calls": [], "member_queries": []}
-    server = http.server.HTTPServer(("127.0.0.1", 0), StubPlane)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield StubPlane.state, f"http://127.0.0.1:{server.server_address[1]}"
-    server.shutdown()
+    with serve(StubPlane) as base:
+        yield StubPlane.state, base
 
 
 def run(base, desired, apply):

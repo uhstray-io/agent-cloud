@@ -37,6 +37,7 @@ TEMPLATES = ROOT / "platform/semaphore/templates.yml"
 GUARD = "refuse-internal-extra-vars.yml"
 NESTED = "_extra_var_guard_nested"
 RULE_UID = "o11y_endpoint_probe_failed"
+ABSENT_RULE_UID = "o11y_endpoint_probe_missing"
 AVAILABILITY_JOB = "o11y-availability"
 MARKER = "{{ _monorepo_dir | dirname }}/.o11y-endpoint-drill"
 BLOCKS = ("block", "rescue", "always", "tasks", "pre_tasks", "post_tasks")
@@ -48,6 +49,13 @@ TARGET = {
     "environment": "prod",
     "cluster": "agent-cloud",
 }
+TARGET_ID = TARGET["target_id"]
+# The one census drill input both the prepare include and the drilled import build from the mode.
+DRILL_INPUT = (
+    "{{ {'target_id': availability_drill_target_id, 'status_code': 599} "
+    "if (availability_drill_mode | default('fail')) == 'fail' "
+    "else {'target_id': availability_drill_target_id, 'mode': 'absent'} }}"
+)
 
 
 def _label(entry):
@@ -105,6 +113,13 @@ def _expr(value, context):
     return env.compile_expression(value)(context)
 
 
+def _unwrap(text):
+    """The expression inside one whole-value template, as compile_expression takes it."""
+    text = text.strip()
+    assert text.startswith("{{") and text.endswith("}}"), text
+    return text[2:-2].strip()
+
+
 def _stdin_expression(path):
     """The census stdin of the prepare task, exactly as the committed YAML spells it."""
     task = next(t for t in playbook_yaml.load(path) if isinstance(t, dict) and "name" in t
@@ -158,12 +173,16 @@ def test_the_endpoint_drill_runs_its_plays_in_the_order_that_proves_each_step():
 def test_the_drilled_import_carries_the_guard_skip_and_the_one_drill_input():
     entry = next(p for p in playbook_yaml.load(DRILL) if p.get("name") == "Deploy the endpoint drill projection")
     assert entry["ansible.builtin.import_playbook"] == "deploy-o11y.yml"
-    assert entry["vars"] == {
-        NESTED: True,
-        "_o11y_availability_drill": {"target_id": "{{ availability_drill_target_id }}", "status_code": 599},
-    }
+    assert set(entry["vars"]) == {NESTED, "_o11y_availability_drill"}
+    assert entry["vars"][NESTED] is True
+    drill = entry["vars"]["_o11y_availability_drill"]
+    assert drill == DRILL_INPUT, "the drilled import and the census prepare must build the same input"
+    fail = _expr(_unwrap(drill), {"availability_drill_target_id": TARGET_ID, "availability_drill_mode": "fail"})
+    assert fail == {"target_id": TARGET_ID, "status_code": 599}
     # The census reads status_code as an integer; a quoted 599 would be refused.
-    assert type(entry["vars"]["_o11y_availability_drill"]["status_code"]) is int
+    assert type(fail["status_code"]) is int
+    absent = _expr(_unwrap(drill), {"availability_drill_target_id": TARGET_ID, "availability_drill_mode": "absent"})
+    assert absent == {"target_id": TARGET_ID, "mode": "absent"}
 
 
 def test_the_restoring_import_carries_only_the_guard_skip():
@@ -180,6 +199,7 @@ def test_the_claim_is_the_last_step_before_the_first_deploy_and_follows_every_re
     refusals = [
         "Require a real production endpoint drill",
         "Require one named availability target id",
+        "Require a known availability drill mode",
         "Require the paused-canary workflow to be settled",
         "Require no active alert drill to be in progress",
         "Require no endpoint drill to be in progress",
@@ -241,9 +261,11 @@ def test_the_probe_is_called_with_the_endpoint_shape_and_one_instance_line():
     for key in ("o11y_production_static_probe", "drill_expect_alert", "o11y_alerts_enabled", "o11y_grouped_probe"):
         assert vars_[key] is True, key
     assert vars_["_alert_probe_kind"] == "endpoint"
-    assert vars_["_alert_probe_rule_uid"] == RULE_UID
+    # The rule the probe reads and waits on follows the drill mode, never a hard-coded uid.
+    assert vars_["_alert_probe_rule_uid"] == "{{ _endpoint_drill_rule_uid }}"
     assert vars_["_alert_probe_instance_lines"] is False
-    assert vars_["_alert_probe_ready_query"] == "{{ _endpoint_probe_query }}"
+    assert vars_["_alert_probe_ready_query"] == "{{ _endpoint_ready_query }}"
+    assert "_alert_probe_fire_retries" not in vars_, "only an absent drill passes its own fire budget"
     expected = _play(DRILL, "Prove the endpoint alert fires and reaches Discord")["vars"]
     instances = vars_["o11y_probe_expected_instances"]
     assert len(instances) == 1
@@ -315,6 +337,103 @@ def test_the_probe_selector_is_the_rule_identity_from_the_alert_template():
     assert 'job="o11y-availability"' in identity
 
 
+# ---- the drill mode: fail (status 599) or absent (probe series removed) -----------------------
+
+CLAIM = "Validate the endpoint drill target and claim the drill marker"
+
+
+def test_the_drill_mode_is_refused_before_the_claim_unless_it_is_fail_or_absent():
+    tasks = _tasks_of(DRILL, CLAIM)
+    that = _named(tasks, "Require a known availability drill mode")["ansible.builtin.assert"]["that"]
+    assert _expr(that, {"availability_drill_mode": "fail"}) is True
+    assert _expr(that, {"availability_drill_mode": "absent"}) is True
+    assert _expr(that, {"availability_drill_mode": "status"}) is False
+    assert _expr(that, {}) is True, "an unset mode is the fail default, the behaviour before this drill had"
+
+
+def test_the_mode_selects_the_rule_the_drill_reads_and_proves():
+    tasks = _tasks_of(DRILL, CLAIM)
+    uid = _named(tasks, "Bind the endpoint rule the drill mode proves")["ansible.builtin.set_fact"][
+        "_endpoint_drill_rule_uid"]
+    assert _render(uid, {"availability_drill_mode": "fail"}) == RULE_UID
+    assert _render(uid, {"availability_drill_mode": "absent"}) == ABSENT_RULE_UID
+    assert _render(uid, {}) == RULE_UID, "an unset mode keeps the fail rule"
+
+
+def test_the_rule_read_its_assert_and_the_probe_proof_use_the_mode_uid_not_a_fixed_one():
+    tasks = _tasks_of(DRILL, CLAIM)
+    read = _named(tasks, "Read the endpoint availability rule without displaying its settings")
+    script = read["ansible.builtin.command"]["argv"][-1]
+    assert script.rstrip().endswith("alert-rules/{{ _endpoint_drill_rule_uid }}")
+    assert "o11y_endpoint_probe_failed" not in str(read), "the rule read must follow the mode"
+    rule_assert = _named(tasks, "Require the endpoint availability rule to be provisioned and active")
+    uid_check = "(_endpoint_rule.stdout | from_json).uid == _endpoint_drill_rule_uid"
+    assert rule_assert["ansible.builtin.assert"]["that"][0] == uid_check
+    proof = _tasks_of(DRILL, "Prove the endpoint alert fires and reaches Discord")
+    probe = next(t for t in _walk(proof) if t.get("ansible.builtin.include_tasks") == "tasks/o11y-alert-probe.yml")
+    rule_uid = probe["vars"]["_alert_probe_rule_uid"]
+    assert _render(rule_uid, {"_endpoint_drill_rule_uid": ABSENT_RULE_UID}) == ABSENT_RULE_UID
+
+
+def test_the_readiness_query_is_absent_over_time_minus_one_only_in_absent_mode():
+    tasks = _tasks_of(DRILL, CLAIM)
+    binding = _named(tasks, "Bind the endpoint probe selector the readiness waits query")
+    probe = _render(binding["ansible.builtin.set_fact"]["_endpoint_probe_query"], {"_endpoint_drill_target": TARGET})
+    ready = _named(tasks, "Bind the endpoint readiness query the drill mode waits for")["ansible.builtin.set_fact"][
+        "_endpoint_ready_query"]
+    fail = _expr(_unwrap(ready), {"availability_drill_mode": "fail", "_endpoint_probe_query": probe})
+    assert fail == probe
+    absent = _expr(_unwrap(ready), {"availability_drill_mode": "absent", "_endpoint_probe_query": probe})
+    assert absent == f"absent_over_time({probe}[30s]) - 1"
+    # The offset is the value the readiness predicate reads: an absent series reads 0.
+    assert absent.endswith(" - 1")
+
+
+def test_the_pre_claim_check_and_the_recovery_still_read_the_probe_series_itself():
+    tasks = _tasks_of(DRILL, CLAIM)
+    before = _named(tasks, "Read the drilled target's health probe series before the drill")
+    assert before["ansible.builtin.command"]["argv"][-1] == (
+        "http://prometheus:9090/api/v1/query?query={{ _endpoint_probe_query | urlencode }}")
+    recovered = next(t for t in _walk(_tasks_of(DRILL, "Prove recovery and clear the endpoint-drill marker"))
+                     if t.get("name") == "Wait for a fresh successful endpoint probe after the normal projection")
+    assert recovered["ansible.builtin.command"]["argv"][-1] == (
+        "http://prometheus:9090/api/v1/query?query={{ _endpoint_probe_query | urlencode }}")
+
+
+def test_the_drilled_target_is_collected_from_the_normal_and_the_alert_only_lists():
+    tasks = _tasks_of(DRILL, CLAIM)
+    collect = _named(tasks, "Collect the one drilled target from the validated projection")["ansible.builtin.set_fact"][
+        "_endpoint_drill_matches"]
+    alert_only = {"target_id": TARGET_ID, "service_identity": TARGET["service_identity"], "environment": "prod",
+                  "cluster": "agent-cloud", "freshness_seconds": 600}
+    absent_projection = {"targets": [{"target_id": "service:other"}], "alert_only_targets": [alert_only]}
+    context = {"availability_drill_target_id": TARGET_ID, "_o11y_availability": absent_projection}
+    assert _expr(_unwrap(collect), context) == [alert_only]
+    # A status-code drill's projection has no alert_only_targets key, and the default covers that.
+    normal = {"targets": [alert_only]}
+    assert _expr(_unwrap(collect), {**context, "_o11y_availability": normal}) == [alert_only]
+
+
+def test_only_an_absent_drill_passes_the_longer_fire_budget_and_fail_keeps_the_default():
+    tasks = _tasks_of(DRILL, "Prove the endpoint alert fires and reaches Discord")
+    budget = _named(tasks, "Give an absent drill the fire wait its freshness window and for-window need")
+    assert budget["when"] == "(availability_drill_mode | default('fail')) == 'absent'"
+    assert _expr(budget["when"], {"availability_drill_mode": "absent"}) is True
+    assert _expr(budget["when"], {"availability_drill_mode": "fail"}) is False
+    assert _expr(budget["when"], {}) is False
+    value = budget["ansible.builtin.set_fact"]["_alert_probe_fire_retries"]
+    # 600 s freshness: the absence window, then the 2-minute for-window, with a 2-minute margin.
+    assert _expr(_unwrap(value), {"_endpoint_drill_target": {"freshness_seconds": 600}}) == 84
+    probe = next(t for t in _walk(tasks) if t.get("ansible.builtin.include_tasks") == "tasks/o11y-alert-probe.yml")
+    assert "_alert_probe_fire_retries" not in probe["vars"]
+
+
+def test_the_shared_probe_fire_wait_defaults_to_36_and_takes_the_drill_budget_when_set():
+    fire = _named(playbook_yaml.load(PROBE), "Wait for Grafana's service-down rule to fire for the probe")
+    assert fire["retries"] == "{{ _alert_probe_fire_retries | default(36) }}"
+    assert _expr(_unwrap(fire["retries"]), {}) == 36
+    assert _expr(_unwrap(fire["retries"]), {"_alert_probe_fire_retries": 84}) == 84
+
 
 # ---- recovery ---------------------------------------------------------------------------------
 
@@ -357,7 +476,8 @@ def test_the_names_the_probe_reads_from_the_preflight_are_not_set_again_by_the_d
     for name in ("_discord_secret", "_webhook_id", "_before_messages", "_o11y_secret"):
         assert name not in closure, f"deploy-o11y.yml sets {name}; the probe would read the deploy's value"
     # The drill's own facts are read after the drilled deploy, so the deploy must not set them.
-    for name in ("_endpoint_drill_target", "_endpoint_probe_query", "_endpoint_drill_outcome", "_endpoint_rule"):
+    for name in ("_endpoint_drill_target", "_endpoint_probe_query", "_endpoint_drill_outcome", "_endpoint_rule",
+                 "_endpoint_drill_rule_uid", "_endpoint_ready_query", "_alert_probe_fire_retries"):
         assert name not in closure, name
 
 
@@ -380,12 +500,21 @@ def test_the_drill_template_names_the_playbook_on_dev_with_its_survey():
     assert entry["repository"] == "agent-cloud dev"
     survey = {v["name"]: v for v in entry["survey_vars"]}
     assert set(survey) == {"expected_repository_sha", "service_branch", "availability_drill_target_id",
-                           "deploy_force_recreate"}
+                           "availability_drill_mode", "deploy_force_recreate"}
     assert survey["expected_repository_sha"]["required"] is True
     assert survey["availability_drill_target_id"]["required"] is True
     assert survey["service_branch"]["default_value"] == "dev"
     assert survey["deploy_force_recreate"]["default_value"] == "false"
     assert "dev_variant" not in entry
+
+
+def test_the_drill_mode_is_a_required_enum_that_defaults_to_the_fail_drill():
+    entry = _templates()["Drill o11y Endpoint Availability (Dev)"]
+    mode = {v["name"]: v for v in entry["survey_vars"]}["availability_drill_mode"]
+    assert mode["type"] == "enum"
+    assert mode["required"] is True
+    assert mode["default_value"] == "fail"
+    assert [value["value"] for value in mode["values"]] == ["fail", "absent"]
 
 
 def test_the_recover_template_names_the_playbook_on_dev_without_a_target():
@@ -424,6 +553,35 @@ def test_the_drilled_import_vars_reach_the_census_stdin_as_an_integer_target(tmp
     payload = json.loads(out.read_text())
     assert payload["drill"] == {"target_id": "service:alpha-health", "status_code": 599}
     assert type(payload["drill"]["status_code"]) is int
+    assert set(payload) == {"targets", "inventory_revision", "enabled", "reviewed", "limits",
+                            "receiver_environment", "cluster", "shared_sample_limit", "drill"}
+
+
+@needs_ansible
+def test_the_absent_drill_reaches_the_census_stdin_as_a_mode_and_no_status_code(tmp_path):
+    drilled = copy.deepcopy(
+        next(p for p in playbook_yaml.load(DRILL) if p.get("name") == "Deploy the endpoint drill projection")["vars"])
+    stdin = _stdin_expression(PREPARE)
+    child = tmp_path / "child.yml"
+    out = tmp_path / "rendered.json"
+    child.write_text(yaml_dump([{
+        "name": "render the census stdin",
+        "hosts": "localhost",
+        "connection": "local",
+        "gather_facts": False,
+        "tasks": [{"name": "write", "ansible.builtin.copy": {"dest": str(out), "content": stdin}}],
+    }]))
+    importer = tmp_path / "importer.yml"
+    importer.write_text(yaml_dump([{
+        "name": "import the drilled vars",
+        "ansible.builtin.import_playbook": "child.yml",
+        "vars": drilled,
+    }]))
+    proc = _ansible(tmp_path, importer, "-e", "availability_drill_target_id=service:alpha-health",
+                    "-e", "availability_drill_mode=absent")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    payload = json.loads(out.read_text())
+    assert payload["drill"] == {"target_id": "service:alpha-health", "mode": "absent"}
     assert set(payload) == {"targets", "inventory_revision", "enabled", "reviewed", "limits",
                             "receiver_environment", "cluster", "shared_sample_limit", "drill"}
 
@@ -526,8 +684,12 @@ def test_no_log_hides_only_the_tasks_that_hold_a_private_endpoint_or_a_secret():
         (claim_tasks, "Read the drilled target's health probe series before the drill"),
         (claim_tasks, "Require the drilled target's health probe to be succeeding before the drill"),
         (claim_tasks, "Require the drilled target's endpoint alert to be quiet before the drill"),
+        (claim_tasks, "Bind the endpoint rule the drill mode proves"),
+        (claim_tasks, "Bind the endpoint readiness query the drill mode waits for"),
         (final_tasks, "Wait for a fresh successful endpoint probe after the normal projection"),
     ]
+    proof_tasks = _tasks_of(DRILL, "Prove the endpoint alert fires and reaches Discord")
+    visible.append((proof_tasks, "Give an absent drill the fire wait its freshness window and for-window need"))
     for tasks, name in visible:
         assert "no_log" not in _named(tasks, name), name
     hidden = [

@@ -30,9 +30,10 @@ has run it since 2026-11-09: `Deploy launch-gate (Dev)` task 14113 proved that O
 (`plan/development/openspec/changes/add-dispatch-console/tasks.md`; decisions D49 and D51 in
 `plan/development/17-dispatch-console.md`). That change deploys nothing. The console's own deploy, which shared-reads
 `caller_console_token`, is built in `deploy-console.yml` (read when `console_launch_gate_url` is declared). The `skynet-launch-containment` change
-(`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) records skynet's shared read and route (3.6),
-the production host, firewall rules, the `svc-launch-gate` team member and the rollout (5.1 to 5.5) as done. Its one
-open task is 4.4, the end-to-end proof of a skynet-tagged task through the locally deployed gate.
+(`plan/development/openspec/changes/skynet-launch-containment/tasks.md`) records every task as done: skynet's shared read and route (3.6), the production host, firewall
+rules, the `svc-launch-gate` team member and the rollout (5.1 to 5.5), and 4.4, the end-to-end proof of a
+skynet-tagged task through the locally deployed gate (`Probe skynet Launch (Local)`, local task 14202). Its archive is
+scheduled for Release 2 (`plan/development/23-release-train.md`).
 
 ## Files
 
@@ -167,6 +168,8 @@ Declared in `platform/playbooks/bootstrap-local-dev.yml` (`[launch_gate_svc]`, t
 mirrored in `platform/inventory/local-dev.yml.example`. `Deploy launch-gate (Local)` and
 `Provision launch-gate Semaphore Access (Local)` are in `platform/semaphore/templates-local.yml`.
 
+The deploy decides local mode from the inventory (every host but `localhost` named `<name>-local`, read from `groups`), never from `local_mode` or `inventory_hostname`, which an extra var can set; a `local_mode` that disagrees with the inventory is refused before anything changes (`tasks/assert-local-mode-identity.yml`).
+
 - Deploy OPA (Local) first. Phase 3 asks OPA for `/health` from inside the gate container at `http://opa:8181`, so a
   local deploy fails there while OPA is not running on the `local-dev` network.
 - The published port is 18443 on 127.0.0.1, because Caddy holds 8443 on the Mac. The container still listens on 8443.
@@ -187,6 +190,14 @@ keeps `certs/` (clean-service removes the checkout only in production). The leaf
 default). So the deploy itself checks it: in local-dev, `openssl x509 -checkend 604800` on `current/cert.pem`, and a
 leaf with under 7 days left, or none yet, is issued again (`_mint_reissue`). Re-run `Deploy launch-gate (Local)` at
 least weekly, or after a long break, to keep it current. Production keeps an issued leaf; Renew Internal Certs renews it.
+
+**The working-tree branch.** On both routes (`/v1/launch` and `/v1/decide`, through `Gate._judge`) the branch the
+gate pins and asks OPA about is the template's repository record's, read from Semaphore and never from the caller.
+Local-dev's working-tree record declares `HEAD` (whatever the developer has checked out), and OPA allows agent
+launches only from `main` or `dev`, so in local mode only the gate reads that `HEAD` as `dev` (`policy_branch`), as
+skynet's local catalog already does. Outside local mode `HEAD` reaches OPA unchanged and is refused. Found by the
+local skynet launch probe on 2026-11-09 (local task 14161): every agent launch through the local gate was denied "an
+agent task may run only from main or dev".
 
 ## Allowlist
 
@@ -239,7 +250,7 @@ repo is placed.
   refusals, the secrets they declare, the Phase 3 probes, and one behavioural run that refuses a non-digest image
   before the repo is placed.
 - `platform/tests/test_launch_gate*.py` (existing): the app.
-- `platform/tests/test_restart_policy.bats`, `test_compose_image_qualified.py`, `test_no_bind_mount_dir_delete.py`:
+- `platform/tests/suite/restart_policy.rs`, `test_compose_image_qualified.py`, `test_no_bind_mount_dir_delete.py`:
   repository-wide guards that also cover this directory.
 - `platform/playbooks/probe-launch-gate.yml` (template `Probe launch-gate (Dev)`): the allow-path and duplicate-refusal
   probe, run from inside the gate's container; `platform/tests/test_probe_launch_gate.py` runs it against a fake gate.

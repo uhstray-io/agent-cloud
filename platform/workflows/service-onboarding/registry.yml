@@ -152,7 +152,7 @@ steps:
       - the proposal validates against its schema
       - it names an existing deploy template for an existing service
     evidence_keys: [compose_found, running_count]
-    reviewed: null
+    reviewed: "2026-11-11"
 
   - id: vm-rightsize
     order: 10

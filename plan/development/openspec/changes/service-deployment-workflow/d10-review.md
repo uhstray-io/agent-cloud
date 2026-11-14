@@ -544,3 +544,35 @@ unchanged, so its D10 verdict and its 2026-10-08 stamp above stand.
 
 2026-10-09: the open vm-template item above is closed. Create VM Template (Dev) task 3623 at
 `1c735290` (PR #491) recorded `pass` against template 9000, evidence `cloudinit_drive: ide0`.
+
+## service-assess stamped — 2026-11-11
+
+The 2026-10-02 review left the three reasoning steps out of scope because none has an
+executor. That no longer fits `service-assess`: the Dispatch Console's Assess resource
+proposal launches the step's snapshot, Snapshot Service Assessment, as the step's own task
+(`platform/services/console/app/src/server/proposals.rs:629`), and OPA judges that launch
+against `catalog.workflow_steps.service-assess.reviewed`, the only place the policy reads
+review state (`agent_actions.rego:139-143`). Once `console_launch_dev_variants` is turned off
+at promotion the console launches the base template, which runs from `main`, where an
+unreviewed step is denied (add-dispatch-console task 10.4a). This pass applies D10 to the
+snapshot as the step's executor.
+
+| Check | Holds | Evidence |
+|-------|-------|----------|
+| Criteria written | yes, for the proposal | the registry's two criteria judge the proposal the step produces, not the snapshot. The snapshot's own pass condition is a populated target group (`:15-28`); it records `pass` whenever it runs (`:84`), with `compose_found` and `running_count` as evidence |
+| Idempotent re-run | read-only | `snapshot-service-assessment.yml` reads the committed compose file, the registry and the agent practices on the controller and lists containers through `tasks/list-service-containers.yml`, a read that runs in check mode too; nothing writes. A target group with no hosts is refused first (`:15-28`) |
+| Result recorded | yes | `:80-87`, step `service-assess`, status `pass` |
+| Undo | `none` | nothing to undo |
+| Emitter guarded | yes | `test_review_stamp_requires_a_recorded_result_and_a_named_undo` now covers reasoning steps |
+
+Main hazard: the playbook, `refuse-internal-extra-vars.yml` and `tasks/emit-step-result.yml`
+are identical on `main` and `dev`; `tasks/list-service-containers.yml` differs only in a
+comment (`git diff origin/main origin/dev`, 2026-11-11).
+
+Production runs of Snapshot Service Assessment (Dev), template 324, all `success`: 4945
+(check mode, `o11y_svc`, 2026-10-13), 4951 (`o11y_svc`, 2026-10-13), 9526 (`console_svc`,
+2026-10-27) and 14118 (check mode through the launch gate, `opa_svc`, 2026-11-09).
+
+Stamped `reviewed: "2026-11-11"` in the registry and `true` in OPA `data.json`. Production
+OPA picks the stamp up on its next deploy. `fw-assess` and `access-assess` stay unstamped:
+no console proposal launches their snapshots.

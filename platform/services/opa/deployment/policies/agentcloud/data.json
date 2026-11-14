@@ -206,7 +206,7 @@
           "Snapshot Service Assessment"
         ],
         "per_service": false,
-        "reviewed": false
+        "reviewed": true
       },
       "vm-rightsize": {
         "owner": "infra-agent",

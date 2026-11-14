@@ -50,6 +50,21 @@ ALERT_INPUTS = (
     ("loki_discarded_samples_total", "loki"),
     ("tempo_discarded_spans_total", "tempo"),
 )
+# A drop counter that is created lazily has no series until its first increment, so an empty
+# result is the healthy state of a live pipeline. Each entry names a liveness series from the
+# same job that proves the component is scraped and running, plus any label the selector needs.
+# Upstream: the Alloy exporter's enqueue-failed counter is recorded only on queue.ErrQueueIsFull
+# (opentelemetry-collector v0.112.0, exporter/exporterhelper/traces.go and
+# exporter/exporterhelper/internal/obsexporter.go, RecordEnqueueFailure). Loki's
+# discarded_samples_total is a CounterVec with no default children (grafana/loki v3.3.2,
+# pkg/validation/validate.go). Only an absent family with a live liveness series is reported
+# as absent_lazy_counter; a family with no liveness series stays missing_or_stale.
+LAZY_ALERT_INPUT_LIVENESS = {
+    "otelcol_exporter_enqueue_failed_spans_total": (
+        "otelcol_exporter_queue_size", 'data_type="traces"',
+    ),
+    "loki_discarded_samples_total": ("loki_distributor_lines_received_total", ""),
+}
 EXPECTED_IDENTITY_FIELDS = ("job", "instance", "service", "cluster", "environment")
 EXPECTED_SOURCE_VALUES = {"prometheus", "alloy"}
 EXPECTED_UID = re.compile(r"^o11y_missing_[a-z0-9_]{1,27}\Z")
@@ -3257,6 +3272,36 @@ def _alert_input_family(
     }
 
 
+def _lazy_counter_liveness_present(
+    metric_name: str,
+    job: str,
+    active_targets: set[tuple[str, str]],
+) -> bool:
+    """True only when every expected target has its own liveness series from the same job.
+
+    The liveness series must be present for every target in active_targets (each expected
+    (job, instance)), not for just one of them: with several instances, one live instance must not
+    mark the whole family absent_lazy_counter. Any failure (refusal, API error, malformed or foreign
+    series, no series, a missing target) answers False, so the caller keeps the family's
+    missing_or_stale result. No liveness label or value leaves this function.
+    """
+    liveness_name, extra_selector = LAZY_ALERT_INPUT_LIVENESS[metric_name]
+    selector = ",".join([f'job="{job}"', *([extra_selector] if extra_selector else [])])
+    params = {"query": f"{liveness_name}{{{selector}}}", "lookback_delta": "5m"}
+    try:
+        raw = _run_api("/api/v1/query?" + urlencode(params), "alert_query_unavailable")
+        liveness = _alert_input_family(raw, liveness_name, job, active_targets)
+        if liveness["status"] not in {"observed_zero", "observed_nonzero"}:
+            return False
+        seen = {
+            (row["metric"]["job"], row["metric"]["instance"])
+            for row in _api_vector(raw, "malformed_alert_response")
+        }
+    except Exception:
+        return False
+    return seen == active_targets
+
+
 def _alert_input_availability(
     targets_raw: bytes | str, *, native_alloy_verified: bool = False,
 ) -> dict[str, Any]:
@@ -3287,6 +3332,12 @@ def _alert_input_availability(
             params = {"query": query, "lookback_delta": "5m"}
             raw = _run_api("/api/v1/query?" + urlencode(params), "alert_query_unavailable")
             result = _alert_input_family(raw, metric_name, job, expected_targets)
+            if (
+                result == {"status": "missing_or_stale", "reason": "no_samples"}
+                and metric_name in LAZY_ALERT_INPUT_LIVENESS
+                and _lazy_counter_liveness_present(metric_name, job, expected_targets)
+            ):
+                result = {"status": "absent_lazy_counter", "reason": "liveness_series_present"}
         except Refusal as error:
             reason = {
                 "malformed_alert_response": "malformed_response",
@@ -4107,13 +4158,42 @@ def _native_metric_rows(
     return result
 
 
+def _availability_identities(
+    entries: list[Any], *, environment: str, cluster: str, taken: frozenset[str] = frozenset(),
+) -> dict[str, dict[str, str]]:
+    """The exact series identity each declared availability target must carry, keyed by target_id."""
+    identities: dict[str, dict[str, str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise Refusal("native_declaration_invalid")
+        target_id = entry.get("target_id")
+        expected = {
+            "job": "o11y-availability", "instance": target_id,
+            "service": entry.get("service_identity"), "cluster": entry.get("cluster"),
+            "environment": entry.get("environment"), "target_id": target_id,
+        }
+        if (
+            not isinstance(target_id, str) or target_id in identities or target_id in taken
+            or entry.get("environment") != environment or entry.get("cluster") != cluster
+            or any(not isinstance(value, str) or not value for value in expected.values())
+        ):
+            raise Refusal("native_declaration_invalid")
+        identities[target_id] = expected
+    return identities
+
+
 def collect_availability_native_samples(
     availability: dict[str, Any], shared_limits: dict[str, Any], *, environment: str, cluster: str,
     process_started_at: Decimal | int, preapply_bound: int | None = None,
     now: int | None = None, freshness_seconds: int = 300, self_only: bool = False,
     deadline: float | None = None, max_total_bytes: int = MAX_API_BYTES,
 ) -> dict[str, Any]:
-    """Read bounded raw metric timestamps and values for the fixed Alloy producer."""
+    """Read bounded raw metric timestamps and values for the fixed Alloy producer.
+
+    A target under `alert_only_targets` (an absent drill) has no probe, but its series may
+    still be visible. Its leftover rows are ignored, and a fresh sample for it refuses the
+    read. Its rows never reach the receipts.
+    """
     targets = availability.get("targets") if isinstance(availability, dict) else None
     if (
         not isinstance(availability, dict)
@@ -4138,23 +4218,14 @@ def collect_availability_native_samples(
         "job": "alloy", "instance": "alloy:12345", "service": "o11y/alloy",
         "cluster": cluster, "environment": environment, "target_id": "service:o11y",
     }
-    target_identities: dict[str, dict[str, str]] = {}
-    for target in targets:
-        if not isinstance(target, dict):
-            raise Refusal("native_declaration_invalid")
-        target_id = target.get("target_id")
-        expected = {
-            "job": "o11y-availability", "instance": target_id,
-            "service": target.get("service_identity"), "cluster": target.get("cluster"),
-            "environment": target.get("environment"), "target_id": target_id,
-        }
-        if (
-            not isinstance(target_id, str) or target_id in target_identities
-            or target.get("environment") != environment or target.get("cluster") != cluster
-            or any(not isinstance(value, str) or not value for value in expected.values())
-        ):
-            raise Refusal("native_declaration_invalid")
-        target_identities[target_id] = expected
+    target_identities = _availability_identities(targets, environment=environment, cluster=cluster)
+    alert_only = availability.get("alert_only_targets", [])
+    if not isinstance(alert_only, list) or (alert_only and not targets):
+        raise Refusal("native_declaration_invalid")
+    alert_only_identities = _availability_identities(
+        alert_only, environment=environment, cluster=cluster, taken=frozenset(target_identities),
+    )
+    expected_identities = {**target_identities, **alert_only_identities}
 
     value_families = set(ALLOY_HEALTH_METRICS)
     self_families = set(ALLOY_SELF_METRICS)
@@ -4187,10 +4258,10 @@ def collect_availability_native_samples(
     health_timestamps: dict[tuple[str, str], Decimal] = {}
     if targets:
         health_timestamps = _native_metric_rows(
-            query_responses[0], families=value_families, expected=target_identities,
+            query_responses[0], families=value_families, expected=expected_identities,
         )
         health_values = _native_metric_rows(
-            query_responses[1], families=value_families, expected=target_identities,
+            query_responses[1], families=value_families, expected=expected_identities,
         )
         self_timestamp_raw, self_values_raw = query_responses[2:]
     else:
@@ -4204,6 +4275,21 @@ def collect_availability_native_samples(
         self_values_raw,
         families=self_families, expected=self_expected,
     )
+    # The drilled target of an absent drill has no probe after the drilled apply. A force-recreated
+    # Alloy writes no staleness marker, so an instant query can still return its last samples from
+    # before that apply. Those are expected leftovers and are ignored. A sample newer than the
+    # bound cannot be a leftover, so it refuses the read.
+    alert_only_keys: set[tuple[str, str]] = set()
+    for alert_target_id in alert_only_identities:
+        if any(
+            sample_time > oldest_allowed
+            for (row_target_id, _family), sample_time in health_timestamps.items()
+            if row_target_id == alert_target_id
+        ):
+            raise Refusal("native_samples_ambiguous")
+        alert_only_keys.update(
+            key for key in {*health_values, *health_timestamps} if key[0] == alert_target_id
+        )
 
     def require_fresh(
         values: dict[tuple[str, str], Decimal], timestamps: dict[tuple[str, str], Decimal],
@@ -4277,6 +4363,7 @@ def collect_availability_native_samples(
             "scrape_samples_scraped": samples, "scrape_body_size_bytes": body,
         })
         expected_keys.update((target_id, family) for family in ALLOY_HEALTH_METRICS)
+    expected_keys.update(alert_only_keys)
     unexpected_values = set(health_values) - expected_keys
     unexpected_timestamps = set(health_timestamps) - expected_keys
     if unexpected_values or unexpected_timestamps:

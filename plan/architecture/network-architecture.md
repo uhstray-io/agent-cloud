@@ -134,7 +134,7 @@ flowchart TB
     SEM -->|"SSH"| CADDY
     LG -->|"Semaphore task on allow, HTTPS"| SEM
     LG -->|"asks OPA, HTTPS"| OPA
-    SKY -. "launch request via the gate, HTTPS (wired; no launch yet)" .-> LG
+    SKY -. "launch request via the gate, HTTPS (wired)" .-> LG
     SEM -->|"AppRole over HTTP, internal only"| BAO
     SEM -->|"SSH (issuance runs in the CA container)"| CA
     GH["GitHub"]
@@ -344,7 +344,8 @@ stateDiagram-v2
 ```
 
 **Shared-key retirement.** Before the gateway, every client sent vLLM's one key. The gateway
-admits that key as a `legacy-shared` identity until **2026-11-13**; a deploy on or after that date
+admits that key as a `legacy-shared` identity until **2026-12-11** (moved from 2026-11-13 by
+site-config #183 while dgx-spark#43 automates the rotation); a deploy on or after that date
 drops the identity and fails until dgx-spark rotates the vLLM key [24].
 
 **skynet's route.** agentgateway can carry a `/skynet/` route to the skynet orchestration API,
@@ -494,7 +495,7 @@ flowchart LR
     SEM -->|"public front door, every 10 min"| GRAF["Grafana liveness"]
     PROM["o11y Prometheus"] -->|"scrape node exporter<br/>on a private bind"| VMS
     SEM -->|"push-loki-lines"| LOKI["o11y Loki"]
-    SKY["skynet<br/>(launch caller, LIVE)"] -.->|"launch request, HTTPS (wired; no launch yet)"| LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
+    SKY["skynet<br/>(launch caller, LIVE)"] -.->|"launch request, HTTPS (wired)"| LG["Launch gate<br/>HTTPS, live since 2026-11-09"]
     LG -->|"asks OPA, HTTPS"| OPA["OPA decisions<br/>(LIVE)"]
     LG -->|"creates task only on allow"| SEM
 ```
@@ -508,7 +509,7 @@ flowchart LR
   scrape, and requires the series to arrive [41]. The liveness watcher probes Grafana through the
   public front door, so the firewall needs no exception for it [42].
 
-- **The launch gate is an HTTPS service, live in production since 2026-11-09.** It is the only identity that may ask Semaphore to launch a task for an agent. Its listener is HTTPS with an internal-CA server leaf, and its host admits connections on 8443 only from the skynet and console VMs. skynet's wiring to the gate is deployed, but no skynet-initiated launch through the gate is recorded yet [54].
+- **The launch gate is an HTTPS service, live in production since 2026-11-09.** It is the only identity that may ask Semaphore to launch a task for an agent. Its listener is HTTPS with an internal-CA server leaf, and its host admits connections on 8443 only from the skynet and console VMs. skynet's wiring to the gate is deployed. A skynet-initiated launch through the gate is proven in local-dev (OpenSpec change `skynet-launch-containment`, task 4.4) but not yet in production [54].
 
 ### 8. Provisioning: how a VM gets its address
 
@@ -618,10 +619,10 @@ This is a current-state map, so its "phases" are the network work in flight. Eac
 change or plan named, and each acceptance criterion is what would let this document move the item's
 status forward.
 
-### Phase A: retire the shared inference key (due 2026-11-13)
+### Phase A: retire the shared inference key (due 2026-12-11)
 
 **Owner:** `inference-gateway-agentgateway` task 5.1, with dgx-spark rotating the vLLM key [24].
-**Acceptance:** a deploy after 2026-11-13 passes with no `legacy-shared` identity; rollback
+**Acceptance:** a deploy after 2026-12-11 passes with no `legacy-shared` identity; rollback
 `restore` completes and withdraws every `direct_` copy.
 
 ### Phase B: TLS from the gateway to vLLM
@@ -791,7 +792,7 @@ document; for the long, frequently edited documents the section name is given as
 51. `plan/development/openspec/changes/production-internal-ca/proposal.md:1-25`
 52. `platform/services/opa/deployment/context/architecture.md:31-46` (production specifics, deployed 2026-10-29)
 53. `platform/playbooks/deploy-opa.yml` (production refusals; `opa_tls` defaults to false)
-54. `platform/playbooks/deploy-launch-gate.yml`; `platform/services/launch-gate/deployment/CLAUDE.md:1-12` (status: deployed in production since 2026-11-09); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
+54. `platform/playbooks/deploy-launch-gate.yml`; `platform/services/launch-gate/deployment/CLAUDE.md:1-36` (status: deployed in production since 2026-11-09); `AGENTS.md`, Deployment Status, "Launch gate deployed (prod, 2026-11-09)"
 55. `platform/services/o11y/deployment/compose.otlp-tls.yml`; `platform/playbooks/tasks/assert-o11y-otlp-tls.yml`; `platform/playbooks/deploy-o11y-journal-collector.yml` (switch `o11y_otlp_tls_enabled`, default false; merged as PR #756, commit `0bc41a8b`)
 
 ## Revision History
@@ -801,3 +802,4 @@ document; for the long, frequently edited documents the section name is given as
 | 2026-10-27 | Initial version: current-state network map with status per component, decision criteria, in-flight phases and target outcome |
 | 2026-11-04 | Corrected in place against the repository: OPA production path and the launch gate (HTTPS, not deployed) added; o11y OTLP mutual TLS (PR #756) recorded as built and off by default; label count corrected to nineteen; rate-limit modes stated (inference block, MCP log only); the every-hop row now records the plain-HTTP gateway-to-vLLM gap and its compensating control; vLLM TLS status brought up to the 2026-10-26 handoff |
 | 2026-11-09 | Corrected the launch gate to live in production since 2026-11-09 in the diagrams, the component table and the control-plane prose; the gate-to-OPA and gate-to-Semaphore edges are solid, and the skynet-to-gate edge stays dashed until a skynet-initiated launch is recorded; the recorded gateway-to-vLLM gap is cited as a dated exception in PRINCIPLES.md §6; ADR-0017 is named as dgx-spark's |
+| 2026-11-12 | The launch-gate control-plane note records a skynet-initiated launch through the gate as proven in local-dev (task 4.4), not yet in production; the skynet-to-gate edge stays dashed until it is proven in production |

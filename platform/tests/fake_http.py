@@ -8,13 +8,16 @@ so it cannot be left to each fake remembering. This base reads the whole declare
 before the do_* method runs, on every path, and serves it back from memory: handlers
 keep calling self.rfile.read(...) exactly as before.
 
-It also holds `refused_port()`, the one port a test aims at when it needs "nothing listens here".
+It also holds `refused_port()`, the one port a test aims at when it needs "nothing listens here",
+and `serve()`, the one way a test starts a fixture server.
 """
 
 import errno
 import io
 import socket
-from http.server import BaseHTTPRequestHandler
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Below every ephemeral range (Linux 32768-60999, macOS 49152-65535), so a bind to port 0 never
 # returns it, and nothing listens on it: a connection is refused at once on both.
@@ -70,3 +73,62 @@ class DrainingHandler(BaseHTTPRequestHandler):
             sock = self.__dict__.pop("_socket_rfile", None)
             if sock is not None:
                 self.rfile = sock
+
+
+# serve_forever's select timeout: shutdown() waits out one poll, so the stdlib's 0.5 s would be paid on
+# every server exit. Servers a test builds itself pass it too.
+SHUTDOWN_POLL_SECONDS = 0.01
+
+# Socket timeout while a TLS handshake runs: each blocking read in it waits at most this long, and it is
+# lifted once the handshake completes. A client that never finishes holds only its own request thread.
+TLS_HANDSHAKE_TIMEOUT = 10
+
+# A wildcard bind is reached on loopback, so the URL names loopback.
+_LOOPBACK_FOR = {"0.0.0.0": "127.0.0.1", "::": "::1"}
+
+
+@contextmanager
+def serve(handler, *, host="127.0.0.1", ssl_context=None):
+    """A fixture server for `handler` on an ephemeral port of `host`, while the with-block runs; yields
+    its URL: "http://<host>:<port>", "https://..." when `ssl_context` is given, the host bracketed for IPv6
+    ("http://[::1]:<port>"), and loopback for a wildcard bind ("0.0.0.0", for a container that reaches
+    the host, gives "http://127.0.0.1:<port>"). Threaded, with daemon
+    request threads, and stopped and closed on exit. Each TLS connection does its handshake on its own
+    request thread, so a client that connects and stalls holds up only itself."""
+    class Server(ThreadingHTTPServer):
+        address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
+        # Default listen backlog is 5; a playbook's request bursts on a loaded machine got
+        # "Connection reset by peer" (see test_scoped_publication.py).
+        request_queue_size = 128
+        daemon_threads = True
+
+        def get_request(self):
+            sock, address = self.socket.accept()
+            if ssl_context is None:
+                return sock, address
+            # Wrapping the listening socket would run every handshake inside accept(), on the one
+            # serve_forever thread: a silent client would block all requests and shutdown().
+            sock.settimeout(TLS_HANDSHAKE_TIMEOUT)
+            return ssl_context.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), address
+
+        def finish_request(self, request, client_address):
+            if ssl_context is not None:
+                try:
+                    request.do_handshake()
+                except OSError:  # ssl.SSLError and timeouts are OSError: a failed client, not a fixture error
+                    return
+                request.settimeout(None)  # the timeout bounds the handshake only
+            super().finish_request(request, client_address)
+
+    server = Server((host, 0), handler)
+    url_host = _LOOPBACK_FOR.get(host, host)
+    if ":" in url_host:
+        url_host = f"[{url_host}]"
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_SECONDS}, daemon=True)
+    thread.start()
+    try:
+        yield f"{'https' if ssl_context is not None else 'http'}://{url_host}:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
