@@ -182,6 +182,17 @@ fn command_line(task: &Node) -> Option<String> {
     })
 }
 
+/// True when a scalar names a Docker engine package, bare or pinned to a version (`docker-ce=5:27.0*`).
+/// The package is the token before the first `=`, trimmed, and it must match exactly: a prefix does
+/// not, so the client `docker-ce-cli`, bare or pinned, is not an engine.
+fn names_an_engine(scalar: &str) -> bool {
+    let package = scalar
+        .split_once('=')
+        .map_or(scalar, |(name, _)| name)
+        .trim();
+    matches!(package, "docker-ce" | "containerd.io" | "docker.io")
+}
+
 /// The play whose name starts with `prefix`, as parsed (its `vars:` and its `tasks:`).
 fn play(prefix: &str) -> Node {
     repo::tasks(PB)
@@ -325,10 +336,14 @@ fn the_banner_marker_touch_is_idempotent() {
     let tasks = repo::tasks(PB);
 
     // Act
+    // Selected by its path too: an unrelated touch task earlier in the file must not stand in for it.
     let touch = tasks
         .iter()
-        .find(|t| field(t, "file", "state") == Some("touch"))
-        .expect("no task touches the banner marker");
+        .find(|t| {
+            field(t, "file", "state") == Some("touch")
+                && field(t, "file", "path") == Some("/etc/containers/nodocker")
+        })
+        .expect("no task touches the banner marker /etc/containers/nodocker");
     let file = module(touch, "file").expect("the banner touch is a file task");
 
     // Assert: a bare touch reports changed on every run.
@@ -552,10 +567,7 @@ fn the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim() {
     let whole = doc(PB);
     let mut all = vec![];
     strings(&whole, &mut all);
-    let engine: Vec<&str> = all
-        .into_iter()
-        .filter(|s| matches!(s.trim(), "docker-ce" | "containerd.io" | "docker.io"))
-        .collect();
+    let engine: Vec<&str> = all.into_iter().filter(|s| names_an_engine(s)).collect();
     assert!(
         engine.is_empty(),
         "the playbook names a Docker engine package: {engine:?}"
@@ -578,6 +590,32 @@ fn the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim() {
             < position(&tasks, "Install the pinned Docker CLI client"),
         "the client installs before the shim is removed"
     );
+}
+
+#[test]
+fn the_engine_matcher_reads_the_package_token_not_a_prefix() {
+    // Arrange: the engine names, bare and version-pinned, and the client names that must stay allowed.
+    let engines = [
+        "docker-ce",
+        "docker-ce=5:27.0.3-1~ubuntu",
+        " containerd.io ",
+        "docker.io=1.0",
+    ];
+    let clients = ["docker-ce-cli", "docker-ce-cli=5:{{ v }}-*", "podman"];
+
+    // Act / Assert
+    for name in engines {
+        assert!(
+            names_an_engine(name),
+            "{name:?} names a Docker engine and is not matched"
+        );
+    }
+    for name in clients {
+        assert!(
+            !names_an_engine(name),
+            "{name:?} is not a Docker engine and is matched"
+        );
+    }
 }
 
 #[test]

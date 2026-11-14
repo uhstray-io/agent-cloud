@@ -315,11 +315,6 @@ fn orb_agent_local_dev_checks_the_discovery_scope_before_any_credential() {
     // Act
     let scope = include_position(&tasks, "tasks/assert-local-discovery-scope.yml");
     let creds = include_position(&tasks, "tasks/manage-diode-credentials.yml");
-    let gated = tasks
-        .iter()
-        .flat_map(when_list)
-        .filter(|c| *c == gate)
-        .count();
     let removes = text(
         module(
             task(&tasks, "remove a previously started orb agent"),
@@ -333,12 +328,19 @@ fn orb_agent_local_dev_checks_the_discovery_scope_before_any_credential() {
         scope < creds,
         "the scope check runs after the Diode credentials are minted"
     );
-    // Three uses: remove the agent a prior run started, stop when discovery is off, and the
-    // same stop in play 2.
-    assert_eq!(
-        gated, 3,
-        "the discovery-disabled condition is not on all three gates"
-    );
+    // Per task, not a count: a gate on some other task must not stand in for one of these. Three
+    // gates: remove the agent a prior run started, stop when discovery is off, and the same stop in
+    // play 2 (its own name, so `task()` finds that one and not play 1's).
+    for needle in [
+        "remove a previously started orb agent",
+        "stop here when no local discovery target is declared",
+        "stop here when local discovery is disabled",
+    ] {
+        assert!(
+            when_list(task(&tasks, needle)).contains(&gate),
+            "the discovery-disabled condition is not on the task named like {needle:?}"
+        );
+    }
     assert!(
         position(&tasks, "remove a previously started orb agent")
             < position(
@@ -388,10 +390,6 @@ fn the_local_scope_guard_reads_the_live_engine_under_check() {
         .expect("the task runs a shell"),
     );
     let scope_script = text(task(&tasks, "refuse any target outside local-dev"));
-    let check_mode_off = tasks
-        .iter()
-        .filter(|t| t.get("check_mode") == Some(&Node::Bool(false)))
-        .count();
 
     // Assert
     assert!(
@@ -402,10 +400,17 @@ fn the_local_scope_guard_reads_the_live_engine_under_check() {
         scope_script.contains("discovery_scope.py"),
         "the targets are not checked by discovery_scope.py"
     );
-    assert_eq!(
-        check_mode_off, 2,
-        "the engine read and the scope check do not both run under --check"
-    );
+    // Per task: a `check_mode: false` on some other task must not stand in for either of these two.
+    for needle in [
+        "read the local engine's network subnets",
+        "refuse any target outside local-dev",
+    ] {
+        assert_eq!(
+            task(&tasks, needle).get("check_mode"),
+            Some(&Node::Bool(false)),
+            "the task named like {needle:?} does not run under --check"
+        );
+    }
 }
 
 #[test]
