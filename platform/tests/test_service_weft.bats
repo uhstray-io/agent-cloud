@@ -162,7 +162,9 @@ PY
   rescue=$(tac "$PB/tasks/weft-deploy.yml" | sed '/^  rescue:$/q' | tac)
   assert_grep -qE '^  rescue:$' <<<"$rescue"
   assert_grep -qF 'ansible.builtin.fail:' <<<"$rescue"
-  refute_grep -qE 'deploy\.sh, (restore|up)|include_tasks' <<<"$rescue"
+  # It may release the deploy lock (weft-lock.yml); it may not include anything that runs a release.
+  refute_grep -qE 'deploy\.sh, (restore|up)' <<<"$rescue"
+  [ -z "$(grep -E 'include_tasks:' <<<"$rescue" | grep -v 'include_tasks: weft-lock.yml')" ]
   local restorers
   restorers=$(grep -rlE 'deploy\.sh, restore' "$PB" | sed "s#$PB/##" | sort | tr '\n' ' ')
   [ "$restorers" = "rollback-weft-host.yml " ] || { echo "restore called from: $restorers"; false; }

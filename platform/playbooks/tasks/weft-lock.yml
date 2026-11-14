@@ -1,0 +1,102 @@
+---
+# weft-lock.yml — one weft deploy or rollback at a time on a host (agent-cloud#891, N1). Semaphore
+# does not serialise templates (its README records two concurrent tasks colliding), so a deploy and
+# a person's rollback of the same host could otherwise stop, restore and start over each other.
+#
+# The platform's pattern, as in tasks/issue-internal-leaf.yml and Plane's sync_projects.py: a
+# non-blocking kernel flock on the target, which the kernel releases when its holder dies, so a
+# killed run leaves nothing stale and a second run is refused at once rather than queued. A deploy
+# spans many tasks and SSH sessions, so the holder is its own process on the host: `flock` around a
+# sleep, started with async and poll 0 (the pattern of configure-host-network.yml), bounded by the
+# longest a deploy can take, and killed by the run that started it when it finishes.
+#
+# The lock file is `deploy.lock` in the role's root-owned state directory, which no container
+# mounts. The accepted cost: a run that dies without releasing (the controller killed mid-deploy)
+# holds the host until its holder's sleep ends, at most weft_lock_minutes.
+#
+# Caller passes:
+#   _wl_action       take | release
+#   _weft_state_dir  the role's state directory
+#   _weft_label      how the messages name this host
+# take sets _weft_lock_held; release acts only when this run holds the lock.
+
+- name: "Take the deploy lock on {{ _weft_label }}"
+  when: _wl_action == 'take' and not ansible_check_mode
+  block:
+    - name: "Name this run's hold"
+      ansible.builtin.set_fact:
+        _weft_lock_id: "{{ 999999999999 | random(seed=inventory_hostname ~ now().isoformat()) }}"
+        _weft_lock_file: "{{ _weft_state_dir }}/deploy.lock"
+        _weft_lock_owner: "{{ _weft_state_dir }}/deploy.lock.holder"
+        _weft_lock_seconds: "{{ ((_weft_lock_minutes | int) * 60) }}"
+
+    # flock exits 75 at once when another holder has the lock; otherwise it holds it while the
+    # sleep runs and writes "<id> <pid>" so this run can see the hold is its own and end it.
+    - name: "Start the lock's holder"
+      ansible.builtin.command:
+        argv:
+          - flock
+          - --nonblock
+          - --conflict-exit-code
+          - "75"
+          - "{{ _weft_lock_file }}"
+          - sh
+          - -c
+          - 'printf "%s %s\n" "$1" "$$" > "$2" && exec sleep "$3"'
+          - sh
+          - "{{ _weft_lock_id }}"
+          - "{{ _weft_lock_owner }}"
+          - "{{ _weft_lock_seconds }}"
+      async: "{{ (_weft_lock_seconds | int) + 60 }}"
+      poll: 0
+      register: _weft_lock_job
+      changed_when: true
+      become: true
+      when: not ansible_check_mode
+
+    - name: "Wait for the holder to say the lock is this run's"
+      ansible.builtin.command:
+        argv: [cat, "{{ _weft_lock_owner }}"]
+      register: _weft_lock_seen
+      until: (_weft_lock_seen.stdout | default('')).split(' ')[0] == (_weft_lock_id | string)
+      retries: 10
+      delay: 1
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      become: true
+
+    - name: "Refuse to run beside another weft deploy or rollback"
+      ansible.builtin.assert:
+        that:
+          - (_weft_lock_seen.stdout | default('')).split(' ')[0] == (_weft_lock_id | string)
+        fail_msg: >-
+          Another weft deploy or rollback holds {{ _weft_label }}'s lock ({{ _weft_lock_file }}), so
+          this run was refused before anything stopped. Wait for that run to finish; if none is
+          running in Semaphore, the lock frees itself within weft_lock_minutes
+          ({{ _weft_lock_minutes }}) of the run that took it.
+
+    - name: "This run holds the lock"
+      ansible.builtin.set_fact:
+        _weft_lock_held: true
+
+- name: "Release the deploy lock on {{ _weft_label }}"
+  when: _wl_action == 'release' and (_weft_lock_held | default(false) | bool)
+  block:
+    # Only the holder this run started: its id and pid are in the owner file.
+    - name: "End this run's holder"
+      ansible.builtin.command:
+        argv:
+          - sh
+          - -c
+          - 'mine="$2"; set -- $(cat "$1"); [ "$1" = "$mine" ] && kill "$2" 2>/dev/null; true'
+          - sh
+          - "{{ _weft_lock_owner }}"
+          - "{{ _weft_lock_id }}"
+      changed_when: true
+      become: true
+      when: not ansible_check_mode
+
+    - name: "This run no longer holds the lock"
+      ansible.builtin.set_fact:
+        _weft_lock_held: false
