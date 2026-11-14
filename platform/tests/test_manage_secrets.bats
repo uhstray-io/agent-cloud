@@ -24,3 +24,18 @@ setup() {
   writes=$(awk '/secret\/data/{f=1} f&&/method:/{print; f=0}' "$TASK")
   refute_grep -qE 'method: (POST|PUT|PATCH)' <<<"$writes"
 }
+
+@test "manage-secrets: a hex secret is drawn from lowercase hex digits only" {
+  # weft's front door parses its signing key as 64 hex digits, and refuses
+  # anything else at start — a generated key with one letter outside a-f is a
+  # front door that never comes up. The deterministic property is the alphabet
+  # the generator is given, so that is what is asserted (never a sample).
+  local resolve
+  resolve=$(sed -n '/name: "Resolve secrets/,/loop:/p' "$TASK")
+  assert_grep -qF "if item.type == 'hex'" <<<"$resolve"
+  # The lookup that draws from that alphabet is the one the hex condition selects: the range from
+  # it to the next type test ends at the hex test.
+  local hex_branch
+  hex_branch=$(sed -n "/chars=digits,abcdef'/,/if item.type/p" <<<"$resolve")
+  assert_grep -qF "if item.type == 'hex'" <<<"$hex_branch"
+}
