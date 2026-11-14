@@ -147,6 +147,7 @@ the service; the network path itself is in the companion document. The runtime c
 | Plane | Work tracker | Auxiliary | Podman (production placement unverified) | Authentik OIDC (blueprint and catalog entry in repo) | Production deploy run recorded (task 11139); live state UNVERIFIED [22][43] | `plan/development/16-plane-work-management.md` |
 | Postiz | Social publishing | Auxiliary | Rootless podman, 5 containers + search node | Native OIDC; public API path keyed by the app | LIVE-LOCAL; production host hardened, app pending [23] | `postiz/deployment/CLAUDE.md` |
 | ERPNext | ERP, the financial system of record | Business | Podman, 9 containers | Native OIDC | BUILT; local deploy pending image pull [24] | `erpnext/deployment/context/architecture.md` |
+| weft | uhstray's agent harness, sold as a subscription: one front door (identity across companies; redirects, never proxies) and one VM per company workspace, plus a staging pair; each rack host pinned in site-config to a version and its `release.json` digest, and moved only when a person launches a deploy | AI | Rootless podman; the workspace's orchestrator starts agent containers through the deploy user's podman socket | weft's own password sign-in, `auth_mode` per hostname to be declared [45] | BUILT; nothing has run on a host [45] | `plan/development/25-weft-service.md` |
 | vLLM | Model serving on the GPU pair | External | Owned by dgx-spark | Upstream key held by agentgateway | EXTERNAL [16] | dgx-spark repository |
 
 Directories that exist with nothing deployable: `a2a-registry`, `inference`, and
@@ -658,12 +659,14 @@ document; for long, frequently edited documents the section name is given as wel
 42. `AGENTS.md`, Deployment Status, skynet entry (prod, 2026-10-30); `platform/services/skynet/deployment/CLAUDE.md:10-16` (launch steps refused while svc-skynet is guest); `docs/MISTAKES.md` line 437 (the 2026-10-31 launcher narrowing; a separate Semaphore project is not a security control)
 43. `platform/services/plane/deployment/CLAUDE.md:19-22` (production fetch step recorded under Semaphore task 11139)
 44. `platform/playbooks/deploy-honcho.yml` (`gemini_api_key` at `secret/services/honcho:gemini_api_key`, with no shared read)
+45. `plan/development/25-weft-service.md` (status); `plan/development/openspec/changes/add-weft-service/design.md` (declared deviations, `auth_mode` per hostname); `platform/services/weft-workspace/deployment/CLAUDE.md` and `platform/services/weft-door/deployment/CLAUDE.md` (what runs where)
 
 ## Revision History
 
 | Date | Change |
 |---|---|
 | 2026-11-12 | skynet-initiated launch through the launch gate recorded as proven in local-dev (task 4.4), not yet in production, in the catalog rows and the skynet and AI-path prose; the runtime and AI-path diagrams now route skynet's launches through the gate, which asks OPA again before it creates the task |
+| 2026-11-11 | Added weft's catalog row (AI tier: it runs agents; BUILT, nothing has run on a host) and its reference |
 | 2026-11-10 | Removed retired platforms from the catalog, diagrams, edges, decision criteria, phases, secrets map and references |
 | 2026-11-09 | Corrected the launch gate to live in production since 2026-11-09 across the diagrams, the catalog, the skynet and AI-path prose, the security notes and the references; OPA's status moved from local-dev to production (since 2026-10-29); the agentgateway tier moved to AI; the collector's `(Dev)` schedule wording aligned with section 8; the Target Outcome note aligned with the same wording |
 | 2026-11-05 | Corrected the conformance collector's wording: its `(Dev)` template declares a 15-minute schedule in `platform/semaphore/templates.yml` (no main-bound copy published), so it is no longer described as hand-launched; whether the schedule is live in production is not verified from this repository; collector edges remain dashed |
