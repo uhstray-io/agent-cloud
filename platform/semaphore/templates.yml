@@ -1085,6 +1085,123 @@ templates:
         required: false
         default_value: "false"
 
+  # ── weft ───────────────────────────────────────────────────────
+  # weft is deployed from signed images named by its release.json, never built on a VM. Every
+  # weft template is launched by a person; none is scheduled. A rack host moves when a person
+  # changes its weft_release pin in site-config (<version>@sha256:<release.json digest>) and launches
+  # a deploy; staging runs the commit a person launches Deploy weft Staging with. Every deploy
+  # backs up first, and a failed health check or watch fails the run and leaves the host as it is.
+  # See platform/services/weft-workspace/deployment/ and platform/services/weft-door/deployment/.
+  - name: Deploy weft Front Door
+    playbook: platform/playbooks/deploy-weft-door.yml
+    # The rack's front door, to its pin. Introduced on dev; main has no weft code until promotion.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy weft Workspace
+    playbook: platform/playbooks/deploy-weft-workspace.yml
+    # The rack's workspaces, each to its pin, one at a time, stopping at the first failure; a
+    # workspace already on its pin is left alone.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Roll Out weft Release
+    playbook: platform/playbooks/roll-out-weft-release.yml
+    # The front door, then every workspace one at a time, each to its pin; refuses a rack host
+    # not pinned to <version>@sha256:<digest> before anything changes. Re-launching continues a
+    # rollout where it stopped.
+    dev_variant: true
+    survey_vars:
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Deploy weft Staging
+    playbook: platform/playbooks/deploy-weft-staging.yml
+    # The staging front door, then the staging workspace, to the commit or pin given here; both
+    # healthy, it records the GitHub `staging` deployment weft's release.yml requires, with a
+    # GitHub App token minted for the run.
+    dev_variant: true
+    survey_vars:
+      - name: weft_staging_release
+        title: "weft commit or pin"
+        description: "A full commit main published, or <commit|version>@sha256:<release.json digest>"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
+  - name: Roll Back weft Host
+    playbook: platform/playbooks/rollback-weft-host.yml
+    # DESTRUCTIVE to what was written since the named backup (set aside, never deleted). Revert
+    # the host's weft_release in site-config and sync the inventory first: this goes back to what
+    # the host is pinned to now.
+    dev_variant: true
+    survey_vars:
+      - name: weft_rollback_host
+        title: "Host"
+        description: "The one weft host's inventory name (a workspace or a front door)"
+        type: string
+        required: true
+      - name: confirm_rollback
+        title: "Confirm"
+        description: "The same inventory host name again"
+        type: string
+        required: true
+      - name: weft_restore_from
+        title: "Backup set"
+        description: "A set under the host's deploys/ directory, as the failed deploy printed it"
+        type: string
+        required: true
+      - name: weft_rollback_reason
+        title: "Reason"
+        description: "One line, kept in the task's log"
+        type: string
+        required: true
+      - name: weft_staging_release
+        title: "Staging only: commit or pin"
+        description: "Staging has no pin in site-config; the commit or pin to go back to. Ignored on the rack"
+        type: string
+        required: false
+        default_value: ""
+
+  - name: Stand Up weft Workspace
+    playbook: platform/playbooks/stand-up-weft-workspace.yml
+    # After the workspace exists on the front door and its VM is provisioned and hardened:
+    # routes <name>.<domain> to it and deploys it to its pin, which must be the front door's.
+    dev_variant: true
+    survey_vars:
+      - name: target_host
+        title: "Workspace host"
+        description: "The workspace's inventory host, in weft_workspaces"
+        type: string
+        required: true
+      - name: service_branch
+        title: "Branch"
+        description: "Git branch to deploy (leave as 'main' for production)"
+        type: string
+        required: false
+        default_value: "main"
+
   - name: Deploy Postiz
     playbook: platform/playbooks/deploy-postiz.yml
     dev_variant: true
