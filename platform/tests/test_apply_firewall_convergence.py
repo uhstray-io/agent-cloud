@@ -24,7 +24,7 @@ REPO = Path(__file__).resolve().parents[2]
 PLAYBOOK = REPO / "platform/playbooks/apply-firewall.yml"
 STUB = Path(__file__).with_name("ufw_stub.py")
 FIRST = "Refuse to proceed without SSH allow CIDRs (anti-lockout)"
-SKIPPED = {"Install ufw", "Dry run, ufw not installed: report", "Dry run, ufw not installed: record the verdict",
+SKIPPED = {"Read whether ufw is installed", "Install ufw", "Dry run, ufw not installed: report", "Dry run, ufw not installed: record the verdict",
            "Dry run, ufw not installed: stop this host"}
 SSH = "192.0.2.0/24"
 CONTROLLER = {"firewall_controller_cidr": SSH}

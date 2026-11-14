@@ -176,9 +176,14 @@
 #                            audit: outgoing stays allowed by default, and one last
 #                            `allow out log to any` logs every NEW outbound connection the
 #                            allowlist does not name (kernel log, "[UFW ALLOW]"), so the
-#                            declaration is measured before anything is denied. enforce:
-#                            `default deny outgoing`; only the allowlist passes. Enforce
-#                            refuses an allowlist without 53/udp or without probes.
+#                            declaration is measured before anything is denied. ufw rate-limits
+#                            each rule's log (3/min, burst 10; src/backend_iptables.py, release
+#                            0.36), so the log is a sample: audit long enough to see rare
+#                            destinations. enforce: `default deny outgoing`; only the allowlist
+#                            passes for traffic the host itself sends (OUTPUT). Traffic a rootful
+#                            podman or Docker host forwards for bridged containers crosses
+#                            FORWARD, which this does not restrict. Enforce refuses an empty
+#                            allowlist, one without 53/udp, or no probes.
 #   firewall_egress_probes   [{host, port}] reached FROM the host after enabling an enforced
 #                            allowlist (TCP connect). One that fails puts `default allow
 #                            outgoing` back and fails the run: verify before hardening.
@@ -328,11 +333,22 @@
           proves Semaphore keeps SSH access. Declare it in site-config.
       when: firewall_controller_cidr is not defined
 
+    # The package index is refreshed only when ufw is missing. On a host already enforcing an
+    # outbound allowlist, `apt-get update` would need the mirror's port, which the allowlist need
+    # not name, and a failed refresh would stop every later run here, before the run that could
+    # change the allowlist or the mode.
+    - name: "Read whether ufw is installed"  # noqa: command-instead-of-module
+      ansible.builtin.command: "dpkg-query -W -f=${Status} ufw"
+      register: _ufw_installed
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
     - name: "Install ufw"
       ansible.builtin.apt:
         name: ufw
         state: present
-        update_cache: true
+        update_cache: "{{ 'install ok installed' not in _ufw_installed.stdout }}"
       register: _ufw_pkg
 
     # A dry run only simulates the install, so on a host without ufw every `ufw` command below
@@ -861,9 +877,10 @@
             msg: >-
               {{ inventory_hostname }}: with outgoing denied by default, a declared probe could not
               be reached ({{ ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
-              | selectattr('failed') | map(attribute='item') | map(attribute='host') | join(', ') }});
+              | selectattr('failed') | map(attribute='item') | map(attribute='host') | join(', ')
+              or 'none ran: the deny itself failed' }});
               outgoing is allowed by default again and the allow rules are kept. Add what the
-              probe needs to firewall_allow_egress (see the audit log), then re-run.
+              probe needs to firewall_allow_egress (measure it in audit mode), then re-run.
 
     # Re-read only when this run changed something; otherwise the read taken before the adds
     # IS the final state, and the report shows it.

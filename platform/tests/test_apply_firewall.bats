@@ -157,6 +157,15 @@ setup() {
   assert_precedes "$PLAYBOOK" 'name: "Verify SSH still works after enabling' 'ufw default deny outgoing'
 }
 
+@test "firewall: the package index is refreshed only when ufw is missing" {
+  # Under an enforced outbound allowlist `apt-get update` needs the mirror's port; refreshing
+  # on every run would stop each later run at the install, before any rule or mode change.
+  local blk
+  blk=$(task_block "$PLAYBOOK" "Install ufw")
+  assert_grep -qF "update_cache: \"{{ 'install ok installed' not in _ufw_installed.stdout }}\"" <<<"$blk"
+  assert_precedes "$PLAYBOOK" 'name: "Read whether ufw is installed"' 'name: "Install ufw"'
+}
+
 @test "apply-firewall: the upstream source may be a LIST, and a bare string still works" {
   local pb="$PLAYBOOK" blk
   # A service can have more than one legitimate upstream — a reverse proxy AND
