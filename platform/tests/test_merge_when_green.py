@@ -1978,6 +1978,62 @@ class ReleaseBudgetTests(unittest.TestCase):
         self.assertEqual(len(reads), 3)
 
 
+class BudgetAcknowledgedTests(unittest.TestCase):
+    # Policy 10 R10: an operator-approved release may go over a limit at dev intake. The flag passes the budget only;
+    # every later gate still runs, and the stale-count refusals stay unconditional.
+    SUFFIX = " (over the limit: acknowledged by the operator, policy 10 R10)"
+    OVER = {"files": ((5, 120), (6, 121)), "pull requests": ((100, 21), (101, 21))}
+
+    def test_over_a_limit_without_the_flag_refuses(self):
+        for limit, (before, after) in self.OVER.items():
+            with self.subTest(limit=limit):
+                api = FakeGitHub()
+                set_budget(api, before=before, after=after)
+                result, out, err = run_guard(api)
+                self.assertEqual(result, 1)
+                self.assertIn("Release full", err)
+                self.assertNotIn("acknowledged", out)
+
+    def test_with_the_flag_the_budget_passes_and_the_later_gates_still_run(self):
+        for limit, (before, after) in self.OVER.items():
+            with self.subTest(limit=limit):
+                api = FakeGitHub()
+                set_budget(api, before=before, after=after)
+                api.statuses = [status for status in api.statuses if status["context"] != "simplify"]
+                result, out, err = run_guard(api, "--budget-acknowledged")
+                self.assertEqual(result, 1)
+                self.assertNotIn("Release full", err)
+                self.assertIn("Review-pass commit status missing on this head: simplify", err)
+                self.assertIn(f"{after[0]}/100 pull requests and {after[1]}/120 files since v0.14.0", out)
+                self.assertIn(self.SUFFIX, out)
+
+    def test_with_the_flag_an_over_budget_head_merges_once(self):
+        # Both validations in main carry the flag, or the re-read before the merge call would refuse.
+        api = FakeGitHub()
+        set_budget(api, before=(5, 120), after=(6, 121))
+        result, out, _err = run_guard(api, "--merge", "--feedback-addressed", "--budget-acknowledged")
+        self.assertEqual(result, 0)
+        self.assertEqual(out.count(self.SUFFIX), 2)
+        self.assertEqual(len(api.merge_calls), 1)
+
+    def test_with_the_flag_a_stale_local_dev_still_refuses(self):
+        api = FakeGitHub()
+        set_budget(api, before=(5, 120), after=(6, 121))
+        api.budget_dev_sha = "f" * 40
+        result, out, err = run_guard(api, "--budget-acknowledged")
+        self.assertEqual(result, 1)
+        self.assertIn("is not GitHub's dev", err)
+        self.assertNotIn("BUDGET", out)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_under_the_limit_the_flag_changes_nothing(self):
+        api = FakeGitHub()
+        set_budget(api, before=(5, 119), after=(6, 120))
+        plain = run_guard(api)
+        self.assertEqual(run_guard(api, "--budget-acknowledged"), plain)
+        self.assertNotIn("acknowledged", plain[1])
+
+
 def git(cwd, *args):
     subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
 
