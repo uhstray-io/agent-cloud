@@ -549,7 +549,7 @@ environment before operations; a checked-in deploy path is not proof it is runni
 This repository's work is tracked in Plane, project `AC`. Plane's GitHub integration links
 the two, and it acts only on what these rules mark:
 
-- **An issue reaches Plane only with the `plane` label.** Adding the label imports the issue as a
+- **An issue reaches Plane only with the `plane` label.** Adding the label imports the issue as an
   `AC` work item, and the Plane app comments on the issue with its key. After that, edits and
   comments sync both ways. An unlabelled issue is never imported, and existing issues are not
   backfilled. A Plane work item reaches GitHub only with the `github` label.
@@ -557,15 +557,21 @@ the two, and it acts only on what these rules mark:
   request title, for example `fix(scope): short description [AC-12]`. Plane links the pull
   request to that item and moves the item with the pull request's state (the mapping is
   `PR_STATES` in `platform/services/plane/deployment/link_github_repos.py`). Mention any other
-  item without brackets (`AC-34`): that links the pull request
-  without moving the item. Plane reads the title and description when a pull request is opened,
-  edited, reviewed or closed, so a key added later is picked up on the next edit.
+  item without brackets (`AC-34`): that links the pull request without moving the item. Plane
+  reads the title and description on every pull request event except a push, so a key added to
+  the title later is picked up on the next such event.
 - **A brief for any agent that may open a pull request names the work item's key.**
-- **Label every issue and work item with at least one area label.** These are this repository's areas. A shared `area:` name means the same thing in every Uhstray.io repository, so filter by it across projects. Create a new area label only after agreeing it with the repository owner, with the same name on GitHub and in Plane:
+- **Label every issue and work item with at least one area label.** These are the area labels
+  this repository uses. An `area:` name and its description are shared: it means the same thing
+  in every repository in this organisation, so filter by it across projects. Plane's area labels
+  are kept by hand: Sync Plane Projects declares only the labels every project carries
+  (`platform/services/plane/schema.yml`), so a work item the OpenSpec sync creates arrives with
+  `openspec` alone, and whoever works it adds its area label. Create a new area label only after
+  agreeing it with the repository owner, with the same name on GitHub and in Plane:
   - `platform`: services, VMs, hosts and the edge
-  - `playbooks`: ansible playbooks and the task library
-  - `semaphore`: semaphore templates and orchestration
-  - `netbox`: netBox, IPAM and network discovery
+  - `playbooks`: Ansible playbooks and the task library
+  - `semaphore`: Semaphore templates and orchestration
+  - `netbox`: NetBox, IPAM and network discovery
   - `area:docs`: internal docs and runbooks
   - `area:ai`: models: transcription, diarisation, summaries, inference, prompts
   - `area:auth`: sign-in, SSO, identity, sessions, access control
