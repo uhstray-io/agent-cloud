@@ -86,7 +86,7 @@
     # An unparsed inventory empties every group; name that before the OTLP guard reads them.
     - name: "Require the inventory to have parsed"
       ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
-      when: not (local_mode | default(false) | bool)
+      when: not (groups['all'] | local_dev_inventory)
 
     - name: "Require the exact private Alloy OTLP/HTTP destination in production"
       ansible.builtin.assert:
@@ -96,7 +96,7 @@
           - groups.get('semaphore_svc', []) | length == 1
           - _collector_otlp_url == 'http://' ~ _o11y_bind ~ ':4318/v1/logs'
         fail_msg: "Production conformance delivery requires collector_otlp_url to match the declared private Alloy OTLP/HTTP receiver."
-      when: not (local_mode | default(false) | bool)
+      when: not (groups['all'] | local_dev_inventory)
 
     - name: "Semaphore runtime access (injected token, or the controller AppRole)"
       ansible.builtin.include_tasks: ../semaphore/tasks/runtime-access.yml
@@ -381,7 +381,7 @@
         push_loki_must_succeed: false
       when:
         - not ansible_check_mode
-        - local_mode | default(false) | bool
+        - (groups['all'] | local_dev_inventory)
         - collector_loki_url is defined
         - _agg.loki_streams | length > 0
 
@@ -402,7 +402,7 @@
       no_log: true
       when:
         - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
         - _agg.otlp_payload.resourceLogs | length > 0
 
     - name: "Classify the OTLP response without exposing its body"
@@ -447,11 +447,11 @@
         argv: [python3, "{{ _parser }}"]
         stdin: >-
           {{ {'mode': 'completion_delivery', 'required_work_ok': _completion_ready,
-              'transport': ('local_loki' if local_mode | default(false) | bool else 'production_otlp'),
+              'transport': ('local_loki' if (groups['all'] | local_dev_inventory) else 'production_otlp'),
               'transport_configured': ((collector_loki_url is defined and collector_loki_url | length > 0)
-                                       if local_mode | default(false) | bool else true),
+                                       if (groups['all'] | local_dev_inventory) else true),
               'record_count': _agg.loki_streams | length,
-              'response_status': (((_push_loki_result | default({})).status | default(none)) if local_mode | default(false) | bool
+              'response_status': (((_push_loki_result | default({})).status | default(none)) if (groups['all'] | local_dev_inventory)
                                   else none),
               'otlp_acknowledged': _otlp_delivery_ack | default(false)} | to_json }}
       register: _completion_delivery_gate
@@ -483,7 +483,7 @@
         push_loki_must_succeed: false
       when:
         - not ansible_check_mode
-        - local_mode | default(false) | bool
+        - (groups['all'] | local_dev_inventory)
         - collector_loki_url is defined
         - _completion_publish_ready
 
@@ -503,7 +503,7 @@
       no_log: true
       when:
         - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
         - _completion_publish_ready
 
     - name: "Completion: classify final receipt response"
@@ -542,9 +542,9 @@
         argv: [python3, "{{ _parser }}"]
         stdin: >-
           {{ {'mode': 'completion_delivery', 'required_work_ok': _completion_publish_ready,
-              'transport': ('local_loki' if local_mode | default(false) | bool else 'production_otlp'),
+              'transport': ('local_loki' if (groups['all'] | local_dev_inventory) else 'production_otlp'),
               'transport_configured': true, 'record_count': 1,
-              'response_status': (((_push_loki_result | default({})).status | default(none)) if local_mode | default(false) | bool else none),
+              'response_status': (((_push_loki_result | default({})).status | default(none)) if (groups['all'] | local_dev_inventory) else none),
               'otlp_acknowledged': _completion_receipt_ack} | to_json }}
       register: _completion_receipt_gate
       changed_when: false
@@ -568,15 +568,15 @@
           otlp: >-
             {{ 'check mode' if ansible_check_mode else
                ('no records' if _agg.otlp_payload.resourceLogs | length == 0 else
-                ('skipped' if local_mode | default(false) | bool else
+                ('skipped' if (groups['all'] | local_dev_inventory) else
                  ('delivered' if _otlp_delivery_ok | default(false) | bool else 'failed/UNKNOWN'))) }}
           completion_receipt: >-
             {{- 'not_attempted' if (not _completion_publish_ready or ansible_check_mode or
-                ((local_mode | default(false) | bool) and _push_loki_result is skipped) or
-                (not (local_mode | default(false) | bool) and _otlp_receipt is skipped)) else
+                ((groups['all'] | local_dev_inventory) and _push_loki_result is skipped) or
+                (not (groups['all'] | local_dev_inventory) and _otlp_receipt is skipped)) else
                 ('acknowledged' if
-                  ((local_mode | default(false) | bool and (_push_loki_result.status | default(0) | int == 204)) or
-                   (not (local_mode | default(false) | bool) and (_completion_receipt_delivery_ok | default(false) | bool)))
+                  (((groups['all'] | local_dev_inventory) and (_push_loki_result.status | default(0) | int == 204)) or
+                   (not (groups['all'] | local_dev_inventory) and (_completion_receipt_delivery_ok | default(false) | bool)))
                  else 'failed/UNKNOWN') -}}
 
     - name: "Fail after reporting unsuccessful production OTLP delivery"
@@ -584,7 +584,7 @@
         msg: "Conformance OTLP delivery failed; see the preceding report for status."
       when:
         - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
         - _agg.otlp_payload.resourceLogs | length > 0
         - not (_otlp_delivery_ok | default(false) | bool)
 
@@ -593,6 +593,6 @@
         msg: "Completion receipt publication failed or is unknown; see the preceding report for status."
       when:
         - not ansible_check_mode
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
         - _completion_publish_ready
         - not (_completion_receipt_delivery_ok | default(false) | bool)

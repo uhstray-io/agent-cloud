@@ -27,7 +27,7 @@
 # Inventory (site-config, on each host of the group):
 #   o11y_host_exporter_bind  IPv4 address of the host's private interface; required. Must be
 #                            RFC 1918 (10/8, 172.16/12, 192.168/16): the exporter is on the host
-#                            network, so its bind IS its exposure. Loopback only in local_mode.
+#                            network, so its bind IS its exposure. Loopback only on a local-dev inventory.
 #   o11y_host_exporter_port  default 9100
 #   o11y_node_exporter_image the image; defaults to the receiver's pin (o11y env.j2)
 # and exactly one o11y_svc host with o11y deployed (its config/scrape.d exists).
@@ -269,14 +269,14 @@
     # Everything the container is created with except its spec label, which is this hashed.
     _ih_spec: >-
       {{ ['--restart', 'always', '--network', 'host', '--volume', '/:/host:ro,rslave']
-         + (['--security-opt', 'label=disable'] if (local_mode | default(false) | bool) else [])
+         + (['--security-opt', 'label=disable'] if (groups['all'] | local_dev_inventory) else [])
          + [_ih_image] + _ih_collector_args + ['--web.listen-address=' ~ _ih_bind ~ ':' ~ _ih_port] }}
     _ih_spec_hash: "{{ (_ih_spec | to_json | hash('sha256'))[:16] }}"
     _ih_become: "{{ podman_rootful | default(false) | bool }}"
-    # tasks/enable-linger.yml's account, and its own gate: it skips itself under local_mode.
+    # tasks/enable-linger.yml's account, and its own gate: it skips itself on a local-dev inventory.
     _ih_linger_user: "{{ linger_user | default(ansible_user) }}"
     _ih_rootless: >-
-      {{ _ih_engine == 'podman' and not (_ih_become | bool) and not (local_mode | default(false) | bool) }}
+      {{ _ih_engine == 'podman' and not (_ih_become | bool) and not (groups['all'] | local_dev_inventory) }}
 
   tasks:
     - name: "Converge the exporter, recording this host's verdict"
@@ -288,13 +288,13 @@
               - >-
                 _ih_octets[0] == 10 or (_ih_octets[0] == 172 and 16 <= _ih_octets[1] <= 31)
                 or (_ih_octets[0] == 192 and _ih_octets[1] == 168)
-                or (_ih_octets[0] == 127 and (local_mode | default(false) | bool))
+                or (_ih_octets[0] == 127 and (groups['all'] | local_dev_inventory))
               - _ih_port is match('^[0-9]+$')
               - _ih_port | int > 0 and _ih_port | int < 65536
             fail_msg: >-
               o11y_host_exporter_bind must declare this host's private RFC 1918 IPv4 address (got
               '{{ _ih_bind }}'; the exporter is on the host network, so a public or wildcard bind
-              exposes it; loopback only in local_mode) and o11y_host_exporter_port a TCP port
+              exposes it; loopback only on a local-dev inventory) and o11y_host_exporter_port a TCP port
               (got '{{ _ih_port }}').
           vars:
             _ih_octets: "{{ (_ih_bind.split('.') | map('int') | list) if (_ih_bind | ufw_is_ipv4) else [0, 0, 0, 0] }}"

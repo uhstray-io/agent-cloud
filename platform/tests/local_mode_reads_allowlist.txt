@@ -5,7 +5,6 @@
 platform/playbooks/accept-o11y-profile-pilot.yml
 platform/playbooks/attach-pbs-data-disk.yml
 platform/playbooks/backup-o11y-to-pbs.yml
-platform/playbooks/collect-service-conformance.yml
 platform/playbooks/deploy-agentgateway.yml
 platform/playbooks/deploy-authentik.yml
 platform/playbooks/deploy-caddy.yml
@@ -28,8 +27,6 @@ platform/playbooks/drill-o11y-active-alert-delivery.yml
 platform/playbooks/drill-o11y-alert-canary.yml
 platform/playbooks/drill-o11y-endpoint-availability.yml
 platform/playbooks/enable-o11y-pbs-import-content.yml
-platform/playbooks/ensure-service-persistence.yml
-platform/playbooks/instrument-host-o11y.yml
 platform/playbooks/preflight-o11y-restore-target.yml
 platform/playbooks/prepare-pbs-guest-data-disk.yml
 platform/playbooks/provision-console-semaphore-access.yml
@@ -46,7 +43,6 @@ platform/playbooks/restart-o11y-pyroscope-durability.yml
 platform/playbooks/restore-o11y-alert-baseline.yml
 platform/playbooks/restore-plane-db.yml
 platform/playbooks/rollback-inference-route.yml
-platform/playbooks/rotate-console-credentials.yml
 platform/playbooks/survey-o11y-alloy-health.yml
 platform/playbooks/survey-o11y-availability-gate.yml
 platform/playbooks/survey-o11y-backup-artifact.yml
@@ -77,7 +73,6 @@ platform/playbooks/verify-o11y-pbs-artifact.yml
 platform/playbooks/verify-o11y-production-budgets.yml
 platform/playbooks/verify-o11y-profile-pilot.yml
 platform/playbooks/verify-o11y-protected-pbs-copy.yml
-platform/playbooks/verify-service-persistence.yml
 platform/services/agentgateway/deployment/templates/config.yaml.j2
 platform/services/agentgateway/deployment/templates/env.j2
 platform/services/console/deployment/templates/env.j2

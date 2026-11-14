@@ -3,8 +3,9 @@
 Change service-deployment-workflow task 7.3. Runs the real playbook through ansible-playbook:
 each service host gets a fake container engine (a script keeping its containers in a state
 file), and local HTTP servers play the host exporters and the receiver's Prometheus, whose
-query answers come from the scrape file it last reloaded. local_mode allows the loopback
-exporter address and skips linger.
+query answers come from the scrape file it last reloaded. The hosts are named -local, so the playbook
+takes the local-dev branch (loopback exporter address, no linger). The production tests run on a
+production inventory (_production_inventory).
 """
 
 import hashlib
@@ -128,7 +129,7 @@ def estate(tmp_path):
     scrape_dir = tmp_path / "repo/o11y/config/scrape.d"
     scrape_dir.mkdir(parents=True)
     state = {"tmp": tmp_path, "fragment": scrape_dir / "host-demo_svc.yml", "exporters": {}}
-    for host in ("alpha", "beta"):
+    for host in ("alpha-local", "beta-local"):
         engine = tmp_path / f"engine-{host}"
         engine.write_text(FAKE_ENGINE)
         engine.chmod(0o755)
@@ -166,7 +167,7 @@ def _inventory(
     lines += [
         "",
         "[o11y_svc]",
-        f"receiver ansible_connection=local local_monorepo_dir={tmp / 'repo'} monorepo_deploy_path=o11y "
+        f"receiver-local ansible_connection=local local_monorepo_dir={tmp / 'repo'} monorepo_deploy_path=o11y "
         f"o11y_prom_bind=127.0.0.1 o11y_prom_port={estate['prometheus'].server.server_address[1]} local_mode=true "
         f"{receiver_vars}",
     ]
@@ -188,6 +189,11 @@ def _run(
     inventory = _inventory(
         estate, binds, host_vars, receiver_vars, identity_enabled, coverage, ports, host_coverage
     )
+    return _run_inventory(inventory, *extra, path_prefix=path_prefix)
+
+
+def _run_inventory(inventory: Path, *extra, path_prefix=None) -> subprocess.CompletedProcess:
+    """The playbook on one inventory file, in the environment and bound _run always uses."""
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     if path_prefix:
@@ -207,7 +213,7 @@ def _run(
 
 def _coverage_targets(estate, *, hosts=None, selector=None) -> dict:
     targets = []
-    for host in hosts or ("alpha", "beta"):
+    for host in hosts or ("alpha-local", "beta-local"):
         identity = "demo"
         target_id = f"service:{host}"
         targets.append({
@@ -247,7 +253,8 @@ def _engine_calls(estate, host) -> list[str]:
 
 
 def _changed(proc) -> dict:
-    return {m.group(1): int(m.group(2)) for m in re.finditer(r"^(\w+)\s+: ok=\d+\s+changed=(\d+)", proc.stdout, re.M)}
+    pattern = r"^([\w.-]+)\s+: ok=\d+\s+changed=(\d+)"  # names may hold hyphens (-local, -prod)
+    return {m.group(1): int(m.group(2)) for m in re.finditer(pattern, proc.stdout, re.M)}
 
 
 @needs_ansible
@@ -258,19 +265,19 @@ def test_apply_declares_and_proves_then_rerun_changes_nothing(estate, identity_e
     result = _result(proc)
     assert (result["step"], result["status"], result["service"]) == ("instrument-host", "pass", "demo")
     assert result["evidence"] == {
-        "exporter_running": {"alpha": True, "beta": True},
-        "series_present": {"alpha": True, "beta": True},
+        "exporter_running": {"alpha-local": True, "beta-local": True},
+        "series_present": {"alpha-local": True, "beta-local": True},
     }
-    run = [c for c in _engine_calls(estate, "alpha") if c.startswith("run ")]
+    run = [c for c in _engine_calls(estate, "alpha-local") if c.startswith("run ")]
     assert len(run) == 1
     assert "--network host" in run[0] and "--restart always" in run[0] and "/:/host:ro,rslave" in run[0]
-    assert f"--web.listen-address=127.0.0.1:{estate['exporters']['alpha'].server_address[1]}" in run[0]
+    assert f"--web.listen-address=127.0.0.1:{estate['exporters']['alpha-local'].server_address[1]}" in run[0]
     declared = yaml.safe_load(estate["fragment"].read_text())["scrape_configs"]
     assert [c["job_name"] for c in declared] == ["host-node-demo_svc"]
     labels = [t["labels"] for t in declared[0]["static_configs"]]
     assert [(lbl["host"], lbl["service"], lbl["component"]) for lbl in labels] == [
-        ("alpha", "demo/host", "node-exporter"),
-        ("beta", "demo/host", "node-exporter"),
+        ("alpha-local", "demo/host", "node-exporter"),
+        ("beta-local", "demo/host", "node-exporter"),
     ]
     assert all("target_id" not in lbl and "metrics_scope" not in lbl for lbl in labels)
     assert estate["prometheus"].reloads == 1
@@ -278,8 +285,8 @@ def test_apply_declares_and_proves_then_rerun_changes_nothing(estate, identity_e
     again = _run(estate, identity_enabled=identity_enabled)
     assert again.returncode == 0, again.stdout[-4000:]
     assert _result(again)["status"] == "pass"
-    assert _changed(again) == {"alpha": 0, "beta": 0, "receiver": 0, "localhost": 0}
-    assert len([c for c in _engine_calls(estate, "alpha") if c.startswith("run ")]) == 1
+    assert _changed(again) == {"alpha-local": 0, "beta-local": 0, "receiver-local": 0, "localhost": 0}
+    assert len([c for c in _engine_calls(estate, "alpha-local") if c.startswith("run ")]) == 1
     assert estate["prometheus"].reloads == 1
 
 
@@ -305,24 +312,24 @@ def test_opt_in_binds_exact_declared_ids_and_host_metric_labels(estate):
     assert declared["honor_labels"] is False
     labels = [target["labels"] for target in declared["static_configs"]]
     assert [(row["host"], row["target_id"], row["component"], row["metrics_scope"]) for row in labels] == [
-        ("alpha", "service:alpha", "node-exporter", "host"),
-        ("beta", "service:beta", "node-exporter", "host"),
+        ("alpha-local", "service:alpha-local", "node-exporter", "host"),
+        ("beta-local", "service:beta-local", "node-exporter", "host"),
     ]
-    assert _result(proc)["evidence"]["series_present"] == {"alpha": True, "beta": True}
+    assert _result(proc)["evidence"]["series_present"] == {"alpha-local": True, "beta-local": True}
     assert coverage["targets"][0]["signals"]["metrics"]["selector"] == (
-        'node_cpu_seconds_total{target_id="service:alpha"}'
+        'node_cpu_seconds_total{target_id="service:alpha-local"}'
     )
 
     again = _run(estate, identity_enabled=True, coverage=coverage)
     assert again.returncode == 0, again.stdout[-4000:]
-    assert _changed(again) == {"alpha": 0, "beta": 0, "receiver": 0, "localhost": 0}
+    assert _changed(again) == {"alpha-local": 0, "beta-local": 0, "receiver-local": 0, "localhost": 0}
     assert estate["prometheus"].reloads == 1
 
 
 @needs_ansible
 def test_opted_in_hosts_refuse_divergent_inventory_revisions_and_duplicate_ids_before_mutation(estate):
     host_coverage = {}
-    for host in ("alpha", "beta"):
+    for host in ("alpha-local", "beta-local"):
         inventory = _coverage_targets(estate, hosts=(host,))
         inventory["targets"][0]["target_id"] = "service:shared"
         inventory["targets"][0]["signals"]["metrics"]["selector"] = (
@@ -337,8 +344,8 @@ def test_opted_in_hosts_refuse_divergent_inventory_revisions_and_duplicate_ids_b
     assert proc.returncode != 0, proc.stdout[-4000:]
     assert "same reviewed estate inventory revision" in proc.stdout, proc.stdout[-4000:]
     assert not estate["fragment"].exists()
-    assert _engine_calls(estate, "alpha") == []
-    assert _engine_calls(estate, "beta") == []
+    assert _engine_calls(estate, "alpha-local") == []
+    assert _engine_calls(estate, "beta-local") == []
     assert estate["prometheus"].reloads == 0
 
 
@@ -365,7 +372,7 @@ def test_opted_in_identity_refusals_precede_every_mutation(estate, failure):
     elif failure == "missing_id":
         coverage["targets"][0].pop("target_id")
     elif failure == "bad_schema":
-        coverage["targets"][0]["target_id"] = "vm:alpha"
+        coverage["targets"][0]["target_id"] = "vm:alpha-local"
     if coverage is not None:
         targets = coverage["targets"]
         coverage["revision"] = hashlib.sha256(json.dumps(
@@ -376,8 +383,8 @@ def test_opted_in_identity_refusals_precede_every_mutation(estate, failure):
     assert proc.returncode != 0, proc.stdout[-4000:]
     assert "Host-metrics identity refused" in proc.stdout, proc.stdout[-4000:]
     assert not estate["fragment"].exists()
-    assert _engine_calls(estate, "alpha") == []
-    assert _engine_calls(estate, "beta") == []
+    assert _engine_calls(estate, "alpha-local") == []
+    assert _engine_calls(estate, "beta-local") == []
     assert estate["prometheus"].reloads == 0
 
 
@@ -386,8 +393,8 @@ def test_identity_opt_in_rejects_non_boolean_inventory_value(estate):
     proc = _run(estate, identity_enabled="false", coverage=_coverage_targets(estate))
     assert proc.returncode != 0
     assert "must be one inventory boolean value" in proc.stdout
-    assert _engine_calls(estate, "alpha") == []
-    assert _engine_calls(estate, "beta") == []
+    assert _engine_calls(estate, "alpha-local") == []
+    assert _engine_calls(estate, "beta-local") == []
     assert not estate["fragment"].exists()
 
 
@@ -400,12 +407,12 @@ def test_identity_opt_in_rejects_non_boolean_inventory_value(estate):
     {"host": "other"},
 ])
 def test_opted_in_named_metric_requires_all_exact_returned_identity_labels(estate, spoof):
-    estate["prometheus"].identity_overrides["beta"] = spoof
+    estate["prometheus"].identity_overrides["beta-local"] = spoof
     proc = _run(estate, identity_enabled=True, coverage=_coverage_targets(estate))
     assert proc.returncode != 0, proc.stdout[-4000:]
     result = _result(proc)
-    assert result["evidence"]["series_present"] == {"alpha": True, "beta": False}
-    assert "beta: no node_memory_MemAvailable_bytes series in Prometheus" in result["error"]
+    assert result["evidence"]["series_present"] == {"alpha-local": True, "beta-local": False}
+    assert "beta-local: no node_memory_MemAvailable_bytes series in Prometheus" in result["error"]
 
 
 @needs_ansible
@@ -413,7 +420,7 @@ def test_opted_in_named_metric_requires_all_exact_returned_identity_labels(estat
     ("estate_coverage_inventory", "{}", "estate_coverage_inventory"),
     ("o11y_host_metrics_identity_enabled", "false", "o11y_host_metrics_identity_enabled"),
     ("service_name", "other", "service_name"),
-    ("inventory_hostname", "alpha", "inventory_hostname"),
+    ("inventory_hostname", "alpha-local", "inventory_hostname"),
 ])
 def test_identity_inventory_cannot_be_overridden_at_launch(estate, name, value, identity_reason):
     proc = _run(estate, "-e", f"{name}={value}", identity_enabled=True,
@@ -422,28 +429,28 @@ def test_identity_inventory_cannot_be_overridden_at_launch(estate, name, value, 
     assert identity_reason in proc.stdout
     assert "Host-metrics identity is controlled by reviewed inventory declarations" in proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
-    assert _engine_calls(estate, "alpha") == []
-    assert _engine_calls(estate, "beta") == []
+    assert _engine_calls(estate, "alpha-local") == []
+    assert _engine_calls(estate, "beta-local") == []
     assert not estate["fragment"].exists()
     assert estate["prometheus"].reloads == 0
 
 
 @needs_ansible
 def test_duplicate_exporter_endpoint_refuses_before_mutation(estate):
-    shared_port = estate["exporters"]["alpha"].server_address[1]
+    shared_port = estate["exporters"]["alpha-local"].server_address[1]
     proc = _run(estate, identity_enabled=True, coverage=_coverage_targets(estate),
-                binds={"alpha": "127.0.0.1", "beta": "127.0.0.1"},
-                ports={"alpha": shared_port, "beta": shared_port})
+                binds={"alpha-local": "127.0.0.1", "beta-local": "127.0.0.1"},
+                ports={"alpha-local": shared_port, "beta-local": shared_port})
     assert proc.returncode != 0
     assert "unique exporter endpoints" in proc.stdout
-    assert _engine_calls(estate, "alpha") == []
-    assert _engine_calls(estate, "beta") == []
+    assert _engine_calls(estate, "alpha-local") == []
+    assert _engine_calls(estate, "beta-local") == []
     assert not estate["fragment"].exists()
 
 
 @needs_ansible
 def test_application_selector_is_left_unchanged_and_host_probe_emits_no_coverage_receipt(estate):
-    application_selector = 'process_cpu_seconds_total{service="demo",target_id="service:alpha"}'
+    application_selector = 'process_cpu_seconds_total{service="demo",target_id="service:alpha-local"}'
     coverage = _coverage_targets(estate, selector=application_selector)
     proc = _run(estate, identity_enabled=True, coverage=coverage)
     assert proc.returncode == 0, proc.stdout[-4000:]
@@ -462,9 +469,9 @@ def test_check_mode_writes_nothing_and_records_skip(estate, identity_enabled):
     assert proc.returncode == 0, proc.stdout[-4000:]
     result = _result(proc)
     assert (result["status"], result["check_mode"]) == ("skip", True)
-    assert result["evidence"]["exporter_running"] == {"alpha": False, "beta": False}
-    assert result["evidence"]["series_present"] == {"alpha": None, "beta": None}
-    for host in ("alpha", "beta"):
+    assert result["evidence"]["exporter_running"] == {"alpha-local": False, "beta-local": False}
+    assert result["evidence"]["series_present"] == {"alpha-local": None, "beta-local": None}
+    for host in ("alpha-local", "beta-local"):
         assert all(c.startswith("inspect ") for c in _engine_calls(estate, host)), _engine_calls(estate, host)
     assert not estate["fragment"].exists()
     assert estate["prometheus"].reloads == 0
@@ -477,59 +484,58 @@ def test_check_mode_after_apply_verifies_live(estate):
     assert proc.returncode == 0, proc.stdout[-4000:]
     result = _result(proc)
     assert (result["status"], result["check_mode"]) == ("pass", True)
-    assert result["evidence"]["series_present"] == {"alpha": True, "beta": True}
+    assert result["evidence"]["series_present"] == {"alpha-local": True, "beta-local": True}
 
 
 @needs_ansible
 @pytest.mark.parametrize(
-    ("bind", "beta_vars"),
+    "bind",
     [
-        ("", ""),
-        ("0.0.0.0", ""),
-        ("999.1.1.1", ""),
+        "",
+        "0.0.0.0",
+        "999.1.1.1",
         # public: the exporter is on the host network, so its bind is its exposure
-        ("8.8.8.8", ""),
-        ("203.0.113.5", ""),
-        ("172.32.0.1", ""),
-        ("100.64.0.1", ""),
-        # loopback only in local_mode
-        ("127.0.0.1", "local_mode=false"),
+        "8.8.8.8",
+        "203.0.113.5",
+        "172.32.0.1",
+        "100.64.0.1",
+        # loopback is refused on a production inventory, not here: see the production tests below
     ],
 )
-def test_an_unusable_declaration_fails_the_group_and_declares_nothing(estate, bind, beta_vars):
-    proc = _run(estate, binds={"beta": bind}, host_vars={"beta": beta_vars})
+def test_an_unusable_declaration_fails_the_group_and_declares_nothing(estate, bind):
+    proc = _run(estate, binds={"beta-local": bind})
     assert proc.returncode != 0
     result = _result(proc)
     assert result["status"] == "fail"
-    assert result["error"].startswith("beta: o11y_host_exporter_bind must declare")
-    assert "alpha:" not in result["error"]
-    assert result["evidence"]["exporter_running"] == {"alpha": True, "beta": False}
-    assert result["evidence"]["series_present"] == {"alpha": None, "beta": None}
+    assert result["error"].startswith("beta-local: o11y_host_exporter_bind must declare")
+    assert "alpha-local:" not in result["error"]
+    assert result["evidence"]["exporter_running"] == {"alpha-local": True, "beta-local": False}
+    assert result["evidence"]["series_present"] == {"alpha-local": None, "beta-local": None}
     assert not estate["fragment"].exists()
 
 
 @needs_ansible
 def test_an_unreachable_host_is_recorded_not_dropped(estate):
     # Nothing listens on port 1: the connection is refused at once.
-    proc = _run(estate, host_vars={"beta": "ansible_connection=ssh ansible_host=127.0.0.1 ansible_port=1"})
+    proc = _run(estate, host_vars={"beta-local": "ansible_connection=ssh ansible_host=127.0.0.1 ansible_port=1"})
     assert proc.returncode != 0
     result = _result(proc)
     assert result["status"] == "fail"
-    assert result["error"].startswith("beta: unreachable")
-    assert "alpha:" not in result["error"]
-    assert result["evidence"]["exporter_running"] == {"alpha": True, "beta": False}
+    assert result["error"].startswith("beta-local: unreachable")
+    assert "alpha-local:" not in result["error"]
+    assert result["evidence"]["exporter_running"] == {"alpha-local": True, "beta-local": False}
     assert not estate["fragment"].exists()
 
 
 @needs_ansible
 def test_an_exporter_the_receiver_cannot_reach_is_never_declared(estate):
-    estate["exporters"]["beta"].shutdown()
-    estate["exporters"]["beta"] = _exporter(503)
+    estate["exporters"]["beta-local"].shutdown()
+    estate["exporters"]["beta-local"] = _exporter(503)
     proc = _run(estate)
     assert proc.returncode != 0
     result = _result(proc)
     assert result["status"] == "fail"
-    assert "o11y receiver: The receiver got no HTTP 200 from beta (HTTP 503)" in result["error"]
+    assert "o11y receiver: The receiver got no HTTP 200 from beta-local (HTTP 503)" in result["error"]
     assert not estate["fragment"].exists()
     assert estate["prometheus"].reloads == 0
 
@@ -537,13 +543,13 @@ def test_an_exporter_the_receiver_cannot_reach_is_never_declared(estate):
 @needs_ansible
 def test_a_declared_host_without_series_fails(estate):
     # The playbook waits for the series over its retries; _run passes ih_wait_delay=0, so they run without the delay.
-    estate["prometheus"].silent_hosts = {"beta"}
+    estate["prometheus"].silent_hosts = {"beta-local"}
     proc = _run(estate)
     assert proc.returncode != 0
     result = _result(proc)
     assert result["status"] == "fail"
-    assert result["error"] == "beta: scrape not up in Prometheus"
-    assert result["evidence"]["series_present"] == {"alpha": True, "beta": False}
+    assert result["error"] == "beta-local: scrape not up in Prometheus"
+    assert result["evidence"]["series_present"] == {"alpha-local": True, "beta-local": False}
 
 
 @needs_ansible
@@ -596,13 +602,66 @@ def _spec_hash(bind: str, port: int, local_mode: bool) -> str:
     return hashlib.sha256(json.dumps(spec).encode()).hexdigest()[:16]
 
 
+PRODUCTION_PORTS = {"alpha": 9101, "beta": 9102}
+# The budgets tasks/assert-o11y-scrape-limits.yml requires of a production receiver: the review flag and the five
+# limits, each inside its range.
+PRODUCTION_BUDGETS = {
+    "o11y_scrape_limits_reviewed": True,
+    "o11y_scrape_limits": {
+        "body_size_limit_bytes": 1048576,
+        "sample_limit": 1000,
+        "label_limit": 64,
+        "label_name_length_limit": 128,
+        "label_value_length_limit": 1024,
+    },
+}
+
+
+def _production_inventory(estate, binds=None, fake_alpha=False) -> Path:
+    """The two service hosts and the receiver of _inventory, on a production inventory: no host is named -local and
+    local_mode is false, so the playbook takes the production branch (plan 24). `binds` overrides a host's exporter
+    bind; both default to an unrouted private address. `fake_alpha` gives alpha the fake engine too (its calls land in
+    engine-alpha.log), so a test can assert on alpha's engine calls; by default alpha runs the real podman."""
+    tmp = estate["tmp"]
+    engine = tmp / "engine-beta"
+    engine.write_text(FAKE_ENGINE)
+    engine.chmod(0o755)
+    alpha_engine = "podman"
+    if fake_alpha:
+        alpha_fake = tmp / "engine-alpha"
+        alpha_fake.write_text(FAKE_ENGINE)
+        alpha_fake.chmod(0o755)
+        alpha_engine = str(alpha_fake)
+    binds = binds or {}
+    lines = [
+        "[demo_svc]",
+        f"alpha ansible_connection=local container_engine={alpha_engine} ansible_user=tester "
+        f"o11y_host_exporter_bind={binds.get('alpha', PRIVATE_UNROUTED)} "
+        f"o11y_host_exporter_port={PRODUCTION_PORTS['alpha']}",
+        f"beta ansible_connection=local container_engine={engine} "
+        f"o11y_host_exporter_bind={binds.get('beta', PRIVATE_UNROUTED)} "
+        f"o11y_host_exporter_port={PRODUCTION_PORTS['beta']}",
+        "",
+        "[demo_svc:vars]",
+        "service_name=demo",
+        "local_mode=false",
+        "",
+        "[o11y_svc]",
+        f"receiver ansible_connection=local local_monorepo_dir={tmp / 'repo'} monorepo_deploy_path=o11y "
+        f"o11y_prom_bind=127.0.0.1 o11y_prom_port={estate['prometheus'].server.server_address[1]}",
+    ]
+    inventory = tmp / "production-inventory.ini"
+    inventory.write_text("\n".join(lines) + "\n")
+    return inventory
+
+
 @needs_ansible
 @pytest.mark.parametrize("persisted", [False, True])
 def test_check_mode_counts_a_pending_boot_persistence_change(estate, persisted):
-    # alpha: rootless podman outside local_mode, its exporter already current, so only linger and
-    # podman's user boot unit can differ. Its private address is unrouted, so the receiver's probe
-    # cannot reach it: a dry run that would change persistence verifies nothing live and records
-    # skip; one with nothing to change runs the probe and fails.
+    # A production inventory (plan 24): the linger and boot-unit checks are production-only. alpha is rootless podman,
+    # its exporter already current, so only linger and podman's user boot unit can differ. Both hosts bind an unrouted
+    # private address, so the receiver's probe cannot reach them: a dry run that would change persistence verifies
+    # nothing live and records skip; one with nothing to change runs the probe and fails.
     tmp = estate["tmp"]
     bindir, home = tmp / "bin", tmp / "home"
     bindir.mkdir()
@@ -615,18 +674,16 @@ def test_check_mode_counts_a_pending_boot_persistence_change(estate, persisted):
         wants = home / ".config/systemd/user/default.target.wants"
         wants.mkdir(parents=True)
         (wants / "podman-restart.service").write_text("")
-    ports = {h: srv.server_address[1] for h, srv in estate["exporters"].items()}
     (bindir / "podman.state").write_text(
-        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, ports["alpha"], False)})
+        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, PRODUCTION_PORTS["alpha"], False)})
     )
     (tmp / "engine-beta.state").write_text(
-        json.dumps({"agent-cloud-node-exporter": _spec_hash("127.0.0.1", ports["beta"], True)})
+        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, PRODUCTION_PORTS["beta"], False)})
     )
-    binds = {"alpha": PRIVATE_UNROUTED}
-    host_vars = {"alpha": "container_engine=podman local_mode=false ansible_user=tester"}
+    inventory = _production_inventory(estate)
     # The scrape file already declares both hosts, so the scrape file changes nothing either.
     endpoints = [
-        {"host": h, "address": f"{binds.get(h, '127.0.0.1')}:{ports[h]}", "service": "demo/host"}
+        {"host": h, "address": f"{PRIVATE_UNROUTED}:{PRODUCTION_PORTS[h]}", "service": "demo/host"}
         for h in ("alpha", "beta")
     ]
     rendered = subprocess.run(
@@ -634,13 +691,15 @@ def test_check_mode_counts_a_pending_boot_persistence_change(estate, persisted):
             "ansible",
             "receiver",
             "-i",
-            str(_inventory(estate, binds, host_vars)),
+            str(inventory),
             "-m",
             "ansible.builtin.template",
             "-a",
             f"src={O11Y / 'templates/scrape-host-node.yml.j2'} dest={estate['fragment']} mode=0644",
             "-e",
             f"@{REPO / 'platform/playbooks/vars/o11y-metric-labels.yml'}",
+            "-e",
+            json.dumps(PRODUCTION_BUDGETS),
             "-e",
             json.dumps({"_ih_job": "host-node-demo_svc", "_ih_endpoints": endpoints}),
         ],
@@ -651,7 +710,7 @@ def test_check_mode_counts_a_pending_boot_persistence_change(estate, persisted):
         check=False,
     )
     assert rendered.returncode == 0, rendered.stdout
-    proc = _run(estate, "--check", binds=binds, host_vars=host_vars, path_prefix=bindir)
+    proc = _run_inventory(inventory, "--check", "-e", json.dumps(PRODUCTION_BUDGETS), path_prefix=bindir)
     result = _result(proc)
     assert result["evidence"]["exporter_running"] == {"alpha": True, "beta": True}, proc.stdout[-4000:]
     if persisted:
@@ -666,6 +725,23 @@ def test_check_mode_counts_a_pending_boot_persistence_change(estate, persisted):
 
 
 @needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True)[:2])
+def test_a_loopback_bind_is_refused_on_production_whatever_local_mode_says(estate, forge):
+    # Loopback is an exposure only on a local-dev inventory. On a production inventory a forged local_mode, plain or
+    # templated, must not accept it: the refusal is the one any unusable bind gets.
+    proc = _run_inventory(
+        _production_inventory(estate, binds={"alpha": "127.0.0.1"}),
+        "-e", forge(estate["tmp"]),
+        "-e", json.dumps(PRODUCTION_BUDGETS),
+    )
+    result = _result(proc)
+    assert proc.returncode != 0
+    assert result["status"] == "fail"
+    assert result["error"].startswith("alpha: o11y_host_exporter_bind must declare"), result["error"]
+    assert not estate["fragment"].exists()
+
+
+@needs_ansible
 @pytest.mark.parametrize("target", ["o11y_svc", "no_such_svc", "../etc"])
 def test_refuses_a_target_it_must_not_instrument(estate, target):
     proc = _run(estate, "-e", f"target_service={target}")
@@ -676,7 +752,9 @@ def test_refuses_a_target_it_must_not_instrument(estate, target):
 
 @needs_ansible
 def test_production_budget_failure_on_distinct_receiver_stops_exporter_play(estate):
-    proc = _run(estate, receiver_vars="local_mode=false")
+    # A production inventory (plan 24): no host is named -local, so the budget check's production branch is taken by
+    # the inventory alone. Both service hosts run the fake engine, so the empty engine-call logs are a real claim.
+    proc = _run_inventory(_production_inventory(estate, fake_alpha=True))
 
     assert proc.returncode != 0, proc.stdout[-4000:]
     assert "Production o11y scrape budgets require" in proc.stdout, proc.stdout[-4000:]
@@ -722,8 +800,8 @@ def test_the_run_opens_by_refusing_internal_extra_vars():
     for n in sorted(_defined_names()) for f in forgeries.by_name(n, [], [])
 ])
 def test_refuses_an_extra_var_forging_an_internal_name(estate, name, forge):
-    # beta's declaration is unusable, so a forged verdict would turn a failing group into a pass.
-    proc = _run(estate, "-e", forge(estate["tmp"]), binds={"beta": "0.0.0.0"})
+    # beta-local's declaration is unusable, so a forged verdict would turn a failing group into a pass.
+    proc = _run(estate, "-e", forge(estate["tmp"]), binds={"beta-local": "0.0.0.0"})
     assert proc.returncode != 0
     assert f"Refusing to run: {name} set from outside the playbook" in proc.stdout
     assert step_results.results_in(proc.stdout.splitlines()) == []
