@@ -903,11 +903,11 @@ def check_release_budget(api, file_records, acknowledged=False):
     over_prs = after["prs"] > limits["prs"]
     over_files = after["files"] > limits["files"] and after["files"] > before["files"]
     # R10: the operator may approve a named release going over a limit at dev intake (--budget-acknowledged).
-    if acknowledged and not after["transition"] and (over_prs or over_files):
-        print(readout + " (over the limit: acknowledged by the operator, policy 10 R10)")
-        return after
+    acknowledged = acknowledged and not after["transition"] and (over_prs or over_files)
+    if acknowledged:
+        readout += " (over the limit: acknowledged by the operator, policy 10 R10)"
     print(readout)
-    if after["transition"]:
+    if after["transition"] or acknowledged:
         return after
     if over_prs:
         raise Refusal(f"Release full: this merge makes {after['prs']} pull requests (limit {limits['prs']}) "
