@@ -443,12 +443,20 @@ fn testsel_reads_the_change_from_git_and_fails_open() {
 
 #[test]
 fn lane_sh_skips_a_workstation_lane_without_nextest_and_refuses_a_ci_lane() {
-    // Arrange: a PATH with no cargo on it
+    // Arrange: a fake cargo first on PATH that fails every call, the version probe included, so a
+    // cargo installed under /usr/bin or /bin on the host cannot answer in its place
     let home = TempDir::new().expect("a temporary home");
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).expect("a bin directory");
+    let cargo = bin.join("cargo");
+    std::fs::write(&cargo, "#!/bin/sh\nexit 1\n").expect("write the fake cargo");
+    std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make the fake cargo executable");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
     let lane_sh = repo::path("platform/tests/lane.sh").display().to_string();
     let without_cargo = |lane: &str| {
         let mut cmd = process::scrubbed("bash", home.path());
-        cmd.env("PATH", "/usr/bin:/bin").arg(&lane_sh).arg(lane);
+        cmd.env("PATH", &path).arg(&lane_sh).arg(lane);
         cmd
     };
 

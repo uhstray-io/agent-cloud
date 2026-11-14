@@ -198,9 +198,11 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 
 ## Security Considerations
 
-- The security set runs in every lane, so `push`, `ci` and `full` never skip a secret-handling, guard or
-  ledger-enforced test; the `commit` lane runs its static tests only, and `push` runs the rest before the
-  change leaves the workstation.
+- **Target:** the security set runs in every lane, so `push`, `ci` and `full` never skip a secret-handling,
+  guard or ledger-enforced test; the `commit` lane runs its static tests only, and `push` runs the rest
+  before the change leaves the workstation. **Today** the `always` set in `platform/tests/areas.yml` holds
+  only `ledger`. The other secret-handling and guard tests are still pytest and BATS files, which CI runs in
+  full on every pull request and the pre-push fast lane may skip; each joins `always` as it is ported.
 - Process tests run with a scrubbed environment: no `ANSIBLE_CONFIG`, no OpenBao or Semaphore variables,
   `HOME` and temp directories inside the test's `tempfile` directory. This is today's
   `harness_sandbox.env_for` rule, centralised in the support library.
