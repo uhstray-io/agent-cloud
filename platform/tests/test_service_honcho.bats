@@ -4,7 +4,7 @@
 # + own pgvector Postgres + redis), dependency-safe healthchecks, only the api
 # publishing a port, container-only deploy.sh (no secret generation) with the
 # local-image pull tolerance, a non-secret env.j2 (secrets from OpenBao), a
-# composable deploy playbook (manage-secrets + shared-read + image pre-flight +
+# composable deploy playbook (manage-secrets + existing Gemini key + image pre-flight +
 # reboot linger), and a valid config-as-code Authentik forward_auth blueprint
 # for /docs. No hardcoded IPs/credentials.
 #
@@ -15,6 +15,7 @@ setup() {
   REPO_ROOT=$(git rev-parse --show-toplevel)
   DEPLOY_DIR="$REPO_ROOT/platform/services/honcho/deployment"
   PLAYBOOK="$REPO_ROOT/platform/playbooks/deploy-honcho.yml"
+  load assert_helpers
 }
 
 @test "honcho: compose env-parameterizes image + bind/port" {
@@ -95,16 +96,25 @@ setup() {
   ! grep -qiE '(password|secret|token|api_key)\s*[:=]\s*[A-Za-z0-9]{8,}' "$f"
 }
 
-@test "honcho: deploy playbook is composable (manage-secrets, secret defs, shared-read, env templates)" {
+@test "honcho: deploy playbook is composable (manage-secrets, secret defs, existing Gemini key, env templates)" {
   [ -f "$PLAYBOOK" ]
   grep -q 'tasks/manage-secrets.yml' "$PLAYBOOK"
   grep -q '_secret_definitions:' "$PLAYBOOK"
   grep -q 'honcho_jwt_secret' "$PLAYBOOK"
   grep -q 'honcho_db_password' "$PLAYBOOK"
-  # Gemini key is shared-read from nemoclaw (which owns it).
-  grep -q '_shared_reads:' "$PLAYBOOK"
-  grep -q 'gemini_api_key' "$PLAYBOOK"
+  # Gemini key is honcho's own: declared `existing` (operator-seeded, never generated)
+  # and required before any write, so a missing key fails the deploy up front.
+  assert_grep -qF '{ name: gemini_api_key, type: existing }' "$PLAYBOOK"
+  assert_grep -qF '_required_existing_secrets: [gemini_api_key]' "$PLAYBOOK"
+  # No shared read from another platform's path.
+  refute_grep -q '_shared_reads:' "$PLAYBOOK"
+  refute_grep -qi 'nemoclaw' "$PLAYBOOK"
   grep -q '_env_templates:' "$PLAYBOOK"
+}
+
+@test "honcho: validate-secrets checks the operator-seeded Gemini key as well as the generated pair" {
+  local v="$REPO_ROOT/platform/playbooks/validate-secrets.yml"
+  assert_grep -qF '_secrets.gemini_api_key is defined' "$v"
 }
 
 @test "honcho: playbook gates on the pinned image + enables reboot linger (prod-gated)" {

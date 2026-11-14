@@ -22,8 +22,6 @@ All plan documents use **SCREAMING-KEBAB-CASE** filenames with a `.md` extension
 - `CREDENTIAL-LIFECYCLE-PLAN.md`
 - `DEV-PROXMOX-CLUSTER-PLAN.md`
 
-Exceptions: `IMPLEMENTATION_PLAN.md` (legacy underscore, retained for link stability).
-
 ### Required Sections
 
 Every architecture or development plan document must include the following sections. Not all sections need extensive content, but each must be present:
@@ -31,7 +29,7 @@ Every architecture or development plan document must include the following secti
 1. **Title** -- H1 heading matching the document purpose
 2. **Frontmatter** -- Date, Status (see Status Values below), Context (one paragraph explaining why this document exists)
 3. **Problem** -- What gap or issue this plan addresses
-4. **Design Principles** -- Guiding constraints for the solution (align with platform design principles in IMPLEMENTATION_PLAN.md)
+4. **Design Principles** -- Guiding constraints for the solution
 5. **Architecture** -- Solution design with at least one mermaid diagram
 6. **Implementation Phases** -- Ordered steps with acceptance criteria per phase
 7. **Validation Criteria** -- Table of checks and pass conditions
@@ -127,8 +125,7 @@ Documents in `plan/architecture/` define cross-cutting patterns and standards.
 | [CI-TESTING-SPECIFICATION.md](CI-TESTING-SPECIFICATION.md) | ACTIVE | Test standards, templates, and onboarding requirements for all services. |
 | [PODMAN-VS-DOCKER-COMPOSE.md](PODMAN-VS-DOCKER-COMPOSE.md) | ACTIVE | Compatibility guide for Podman vs Docker across all services. |
 | [SECURITY-TESTING-STANDARDS.md](SECURITY-TESTING-STANDARDS.md) | ACTIVE | Security testing standards for code, playbooks, templates, and configuration. |
-| [skills-recommendation.md](skills-recommendation.md) | ACTIVE | Maps Claude Code skills to agent-cloud development activities. |
-| [WEBSITE-BUILDING-AGENT.md](WEBSITE-BUILDING-AGENT.md) | ACTIVE | WebSmith agent integration: position in 4-layer model, SPEC → service handoff, agent-cloud preset, second-site recipe. |
+| [skills-recommendation.md](../../architecture/skills-recommendation.md) | ACTIVE | Maps Claude Code skills to agent-cloud development activities. |
 
 ---
 
@@ -138,12 +135,7 @@ Documents in `plan/development/` define service-specific implementation plans.
 
 | Document | Status | Purpose |
 |---|---|---|
-| [IMPLEMENTATION_PLAN.md](../development/IMPLEMENTATION_PLAN.md) | COMPLETE | Master implementation plan. Agent roles, service topology, guardrails model, phase roadmap. |
 | [OPA-INTEGRATION-PLAN.md](../development/OPA-INTEGRATION-PLAN.md) | PROPOSED | OPA policy engine deployment, agent authorization, Rego policies, Semaphore governance. |
-| [NETCLAW-INTEGRATION-PLAN.md](../development/NETCLAW-INTEGRATION-PLAN.md) | PROPOSED | NetClaw network agent deployment, MCP server selection, device inventory, cross-agent coordination. |
-| [WISAI-DEPLOYMENT-PLAN.md](../archive/WISAI-DEPLOYMENT-PLAN.md) | SUPERSEDED | WisAI LLM plane (Ollama + Open WebUI) — superseded by skynet `/v1`; see `SKYNET-REPLACEMENT-PLAN.md`. Retained as provenance. |
-| [SKYNET-REPLACEMENT-PLAN.md](../development/SKYNET-REPLACEMENT-PLAN.md) | PROPOSED | Reframe agent-cloud docs for skynet replacing WisAI's LLM plane + NemoClaw/OpenClaw; preserve OPA; harvest use-cases into skynet's catalog. |
-| [WISAI-TO-SKYNET-MIGRATION-PLAN.md](../development/WISAI-TO-SKYNET-MIGRATION-PLAN.md) | PLANNING | Operational WisAI→skynet inference cutover: feature-parity matrix, phased migration via the OpenBao endpoint lever, dependency gates, rollback, X2 telemetry gap. |
 | [DEV-PROXMOX-CLUSTER-PLAN.md](../development/DEV-PROXMOX-CLUSTER-PLAN.md) | PLANNING | Dev Proxmox cluster with ZimaBoard + nested VMs, VLAN isolation, MAAS assessment. |
 | [SPARSE-CHECKOUT-MIGRATION.md](../development/SPARSE-CHECKOUT-MIGRATION.md) | PROPOSED | Migrate from full clone to sparse checkout + runtime directory separation. |
 | [NETBOX-DISCOVERY-EXPANSION.md](../development/NETBOX-DISCOVERY-EXPANSION.md) | IMPLEMENTED | NetBox discovery pipeline architecture (Diode, proxmox_discovery, pfsense_sync). |
@@ -155,10 +147,6 @@ Documents in `plan/development/` define service-specific implementation plans.
 | [PODMAN-UPGRADE-PLAN.md](../development/PODMAN-UPGRADE-PLAN.md) | PLANNING | Podman-compose upgrade strategy for services using Podman. |
 | [CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md](../development/CREDENTIAL-LIFECYCLE-IMPLEMENTATION.md) | PROPOSED | Implementation phases for credential rotation, metadata, dynamic secrets, site lifecycle. |
 | [ARCHITECTURE-REVIEW-FOLLOWUP.md](../development/ARCHITECTURE-REVIEW-FOLLOWUP.md) | TODO | Deferred items from the 2026-05-07 architecture review. |
-| [WEBSMITH-INTEGRATION-PLAN.md](../development/WEBSMITH-INTEGRATION-PLAN.md) | ACTIVE | 11-phase integration of the WebSmith agent + UhhCraft platform service into agent-cloud (Phases 1–9 + 11 merged; only Phase 10 go-live pending). |
-| [UHHCRAFT-GO-LIVE-PLAN.md](../development/UHHCRAFT-GO-LIVE-PLAN.md) | ACTIVE | Phase 10 production-validation runbook: decisions, provisioning chain, deploy sequence, smoke + rollback, Definition of Done. Execution pending hardware. |
-| [UHHCRAFT-GO-LIVE-WALKTHROUGH.md](../development/UHHCRAFT-GO-LIVE-WALKTHROUGH.md) | ACTIVE | Step-by-step operator session script for the go-live: sequential [YOU]/[CLAUDE] steps with hand-off cues. Companion to the go-live plan. |
-| [UHHCRAFT-GPU-PASSTHROUGH.md](../development/UHHCRAFT-GPU-PASSTHROUGH.md) | PLANNING | Proxmox PCIe passthrough procedure for the two inference VMs. §1 decision pending. |
 | [ERPNEXT-DEPLOYMENT.md](../development/ERPNEXT-DEPLOYMENT.md) | PROPOSED | ERPNext + LLM integration: dev/prod VMs, accounting cutover, backup cross-mirror, read-only MCP, llm-gate service. |
 | [LOCAL-DEV-DEPLOYMENT.md](../development/LOCAL-DEV-DEPLOYMENT.md) | ACTIVE | Local dev instance via podman: make bootstraps, local Semaphore operates; slim overlays; promotion pipeline; local DNS (hickory-dns), ERPNext/OPA local tiers. |
 | [DNS-SERVER-DEPLOYMENT.md](../development/DNS-SERVER-DEPLOYMENT.md) | PROPOSED | hickory-dns internal DNS platform service: zones-as-code, pfSense delegation, decision-gated internal ACME (RFC 2136 + TSIG). |
@@ -174,8 +162,7 @@ Documents in `plan/archive/` have reached terminal status (COMPLETE or SUPERSEDE
 
 | Document | Status | Reason |
 |---|---|---|
-| [UNIFICATION-PLAN.md](../archive/UNIFICATION-PLAN.md) | SUPERSEDED | Content absorbed into IMPLEMENTATION_PLAN.md. |
-| [LINT-COMPLIANCE-PLAN.md](../archive/LINT-COMPLIANCE-PLAN.md) | COMPLETE | All violations fixed in PR #7. |
+| [LINT-COMPLIANCE-PLAN.md](../LINT-COMPLIANCE-PLAN.md) | COMPLETE | All violations fixed in PR #7. |
 
 ---
 

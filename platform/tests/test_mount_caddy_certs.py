@@ -157,7 +157,7 @@ def test_a_recreate_that_does_not_show_the_mount_fails(tmp_path):
     _setup(tmp_path)
     vol = f"{tmp_path}/caddy/certs:/etc/caddy/certs:ro"
     edited = subprocess.run([sys.executable, str(EDITOR), "caddy", vol], input=COMPOSE, capture_output=True,
-                            text=True, check=True)
+                            text=True, check=True, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     text = json.loads(edited.stdout)["text"]
     (tmp_path / "caddy" / "compose.yml").write_text(text)
     r = _run(tmp_path)
@@ -223,7 +223,8 @@ def test_a_container_from_another_or_more_than_one_file_is_refused(tmp_path, fil
 # ── The editor on its own ─────────────────────────────────────────────────────
 
 def _edit(text: str, service: str = "caddy", volume: str = "/c:/etc/caddy/certs:ro") -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, str(EDITOR), service, volume], input=text, capture_output=True, text=True)
+    return subprocess.run([sys.executable, str(EDITOR), service, volume], input=text, capture_output=True, text=True,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
 
 
 @pytest.mark.parametrize("text,reason", [

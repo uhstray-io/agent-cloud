@@ -388,8 +388,10 @@ discard, and Tempo discard alerts. Each raw selector query explicitly sets
 missing or stale input. The helper validates the query response shape, privately
 joins series to active targets, permits multiple distinct reason series, and
 requires finite nonnegative values. Each public row contains only its fixed metric family, status
-(`observed_zero`, `observed_nonzero`, `missing_or_stale`, or `unavailable`), and
-fixed reason. Labels, values, timestamps, selectors, URLs, response bodies, and
+(`observed_zero`, `observed_nonzero`, `missing_or_stale`, `absent_lazy_counter`, or `unavailable`), and
+fixed reason. `absent_lazy_counter` applies only to the Alloy enqueue-failed and Loki discarded-samples counters, which upstream
+creates on the first drop: it is reported when the family is empty but a liveness series is present for every
+expected target of the same job, and it never counts as an observed zero. Labels, values, timestamps, selectors, URLs, response bodies, and
 exceptions stay private. Failures remain isolated from the active-load baseline,
 candidate preview, and loaded-limit receipt; check mode reports
 `check_mode_unverified`. This source receipt does not prove metric exposition,
@@ -1015,11 +1017,14 @@ canary's `Restore o11y Alert Baseline (Dev)` workflow.
 
 ## Endpoint availability drill
 
-`Drill o11y Endpoint Availability (Dev)` proves that the endpoint availability rule
-(`o11y_endpoint_probe_failed`) fires to Discord for one reviewed availability target. It
-sets that target's only expected status code to 599, which the target never returns, so
-its health probe fails. A second deploy then restores the normal projection. The drill
-sends a real Discord alert, so tell the operator before it runs.
+`Drill o11y Endpoint Availability (Dev)` proves that an endpoint availability rule fires to
+Discord for one reviewed availability target. The survey's `availability_drill_mode` picks the
+fault. `fail` (the default) sets that target's only expected status code to 599, which the
+target never returns, so its health probe fails and `o11y_endpoint_probe_failed` must fire.
+`absent` removes that target's probe from the projection, so no `probe_success` series
+exists and `o11y_endpoint_probe_missing` must fire; see [Absent mode](#absent-mode). A second
+deploy then restores the normal projection. The drill sends a real Discord alert, so tell the
+operator before it runs.
 
 The drill cannot run until availability is enabled and reviewed in production. The census
 refuses it unless `o11y_availability_probes_enabled` and `o11y_availability_probes_reviewed`
@@ -1028,8 +1033,9 @@ are both set. Tasks 2.3c.1 to 2.3c.3 in
 complete first.
 
 The survey takes the reviewed Dev commit (`expected_repository_sha`), the branch both
-deploys clone (`service_branch`, default `dev`), and `availability_drill_target_id`, which
-must name one selected availability target of this receiver. The drill refuses a
+deploys clone (`service_branch`, default `dev`), `availability_drill_target_id`, which
+must name one selected availability target of this receiver, and `availability_drill_mode`,
+which must be `fail` or `absent` (default `fail`). The drill refuses a
 check-mode run, a local-mode run, a run with alerts disabled, and a run with no declared
 Discord channel.
 
@@ -1050,14 +1056,20 @@ health and alert) happens before the marker is claimed, so a refused run leaves 
 Only then does the play create the marker, an empty directory named `.o11y-endpoint-drill`
 in the parent of the monorepo checkout on the receiver. It sits outside the checkout, so
 placing the monorepo never touches it. The drilled deploy imports `deploy-o11y.yml` with the
-internal input `_o11y_availability_drill`, which names the target and status code 599. The
-census replaces only that target's expected status codes in the projection it prepares.
+internal input `_o11y_availability_drill`, which names the target and either status code 599
+(fail) or the mode `absent`. In fail mode the census replaces only that target's expected
+status codes in the projection it prepares. In absent mode it moves that one target out of
+`targets` into `alert_only_targets`, so the target gets no blackbox module and no Alloy
+component, while its alert rules still cover it. The census refuses an absent drill that
+would leave no other probed target, or that would drop the only internal-CA target.
 
 The shared alert probe (`tasks/o11y-alert-probe.yml`) then waits for three things, in order.
-The `probe_success` series for the target reads 0. Grafana reports the rule's alert as
-firing for the target. A Discord message newer than the last one seen before the probe
-names the drill's delivery marker and carries a ` - instance = <target_id>` line. Each wait
-has a fixed retry budget in `tasks/o11y-alert-probe.yml`. The waits run inside a block with a rescue. A pass
+In fail mode, the `probe_success` series for the target reads 0; in absent mode the series is
+gone. Grafana reports the rule's alert as firing for the target. A Discord message newer than
+the last one seen before the probe names the drill's delivery marker and carries a
+` - instance = <target_id>` line. Each wait has a fixed retry budget in
+`tasks/o11y-alert-probe.yml`; the firing wait's budget is larger in absent mode (see below).
+The waits run inside a block with a rescue. A pass
 records the outcome `passed`. A failure records `failed` and does not stop the run, so the
 restore still runs.
 
@@ -1095,6 +1107,32 @@ health, so a target that is really down can still be recovered. A normal deploy 
 refuse on this marker, because a deploy is the recovery path. Other Deploy o11y refusals, and a
 dev move during the drill, can stop the drilled or the restoring deploy after the marker is
 claimed; Recover o11y Endpoint Drill (Dev) is the path back.
+
+### Absent mode
+
+With `availability_drill_mode` set to `absent`, the drill proves the missing-data rule
+`o11y_endpoint_probe_missing` instead of `o11y_endpoint_probe_failed`. The rule takes
+`absent_over_time` of the target's `probe_success` series over the target's declared
+`freshness_seconds`, and it is suppressed while the target's own scrape is down (`up == 0`).
+So the alert cannot fire until the probe series has been silent for the whole freshness
+window, and its two-minute `for:` window must then hold. The firing wait allows
+`freshness_seconds + 240` seconds, polled every 10 seconds: the freshness window, the `for:`
+window, and a two-minute margin. For example, a declared freshness of 600 seconds gives 84
+polls, about 14 minutes. The Discord receipt wait follows the firing wait with its own fixed
+budget in `tasks/o11y-alert-probe.yml`.
+
+The readiness wait is `absent_over_time(<the probe selector>[30s]) - 1`. It returns nothing
+while the probe series is present and one series with value 0, carrying the probe's labels,
+once the series has stopped. The pre-claim health check still requires the probe to read 1,
+so the drill starts from a healthy target in both modes. Recovery is unchanged: the normal
+deploy restores the probe, the recovery play waits for one fresh `probe_success` of 1, and it
+waits for the missing-data alert to resolve before it clears the marker.
+
+`platform/tests/test_o11y_endpoint_missing_promql.bats` proves the readiness query the
+playbook renders by native PromQL evaluation over synthetic series. A mutant without the
+`- 1` offset fails as a result mismatch. The census's absent input is covered by
+`platform/tests/test_o11y_coverage_census.py`. A live run is still the only proof that
+Grafana fires the rule and Discord receives it.
 
 ## Fault drills (`o11y Fault Drill (Dev)`)
 

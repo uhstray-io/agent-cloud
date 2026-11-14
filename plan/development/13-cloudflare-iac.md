@@ -79,7 +79,7 @@ flowchart TD
   the generated HCL into `waf.tf`; `plan` MUST be zero-diff. No apply needed —
   pure adoption.
 - **Phase 2 — Migrate platform DNS.** Import each Caddy-origin platform A-record
-  (`auth/canvas/memory/n8n/netbox/nocodb/o11y/semaphore/todo/...`) the same way;
+  (`auth/memory/netbox/o11y/semaphore/...`) the same way;
   `plan` zero-diff; then retire `manage-cloudflare-records.yml` (leave a pointer).
   External/email/ACME records stay unmanaged.
 - **Phase 3 — Zone settings + future.** Bring settings (security level, SBFM

@@ -63,7 +63,7 @@ unchanged.
   the inference estate, with the DGX Spark nodes as the first external targets.
 
 ### Modified Capabilities
-- none in this store (`specs/platform/` holds `n8n-automation` only).
+- none in this store (`specs/platform/` holds `inference-edge` only).
 
 ## Impact
 

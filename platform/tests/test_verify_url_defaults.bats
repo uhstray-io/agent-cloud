@@ -2,8 +2,8 @@
 # A verify playbook reads each endpoint under the same name, with the same default, as
 # the playbook that provisions or deploys the thing it verifies.
 #
-# docs/MISTAKES.md 6.4: a verify gate read the tududi API from
-# `tududi_base_url | default('http://127.0.0.1:3002')`. The baked local inventory already
+# docs/MISTAKES.md 6.4: a verify gate read an app's API from
+# `<app>_base_url | default('http://127.0.0.1:3002')`. The baked local inventory already
 # set that name, to the app's PUBLIC base URL behind Caddy, which the orchestrator cannot
 # reach. The provisioner had named the same fact differently, with another default. The
 # gate failed on every run, and the step carried a bearer header, so the run printed
@@ -129,7 +129,7 @@ _compare() {
   local n
   n=$(printf '%s\n' "$output" | sed -n 's/^checked //p')
   # No real-tree floor. The population is empty since 2026-11-07: the only verify playbook
-  # that defaulted a url name was retired with the tududi sync. Non-vacuity is proven on
+  # that defaulted a url name was retired with its service. Non-vacuity is proven on
   # the fixtures below (the 6.4 shape is an offender; a matching default is compared clean).
   [ -n "$n" ]
 }

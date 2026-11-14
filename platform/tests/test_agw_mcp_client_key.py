@@ -11,6 +11,7 @@ import sys
 import textwrap
 from pathlib import Path
 
+import harness_sandbox
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,7 +49,8 @@ class Box:
 
     def run(self, *args, **extra):
         return subprocess.run(
-            [str(HELPER), *args], env={**self.env, **extra}, cwd=self.cwd, capture_output=True, text=True, check=False
+            [str(HELPER), *args], env={**self.env, **extra}, cwd=self.cwd, capture_output=True, text=True,
+            check=False, timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
 
     def files(self):

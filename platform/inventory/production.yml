@@ -19,22 +19,6 @@ all:
           health_status_codes: [200, 429, 472, 473, 501, 503]
           monorepo_deploy_path: platform/services/openbao/deployment
 
-    nocodb_svc:
-      hosts:
-        "{{ nocodb_host }}":
-          service_name: nocodb
-          service_url: "http://{{ nocodb_host }}:8181"
-          health_path: "/api/v1/health"
-          monorepo_deploy_path: platform/services/nocodb/deployment
-
-    n8n_svc:
-      hosts:
-        "{{ n8n_host }}":
-          service_name: n8n
-          service_url: "http://{{ n8n_host }}:5678"
-          health_path: "/healthz"
-          monorepo_deploy_path: platform/services/n8n/deployment
-
     semaphore_svc:
       hosts:
         "{{ semaphore_host }}":
@@ -51,14 +35,7 @@ all:
           health_path: "/api/status/"
           monorepo_deploy_path: platform/services/netbox/deployment
 
-    nemoclaw_svc:
-      hosts:
-        "{{ nemoclaw_host }}":
-          service_name: nemoclaw
-          monorepo_deploy_path: agents/nemoclaw/deployment
-
-    # Central reverse proxy. uhhcraft's deploy renders + distributes a Caddy
-    # fragment here (Phase 5) only when this group is non-empty.
+    # Central reverse proxy.
     caddy_svc:
       hosts:
         "{{ caddy_host }}":
@@ -97,44 +74,6 @@ all:
           health_path: "/api/"
           monorepo_deploy_path: platform/services/postiz/deployment
           container_engine: podman
-
-    uhhcraft_svc:
-      hosts:
-        "{{ uhhcraft_host }}":
-          service_name: uhhcraft
-          service_url: "https://{{ uhhcraft_domain | default('uhhcraft.example.com') }}"
-          health_path: "/healthz"
-          monorepo_deploy_path: platform/services/uhhcraft/deployment
-          container_engine: podman
-          # Non-secret config consumed by env.j2 + the Phase 5 caddy-site render.
-          # Real hosts resolve from site-config; these are placeholder templates.
-          uhhcraft_ai_image_url: "http://{{ inference_comfyui_host }}:8189"
-          uhhcraft_ai_3d_url: "http://{{ inference_hunyuan3d_host }}:8001"
-          inference_comfyui_minio_upstream: "{{ inference_comfyui_host }}:9000"
-          inference_hunyuan3d_minio_upstream: "{{ inference_hunyuan3d_host }}:9000"
-
-    inference_comfyui_svc:
-      hosts:
-        "{{ inference_comfyui_host }}":
-          service_name: inference-comfyui
-          service_url: "http://{{ inference_comfyui_host }}:8189"
-          health_path: "/health"
-          monorepo_deploy_path: platform/services/inference-comfyui/deployment
-          container_engine: podman
-
-    inference_hunyuan3d_svc:
-      hosts:
-        "{{ inference_hunyuan3d_host }}":
-          service_name: inference-hunyuan3d
-          service_url: "http://{{ inference_hunyuan3d_host }}:8001"
-          health_path: "/health"
-          monorepo_deploy_path: platform/services/inference-hunyuan3d/deployment
-          container_engine: podman
-          # Per-host: where Hunyuan3D-2-mini weights live on disk. Literal
-          # default — site-config overrides this host var directly when the GPU
-          # box stores them elsewhere. (Not `{{ hunyuan3d_weights_dir | default }}`
-          # — a var defaulting to itself recurses.)
-          hunyuan3d_weights_dir: "/srv/hunyuan3d/weights"
 
   vars:
     ansible_user: "{{ ansible_user }}"

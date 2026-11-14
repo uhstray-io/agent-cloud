@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import ansible_python, needs_ansible
@@ -155,7 +156,13 @@ def test_inventory_openbao_url_uses_shared_transport_policy() -> None:
     strict = expand("_pat_strict")
     https = expand("_pat_https")
     assert "_assert_bao_url is match(_pat_strict)" in source
-    assert "or ((local_mode | default(false) | bool)" in source
+    # Parsed, not raw: a comment that names the terms cannot satisfy the pin.
+    guard = yaml.safe_load(BAO_TRANSPORT.read_text())[0]["ansible.builtin.assert"]["that"][0]
+    single_label_branch = (
+        "or ((groups['all'] | local_dev_inventory) "
+        "and _assert_bao_url is match(_pat_single_label))"
+    )
+    assert single_label_branch in " ".join(guard.split())
 
     def shared_guard_accepts(url: str) -> bool:
         return bool(re.match(strict, url) and (not url.startswith("https://") or re.match(https, url)))
@@ -278,6 +285,7 @@ print(json.dumps({"refused": not templar.evaluate_conditional(trust_as_template(
         capture_output=True,
         check=False,
         env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert result.returncode == 0, result.stderr
     resolved = json.loads(result.stdout)

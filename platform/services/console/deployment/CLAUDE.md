@@ -4,7 +4,7 @@ The Dispatch Console: a Rust/Dioxus app (source in `../app` in the agent-cloud r
 
 ## What this deploy does
 
-Composable pattern, first copied from the since-retired `deploy-tududi.yml`; `deploy-honcho.yml` follows the same shape:
+Composable pattern; `deploy-honcho.yml` follows the same shape:
 
 ```text
 Semaphore "Deploy console" (or "Deploy console (Local)")
@@ -310,7 +310,7 @@ Three credentials serve the console. Each has its own provisioning playbook, and
 
 - **No compose healthcheck; readiness is an exec probe.** The compose file declares no `healthcheck:`. On prod, podman-compose 1.0.6 (tag `v1.0.6`, `podman_compose.py`, the healthcheck translation) wraps every `healthcheck.test` in `/bin/sh -c`, and the runtime image is distroless (`cc-debian12`, no `/bin/sh`). Prod Semaphore task 9892 built and started the container, which logged `OIDC discovery ready`, yet podman reported it `unhealthy`, and `wait_for_healthy` failed the deploy. So `deploy.sh` step 4 runs `podman exec console /usr/local/app/server probe /healthz 200` every 5 s until a 300 s wall-clock deadline, then dumps the container's diagnostics and fails. Each exec is bounded by `timeout 15` where coreutils `timeout` exists, because a stalled `podman exec` would otherwise hold the loop past its deadline. Phase 3 of `deploy-console.yml` repeats the same probe. The probe is the server binary's own subcommand, so no curl or wget is assumed. The shell-less gateway in `agentgateway` is probed the same way.
 - **Preferences volume.** `console-data` mounts at `/data` (SQLite `prefs.db`: preferences, login sessions and proposals). The image's nonroot uid 65532 must own `/data` (the Containerfile's job; unverified until the image is built).
-- **Sessions** are rows in the same `prefs.db` (table `sessions`, one connection shared with preferences). A restart keeps every unexpired session. Expired rows are swept at startup and at most hourly. The cookie `console_session` expires after 8h of inactivity.
+- **Sessions** are rows in the same `prefs.db` (table `sessions`, one connection shared with preferences). A restart keeps every unexpired session. Expired rows are swept at startup and at most hourly. The cookie `console_session` expires after 8h of inactivity; every request that carries a live session re-saves it (`always_save` in `session_layer`), which resets that clock. A session also ends 12 hours after sign-in however active it is (`SESSION_LIFETIME_SECS`, `auth::current_user`), because an open tab polls often enough never to go idle; the API then answers 401 and the UI shows the sign-in page, which goes through Authentik. A session stored with no sign-in time counts as over-age, so every user signs in once after the deploy that introduced the lifetime. A re-save only updates a live row (`app/src/server/sessions.rs`), so sign-out stays final.
 - **Local-dev overlay** (`compose.local.yml`, `LOCAL_MODE=true`): joins the `local-dev` network so central Caddy reaches `console:8080` by name, mounts `certs/step-ca-bundle.crt`, and sets `CONSOLE_EXTRA_CA_FILE` to it for OIDC calls to the internal IdP. Prod's IdP uses a public chain, so the overlay is not applied there.
 - **Probes** run inside the container with `podman exec`, so they do not depend on the published port or on Caddy.
 - **Read-only upstream access.** The console calls NetBox and Proxmox with a view-only token and an auditor token. It never calls a write path on either.
@@ -372,7 +372,7 @@ The `Containerfile` is part of this change. It sits next to this file and builds
 
 ## Related
 
-- Model: [`../../../playbooks/deploy-honcho.yml`](../../../playbooks/deploy-honcho.yml) (the original model, `deploy-tududi.yml`, was retired 2026-11-09). Playbook: [`../../../playbooks/deploy-console.yml`](../../../playbooks/deploy-console.yml), [`../../../playbooks/clean-deploy-console.yml`](../../../playbooks/clean-deploy-console.yml)
+- Model: [`../../../playbooks/deploy-honcho.yml`](../../../playbooks/deploy-honcho.yml). Playbook: [`../../../playbooks/deploy-console.yml`](../../../playbooks/deploy-console.yml), [`../../../playbooks/clean-deploy-console.yml`](../../../playbooks/clean-deploy-console.yml)
 - Plan: [`../../../../plan/development/17-dispatch-console.md`](../../../../plan/development/17-dispatch-console.md)
 - Onboarding checklist: [`../../../../plan/architecture/02-service-onboarding.md`](../../../../plan/architecture/02-service-onboarding.md)
 - Root conventions: [`../../../../AGENTS.md`](../../../../AGENTS.md)

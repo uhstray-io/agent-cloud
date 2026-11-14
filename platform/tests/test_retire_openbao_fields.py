@@ -21,15 +21,13 @@ import os
 import re
 import shutil
 import subprocess
-import threading
 from contextlib import contextmanager
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import playbook_yaml
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 PLAYBOOKS = REPO / "platform/playbooks"
@@ -51,6 +49,41 @@ SEEDED = {
     ("services/authentik", "tududi_oidc_client_secret"),
     ("services/github", "tududi_sync_app_key"),
     ("services/github", "tududi_sync_app_client_id"),
+    ("services/n8n", "db_admin_password"),
+    ("services/n8n", "db_user_password"),
+    ("services/n8n", "encryption_key"),
+    ("services/n8n", "owner_password"),
+    ("services/n8n", "owner_totp_secret"),
+    ("services/n8n", "n8n_api_key"),
+    ("services/n8n", "api_key"),
+    ("services/n8n", "url"),
+    ("services/nocodb", "api_token"),
+    ("services/nocodb", "url"),
+    ("services/uhhcraft", "postgres_password"),
+    ("services/uhhcraft", "redis_password"),
+    ("services/uhhcraft", "minio_root_user"),
+    ("services/uhhcraft", "minio_root_password"),
+    ("services/uhhcraft", "session_secret"),
+    ("services/uhhcraft", "stripe_secret_key"),
+    ("services/uhhcraft", "stripe_publishable_key"),
+    ("services/uhhcraft", "stripe_webhook_secret"),
+    ("services/uhhcraft", "resend_api_key"),
+    ("services/uhhcraft", "discord_orders_webhook_url"),
+    ("services/uhhcraft", "discord_ops_webhook_url"),
+    ("services/uhhcraft", "usps_client_id"),
+    ("services/uhhcraft", "usps_client_secret"),
+    ("services/uhhcraft", "printify_api_key"),
+    ("services/uhhcraft", "printify_shop_id"),
+    ("services/uhhcraft", "hubs_api_key"),
+    ("services/uhhcraft", "url"),
+    ("services/inference-comfyui", "minio_root_user"),
+    ("services/inference-comfyui", "minio_root_password"),
+    ("services/inference-comfyui", "url"),
+    ("services/inference-hunyuan3d", "minio_root_user"),
+    ("services/inference-hunyuan3d", "minio_root_password"),
+    ("services/inference-hunyuan3d", "url"),
+    ("services/wisbot", "discord_token"),
+    ("services/nemoclaw", "gemini_api_key"),
 }
 # The playbook's refusal matches a field as a whole word. The same pattern is used here, so the real-tree
 # scan and the playbook agree.
@@ -378,14 +411,8 @@ def _handler(vault: _Vault):
 @contextmanager
 def _bao(paths: dict):
     vault = _Vault(paths)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _handler(vault))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield vault, f"http://127.0.0.1:{server.server_address[1]}"
-    finally:
-        server.shutdown()
-        server.server_close()
+    with serve(_handler(vault)) as url:
+        yield vault, url
 
 
 def _tree(

@@ -10,13 +10,11 @@ import json
 import os
 import shutil
 import subprocess
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 ROOT = Path(__file__).resolve().parents[2]
 PLAYBOOK = ROOT / "platform/playbooks/promote-semaphore-admins.yml"
@@ -81,18 +79,13 @@ def run(tmp_path, all_vars, *, group_vars=None, check=False, ignore_put=False, p
                   user(4, "svc-robot"), user(5, "bystander")]
     inventory = {"all": {"vars": all_vars, "children": {"agent_cloud": {"vars": group_vars or {}, "hosts": {"h": {}}}}}}
     (tmp_path / "inventory.yml").write_text(yaml.safe_dump(inventory, sort_keys=False))
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Fake)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    try:
+    with serve(Fake) as url:
         env = {"PATH": os.environ["PATH"], "ANSIBLE_NOCOLOR": "1", "ANSIBLE_LOCAL_TEMP": str(tmp_path),
-               "SEMAPHORE_URL": f"http://127.0.0.1:{server.server_port}{url_suffix}", "SEMAPHORE_TOKEN": TOKEN}
+               "SEMAPHORE_URL": f"{url}{url_suffix}", "SEMAPHORE_TOKEN": TOKEN}
         result = subprocess.run(["ansible-playbook", "-i", str(tmp_path / "inventory.yml"), str(PLAYBOOK),
                                  *(["--check"] if check else [])],
                                 cwd=ROOT, env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL,
                                 timeout=120)
-    finally:
-        server.shutdown()
-        server.server_close()
     output = result.stdout + result.stderr
     assert TOKEN not in output
     return result.returncode, output

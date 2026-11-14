@@ -11,8 +11,8 @@
 > before operations; this is a dated result, not continuous monitoring.
 
 Self-hosted [Postiz](https://postiz.com). Composes and schedules social posts through
-an Authentik-authenticated web interface, and exposes an API-key endpoint that n8n
-drives to automate post creation, media upload, and scheduling.
+an Authentik-authenticated web interface, and exposes an API-key endpoint that
+automation drives to create posts, upload media, and schedule them.
 
 - **Public URL (prod):** `https://postiz.uhstray.io`
 - **Local:** `https://postiz.agent-cloud.test:8443`
@@ -135,7 +135,7 @@ values as shell code. Adding shell quotes would change the credentials.
 ## Auth
 
 Authentik OIDC **in the app**, not a Caddy `forward_auth` gate. That choice is what
-keeps the automation endpoint usable — an edge gate would redirect n8n's API-key calls
+keeps the automation endpoint usable — an edge gate would redirect API-key calls
 into a browser sign-in flow.
 
 Three upstream behaviours worth knowing before you debug a sign-in failure:
@@ -159,11 +159,12 @@ Three upstream behaviours worth knowing before you debug a sign-in failure:
 - Update each social platform's OAuth redirect URI to the public host. **Connecting an
   account fails until this is done** — the developer consoles are not reachable from here.
 
-## n8n integration
+## Automation integration
 
-Base `https://postiz.uhstray.io/api/public/v1`, API key from the app's settings, with
-`API_LIMIT` (default 90/hr on post creation) as the budget workflows must respect. The
-contract lives in [`../context/use-cases.md`](../context/use-cases.md).
+Base `https://postiz.uhstray.io/api/public/v1`, API key from the app's settings (stored in
+OpenBao at `secret/services/postiz:postiz_api_key`), with `API_LIMIT` (default 90/hr on
+post creation) as the budget clients must respect. The contract lives in
+[`../context/use-cases.md`](../context/use-cases.md).
 
 Automation goes over the public host rather than the LAN on purpose — Caddy is already
 the only source the firewall permits, so there is no second access path to maintain.

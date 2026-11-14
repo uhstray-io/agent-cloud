@@ -2,7 +2,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 ## Purpose
 
-Provides the platform's work tracker. Plane links GitHub issues and pull requests, each repository's OpenSpec changes, and the work cards that the team and its harnesses act on. It replaces tududi as the tracker. Humans sign in through the central identity provider, roles follow identity-provider groups, harnesses act under the user who signed in, and the tududi tracker is torn down in a fixed order.
+Provides the platform's work tracker. Plane links GitHub issues and pull requests, each repository's OpenSpec changes, and the work cards that the team and its harnesses act on. Humans sign in through the central identity provider, roles follow identity-provider groups, and harnesses act under the user who signed in.
 
 ## ADDED Requirements
 
@@ -174,12 +174,7 @@ Plane roles SHALL follow Authentik group membership under decision D3. Members o
 
 ### Requirement: GitHub integration syncs issues and pull requests
 
-The GitHub integration SHALL use the GitHub App named Plane. Issues and pull requests SHALL sync between GitHub and Plane. The trigger label `plane` SHALL move an issue from GitHub to Plane, and the trigger label `github` SHALL move it from Plane to GitHub. A pull request that names a work item key, such as `[KEY-123]`, MUST link to that work item. The tududi sync MUST be switched off before the Plane sync is enabled, so that the two bidirectional syncs never run at the same time on the same repository.
-
-#### Scenario: tududi sync is switched off before Plane sync starts
-
-- **WHEN** the Plane GitHub integration is enabled for a repository
-- **THEN** the tududi sync for that repository has already been switched off, and the refresher schedules of both the production and the local templates have been removed
+The GitHub integration SHALL use the GitHub App named Plane. Issues and pull requests SHALL sync between GitHub and Plane. The trigger label `plane` SHALL move an issue from GitHub to Plane, and the trigger label `github` SHALL move it from Plane to GitHub. A pull request that names a work item key, such as `[KEY-123]`, MUST link to that work item.
 
 #### Scenario: Labelled issue appears in Plane
 
@@ -249,35 +244,11 @@ The Plane MCP server SHALL run in OAuth mode behind the reverse proxy. A harness
 - **WHEN** weft's builder updates a work item
 - **THEN** the update is made with the `weft` bot user's personal access token, and no human credential is used
 
-### Requirement: tududi retires in a fixed order
-
-The tududi retirement SHALL run only after the Phase 1 gate passes; it does not wait for phases 2 to 6 (decision 2026-11-07). The tududi data MUST be archived, not migrated: its database and uploads are written to site-config and then discarded, and nothing is imported into Plane. The tududi container MUST be stopped before the final archive, so no write lands during or after it. The final archive MUST be taken from the stopped volumes and its checksum read back before any container, volume or VM is removed. The uninstall of the tududi sync GitHub App MUST happen only after the refresher that mints its tokens is gone. The teardown MUST refuse, before any backup or destructive step, unless its confirmation value equals the VM id.
-
-#### Scenario: Teardown refuses without confirmation
-
-- **WHEN** the tududi teardown is launched with a confirmation value that is absent or does not equal the VM id
-- **THEN** its preflight refuses before any backup or destructive step, and it changes nothing
-
-#### Scenario: Final archive precedes teardown
-
-- **WHEN** the teardown runs
-- **THEN** the tududi container is stopped first, the database and uploads are archived from the stopped volumes to site-config, and the archive checksum is read back before any container, volume or VM is removed
-
-#### Scenario: Sync app is uninstalled after the refresher is gone
-
-- **WHEN** the tududi sync GitHub App is uninstalled
-- **THEN** the refresher that mints its installation tokens has already been removed
-
-#### Scenario: Retirement leaves no tududi surface
-
-- **WHEN** the teardown completes
-- **THEN** no tududi container, route, DNS record, OIDC application or GitHub App remains
-
 ### Requirement: Documentation tracks the deployed platform
 
-`AGENTS.md` SHALL describe the Plane service, its workflows and its secrets layout. It MUST NOT describe tududi once the teardown has completed.
+`AGENTS.md` SHALL describe the Plane service, its workflows and its secrets layout.
 
-#### Scenario: AGENTS.md lists Plane and drops tududi
+#### Scenario: AGENTS.md lists Plane
 
-- **WHEN** the Phase 7 documentation update is complete
-- **THEN** `AGENTS.md` lists the Plane workflows and the Plane sub-directory docs line, and it contains no tududi entry
+- **WHEN** the documentation update is complete
+- **THEN** `AGENTS.md` lists the Plane workflows and the Plane sub-directory docs line

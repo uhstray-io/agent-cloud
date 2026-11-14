@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -381,7 +382,8 @@ def test_the_alias_list_is_what_the_installed_plugins_read():
         "for m, opt in ((a, 'become_pass'), (b, 'become_pass'), (c, 'become_pass'), (d, 'password')):\n"
         "    names |= {v['name'] for v in yaml.safe_load(m.DOCUMENTATION)['options'][opt].get('vars', [])}\n"
         "print(' '.join(sorted(names)))")
-    out = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True).stdout.split()
+    out = subprocess.run([ansible_python(), "-c", script], text=True, capture_output=True, check=True,
+                         timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS).stdout.split()
     assert sorted(out) == sorted(PASSWORD_ALIASES)
 
 

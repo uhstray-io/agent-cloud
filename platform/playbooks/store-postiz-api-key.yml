@@ -13,10 +13,9 @@
 #
 # So this playbook READS the key from the service's own Postgres and places it at
 # secret/services/postiz:postiz_api_key (postiz owns it — same ownership
-# convention as the OIDC client secret; n8n shared-reads it when its workflows
-# land). If no key exists yet, it fails with the one action that mints it: sign
-# in once. Run it after the first sign-in, and after any clean-deploy that wiped
-# the app's database.
+# convention as the OIDC client secret). If no key exists yet, it fails with the one
+# action that mints it: sign in once. Run it after the first sign-in, and after any
+# clean-deploy that wiped the app's database.
 #
 # READ-ONLY against the database. SELECT only — a write path here could clobber
 # the key every session and API caller depends on.

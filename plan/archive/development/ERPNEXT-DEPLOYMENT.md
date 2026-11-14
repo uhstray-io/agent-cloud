@@ -8,7 +8,7 @@
 
 **Goal:** Stand up ERPNext at `<erpnext-prod-domain>` through the standard composable deployment pattern — dev first, then prod with real books — then layer on LLM capability without any sensitive financial data ever leaving the perimeter.
 
-**Architecture:** Two ERPNext VMs (dev with synthetic books and isolated credentials; prod with cutover books), each running frappe_docker adapted for podman-compose with its own MariaDB, Redis pair, and MinIO; backups cross-mirror between the VMs. Three LLM planes: (A) local inference via skynet (the `/v1` gateway that supersedes the planned WisAI stack), (B) read-only MCP consumed by Claude Desktop/Cowork, (C) **llm-gate** — a new platform service on its own minimal VM that holds the only Anthropic API key and enforces per-tenant allowlists, PII scrubbing, and budgets in code (ERPNext tenant #1, NetClaw #2).
+**Architecture:** Two ERPNext VMs (dev with synthetic books and isolated credentials; prod with cutover books), each running frappe_docker adapted for podman-compose with its own MariaDB, Redis pair, and MinIO; backups cross-mirror between the VMs. Three LLM planes: (A) local inference via skynet (the `/v1` gateway), (B) read-only MCP consumed by Claude Desktop, (C) **llm-gate** — a new platform service on its own minimal VM that holds the only Anthropic API key and enforces per-tenant allowlists, PII scrubbing, and budgets in code (ERPNext tenant #1).
 
 **Tech stack:** ERPNext v16 (pinned tag), MariaDB 10.6, Redis 7, Podman + podman-compose, Ansible/Semaphore, OpenBao, Caddy (DNS-01/Cloudflare), FastAPI + `anthropic` SDK (llm-gate), Ollama (Plane A).
 
@@ -20,9 +20,9 @@
 
 When Phase 6's gate passes, the platform has its first financial system of record and its first production LLM integration — and the two are coupled only through code-enforced boundaries. Concretely, "done" means:
 
-- **`<erpnext-prod-domain>` is the books.** UhhCraft revenue, marketplace payouts, and Zord license sales live in ERPNext — populated from a cutover date with opening balances and monthly CSV/OFX statement imports, and deployed, backed up, and validated exclusively through Semaphore templates [1].
+- **`<erpnext-prod-domain>` is the books.** Marketplace payouts and Zord license sales live in ERPNext — populated from a cutover date with opening balances and monthly CSV/OFX statement imports, and deployed, backed up, and validated exclusively through Semaphore templates [1].
 - **A dev twin absorbs all experimentation.** `<erpnext-dev-domain>` (LAN-only DNS, isolated credentials) runs synthetic books through the LLM validation phases, becoming a standing mirror of prod at Phase 6; prod only ever sees `main`.
-- **Finance questions are conversational.** Anyone with Claude Desktop asks in natural language and gets answers whose every figure traces to an ERPNext report; Claude Cowork produces the monthly close narrative the same way. The LLM never computes a number — it orchestrates and narrates.
+- **Finance questions are conversational.** Anyone with Claude Desktop asks in natural language and gets answers whose every figure traces to an ERPNext report. The LLM never computes a number — it orchestrates and narrates.
 - **The privacy boundary is a property of the system, not a policy document.** Exactly two paths lead toward Anthropic — the MCP exposure profile and the llm-gate service — both deny-by-default, both covered by CI tests that fail the build if PII could cross, both governed by the k-threshold rule (§6).
 - **Spend is bounded by construction.** Per-tenant and global ledgers hard-stop at their ceilings, the Console workspace cap backstops them, and threshold crossings alert Discord before they become surprises.
 - **The books survive VM loss.** Nightly backups land in MinIO on *both* VMs (cross-mirror), restores are proven quarterly via the dev mirror refresh, and an offsite/NAS target is planned future work.
@@ -32,7 +32,7 @@ The phase graph below shows how that end state is reached: solid arrows are hard
 
 ```mermaid
 flowchart LR
-  WIS[skynet inference<br/>WISAI-TO-SKYNET-MIGRATION-PLAN] -. unblocks .-> P2
+  WIS[skynet inference] -. unblocks .-> P2
   P0[P0<br/>scaffolding + CI] --> P1A[P1A<br/>dev VM live - synthetic books + DR]
   P1A --> P1B[P1B<br/>prod live - cutover books + cross-mirror]
   P1B --> P3[P3<br/>Plane B read-only MCP - validated on dev]
@@ -48,7 +48,7 @@ flowchart LR
 
 ## 1. Problem
 
-The platform has no accounting system of record. UhhCraft revenue (Stripe), marketplace payouts, and Zord license sales are reconciled by hand. We want ERPNext for the books **and** we want LLM assistance over those books — but customer PII, payment detail, and raw ledger lines must never reach a frontier API. The existing platform conventions (composable deploys, OpenBao-only secrets, Semaphore-only operations) must hold; ERPNext is the highest-stakes service yet, so this plan enforces them harder, not looser.
+The platform has no accounting system of record. Marketplace payouts and Zord license sales are reconciled by hand. We want ERPNext for the books **and** we want LLM assistance over those books — but customer PII, payment detail, and raw ledger lines must never reach a frontier API. The existing platform conventions (composable deploys, OpenBao-only secrets, Semaphore-only operations) must hold; ERPNext is the highest-stakes service yet, so this plan enforces them harder, not looser.
 
 ## 2. Locked decisions (from requirements intake)
 
@@ -59,32 +59,31 @@ The platform has no accounting system of record. UhhCraft revenue (Stripe), mark
 | 3 | **Read-only first**; write/draft is a later phase; auto-post thresholds when writes land | Phases 1–6 are read-only; Phase 7 introduces gated writes |
 | 4 | Adopt native Frappe/ERPNext MCP servers first; custom MCP only for out-of-scope needs | Start with Frappe Assistant Core and/or mascor/frappe-mcp-server (repo names verified at P3 kickoff); custom MCP deferred to Phase 8 |
 | 5 | Proposed use cases all in scope; tackle **one at a time** | Use-case backlog in §17, sequenced; one active per increment |
-| 6 | Claude **Desktop** consumes MCP (interactive); Claude **Cowork** does reports + read-only; existing Anthropic account with a **budget ceiling** | Remote-capable MCP transport; per-tenant + global ledgers in llm-gate, Console spend cap as backstop |
+| 6 | Claude **Desktop** consumes MCP (interactive); existing Anthropic account with a **budget ceiling** | Remote-capable MCP transport; per-tenant + global ledgers in llm-gate, Console spend cap as backstop |
 
 Decisions made during the 2026-06-11 plan review (dev topology, books population, banking ingress, gate scope, backup DR, re-identification control, scheduling) are recorded with their alternatives in **Decision criteria** below.
 
 ### GPU / inference engineering notes
 
-- Consumer RTX 30xx/40xx/50xx cards do **not** support MIG. The VRAM target (10–20% of the serving node's total) is enforced at the serving layer: Ollama model sizing/`keep_alive`, vLLM `--gpu-memory-utilization`, or Dynamo worker config. The earlier "10–20% of 36 GB ≈ 3.6–7.2 GB" figure assumes the final skynet GPU-backend topology — **confirm against the hardware decision gate in `UHHCRAFT-GPU-PASSTHROUGH.md` §1** before sizing. A 7–8B model at Q4/Q5 (≈4.5–5.5 GB + KV cache) fits any plausible outcome.
+- Consumer RTX 30xx/40xx/50xx cards do **not** support MIG. The VRAM target (10–20% of the serving node's total) is enforced at the serving layer: Ollama model sizing/`keep_alive`, vLLM `--gpu-memory-utilization`, or Dynamo worker config. The earlier "10–20% of 36 GB ≈ 3.6–7.2 GB" figure assumes the final skynet GPU-backend topology — **confirm before sizing.** A 7–8B model at Q4/Q5 (≈4.5–5.5 GB + KV cache) fits any plausible outcome.
 - The **ERPNext VMs need no GPU.** Inference runs on skynet's GPU backends; consumers call the OpenAI-compatible `/v1` endpoint over the LAN.
 - Serving starts on **Ollama** (a skynet model backend); **NVIDIA Dynamo** is a Phase 6 validation spike, not a commitment.
 
 ## 3. Platform reality and dependencies
 
-This plan was validated against what actually exists in agent-cloud and site-config (2026-06-09) — primarily the platform conventions [1], the deployed exemplars [16], the WisAI design [19], and the private inventory [24]. Phases below state these dependencies explicitly.
+This plan was validated against what actually exists in agent-cloud and site-config (2026-06-09) — primarily the platform conventions [1] and the private inventory [19]. Phases below state these dependencies explicitly.
 
 | Assumed component | Actual status | Impact on this plan |
 |---|---|---|
-| skynet `/v1` (Plane A inference) | **Replacing WisAI's LLM plane** — `WISAI-TO-SKYNET-MIGRATION-PLAN.md`; WisAI was never built | Phase 2 **floats**: P3–P5 proceed without it; Plane-A-dependent backlog items wait |
+| skynet `/v1` (Plane A inference) | Not yet deployed | Phase 2 **floats**: P3–P5 proceed without it; Plane-A-dependent backlog items wait |
 | NVIDIA Dynamo | No code anywhere | Phase 6 spike with explicit go/no-go |
-| Platform-wide MinIO / offsite backup | Neither exists; per-service MinIO is the established pattern (UhhCraft, ComfyUI, Hunyuan3D) | ERPNext VMs run their own MinIO; **cross-mirror between dev and prod** covers VM loss; NAS/offsite is planned future work |
+| Platform-wide MinIO / offsite backup | Neither exists; per-service MinIO is the established pattern | ERPNext VMs run their own MinIO; **cross-mirror between dev and prod** covers VM loss; NAS/offsite is planned future work |
 | Banking data access | None — no bank API/aggregator integration anywhere | Cutover uses **CSV/OFX statement import** (no new credentials); bank/aggregator API is planned future work; dev uses synthetic data |
 | Grafana/Prometheus/Loki | `platform/services/o11y/` is empty (planned) | Phase 6 observability scoped to what exists: Semaphore-scheduled health validation + Discord alerts; dashboards land when o11y does |
 | Caddy | **Deployed**, per-site fragment system live (`sites/*.caddy`, `tasks/distribute-caddy-site.yml`) | Phase 0 ships `caddy-site.j2`; both VMs get fragments (`<erpnext-dev-domain>` resolves via pfSense only) |
-| n8n | Deployed (legacy path); composable migration **HELD** | Phase 4 uses the running n8n via its API only; n8n never holds the Anthropic key |
 | MCP configs in `agents/*/context/` | None exist yet | ERPNext establishes the convention: MCP config templates live in `platform/services/erpnext/context/mcp/` |
-| Anthropic API usage | None deployed; NetClaw plan reserves its own key path | **Superseded**: the llm-gate platform service becomes the single key custodian; NetClaw onboards as tenant #2 instead of holding a key |
-| Discord alerting | Pattern exists (UhhCraft ops webhooks) | Budget alerts reuse the Discord webhook pattern |
+| Anthropic API usage | None deployed | **Superseded**: the llm-gate platform service becomes the single key custodian |
+| Discord alerting | Pattern exists (o11y alert webhook) | Budget alerts reuse the Discord webhook pattern |
 | SELinux concerns | VMs are Ubuntu 24.04 (AppArmor) — `:Z`/`:z` volume labels are inert | Dropped; the real Podman friction is podman-compose 1.0.6 ignoring `depends_on` conditions (see §7 deploy.sh) |
 
 ## 4. Design principles
@@ -104,33 +103,32 @@ The locked decisions in §2 came from requirements intake; the engineering decis
 | Decision | Chosen | Alternatives — and why they lost | Sources |
 |---|---|---|---|
 | Container runtime | Podman (rootless), the platform default | Docker — justified only where privileged containers or compose health-dependency chains demand it (the NetBox case); ERPNext needs neither | [4] |
-| Compose tooling | podman-compose 1.0.6 as deployed today, with **staged startup in deploy.sh** replacing `depends_on` conditions | (a) docker-compose against the podman socket — no platform precedent; (b) blocking on podman-compose ≥ 1.3.0 — couples the deploy to an OS upgrade tracked in `PODMAN-UPGRADE-PLAN.md`. Staged startup works today and stays correct after the upgrade | [4][18] |
-| Secret management | Composable `manage-secrets.yml` (OpenBao → Ansible memory → Jinja2 → `.env`) | Legacy deploy.sh-generated `secrets/` dir (the NocoDB/n8n path) — violates Critical Rules #2/#4 and reproduces the held-migration debt those services carry; unacceptable for a financial system | [1][14][23] |
+| Compose tooling | podman-compose 1.0.6 as deployed today, with **staged startup in deploy.sh** replacing `depends_on` conditions | (a) docker-compose against the podman socket — no platform precedent; (b) blocking on podman-compose ≥ 1.3.0 — couples the deploy to an OS upgrade tracked in `PODMAN-UPGRADE-PLAN.md`. Staged startup works today and stays correct after the upgrade | [4][16] |
+| Secret management | Composable `manage-secrets.yml` (OpenBao → Ansible memory → Jinja2 → `.env`) | Legacy deploy.sh-generated `secrets/` dir — violates Critical Rules #2/#4; unacceptable for a financial system | [1][13] |
 | Dev/prod topology | **Separate dev VM with full credential isolation** (`service_name: erpnext-dev` → own OpenBao path, own passwords, own SSH keypair); LAN-only `<erpnext-dev-domain>` | One VM + branch deploys — cheaper, but intake said "dev first" and a financial system earns a real staging target; shared credentials — rejected because dev compromise would expose prod passwords, violating the blast-radius rules | [7] |
-| Dev targeting | One playbook codebase + `erpnext_target` var; **separate Semaphore templates** pin dev vs prod | Single template with a target dropdown — one wrong selection deploys to prod; duplicate playbooks — violates build-once | [17] |
+| Dev targeting | One playbook codebase + `erpnext_target` var; **separate Semaphore templates** pin dev vs prod | Single template with a target dropdown — one wrong selection deploys to prod; duplicate playbooks — violates build-once | [15] |
 | Books population | **Cutover + opening balances** via a fixtures playbook (company/CoA/fiscal year as versioned fixtures; opening-balance journal entry is a one-time human task); dev runs a synthetic generator | Full historical import — a real data-migration work stream, deferred until wanted; sample-data-only — delays real value | — |
 | Bank data ingress | **CSV/OFX statement import** at cutover and monthly | Aggregator API (Plaid-class) or bank-direct API — adds vendor onboarding + credential custody before any import pain exists; **planned future work** once volume justifies it | — |
-| Backup DR | **Cross-mirror**: each VM's nightly backups also land on the peer VM's MinIO via a restricted write-only user | On-VM only — books and backups share fate on VM loss; NAS/offsite now — new infrastructure this plan doesn't otherwise need; **planned future work** | [16][21] |
+| Backup DR | **Cross-mirror**: each VM's nightly backups also land on the peer VM's MinIO via a restricted write-only user | On-VM only — books and backups share fate on VM loss; NAS/offsite now — new infrastructure this plan doesn't otherwise need; **planned future work** | [17] |
 | Re-identification control | **Documented k-threshold**: an aggregate may go to Claude only if it spans ≥10 records and no single counterparty dominates it; checked at every PR that touches the profile/tenant config | Qualitative-only allowlist — "conservative" is undefined at year-one volumes where most rollups sit on 1–5 transactions; code-enforced threshold — requires structured record-counts end-to-end; remains the §21 upgrade path | — |
-| LLM integration topology | Three planes (local inference / read-only MCP / gated API) | Single LLM proxy (LiteLLM-style) — already rejected platform-wide in the WisAI plan; MCP-only — cannot serve scheduled server-side work and has no central redaction/budget point | [19] |
-| Plane C gate scope | **Platform service (`llm-gate`) on its own minimal VM**, multi-tenant by config; ERPNext tenant #1, NetClaw #2 | ERPNext-scoped sidecar — duplicates the hardest security component per service; co-location on the ERPNext or n8n VM — puts the key inside another service's blast radius and defeats VM-scoped egress rules | [7][26] |
+| LLM integration topology | Three planes (local inference / read-only MCP / gated API) | Single LLM proxy (LiteLLM-style) — already rejected platform-wide; MCP-only — cannot serve scheduled server-side work and has no central redaction/budget point |  |
+| Plane C gate scope | **Platform service (`llm-gate`) on its own minimal VM**, multi-tenant by config; ERPNext tenant #1 | ERPNext-scoped sidecar — duplicates the hardest security component per service; co-location on the ERPNext VM — puts the key inside another service's blast radius and defeats VM-scoped egress rules | [7][21] |
 | Runtime OpenBao access | None — deploy-time only via Semaphore's AppRole | Dedicated runtime AppRole — no container has runtime secret needs; smallest blast radius wins; the code-managed AppRole path stays documented (§7.12) for the day dynamic DB creds arrive | [6][7] |
-| MCP server | Deferred to a criteria-driven decision task at P3 kickoff (§10.1) | Building custom MCP first — rejected by locked decision #4; custom MCP is the Phase 8 escape hatch | [27] |
-| Plane A serving engine | Ollama first | vLLM — reserved for 24 GB+ hardware per the WisAI plan; Dynamo — multi-node value unproven for one 7–8B model, P6 spike decides | [19][20] |
-| ERPNext version | v16, pinned image tag | v15 LTS — older but battle-tested; v16 chosen as current stable with documented v15 fallback (P1A work item) | [25] |
+| MCP server | Deferred to a criteria-driven decision task at P3 kickoff (§10.1) | Building custom MCP first — rejected by locked decision #4; custom MCP is the Phase 8 escape hatch | [22] |
+| Plane A serving engine | Ollama first | vLLM — reserved for 24 GB+ hardware; Dynamo — multi-node value unproven for one 7–8B model, P6 spike decides |  |
+| ERPNext version | v16, pinned image tag | v15 LTS — older but battle-tested; v16 chosen as current stable with documented v15 fallback (P1A work item) | [20] |
 | Scheduling | Gate-driven only — phases complete when gates pass | Dates + owners — better forcing function but stale-date rot in a committed doc | — |
 
 The load-bearing rows are secret management, dev/prod isolation, LLM topology, and gate scope — get any of those wrong and the privacy posture degrades from *enforced* to *advisory*. Everything else is reversible at moderate cost.
 
 ## 5. Target architecture
 
-The component map below shows the full perimeter: the prod ERPNext VM and the llm-gate VM ship with this plan (plus the dev twin), the platform services already exist (n8n on its legacy path), the WisAI subgraph is the one planned-but-not-built dependency, and the only line that crosses the perimeter is the gate's redacted, budgeted egress to Anthropic.
+The component map below shows the full perimeter: the prod ERPNext VM and the llm-gate VM ship with this plan (plus the dev twin), the platform services already exist, the skynet inference subgraph is the one planned-but-not-built dependency, and the only line that crosses the perimeter is the gate's redacted, budgeted egress to Anthropic.
 
 ```mermaid
 flowchart TB
   subgraph clients[Interactive AI clients]
     CD[Claude Desktop]
-    CW[Claude Cowork]
   end
 
   subgraph perimeter[agent-cloud perimeter - on-prem, privacy-bounded]
@@ -148,24 +146,23 @@ flowchart TB
     subgraph infra[Platform services]
       CAD[Caddy - TLS DNS-01]
       BAO[OpenBao - secrets]
-      N8N[n8n - legacy deploy, running]
       SEM[Semaphore - all operations]
     end
-    subgraph wis[skynet inference Plane A - WISAI-TO-SKYNET-MIGRATION-PLAN]
-      OLL[Ollama via Open WebUI<br/>OpenAI-compatible API]
+    subgraph wis[skynet inference Plane A]
+      OLL[Ollama<br/>OpenAI-compatible API]
     end
   end
 
   EXT[Anthropic Claude API]
 
-  CD & CW -->|MCP, read-only profile| MCP
+  CD -->|MCP, read-only profile| MCP
   MCP --> FE
   FE --> DB & RC
   FE -.nightly backup.-> MIN
   MIN <-.cross-mirror.-> DEV
-  N8N & FE -->|aggregated, k-threshold| GATE
+  FE -->|aggregated, k-threshold| GATE
   GATE -->|redacted, budgeted, logged| EXT
-  N8N & FE -.sensitive tasks stay local.-> OLL
+  FE -.sensitive tasks stay local.-> OLL
   CAD -->|reverse proxy :8080| FE
   BAO -.deploy-time secrets via Ansible.-> erpvm & DEV & gatevm
   SEM -.deploys, backups, validation.-> erpvm & DEV & gatevm
@@ -174,8 +171,8 @@ flowchart TB
 **Three planes**
 
 - **Plane A — Local inference (skynet).** OpenAI-compatible `/v1` endpoint. Sensitive, high-volume, low-stakes tasks (categorization, embeddings, drafting). Data never leaves the perimeter. *Dependency: skynet inference; floats.*
-- **Plane B — MCP + Claude (read-only).** Claude Desktop/Cowork drive ERPNext via MCP tools scoped to a non-sensitive/aggregated allowlist, authenticated, audit-logged. Validated against dev's synthetic books before prod ever connects.
-- **Plane C — Claude API via llm-gate.** Server-side callers (n8n workflows, ERPNext server scripts, Cowork flows) POST to the llm-gate service; the gate validates the caller's tenant config, enforces its field allowlist, scrubs PII, enforces per-tenant + global budget ledgers, holds the only copy of the API key, and forwards to `/v1/messages`.
+- **Plane B — MCP + Claude (read-only).** Claude Desktop drives ERPNext via MCP tools scoped to a non-sensitive/aggregated allowlist, authenticated, audit-logged. Validated against dev's synthetic books before prod ever connects.
+- **Plane C — Claude API via llm-gate.** Server-side callers (ERPNext server scripts) POST to the llm-gate service; the gate validates the caller's tenant config, enforces its field allowlist, scrubs PII, enforces per-tenant + global budget ledgers, holds the only copy of the API key, and forwards to `/v1/messages`.
 
 ## 6. Data classification & egress policy
 
@@ -418,7 +415,7 @@ Notes:
 
 ### 7.3 `deployment/deploy.sh` — container lifecycle only
 
-Mirrors `platform/services/uhhcraft/deployment/deploy.sh` [13][18]. Staged startup replaces `depends_on` conditions.
+Staged startup replaces `depends_on` conditions.
 
 ```bash
 #!/usr/bin/env bash
@@ -636,7 +633,7 @@ PEER_BACKUP_SECRET={{ secrets.peer_backup_secret | default('') }}
 
 ### 7.6 `deployment/templates/caddy-site.j2`
 
-Identical shape to the UhhCraft fragment [16]; distributed by the deploy playbook via `tasks/distribute-caddy-site.yml`. The domain comes from `erpnext_public_url`, so **the same template serves prod (`<erpnext-prod-domain>`) and dev (`<erpnext-dev-domain>`)** — dev's name resolves only via pfSense local DNS; DNS-01 issues its cert without a public record. Caddy handles WebSocket upgrades transparently.
+Distributed by the deploy playbook via `tasks/distribute-caddy-site.yml`. The domain comes from `erpnext_public_url`, so **the same template serves prod (`<erpnext-prod-domain>`) and dev (`<erpnext-dev-domain>`)** — dev's name resolves only via pfSense local DNS; DNS-01 issues its cert without a public record. Caddy handles WebSocket upgrades transparently.
 
 ```jinja2
 {{ svc_domain }} {
@@ -656,7 +653,7 @@ Identical shape to the UhhCraft fragment [16]; distributed by the deploy playboo
 
 ### 7.7 `platform/playbooks/deploy-erpnext.yml`
 
-One codebase for dev and prod: every play targets `hosts: "{{ erpnext_target | default('erpnext_svc') }}"`; the Dev Semaphore templates pin `erpnext_target=erpnext_dev_svc`. Per the platform's redaction standard, **no `no_log: true` anywhere** — the callback plugin redacts [10]. Phase 1 (the contract) in full; phases 2–5 are line-for-line the `deploy-uhhcraft.yml` pattern [13] with the ERPNext values tabled below.
+One codebase for dev and prod: every play targets `hosts: "{{ erpnext_target | default('erpnext_svc') }}"`; the Dev Semaphore templates pin `erpnext_target=erpnext_dev_svc`. Per the platform's redaction standard, **no `no_log: true` anywhere** — the callback plugin redacts [10]. Phase 1 (the contract) in full; phases 2–5 follow the composable deploy pattern with the ERPNext values tabled below.
 
 ```yaml
 ---
@@ -719,7 +716,7 @@ One codebase for dev and prod: every play targets `hosts: "{{ erpnext_target | d
       ansible.builtin.include_tasks: tasks/manage-secrets.yml
 ```
 
-| Play (mirrors `deploy-uhhcraft.yml`) | ERPNext specifics |
+| Play | ERPNext specifics |
 |---|---|
 | Phase 2 — container lifecycle | `bash deploy.sh {{ _service_url }}` with `CONTAINER_ENGINE: "{{ container_engine \| default('podman') }}"` |
 | Phase 3 — app bootstrap | `bash post-deploy.sh` (idempotent site creation) |
@@ -737,7 +734,7 @@ One codebase for dev and prod: every play targets `hosts: "{{ erpnext_target | d
 
 ### 7.9 Semaphore templates (`platform/semaphore/templates.yml`)
 
-Seven entries, applied via `setup-templates.yml` (config-as-code; never ad-hoc API calls) [17]. Separate dev/prod templates keep the deploy target explicit in the button you click; all reuse the same playbooks via `erpnext_target`.
+Seven entries, applied via `setup-templates.yml` (config-as-code; never ad-hoc API calls) [15]. Separate dev/prod templates keep the deploy target explicit in the button you click; all reuse the same playbooks via `erpnext_target`.
 
 | Template | Playbook | Pinned vars |
 |---|---|---|
@@ -934,7 +931,7 @@ All operations through Semaphore (ACCESS-BOUNDARIES: no SSH deploys; SSH is read
 - [ ] Provision VM 212 via **Provision VM** template (clone 9000, Ubuntu 24.04, cloud-init)
 - [ ] Generate dev SSH keypair → `secret/services/ssh/erpnext-dev` (+ site-config DR copy); **Distribute SSH Keys**; verify key auth; only then **Harden SSH** (rule #5)
 - [ ] pfSense local-DNS host override for `<erpnext-dev-domain>` (no public record; DNS-01 still issues the cert)
-- [ ] Pin `erpnext_version` to the current stable v16 tag — verify the tag exists on `docker.io/frappe/erpnext` and matches frappe_docker guidance (assumption [25]); v15 LTS fallback recorded here if needed
+- [ ] Pin `erpnext_version` to the current stable v16 tag — verify the tag exists on `docker.io/frappe/erpnext` and matches frappe_docker guidance (assumption [20]); v15 LTS fallback recorded here if needed
 - [ ] **Deploy ERPNext (Dev)** from `feat/erpnext-phase1` branch, then from `main` after merge [11]
 - [ ] **Bootstrap ERPNext Accounting** with `synthetic=true` — fixtures structure + realistic-volume demo books
 - [ ] **Backup ERPNext** once manually; then run the restore drill (§8.4) on dev
@@ -1034,7 +1031,7 @@ info "Backup complete: ${BACKUP_BUCKET}/${STAMP}"
 
 ### 8.4 Restore drill (gate requirement — financial data DR is non-negotiable)
 
-Quarterly, documented in `context/runbooks/restore.md` [21]. Through P5 the drill runs on dev (restore real prod backup → verify → **Clean Deploy ERPNext (Dev)** back to synthetic); from P6 onward dev becomes the **standing mirror** and the drill *is* the mirror refresh:
+Quarterly, documented in `context/runbooks/restore.md` [17]. Through P5 the drill runs on dev (restore real prod backup → verify → **Clean Deploy ERPNext (Dev)** back to synthetic); from P6 onward dev becomes the **standing mirror** and the drill *is* the mirror refresh:
 
 1. **Clean Deploy ERPNext (Dev)** — fresh stack, dev's own OpenBao secrets.
 2. Pull the latest prod backup set from dev's mirrored copy (`mc cp --recursive`, same netns pattern as backup.sh).
@@ -1043,45 +1040,45 @@ Quarterly, documented in `context/runbooks/restore.md` [21]. Through P5 the dril
 
 ## 9. Phase 2 — Local inference (Plane A) — *floats*
 
-**Hard dependency:** skynet inference availability (`WISAI-TO-SKYNET-MIGRATION-PLAN.md`) [19]. **Non-blocking for this plan:** P3–P5 proceed without it; only Plane-A backlog items (categorization, RAG, bank-feed assistance) wait. This phase consumes inference infrastructure; it does not build it.
+**Hard dependency:** skynet inference availability. **Non-blocking for this plan:** P3–P5 proceed without it; only Plane-A backlog items (categorization, RAG, bank-feed assistance) wait. This phase consumes inference infrastructure; it does not build it.
 
 - [ ] Confirm skynet through its endpoint-live gate; endpoint + key at `secret/services/inference/*` per the migration plan
 - [ ] Select the 7–8B model (candidates: Qwen3 8B, Llama 3.1 8B) by a 10-prompt categorization/extraction eval recorded in `context/prompts/plane-a-eval.md`
 - [ ] Enforce the VRAM budget at the serving layer (model choice + Ollama `keep_alive`/`num_ctx`); document measured VRAM in the eval file
-- [ ] Surface the endpoint to consumers (llm-gate env + n8n); ERPNext core config untouched until a use case needs it
+- [ ] Surface the endpoint to consumers (llm-gate env); ERPNext core config untouched until a use case needs it
 - [ ] Confirm no Caddy fragment / no public route for inference
 
 **Gate:** model within VRAM budget (`nvidia-smi`); completion succeeds from the ERPNext VM; latency baseline committed; no public route; endpoint-down fallback documented (sensitive tasks queue or fail — never fall back to Plane C).
 
 ## 10. Phase 3 — Read-only MCP + Claude Desktop (Plane B)
 
-**Deliverable:** Claude Desktop (and Cowork) reading ERPNext through an authenticated, audit-logged, allowlist-scoped MCP layer — **validated entirely against dev's synthetic books before prod ever connects**. ERPNext establishes the platform's MCP config convention under `platform/services/erpnext/context/mcp/`.
+**Deliverable:** Claude Desktop reading ERPNext through an authenticated, audit-logged, allowlist-scoped MCP layer — **validated entirely against dev's synthetic books before prod ever connects**. ERPNext establishes the platform's MCP config convention under `platform/services/erpnext/context/mcp/`.
 
 ### 10.1 MCP server selection (decision task, first item of the phase)
 
-Verify current repos/maintenance (names from intake [27]; confirm with a web search at kickoff — both move fast):
+Verify current repos/maintenance (names from intake [22]; confirm with a web search at kickoff — both move fast):
 
 | Criterion | Frappe Assistant Core (in-app Frappe app) | Standalone frappe-mcp-server (e.g. mascor / appliedrelevance) |
 |---|---|---|
 | Auth | OAuth2 via Frappe provider | ERPNext API key/secret |
 | Permission model | Frappe roles/permissions, plugin-scoped | Field/DocType allowlist at tool boundary |
 | Audit | In-app audit log | Server-side request log |
-| Transport | HTTP (remote-capable for Desktop/Cowork connectors) | stdio (Desktop local) |
+| Transport | HTTP (remote-capable for Desktop connectors) | stdio (Desktop local) |
 | Deploy shape | Installed into the bench (custom image) | Separate container/process |
 
 Lean: **Frappe Assistant Core** for identity + audit; add the standalone server only where field-level redaction at the tool boundary proves necessary. Record the decision + rationale in `context/mcp/DECISION.md` before building.
 
 ### 10.2 Custom image (required for any in-bench app)
 
-The stock `frappe/erpnext` image contains only frappe + erpnext; additional apps require a layered image (frappe_docker's documented custom-app build [25]):
+The stock `frappe/erpnext` image contains only frappe + erpnext; additional apps require a layered image (frappe_docker's documented custom-app build [20]):
 
 - [ ] `deployment/apps.json` — `[{"url": "<assistant-core repo>", "branch": "<pinned>"}]`
-- [ ] GitHub Actions job building `ghcr.io/uhstray-io/erpnext:<erpnext_version>-<short-sha>` via frappe_docker's layered Containerfile (`APPS_JSON_BASE64` build arg) — the WisBot prebuilt-GHCR pattern; hadolint applies
+- [ ] GitHub Actions job building `ghcr.io/uhstray-io/erpnext:<erpnext_version>-<short-sha>` via frappe_docker's layered Containerfile (`APPS_JSON_BASE64` build arg); hadolint applies
 - [ ] Flip `erpnext_image`/`erpnext_version` in site-config (dev first, prod after Gate); `install-app` added to post-deploy.sh behind the same check-before-create guard
 
 ### 10.3 Read-only AI service user (`provision-erpnext-ai-user.yml`)
 
-Independent workflow (rule #3). Creates the user + role, generates API keys **inside the app**, writes them back to OpenBao — the `manage-diode-credentials.yml` pattern [15]. No `no_log` (callback plugin redacts [10]).
+Independent workflow (rule #3). Creates the user + role, generates API keys **inside the app**, writes them back to OpenBao — the `manage-diode-credentials.yml` pattern [14]. No `no_log` (callback plugin redacts [10]).
 
 The sequence below shows the full credential round trip. The original draft of this plan had `post-deploy.sh` doing this writeback, which would have violated Critical Rules #2/#4 — the corrected flow keeps the secret in Ansible memory between the bench call and the OpenBao PATCH, never on the VM's disk; subsequent deploys then render it into consumer env files via `manage-secrets.yml` like any other secret.
 
@@ -1204,7 +1201,7 @@ sequenceDiagram
 
 - [ ] Run the full P3 stack against **dev** first: provision AI user on dev, connect Desktop to dev's MCP endpoint, exercise the profile against synthetic books
 - [ ] `context/mcp/claude-desktop.example.json` — placeholder config (no secrets): remote connector URL + OAuth, or stdio command with `ERPNEXT_API_KEY`/`ERPNEXT_API_SECRET` env placeholders
-- [ ] Only after the gate passes on dev: provision the prod AI user, connect Desktop/Cowork to prod
+- [ ] Only after the gate passes on dev: provision the prod AI user, connect Desktop to prod
 - [ ] MCP endpoint exposure: authenticated HTTPS through Caddy only (never anonymous); stdio variant stays LAN-only
 
 ### Phase 3 gate
@@ -1219,15 +1216,15 @@ sequenceDiagram
 | Not anonymous | `curl` MCP endpoint unauthenticated | 401/403 |
 | Creds in OpenBao | `check-secrets.yml` | `api_key`/`api_secret` under the right secret set; not in repo |
 
-## 11. Phase 4 — llm-gate platform service + Cowork reporting (Plane C)
+## 11. Phase 4 — llm-gate platform service (Plane C)
 
-**Deliverable:** `llm-gate` — a new platform service on its own minimal VM, the **only** component on the platform holding an Anthropic API key. Multi-tenant by config file: ERPNext is tenant #1; NetClaw onboards later by adding one file. Includes per-tenant + global budget ledgers, Discord alerting, and Cowork producing a gated report.
+**Deliverable:** `llm-gate` — a new platform service on its own minimal VM, the **only** component on the platform holding an Anthropic API key. Multi-tenant by config file: ERPNext is tenant #1. Includes per-tenant + global budget ledgers and Discord alerting.
 
 Every Plane C request walks the same checkpoints in order — tenant lookup, field allowlist, PII scrub, budget ledger, then (and only then) the Anthropic call — so a failure at any checkpoint means zero egress, not partial egress:
 
 ```mermaid
 sequenceDiagram
-    participant C as Caller - n8n / server script / Cowork flow
+    participant C as Caller - ERPNext server script
     participant G as llm-gate VM :8088
     participant L as Ledger (sqlite)
     participant A as Anthropic /v1/messages
@@ -1292,7 +1289,7 @@ monthly_budget_usd: 50
 model: claude-opus-4-8        # sonnet-4-6 / haiku-4-5 for high-volume tiers
 ```
 
-Core of `app/main.py` (official `anthropic` SDK [26] — `claude-opus-4-8` $5/$25 per MTok; `claude-sonnet-4-6` $3/$15, `claude-haiku-4-5` $1/$5):
+Core of `app/main.py` (official `anthropic` SDK [21] — `claude-opus-4-8` $5/$25 per MTok; `claude-sonnet-4-6` $3/$15, `claude-haiku-4-5` $1/$5):
 
 ```python
 import glob
@@ -1407,8 +1404,7 @@ def test_no_pii_survives_scrub(pii):
 
 ### 11.3 Tenant wiring
 
-- [ ] n8n workflows and ERPNext server scripts call `http://<gate-ip>:8088/v1/complete` with `tenant: erpnext` — **no caller ever holds the Anthropic key**
-- [ ] Cowork reporting flow: MCP (Plane B) for figures + gate (Plane C) for prose
+- [ ] ERPNext server scripts call `http://<gate-ip>:8088/v1/complete` with `tenant: erpnext` — **no caller ever holds the Anthropic key**
 - [ ] Plane A endpoint (when live) surfaced via gate env for future local-routing decisions
 
 ### Phase 4 gate
@@ -1421,8 +1417,6 @@ def test_no_pii_survives_scrub(pii):
 | Budget ceilings | Set tenant budget to $0.01, fire a request | 429 + Discord alert |
 | Egress logged | `/data/egress.jsonl` | Every call recorded with tenant + token usage |
 | Egress scoped | pfSense rule check | `api.anthropic.com` reachable from VM 213 only |
-| NetClaw-ready | Add a dummy tenant config in dev, redeploy | New tenant served with zero code changes |
-| Cowork report E2E | Cowork produces a monthly summary via profile + gate | Report renders; figures match ERPNext native report |
 
 ## 12. Phase 5 — First end-to-end read-only use case
 
@@ -1431,7 +1425,7 @@ Exactly **one** use case: natural-language querying of the books + a generated m
 - [ ] `context/prompts/monthly-summary.md` — prompt template with the figures-are-canonical rule baked in
 - [ ] **Eval runs on dev's synthetic books** (built to clear the k-threshold); 10 NL questions with known-correct answers from native reports
 - [ ] Prod usage accepts the k-rule's early limits: low-volume months will legitimately block some rollups — that is the control working, not a bug
-- [ ] Run via Claude Desktop (interactive) and Cowork (report) paths
+- [ ] Run via Claude Desktop (interactive) path
 
 ### Phase 5 gate
 
@@ -1448,10 +1442,10 @@ Exactly **one** use case: natural-language querying of the books + a generated m
 - [ ] **Dynamo spike (decision gate):** benchmark the 7–8B slice on Dynamo vs Ollama; if the single small model shows no multi-node benefit, **stay on Ollama** and record the decision here
 - [ ] **Dev becomes the standing mirror:** grow dev disk to prod spec; mirror refresh (= restore drill, §8.4) becomes the quarterly cadence; dev retains isolated credentials and stays off the MCP/gate prod configs
 - [ ] **Observability:** until the platform o11y stack lands — Semaphore-scheduled **Validate All** + backup jobs with Discord alert on failure; gate ledger doubles as the cost dashboard. When o11y ships: container metrics, latency, backup age, gate spend panels
-- [ ] **Offsite backup (planned future work):** evaluate NAS/B2 target; until then cross-mirror is the DR floor [21]
+- [ ] **Offsite backup (planned future work):** evaluate NAS/B2 target; until then cross-mirror is the DR floor [17]
 - [ ] **Rotation** (Create → Verify → Retire [6]): `rotate-erpnext-secrets.yml` for admin + MariaDB + MinIO (both VMs, independent secret sets); Anthropic key manual 90-day rotation
 - [ ] **Banking API (planned future work):** evaluate aggregator vs bank-direct once CSV/OFX import pain is real; credentials would be `user`-type secrets; bank data stays Sensitive-class regardless
-- [ ] **Optional k0s move:** only with the platform-wide Kubernetes phase; a Kyverno/OPA test must block a disallowed action before claiming the guardrail [22]
+- [ ] **Optional k0s move:** only with the platform-wide Kubernetes phase; a Kyverno/OPA test must block a disallowed action before claiming the guardrail [18]
 - [ ] **Load test:** k6/locust read-mix against the frontend + one inference-burst test; record baselines
 - [ ] `context/runbooks/erpnext-failure-modes.md`: DB down, redis down, site corrupt, backup failed, gate over budget, inference endpoint down
 
@@ -1465,7 +1459,6 @@ Design (build only after Phases 1–6 are stable in production):
 - **Auto-post thresholds** configurable per DocType (auto-post below $X and above Y confidence; the rest routes to a human queue). Threshold config lives in a versioned fixture, not in prompts.
 - A second service user (`ai-draft@uhstray.io`) with draft-only DocPerms — the read-only user never gains write perms.
 - Full audit + reversibility: every AI-created draft tagged with origin metadata; cancel/amend path documented.
-- Flagship n8n workflow: monthly marketplace reports → Plane A categorization → draft journal entries → human approval → post.
 - Prompt-injection posture: untrusted marketplace/customer text never combined with write tools in the same context.
 
 **Gate (design-complete):** drafts cannot post without approval; threshold logic verified at boundary values; blast-radius test proves the AI users cannot execute payments/payouts or exceed their roles.
@@ -1494,7 +1487,7 @@ Rule of thumb: **LLMs orchestrate; ERPNext computes.** Gate default model `claud
 **Sequenced start (read-only):**
 
 1. NL querying of the books + monthly summary (Phase 5).
-2. Report/summary generation for Cowork (aggregated → Claude prose).
+2. Report/summary generation (aggregated → Claude prose).
 3. Transaction categorization (local, sensitive — needs Plane A).
 4. Bank feed sync + reconciliation assist (local + deterministic — needs Plane A; API ingress per §13).
 5. RAG over ERPNext docs/records (local embeddings — needs Plane A).
@@ -1524,7 +1517,7 @@ Each becomes its own mini-increment with its own gate; none ship bundled.
 | 1 | Idempotent | Re-run deploy (either target) | No duplicate site/app; no secret churn |
 | 2 | Plane A live, internal, in budget | `nvidia-smi`; LAN curl; WAN curl | Within VRAM budget; completion OK; no public route |
 | 3 | Read-only enforced + audited, dev-first | MCP write attempt; sensitive query; audit log | Both denied; all calls logged; validated on dev before prod |
-| 4 | Zero PII egress + budgets + tenancy | `pytest`; overage + unknown-tenant probes | Green; 429/403 + Discord alert; NetClaw-ready check passes |
+| 4 | Zero PII egress + budgets + tenancy | `pytest`; overage + unknown-tenant probes | Green; 429/403 + Discord alert |
 | 5 | No fabrication | 10-question eval vs native reports (dev) | Exact figure match |
 | 6 | DR + rotation + alerting | Mirror refresh, rotate playbook, kill a job | All pass without downtime |
 | 7 | Drafts-only writes | Approval-bypass attempt | Impossible by permission model |
@@ -1541,11 +1534,11 @@ Each becomes its own mini-increment with its own gate; none ship bundled.
 
 | Item | Status | Resolution path |
 |---|---|---|
-| MCP server pick (repo names unverified) | Open — blocks P3 | Decision task §10.1; verify repos at kickoff [27] |
-| skynet inference not yet deployed | Blocks P2 only (P2 floats) | Stand up skynet per `WISAI-TO-SKYNET-MIGRATION-PLAN.md`; P0–P5 proceed regardless |
+| MCP server pick (repo names unverified) | Open — blocks P3 | Decision task §10.1; verify repos at kickoff [22] |
+| skynet inference not yet deployed | Blocks P2 only (P2 floats) | P0–P5 proceed regardless |
 | ERPNext v16 tag stability | Open — P1A start | Pin exact tag; v15 LTS fallback documented |
 | podman-compose 1.0.6 gaps | Mitigated | Staged startup; explicit container names; upgrade tracked in `PODMAN-UPGRADE-PLAN.md` |
-| GPU topology / VRAM basis | Open (external) | `UHHCRAFT-GPU-PASSTHROUGH.md` §1 decision; P2 sizes against it |
+| GPU topology / VRAM basis | Open (external) | P2 sizes against it |
 | Dynamo fit for one small model | Deferred | P6 benchmark spike with go/no-go |
 | Banking API (aggregator vs bank-direct) | Planned future | CSV/OFX until import pain justifies a vendor (§13); credentials `user`-type when it lands |
 | Offsite/NAS backup | Planned future | Cross-mirror is the floor; evaluate at P6 |
@@ -1564,7 +1557,7 @@ Each becomes its own mini-increment with its own gate; none ship bundled.
 | Verify before hardening (rule #5) | SSH verify-then-harden (§8.1/§8.2); Create→Verify→Retire rotation (§13) |
 | Policy/config as code | Semaphore templates, gate tenant configs, MCP profile, fixtures — all repo-versioned, PR-gated |
 | OpenBao layout + blast radius | §7.12 — per-host secret sets and SSH keys; no cross-VM credential sharing |
-| `_secret_definitions`/`_env_templates` schema | §7.7 matches `manage-secrets.yml` interface exactly [14] |
+| `_secret_definitions`/`_env_templates` schema | §7.7 matches `manage-secrets.yml` interface exactly [13] |
 | Podman default; engine never hardcoded | `container_engine: podman` in inventory; `detect_runtime`/`compose` wrapper everywhere |
 | Caddy per-site fragments | §7.6 — one template serves prod + dev domains via `distribute-caddy-site.yml` [5] |
 | New-service onboarding reused | llm-gate follows the full checklist as its own service (§11.1) [3] |
@@ -1575,13 +1568,13 @@ Each becomes its own mini-increment with its own gate; none ship bundled.
 
 ## 23. Source context & references
 
-This plan instantiates, rather than invents, the platform's deployment doctrine. The five Critical Deployment Rules and the OpenBao secrets flow come from the root conventions [1]; the composable playbook shape, the `_secret_definitions`/`_env_templates` schema, and the task library from the composability architecture [2][14]; and the Phase 0–1 sequence follows the service-integration onboarding checklist step for step [3]. Operational boundaries (Semaphore-only operations, read-only emergency SSH) [7], CI obligations [8][9], the no-`no_log` redaction standard [10], the branch-test-then-merge flow [11], and this document's own structure [12] are all inherited, not local choices.
+This plan instantiates, rather than invents, the platform's deployment doctrine. The five Critical Deployment Rules and the OpenBao secrets flow come from the root conventions [1]; the composable playbook shape, the `_secret_definitions`/`_env_templates` schema, and the task library from the composability architecture [2][13]; and the Phase 0–1 sequence follows the service-integration onboarding checklist step for step [3]. Operational boundaries (Semaphore-only operations, read-only emergency SSH) [7], CI obligations [8][9], the no-`no_log` redaction standard [10], the branch-test-then-merge flow [11], and this document's own structure [12] are all inherited, not local choices.
 
-The concrete artifacts copy proven code rather than novel designs: the deploy playbook mirrors UhhCraft's [13], all scripts source the shared bash library [18], the compose file applies the podman-compose compatibility rules [4] to the established per-service scaffolding pattern — including the per-service MinIO precedent [16], public exposure uses the live Caddy fragment system [5], the AI-user credential writeback mirrors the Diode pattern [15], Semaphore templates follow templates-as-code [17], and the rotation/backup discipline comes from the credential-lifecycle and disaster-recovery plans [6][21]. Host variables, VM sizing, the VMID range, and the public/private boundary come from the private site-config schema [24].
+The concrete artifacts copy proven code rather than novel designs: all scripts source the shared bash library [16], the compose file applies the podman-compose compatibility rules [4] to the established per-service scaffolding pattern, public exposure uses the live Caddy fragment system [5], the AI-user credential writeback mirrors the Diode pattern [14], Semaphore templates follow templates-as-code [15], and the rotation/backup discipline comes from the credential-lifecycle and disaster-recovery plans [6][17]. Host variables, VM sizing, the VMID range, and the public/private boundary come from the private site-config schema [19].
 
-Adjacent plans supply the rest: Plane A consumes the WisAI design, including its explicit rejection of a LiteLLM-style proxy [19], and is sized against the pending GPU-topology decision [20]; the legacy-path hazard that shaped the secret-management decision is documented in the held NocoDB/n8n migration plan [23]; optional policy-as-code arrives via the OPA plan [22]. Outside the repos, the container topology and custom-image build path derive from upstream frappe_docker [25], and the gate's model IDs, pricing, and usage-accounting fields come from the Anthropic API reference [26]; the MCP server candidates are named but unverified [27].
+Adjacent plans supply the rest: optional policy-as-code arrives via the OPA plan [18]. Outside the repos, the container topology and custom-image build path derive from upstream frappe_docker [20], and the gate's model IDs, pricing, and usage-accounting fields come from the Anthropic API reference [21]; the MCP server candidates are named but unverified [22].
 
-**Explicit assumptions:** [25] and [27] were not fetched during planning and are tracked as open items in §21 — verify at P1/P3 kickoff respectively. Repo citations reflect the 2026-06-09 convention review; line ranges are anchors from that review, not exact pins.
+**Explicit assumptions:** [20] and [22] were not fetched during planning and are tracked as open items in §21 — verify at P1/P3 kickoff respectively. Repo citations reflect the 2026-06-09 convention review; line ranges are anchors from that review, not exact pins.
 
 ### References
 
@@ -1599,30 +1592,25 @@ Tags: *(repo)* agent-cloud file · *(private)* site-config · *(web)* external �
 10. *(repo)* `plan/development/ANSIBLE-CREDENTIAL-REDACTION-PLAN.md` — callback-plugin redaction replacing `no_log`.
 11. *(repo)* `plan/architecture/BRANCH-TESTING-WORKFLOW.md` — `service_branch` deploy/validate/rollback used by every phase.
 12. *(repo)* `plan/architecture/architecture-reference.md:15-43` — plan-document standards (status lifecycle, mermaid-only diagrams).
-13. *(repo)* `platform/playbooks/deploy-uhhcraft.yml` — exemplar composable deploy this plan's playbook mirrors, including the Caddy fragment phase.
-14. *(repo)* `platform/playbooks/tasks/manage-secrets.yml` — fetch/generate semantics; `secrets.*` template namespace; `service_name`-keyed secret paths.
-15. *(repo)* `platform/playbooks/tasks/manage-diode-credentials.yml` — runtime-credential writeback pattern mirrored in §10.3.
-16. *(repo)* `platform/services/uhhcraft/deployment/` — compose.yml / deploy.sh / env.j2 / caddy-site.j2 exemplars; per-service MinIO precedent (also `inference-comfyui`, `inference-hunyuan3d`).
-17. *(repo)* `platform/semaphore/templates.yml` + `setup-templates.yml:48-77` — templates-as-code schema; idempotent create-or-update apply.
-18. *(repo)* `platform/lib/common.sh` — `detect_runtime`, `compose`, `wait_for_healthy`, `wait_for_http` used by all scripts.
-19. *(repo)* `plan/development/WISAI-TO-SKYNET-MIGRATION-PLAN.md` (+ archived `plan/archive/WISAI-DEPLOYMENT-PLAN.md`) — Plane A inference (skynet `/v1`); LiteLLM rejection; `secret/services/inference/*` paths (Phase 2 dependency).
-20. *(repo)* `plan/development/UHHCRAFT-GPU-PASSTHROUGH.md` — GPU hardware decision gate feeding §2/§9; VRAM constraints.
-21. *(repo)* `plan/development/DISASTER-RECOVERY-PLAN.md` — backup/restore strategy and drill cadence (§8.3–§8.4, §13).
-22. *(repo)* `plan/development/OPA-INTEGRATION-PLAN.md` — policy-as-code option (§13).
-23. *(repo)* `plan/development/nocodb-n8n-composable-migration.md` — held legacy-path migration; stateful-secret hazard informing the secrets decision (§3).
-24. *(private)* site-config: `inventory/production.yml`, `proxmox/vm-specs.yml`, `plan/ARCHITECTURE-REFERENCE.md` — host-variable schema; VMID 200–299 range; template VM 9000; public/private repo boundary; `secrets/` DR layout. Reviewed 2026-06-09.
-25. *(web)* frappe/frappe_docker — `https://github.com/frappe/frappe_docker` — compose topology (configurator one-shot, backend/frontend/websocket/workers/scheduler) and the layered custom-image build (§10.2). **Assumption: from prior knowledge, not fetched; verify compose details and image tags at P1A.**
-26. *(skill)* Anthropic Claude API reference (claude-api skill bundle; model/pricing tables cached 2026-05-26) — model IDs and $/MTok pricing; `/v1/messages` request shape; `usage` token fields backing the budget ledger (§11.2).
-27. *(web)* Frappe Assistant Core / `mascor` / `appliedrelevance` frappe-mcp-server — candidate repo names from requirements intake. **Assumption: unverified; the P3 decision task (§10.1) confirms before any build.**
+13. *(repo)* `platform/playbooks/tasks/manage-secrets.yml` — fetch/generate semantics; `secrets.*` template namespace; `service_name`-keyed secret paths.
+14. *(repo)* `platform/playbooks/tasks/manage-diode-credentials.yml` — runtime-credential writeback pattern mirrored in §10.3.
+15. *(repo)* `platform/semaphore/templates.yml` + `setup-templates.yml:48-77` — templates-as-code schema; idempotent create-or-update apply.
+16. *(repo)* `platform/lib/common.sh` — `detect_runtime`, `compose`, `wait_for_healthy`, `wait_for_http` used by all scripts.
+17. *(repo)* `plan/development/DISASTER-RECOVERY-PLAN.md` — backup/restore strategy and drill cadence (§8.3–§8.4, §13).
+18. *(repo)* `plan/development/OPA-INTEGRATION-PLAN.md` — policy-as-code option (§13).
+19. *(private)* site-config: `inventory/production.yml`, `proxmox/vm-specs.yml`, `plan/ARCHITECTURE-REFERENCE.md` — host-variable schema; VMID 200–299 range; template VM 9000; public/private repo boundary; `secrets/` DR layout. Reviewed 2026-06-09.
+20. *(web)* frappe/frappe_docker — `https://github.com/frappe/frappe_docker` — compose topology (configurator one-shot, backend/frontend/websocket/workers/scheduler) and the layered custom-image build (§10.2). **Assumption: from prior knowledge, not fetched; verify compose details and image tags at P1A.**
+21. *(skill)* Anthropic Claude API reference (claude-api skill bundle; model/pricing tables cached 2026-05-26) — model IDs and $/MTok pricing; `/v1/messages` request shape; `usage` token fields backing the budget ledger (§11.2).
+22. *(web)* Frappe Assistant Core / `mascor` / `appliedrelevance` frappe-mcp-server — candidate repo names from requirements intake. **Assumption: unverified; the P3 decision task (§10.1) confirms before any build.**
 
 ## 24. Revision history
 
 | Date | Change |
 |---|---|
 | 2026-06-09 | Initial draft (six-lens cross-review; strategy-level) |
-| 2026-06-09 | Full refinement: validated against agent-cloud/site-config conventions; corrected post-deploy OpenBao writeback to the Ansible pattern; per-service MinIO; WisAI/o11y dependencies made explicit; complete Phase 0–1 implementation detail; gate sidecar design with budget ledger; per-phase validation tables; convention compliance map |
+| 2026-06-09 | Full refinement: validated against agent-cloud/site-config conventions; corrected post-deploy OpenBao writeback to the Ansible pattern; per-service MinIO; o11y dependencies made explicit; complete Phase 0–1 implementation detail; gate sidecar design with budget ledger; per-phase validation tables; convention compliance map |
 | 2026-06-11 | Self-explaining pass: added Target outcome, Decision criteria, credential-writeback and gate-request sequence diagrams, and cited Source context & references |
-| 2026-06-11 | Interactive review: dev VM with full credential isolation (`erpnext-dev`, `<erpnext-dev-domain>`); Phase 1 split into 1A (dev, synthetic books) / 1B (prod, cutover + opening balances via fixtures playbook, CSV/OFX bank import); cross-mirror backups with restricted writers + retention; **llm-gate promoted to a multi-tenant platform service on its own VM**; k-threshold re-identification rule; fail-closed classification; P2 floats on WisAI; banking API + offsite backup recorded as planned future work; simplification pass (boilerplate playbooks/templates compressed to contracts + exemplar pointers) |
+| 2026-06-11 | Interactive review: dev VM with full credential isolation (`erpnext-dev`, `<erpnext-dev-domain>`); Phase 1 split into 1A (dev, synthetic books) / 1B (prod, cutover + opening balances via fixtures playbook, CSV/OFX bank import); cross-mirror backups with restricted writers + retention; **llm-gate promoted to a multi-tenant platform service on its own VM**; k-threshold re-identification rule; fail-closed classification; P2 floats on skynet inference; banking API + offsite backup recorded as planned future work; simplification pass (boilerplate playbooks/templates compressed to contracts + exemplar pointers) |
 | 2026-06-12 | Security-review fixes: owner email removed; service-domain literals replaced with `<erpnext-prod-domain>`/`<erpnext-dev-domain>` placeholders — real values moved to the private site-config repo (`site-config/erpnext/README.md`) |
 
 ---

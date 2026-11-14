@@ -82,7 +82,7 @@ PR #10) to GHCR as `ghcr.io/uhstray-io/skynet-tier2`. The inventory pins that di
 
 skynet calls OPA, the gateway and Semaphore over HTTPS. `SSL_CERT_FILE` replaces the process's
 whole trust store, so each overlay names a bundle that holds everything skynet must verify. The
-base `compose.yml` never sets `SSL_CERT_FILE`.
+base `compose.yml` never sets `SSL_CERT_FILE`. Which of the two bullets applies is decided by the inventory, not by a variable: local mode holds only when every host but `localhost` is named `<service>-local` (`_skynet_local` in `deploy-skynet.yml`, read from `groups`), and a `local_mode` that disagrees with it is refused before anything changes (`tasks/assert-local-mode-identity.yml`).
 
 - **Local-dev** (`compose.local.yml`, loaded when LOCAL_MODE=true): every local endpoint is a
   step-ca leaf. The bundle is `./certs/step-ca-bundle.crt`, the root and intermediate, written by
@@ -166,7 +166,7 @@ their identity changes, so a renewal needs no restart.
   containers. An unchanged re-run recreates nothing. The local bring-up on a locally built image
   is tolerated by `step_pull_images`, as honcho does.
 - **`restart: always`** on both services. Podman's boot unit starts only `always` containers
-  (enforced by `platform/tests/test_restart_policy.bats`).
+  (enforced by `platform/tests/suite/restart_policy.rs`).
 - **Healthchecks use `CMD-SHELL`**, the same form honcho uses, because podman-compose mis-quotes
   exec-form `CMD` lists.
 - **`skynet-db` gets no `env_file`.** It takes only `POSTGRES_*` from the compose environment, so

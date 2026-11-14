@@ -96,12 +96,6 @@ setup() {
   assert_contains "$output" "local-deploy-erpnext"
 }
 
-@test "Makefile: local-up treats n8n as best-effort (leading dash)" {
-  # n8n pull can rate-limit; local-up must not abort the whole stack on failure.
-  run grep -E '^\s*-.*local-deploy-n8n' "$MF"
-  [ "$status" -eq 0 ]
-}
-
 # ── Delegation convention: targets delegate to scripts/local-dev.sh ──────────
 
 @test "Makefile: core targets delegate to \$(LOCAL_DEV) with the right subcommand" {

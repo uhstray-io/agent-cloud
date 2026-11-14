@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x7** | Unverified claim | 7 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x8** | Unverified claim | 8 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -48,21 +48,26 @@ and why.
 | 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
-| 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
+| 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
-| 1.21 | **x4** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 4 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed |
+| 1.21 | **x5** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 5 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
 | 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
-| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) | Unverified claim | 1 | Convention |
-| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) | Unverified claim | 11 | Convention; guard proposed (count ≥ 3) |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) | Unverified claim | 3 | Convention; guard proposed (count 3) |
+| 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
 | 1.32 | Diagnosed a survey refusal from raise sites its path never reaches, missing the exception handler, after the fix had already merged (widens 1.18) — **x2** (2026-11-10: called a survey a read-only reproduction of a deploy refusal because the category word matched; it failed at a different step) | Unverified claim | 2 | Convention; one helper test-guarded (`test_o11y_availability_namespace_survey.py`) |
 | 1.33 | Called the Plane GitHub integration "working end to end" from webhook deliveries alone; the in-app integration page, the part a person uses, did not list GitHub | Unverified claim | 1 | Test (Phase 3e of Deploy Plane asserts every marketplace application exists, `test_the_marketplace_phase_judges_the_script_summary`); the general rule Convention |
+| 1.34 | Recorded that a PR changed exactly a task's scoped files from one commit's stat; the PR's merge diff carried four more files from another task | Unverified claim | 1 | Convention |
+| 1.35 | Offered an operator a drill option, then recorded it, from a truncated read of a playbook header; the fault drill has three modes and stops Grafana (widens 1.19) | Unverified claim | 1 | Convention |
+| 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
+| 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
+| 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -101,6 +106,7 @@ and why.
 | 2.36 | A test stubbed the one OS read (`/proc/1/ns/net`) whose permission decided the outcome; the rootless prod helper got EACCES on every run and printed the generic refusal (widens 2.22) — **x2** (2026-11-10: the source command's catch-all reused `native_source_unavailable`) | Wrong-reason pass | 2 | Test (`test_o11y_availability_namespace_survey.py`: stub refuses pid 1, catch-all has its own category; `test_o11y_scrape_baseline.py`: `test_source_cli_prints_its_own_word_for_an_unexpected_exception`); class Convention |
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
+| 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 1 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -111,7 +117,7 @@ and why.
 | 3.8 | Launched a production deploy as a "dry run" through the Semaphore API with a top-level `dry_run` the server ignores; it ran for real through the secret phase | Live state | 1 | Test: committed launcher places and gates the flag before launch |
 | 3.9 | A mutation test aimed a playbook write at `~/.ssh/known_hosts`; the harness ran it for real on the workstation and overwrote the operator's real known_hosts | Live state | 1 | Test (pinned targets + definitions, before every run) + runtime path asserts against an inline root + default-deny sandboxed harness on macOS/bwrap; CI has no kernel sandbox |
 | 3.10 | A test wrote scratch playbooks into the tracked tree and raced parallel tests that glob it | Working-tree damage | 1 | Convention (session-end tree check proposed) |
-| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`) |
+| 3.11 | Made a deploy stop recreating containers without auditing a step that relied on it; a directory reset under a live bind mount emptied Authentik's custom blueprints in prod | Live state | 1 | Test (`test_no_bind_mount_dir_delete.py` + FORCE_RECREATE case in `test_compose_up_if_changed.bats`); widened by 3.24 |
 | 3.12 | Launched two `(Dev)` deploys through the API without `service_branch`; Semaphore applies survey defaults only in its form, so both hosts checked out `main` under Dev playbooks | Live state | 1 | Playbook guard (`assert-placement-branch.yml`) + launcher default fill + tests (`test_placement_branch_guard.py`, `test_semaphore_launch.py`, mutation-checked) |
 | 3.13 | The `dev` -> `main` promotion merge let the repo's delete-head-branch-on-merge setting delete `dev`, the long-lived integration branch; the main -> dev sync then failed | Live state | 1 | Ruleset (`protect-dev.json`, deletion rule) + test (`test_ruleset_protect_dev.py`); live since 2026-10-08 |
 | 3.14 | Ran a real rollback drill on the strength of a dry run that skips the step that failed; the gateway came up broken and stayed down ~6 minutes | Live state | 1 | Test (`test_rollback_inference_route.py`: validation before recreate, auto-restore on a failed readiness) |
@@ -123,6 +129,8 @@ and why.
 | 3.20 | **x2** — Launched production Semaphore tasks at the top of the hour, into the scheduled burst; the shared inventory file was removed mid-parse, failing my task; the same race may have caused the four scheduled tasks that started with it to fail (inferred, not proven) (x2: three more launches in forbidden minutes, no failure) | Live state | 2 | Convention (launch away from schedule slots); per-task inventory proposed; widened by 3.22 |
 | 3.21 | Merged and synced two shared-inventory switches for a mode never run in production (availability probes on, Alloy self-source declared native) before any proof run read them; every `Deploy o11y` refused until both were reverted (related: 3.15) | Live state | 1 | Convention (merge such a switch off; prove it first); read-only pre-enable gate run proposed |
 | 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
+| 3.23 | Ran an 18-minute production drill whose second deploy clones the moving `dev` head against a SHA pinned at launch; three merges landed mid-drill and the restore refused, leaving the drilled projection live | Live state | 1 | Convention |
+| 3.24 | A deploy placed files OPA reads only at startup and never restarted it; production OPA served its 2026-11-01 policies until 2026-11-12, twelve policy commits not live (widens 3.11) | Live state | 1 | Test for OPA (`opa:` cases in `test_compose_up_if_changed.bats`); general form Convention; verify gap AC-845 |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -135,12 +143,12 @@ and why.
 | 4.10 | **x4** — A heredoc script and a stdin redirect both targeted one interpreter; it parsed the operator token file as source and the syntax error printed the token | Secret in transcript | 4 | Test + Claude project PreToolUse hook (`.claude/hooks/guard-secret-stdin.py`); Codex hook remains open |
 | 4.11 | A workstation home path reached a committed ledger entry; the audit grep for it ran by hand only | Data handling | 1 | Pre-commit hook (`no-machine-paths`) |
 | 5.1 | Security check duplicated per caller; a fix reached three copies and missed two | Duplication | 1 | Test |
-| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips) | Process | 12 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
+| 5.2 | Committed while a test was failing, because the check did not gate the commit (repeat 2026-09-25: a merge after a mergeability read, joined by `;`; 2026-10-30: a push under `SKIP_TESTS=1`; 2026-11-02: another, past two repo-wide guards; 2026-11-03: past the TLS guard again; 2026-11-04: a ledger edit past the citation guard; 2026-11-05: a playbook change past the check-mode contract test; 2026-11-08: a template comment past the check-mode injection guard; 2026-11-09: a template-order test the fast subset skips; 2026-11-11: a new test file past the spawn guard; 2026-11-11: a test-only push under `SKIP_TESTS=1`, past the line-window ratchet) | Process | 14 | Pre-push hook (bypassed whole by `SKIP_TESTS=1`; narrower skip proposed); ledger citation test at pre-commit when `docs/MISTAKES.md` is staged |
 | 5.3 | Merged a PR while its review was rate-limited | Process | 1 | Convention (user-stated) |
 | 5.4 | A command's own planning boundary honoured over an explicit instruction to implement | Process | 1 | Convention + stop hook |
 | 5.5 | Repeated 5.2 — committed with a failing test; hooks do not gate the suite | Process | 1 | Pre-push hook |
 | 5.6 | Repeated 5.2 twice more — committed with a failing suite; hooks did not gate it | Process | 2 | Pre-push hook |
-| 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | 1 | Convention (user-stated) |
+| 5.7 | Pushed, opened and merged a PR without the per-action authorization | Process | 1 | Superseded by 5.26 |
 | 5.8 | A required CI gate installed whatever upstream published last | Reproducibility | 1 | Pinned binary and SHA256 in CI |
 | 5.9 | **x2** — Added AI attribution to commits against the repo rule (six commits, one pushed); then to a PR body, which no hook reads (widened by 5.15) | Process | 2 | commit-msg hook |
 | 5.10 | **x2** — Switched branches inside a checkout another task was using; the rule is one worktree per work item (widened by 5.14) | Process | 2 | Convention (hook proposed) |
@@ -156,6 +164,12 @@ and why.
 | 5.20 | A promotion merged a head newer than the one its review covered; widens 5.16 from feature-to-dev merges to `dev` to `main` promotions | Process | 1 | Convention (the pin is an operator-side practice) |
 | 5.21 | A worker was told amending an unpushed commit was acceptable; the operator's rule has no such exception | Process | 3 | Superseded (operator decision 2026-10-26) |
 | 5.22 | The `Python core` CI job outgrew its 30-minute `timeout-minutes` as tests grew; two runs of one branch were cancelled at 30m16s (repeat 2026-10-31: PRs 805 and 806, cancelled at 98% and 99%) | Process | 2 | Test for the partition (`test_ci_python_partition.py`); runtime growth: a CI warning above half the timeout (non-blocking, so not enforcement) and data-only rebalancing |
+| 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
+| 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
+| 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
+| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
+| 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -208,6 +222,8 @@ and why.
 | 10.34 | The o11y liveness watcher named every non-OK datasource health answer "prometheus datasource unhealthy" and paged on one sample; the repeated pages were Grafana-side 500s (cause unconfirmed; lock contention in Grafana's SQLite store suspected) while Prometheus served no errors | Mechanism never exercised | 1 | Test (`test_check_o11y_liveness.py`: 500 named Grafana-side, one blip posts nothing, persistent failure probed three times; mutation-checked against the old playbook) |
 | 10.35 | Merged a tag-pushing workflow whose push path no run had exercised; GitHub refused its first tag because the job token lacked the `workflows` permission | Mechanism never exercised | 1 | Convention (pre-merge write probe with the real credential) |
 | 10.36 | An assert's `fail_msg` read a key only a failed summary carries; ansible-core renders `fail_msg` even when the assertion holds, so a successful Deploy Plane run failed after recreating the stack | Mechanism never exercised | 1 | Test (`test_the_webhook_assert_renders_with_and_without_an_error` runs the task through ansible-playbook both ways); the general form Convention |
+| 10.37 | The console session was documented and specified as an 8-hour inactivity expiry, but the session layer never re-saved on a read, so it expired 8 hours after sign-in; the first fix made every re-save an upsert that could bring a signed-out session back | Mechanism never exercised | 1 | Test (`a_signed_in_request_refreshes_the_session_cookie` proves the cookie refresh; `save_moves_the_stored_expiry` and `a_signed_in_request_moves_the_stored_session_expiry` prove the stored expiry moves; `save_never_brings_back_a_deleted_session`, `save_never_extends_an_expired_session`; mutation-checked) |
+| 10.38 | Fixed the console's inactivity expiry by re-saving the session on every request without asking which requests are activity; the board's background polling counts, so a session in a visible tab never expires (widens 10.37) | Mechanism never exercised | 1 | Instance: Test (`a_session_ends_at_its_absolute_lifetime_however_active`, `lifetime_ends_twelve_hours_after_sign_in`; AC-747, #1125); class Convention |
 | 11.1 | 76 assertions across the suite could never fail — `!` and `[[ ]]` are exempt from `set -e` | False-green test | 2 | **Ratchet test** (`test_assertions_are_real.bats` + `known_inert_assertions.txt`) |
 | 11.2 | Sourced a config file instead of reading it, turning every credential into shell code | Live-state damage | 1 | Test |
 | 11.3 | Committed without running the suite — third occurrence (repeat 2026-10-15: `SKIP_TESTS=1` justified by an unchecked "the suites do not cover this") | Process | 2 | Pre-push hook (status note 2026-10-02) |
@@ -261,7 +277,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 7** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07
+**Occurrences: 8** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -345,6 +361,18 @@ passed. Why the rule did not fire: no file was grepped. The gap was read from a 
 that lists possible causes, and the stored artifact the claim was about was never opened. A guard's
 fail message names what it checks, not what is missing; the cause of a failure comes from the
 failing task's full output and the artifact it names.
+
+**Occurrence 8 — 2026-11-12 (a mechanism inferred from the tracker's state).** Entry 5.27, as
+first written in PR #1134, said the Plane sync "created even the ticked tasks in Backlog" and that no
+change "ticked the task it finished". I inferred both from Plane showing tasks 1.1 to 1.5 in Backlog
+while `tasks.md` on `main` had them ticked. I told the operator the first, and wrote both into the
+entry. Both were false. The sync skips a task already ticked when first seen; 1.1 to 1.5 were ticked
+on `dev` only when the sync first read `main`; and `21ad7e8bc`, my own commit, had ticked 1.5. The
+independent review found it by reading `openspec_to_plane.py` and the git history. Why the rule did
+not fire: no file was grepped. The behaviour was read from the tracker's present state, and the code
+that made that state, and the history of the ticks, were never opened. A tracker's state is an
+output: its cause comes from the code that wrote it and from what that code read, on the branch
+and at the time it read it.
 
 ### 1.3 A masked exit code reported as success
 
@@ -1062,7 +1090,7 @@ live rule and contact state", "real deploy verifies every provisioned dashboard 
 renders the alert file with the inference scrape and probe enabled and fails when an
 `inference_*` rule is missing or unrouted live, or a dashboard file's uid is not live.
 
-**Occurrences: 4** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09
+**Occurrences: 5** — 2026-10-04, 2026-10-13, 2026-10-28, 2026-11-09, 2026-11-12
 
 **Occurrence 2 — 2026-10-13.** Verify o11y Service (Dev) tasks 5257 and 5262 passed with the
 agentgateway canary, and the operator was told the Loki line read back "is a span log", so
@@ -1122,6 +1150,18 @@ task tagged `skynet <workflow_id> <step>`, so "skynet launches through the gate"
 own selection rather than an inference from its neighbours; until it exists, that claim is not
 made for any environment where the probe has not run.
 
+
+**Occurrence 5 — 2026-11-12.** The handoff for the skynet registry rollout stated "Production
+OPA has the stamp: Deploy OPA (Dev) task 15168 deployed agent-cloud 188ce892, whose data.json has
+service-assess reviewed: true." The deploy's success was cited as proof of what the running OPA
+answered. Its verify reads the placed files (`opa test --bundle /policies`) and asks sample
+decisions that do not depend on the stamp, so it passed with the server still on its 2026-11-01
+policies (3.24). The rule did not fire because the claim named the deploy, not its check: "it
+deployed the commit" read as "the server runs the commit". It cost a live probe failure (task
+15656) and an investigation, and touched no live state. Guard proposal, retiring `Convention`
+for this form: Plane AC-845, a Deploy OPA verify that asks the running server a decision whose
+expected answer is computed from the placed data, so "the deploy passed" includes "the server
+loaded it".
 ### 1.22 A runner's tool version stated twice without reading the running system
 
 **What happened.** While diagnosing why a production dry run of `Rollback Inference Route (Dev)`
@@ -1284,6 +1324,8 @@ its merge date, or say the origin is unverified.
 
 ### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
 
+**Occurrences: 3** — 2026-10-31, 2026-11-11, 2026-11-12
+
 **What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
 `[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
 test, and cited a throwaway Bats file it had run to show it. I relayed that to Joe as a
@@ -1304,9 +1346,51 @@ happens to pass). Until then, a claim reaches Joe or a merge decision labelled `
 
 **Enforced by.** Convention.
 
+**Occurrence 2 — 2026-11-11.** The independent review of #1020 (plan 23, the release train)
+said the merge guard's release-budget count should be taken "at the pinned base SHA". I wrote that
+into plan 23's design table and into Plane item AC-699 as "refuses unless that checkout's
+`origin/dev` equals the pull request's pinned base SHA", and #1020 merged with it, without checking
+what GitHub's `base.sha` holds. Building AC-699 on 2026-11-12, I compared it with the live `dev`
+ref (`gh api repos/uhstray-io/agent-cloud/pulls/<n> -q .base.sha` against
+`gh api repos/uhstray-io/agent-cloud/git/ref/heads/dev -q .object.sha`): each of the 8 open pull
+requests into `dev` that `gh pr list -L 8` returned carried a `base.sha` older than the tip
+`c0e58d71`. The gate as planned would have refused
+almost every merge. It was caught before any code. The count now checks the fetched `origin/dev`
+against GitHub's live `dev` ref (#1093), and plan 23 records the change. Why the rule did not fire:
+the claim came as a review fix, phrased as a constraint to add, so I read it as a design decision and
+not as a statement about how GitHub's API behaves. A reviewer's fix that rests on an API field's
+behaviour is a subagent claim like any other, and is checked before it goes into a plan.
+
+**Occurrence 3 — 2026-11-12.** Round 2 of the v0.15.0 promotion review (#1112) reported that
+the 26 template names the promotion drops from `platform/semaphore/templates.yml` were live
+`main`-bound templates that would point at deleted playbooks after the merge, and should be
+retired. I posted that on #1112 as an after-merge checklist item. The reviewer had compared
+`templates.yml` at `main` and at the head; it had not read Semaphore. After the merge I read the
+live catalog (`GET /api/project/1/templates`): 243 templates, none with any of the 26 names. The
+promotion's own pre-merge check, taken from the live API the same day, already said so (7
+templates with missing playbooks, all already missing on `main`). I corrected the comment within
+the hour, before anyone acted on it. Why the rule did not fire: the claim was about live state but
+arrived as a reading of a file, so it looked like a repository fact I could relay. A statement
+about what is deployed or registered is a live-state claim, whatever file it was inferred from.
+
+**Proposed guard (count 3 retires `Convention`).** One contract and one mechanism.
+1. Contract (not a mechanism): the `pr-reviewer` agent's report labels every finding's evidence
+   `repo:` (a file at a ref), `live:` (a command against the running system, quoted) or
+   `inferred:`. A claim about deployed state with no `live:` command is `inferred:`.
+2. Mechanism, failing closed: a PreToolUse hook on `gh pr comment`, `gh pr review` and
+   `gh api …/comments` refuses any body without an `Evidence` section in which every line starts
+   `repo:` or `live:`, and refuses a body that contains `inferred:` anywhere. A reworded finding
+   posted with no `Evidence` section (as happened here) is refused rather than let through. Limit:
+   the hook checks that every evidence line names a source, not that every claim has one, nor that
+   the source says what the line claims.
+
+The hook does not replace the recheck in The rule: a `repo:` line names a file at a ref, not
+proof that the lead re-read it against the claim, so the recheck stays required with the hook in
+place. Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
+
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
-**Occurrences: 11** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10
+**Occurrences: 12** — 2026-11-02, 2026-11-03, 2026-11-04, 2026-11-05, 2026-11-07, 2026-11-04 (recorded late), 2026-11-08, 2026-11-09, 2026-11-10, 2026-11-10, 2026-11-10, 2026-11-11
 
 **What happened.** `make local-bootstrap` failed because the existing `local-semaphore`
 container's checkout bind source had been deleted, so the encryption-key carry step in
@@ -1436,6 +1520,25 @@ behavioural claim with no citation, has no mechanical detector; it stays Convent
 
 
 **Occurrence 11 — 2026-11-10.** Launching check-mode runs of the `main`-bound `Provision VM` and `Resize VM` templates for the OPA host, I passed `target_service=opa_svc`, the group name, taken from another template's default (`Probe launch-gate (Dev)`'s `probe_target_service` defaults to `opa_svc`) without reading these templates' own survey descriptions ("Service whose <name>_svc group holds the declaration (e.g. github_runner)", "Service name as keyed in proxmox/vm-specs.yml (e.g. postiz)"). Both playbooks append `_svc` (`provision-vm.yml:112`, `resize-vm.yml:168`), so Semaphore tasks 14728 and 14729 refused before touching Proxmox, naming the group `opa_svc_svc`; the relaunch with `target_service=opa` passed (14731, 14734). This is occurrence 2's slip again, on the same field and the same two templates. Why the rule did not fire: it was not recalled; a survey value set on a launcher command line felt like an input, not a claim about what the template does. Guard proposal: the launcher (`scripts/semaphore-launch.py`) refuses a `target_service` ending in `_svc` for every template on OPA's existing `bare_service_name_templates` list (`platform/services/opa/deployment/policies/agentcloud/data.json`), and OPA's own bare-name check refuses the same suffix, so one list guards both the operator launcher and the launch gate.
+
+**Occurrence 12 — 2026-11-11.** Answering a review finding on PR #1082 (the Plane mobile app's OIDC callback), I wrote that a `plane_redirect_uri` missing `/auth/oidc/callback/` is harmless because "the existing promotion verify fails it on the web redirect". It does not: `platform/services/authentik/deployment/templates/verify-oidc.py.j2` compares the live `redirect_uris` against the inventory value itself (`want not in got`), so a wrong inventory value is applied and then found present, and the check passes. I had read that template earlier in the same session, for a different question, and stated its coverage from its purpose ("live OIDC config diverged from intent") rather than its comparison. The pr-reviewer agent caught it in its review round on head `3e4e4791`; the PR comment was then corrected in place. Why the rule did not fire: like occurrence 9, a behavioural claim about a check's coverage in outward text, written while composing a reply rather than a brief, so the "read the logic before describing it" habit was not triggered; having read the file earlier made the claim feel verified. No new guard: occurrence 9's analysis holds (no mechanical detector for an uncited behavioural claim); the independent review is what caught it.
+
+**Occurrence 13 — 2026-11-12.** The publish step for a reviewed release-notes body (PR #1064) refused any
+`secret/services/semaphore` url that did not match `^https://[^/]+$`, a format I wrote from the URL the launcher
+uses, without reading the path's other readers. One of them, `platform/playbooks/promote-semaphore-admins.yml:77-84`,
+documents that the stored URL may end in `/` and trims it (task 9870, #604), and others check the transport with the
+shared `tasks/assert-bao-transport.yml`, which admits https and http to loopback or a private address. The first real
+publish (Semaphore task 15360, v0.14.0) stopped at that assert before any write. The assert also required an
+`api_token`, and its result is hidden, so which half failed is not established; the url half is the one written without
+reading the other readers. The review rounds and the tests used invented values, so neither could see the stored one.
+Fixed by trimming the URL as
+`promote-semaphore-admins.yml` does, using the shared guard, and splitting the assert so a refusal names its field. Why the rule did not fire: a validator for a stored
+value felt like a guard, not a claim about the value, so its other consumers were not read. Guard proposal: a test that
+refuses an `assert` on a field read from a shared OpenBao path unless it is one of the shared checks for that field
+(`tasks/assert-bao-transport.yml` for a URL).
+
+The rule is widened in 1.36.
+
 ### 1.30 Explained a Linux-only failure with an unchecked macOS fact (widens 1.29)
 
 **Occurrences: 1** — 2026-11-03
@@ -1535,6 +1638,117 @@ the producer identity and Prometheus targets read now have their own words, so t
 **The rule.** An integration is "working" only once every leg a person uses has been exercised, the in-app setup page included. Name the legs that were proven and the ones that were not.
 
 **Enforced by.** For this integration, a test: Deploy Plane Phase 3e creates the missing applications and fails unless every one exists (`test_the_marketplace_phase_judges_the_script_summary`). The general rule is Convention.
+
+### 1.34 Recorded a PR's scope from one of its commits
+
+**What happened.** On 2026-11-11, closing openspec task 1.1a.3 (a source validation gate whose job is to verify exact source ownership), I wrote into `tasks.md` on PR #1073 that PR #803 "changed exactly the scoped files". My evidence was `git show --stat 03539978`, the first of #803's seven commits. The independent review diffed #803's merge `403afc62` against its first parent and found nine files, not five: #803 also carried three scrape-baseline and `deploy.sh` commits that belong to another task. The review caught it before merge.
+
+**Root cause.** A claim about a pull request was established from one commit inside it. A commit's file list proves nothing about the PR's merge diff, and the gate being recorded existed to check exactly that.
+
+**The rule.** A scope claim names the object it was measured on. Take a PR's file set from `git diff <merge>^1 <merge>` (or `gh pr view --json files`). Take a source slice from the exact commits listed by SHA. Never let one stand in for the other.
+
+**Enforced by.** Convention.
+
+### 1.35 Offered an operator a drill option, and then recorded it, from a truncated read (widens 1.19)
+
+**What happened.** On 2026-11-11 I asked Joseph whether to run the endpoint absent-series proof (the open "Endpoint availability live receipt" in 2.3). The recommended option said Alloy would be stopped "through a Semaphore playbook", that the missing-probe alert would fire, and that Alloy would then be restarted. He chose "Run it next slot". I then told him no such mechanism existed, and wrote the first draft of this entry saying `o11y-fault-drill.yml` "only stops DGX node exporters" and that "no template stops the receiver's Alloy". Both were read from a filtered `head -40` of the playbook's header comment. The PR #1087 review found the facts:
+
+- `o11y-fault-drill.yml` has three modes: `exporter`, `probe` and `grafana` (`:10-37`, the mode guard at `:83`). `grafana` stops the `o11y-grafana` container for up to fifteen minutes.
+- `clean-deploy-o11y.yml` (through `tasks/clean-service.yml`) and `reboot-host.yml` do take Alloy down, destructively or with the whole host.
+- What is true: no bounded, non-destructive drill stops the receiver's Alloy or removes a single probe series.
+
+The alert outcome was also unchecked when I offered it. Traced afterwards, it holds: `config.alloy.j2` has Alloy scrape its own blackbox exporter and remote-write the result, so the probe and its `up` both disappear when Alloy stops, and `unless on(…) (up{…} == 0)` (`alerts.yml.j2:132`) does not suppress.
+
+**Root cause.** A claim that something does not exist was made from a partial read: a grep filter and a line limit cut off the modes that disproved it. The correction then repeated the same read, so the error went into the record meant to prevent it.
+
+**The rule.** A claim that a mechanism exists, or does not, needs the whole file or an exhaustive search (for example `git grep` over `platform/playbooks` and `platform/semaphore/templates.yml`), never a truncated header. An option offered to an operator names the playbook that carries it out and the alert expression it will fire. If either is missing, the option is "build X first", with that work named.
+
+**Enforced by.** Convention.
+
+### 1.36 Briefed a fix's guarantee from a comment's citation, without reading the cited code (widens 1.29)
+
+**Occurrences: 2** — 2026-11-11, 2026-11-12
+
+**What happened.** The first fix for AC-695 had to stop `-e local_mode=true` from skipping skynet's production
+refusals. I briefed a worker to copy the launch gate's expression: `local_mode` and `inventory_hostname` matching
+`<name>-local` (`deploy-launch-gate.yml:73` at `b7e11937`). I took it from the expression's comment (`:70-72`),
+which said the rule was derived "as tasks/clean-service.yml derives it" and that `-e local_mode=true` "cannot lift
+the ... refusals below". I read the expression, not the file the comment cited. `tasks/clean-service.yml:85-89`
+says `-e` can set `inventory_hostname` and that its checks key on `ansible_play_hosts_all` instead, the property
+`AGENTS.md:262` also records. The commit went out as `59c97fb7`, "fix(skynet): local mode needs a -local host, so a
+forged local_mode cannot lift production refusals", which is false as written: `-e local_mode=true -e
+inventory_hostname=skynet-local` on host `skynet-prod` made local mode true (ansible-core 2.21.0, scratch play).
+The grounding checkpoint caught it before a PR was opened, and the redesign landed in the same PR (5.24 occurrence
+4), so `59c97fb7` merged to `dev` inside #1078 (merge `69082755`) with that subject.
+
+**Root cause.** 1.29's rule was met literally: the body of the expression was read. The claim was a guarantee
+(what an extra var cannot do), and no expression can show that; the proof lived in the file the comment cited.
+
+**The rule.** A guarantee about what a mechanism prevents is unverified until the code or document that enforces
+it is read, whatever pointed to it (1.25, 1.28, 1.29), a comment's citation included. Follow the citation and read
+the cited lines before a brief, commit or reply repeats the guarantee.
+
+**Enforced by.** The instance: both playbooks derive local mode with the shared `local_dev_inventory` filter
+(`platform/playbooks/filter_plugins/local_dev.py`; AC-702, #1106), from the inventory since AC-784, pinned in all
+three plays by `platform/tests/test_launch_gate_playbooks.bats:590-591` and
+`platform/tests/test_service_skynet.bats:623-624`. Phase 1 of each includes the shared identity check first, pinned by
+`platform/tests/test_launch_gate_playbooks.bats:597-600` and `platform/tests/test_service_skynet.bats:263-273`. The class:
+Convention, with no detector; 1.29's path-read guards (occurrences 6 and 10) check the paths a brief or outward
+text names, not the paths a comment in those files cites.
+
+**Occurrence 2 — 2026-11-12.** Recording the absent endpoint drill (task 15623) in PR #1124, and in my report to Joseph, I wrote that the restoring deploy "refused before changing anything". I took that from the refusing assert's message, "no secrets or containers were changed", and widened it, without reading the tasks above it. `deploy-o11y.yml:597-610` places the monorepo with `force: true` and re-renders the Alloy and Prometheus configs before the assert at `:625-628`. So the checkout had moved and the Alloy config was re-rendered for the restored projection; the Prometheus config renders from inventory alone (`prometheus.yml.j2` does not read the availability projection) and would have been unchanged. The PR review caught it before merge. Why the rule did not fire: it names a comment's citation; an assertion's own message is the same kind of pointer, a description of what the code does, and needs the same read of the code it describes.
+
+### 1.37 Called a fix impossible from a true fact stretched past its scope, then built around it (widens 1.19)
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** AC-743: GNU parallel starts every job with SIGALRM ignored
+(`$SIG{ALRM} = 'IGNORE'`, line 6352 of the installed 20261022 script), so ansible-core refused task
+timeouts under `bats --jobs 4`. I wrote "a wrapper cannot repair that: parallel sets the disposition
+itself", from the true POSIX fact that a shell cannot reset a signal it inherited as ignored, and
+never tried a wrapper. On that claim I built a probe that detected the condition and fell back to
+serial BATS, and repeated the claim in the hook comment, `AGENTS.md`, the commit body, the PR #1114
+body and the Plane item. The review round approved it. The `/simplify` altitude reviewer then ran
+`PARALLEL_SHELL` (GNU parallel runs each job as `$PARALLEL_SHELL -c cmd` after the fork) with a
+three-line perl job shell: the job saw SIGALRM at default (`0`, against `1` without it), and
+`test_provision_vm.bats` under `--jobs 4` passed with the wrapper and failed without it.
+
+**Root cause.** The fact was about shells; the claim was about every wrapper. A negative claim ("X
+cannot fix this") was made from evidence that only rules out one kind of X, and the one cheap
+experiment that would have tested it (a non-shell job wrapper) was never run.
+
+**The rule.** Supersedes 1.19's scope to claims about what cannot work. A statement that a fix is
+impossible is made only after the cheapest counter-experiment has failed, or from a source that
+states the impossibility for the general case. A true fact about one mechanism is reported as
+exactly that ("a shell cannot reset it"), never widened to every mechanism.
+
+**Enforced by.** The instance: `platform/tests/test_pre_push_parallel_sigalrm.bats` "parallel-job-shell: a job
+started with SIGALRM ignored runs with it at default" proves the wrapper, with a control that the job
+really starts with SIGALRM ignored. The class: Convention, with no detector.
+
+### 1.38 "Never overridden" checked in the caller, not in the library that overrides it
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** Reconciling the Dispatch Console's Phase 1 checklist (task 2.1, PR #1104),
+I wrote that the console accepts only RS256 ID tokens: openidconnect 4.0.1's verifier
+defaults to RS256 (`verification/mod.rs:136-142`), and a grep showed the console never calls
+`set_allowed_algs`. The same claim went into the Plane comment on AC-488. Review of #1104 found
+that `CoreClient::from_provider_metadata` (called at `app/src/server/auth.rs:71`) copies the
+provider's `id_token_signing_alg_values_supported` into the client (`client.rs:272-276`), and
+`id_token_verifier()` calls `set_allowed_algs` with that list (`client.rs:658-659`). The
+console accepts whatever Authentik advertises; RS256 holds only because the blueprint pins
+the signing key.
+
+**Root cause.** "Never overridden" was checked by searching the console's own source for the
+override call. The override is made inside the library, by a constructor the console does
+call, so a search of the caller could not find it.
+
+**The rule.** A claim that a library default is in force is checked by following every call
+the code makes into that library to where the setting is finally read, not by searching the
+caller for the setter. Name the line that reads the setting.
+
+**Enforced by.** Convention. The corrected 2.1 note cites the library lines that set the list.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -2821,6 +3035,30 @@ widens 2.28 ("disable bytecode writes") from clean-copy tests to mutation checks
 
 **Enforced by.** Convention.
 
+### 2.39 An absence check asked with a handle that could never show the thing
+
+**What happened.** PR #1099 added `callback_with_a_wrong_nonce_is_refused` for the
+Dispatch Console's sign-in gate (add-dispatch-console task 2.6). After the refused
+callback it asserted that `/v1/me` answers 401, but it sent the cookie the browser
+held before sign-in. The callback cycles the session id before it stores a user, so
+a user stored under the new id is invisible through the old cookie. The review wrote
+a mutant that cycled the id, stored the user and then answered 401: all three sign-in
+tests stayed green. Caught in review on 2026-11-12, before merge.
+
+**Root cause.** The assertion checked an absence, and absence is satisfied by any
+probe that cannot see the thing. The probe was chosen from the request side (the
+cookie the test already had) rather than from the response under test (the cookie the
+refusal itself sets).
+
+**The rule.** A test that asserts something did not happen asks through the handle the
+code under test hands back: the cookie, id or path its response sets, not one the test
+held beforehand. Then write the mutant that does the forbidden thing and watch it fail.
+
+**Enforced by.** Test: `callback_with_a_wrong_nonce_is_refused` and
+`callback_with_a_token_signed_by_another_key_is_refused` probe with
+`callback.session.unwrap_or(login_session)`; the store-then-refuse mutant turns both
+red. The general rule is `Convention`.
+
 ## 3. Acting on live state
 
 ### 3.1 Overwriting a real credential with a probe value
@@ -3140,6 +3378,8 @@ fails the session if it differs at the end, plus a grep ratchet against tests th
 paths under the repository's `platform/` for writing.
 
 ### 3.11 Changed when a long-lived process restarts without auditing the steps that relied on the old restart; production Authentik lost every custom blueprint instance
+
+**Widened by 3.24 (2026-11-12):** the same failure with no restart change at all; 3.24's rule covers every deploy.
 
 **What happened.** PR #431 made the Authentik and o11y deploys recreate their containers
 only when an input changed, instead of on every run. Semaphore task 2843, the first deploy
@@ -3561,6 +3801,46 @@ real fix is a per-task inventory copy, below.
 falls within a template's recorded typical duration of the next declared slot, and proceeds only with an explicit
 accept-the-risk flag, matching the rule above. The foundational fix is unchanged: a per-task copy of the inventory, so
 no task can remove another's.
+
+### 3.23 A long drill pinned a SHA at launch but cloned the moving branch for its restore
+
+**What happened.** On 2026-11-12 I launched `Drill o11y Endpoint Availability (Dev)` in absent mode (task 15623, `service:authentik`), pinned to the `dev` head read at launch (`432c137a`). The drill has two deploys, with the alert proof between them (task 15623 ran from 20:35 to about 20:53 UTC). Both clone `service_branch` (`dev`), and both refuse unless the receiver checkout equals `expected_repository_sha`. The `dev` freeze had just been lifted, and three PRs merged between 20:39 and 20:46 UTC. The drilled deploy and its proof ran (the missing-data alert fired, and Discord confirmed it). The restoring deploy then moved the receiver checkout to the new head and re-rendered the Alloy and Prometheus configs (`deploy-o11y.yml:597-610`, `tasks/place-monorepo.yml` with `force: true`). Only then did its checkout assert (`:625-628`) find the checkout differed from the pin, and it refused before changing any secret or container. That left authentik's probe removed and its missing alert firing, under the drill marker, until `Recover o11y Endpoint Drill (Dev)` (task 15629, pinned to the then-current head) restored it, finishing at 21:06 UTC. I asked the active PM sessions to hold `dev` merges during the recovery.
+
+**Root cause.** The drill pins one SHA for its whole run, but places the checkout from a branch name, so its correctness depends on nobody merging for the length of the run. The same exposure was already known for single launches: a launch pinned to a head read too early refuses. A multi-deploy run widens it from seconds to the drill's full duration. Nothing on the controller holds the branch still, and I did not ask for a hold before launching. The deploy's checkout guard also runs after the placement and render steps, so a refusal leaves files on the receiver that differ from what is running: from 20:53 to 21:06 the checkout was at the new head and the on-disk Alloy config no longer matched the running, drilled Alloy.
+
+**The rule.** A run that deploys more than once against one pinned SHA must place that SHA, not a branch, and a revision guard runs before anything is placed or rendered. Until the drill does, launch it only with `dev` merges held for its duration, agreed with the sessions that merge, and have the matching Recover template ready to run against the current head.
+
+**Enforced by.** Convention. The fix is Plane AC-827: the drill places the reviewed SHA for both deploys, and the revision guard runs first.
+
+### 3.24 A deploy placed files its process reads only at startup and never restarted it; production OPA served eleven-day-old policies (widens 3.11)
+
+**What happened.** Production OPA served its 2026-11-01 policies until 2026-11-12. It loads
+`./policies` once, at startup (`--bundle /policies`, no `--watch`), and its deploy.sh ran a plain
+`compose up -d`, which leaves a running container alone when only bind-mounted files changed.
+Four `Deploy OPA (Dev)` runs (11933, 12121, 15166, 15168) placed new policies and passed their
+verify, and none reached the running server: `opa test --bundle /policies` reads the files on
+disk, and the sample allow and deny decisions do not depend on the new data. Twelve policy
+commits were not live, among them the bound on agent-launched `target_service` (157e10aa) and the
+`service-assess` review stamp (efe8736b). It surfaced when `Probe launch-gate (Dev)` with the base
+`Snapshot Service Assessment` got 403 `opa_denied` (task 15656) while the `(Dev)` control got 201
+and 409 (task 15659); `Inspect Service Runtime (Dev)` (task 15664) showed the OPA container
+started 2026-11-01 03:25 UTC with no restart since.
+
+**Root cause.** 3.11's rule is triggered by a change to *when* a process restarts. OPA's deploy
+never restarted the process at all, so nothing triggered the audit, and the deploy's verify
+checked the placed files rather than what the server had loaded.
+
+**The rule.** A deploy that places a file its process reads only at startup must restart the
+process when that file changes. For a compose service, name the file or directory as a
+`compose_up_if_changed` input, so its digest rides the container label. Whether or not anything
+about restarts changed, check this for every service whose config is a bind mount.
+
+**Enforced by.** For OPA: the `opa:` cases in `platform/tests/test_compose_up_if_changed.bats`
+run its real deploy.sh against stub engines with no `.env` present (a policy edit or a new port
+recreates, an unchanged re-run does not) and pin `write_env` to the compose substitutions. The
+general form, a service that reads a bind-mounted file once at start without that file among its
+`compose_up_if_changed` inputs, is Convention. The verify-side gap (proving what the running
+server loaded) is Plane AC-845.
 
 ## 4. Data handling
 
@@ -4126,6 +4406,17 @@ subset excluded it, although this test only reads `templates.yml`. Fixed before 
 hold text-only tests about shared files. **Refines the proposed guard:** select the always-run scans per test (a
 marker on tests that launch nothing), not per file.
 
+**Occurrence 2026-11-11 (a new test file past the spawn guard).** PR #1064's head `9e104291` added
+`platform/tests/test_release_notes_from_task.py`, whose helper call used `subprocess.run` with no `timeout=`,
+and was pushed under `SKIP_TESTS=1` after the suites it touched passed locally (934 tests). CI's Python (1/8)
+failed on `test_playbook_spawns_are_bounded.py::test_no_new_unbounded_spawn`, which refuses any test file
+that starts a process without a timeout (1 failed, 1857 passed). Fixed before merge by passing
+`harness_sandbox.DEFAULT_TIMEOUT_SECONDS`. Why the rule did not fire: the suites were again chosen by the
+files the change touched, and this guard scans every test file without naming any of them. The proposed
+fast subset of scans that launch nothing includes it and would have stopped the push.
+
+**Occurrence 2026-11-11 (a test-only change pushed with the hook switched off).** PR #1082 (AC-711) took a review finding to scope a strict-match assertion to one blueprint entry. I rewrote it as `grep -B1 -F <url line> | grep -qF 'matching_mode: strict'`, ran the one test file and a mutation of the entry, and pushed head `3e4e4791` with `SKIP_TESTS=1` on the reasoning that the full suite had passed on the parent commit. `Bash Tests` failed in CI: `platform/tests/test_no_line_window_assertions.bats` refuses `-B1` as a line-count window (2.6, 2.8). Fixed before merge by scoping the check to the `redirect_uris` construct with a `sed` range between its two keys. Why the rule did not fire: the change touched only a test, so running that test felt like the whole check, but a test file is itself the subject of repo-wide guards (the window ratchet), which only the full suite runs. Supports the narrower-skip proposal: `SKIP_TESTS` should never cover a pushed change to a `*.bats` or `*.bash` file.
+
 ### 5.3 Merging while the review was rate-limited
 
 **What happened.** Merged a pull request while the review bot reported
@@ -4243,6 +4534,10 @@ Mechanically enforceable via a permission rule denying `git push`/`gh pr create`
 `gh pr merge` without a prompt — the auto-mode classifier already prompts for some
 Semaphore-task dispatches; extending deny-by-default to these three git surfaces
 would close it.
+
+**Superseded 2026-11-12 by 5.26.** The operator's standing decisions of 2026-10-14, 2026-11-09 and
+2026-11-10 lifted per-action approval for pushes, pull requests into `dev` and reviewed merges. The
+principle above, an approval covers exactly the action it names, stays for the actions 5.26 still asks.
 
 ### 5.8 A required CI gate installed whatever upstream published last
 
@@ -4484,6 +4779,7 @@ main-to-Dev sync workflow pushes directly to `dev`. A direct merge command can b
 CLI, and a concurrently started rerun or review can race the separate API reads and merge.
 
 Widened by 5.20 (2026-10-14): the same pin applies to promotions.
+Widened by 5.23 (2026-11-11): exact-head CI does not cover a base that moved after the run.
 
 ### 5.17 Upgraded production's ansible-core before CI exercised the playbooks on the new version
 
@@ -4680,6 +4976,240 @@ rebalance is a data commit, not another workflow transition. The partition stays
 half gains the proposal above: each shard prints its duration against its timeout and warns above half of it.
 The warning does not fail the run, so it is not enforcement and stays labelled Convention-plus-warning. First
 run: shards took 282 to 495 seconds, against 20 to 24 minutes for the old `Python core`.
+
+### 5.23 A repo-wide guard and a PR that adds an offender merged minutes apart; `dev` went red (widens 5.16)
+
+**What happened.** On 2026-11-11, #1066 added `test_no_new_test_builds_its_own_http_server`
+(`platform/tests/test_fake_http.py`), which refuses any test file that builds its own HTTP server
+unless the file is on an exact list. It merged at 21:26:47 UTC with the 15 checks the merge guard expects green (CodeRabbit neutral). #952,
+from another session, added `platform/tests/test_probe_skynet_launch.py`, whose listener subclasses
+`ThreadingHTTPServer`. Its Python CI finished at 21:20:44 UTC, before #1066 existed on `dev`, and
+it merged at 21:31:51 UTC with its head not containing #1066. The combination failed the guard on
+`dev`: a PR CI run in that window failed the guard (run 43104746466), and `dev` itself runs no push
+CI, so its state is read from PR merge-ref runs. A peer session reported it; #1068 added the file to the
+list and merged at 21:49:50 UTC.
+
+**Root cause.** The merge guard (`scripts/merge-when-green.py`) proves CI on the PR's head, not on
+the result of merging that head into the current `dev`. `dev` has no up-to-date-branch rule,
+because the main-to-dev sync pushes to it directly. A repo-wide check is exactly the kind of
+change whose result depends on files other PRs add, so two heads that are each green can merge
+into a red branch. 5.16's exact-head pin was met here (#952's own head had green CI), so this widens it:
+an exact head is not enough when the base moved after its CI ran.
+
+**The rule.** Immediately before merging, when `origin/dev` holds commits the PR's head does not
+and any of them touches a test file, merge `dev` into the branch and let CI run again on the new
+head.
+
+**Enforced by.** Since 2026-11-12, `scripts/merge-when-green.py` (`check_dev_drift`): it reports how many
+commits `origin/dev` holds that the head lacks and refuses when any of them changes a test path, unless the
+operator passes `--dev-drift-acknowledged`; tested in `platform/tests/test_merge_when_green.py`
+(`test_dev_drift_into_test_paths_refuses`, `DevDriftGitTests`). Limits: only `dev`'s side is read, so a head
+that adds a repo-wide test still merges when `dev` changed no test path; and it binds only merges that go
+through the script.
+
+### 5.24 Opened a PR without the `/simplify` and `/security-review` the branch workflow requires
+
+**Occurrences: 5** — 2026-10-29, 2026-11-11, 2026-11-10 (recorded late), 2026-11-11, 2026-11-09 to 11-10 (recorded late)
+
+**What happened.** The branch workflow (`AGENTS.md:568`, step 4) runs `/simplify` and
+`/security-review` on the branch changes before a PR is opened. #1066 (fixture servers onto
+`fake_http.serve`) was opened, reviewed by `pr-reviewer` and merged on 2026-11-11 without either.
+The grounding checkpoint ran them after the merge. `/security-review` found nothing reportable,
+but `/simplify` found that `serve` wraps the listening socket for TLS
+(`platform/tests/fake_http.py:91`), so the handshake runs on the accept thread and one silent
+client hangs every request and the teardown; a reviewer reproduced it. It also found that small
+parameters on `serve` would retire most of the files still on the guard's list. Those went to a
+follow-up rather than into the PR.
+
+**Root cause.** The step lives only in prose, and nothing between `git push` and the merge asks
+for it. The independent PR review covers correctness. It does not stand in for the two passes,
+which look for different things (reuse and altitude; a security-only threat model).
+
+**The rule.** Before `gh pr create`, run `/simplify` and `/security-review` on the branch diff and
+put one line for each in the PR body: what it found, and what was fixed or deferred.
+
+**Enforced by.** Convention. Proposal: a PR-template checkbox for each pass, and a
+`merge-when-green.py` check that the PR body names both.
+
+**Occurrence 1 — 2026-10-29.** Recorded in 10.33 (found 2026-10-31) only as a cause: the
+`/security-review` skipped for #778 would have read OPA's command line with the write-surface
+question in mind. This entry gives the rule its own place, so the count is visible. 2.23 and 2.35
+were also found by `/simplify` passes after their PRs merged; whether step 4 ran on those PRs is
+not recorded, so they are not counted.
+
+**Occurrence 3 — 2026-11-10, recorded late.** #993 (skynet's HTTPS listener, also in 1.29 occurrence 9) was
+opened and merged on 2026-11-10 (UTC) with neither pass; the session's saved record mentions neither.
+The grounding checkpoint ran both after the merge, and `/simplify` found a production-refusal bypass: skynet
+decided local mode from an extra var (AC-695, fixed in #1078). Why the rule did not fire: review rounds and green
+CI read as a complete review, the gap the root cause above names.
+
+**Occurrence 4 — 2026-11-11.** Both passes ran before #1078 (AC-695) was opened, at a grounding checkpoint over
+`b7e11937..48c4f75d` (from `59c97fb7`), the version that keyed local mode on `inventory_hostname`. Their findings, that `-e` can set
+that name (the property `AGENTS.md:262` already records), drove the redesign onto `ansible_play_hosts_all`
+(`5a37a00e`, `867957aa`); the PR review's fixes followed in `a4a2760f`. Neither pass ran over the diff the PR
+opened or merged with, and its body names the passes only as the source of the finding. Why the rule did not fire: the passes had
+run before `gh pr create`, so the step read as done, but they covered a version the PR no longer carried.
+
+**Proposal, refined at count 4.** The rule's PR-body line names no head, and a body line is free text no gate reads
+(`scripts/merge-when-green.py` reads only comment bodies). Instead: each pass posts a commit status on the head it
+covered (contexts `simplify` and `security-review`), and `check_commit_statuses` (`scripts/merge-when-green.py:572`)
+requires both present and successful on the merge head; today it refuses only a status that is present and not
+successful. A push after the passes leaves the new head with no such status, so a stale pass is refused without any
+string comparison, the same exact-head pin 5.20 applies to reviews. Still self-attested, and it binds only merges
+that go through the script. 1.16 and 5.15 also propose reading the PR body; this proposal reads none. It widens
+the rule from "before `gh pr create`" to the merge head, so a push of review fixes needs both passes again;
+building it starts with a new entry that supersedes this rule. Not built.
+
+**Superseded 2026-11-12 by 5.25.** At four occurrences the rule above ("one line for each in the PR body") is
+replaced by a mechanical one: the passes are commit statuses the merge guard requires on the merge head.
+
+**Occurrence 5 — 2026-11-09 to 11-10, recorded late (2026-11-12, after the supersession).** One session (the
+launch-gate work of 1.21 occurrence 4) opened six PRs without either pass: #924, #932, #938, #939, #951 and #952,
+all opened 2026-11-09 to 11-10 (UTC). skynet#14 is not counted: the skynet repository's workflow has no such step.
+Each had one `pr-reviewer` round and green CI before it merged; #952's round requested changes for a HIGH finding,
+fixed before merge. Why the rule did not fire: as in occurrence 3; the session did not reread step 4 before each
+PR. None of the six heads carries either commit status, which 5.25's guard now requires of a merge through
+`scripts/merge-when-green.py`.
+
+### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
+
+**Occurrences: 2** — 2026-11-12, 2026-11-12. The four that earned this rule are 5.24's.
+
+**What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
+`Convention` as its enforcement.
+
+**Root cause.** Nothing between the passes and the merge read whether they ran, or on which head. A PR-body line
+names no head, and `scripts/merge-when-green.py` never reads a PR body.
+
+**The rule.** Run both passes and commit their fixes; a fix changes the head they reviewed, so run both again until
+a round changes nothing. Then push and post each as a commit status on the pushed head with a description of
+what it found and what was fixed or deferred: the command is in `AGENTS.md`, Branch Workflow step
+5. Every later push, review fixes or a `dev` merge included, needs both passes again on the new head. A status can
+be posted only on a commit GitHub already holds.
+
+**Enforced by.** `scripts/merge-when-green.py`: `check_commit_statuses` refuses a feature-to-`dev` head without
+both statuses (`REVIEW_PASS_STATUSES`), or with one whose description is empty or the unfilled placeholder, and
+names the command that posts each missing one; tested in `platform/tests/test_merge_when_green.py`
+(`test_each_review_pass_status_is_required_on_the_exact_head`, `test_a_review_pass_status_with_no_finding_refuses`).
+Limits: the status is self-attested, so the gate proves a pass was claimed for the head, not that it ran or what it
+found (a skipped pass posted as run goes green); and it binds only merges that go through the script (a plain
+`gh pr merge --merge` skips it).
+
+**Occurrence 1 — 2026-11-12.** On this rule's own PR (#1107), `/simplify` reviewed `74ac3ba0` and its fixes made
+`e58f113c`; `/security-review` then ran on `e58f113c`, and both statuses were posted there, the `simplify` one
+reading "Ran on e58f113c". That claimed a pass for a head it never reviewed. The rule as first drafted ("run both
+passes, commit their fixes, push, then post") did not cover it: nothing said a pass's own fixes need a further
+round. CodeRabbit flagged the gap; the rule above now requires rounds until one changes nothing.
+
+**Occurrence 2 — 2026-11-12.** On #1128, after a small review fix (`4d0ece19`) and a merge of `dev`, I
+checked the delta by hand and posted both statuses on the merge head `95a10ea4`, with descriptions saying
+the passes ran there. Neither pass had run on that head. The rule says to run both passes on every new
+head, but nothing stops a status being posted first: the guard checks that each pass's latest status is
+a success with a filled description, never that the pass ran. Caught before any merge. A status belongs
+to one commit, so the false ones stay on `95a10ea4`; a newer `failure` status on that head makes the
+guard refuse it, and no further status was posted until both passes had run on the head being pushed. A
+hand check of a small delta is not a pass, and its status must not say it is.
+
+### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
+
+**Occurrences: 1** — 2026-11-12, the committed rule left stale for four weeks (below).
+
+**What happened.** On 2026-10-14 the operator lifted per-action approval for pushes and pull requests,
+and on 2026-11-09 and 2026-11-10 for a merge into `dev` after one review round and a promotion after
+two. AGENTS.md's Branch Workflow callout and 5.7 still required an explicit approval for every push,
+pull request and merge, so the committed rule and the operator's contradicted each other until the
+grounding checkpoint of 2026-11-12 found it.
+
+**Root cause.** The operator's standing decisions lived only in the agent's private instructions and
+memory, never in the repository's record, so the committed rule went stale with nothing to flag it.
+
+**The rule.** An agent pushes a feature branch and opens a pull request into `dev`, or a `dev` → `main`
+promotion pull request. It merges a pull request into `dev` through `scripts/merge-when-green.py` once
+the gates in AGENTS.md, "Feature-to-Dev pull-request merges", hold and no `dev` merge hold is in force:
+a `dev` freeze the operator has announced, or merges held for the duration of a drill run under 3.23,
+agreed with the merging sessions, until that drill's fix lands. A `dev` → `main` promotion merges after
+two review rounds of its final head. Still asked every time, with an approval covering exactly the
+action it names: a push to `main` or `dev`, a force push, a squash merge, passing
+`--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator (one that changes a
+release script or a workflow file the guard does not accept), and a push or pull request in a
+repository outside the organisation. Direction to do the work releases none of those.
+
+**Enforced by.** `.github/rulesets/protect-main.json` refuses a force push and a deletion on `main` and
+requires a pull request with passing checks, with one bypass, the repository-admin role (break-glass),
+for all of them; `protect-dev.json` refuses a force push and a deletion on `dev`, with no bypass.
+`scripts/merge-when-green.py` gates a merge into `dev` (the Feature-to-Dev gates), which a plain
+`gh pr merge` skips. An agent running under an account with the repository-admin role holds that
+bypass, so for it a push, force push or deletion on `main` is held by convention too. The rest is
+convention: a `dev` merge hold, which nothing the guard reads records, a fast-forward push straight
+to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the
+operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
+repositories, and the two promotion rounds, which no check counts.
+
+### 5.27 A live service's tasks stayed unticked, and a late tick never reached the tracker
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** The self-hosted runners have run jobs in production since at least 2026-10-12
+(Deploy GitHub Runner (Dev) task 4831), and container jobs since 2026-10-28 (Install Podman (Dev)
+task 9849, Deploy GitHub Runner (Dev) task 9856, site-config smoke run 40717453592). On 2026-11-12
+the `add-github-actions-runners` change's `tasks.md` had 7 of 83 tasks ticked, on both `main` and
+`dev`, and its 81 Plane items were all in Backlog or In Progress. Five of the seven ticks (1.1 to
+1.4 in `ee14db326`, 1.5 in `21ad7e8bc`) were made on `dev`. When the OpenSpec sync first ran, on
+2026-11-09, it read `main`, where only 3.1 and 3.2 were ticked. It skipped those two and imported
+the other 81 tasks as open items, 1.1 to 1.5 included. The five ticks reached `main` with the
+promotion in #1003 on 2026-11-10, and their items stayed in Backlog. Asked to put the runner fix
+in milestone v0.17.0, I could not scope the module from the tracker: six items were closed by hand
+against their evidence, and the rest went to a reconciliation item (AC-859).
+
+**Root cause.** Two gaps, one behind the other:
+1. Most completed work never ticked its task. The PRs and runs cited the change, not the task.
+2. A tick that is made matters to Plane only if it is on `main` before the sync first sees the task;
+   then no item is created for it. The sync reads `main`, skips a task already ticked when first
+   seen, and never writes status once an item exists
+   (`platform/services/plane/lib/openspec_to_plane.py`, `sync-plane-projects.yml`). Plane owns
+   status from then on, so a tick made on `dev` and promoted later moves nothing.
+
+**The rule.** A pull request or live run that completes a task ticks that task in `tasks.md`,
+citing its evidence, in the same change, and sets the task's Plane item to Done itself, because no
+sync will. Before a change whose service is live goes into a milestone, reconcile its open items
+against the evidence.
+
+**Enforced by.** Convention. Proposed: the sync sets an item to Done when its task becomes ticked
+on `main`. That reverses the sync's rule that Plane owns status once an item exists, so it needs
+that decision first.
+
+### 5.28 Wrote a design rule into a plan, then briefed and described code that broke it
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** Plan 24 (`plan/development/24-local-mode-from-inventory.md`, merged in #1131) decides
+that every reader takes local-dev mode inline from `(groups['all'] | local_dev_inventory)`, "with no
+intermediate variable", because an underscore play variable can be set with `-e` when the run-start
+guard is skipped (`--limit` excluding localhost, `--start-at-task`). The same day I briefed PR 1b's
+worker that "ensure-service-persistence's existing `_local` stays, its value changes", and the plan's
+Context said skynet and the launch gate "already read the mode this way (AC-784, #1127)". AC-784 had
+moved them to play variables (`_skynet_local` at `deploy-skynet.yml:119,407,494`,
+`_launch_gate_local_mode` at `deploy-launch-gate.yml:74,397,440`). PR #1132's security pass and review
+reproduced the bypass on a production inventory. `-e _local=true --limit alpha` skipped the rootful
+boot-unit task in `ensure-service-persistence.yml` (exit 0). `-e _rootless_podman=false --limit alpha`
+turned `verify-service-persistence.yml`'s failure into a pass.
+
+**Root cause.** The rule was written as the reason for a choice, in the plan's Decision section, and
+the briefs were written from each file's list of reads, never checked against that section. The
+plan's sentence about AC-784 was written from memory ("it reads groups now"), not from the shape of
+the merged code.
+
+**The rule.** Before dispatching a brief that implements a plan, check each decision in the brief
+against the plan's Decision bullets it implements, and name any it departs from. A plan's statement
+that existing code already complies is verified against that code's current form before it is
+written.
+
+**Enforced by.** Convention. Proposed (AC-865): `platform/tests/test_local_mode_reads.py` refuses a
+variable definition whose value contains `local_dev_inventory`, so the plan's rule fails a test, not
+a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and AC-865
+`_skynet_local`, `_launch_gate_local_mode` and `instrument-host-o11y.yml`'s `_ih_spec` and
+`_ih_rootless` (they read `local_mode`; the facts derived from them are read across hosts through
+`hostvars`). #1136 corrects plan 24's Context.
 
 ## 6. Working from assumptions about files
 
@@ -5741,6 +6271,8 @@ include the linger task, and requires that task to link the user unit into
 `default.target.wants`. Both guards were mutated once and went red. An actual reboot
 test of a service host is still not exercised by any automation.
 
+**Enforcement moved — 2026-11-12.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no`, `platform/tests/suite/restart_policy.rs::no_container_is_started_with_restart_unless_stopped`, `platform/tests/suite/restart_policy.rs::the_shared_preamble_includes_the_linger_task` and `platform/tests/suite/restart_policy.rs::the_linger_task_links_podmans_user_boot_unit_as_the_container_user` are its four replacements.
+
 ### 10.16 The agentgateway deploy was proven only on an executor where its bug could not show
 
 **What happened.** `deploy-agentgateway.yml` built `_client_defs` as TEXT, a
@@ -6446,6 +6978,76 @@ in a throwaway clone before any push.
 **The rule.** Treat `fail_msg` and `success_msg` as rendered on every run. Any key that only one outcome carries is read with `| default(...)`. A new assert on a result summary gets a test that runs the task through `ansible-playbook` with both a passing and a failing input.
 
 **Enforced by.** Test for this task: `test_the_webhook_assert_renders_with_and_without_an_error` in `platform/tests/test_plane_env_github.py`. The general form is Convention. A lint that flags a `fail_msg` dereferencing an attribute without `default` is the mechanical guard to build if this recurs.
+
+### 10.37 An "8-hour inactivity" session expiry that was really 8 hours from sign-in
+
+**What happened.** Dispatch Console task 2.3 and the `session_layer` doc comment
+(`platform/services/console/app/src/server/mod.rs`) both said the `console_session`
+cookie expires after 8 hours of inactivity. The layer set
+`Expiry::OnInactivity(8h)` but not `with_always_save(true)`, and tower-sessions
+0.15.0 resets that expiry only when it saves the session (`service.rs:251`,
+documented at `:420-431`). The console saved the session only at sign-in, callback
+and sign-out, so every session ended 8 hours after sign-in however active the user
+was. It shipped in v0.14.0 and was found on 2026-11-11 while reconciling the Phase 1
+checklist, whose 2.3 box had never been ticked.
+
+The first fix (`4cf50a17`, never deployed; fixed by the next commit in the same pull
+request) added `with_always_save(true)`. The store's `save` was an upsert
+(`INSERT ... ON CONFLICT DO UPDATE`), so a request that loaded the session before sign-out
+re-inserted the deleted row when it answered: a stolen cookie that kept polling would have
+outlived sign-out. An automated security review of the commit caught it before the pull
+request was opened.
+
+**Root cause.** The expiry was configured, documented and specified, and nothing ever
+exercised it: no test made a signed-in read and checked that the expiry moved. The
+first fix then changed when the store writes without re-reading what the write did to
+a row another request had just deleted.
+
+**The rule.** A time-based session property is proven by a request that should move
+it, not by the line that configures it. When a change makes a store write more often,
+re-check each write against a row that may have been deleted or expired since the
+request read it; a re-save updates a live row and never inserts.
+
+**Enforced by.** Tests, each mutation-checked. `a_signed_in_request_refreshes_the_session_cookie`
+(`mod.rs`) proves the refresh is sent: a signed-in read carries a `Set-Cookie`. It cannot see a
+frozen stored expiry, and liveness is decided by that stored expiry, so
+`save_moves_the_stored_expiry` (`sessions.rs`) proves the stored expiry moves, and
+`a_signed_in_request_moves_the_stored_session_expiry` (`mod.rs`) proves it through a signed-in
+request. `save_never_brings_back_a_deleted_session` and `save_never_extends_an_expired_session`
+(`sessions.rs`) cover the re-save. Removing `with_always_save` turns the cookie test and the
+HTTP expiry test red; freezing the stored column turns the store test and the HTTP expiry test
+red; restoring the upsert turns `save_never_brings_back_a_deleted_session` red; dropping the
+expiry condition turns `save_never_extends_an_expired_session` red. The race itself is covered
+at the store level, not by an interleaved HTTP test.
+
+### 10.38 An inactivity expiry that every background poll resets (widens 10.37)
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** 10.37's fix made the console session layer re-save the session on
+every non-5xx response (`with_always_save(true)` beside `Expiry::OnInactivity(8h)`,
+`platform/services/console/app/src/server/mod.rs:286-287`), so a signed-in request
+moves the expiry. The browser makes signed-in requests on its own: while a tab is
+visible the work board re-reads every 10 seconds (`src/ui/work.rs:24`, `:513-529`)
+and inventory every 30 (`src/ui/inventory.rs:24`). A session in a visible tab is
+therefore never inactive and never expired, and nothing capped a session's age. The v0.15.0
+promotion review found it (#1112) and filed AC-747. The fix had merged in #1094 and was
+not deployed to production. #1125 (AC-747) added the cap: a session ends 12 hours after
+sign-in however active it is (`auth.rs:49`, checked in `auth::current_user`).
+
+**Root cause.** The fix answered "does a request move the expiry?" and its tests proved
+that one does. It did not ask which requests should: a timer-driven poll is not user
+activity, and an inactivity expiry that counts it measures how long the tab was open.
+
+**The rule.** Before changing what refreshes a session, list every request the client
+makes without a user action and decide for each whether it may extend the session. An
+inactivity expiry is paired with an absolute lifetime, so a session ends however it is
+refreshed.
+
+**Enforced by.** The instance: tests, since #1125. `a_session_ends_at_its_absolute_lifetime_however_active`
+(`mod.rs:1197`) proves a session signed in 12 hours ago is refused and deleted while a younger one is served, and
+`lifetime_ends_twelve_hours_after_sign_in` (`auth.rs:322`) pins the boundary. The class: Convention, with no
+detector; nothing lists the requests a client makes on its own before a refresh rule changes.
 
 ## 11. The largest one
 

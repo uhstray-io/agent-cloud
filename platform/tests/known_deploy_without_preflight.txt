@@ -14,7 +14,7 @@
 # landed (2026-10-02), 23 of 26 deploy-*.yml playbooks were unguarded. Adding the imports
 # changes live-service deploys and is tracked as its own work.
 #
-# The wrappers over deploy-service.yml (nemoclaw, nocodb, openbao, semaphore) are judged
+# The wrappers over deploy-service.yml (openbao, semaphore) are judged
 # by the plays they import, so guarding deploy-service.yml clears them too, provided its
 # pre-flight covers the expression its play targets.
 #

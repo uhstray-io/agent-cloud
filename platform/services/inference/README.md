@@ -16,5 +16,3 @@ Where inference lives instead:
 - **The decision** that agentgateway is the edge and skynet the orchestrating gateway is
   `plan/architecture/05-platform-infra.md`, "Inference gateway: agentgateway alongside
   skynet" (Proposed).
-- **The non-LLM sidecars** are `platform/services/inference-comfyui/` and
-  `platform/services/inference-hunyuan3d/`.

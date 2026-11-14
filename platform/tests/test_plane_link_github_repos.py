@@ -6,17 +6,15 @@ so the payload is checked against the record Plane's own form creates, and the r
 not connected, a link pointing elsewhere, a repository the App cannot see) fail without writing.
 """
 
-import http.server
 import json
 import pathlib
 import subprocess
 import sys
-import threading
 import urllib.parse
 
 import pytest
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 DEPLOY = pathlib.Path(__file__).resolve().parents[1] / "services/plane/deployment"
 SOURCE = (DEPLOY / "plane_session.py").read_text() + "\n" + (DEPLOY / "link_github_repos.py").read_text()
@@ -95,10 +93,8 @@ def stub():
         "created": [],
         "silo_cookies": [],
     }
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Stub)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    yield Stub.state, f"http://127.0.0.1:{server.server_port}"
-    server.shutdown()
+    with serve(Stub) as base:
+        yield Stub.state, base
 
 
 def run(base, apply, projects=None):

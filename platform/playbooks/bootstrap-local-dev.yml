@@ -82,7 +82,6 @@
       - {'host': 'netbox.{{ _dev_zone }}', 'upstream': 'host.containers.internal:8000', 'forward_auth': 'authentik-server:9000'}
       - {'host': 'grafana.{{ _dev_zone }}', 'upstream': 'o11y-grafana:3000'}
       - {'host': 'auth.{{ _dev_zone }}', 'upstream': 'authentik-server:9000', 'internal_https_port': 8443}
-      - {'host': 'n8n.{{ _dev_zone }}', 'upstream': 'workflow-n8n:5678', 'forward_auth': 'authentik-server:9000'}
       - {'host': 'erp.{{ _dev_zone }}', 'upstream': 'erpnext-frontend:8080'}
       - {'host': 'console.{{ _dev_zone }}', 'upstream': 'console:8080'}
       - {'host': 'memory.{{ _dev_zone }}', 'upstream': 'honcho-api:8000', 'forward_auth': 'authentik-server:9000', 'forward_auth_paths': ['/docs*', '/redoc*', '/openapi.json']}
@@ -1455,30 +1454,6 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
-          [n8n_svc]
-          n8n-local ansible_host=127.0.0.1 ansible_connection=local
-
-          [n8n_svc:vars]
-          ansible_user=semaphore
-          service_name=n8n
-          monorepo_deploy_path=platform/services/n8n/deployment
-          container_engine=podman
-          openbao_addr={{ _bao_url_net }}
-          local_mode=true
-          n8n_bind=127.0.0.1
-          # PINNED to prod's tag: local validation must prove node/API compat on
-          # the version prod actually runs (`latest` deployed 2.36.9 while prod
-          # holds 2.25.7 — a silently different system under test).
-          n8n_image=docker.io/n8nio/n8n:2.25.7
-          # Postiz credential host for provision-n8n-postiz-credential.yml: the
-          # n8n app container shares the local-dev network with postiz, so the
-          # in-container is-connected test reaches it directly (no .test DNS or
-          # CA trust inside the container). Same /api path shape as prod.
-          n8n_postiz_credential_host=http://postiz:5000/api
-          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
-          local_home_dir=/var/lib/agent-cloud-deploy
-          local_workspace_dir=/workspace/agent-cloud
-
           [erpnext_svc]
           erpnext-local ansible_host=127.0.0.1 ansible_connection=local
 
@@ -1702,23 +1677,6 @@
           local_home_dir=/var/lib/agent-cloud-deploy
           local_workspace_dir=/workspace/agent-cloud
 
-          [uhhcraft_svc]
-          uhhcraft-local ansible_host=127.0.0.1 ansible_connection=local
-
-          [uhhcraft_svc:vars]
-          ansible_user=semaphore
-          service_name=uhhcraft
-          service_url=http://host.containers.internal:3001
-          monorepo_deploy_path=platform/services/uhhcraft/deployment
-          container_engine=podman
-          openbao_addr={{ _bao_url_net }}
-          local_mode=true
-          uhhcraft_port=3001
-          uhhcraft_bind=0.0.0.0
-          uhhcraft_base_url=http://127.0.0.1:3001
-          local_monorepo_dir=/var/lib/agent-cloud-deploy/agent-cloud
-          local_home_dir=/var/lib/agent-cloud-deploy
-          local_workspace_dir=/workspace/agent-cloud
       when: not ansible_check_mode
 
     - name: "Convert the local inventory to the static-yaml shape prod uses"
@@ -1805,12 +1763,13 @@
         _inv_id: "{{ _res.results[0].json | selectattr('name', 'equalto', 'local') | map(attribute='id') | first }}"
         _env_id: "{{ _res.results[1].json | selectattr('name', 'equalto', 'local-openbao') | map(attribute='id') | first }}"
 
-    # ── Stage 4b: seed LOCAL_FAKE secrets (absent paths only) ───────────
-    # Per-service key maps: services whose deploys _shared_read another
-    # service's keys need those paths to EXIST locally (manage-secrets asserts
-    # every read key is present). Values are LOCAL_FAKE-class — a fake
-    # gemini_api_key means honcho deploys fine but derivation no-ops locally;
-    # overwrite the path with a real key to exercise the deriver.
+    # ── Stage 4b: seed LOCAL_FAKE secrets, per KEY ──────────────────────
+    # Per-service key maps: operator-owned keys a deploy requires as existing secrets
+    # must EXIST locally (manage-secrets refuses the deploy when one is absent). A path
+    # that is absent is created whole; a path that exists keeps every value it holds and
+    # only the spec keys it is missing (absent or empty) are merged in. Values are
+    # LOCAL_FAKE-class — a fake gemini_api_key means honcho deploys fine but
+    # derivation no-ops locally; overwrite the path with a real key to exercise the deriver.
     - name: "Check existing service secrets"
       ansible.builtin.uri:
         url: "{{ _bao_url_host }}/v1/secret/data/services/{{ item.key }}"
@@ -1824,12 +1783,8 @@
         label: "{{ item.key }}"
       vars: &seed_specs
         _seed_specs:
-          uhhcraft:
-            postgres_password: LOCAL_FAKE_uhhcraft_postgres
-            redis_password: LOCAL_FAKE_uhhcraft_redis
-            session_secret: LOCAL_FAKE_uhhcraft_session
-          # honcho shared-reads gemini_api_key from nemoclaw (deploy-honcho.yml).
-          nemoclaw:
+          # honcho's Gemini key is its own existing secret (deploy-honcho.yml reads it from this path).
+          honcho:
             gemini_api_key: LOCAL_FAKE_gemini_api_key
       check_mode: false
 
@@ -1849,6 +1804,34 @@
       loop_control:
         label: "{{ item.item.key }}"
       vars: *seed_specs
+      no_log: true
+
+    # A path that already exists is converged per KEY, never overwritten: the keys it holds with a
+    # non-empty value are kept as they are, and only the spec keys it is missing are merged in.
+    # Every task here handles a value, so every task is no_log.
+    - name: "Work out the seed keys each existing path is missing"
+      ansible.builtin.set_fact:
+        _seed_missing: "{{ _seed_missing | default({}) | combine({item.item.key: _seed_absent}) }}"
+      vars:
+        _seed_held: "{{ (item.json.data.data | default({}, true)) | dict2items | selectattr('value') | map(attribute='key') | list }}"
+        _seed_absent: "{{ item.item.value | dict2items | rejectattr('key', 'in', _seed_held) | items2dict }}"
+      loop: "{{ _seed_check.results | selectattr('status', 'equalto', 200) | list }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+      no_log: true
+
+    - name: "Merge the seed keys an existing path is missing (merge-patch; a present value is never written)"
+      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml
+      vars:
+        _bm_url: "{{ _bao_url_host }}"
+        _bm_token: "{{ _bao_root_token }}"
+        _bm_path: "services/{{ item.key }}"
+        _bm_data: "{{ item.value }}"
+        _bm_on_missing: create
+      loop: "{{ _seed_missing | default({}) | dict2items | selectattr('value') | list }}"
+      loop_control:
+        label: "{{ item.key }}"
+      when: not ansible_check_mode
       no_log: true
 
     # The controller's own API token, where production keeps it

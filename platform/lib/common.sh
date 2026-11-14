@@ -417,39 +417,6 @@ store_token_in_openbao() {
   fi
 }
 
-# ── NocoDB Env Generation ─────────────────────────────────────────────────────
-
-generate_nocodb_env() {
-  local env_file="$1" secrets_dir="$2"
-  if [ -f "$env_file" ]; then
-    info "$(basename "$env_file") already exists — skipping."
-    return 0
-  fi
-  info "Generating $(basename "$env_file")..."
-  local pg_pass jwt_secret
-  pg_pass=$(get_secret "$secrets_dir" nocodb_pg_password)
-  needs_gen "$pg_pass" && pg_pass=$(gen_secret)
-  jwt_secret=$(get_secret "$secrets_dir" nocodb_jwt_secret)
-  needs_gen "$jwt_secret" && jwt_secret=$(gen_secret)
-  put_secret "$secrets_dir" nocodb_pg_password "$pg_pass"
-  put_secret "$secrets_dir" nocodb_jwt_secret "$jwt_secret"
-  cat > "$env_file" << EOF
-POSTGRES_USER=nocodb
-POSTGRES_PASSWORD=${pg_pass}
-POSTGRES_DB=nocodb
-NC_DB=pg://workflow-nocodb-postgres:5432?u=nocodb&p=${pg_pass}&d=nocodb
-NC_AUTH_JWT_SECRET=${jwt_secret}
-EOF
-  chmod 600 "$env_file"
-}
-
-# n8n's env generation used to live here (generate_n8n_env). Removed after the
-# composable cutover (2026-09-02): n8n's secrets are OpenBao-sourced via
-# manage-secrets + n8n.env.j2, and its stateful values were pre-seeded from the
-# live instance (seed-n8n-secrets.yml). generate_nocodb_env above stays only
-# until the NocoDB decommission change retires that service (replaced by
-# tududi); nothing new may call it.
-
 # ── Semaphore Env Generation ──────────────────────────────────────────────────
 
 generate_semaphore_env() {
