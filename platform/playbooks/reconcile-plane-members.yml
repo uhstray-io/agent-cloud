@@ -222,4 +222,4 @@
           invite {{ _reconcile_summary.plan.invite }}; set role {{ _reconcile_summary.plan.set_role }};
           remove {{ _reconcile_summary.plan.remove }}{{ (' — done: ' ~ _reconcile_summary.actions) if _apply else '' }}{{
           ('; owners left alone, offboard by hand: ' ~ _reconcile_summary.owners_unmanaged)
-          if _reconcile_summary.owners_unmanaged | default([]) else '' }}
+          if _reconcile_summary.owners_unmanaged else '' }}

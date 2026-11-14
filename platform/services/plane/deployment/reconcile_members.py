@@ -4,7 +4,7 @@ Run by reconcile-plane-members.yml INSIDE the plane-api container, after plane_s
 with one JSON document on stdin:
 
   {base, host, origin,                  plane_session.py
-   email, password,                     the automation account, the workspace's creator and owner
+   email, password,                     the automation account, the workspace's creator
    workspace_slug,
    desired: {email: role_slug},         plane_admin_role for platform-admins ("owner" in production:
                                         Plane's Admin role is Business and Enterprise only; "member"
@@ -126,7 +126,7 @@ if cfg.get("apply"):
 summary = {k: [p["email"] + (f" ({p['role']})" if "role" in p else "") for p in v] for k, v in plan.items()}
 # Owners are never demoted or removed here, so one the groups no longer make an owner would keep
 # full control unnoticed: name them, so the manual offboarding has a trigger.
-unmanaged = [f"{e} ({'in no member group' if e not in desired else 'desired ' + desired[e]})"
-             for e in sorted(owners) if e != me and desired.get(e) != "owner"]
+unmanaged = [f"{e} (desired {desired[e]})" if e in desired else f"{e} (in no member group)"
+             for e in sorted(owners - {me}) if desired.get(e) != "owner"]
 print(json.dumps({"changed": bool(done), "applied": bool(cfg.get("apply")), "plan": summary, "actions": done,
                   "owners_unmanaged": unmanaged}))
