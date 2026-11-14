@@ -143,7 +143,7 @@ before 2026-12-11; plan it into Release 3 or 4 once ADR-0018 is decided.
 
 | Work | Size | Note |
 |---|---|---|
-| weft #743 | 49 files | A draft. Once ready, it takes the first release with ≥ 50 files of room, or splits into a deploy PR and a backup/rollback PR |
+| weft #743 | 60 files | Reworked 2026-11-13 into a stack of five pull requests, the `add-weft-service` OpenSpec change first. Goes up as drafts for Joe's review; targets Release 4 (about 25 planned files, so room under R7's 90), or Release 3 if it has the room when the stack is approved |
 | `shared-automation-helpers` | 60–80 files | **Not approved** (`tasks.md:3`: "Proposal awaiting operator approval — do not start"). If approved, one helper section per release, each ≤ 20 files. Sections 2 and 3 migrate 46 and 12 call sites, so each spans two releases |
 | Rust test platform ports: AC-735 (BATS), AC-736 (static and subprocess Python tests), AC-737 (playbook tests), then AC-738 to AC-741 | Plan 24's phase table | After Release 2, which carries wave 1 (AC-872 to AC-879, AC-881). The rest of AC-735 to AC-741 follows; a port over R7's 90-file plan is split by task group before it is scheduled. |
 | `deploy-postiz-social-publishing` | 0 files | Only runs and decisions left, last touched 2026-09-05. Either schedule its production rollout runs after a promotion, or park the change by operator decision |
