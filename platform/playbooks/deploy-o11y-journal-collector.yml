@@ -170,7 +170,7 @@
 
     - name: Verify the exact receiver network before survey or apply
       ansible.builtin.command:
-        argv: [python3, -, verify-network, --components, "{{ _journal_components_arg }}"]
+        argv: [python3, "-", verify-network, --components, "{{ _journal_components_arg }}"]
         stdin: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/files/o11y-journal-positions.py') }}"
         stdin_add_newline: false
       register: _journal_network_identity
@@ -284,7 +284,7 @@
 
     - name: Survey declared receiver log content before any change
       ansible.builtin.command:
-        argv: [python3, -]
+        argv: [python3, "-"]
         stdin: "{{ _journal_content_helper }}"
         stdin_add_newline: false
       register: _journal_content_survey
@@ -779,7 +779,7 @@
 
     - name: Retire only a verified legacy-project collector registration
       ansible.builtin.command:
-        argv: [python3, -, retire-legacy, --components, "{{ _journal_components_arg }}"]
+        argv: [python3, "-", retire-legacy, --components, "{{ _journal_components_arg }}"]
         stdin: "{{ _journal_positions_helper }}"
         stdin_add_newline: false
       register: _journal_retire_legacy
