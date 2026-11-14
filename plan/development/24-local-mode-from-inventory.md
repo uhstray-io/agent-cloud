@@ -79,5 +79,5 @@ Each `dev` → `main` promotion after v0.15.0 is capped at 100 pull requests and
 
 - `test_local_mode_reads.py` passes with no migration allowlist.
 - The full pytest and BATS suites pass, locally and in CI.
-- For each family, a production inventory run with `-e local_mode=true` (plain and templated) takes the production branch.
+- For each family, a production inventory run with `-e local_mode=true` never takes a local-dev branch. Where the run includes `tasks/assert-local-mode-identity.yml` (through `tasks/place-monorepo.yml` or `tasks/enable-linger.yml`), a plain value is refused there, because it disagrees with the inventory's identity. A templated value that passes that check, and either value in a run without it, takes the production branch in every read.
 - Local-dev deploys still run: one `make local-deploy-<svc>` per family on the local Semaphore, recorded in its PR.
