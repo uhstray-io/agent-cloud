@@ -7,13 +7,13 @@ CUSTOM STATS by the repository ansible.cfg, and --check does not suppress it.
 
 import importlib.util
 import json
-import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import forgeries
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -48,13 +48,9 @@ def _play(tmp_path: Path, **vars_) -> Path:
 
 
 def _run(play: Path, *args: str) -> subprocess.CompletedProcess:
-    # cwd=REPO so the repository ansible.cfg is the one Ansible loads, as on the controller.
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(
-        ["ansible-playbook", "-i", "localhost,", str(play), *args],
-        cwd=REPO, env=env, text=True, capture_output=True, check=False,
-    )
+    # The play sits in the test's own directory, the sandbox's writable root. run_playbook runs from the
+    # repository root, so the repository ansible.cfg is the one Ansible loads, as on the controller.
+    return harness_sandbox.run_playbook(play, play.parent, *args)
 
 
 def _stats(stdout: str) -> dict:

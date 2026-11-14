@@ -12,6 +12,7 @@ from unittest import TestCase, main
 from unittest.mock import Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
+import harness_sandbox
 import yaml
 from jinja2 import Environment
 
@@ -114,6 +115,7 @@ class GeneratedTokenOutputTests(TestCase):
             capture_output=True,
             text=True,
             check=False,
+            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
         )
         self.assertEqual(completed.returncode, 2)
         self.assertNotIn(private_fixture, completed.stdout + completed.stderr)
@@ -156,7 +158,8 @@ class GeneratedTokenOutputTests(TestCase):
                 argv = mint["ansible.builtin.command"]["argv"]
                 self.assertEqual(argv[:3], ["proxmox-backup-manager", "user", "generate-token"])
                 self.assertNotIn("--output-format", argv)
-                cli_result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False)
+                cli_result = subprocess.run(argv, env=env, capture_output=True, text=True, check=False,
+                                            timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
                 self.assertEqual(cli_result.returncode, 0)
                 expected_id = f"{argv[3]}!{argv[4]}"
                 observed_ids.add(expected_id)
@@ -177,6 +180,7 @@ class GeneratedTokenOutputTests(TestCase):
                     capture_output=True,
                     text=True,
                     check=False,
+                    timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
                 )
                 self.assertEqual(parser_result.returncode, 0, parser_result.stderr)
                 self.assertEqual(

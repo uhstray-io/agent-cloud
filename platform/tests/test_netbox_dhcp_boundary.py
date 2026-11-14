@@ -2,12 +2,12 @@
 
 import copy
 import json
-import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -39,6 +39,7 @@ def check(address, server=SERVER):
         text=True,
         capture_output=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
 
 
@@ -142,12 +143,7 @@ def _validate_inputs(tmp_path, extra_vars):
     playbook = tmp_path / "validate-inputs.yml"
     playbook.write_text(yaml.safe_dump([play]))
     extra = {"openbao_addr": "https://openbao.example:8200", **extra_vars}
-    return subprocess.run(
-        ["ansible-playbook", "-i", str(inventory), str(playbook), "-e", json.dumps(extra)],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+    return harness_sandbox.run_playbook(playbook, tmp_path, "-e", json.dumps(extra), inventory=inventory)
 
 
 @pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook is unavailable")
@@ -230,16 +226,9 @@ def test_tls_choice_uses_private_host_even_with_play_var_overrides(tmp_path):
                 },
             ],
         }]))
-        command = ["ansible-playbook", "-i", str(inventory), str(playbook)]
-        if overrides:
-            command.extend(["-e", json.dumps(overrides)])
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            check=False,
-            env={**os.environ, "ANSIBLE_LOCAL_TEMP": str(tmp_path)},
-        )
+        result = harness_sandbox.run_playbook(
+            playbook, tmp_path, *(["-e", json.dumps(overrides)] if overrides else []),
+            inventory=inventory, env={"ANSIBLE_LOCAL_TEMP": str(tmp_path)})
         output = result.stdout + result.stderr
         assert (result.returncode != 0) is refused, output
         if not refused:

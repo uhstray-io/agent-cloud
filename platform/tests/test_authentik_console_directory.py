@@ -13,20 +13,20 @@ These tests hold that shape in three places:
 Requires ansible-playbook for the two render tests (the real `template` module, as the deploy uses).
 """
 
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
-import threading
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import harness_sandbox
 import pytest
 import yaml
 from ansible_python import needs_ansible
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 
 REPO = Path(__file__).resolve().parents[2]
 DEPLOYMENT = REPO / "platform/services/authentik/deployment"
@@ -170,7 +170,8 @@ def _render(tmp: Path, src: Path, variables: dict) -> str:
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env["ANSIBLE_NOCOLOR"] = "1"
     done = subprocess.run(["ansible-playbook", "-i", "localhost,", str(playbook)],
-                          cwd=tmp, env=env, text=True, capture_output=True, check=False)
+                          cwd=tmp, env=env, text=True, capture_output=True, check=False,
+                          timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS)
     assert done.returncode == 0, done.stdout + done.stderr
     return dest.read_text(encoding="utf-8")
 
@@ -304,18 +305,12 @@ def _handler(sc: dict):
 
 @pytest.fixture
 def fake_api():
-    servers = []
+    with contextlib.ExitStack() as servers:
+        def start(sc: dict) -> int:
+            url = servers.enter_context(serve(_handler(sc)))
+            return urlsplit(url).port
 
-    def start(sc: dict) -> int:
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), _handler(sc))
-        threading.Thread(target=srv.serve_forever, daemon=True).start()
-        servers.append(srv)
-        return srv.server_address[1]
-
-    yield start
-    for srv in servers:
-        srv.shutdown()
-        srv.server_close()
+        yield start
 
 
 # Runs the rendered script with http.client aimed at the fake. The script itself is unchanged:

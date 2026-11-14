@@ -1,7 +1,6 @@
 ---
-# backup-plane-db.yml — timestamped pg_dump of Plane's Postgres (plane-db). Modelled on
-# backup-n8n-db.yml: a STANDING tool, run before every Plane release bump and before any
-# clean deploy whose data matters.
+# backup-plane-db.yml — timestamped pg_dump of Plane's Postgres (plane-db). A STANDING tool,
+# run before every Plane release bump and before any clean deploy whose data matters.
 #
 # Read-only against the database. Writes ONE new timestamped dump file (0600, umask'd at
 # creation, noclobber) into an owner-only (0700) directory on the VM. The dump holds every

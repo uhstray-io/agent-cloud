@@ -3,6 +3,7 @@
 **Date:** 2026-10-24
 
 **Status:** IMPLEMENTED
+> **Parent plan:** [Observability](05-observability.md)
 
 **Context:** The dashboard verifier safely refuses to join completion ages when returned rows do not match the public workflow identity contract, but its sanitized report does not say which fixed validation category rejected the age map or why a returned failure pair has no numeric age.
 

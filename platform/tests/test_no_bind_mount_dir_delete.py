@@ -63,7 +63,7 @@ def _deploy_rel(service: str) -> str:
 
 class _ComposeLoader(yaml.SafeLoader):
     """SafeLoader that also reads compose-spec merge tags (!override, !reset) as plain values,
-    as test_restart_policy.bats does, so an overlay that uses them is scanned, not an error."""
+    as suite/restart_policy.rs does, so an overlay that uses them is scanned, not an error."""
 
 
 _ComposeLoader.add_multi_constructor(

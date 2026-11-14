@@ -9,7 +9,6 @@ Reverse Proxy for Uhstray.io Web Applications
   - [Original Documentation Links](#original-documentation-links)
   - [Testing Caddy Locally](#testing-caddy-locally)
 - [Automated Setup Script](#automated-setup-script)
-- [NextCloud Configuration](#nextcloud-configuration)
 
 
 ## Caddy Documentation
@@ -57,12 +56,3 @@ than from `platform/services/caddy/deployment` (Inspect Host Containers, task 14
 inventory declares that directory as `compose_working_dir`; `ensure-service-persistence.yml`
 enabled linger and podman's user boot unit for it (task 1491), and Verify Service Persistence
 passes (task 1521). It declares no health path, so Verify Service Health does not cover it.
-
-## NextCloud Configuration
-
-- [AIO Reverse Proxy Setup](https://github.com/nextcloud/all-in-one/blob/main/reverse-proxy.md#adapting-the-sample-web-server-configurations-below)
-- [Docker Compose Example](https://github.com/nextcloud/all-in-one/discussions/575)
-
-**Configuration Note**
-> On a different server (in container or not)
-Use the <mark>private ip-address</mark> of the host that shall be running AIO. So e.g. `private.ip.address.of.aio.server:$APACHE_PORT` instead of `localhost:$APACHE_PORT`. If you are not sure how to retrieve that, you can run: `ip a | grep "scope global" | head -1 | awk '{print $2}' | sed 's|/.*||'` on the server that shall be running AIO (the commands only work on Linux).

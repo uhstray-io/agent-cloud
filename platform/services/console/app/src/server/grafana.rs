@@ -386,8 +386,8 @@ mod tests {
     #[test]
     fn service_overview_link_sets_both_variables_to_the_service() {
         assert_eq!(
-            service_overview(BASE, "tududi").as_deref(),
-            Some("https://grafana.example.test/d/service-overview/service-overview?var-service=tududi&var-log_service=tududi")
+            service_overview(BASE, "postiz").as_deref(),
+            Some("https://grafana.example.test/d/service-overview/service-overview?var-service=postiz&var-log_service=postiz")
         );
     }
 
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn an_unparseable_base_gives_no_link() {
-        assert_eq!(service_overview("not a url", "tududi"), None);
+        assert_eq!(service_overview("not a url", "postiz"), None);
         assert_eq!(service_conformance("http://[::1"), None);
     }
 }

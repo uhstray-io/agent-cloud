@@ -11,10 +11,9 @@ refused) is proven without a UFW host.
 
 import importlib.util
 import json
-import os
-import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -60,12 +59,9 @@ def _run_record(tmp_path, verdicts: dict, *extra, target="fw_svc"):
     hosts = {h: ({"_fw_verdict": v} if v is not None else {}) for h, v in verdicts.items()}
     inventory = {"all": {"vars": {"service_name": "demo"}, "children": {"fw_svc": {"hosts": hosts}}}}
     (tmp_path / "inv.yml").write_text(json.dumps(inventory))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(
-        ["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"),
-         "-e", f"target_service={target}", *extra],
-        cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False,
+    proc = harness_sandbox.run_playbook(
+        tmp_path / "play.yml", tmp_path, "-e", f"target_service={target}", *extra,
+        inventory=tmp_path / "inv.yml",
     )
     found = step_results.results_in(proc.stdout.splitlines())
     assert len(found) == 1, f"expected one step result, got {found!r}\n{proc.stdout[-3000:]}"
@@ -155,10 +151,7 @@ def _run_slice(tmp_path, playbook, first_task, hostvars: dict, *extra, play_vars
              for h, v in hostvars.items()}
     inv = {"all": {"vars": {"service_name": "demo"}, "children": {"svc": {"hosts": hosts}}}}
     (tmp_path / "inv.yml").write_text(json.dumps(inv))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    proc = subprocess.run(["ansible-playbook", "-i", str(tmp_path / "inv.yml"), str(tmp_path / "play.yml"), *extra],
-                          cwd=REPO, env=env, text=True, capture_output=True, stdin=subprocess.DEVNULL, check=False)
+    proc = harness_sandbox.run_playbook(tmp_path / "play.yml", tmp_path, *extra, inventory=tmp_path / "inv.yml")
     return proc, step_results.results_in(proc.stdout.splitlines())
 
 

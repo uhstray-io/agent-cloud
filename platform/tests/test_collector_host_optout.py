@@ -12,6 +12,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -70,6 +71,7 @@ def _host_services(tmp_path: Path) -> dict:
         text=True,
         capture_output=True,
         check=False,
+        timeout=harness_sandbox.DEFAULT_TIMEOUT_SECONDS,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     return json.loads(out.read_text())

@@ -11,9 +11,8 @@ Verified 2026-09-14:
   Grafana `11.4.0` on 3002, all binds default to `127.0.0.1`.
   `config/prometheus.yml`: 15 s interval, self-scrape only, Phase 2 targets in comments.
   `config/config.alloy`: `loki.write` to Loki; the OTLP receiver is a comment.
-- `platform/inventory/production.yml`: service groups `openbao_svc`, `nocodb_svc`,
-  `n8n_svc`, `semaphore_svc`, `netbox_svc`, `nemoclaw_svc`, `caddy_svc`, `postiz_svc`,
-  `uhhcraft_svc`, `inference_comfyui_svc`, `inference_hunyuan3d_svc`. No `o11y_svc`.
+- `platform/inventory/production.yml`: service groups `openbao_svc`,
+  `semaphore_svc`, `netbox_svc`, `caddy_svc`, `postiz_svc`. No `o11y_svc`.
 - `platform/infra/cloudflare/dns.tf`: `o11y` is in the managed subdomain list, proxied
   to the Caddy origin.
 - `plan/development/05-observability.md`: PROPOSED; Phase 3 (prod) lists Mimir, Tempo,
@@ -45,13 +44,11 @@ Cloudflare 502 host error at `/project/1/templates`. No production host or conta
 state was observed; task 0.2 remains open.
 
 2026-09-22 partial production inventory: Semaphore task 1105 ran the read-only
-`audit-o11y-containers.yml` against the 15 `agent_cloud` service hosts. On the 12
+`audit-o11y-containers.yml` against the `agent_cloud` service hosts. On the 10
 reachable hosts (`agentgateway`, `authentik`, `caddy`, `gh-runner-01`,
-`gh-runner-02`, `honcho`, `n8n`, `netbox`, `openbao`, `postiz`, `semaphore`,
-`tududi`), the rootless and rootful Podman and Docker queries all reported
+`gh-runner-02`, `honcho`, `netbox`, `openbao`, `postiz`, `semaphore`), the rootless and rootful Podman and Docker queries all reported
 empty `o11y-*` container lists. At least one runtime query succeeded on each
-host. `nemoclaw`, `nocodb`, and `openhands` were unreachable, so this does not
-establish absence on every production host. Semaphore task 1106 attempted the
+host. Semaphore task 1106 attempted the
 existing read-only Proxmox validation playbook to check VM state, but its
 OpenBao lookup could not connect; no VM status was observed. Task 0.2 remains
 open until those hosts or their stopped VM state are verified.
@@ -108,10 +105,6 @@ hours after the last deploy for all three figures. o11y Fault Drill (Dev) probe-
 and starts `inference-probe.service` without stopping a container
 (`platform/playbooks/o11y-fault-drill.yml:341-373`), which is the playbook source and not an
 observation of that task.
-
-2026-10-14: the operator decided on 2026-10-13 that the `nocodb`, `nemoclaw` and `openhands`
-VMs are retired, and task 0.2 is closed on that decision. Their power state was not read; the
-investigation was Semaphore tasks 4857-4862, which found all three network-unreachable.
 
 ## Goals / Non-Goals
 
@@ -228,7 +221,7 @@ shape); benchmark coordination (its own change once the gateway exists).
 
 - Which Proxmox VM id and address the o11y host gets (site-config `vm-specs.yml`).
   Default if unanswered: a new small VM per the Auxiliary tier, not co-location.
-- Discord contact point: reuse the WisBot webhook path or a dedicated alerts channel.
+- Discord contact point: reuse an existing webhook path or a dedicated alerts channel.
   Default: dedicated channel, webhook in OpenBao.
 - Whether Grafana sits behind Authentik `forward_auth` from day one. Default: yes, the
   Caddy template already renders that route shape; the synthetic probe and MCP paths do

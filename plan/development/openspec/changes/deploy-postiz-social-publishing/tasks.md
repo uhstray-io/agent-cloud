@@ -433,20 +433,6 @@ protects 1.7, which is the only irreversible step in the change.
       reverse proxy succeed, everything else inbound is refused; and scenario "Closed
       state survives redeployment" holds
 
-## 8. Automation contract for n8n
-
-- [x] 8.1 Write the integration contract document: base endpoint, the API-key auth model,
-      the media-upload then create-post then schedule flow, and the rate ceiling as the
-      budget callers must respect
-- [x] 8.2 Record why automation reaches the service over the public host rather than
-      directly on the internal network, so the reasoning survives a later "optimization"
-- [x] 8.3 Note where the API key belongs in the secret store for when the automation
-      workflows are actually built — no automation deployment or configuration in this
-      change
-- [x] 8.4 Validation gate: scenario "Rate ceiling is enforced" is documented with its
-      configured value and window, so the contract states a budget a caller can actually
-      respect
-
 ## 9. Close out
 
 - [ ] 9.1 Retain one outcome memory into the repo's experience bank: whether the trimmed

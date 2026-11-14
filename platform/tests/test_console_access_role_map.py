@@ -16,12 +16,12 @@ is what the page shows. Every cell is compared exactly.
 """
 
 import json
-import os
 import re
 import shutil
 import subprocess
 from pathlib import Path
 
+import harness_sandbox
 import playbook_yaml
 import pytest
 import yaml
@@ -80,20 +80,18 @@ def _deploy_vars() -> dict:
     return next(p for p in playbook_yaml.plays(DEPLOY) if "_secret_definitions" in (p.get("vars") or {}))["vars"]
 
 
-def _run(harness_dir: Path, playbook: dict) -> subprocess.CompletedProcess:
+def _run(tmp_path: Path, harness_dir: Path, playbook: dict) -> subprocess.CompletedProcess:
+    # tmp_path is the sandbox's writable root: the play may write its output beside harness_dir.
     path = harness_dir / "harness.yml"
     path.write_text(yaml.safe_dump([playbook]))
-    env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
-    env["ANSIBLE_NOCOLOR"] = "1"
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path)], cwd=REPO, env=env,
-                          text=True, capture_output=True, check=False)
+    return harness_sandbox.run_playbook(path, tmp_path)
 
 
 def _render(tmp_path: Path, src: Path, variables: dict) -> str:
     dest = tmp_path / "rendered.out"
     play = {"hosts": "localhost", "connection": "local", "gather_facts": False, "vars": variables,
             "tasks": [{"ansible.builtin.template": {"src": str(src), "dest": str(dest), "mode": "0644"}}]}
-    proc = _run(tmp_path, play)
+    proc = _run(tmp_path, tmp_path, play)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     return dest.read_text()
 
@@ -139,7 +137,7 @@ def test_the_deploy_lookup_renders_the_vars_file_to_the_json_the_server_reads(tm
             "vars": {"_access_role_map": expression},
             "tasks": [{"ansible.builtin.template": {
                 "src": str(CONSOLE / "templates/role-map.json.j2"), "dest": str(dest), "mode": "0644"}}]}
-    proc = _run(harness_dir, play)
+    proc = _run(tmp_path, harness_dir, play)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = dest.read_text()
     # The `{{ vault_secret_prefix }}` placeholder survives rendering as literal text, not as a template.

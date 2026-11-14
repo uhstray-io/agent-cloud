@@ -66,6 +66,13 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    # keep-id (compose.tls.yml): tasks/assert-podman-keep-id.yml.
+    - name: "Refuse a podman older than 4.3 for userns keep-id"
+      ansible.builtin.include_tasks: tasks/assert-podman-keep-id.yml
+      vars:
+        _apk_for: "opa_tls (compose.tls.yml)"
+      when: _opa_tls
+
     # ── Listener TLS (opa_tls, production) ─────────────────────────────────────
     # Every declaration check runs before the leaf is issued, so a bad declaration issues nothing.
     - name: "Refuse opa_tls outside production"
@@ -110,27 +117,6 @@
         quiet: true
       vars:
         _opa_leaf_decl: "{{ internal_leaves | default([]) | selectattr('name', 'equalto', _opa_server_leaf) | list }}"
-      when: _opa_tls
-
-    # keep-id (compose.tls.yml) needs podman 4.3 or later, and the older podman refuses the flag.
-    - name: "Read the podman version for keep-id"
-      ansible.builtin.command:
-        argv: ["{{ container_engine | default('podman') }}", version, --format, "{{ '{{.Client.Version}}' }}"]
-      register: _opa_podman_version
-      changed_when: false
-      check_mode: false
-      when: _opa_tls
-
-    - name: "Refuse keep-id on a podman older than 4.3"
-      ansible.builtin.assert:
-        that:
-          # keep-id is a podman option: another engine's version number would pass the comparison.
-          - (container_engine | default('podman')) == 'podman'
-          - _opa_podman_version.stdout is version('4.3', '>=')
-        fail_msg: >-
-          opa_tls needs podman 4.3 or later for userns keep-id; this host runs
-          {{ container_engine | default('podman') }} {{ _opa_podman_version.stdout }}.
-        quiet: true
       when: _opa_tls
 
     # The server leaf: key generated on this host, signed by the one step_ca_svc host. An issued
@@ -191,16 +177,21 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        # Compose substitution for the published host port (no .env — OPA has no
-        # secrets). Inventory opa_bind/opa_port flow straight into compose.
+        # Compose substitutions for the published host port. OPA has no secrets; deploy.sh writes
+        # these into a non-secret .env so a changed value recreates OPA (write_env).
         OPA_BIND: "{{ opa_bind | default('127.0.0.1') }}"
         OPA_PORT: "{{ opa_port | default('8281') }}"
         # Listener TLS: the overlay mounts ./certs and serves the leaf named by OPA_SERVER_LEAF.
         # Empty COMPOSE_OVERLAYS adds nothing (common.sh's compose() loops over its words).
         COMPOSE_OVERLAYS: "{{ 'compose.tls.yml' if _opa_tls else '' }}"
         OPA_SERVER_LEAF: "{{ opa_server_leaf | default('opa-server') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate OPA even when
+        # its policies, compose files, .env and image all match, as for Authentik and o11y.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates OPA only when its policies, compose files or image changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"
@@ -251,7 +242,7 @@
         method: POST
         path: /v1/data/agentcloud/decision?explain=full
         body:
-          input: {agent: nemoclaw, action: read, service: nocodb}
+          input: {agent: infra-agent, action: read, service: netbox}
     # The TLS probes' curl argv: the same list without --fail (see the TLS refusal task).
     _opa_tls_probe_args: "{{ _opa_tls_args | reject('equalto', '--fail') | list }}"
 
@@ -268,13 +259,13 @@
       check_mode: false
       when: not _opa_tls
 
-    - name: "Sample decision: nemoclaw read nocodb -> allow"
+    - name: "Sample decision: infra-agent read netbox -> allow"
       ansible.builtin.uri:
         url: "{{ _opa_url }}/v1/data/agentcloud/decision"
         method: POST
         body_format: json
         body:
-          input: {agent: nemoclaw, action: read, service: nocodb}
+          input: {agent: infra-agent, action: read, service: netbox}
         status_code: [200]
       register: _opa_allow
       failed_when: not (_opa_allow.json.result.allowed | default(false) | bool)
@@ -286,7 +277,7 @@
         method: POST
         body_format: json
         body:
-          input: {agent: rogue-agent, action: read, service: nocodb}
+          input: {agent: rogue-agent, action: read, service: netbox}
         status_code: [200]
       register: _opa_deny
       failed_when: _opa_deny.json.result.allowed | default(true) | bool
@@ -358,11 +349,11 @@
         quiet: true
       when: _opa_tls
 
-    - name: "Sample decision over TLS: nemoclaw read nocodb -> allow"
+    - name: "Sample decision over TLS: infra-agent read netbox -> allow"
       ansible.builtin.command:
         argv: >-
           {{ _opa_tls_args + ['--header', 'Content-Type: application/json',
-             '--data', ({'input': {'agent': 'nemoclaw', 'action': 'read', 'service': 'nocodb'}} | to_json),
+             '--data', ({'input': {'agent': 'infra-agent', 'action': 'read', 'service': 'netbox'}} | to_json),
              _opa_url ~ '/v1/data/agentcloud/decision'] }}
       register: _opa_allow_tls
       changed_when: false
@@ -373,7 +364,7 @@
       ansible.builtin.command:
         argv: >-
           {{ _opa_tls_args + ['--header', 'Content-Type: application/json',
-             '--data', ({'input': {'agent': 'rogue-agent', 'action': 'read', 'service': 'nocodb'}} | to_json),
+             '--data', ({'input': {'agent': 'rogue-agent', 'action': 'read', 'service': 'netbox'}} | to_json),
              _opa_url ~ '/v1/data/agentcloud/decision'] }}
       register: _opa_deny_tls
       changed_when: false

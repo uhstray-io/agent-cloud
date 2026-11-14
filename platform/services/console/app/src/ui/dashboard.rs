@@ -982,7 +982,7 @@ mod render_tests {
         let decided = Proposal {
             id: "p7".into(),
             state: State::Launched,
-            service: "tududi".into(),
+            service: "postiz".into(),
             decision: Some(Decision {
                 action: proposals_api::DecisionAction::Approved,
                 by: Person {

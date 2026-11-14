@@ -323,8 +323,8 @@ TEMPFILE_USERS = {
     "provision-console-proxmox-token.yml": "per-run Proxmox CA file for TLS verification, removed in an always: block",
     "retire-semaphore-templates.yml": "0600 Semaphore API token file for the history drain, contains no SSH key, "
     "removed in an always: block",
-    "retire-tududi.yml": "tududi archive build dir on the VM and the controller's copy for the checksum, "
-    "contains no SSH key, removed in an always: block",
+    "release-version.yml": "anonymous agent-cloud clone and the 0600 git credential file for the release App "
+    "token, contains no SSH key, removed in an always: block",
 }
 
 

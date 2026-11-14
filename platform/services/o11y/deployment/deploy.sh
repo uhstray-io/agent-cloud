@@ -46,6 +46,30 @@ step_pull_image() {
   compose pull
 }
 
+# availability_candidate_category RC OUTPUT
+#   Print one line, "Availability gate category: <word>", for a refused candidate namespace-gate
+#   run. RC is the helper's exit status and OUTPUT its captured stdout. The word is the helper's
+#   reason only for a status-2 result and only when it is a namespace_* word; any other status
+#   reports namespace_helper_failed, and an unusable reason reports namespace_unverified. OUTPUT is
+#   parsed and never printed, so no raw helper text reaches the deploy log.
+availability_candidate_category() {
+  local rc="${1:-}" output="${2:-}" word
+  case "$rc" in
+    0|2)
+      word=$(printf '%s' "$output" | python3 -c '
+import json, re, sys
+try:
+    reason = json.load(sys.stdin).get("reason")
+except Exception:
+    reason = None
+print(reason if isinstance(reason, str) and re.fullmatch(r"namespace_[a-z_]{1,48}", reason) else "namespace_unverified")
+') || word=namespace_unverified
+      ;;
+    *) word=namespace_helper_failed ;;
+  esac
+  printf 'Availability gate category: %s\n' "$word"
+}
+
 step_start() {
   info "Step 3: Starting o11y (prometheus + loki + alloy + grafana), recreating only on change..."
   local availability_helper="${SCRIPT_DIR}/../../../playbooks/files/summarize-o11y-scrape-baseline.py"
@@ -57,7 +81,11 @@ step_start() {
   if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
     [ -f "$availability_helper" ] || error "Availability runtime verifier is missing."
     export COMPOSE_CMD
-    if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
+    local availability_gate_output="" availability_gate_rc=0
+    availability_gate_output=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" python3 "$availability_helper" --verify-availability-namespace --candidate) \
+      || availability_gate_rc=$?
+    if [ "$availability_gate_rc" -ne 0 ]; then
+      availability_candidate_category "$availability_gate_rc" "$availability_gate_output"
       error "Availability refused because the effective provider, candidate network configuration, or Linux namespace proof is unverified."
     fi
     info "Availability provider and current Linux namespace proof passed immediately before lifecycle apply."
@@ -105,8 +133,11 @@ print(source, container_sha256)
     printf 'O11Y_AVAILABILITY_PREAPPLY_EPOCH=%s\n' "$availability_preapply_epoch"
     compose_staged_up() {
       if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
-        if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_AVAILABILITY_FINAL_START=true \
-          python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
+        local availability_gate_output="" availability_gate_rc=0
+        availability_gate_output=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_AVAILABILITY_FINAL_START=true \
+          python3 "$availability_helper" --verify-availability-namespace --candidate) || availability_gate_rc=$?
+        if [ "$availability_gate_rc" -ne 0 ]; then
+          availability_candidate_category "$availability_gate_rc" "$availability_gate_output"
           error "Availability final pre-start namespace and effective-compose proof is unverified."
         fi
       fi
@@ -115,8 +146,11 @@ print(source, container_sha256)
   fi
   compose_up_if_changed config
   if [ "${O11Y_AVAILABILITY_ENABLED:-false}" = "true" ]; then
-    if ! O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256="" \
-      python3 "$availability_helper" --verify-availability-namespace --candidate >/dev/null; then
+    local availability_gate_output="" availability_gate_rc=0
+    availability_gate_output=$(O11Y_DEPLOYMENT_DIR="$SCRIPT_DIR" O11Y_EXPECTED_NAMESPACE_SNAPSHOT_SHA256="" \
+      python3 "$availability_helper" --verify-availability-namespace --candidate) || availability_gate_rc=$?
+    if [ "$availability_gate_rc" -ne 0 ]; then
+      availability_candidate_category "$availability_gate_rc" "$availability_gate_output"
       error "Availability post-apply Linux namespace proof is unverified; the running stack is preserved for review."
     fi
     info "Availability post-apply Linux namespace proof passed."

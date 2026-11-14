@@ -2,6 +2,8 @@
 
 **Date:** 2026-10-10
 **Status:** SOURCE PROVENANCE SLICE IMPLEMENTED; dashboard consumption and Dev acceptance pending
+> **Parent plan:** [Observability](05-observability.md)
+
 **Context:** Plan correction of the production Service deployment conformance and Service Overview dashboards, with OpenSpec contract in `openspec/changes/o11y-dashboard-accuracy/`. Current source references are local to this feature checkout; the live evidence below was supplied with this task.
 
 ---

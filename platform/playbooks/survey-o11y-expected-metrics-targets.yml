@@ -121,7 +121,9 @@
             'reviewed': o11y_expected_metrics_targets_reviewed | default(false) | bool,
             'targets': o11y_expected_metrics_targets | default([]),
             'availability': _expected_source_availability,
-            'shared_limits': o11y_scrape_limits | default({}),
+            'shared_limits': o11y_scrape_limits | default(none) | o11y_effective_scrape_limits(
+                o11y_scrape_sample_limit | default(2000) | int, local_mode | default(false) | bool,
+                o11y_scrape_limits_reviewed | default(false) | bool),
             'environment': o11y_environment | default('prod'),
             'cluster': o11y_cluster | default('agent-cloud-local'),
             'lower_bound': none,

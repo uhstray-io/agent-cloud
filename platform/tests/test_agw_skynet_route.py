@@ -19,16 +19,15 @@ nothing else.
 import hashlib
 import json
 import subprocess
-import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 from test_agw_admin_identities import CONFIG, PHASE1, REPO, SECRETS, _ansible, _task
 from test_agw_stream_usage import IMAGE, _free_port, _image_present
 
@@ -368,61 +367,59 @@ def test_the_route_admits_only_its_identity_and_skynet_sees_only_its_own_token(t
     """The real render, with only the backend pointed at a local stand-in and the database dropped (the
     route's policy has no budget, and the llm keys' budgets need a database this check does not start)."""
     Backend.seen = []
-    server = ThreadingHTTPServer(("0.0.0.0", 0), Backend)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    name = f"agw-skynet-{_free_port()}"
-    try:
-        cfg = render(tmp_path, **{**ROUTE_HV, "agw_skynet_backend": f"host.containers.internal:{server.server_port}"})
-        cfg["config"] = {"adminAddr": "127.0.0.1:15000"}
-        for entry in cfg["llm"]["policies"]["apiKey"]["keys"]:
-            entry.pop("budgets", None)
-        (tmp_path / "live.yaml").write_text(yaml.safe_dump(cfg))
-        port = _free_port()
-        subprocess.run(
-            [
-                "podman",
-                "run",
-                "-d",
-                "--rm",
-                "--name",
-                name,
-                "-p",
-                f"127.0.0.1:{port}:4000",
-                "-e",
-                f"SKYNET_API_TOKEN={TOKEN}",
-                "-e",
-                "VLLM_API_KEY=vllm-synthetic",
-                "-v",
-                f"{tmp_path / 'live.yaml'}:/config.yaml:ro",
-                IMAGE,
-                "-f",
-                "/config.yaml",
-            ],
-            check=True,
-            capture_output=True,
-        )
-        deadline = time.time() + 30
-        while True:
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
-                break
-            except urllib.error.HTTPError:
-                break
-            except OSError:
-                if time.time() > deadline:
-                    raise
-                time.sleep(0.5)
-        assert _call(port, "GET", "/skynet/healthz") == 401  # keyless: refused at the gateway
-        assert _call(port, "GET", "/skynet/healthz", STORE["client_alice"]) == 401  # enrolled, not a route identity
-        assert Backend.seen == []  # neither refused call reached skynet
-        assert _call(port, "GET", "/skynet/healthz", STORE["client_skynet"]) == 200
-        assert _call(port, "POST", "/skynet/runs", STORE["client_skynet"], {"x": 1}) == 200
-        assert [s["path"] for s in Backend.seen] == ["/skynet/healthz", "/skynet/runs"]  # no rewrite
-        assert {s["auth"] for s in Backend.seen} == {f"Bearer {TOKEN}"}  # the caller's key never arrives
-    finally:
-        subprocess.run(["podman", "rm", "-f", name], capture_output=True)
-        server.shutdown()
-        server.server_close()
+    with serve(Backend, host="0.0.0.0") as backend_url:
+        backend_port = urlsplit(backend_url).port
+        name = f"agw-skynet-{_free_port()}"
+        try:
+            cfg = render(tmp_path, **{**ROUTE_HV, "agw_skynet_backend": f"host.containers.internal:{backend_port}"})
+            cfg["config"] = {"adminAddr": "127.0.0.1:15000"}
+            for entry in cfg["llm"]["policies"]["apiKey"]["keys"]:
+                entry.pop("budgets", None)
+            (tmp_path / "live.yaml").write_text(yaml.safe_dump(cfg))
+            port = _free_port()
+            subprocess.run(
+                [
+                    "podman",
+                    "run",
+                    "-d",
+                    "--rm",
+                    "--name",
+                    name,
+                    "-p",
+                    f"127.0.0.1:{port}:4000",
+                    "-e",
+                    f"SKYNET_API_TOKEN={TOKEN}",
+                    "-e",
+                    "VLLM_API_KEY=vllm-synthetic",
+                    "-v",
+                    f"{tmp_path / 'live.yaml'}:/config.yaml:ro",
+                    IMAGE,
+                    "-f",
+                    "/config.yaml",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            deadline = time.time() + 30
+            while True:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+                    break
+                except urllib.error.HTTPError:
+                    break
+                except OSError:
+                    if time.time() > deadline:
+                        raise
+                    time.sleep(0.5)
+            assert _call(port, "GET", "/skynet/healthz") == 401  # keyless: refused at the gateway
+            assert _call(port, "GET", "/skynet/healthz", STORE["client_alice"]) == 401  # enrolled, not a route identity
+            assert Backend.seen == []  # neither refused call reached skynet
+            assert _call(port, "GET", "/skynet/healthz", STORE["client_skynet"]) == 200
+            assert _call(port, "POST", "/skynet/runs", STORE["client_skynet"], {"x": 1}) == 200
+            assert [s["path"] for s in Backend.seen] == ["/skynet/healthz", "/skynet/runs"]  # no rewrite
+            assert {s["auth"] for s in Backend.seen} == {f"Bearer {TOKEN}"}  # the caller's key never arrives
+        finally:
+            subprocess.run(["podman", "rm", "-f", name], capture_output=True)
 
 
 # -- The backend receives skynet's bearer over plain HTTP: it must be loopback or private --------------
@@ -445,17 +442,20 @@ def test_the_transport_check_runs_before_secrets_and_only_while_the_route_is_on(
 
 
 @pytest.mark.parametrize(
-    "backend, local, passes",
+    "backend, local, host, passes",
     [
-        ("skynet.example.com:8080", False, False),  # a public name: the bearer would cross in cleartext
+        ("skynet.example.com:8080", False, "gw", False),  # a public name: the bearer would cross in cleartext
         # A synthetic RFC1918 address, built from parts so no literal sits in the repo.
-        (".".join(["10", "20", "30", "40"]) + ":8080", False, True),
-        ("127.0.0.1:8080", False, True),  # loopback
-        ("skynet:8080", True, True),  # a container name on the local podman network
-        ("skynet:8080", False, False),  # a bare name outside local-dev can resolve to a public FQDN
+        (".".join(["10", "20", "30", "40"]) + ":8080", False, "gw", True),
+        ("127.0.0.1:8080", False, "gw", True),  # loopback
+        ("skynet:8080", True, "gw-local", True),  # a container name on the local-dev podman network
+        # local_mode alone is not local-dev: the inventory must be one (AC-696), so a forged
+        # `-e local_mode=true` on a production inventory does not admit a bare name.
+        ("skynet:8080", True, "gw", False),
+        ("skynet:8080", False, "gw", False),  # a bare name outside local-dev can resolve to a public FQDN
     ],
 )
-def test_a_cleartext_backend_is_refused_unless_private(tmp_path, backend, local, passes):
+def test_a_cleartext_backend_is_refused_unless_private(tmp_path, backend, local, host, passes):
     hv = {"agw_skynet_route_enabled": True, "agw_skynet_backend": backend, "local_mode": local}
-    r = _ansible(tmp_path, hv, [_transport_task()])
+    r = _ansible(tmp_path, hv, [_transport_task()], host=host)
     assert (r.returncode == 0) is passes, r.stdout[-2000:]

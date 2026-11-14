@@ -1,5 +1,8 @@
 # o11y PBS backup and protected copy implementation plan
 
+**Status:** IMPLEMENTED (source and focused checks complete; live deployment and acceptance remain open)
+> **Parent plan:** [Observability](05-observability.md)
+
 ## Scope
 
 Implement four Dev-bound, exact-reviewed-source Semaphore workflows in a strict

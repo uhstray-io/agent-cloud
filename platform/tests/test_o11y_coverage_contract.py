@@ -10,6 +10,7 @@ import unittest
 from pathlib import Path
 from urllib.parse import urlunsplit
 
+import harness_sandbox
 import jinja2
 import yaml
 
@@ -231,7 +232,6 @@ class CoverageContractTests(unittest.TestCase):
                     mutation(checkout)
 
                 environment = {
-                    **os.environ,
                     "ANSIBLE_LOCAL_TEMP": str(temp / "local"),
                     "ANSIBLE_REMOTE_TEMP": str(temp / "remote"),
                     "ANSIBLE_STDOUT_CALLBACK": "default",
@@ -240,10 +240,9 @@ class CoverageContractTests(unittest.TestCase):
                 (temp / "local").mkdir()
                 (temp / "remote").mkdir()
                 expected = "0" * 40 if wrong_sha else revision
-                result = subprocess.run(
-                    [ansible_playbook, "-i", "localhost,", "-c", "local", "-e",
-                     f"expected_repository_sha={expected}", str(entrypoint)],
-                    cwd=ROOT, env=environment, text=True, capture_output=True, check=False,
+                result = harness_sandbox.run_playbook(
+                    entrypoint, temp, "-c", "local", "-e", f"expected_repository_sha={expected}",
+                    env=environment,
                 )
                 return result, calls.exists()
 
@@ -365,13 +364,12 @@ class CoverageContractTests(unittest.TestCase):
             (temp / "local").mkdir()
             (temp / "remote").mkdir()
             path = temp / "guard.yml"
-            environment = os.environ.copy()
-            environment.update(
-                ANSIBLE_LOCAL_TEMP=str(temp / "local"),
-                ANSIBLE_REMOTE_TEMP=str(temp / "remote"),
-                ANSIBLE_STDOUT_CALLBACK="default",
-                ANSIBLE_NOCOLOR="1",
-            )
+            environment = {
+                "ANSIBLE_LOCAL_TEMP": str(temp / "local"),
+                "ANSIBLE_REMOTE_TEMP": str(temp / "remote"),
+                "ANSIBLE_STDOUT_CALLBACK": "default",
+                "ANSIBLE_NOCOLOR": "1",
+            }
             for endpoint, accepted in (
                 (urlunsplit(("http", "user:" + sentinel + "@public.example", "", "", "")), False),
                 (urlunsplit(("https", "user:" + sentinel + "@public.example", "", "", "")), False),
@@ -393,10 +391,7 @@ class CoverageContractTests(unittest.TestCase):
                         }],
                     }]
                     path.write_text(yaml.safe_dump(playbook))
-                    result = subprocess.run(
-                        [ansible_playbook, "-i", "localhost,", "-c", "local", str(path)],
-                        cwd=ROOT, env=environment, text=True, capture_output=True, check=False,
-                    )
+                    result = harness_sandbox.run_playbook(path, temp, "-c", "local", env=environment)
                     output = result.stdout + result.stderr
                     if accepted:
                         self.assertEqual(result.returncode, 0, output)

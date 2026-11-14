@@ -19,17 +19,16 @@ wire.
 
 import json
 import subprocess
-import threading
 import time
 import urllib.error
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
 from ansible_python import ansible_python
-from fake_http import DrainingHandler
+from fake_http import DrainingHandler, serve
 from test_agw_admin_identities import CONFIG, DEPLOY, PHASE1, PHASE3, SECRETS, _ansible, _task, admin
 from test_agw_mcp_render import SCHEMA_FILE, SCHEMA_TEXT, TARGETS
 from test_agw_stream_usage import IMAGE, _free_port, _image_present
@@ -865,71 +864,69 @@ def test_the_gateway_sends_the_openrouter_id_and_key_and_gates_the_model_by_iden
     upstream receives the OpenRouter key and never the client's, a streamed request is asked for
     usage, and an identity not named in agw_openrouter_identities is refused the model."""
     Recorder.seen = []
-    server = ThreadingHTTPServer(("0.0.0.0", 0), Recorder)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    name = f"agw-openrouter-{_free_port()}"
-    try:
-        cfg = render(tmp_path, **{**GOOD, "agw_plaintext_keys": True, "local_mode": True})
-        for m in cfg["llm"]["models"]:
-            if m["provider"] == "openrouter":
-                m["params"]["baseUrl"] = f"http://host.containers.internal:{server.server_port}/api/v1"
-            else:
-                m["params"]["baseUrl"] = f"http://host.containers.internal:{server.server_port}/v1"
-        cfg.pop("frontendPolicies", None)
-        cfg.pop("ui", None)
-        cfg["config"] = {"adminAddr": "127.0.0.1:15000"}
-        for entry in cfg["llm"]["policies"]["apiKey"]["keys"]:
-            entry.pop("budgets", None)  # budgets need the database, which this check does not start
-        (tmp_path / "live.yaml").write_text(yaml.safe_dump(cfg))
-        port = _free_port()
-        subprocess.run(
-            [
-                "podman",
-                "run",
-                "-d",
-                "--rm",
-                "--name",
-                name,
-                "-p",
-                f"127.0.0.1:{port}:4000",
-                "-e",
-                f"OPENROUTER_API_KEY={OR_KEY}",
-                "-e",
-                "VLLM_API_KEY=vllm-synthetic",
-                "-v",
-                f"{tmp_path / 'live.yaml'}:/config.yaml:ro",
-                IMAGE,
-                "-f",
-                "/config.yaml",
-            ],
-            check=True,
-            capture_output=True,
-        )
-        deadline = time.time() + 30
-        while True:
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
-                break
-            except urllib.error.HTTPError:
-                break
-            except OSError:
-                if time.time() > deadline:
-                    raise
-                time.sleep(0.5)
-        chat = {"model": "or-mini", "messages": [{"role": "user", "content": "x"}]}
-        assert _post(port, chat, STORE["client_skynet"]) == 200
-        assert _post(port, {**chat, "stream": True}, STORE["client_skynet"]) == 200
-        status, raw = _post_full(port, chat, STORE["client_ws"])
-        assert status == 403, (status, raw)  # the gateway's refusal, not a 429 bucket or a routing fault
-        assert json.loads(raw)["error"]["code"] == "model_not_allowed", raw
-        assert len(Recorder.seen) == 2, Recorder.seen
-        for call in Recorder.seen:
-            assert call["path"] == "/api/v1/chat/completions"
-            assert call["auth"] == f"Bearer {OR_KEY}"  # the gateway's key, never the client's
-            assert call["body"]["model"] == "openai/gpt-4o-mini"  # remapped from the client's name
-        assert Recorder.seen[1]["body"]["stream_options"] == {"include_usage": True}
-        assert "stream_options" not in Recorder.seen[0]["body"]
-    finally:
-        subprocess.run(["podman", "rm", "-f", name], capture_output=True)
-        server.shutdown()
-        server.server_close()
+    with serve(Recorder, host="0.0.0.0") as recorder_url:
+        recorder_port = urlsplit(recorder_url).port
+        name = f"agw-openrouter-{_free_port()}"
+        try:
+            cfg = render(tmp_path, **{**GOOD, "agw_plaintext_keys": True, "local_mode": True})
+            for m in cfg["llm"]["models"]:
+                if m["provider"] == "openrouter":
+                    m["params"]["baseUrl"] = f"http://host.containers.internal:{recorder_port}/api/v1"
+                else:
+                    m["params"]["baseUrl"] = f"http://host.containers.internal:{recorder_port}/v1"
+            cfg.pop("frontendPolicies", None)
+            cfg.pop("ui", None)
+            cfg["config"] = {"adminAddr": "127.0.0.1:15000"}
+            for entry in cfg["llm"]["policies"]["apiKey"]["keys"]:
+                entry.pop("budgets", None)  # budgets need the database, which this check does not start
+            (tmp_path / "live.yaml").write_text(yaml.safe_dump(cfg))
+            port = _free_port()
+            subprocess.run(
+                [
+                    "podman",
+                    "run",
+                    "-d",
+                    "--rm",
+                    "--name",
+                    name,
+                    "-p",
+                    f"127.0.0.1:{port}:4000",
+                    "-e",
+                    f"OPENROUTER_API_KEY={OR_KEY}",
+                    "-e",
+                    "VLLM_API_KEY=vllm-synthetic",
+                    "-v",
+                    f"{tmp_path / 'live.yaml'}:/config.yaml:ro",
+                    IMAGE,
+                    "-f",
+                    "/config.yaml",
+                ],
+                check=True,
+                capture_output=True,
+            )
+            deadline = time.time() + 30
+            while True:
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+                    break
+                except urllib.error.HTTPError:
+                    break
+                except OSError:
+                    if time.time() > deadline:
+                        raise
+                    time.sleep(0.5)
+            chat = {"model": "or-mini", "messages": [{"role": "user", "content": "x"}]}
+            assert _post(port, chat, STORE["client_skynet"]) == 200
+            assert _post(port, {**chat, "stream": True}, STORE["client_skynet"]) == 200
+            status, raw = _post_full(port, chat, STORE["client_ws"])
+            assert status == 403, (status, raw)  # the gateway's refusal, not a 429 bucket or a routing fault
+            assert json.loads(raw)["error"]["code"] == "model_not_allowed", raw
+            assert len(Recorder.seen) == 2, Recorder.seen
+            for call in Recorder.seen:
+                assert call["path"] == "/api/v1/chat/completions"
+                assert call["auth"] == f"Bearer {OR_KEY}"  # the gateway's key, never the client's
+                assert call["body"]["model"] == "openai/gpt-4o-mini"  # remapped from the client's name
+            assert Recorder.seen[1]["body"]["stream_options"] == {"include_usage": True}
+            assert "stream_options" not in Recorder.seen[0]["body"]
+        finally:
+            subprocess.run(["podman", "rm", "-f", name], capture_output=True)

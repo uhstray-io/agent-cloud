@@ -155,12 +155,12 @@ hdr "8. OPA (Guardrail policy engine)"
 if running opa; then
   ok "container opa running"
   http_is "http://127.0.0.1:8281/health" "200" "OPA health (127.0.0.1:8281)"
-  # A live policy decision: nemoclaw read nocodb -> allowed:true.
+  # A live policy decision: infra-agent read netbox -> allowed:true.
   allowed=$(curl -s --max-time 5 -X POST http://127.0.0.1:8281/v1/data/agentcloud/decision \
             -H 'Content-Type: application/json' \
-            -d '{"input":{"agent":"nemoclaw","action":"read","service":"nocodb"}}' 2>/dev/null \
+            -d '{"input":{"agent":"infra-agent","action":"read","service":"netbox"}}' 2>/dev/null \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["allowed"])' 2>/dev/null)
-  [ "$allowed" = "True" ] && ok "OPA decision: nemoclaw read nocodb -> allow" \
+  [ "$allowed" = "True" ] && ok "OPA decision: infra-agent read netbox -> allow" \
     || no "OPA decision (got allowed=${allowed:-none})"
 else sk "opa not deployed (make local-deploy-opa)"; fi
 

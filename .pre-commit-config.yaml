@@ -1,6 +1,6 @@
 ---
 # Pre-commit hooks for agent-cloud
-# Install: pip install pre-commit && pre-commit install
+# Install: uv tool install pre-commit && pre-commit install
 # Manual run: pre-commit run --all-files
 # Update hooks: pre-commit autoupdate
 
@@ -210,8 +210,8 @@ repos:
   # (2026-11-04). It runs inside Gate 1 (.githooks/pre-commit), so SKIP_SECRET_SCAN=1 skips it
   # too. The test takes about 0.4s, so it can gate the commit itself. Like the pre-push run, it
   # skips with a message when pytest is not importable for python3 (a missing tool skips;
-  # CLAUDE.md "Test check on push"). A real test failure blocks the commit. CI's Python core
-  # job runs the same file.
+  # CLAUDE.md "Test check on push"). A real test failure blocks the commit. One of CI's Python
+  # shards runs the same file.
   - repo: local
     hooks:
       - id: ledger-citations
@@ -221,6 +221,21 @@ repos:
           sh -c 'python3 -c "import pytest" 2>/dev/null || { echo "ledger-citations: pytest is not installed for python3; skipped (CI still runs it)"; exit 0; };
           exec python3 -m pytest -q -p no:cacheprovider platform/tests/test_ledger_test_citations.py'
         files: ^(docs/MISTAKES\.md|platform/tests/ledger_citation_ratchet\.txt)$
+        pass_filenames: false
+        verbose: true
+        stages: [pre-commit]
+
+  # The commit lane of the Rust suite (plan 24): the static tests of the areas the staged change
+  # touches, and the security set's static tests, ledger check included. lane.sh skips with a
+  # message when cargo-nextest is not installed; CI's Rust (tests) job runs the suite. Inside
+  # Gate 1, so SKIP_SECRET_SCAN=1 skips it too.
+  - repo: local
+    hooks:
+      - id: rust-commit-lane
+        name: Rust suite, commit lane (plan 24)
+        language: system
+        entry: platform/tests/lane.sh commit
+        always_run: true
         pass_filenames: false
         verbose: true
         stages: [pre-commit]
