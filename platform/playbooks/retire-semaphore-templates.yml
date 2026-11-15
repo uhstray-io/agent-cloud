@@ -23,6 +23,7 @@
 #   6. Both lists are read back. The run fails if a retired name, or a schedule bound to a deleted
 #      template, is still live.
 #
+# local-dev runs this after every publish via platform/semaphore/converge-local-catalog.yml; production launches it by hand, dry run first.
 # Check mode is a dry run: the GETs run (they only read); the history drain and the DELETEs are
 # skipped. Run the Dev template in Semaphore's Dry run first and read the report.
 #

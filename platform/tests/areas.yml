@@ -25,8 +25,9 @@ ignore:
 
 # The security set: selected in every lane (static modules only in the commit lane). `ledger`
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
+# `yaml_load` checks that every tracked YAML file loads, and plan/** and docs/** hold YAML too.
 always:
-  static: [approle_ttl, host_access_gate, ledger, manage_github_runner_group]
+  static: [approle_ttl, host_access_gate, ledger, manage_github_runner_group, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
@@ -47,9 +48,17 @@ areas:
     tiers:
       cli: [common_sh]
 
+  install_qemu_guest_agent:
+    paths:
+      - "platform/playbooks/install-qemu-guest-agent.yml"
+    tiers:
+      static: [install_qemu_guest_agent]
+      playbook: [install_qemu_guest_agent_playbook]
+
   # The suite's own tests. A change under platform/tests/ hits `full`, which is checked before
   # any area, so this area names no paths: it only gives these modules their one listing.
   test_platform:
     paths: []
     tiers:
       static: [lanes, support]
+      playbook: [support_playbook]
