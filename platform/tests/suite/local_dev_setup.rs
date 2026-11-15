@@ -71,11 +71,11 @@ fn active_lines(gitignore: &str) -> Vec<&str> {
 
 /// Whether an active gitignore line names `path` exactly, with at most trailing blanks after it.
 /// No leading blank: git reads one as part of the pattern, so an indented line ignores nothing
-/// (#1144 review). Trailing blanks git drops, unless escaped. Nothing else may follow: git has no
-/// inline comment, so `path # note` is a different pattern (#1151 review).
+/// (#1144 review). Trailing spaces git drops, unless escaped; a trailing tab it keeps. Nothing else may
+/// follow: git has no inline comment, so `path # note` is a different pattern (#1151 review).
 fn ignores_exactly(line: &str, path: &str) -> bool {
     line.strip_prefix(path)
-        .is_some_and(|rest| rest.chars().all(char::is_whitespace))
+        .is_some_and(|rest| rest.chars().all(|c| c == ' '))
 }
 
 #[test]
@@ -88,6 +88,10 @@ fn an_entry_ignores_exactly_only_with_nothing_but_trailing_blanks() {
     ));
     assert!(!ignores_exactly(
         &format!("{WORKING_INVENTORY} # local inventory"),
+        WORKING_INVENTORY
+    ));
+    assert!(!ignores_exactly(
+        &format!("{WORKING_INVENTORY}\t"),
         WORKING_INVENTORY
     ));
     assert!(!ignores_exactly(
