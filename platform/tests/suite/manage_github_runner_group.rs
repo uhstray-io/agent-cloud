@@ -254,11 +254,7 @@ fn dry_run_is_the_default_and_gates_every_mutation() {
         .collect();
     let ungated: Vec<&str> = mutating
         .iter()
-        .filter(|task| {
-            !texts(task.get("when"))
-                .iter()
-                .any(|w| w.contains("not _dry_run"))
-        })
+        .filter(|task| !gates_dry_run(task.get("when")))
         .map(|task| name(task))
         .collect();
 
@@ -433,4 +429,26 @@ fn the_private_key_comes_from_the_secret_store() {
         read_with_token,
         "the secret-store read carries no vault token"
     );
+}
+
+/// Whether a `when:` stops the task on a dry run: one of its items (a list is an AND) is exactly
+/// `not _dry_run`. A substring match would accept `not _dry_run or true`, which runs it anyway
+/// (#1151 review).
+fn gates_dry_run(when: Option<&Node>) -> bool {
+    texts(when).iter().any(|w| w.trim() == "not _dry_run")
+}
+
+#[test]
+fn only_an_exact_not_dry_run_condition_gates_a_mutation() {
+    // Arrange
+    let when = |text: &str| yaml::parse(&format!("when: {text}\n"), "fixture").remove(0);
+
+    // Act, Assert
+    assert!(gates_dry_run(when("not _dry_run").get("when")));
+    assert!(gates_dry_run(
+        when("[_existing is defined, not _dry_run]").get("when")
+    ));
+    assert!(!gates_dry_run(when("not _dry_run or true").get("when")));
+    assert!(!gates_dry_run(when("\"not _dry_run_x\"").get("when")));
+    assert!(!gates_dry_run(None));
 }

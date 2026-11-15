@@ -266,7 +266,7 @@ fn verify_host_access_is_read_only() {
         })
         .map(name)
         .collect();
-    let mutating = Regex::new(r#"method:\s*["']?(POST|PUT|PATCH|DELETE)"#).unwrap();
+    let mutating = mutating_method_text();
 
     // Assert
     assert!(
@@ -933,4 +933,35 @@ fn a_display_variable_in_harden_ssh_always_has_a_default() {
         undefaulted.is_empty(),
         "undefaulted uses of service_name: {undefaulted:?}"
     );
+}
+
+/// A mutating HTTP method named anywhere in a playbook's text: a `method:` key, or curl's `-X` and
+/// `--request` options in a shell or command task (#1151 review).
+fn mutating_method_text() -> Regex {
+    Regex::new(r#"(?:method:\s*|-X\s*|--request[=\s]+)["']?(POST|PUT|PATCH|DELETE)\b"#).unwrap()
+}
+
+#[test]
+fn the_method_scan_catches_every_mutating_spelling() {
+    // Arrange
+    let mutating = mutating_method_text();
+
+    // Act, Assert
+    for text in [
+        "method: POST",
+        "method: \"DELETE\"",
+        "cmd: curl -X POST https://example.invalid",
+        "cmd: curl -XPUT https://example.invalid",
+        "cmd: curl --request PATCH https://example.invalid",
+        "cmd: curl --request=DELETE https://example.invalid",
+    ] {
+        assert!(mutating.is_match(text), "missed: {text}");
+    }
+    for text in [
+        "method: GET",
+        "cmd: curl -X GET https://example.invalid",
+        "cmd: curl -sS https://example.invalid",
+    ] {
+        assert!(!mutating.is_match(text), "flagged: {text}");
+    }
 }

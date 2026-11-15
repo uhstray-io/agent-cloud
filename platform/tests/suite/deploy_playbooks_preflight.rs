@@ -81,13 +81,10 @@ const LOCAL: [&str; 2] = ["localhost", "127.0.0.1"];
 const PLAYBOOKS: &str = "platform/playbooks";
 const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 
-// Rust's regex has no lookaround, so "not followed by a digit or a dot" is written as a
-// consuming `[^\d.]` or the end of the text. In a whole-text match that is the same condition.
-static POSITIVE: LazyLock<Regex> = LazyLock::new(|| {
-    re(
-        r"\blength\b\s*\)*\s*(?:>\s*0(?:[^\d.]|$)|!=\s*0(?:[^\d.]|$)|(?:>=|==)\s*[1-9]\d*(?:[^\d.]|$))",
-    )
-});
+// The comparison value must end the condition, closing parentheses and blanks aside: anything
+// after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
+static POSITIVE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"\blength\b\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$"));
 static COMPARATOR: LazyLock<Regex> = LazyLock::new(|| re(r"[<>!=]=|[<>]"));
 static NEUTRALISER: LazyLock<Regex> = LazyLock::new(|| re(r"\b(?:and|or|not|if|else)\b"));
 static BRACED_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)"));
@@ -245,14 +242,14 @@ fn hosts_text(play: &Node) -> Option<String> {
     }
 }
 
-/// What a `hosts:` value needs covered: each group of a literal `a:b` union, or the whole
-/// expression when it is templated.
+/// What a `hosts:` value needs covered: each group of a literal `a:b` or `a,b` union (a `hosts:`
+/// list reads as the comma form), or the whole expression when it is templated.
 fn target_parts(hosts: &str) -> Vec<String> {
     if hosts.contains("{{") {
         return vec![hosts.to_owned()];
     }
     hosts
-        .split(':')
+        .split([':', ','])
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(str::to_owned)
@@ -289,7 +286,7 @@ fn covered_inline(subject: &str, guards: &[String]) -> bool {
 }
 
 /// Each assert condition in a localhost play's tasks (nested blocks included) that a populated
-/// group alone satisfies.
+/// group alone satisfies, and that always runs and stops the run when it fails.
 fn inline_guard_items(play: &Node) -> Vec<String> {
     let mut out = vec![];
     for task in tasks(play.get("tasks")) {
@@ -322,14 +319,23 @@ fn is_populated_group_check(text: &str) -> bool {
         && !NEUTRALISER.is_match(text)
 }
 
-/// Every mapping under `node` that holds a task or play, depth first (nested block, rescue and
-/// always children after their parent). Nothing is inherited from the parent.
+/// Keys that let a task, or every task under a block, be skipped or fail without stopping the run.
+/// An assert under one of them is no guard: `when: false` skips it, `ignore_errors` and
+/// `failed_when` swallow its failure, and a block's `rescue` catches it (#1151 review).
+const BYPASSES: [&str; 4] = ["when", "ignore_errors", "failed_when", "rescue"];
+
+/// Every mapping under `node` that holds a task or play and is certain to run and stop the run on
+/// failure, depth first (nested block, rescue and always children after their parent). A mapping
+/// carrying a `BYPASSES` key is left out together with everything under it.
 fn tasks(node: Option<&Node>) -> Vec<&Node> {
     fn walk<'a>(node: Option<&'a Node>, out: &mut Vec<&'a Node>) {
         let Some(Node::Seq(items)) = node else {
             return;
         };
         for item in items.iter().filter(|item| item.as_map().is_some()) {
+            if BYPASSES.iter().any(|key| item.get(key).is_some()) {
+                continue;
+            }
             out.push(item);
             for key in TASK_LISTS {
                 walk(item.get(key), out);
@@ -433,8 +439,10 @@ fn inline_fixture(cases: &[(&str, &str)]) -> tempfile::TempDir {
 /// Inline asserts that are not exactly one accepted positive comparison, or that name a longer
 /// identifier than the target. Each leaves its target unguarded, so each file is an offender. A
 /// fail-safe checker refuses what it does not recognise.
-const NOT_ACCEPTED: [(&str, &str); 11] = [
+const NOT_ACCEPTED: [(&str, &str); 12] = [
     ("ge0", "(groups.get(target_service, []) | length) >= 0"),
+    // `0 > -1`: arithmetic after the value lets an empty group pass (#1151 review).
+    ("arith", "(groups.get(target_service, []) | length) > 0 - 1"),
     ("gtneg", "(groups.get(target_service, []) | length) > -1"),
     (
         "or",
@@ -876,4 +884,65 @@ fn the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines() {
 
     // Assert
     assert!(disagreements.is_empty(), "{disagreements:?}");
+}
+
+#[test]
+fn a_hosts_list_is_covered_by_a_preflight_for_each_group() {
+    // Arrange: `hosts: [a_svc, b_svc]` reads as `a_svc,b_svc`; both groups have a pre-flight.
+    // A second file covers only a_svc, so the split must still name b_svc (#1151 review).
+    let preflight = |group: &str| {
+        format!(
+            "- name: \"Pre-flight {group}\"\n  import_playbook: preflight-target-group.yml\n  vars:\n    preflight_group: {group}\n    preflight_group_expected: {group}\n"
+        )
+    };
+    let work = "- name: \"Work\"\n  hosts: [a_svc, b_svc]\n  tasks: []\n";
+    let both = format!("{}{}{work}", preflight("a_svc"), preflight("b_svc"));
+    let one = format!("{}{work}", preflight("a_svc"));
+    let dir = fixture(&[("deploy-both.yml", &both), ("deploy-one.yml", &one)]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert_eq!(
+        offender_names(&report),
+        vec!["deploy-one.yml"],
+        "{:?}",
+        report.offenders
+    );
+}
+
+#[test]
+fn an_assert_that_can_be_skipped_or_ignored_is_not_a_guard() {
+    // Arrange: an accepted condition on an assert that does not always stop the run.
+    let condition = "(groups.get(target_service, []) | length) > 0";
+    let play = |task: String| {
+        format!(
+            "- name: \"Inline guard\"\n  hosts: localhost\n  tasks:\n{task}- name: \"Work\"\n  hosts: \"{{{{ target_service }}}}\"\n  tasks: []\n"
+        )
+    };
+    let single = |extra: &str| {
+        play(format!(
+            "    - name: \"Require\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n      {extra}\n"
+        ))
+    };
+    let rescued = play(format!(
+        "    - name: \"Block\"\n      block:\n        - name: \"Require\"\n          ansible.builtin.assert:\n            that: \"{condition}\"\n      rescue:\n        - ansible.builtin.debug:\n            msg: caught\n"
+    ));
+    let cases = [
+        ("deploy-when.yml", single("when: false")),
+        ("deploy-ignore.yml", single("ignore_errors: true")),
+        ("deploy-failed-when.yml", single("failed_when: false")),
+        ("deploy-rescue.yml", rescued),
+    ];
+    let refs: Vec<(&str, &str)> = cases.iter().map(|(n, t)| (*n, t.as_str())).collect();
+    let dir = fixture(&refs);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    let mut expected: Vec<&str> = cases.iter().map(|(n, _)| *n).collect();
+    expected.sort_unstable();
+    assert_eq!(offender_names(&report), expected, "{:?}", report.offenders);
 }
