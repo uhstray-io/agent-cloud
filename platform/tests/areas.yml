@@ -28,7 +28,7 @@ ignore:
 # `local_dev_inventory` holds the local-dev inventory template to localhost-only and no credentials.
 # `yaml_load` checks that every tracked YAML file loads, and plan/** and docs/** hold YAML too.
 always:
-  static: [approle_ttl, host_access_gate, ledger, local_dev_inventory, manage_github_runner_group, yaml_load]
+  static: [approle_ttl, configure_host_network, host_access_gate, install_podman, ledger, local_dev_inventory, local_netbox, manage_github_runner_group, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
