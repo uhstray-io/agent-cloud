@@ -560,12 +560,14 @@ fn wrapper_refuses_a_non_numeric_task_id_before_reading_state() {
 #[test]
 fn genesis_registers_repository_records_before_applying_templates() {
     // Arrange: setup-templates.yml refuses a template that names a record which does not exist,
-    // so the records must be registered first.
+    // so the records must be registered first. Genesis publishes through
+    // semaphore/converge-local-catalog.yml, which runs setup-templates.yml and then the retirements
+    // (#1010).
     let tasks = repo::tasks(BOOTSTRAP);
 
     // Act
     let repos = position_mentioning(&tasks, "bootstrap-semaphore-repositories.yml");
-    let templates = position_mentioning(&tasks, "semaphore/setup-templates.yml");
+    let templates = position_mentioning(&tasks, "semaphore/converge-local-catalog.yml");
 
     // Assert
     assert!(
