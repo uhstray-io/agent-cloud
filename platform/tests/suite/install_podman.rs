@@ -216,7 +216,12 @@ fn names_an_engine(scalar: &str) -> bool {
                     if inner == ']' {
                         break;
                     }
-                    pattern.push_str(&regex::escape(&inner.to_string()));
+                    // A `-` inside brackets is a range, as fnmatch reads it; anything else is literal.
+                    if inner == '-' {
+                        pattern.push('-');
+                    } else {
+                        pattern.push_str(&regex::escape(&inner.to_string()));
+                    }
                 }
                 pattern.push(']');
             }
@@ -641,6 +646,8 @@ fn the_engine_matcher_reads_the_package_token_not_a_prefix() {
         "docker*",
         "containerd.*",
         "docker.i[!x]",
+        "docker-c[a-f]",
+        "docker.[h-j]o",
     ];
     let clients = [
         "docker-ce-cli",
