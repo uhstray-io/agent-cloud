@@ -69,6 +69,7 @@ and why.
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
+| 1.40 | Told the operator CodeRabbit was paused on a PR from its check reading `skipping`, and wrote it into a review dismissal; CodeRabbit reviewed that PR minutes later | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -1814,6 +1815,33 @@ member, not a pending invitation).
 
 **Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
 by measurement); this is the reverse, a capability assumed without the documentation.
+
+### 1.40 Called CodeRabbit paused from a `skipping` check, and wrote it into a dismissal
+
+**Occurrences: 1** — 2026-11-15
+
+**What happened.** During the v0.16.0 promotion, #1152's CodeRabbit check read `skipping` on head
+`daed978a` (`gh pr checks 1152`). From that alone I asked the operator to approve resolving two
+CodeRabbit threads and dismissing its CHANGES_REQUESTED review, saying CodeRabbit "is paused (check
+'skipping'), so it will not resolve them". The operator approved. The dismissal message I posted on
+review 5900511766 says "CodeRabbit is paused on this PR". The guard then still refused: CodeRabbit
+had posted a new CHANGES_REQUESTED review on `a56396ac` at 04:15 UTC, after the push I had read the
+check for, and a COMMENTED review on `daed978a`. On the next two heads it reviewed again and
+resolved its own threads. Its check read `skipping` on those heads too.
+
+**Root cause.** A check run's conclusion is not the reviewer's state. The `skipping` conclusion
+stood beside reviews posted to the same pull request on the same night, and I never listed the
+reviews (`gh api repos/<repo>/pulls/<n>/reviews`) before stating why CodeRabbit would not act. An
+earlier note ("auto-pause makes its check `skipped`") was read backwards, as "a skipped check means
+paused".
+
+**The rule.** Before saying a reviewer will or will not act on a pull request, list its reviews and
+threads on that pull request, with their commit and time, and quote the newest. Where the reason
+reaches the operator or a GitHub record, cite what the list showed. A check's conclusion alone says
+nothing about whether CodeRabbit is paused.
+
+**Enforced by.** Convention. Related: 1.10, the inverse (a review reported as started from a keyword
+match).
 
 ## 2. Tests that would have passed for the wrong reason
 
