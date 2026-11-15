@@ -1355,6 +1355,13 @@ impl Guard {
             if task.as_map().is_none() {
                 continue;
             }
+            // A guard that never runs is no guard: an include, or a block holding one, under a
+            // constant-false `when` does not count, and neither does `rescue`, which runs only
+            // after a failure (#1148 review). Any other `when` stays: a guard inside a block shares
+            // the condition of the requests it guards (deploy-plane.yml's check-mode block).
+            if never_runs(task) {
+                continue;
+            }
             for short in INCLUDE_SHORTS {
                 let Some(target) = include_target(task, &[short]) else {
                     continue;
@@ -1373,13 +1380,28 @@ impl Guard {
                     total += self.count(nested.as_slice(), &resolved, &next);
                 }
             }
-            for section in ["block", "rescue", "always"] {
+            for section in ["block", "always"] {
                 if let Some(children) = task.get(section).and_then(Node::as_seq) {
                     total += self.count(children, source, stack);
                 }
             }
         }
         total
+    }
+}
+
+/// Whether a task's `when` is a constant that is always false: `false`, `False`, `no` or `0`, alone
+/// or as any item of a `when:` list (the items are ANDed).
+fn never_runs(task: &Node) -> bool {
+    let is_false = |item: &Node| match item {
+        Node::Bool(b) => !b,
+        Node::Str(s) => matches!(s.trim(), "false" | "False" | "FALSE" | "no" | "No" | "0"),
+        _ => false,
+    };
+    match task.get("when") {
+        Some(Node::Seq(items)) => items.iter().any(is_false),
+        Some(item) => is_false(item),
+        None => false,
     }
 }
 
@@ -1603,12 +1625,17 @@ fn seed_access_check_ends_the_play_before_any_write() {
         &seed_tasks,
         "End read-only verification before every secret-store write",
     );
-    assert!(
-        end_block
-            .get("when")
-            .and_then(Node::as_str)
-            .is_some_and(|w| w.contains("bao_verify_access_only | default(false) | bool")),
-        "the end_play is not gated on the access-check flag"
+    // The named task is the end_play itself, gated on exactly the flag: a substring passed
+    // `<flag> and false`, and a separate end_play elsewhere passed the order check (#1148 review).
+    assert_eq!(
+        module(end_block, "meta").and_then(Node::as_str),
+        Some("end_play"),
+        "the named task does not end the play"
+    );
+    assert_eq!(
+        end_block.get("when").and_then(Node::as_str).map(str::trim),
+        Some("bao_verify_access_only | default(false) | bool"),
+        "the end_play is not gated on exactly the access-check flag"
     );
     let value_check = task_named(&seed_tasks, "Validate the secret value is present");
     assert!(
@@ -1635,12 +1662,31 @@ fn seed_access_check_ends_the_play_before_any_write() {
             .any(|v| v == "{{ _caps | seed_access_missing(_exists | bool) }}"),
         "the missing-capability rule is not the seed_access_missing filter"
     );
-    let no_log = access_maps
+    // Each request that sends the token is itself no_log, not a count of no_log tasks: a count
+    // let `no_log: false` move from a token call to another task (#1148 review). The file is a
+    // flat task list, so there is no block or play no_log to inherit.
+    let token_calls: Vec<&Node> = access_maps
         .iter()
-        .filter(|m| m.get("no_log") == Some(&Node::Bool(true)))
-        .count();
+        .copied()
+        .filter(|m| {
+            module(m, "uri")
+                .and_then(|u| u.get("headers"))
+                .and_then(|h| h.get("X-Vault-Token"))
+                .is_some()
+        })
+        .collect();
     assert_eq!(
-        no_log, 2,
-        "the access check does not mark its two token calls no_log"
+        token_calls.len(),
+        2,
+        "the access check makes other than its two token calls"
+    );
+    let visible: Vec<&str> = token_calls
+        .iter()
+        .filter(|m| m.get("no_log") != Some(&Node::Bool(true)))
+        .map(|m| m.get("name").and_then(Node::as_str).unwrap_or("(unnamed)"))
+        .collect();
+    assert!(
+        visible.is_empty(),
+        "token calls in the access check are not no_log: {visible:?}"
     );
 }

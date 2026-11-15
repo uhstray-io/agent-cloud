@@ -453,7 +453,7 @@ No changes needed to Semaphore. GitHub Actions handles pre-merge quality; Semaph
 | 4b. Dependabot | Done | pip, GitHub Actions, Docker |
 | 4c. Bandit | Done | Python security lint in CI |
 | 5. CI pipeline | Done | 3 jobs: lint, security, test |
-| 6. Credential leak tests | **New** | `platform/tests/test_credential_leaks.bats` |
+| 6. Credential leak tests | **New** | `platform/tests/suite/credential_leaks.rs` (ported from `test_credential_leaks.bats`, plan 24) |
 | 7. Service onboarding tests | **Planned** | Per-service compose/deploy/template validation |
 | 8. Compose dry-run validation | **Planned** | CI step using `docker compose config` |
 | 9. Coverage reporting | **Planned** | pytest-cov + BATS TAP output |
