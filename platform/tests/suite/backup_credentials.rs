@@ -203,32 +203,60 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
     // THE LAZY-EVALUATION TRAP, as a closed rule across every playbook. A `vars:` entry is
     // re-evaluated at each reference, so a lookup whose result can change between two references
     // silently yields two different values. A value that must be stable belongs in set_fact.
-    // pipe, url and random_choice lookups, now(), and `| random` are the non-deterministic ones.
-    let bad = Regex::new(r#"lookup\(\s*['"](pipe|url|random_choice)['"]|\bnow\(\)|\|\s*random\b"#)
-        .expect("a valid regex");
+    // pipe, url and random_choice lookups, now(), and `| random` are the non-deterministic ones. A
+    // lookup is named by its call (lookup, query or the q shorthand) and by its plugin name, with or
+    // without the ansible.builtin or ansible.legacy prefix; now() takes any arguments.
+    let bad = Regex::new(
+        r#"\b(?:lookup|query|q)\s*\(\s*['"](?:ansible\.(?:builtin|legacy)\.)?(?:pipe|url|random_choice)['"]|\bnow\s*\(|\|\s*random\b"#,
+    )
+    .expect("a valid regex");
     let files = repo::ls_files(&[":(glob)platform/playbooks/**/*.yml"]);
     assert!(!files.is_empty(), "no playbook YAML files found");
 
-    let mut offenders = Vec::new();
+    // Each offender is named `<file>:<vars key>`, so the ratchet below lists exact entries.
+    let mut offenders = std::collections::BTreeSet::new();
     for file in &files {
         let text = fs::read_to_string(repo::path(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
         for doc in yaml::parse(&text, file) {
             for map in maps(&doc) {
-                if let Some(vars) = map.get("vars")
-                    && any_string(vars, &|s: &str| bad.is_match(s))
-                {
-                    offenders.push(format!(
-                        "{file}: a vars block holds a non-deterministic lookup"
-                    ));
+                let Some(vars) = map.get("vars").and_then(Node::as_map) else {
+                    continue;
+                };
+                for (key, value) in vars {
+                    if any_string(value, &|s: &str| bad.is_match(s)) {
+                        let key = key.as_str().unwrap_or("(non-string key)");
+                        offenders.insert(format!("{file}:{key}"));
+                    }
                 }
             }
         }
     }
+
+    // A ratchet: the vars entries built from now(...) before the check read now() with
+    // arguments (#1149 review). Each is a real lazy-evaluation case (a run that spans midnight
+    // UTC can read two dates); moving them to set_fact is AC-910. The list only shrinks: a new
+    // offender fails, and so does an entry that is fixed but still listed.
+    const KNOWN: [&str; 4] = [
+        "platform/playbooks/deploy-agentgateway.yml:_agw_today",
+        "platform/playbooks/rollback-inference-route.yml:_today",
+        "platform/playbooks/sync-o11y-protected-pbs-copy.yml:pbs_receipt_observed_end",
+        "platform/playbooks/verify-o11y-pbs-artifact.yml:pbs_receipt_observed_end",
+    ];
+    let known: std::collections::BTreeSet<String> = KNOWN.iter().map(|k| (*k).to_owned()).collect();
+    let new: Vec<&String> = offenders.difference(&known).collect();
+    let fixed: Vec<&String> = known.difference(&offenders).collect();
     assert!(
-        offenders.is_empty(),
-        "non-deterministic lookup inside a play vars block; move it to set_fact, because a vars \
+        new.is_empty(),
+        "non-deterministic lookup inside a vars entry; move it to set_fact, because a vars \
          entry is re-evaluated at every reference:\n{}",
-        offenders.join("\n")
+        new.iter()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        fixed.is_empty(),
+        "listed in the ratchet but no longer an offender; remove it from KNOWN: {fixed:?}"
     );
 }
 
@@ -306,10 +334,52 @@ fn the_scratch_dir_is_wiped_even_when_the_run_fails() {
     }
 }
 
+/// The `_secret` reads a debug task may make, each as the base of an expression with its filters
+/// left off: the HTTP status, and the field NAMES from `.keys()`. Nothing that reads a value is here:
+/// not an indexed read of the payload, not the payload itself, and not a filter over it.
+const DEBUG_SECRET_READS: &[&str] = &["_secret.status", "_secret.json.data.data.keys()"];
+
+/// Every string in a node, keys included: a debug task can name the payload in any of them.
+fn strings_of<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
+    match node {
+        Node::Str(s) => out.push(s),
+        Node::Seq(items) => {
+            for item in items {
+                strings_of(item, out);
+            }
+        }
+        Node::Map(entries) => {
+            for (key, value) in entries {
+                strings_of(key, out);
+                strings_of(value, out);
+            }
+        }
+        Node::Null | Node::Bool(_) => {}
+    }
+}
+
+/// The `_secret` expressions in a task that are not on [`DEBUG_SECRET_READS`]. Every occurrence in
+/// every string of the task is judged. The match stops at a space or a filter, so `| dict2items` is
+/// judged by its base, `_secret.json.data.data`, which is not allowed. The word boundaries keep
+/// `_bao_secret_id` and `_secret_id` out of it.
+fn undeclared_secret_reads(task: &Node) -> Vec<String> {
+    let secret = Regex::new(r"\b_secret\b(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*\]|\([^)]*\))*")
+        .expect("a valid regex");
+    let mut strings = Vec::new();
+    strings_of(task, &mut strings);
+    strings
+        .into_iter()
+        .flat_map(|text| secret.find_iter(text).map(|found| found.as_str()))
+        .filter(|expr| !DEBUG_SECRET_READS.contains(expr))
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
 fn no_debug_task_prints_a_secret_field_value() {
-    // CLOSED: every debug message in the playbook is checked. A message may reference field names,
-    // counts and paths, never an indexed read of the secret payload, which is what a value is.
+    // CLOSED: every debug task in the playbook is checked, and each `_secret` expression in it must
+    // be on the allow-list. A message may name field names, counts and paths. It may not read a
+    // value, and a bare name or a filter over the payload reads one.
     let tasks = repo::tasks(PB);
 
     let debug_tasks = tasks.iter().filter(|t| args(t, "debug").is_some()).count();
@@ -318,16 +388,17 @@ fn no_debug_task_prints_a_secret_field_value() {
         "{PB} has no debug task, so the check would pass for nothing"
     );
 
-    let leaks: Vec<&str> = tasks
-        .iter()
-        .filter(|t| args(t, "debug").is_some())
-        .filter(|t| mentions(t, "_secret.json.data.data["))
-        .map(task_name)
-        .collect();
+    let mut leaks = Vec::new();
+    for task in tasks.iter().filter(|t| args(t, "debug").is_some()) {
+        for expr in undeclared_secret_reads(task) {
+            leaks.push(format!("{}: {expr}", task_name(task)));
+        }
+    }
 
     assert!(
         leaks.is_empty(),
-        "a debug task indexes the secret payload, which prints a value: {leaks:?}"
+        "a debug task reads the secret payload, which can print a value; only \
+         {DEBUG_SECRET_READS:?} may appear: {leaks:?}"
     );
 }
 
