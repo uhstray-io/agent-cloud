@@ -25,9 +25,10 @@ ignore:
 
 # The security set: selected in every lane (static modules only in the commit lane). `ledger`
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
+# `local_dev_inventory` holds the local-dev inventory template to localhost-only and no credentials.
 # `yaml_load` checks that every tracked YAML file loads, and plan/** and docs/** hold YAML too.
 always:
-  static: [approle_ttl, host_access_gate, ledger, manage_github_runner_group, yaml_load]
+  static: [approle_ttl, host_access_gate, ledger, local_dev_inventory, manage_github_runner_group, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
@@ -41,6 +42,22 @@ areas:
       - "platform/playbooks/tasks/place-monorepo.yml"
     tiers:
       static: [restart_policy]
+
+  bootstrap_12a:
+    paths:
+      - "platform/playbooks/**"
+      - "platform/services/authentik/deployment/**"
+      - "scripts/local-dev.sh"
+      - "Makefile"
+    tiers:
+      static: [bootstrap_12a]
+
+  local_dev_setup:
+    paths:
+      - ".gitignore"
+      - "Brewfile"
+    tiers:
+      static: [local_dev_setup]
 
   common_sh:
     paths:
