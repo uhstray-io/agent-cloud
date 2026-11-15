@@ -379,6 +379,21 @@ jobs:
           # The job runs code from the pull request; it needs no token after checkout.
           persist-credentials: false
 
+      # Playbook-tier Rust tests (plan 24, Phase 6) run ansible-playbook, so this job installs the
+      # locked Ansible and the playbooks' collections as the python job does. No Rust test runs a
+      # playbook yet.
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.11.17"
+
+      - name: Install the locked Python environment and Ansible collections
+        # The job's default directory is platform/tests; pyproject.toml, uv.lock and collections/ are at the root.
+        working-directory: .
+        run: |
+          uv sync --locked
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          uv run --locked ansible-galaxy collection install -r collections/requirements.yml
+
       - name: Install Rust 1.96
         run: |
           rustup toolchain install 1.96 --profile minimal -c rustfmt,clippy

@@ -126,7 +126,15 @@ _rust_port_test_named() {
   for file in "$REPO_ROOT"/platform/tests/suite/*.rs; do
     while IFS= read -r fn; do
       [ -n "$fn" ] || continue
+      # Lines inside a /* */ block (opened at the start of a line; a glob like "*/x" in a
+      # string is not one) or a raw string r#"..."# are skipped, as suite/ledger.rs skips them:
+      # a commented-out #[test] fn is no test (#1148 review).
       if awk -v fn="$fn" '
+        function count(s, pat,   n) { n = 0; while (match(s, pat)) { n++; s = substr(s, RSTART + RLENGTH) } return n }
+        inblock { if (index($0, "*/")) inblock = 0; prev = ""; next }
+        inraw { if (index($0, "\"#")) inraw = 0; prev = ""; next }
+        /^[ \t]*\/\*/ && !index($0, "*/") { inblock = 1; prev = ""; next }
+        count($0, "r#+\"") > count($0, "\"#") { inraw = 1; prev = ""; next }
         prev ~ /^[ \t]*#\[test\][ \t]*$/ && $0 ~ ("^[ \t]*fn " fn "\\(") { found = 1 }
         { prev = $0 }
         END { exit(found ? 0 : 1) }
@@ -166,8 +174,7 @@ _rust_port_test_named() {
   for n in \
     "every play that resolves an OpenBao URL includes the transport guard" \
     "the transport pattern accepts internal endpoints and refuses public ones" \
-    "postiz: the seed playbook uses the shared cleartext OpenBao guard" \
-    "install-podman: configures no podman API socket"; do
+    "postiz: the seed playbook uses the shared cleartext OpenBao guard"; do
     # named in the doc ...
     assert_contains "$(tr '\n' ' ' < "$DOC")" "$n"
     # ... and present in the suite: a BATS @test, or a Rust port-map row whose fn is #[test]
@@ -176,4 +183,10 @@ _rust_port_test_named() {
     fi
     _rust_port_test_named "$n" || { echo "no BATS @test and no Rust port-map #[test] fn for: $n" >&2; false; }
   done
+  # The ported test: the doc still names it, and the Rust suite defines it.
+  assert_contains "$(tr '\n' ' ' < "$DOC")" "install-podman: configures no podman API socket"
+  assert_grep -qE '^\s*fn configures_no_podman_api_socket\(' "$REPO_ROOT/platform/tests/suite/install_podman.rs"
+  # ... and the line directly above it is #[test]: nextest runs only a fn that carries the attribute.
+  awk 'prev == "#[test]" && $0 ~ /^[[:space:]]*fn configures_no_podman_api_socket\(/ { found = 1 } { prev = $0 } END { exit !found }' \
+    "$REPO_ROOT/platform/tests/suite/install_podman.rs"
 }

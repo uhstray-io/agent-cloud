@@ -57,7 +57,7 @@ and why.
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
-| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) | Unverified claim | 3 | Convention; guard proposed (count 3) |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) — **x4** (2026-11-12: relayed three website-repo "conflicts" from a scout that read a stale branch into a reply and a Plane item; on `main` two were resolved and the third already tracked) — **x5** (2026-11-13: relayed a worker's unchecked guess that adding a Plane work item to a milestone moves it out of its old one; a second worker's read-back showed the add changes nothing while the item is in another milestone) | Unverified claim | 5 | Convention; guard proposed (count ≥ 3) |
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
@@ -68,6 +68,7 @@ and why.
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
+| 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -170,6 +171,8 @@ and why.
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
+| 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) | Process | 1 | Convention (a ledger test requiring the note proposed) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -436,6 +439,8 @@ command list; until then, `ruff check .; echo rc=$?` is the form.
 
 **Status 2026-10-02.** Repository side: `platform/tests/test_scripts_set_pipefail.bats` requires `pipefail` in committed scripts, with legacy ones in the shrink-only `platform/tests/known_scripts_without_pipefail.txt` (PR #391). Agent side: a user-level PreToolUse Bash hook (`bash-guards-text`, registered in the operator's Claude Code settings) refuses a status-bearing command piped onward unless the command mentions `pipefail` or `PIPESTATUS`; by its own header it cannot see pipes inside command substitution, `eval`, aliases or script files. That hook lives outside this repository, so the Index still reads Convention for agent sessions.
 
+**Enforcement moved — 2026-11-13.** The BATS test this entry's narrative cites was ported to the Rust suite (plan 24): `platform/tests/suite/local_netbox.rs::verify_service_persistence_selects_containers_by_deploy_dir`.
+
 
 ### 1.4 Guessed a resource id rather than reading the one just returned
 
@@ -634,6 +639,8 @@ earns the words "works for the current values", nothing stronger.
 ("bootstrap: the INI route table is emitted as a Python literal, not JSON")
 pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_dev_inventory.rs::bootstrap_emits_the_route_table_as_a_python_literal` is its replacement.
 
 
 ### 1.9 "A feature branch is invisible to the controller" held only in the web UI
@@ -1326,7 +1333,7 @@ its merge date, or say the origin is unverified.
 
 ### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
 
-**Occurrences: 3** — 2026-10-31, 2026-11-11, 2026-11-12
+**Occurrences: 5** — 2026-10-31, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-13
 
 **What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
 `[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
@@ -1389,6 +1396,31 @@ about what is deployed or registered is a live-state claim, whatever file it was
 The hook does not replace the recheck in The rule: a `repo:` line names a file at a ref, not
 proof that the lead re-read it against the claim, so the recheck stays required with the hook in
 place. Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
+
+**Occurrence 4 — 2026-11-12** (1.25's stale-checkout shape). Planning the social-content work,
+I sent read-only scouts to extract the brand design from three website repositories. The Zerds
+scout read the primary checkout, which was on a feature branch about eleven weeks behind
+`origin/main`. Its report named the branch and said it was unverified whether the deployed site
+matched it. I relayed its three "conflicts" to Joe as findings and wrote them into the Plane
+brand-profile item for Zerds: the favicon still used the old accent, the docs gave the audience
+three ways, and the product domain was hard-coded although not yet owned. Joe asked for them as
+GitHub issues. Re-read at `origin/main` before filing: the audience and the domain were both
+settled on `main`, and only the favicon still held, already tracked as an open issue in that
+repository. No issue was filed, and the Plane item was corrected. Why the rule did not fire: the
+scout disclosed its ref, and I read the disclosure as provenance attached to a fact, not as a
+reason to stop. The proposed hook would not have caught this: the claim reached a reply and a
+tracker, not a PR comment. Guard proposal, extending the
+one above: a scout brief names the ref to read (`origin/<default>` after a fetch, via `git show`
+or `git grep <ref>`), and its report states that ref and whether it equals the default branch's tip.
+A report on any other ref goes to Joe labelled `unverified:` until re-read at the tip.
+
+**Occurrence 5 — 2026-11-13.** Planning the v0.16.0 merge queue, I relayed a worker's unchecked
+guess about Plane: that adding a work item to a milestone moves it out of the milestone it is already
+in. A second worker read the milestones back and showed the opposite: while the item is in another
+milestone, the add changes nothing, so the item must be removed from the old milestone first. The
+claim was about a tool's behaviour rather than code, which this rule covers all the same; the
+handoff that records it does not say why it went out unchecked. The second worker's read-back is the
+check this rule asks for. The v0.16.0 handoffs now state the quirk and the remove-then-add order.
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
@@ -1752,6 +1784,37 @@ caller for the setter. Name the line that reads the setting.
 
 **Enforced by.** Convention. The corrected 2.1 note cites the library lines that set the list.
 
+### 1.39 Promised a role from a licence tier without reading the vendor's plan matrix
+
+**Occurrences: 1** — 2026-11-09
+
+**What happened.** Plane refused the Admin workspace role with "Admin role is not available on
+this plan", and the read-only flag check showed `WORKSPACE_ADMIN_ROLE` off. From the flag's name
+and that refusal I told the operator, more than once, that activating the purchased Pro licence
+would make Admin available, and set up the change for it: site-config #169 switched
+`plane_admin_role` to `admin`, to be merged once the licence was active. The licence activated
+(Semaphore task 14291, "workspace plan PRO (activated now)"), and the reconcile still got the same
+403 for the one active member (task 14293). Plane's own documentation
+(docs.plane.so/roles-and-permissions/overview, plan table) offers the Workspace Admin role on
+Business and Enterprise only. The two other "successful" promotions in that run were pending
+invitations, whose update route never checks the flag (`invite.py:228` in the v3.3.3 image), so
+they briefly made it look like a per-person problem. The hourly reconcile failed every run until
+site-config #174 mapped `platform-admins` to Owner.
+
+**Root cause.** A plan gate's name says that something is gated, not which plan opens it. I
+treated "not on this plan" as "not on Free" and never read the vendor's plan matrix, which was one
+fetch away. The earlier spike note "Plane has no Owner role" also went unchallenged for the
+v3.3.3 image, where Owner is a role above Admin.
+
+**The rule.** Before saying a purchase, licence or tier will unlock a feature, read the vendor's
+own plan matrix for that feature by name, and quote it. A gate in the code establishes only that a
+gate exists. When a change is staged on that assumption, label it unverified until the first run
+proves it, and run it read-only first against a row the gate actually applies to (an active
+member, not a pending invitation).
+
+**Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
+by measurement); this is the reverse, a capability assumed without the documentation.
+
 ## 2. Tests that would have passed for the wrong reason
 
 ### 2.1 Compiling a pattern as file text rather than as the runtime sees it
@@ -2081,6 +2144,8 @@ because the guard is allowed exactly one module, which is why the allow-list for
 is available at all. This is the fourth entry in this section found that way
 (§2.9, §2.10, §2.11), and it is the only method that has ever found this class.
 
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/configure_host_network.rs::validation_never_touches_the_live_etc_netplan` is its replacement.
+
 ### 2.13 A test that asserted the fix was present, on a configuration where it could not run
 
 **What happened.** Five playbooks escalated privilege at play level without
@@ -2258,6 +2323,8 @@ against `http://example.invalid` and URLs carrying credentials, and requires the
 refusal; the same mutation turns it red. Why the rule did not fire: it was applied to allow-lists and
 needles in Python, and a grep that proves a guard's text exists read as a guard test. A guard is
 tested by running it.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/configure_host_network.rs::validation_never_touches_the_live_etc_netplan` is its replacement.
 
 ### 2.16 A test whose population was selected by the presence of the fix
 
@@ -2511,6 +2578,8 @@ over a survey-driven group is the form `preflight-target-group.yml`'s header rul
 Widened in 2.25.
 
 **Status 2026-10-02.** The fleet-wide guard this entry proposes merged: `platform/tests/test_deploy_playbooks_preflight.bats`, with the playbooks still missing the import in the shrink-only `platform/tests/known_deploy_without_preflight.txt` (PR #387).
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/deploy_playbooks_preflight.rs::every_deploy_playbook_targeting_a_group_is_guarded_or_on_the_ratchet`, `platform/tests/suite/deploy_playbooks_preflight.rs::the_known_compliant_deploys_are_not_offenders`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_deploy_with_no_preflight_is_an_offender`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_preflight_imported_after_the_first_group_play_does_not_count`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_preflight_for_another_group_or_with_one_var_does_not_count`, `platform/tests/suite/deploy_playbooks_preflight.rs::a_union_target_needs_every_group_covered`, `platform/tests/suite/deploy_playbooks_preflight.rs::both_accepted_forms_and_a_wrapper_over_a_guarded_playbook_are_compliant`, `platform/tests/suite/deploy_playbooks_preflight.rs::the_ratchet_fails_a_new_offender_and_a_listed_playbook_that_complies`, `platform/tests/suite/deploy_playbooks_preflight.rs::the_repositorys_own_inline_guards_are_recognised`, `platform/tests/suite/deploy_playbooks_preflight.rs::inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count` and `platform/tests/suite/deploy_playbooks_preflight.rs::each_accepted_positive_comparison_counts` are its eleven replacements. Three tests were added with the port: `platform/tests/suite/deploy_playbooks_preflight.rs::a_legacy_key_wrapper_over_an_unguarded_inner_play_is_an_offender` and `platform/tests/suite/deploy_playbooks_preflight.rs::a_legacy_key_assert_guard_is_recognised` for the `ansible.legacy.*` spellings, and `platform/tests/suite/deploy_playbooks_preflight.rs::the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines`.
 
 ### 2.22 Fixture hid Semaphore's empty secret projection
 
@@ -5219,6 +5288,54 @@ a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and 
 `_ih_rootless` (they read `local_mode`; the facts derived from them are read across hosts through
 `hostvars`). #1136 corrects plan 24's Context.
 
+### 5.29 Briefed six port workers never to edit the ledger, which forbade the note a deleted cited test needs (widens 5.28)
+
+**Occurrences: 1** — 2026-11-13
+
+**What happened.** The BATS port in `plan/development/24-rust-test-platform.md` deletes each ported file. Where `docs/MISTAKES.md` cites the
+file, the ledger's convention is a closing "**Enforcement moved — <date>.**" paragraph on the entry,
+naming the Rust tests that now enforce it: I wrote the first one myself, on entry 10.15, in #1118.
+The wave-1 port briefs (AC-872 to AC-877) all said "Never edit docs/MISTAKES.md" and asked only for a
+ratchet line in `platform/tests/ledger_citation_ratchet.txt`. The ratchet keeps the citation test
+green, so every gate passed. AC-877's review (#1147) caught the missing note; five PRs then needed a
+second commit and another review round for 18 entries. Entry 6.9, which cites the restart-policy BATS
+file deleted in #1118, had gone without the note since that PR.
+
+**Root cause.** The brief's prohibition protected an append-only file and was right for the entries'
+bodies, but it was written from the rule "the ledger is append-only" without checking what the change
+itself owes the ledger. The ratchet, the only mechanical check, proves a dead citation is acknowledged,
+not that the entry says where its rule is enforced now.
+
+**The rule.** A brief's prohibitions are checked against the conventions the change must follow,
+including the ones the briefing session followed itself in an earlier change. A port that deletes a
+cited test adds the "Enforcement moved" paragraph to each citing entry in the same pull request.
+
+**Enforced by.** Convention. Proposed: a `suite/ledger.rs` test that, for every ratchet line whose
+reason says the cited BATS file was deleted, requires an "**Enforcement moved**" paragraph on that
+entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this change.
+
+### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
+
+**Occurrences: 1** — 2026-11-13
+
+**What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
+only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
+`scratchpad/mut/`, `mutate.py` and `run.sh`. One ran `git checkout -q -- .` in the other's tree
+several times, reverting its in-flight mutations, and its `mutate.py` replaced the other's. One also
+extracted a whole repository tree into the scratchpad root with a mistyped `tar -C`. Both reported the
+collision. Their findings came from clean re-runs in their own directories, at the cost of a re-run.
+
+**Root cause.** The briefs named the scratch root, not a directory per agent. Agents running at the
+same time choose the same obvious names. 5.14's rule (no writes in a checkout another task owns) was
+broken, but the reviewer could not know the tree was another agent's; 3.10 is the same rule for tests.
+
+**The rule.** Every brief for an agent that may run beside others names its own scratch directory,
+unique to that agent and item (`scratchpad/rv-<item>`, `scratchpad/w<n>`), and forbids writing
+elsewhere in the scratchpad and recursive deletes.
+
+**Enforced by.** Convention (the brief template). Applied to every brief from the AC-874 and AC-875
+delta reviews on.
+
 ## 6. Working from assumptions about files
 
 ### 6.1 Editing against an imagined structure
@@ -5267,6 +5384,8 @@ mechanism fails its test.
 This entry previously cited that file before it existed — a dangling enforcement claim,
 which is entry 8.2's mistake applied to a citation rather than an identifier. The test
 was written to make the claim true rather than the claim weakened to match.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::configures_no_podman_api_socket` and `platform/tests/suite/install_podman.rs::does_not_depend_on_systemctl_machine` are its two replacements.
 
 
 ### 6.3 §6.2 repeated — assumed a dependency was present on the host that runs it
@@ -5482,6 +5601,8 @@ by running it before calling the fix done.
 label lookups. It goes red when the lookup is reverted to a name (mutation-checked, 2
 failures). `CONTAINER_SEP` is gone, and `test_local_netbox.bats` refuses its return.
 
+**Enforcement moved — 2026-11-13.** The BATS file for the local NetBox checks was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_netbox.rs::netbox_containers_are_found_by_compose_labels_not_a_guessed_name_separator` is its replacement.
+
 ### 6.9 Scoped a restart-policy fix to the runtime a review named, without reading the test that documents it
 
 **What happened.** The Codex review of ef4432b on PR #195 said rootless podman's boot unit
@@ -5503,6 +5624,8 @@ holds. When a guard elsewhere enforces the same property, the check must accept 
 **Enforced by.** Test: `test_persistence_accepts_only_what_boots` runs the real decision tasks
 on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
 `"no"` pass (mutation-checked).
+
+**Enforcement moved — 2026-11-12.** The BATS file cited above was ported to the Rust suite (plan 24) and deleted in #1118: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no` replaces the compose guard this entry names, and the cited header comment is now the module doc of `platform/tests/suite/restart_policy.rs`. `test_persistence_accepts_only_what_boots` still enforces this entry's rule.
 
 ### 6.10 Acted on a merged plan as current state while a peer session was building the same scope
 
@@ -6805,6 +6928,8 @@ real hooks through prepare, a step and cleanup, and fails unless the shim reprod
 and `test_install_podman.bats` hold each of these, each assertion seen to fail once under
 a mutation. Live proof is the runbook in the service CLAUDE.md ("Verify on the live
 hosts").
+
+**Enforcement moved — 2026-11-13.** The podman install BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/install_podman.rs::the_docker_options_are_opt_in_and_default_off`, `platform/tests/suite/install_podman.rs::the_docker_cli_client_is_pinned_client_only_and_replaces_the_shim` and `platform/tests/suite/install_podman.rs::the_docker_apt_repository_is_one_shared_task_used_by_both_playbooks` are its three replacements.
 
 ### 10.30 Issue #604's fix was recorded as built; its template had never been published, so it never ran
 
