@@ -33,8 +33,10 @@ SHARDED_WORKFLOW_BLOB_SHA = "2edf7439bd09c9c229b8ae042c4b9410fc58fd9b"
 BATS_PINNED_WORKFLOW_BLOB_SHA = "87c6b28357f59a84ae8d98f6f193c246ef4ac882"
 # The bats-pinned workflow once the change detector and the retired jobs were removed; dev held it until Rust (tests).
 RETIRED_WORKFLOW_BLOB_SHA = "fea12801a1909ba4707d5e50c32ddeb30b164b27"
-# The retired workflow plus the Rust (tests) job (plan 24); dev holds it after this merge.
+# The retired workflow plus the Rust (tests) job (plan 24); dev held it until the job's Python setup.
 RUST_TESTS_WORKFLOW_BLOB_SHA = "fec0139560a9b9e845e1e7cc524b59489a980fff"
+# Rust (tests) plus the locked Python environment and Ansible collections (plan 24); dev holds it after this merge.
+RUST_ANSIBLE_WORKFLOW_BLOB_SHA = "bc97004798ad7e65c9b1b394fc39410068985547"
 # The eight legs of the one `python` matrix job; each is its own check run under this name.
 PYTHON_SHARDS = tuple(f"Python ({shard}/8)" for shard in range(1, 9))
 EXPECTED = {
@@ -620,11 +622,27 @@ def check_workflow_change(api, base_sha, head_sha, files):
             raise Refusal("Retired workflow may only remain byte-identical on subsequent PRs")
         return
     if base_blob_sha == RUST_TESTS_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha == RUST_ANSIBLE_WORKFLOW_BLOB_SHA:
+            # Same jobs as Rust (tests); the job's setup steps install the locked Python environment.
+            check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
+            check_workflow_policy(candidate, sharded=True, retired=True, rust_tests=True)
+            if (len(workflow_records) != 1 or workflow_records[0].get("status") != "modified"
+                    or workflow_records[0]["filename"] != WORKFLOW
+                    or workflow_records[0].get("previous_filename") is not None):
+                raise Refusal("Workflow transition requires one modified record at the protected path")
+            return
         if candidate_blob_sha != RUST_TESTS_WORKFLOW_BLOB_SHA:
             raise Refusal("Workflow head is not the exact reviewed Rust-tests workflow")
         check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
         if base != candidate or workflow_records:
             raise Refusal("Rust-tests workflow may only remain byte-identical on subsequent PRs")
+        return
+    if base_blob_sha == RUST_ANSIBLE_WORKFLOW_BLOB_SHA:
+        if candidate_blob_sha != RUST_ANSIBLE_WORKFLOW_BLOB_SHA:
+            raise Refusal("Workflow head is not the exact reviewed Rust-ansible workflow")
+        check_workflow_policy(base, sharded=True, retired=True, rust_tests=True)
+        if base != candidate or workflow_records:
+            raise Refusal("Rust-ansible workflow may only remain byte-identical on subsequent PRs")
         return
     raise Refusal("Workflow base is outside the exact pre-partition or reviewed partition states")
 
@@ -880,7 +898,7 @@ def live_dev_sha(api):
     return live_sha
 
 
-def check_release_budget(api, file_records):
+def check_release_budget(api, file_records, acknowledged=False):
     # Policy 10 R4, R5: a merge may not take its release past 100 pull requests, or past 120 changed files when it
     # adds a path; R12 suspends both until the carry-over tag exists. The count is taken at the dev tip GitHub
     # reports now. The pull request's base.sha is not that tip: it was stale on each of the 8 open pull
@@ -899,13 +917,20 @@ def check_release_budget(api, file_records):
         readout += f" (transition: policy 10 R12, no limit applies before {semver.TRANSITION_TAG})"
     elif after["warn"]:
         readout += " (warn: 80% of a limit)"
+    # R5: a pull request adding no new path may pass the file limit; only the pull request limit binds it.
+    over_prs = after["prs"] > limits["prs"]
+    over_files = after["files"] > limits["files"] and after["files"] > before["files"]
+    # R10: the operator may approve a named release going over a limit at dev intake (--budget-acknowledged).
+    waived = acknowledged and not after["transition"] and (over_prs or over_files)
+    if waived:
+        readout += " (over the limit: acknowledged by the operator, policy 10 R10)"
     print(readout)
-    if after["transition"]:
+    if after["transition"] or waived:
         return after
-    if after["prs"] > limits["prs"]:
+    if over_prs:
         raise Refusal(f"Release full: this merge makes {after['prs']} pull requests (limit {limits['prs']}) "
                       f"since {since}; promote the release first (policy 10 R4, R5)")
-    if after["files"] > limits["files"] and after["files"] > before["files"]:
+    if over_files:
         raise Refusal(f"Release full: this merge makes {after['files']} changed files (limit {limits['files']}) "
                       f"since {since}; promote the release first (policy 10 R4, R5). A pull request that adds no "
                       "new path, such as a revert, may still merge")
@@ -932,14 +957,14 @@ def check_dev_drift(api, number, sha, dev_sha, acknowledged):
                       "pass --dev-drift-acknowledged (docs/MISTAKES.md 5.23)")
 
 
-def validate(api, number, sha, receipt_path, dev_drift_acknowledged=False):
+def validate(api, number, sha, receipt_path, *, dev_drift_acknowledged=False, budget_acknowledged=False):
     pr = get_pr(api, number)
     base_sha = check_pr(pr, number, sha)
     files, file_records = changed_files(api, number)
     # The readout prints on every run that reaches the count, release-script PRs included, so the budget comes before
     # the path refusals. A budget refusal still names a protected path first: that is the operator-merge answer.
     try:
-        budget = check_release_budget(api, file_records)
+        budget = check_release_budget(api, file_records, budget_acknowledged)
     except Refusal:
         check_protected_paths(files)
         raise
@@ -969,6 +994,9 @@ def main(argv=None, api=None):
     parser.add_argument("--review-receipt", help="JSON receipt for an independent Sol/Claude review")
     parser.add_argument("--dev-drift-acknowledged", action="store_true",
                         help="merge although dev holds test-path changes this head lacks (docs/MISTAKES.md 5.23)")
+    parser.add_argument("--budget-acknowledged", action="store_true",
+                        help="merge although the release is over a policy 10 limit; the operator approves it per "
+                             "release (R10)")
     args = parser.parse_args(argv)
     if not SHA.fullmatch(args.head):
         parser.error("--head must be a full 40-character lowercase SHA")
@@ -976,7 +1004,9 @@ def main(argv=None, api=None):
         parser.error("--merge requires --feedback-addressed attestation")
     api = api or GitHub()
     try:
-        evidence = validate(api, args.pr, args.head, args.review_receipt, args.dev_drift_acknowledged)
+        evidence = validate(api, args.pr, args.head, args.review_receipt,
+                            dev_drift_acknowledged=args.dev_drift_acknowledged,
+                            budget_acknowledged=args.budget_acknowledged)
         print(f"PASS: PR {args.pr} head {args.head}; {len(evidence['checks'])} expected checks; "
               f"approval={'receipt' if evidence['receipt'] else 'GitHub'}; "
               f"{evidence['comments']} conversation comments read")
@@ -984,7 +1014,9 @@ def main(argv=None, api=None):
             print("Read-only validation only; no feedback attestation supplied and no merge attempted.")
             return 0
         # Re-read every gate immediately before the single mutating command.
-        refreshed = validate(api, args.pr, args.head, args.review_receipt, args.dev_drift_acknowledged)
+        refreshed = validate(api, args.pr, args.head, args.review_receipt,
+                             dev_drift_acknowledged=args.dev_drift_acknowledged,
+                             budget_acknowledged=args.budget_acknowledged)
         if (refreshed["base_sha"] != evidence["base_sha"]
                 or refreshed["head_sha"] != evidence["head_sha"]):
             raise Refusal("PR base or head moved between merge-gate validations")
