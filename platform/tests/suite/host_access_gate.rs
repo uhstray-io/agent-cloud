@@ -937,12 +937,12 @@ fn a_display_variable_in_harden_ssh_always_has_a_default() {
 const MUTATING_METHODS: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
 
 /// A mutating HTTP method named anywhere in a playbook's text: a `method:` key, or curl's `-X` and
-/// `--request` options in a shell or command task, a shell line continuation between the option
-/// and its value included (#1151, #1152 review).
+/// `--request` options in a shell or command task, `-X` clustered after other short options (`-sX`)
+/// and a shell line continuation between the option and its value included (#1151, #1152 review).
 /// A method curl implies (`-d`, `-F`, `-T`) is not read; AC-912 tracks one shared predicate.
 fn mutating_method_text() -> Regex {
     Regex::new(&format!(
-        r#"(?:method:\s*|-X(?:\s|\\\n)*|--request(?:=|\s|\\\n)+)["']?(?:{})\b"#,
+        r#"(?:method:\s*|-[A-Za-z]*X(?:\s|\\\n)*|--request(?:=|\s|\\\n)+)["']?(?:{})\b"#,
         MUTATING_METHODS.join("|")
     ))
     .unwrap()
@@ -959,6 +959,8 @@ fn the_method_scan_catches_a_named_mutating_method() {
         "method: \"DELETE\"",
         "cmd: curl -X POST https://example.invalid",
         "cmd: curl -XPUT https://example.invalid",
+        "cmd: curl -sX POST https://example.invalid",
+        "cmd: curl -sSfX DELETE https://example.invalid",
         "cmd: curl --request PATCH https://example.invalid",
         "cmd: curl --request=DELETE https://example.invalid",
         "cmd: curl -X \\\n  POST https://example.invalid",
