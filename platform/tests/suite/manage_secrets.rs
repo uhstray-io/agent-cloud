@@ -22,6 +22,9 @@ use agent_cloud_tests::yaml::Node;
 const MANAGE: &str = "platform/playbooks/tasks/manage-secrets.yml";
 const MERGE_TASK: &str = "bao-merge-keys.yml";
 const SERVICE_PATH: &str = "secret/data";
+/// The one request manage-secrets.yml may POST: its AppRole login. Compared exactly, not by
+/// substring, so a POST to `.../auth/approle/login?x=...` or to a KV path cannot pass as the login.
+const LOGIN_URL: &str = "{{ _bao_url }}/v1/auth/approle/login";
 
 /// A task's module under any of the three spellings Ansible accepts for a module key: the short
 /// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
@@ -96,4 +99,58 @@ fn no_task_writes_to_the_service_secret_path_directly() {
             "{MANAGE}: task {name:?} reads {SERVICE_PATH} with method {method}, not GET"
         );
     }
+
+    // Part 2: the file writes nothing to OpenBao except its AppRole login, whatever path the write
+    // names. A path-based selector above cannot see a write to a URL built from variables, or a
+    // write by a module that is not uri. So the rule is closed instead: each uri call that is not a
+    // GET must be that one POST, and no task may call a community.hashi_vault module. A method this
+    // check cannot read counts as a write.
+    let mut writes = Vec::new();
+    let mut logins = 0;
+    for task in repo::tasks(MANAGE) {
+        let name = task
+            .get("name")
+            .and_then(Node::as_str)
+            .unwrap_or("(unnamed)");
+        let calls_hashi_vault = task.as_map().into_iter().flatten().any(|(key, _)| {
+            key.as_str()
+                .is_some_and(|key| key.starts_with("community.hashi_vault."))
+        });
+        if calls_hashi_vault {
+            writes.push(format!("{name:?} calls a community.hashi_vault module"));
+        }
+        let Some(uri) = module(&task, "uri") else {
+            continue;
+        };
+        let is_read = match uri.get("method") {
+            None => true,
+            Some(Node::Str(method)) => method.eq_ignore_ascii_case("GET"),
+            Some(_) => false,
+        };
+        if is_read {
+            continue;
+        }
+        let is_login = uri.get("url").and_then(Node::as_str) == Some(LOGIN_URL)
+            && uri.get("method").and_then(Node::as_str) == Some("POST");
+        if is_login {
+            logins += 1;
+        } else {
+            writes.push(format!(
+                "{name:?} writes to OpenBao (method {:?}, url {:?})",
+                uri.get("method"),
+                uri.get("url")
+            ));
+        }
+    }
+
+    assert!(
+        writes.is_empty(),
+        "{MANAGE} writes to OpenBao outside its AppRole login; a store-back goes through \
+         {MERGE_TASK}:\n{}",
+        writes.join("\n")
+    );
+    assert_eq!(
+        logins, 1,
+        "{MANAGE} must log in to OpenBao exactly once, at {LOGIN_URL}"
+    );
 }
