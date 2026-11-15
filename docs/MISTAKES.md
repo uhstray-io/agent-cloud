@@ -39,7 +39,7 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused | Unverified claim | 1 | Convention |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused — **x2** (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR) | Unverified claim | 2 | Convention |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
@@ -69,7 +69,6 @@ and why.
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
 | 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
-| 1.40 | Told the operator CodeRabbit was paused on a PR from its check reading `skipping`, and wrote it into a review dismissal; CodeRabbit reviewed that PR minutes later | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -753,6 +752,8 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
+**Occurrences: 2** — 2026-09-23, 2026-11-15
+
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
 included `will review` and `Reviewing`; CodeRabbit's refusal reads "Action not completed —
@@ -770,6 +771,21 @@ against a pattern proven on that exact phrasing. Report a keyword classifier's l
 as a guess, and treat an unmatched or surprising label as a reason to read the text.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-15.** During the v0.16.0 promotion, `gh pr checks 1152` listed CodeRabbit
+as `skipping` on head `daed978a`. From that label alone I told the operator CodeRabbit "is paused
+(check 'skipping'), so it will not resolve" its threads, and asked to resolve them and dismiss its
+review myself. The operator approved. The dismissal message on review 5900511766 says "CodeRabbit
+is paused on this PR". It was not paused. The check run behind the label had conclusion `neutral`
+and the title "Review rate limited" (`gh api repos/<repo>/commits/<sha>/check-runs`), and
+`gh pr checks` files `neutral` under `skipping`. CodeRabbit had reviewed `a56396ac` at 04:15 UTC
+(CHANGES_REQUESTED) and `daed978a` at 04:16 (COMMENTED), about an hour and a half before the
+dismissal at 05:51. It reviewed `55e61090` at 05:59 (check `success`) and resolved its four new
+threads itself, and was rate-limited again on `5e7659f6`. The rule did not fire because I took a
+CLI's bucket name as a status, not as a classifier's label: `gh pr checks` sorts check
+conclusions into buckets exactly as 1.10's keyword test sorted replies. The same rule covers it.
+Before saying a reviewer will or will not act, read the check run's title and summary and list the
+reviewer's reviews on the pull request, with their commit and time.
 
 ### 1.14 A fact about the private inventory read from the public template
 
@@ -1815,33 +1831,6 @@ member, not a pending invitation).
 
 **Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
 by measurement); this is the reverse, a capability assumed without the documentation.
-
-### 1.40 Called CodeRabbit paused from a `skipping` check, and wrote it into a dismissal
-
-**Occurrences: 1** — 2026-11-15
-
-**What happened.** During the v0.16.0 promotion, #1152's CodeRabbit check read `skipping` on head
-`daed978a` (`gh pr checks 1152`). From that alone I asked the operator to approve resolving two
-CodeRabbit threads and dismissing its CHANGES_REQUESTED review, saying CodeRabbit "is paused (check
-'skipping'), so it will not resolve them". The operator approved. The dismissal message I posted on
-review 5900511766 says "CodeRabbit is paused on this PR". The guard then still refused: CodeRabbit
-had posted a new CHANGES_REQUESTED review on `a56396ac` at 04:15 UTC, after the push I had read the
-check for, and a COMMENTED review on `daed978a`. On the next two heads it reviewed again and
-resolved its own threads. Its check read `skipping` on those heads too.
-
-**Root cause.** A check run's conclusion is not the reviewer's state. The `skipping` conclusion
-stood beside reviews posted to the same pull request on the same night, and I never listed the
-reviews (`gh api repos/<repo>/pulls/<n>/reviews`) before stating why CodeRabbit would not act. An
-earlier note ("auto-pause makes its check `skipped`") was read backwards, as "a skipped check means
-paused".
-
-**The rule.** Before saying a reviewer will or will not act on a pull request, list its reviews and
-threads on that pull request, with their commit and time, and quote the newest. Where the reason
-reaches the operator or a GitHub record, cite what the list showed. A check's conclusion alone says
-nothing about whether CodeRabbit is paused.
-
-**Enforced by.** Convention. Related: 1.10, the inverse (a review reported as started from a keyword
-match).
 
 ## 2. Tests that would have passed for the wrong reason
 
