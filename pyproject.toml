@@ -27,7 +27,7 @@ test = [
     # Runs the playbook suites against disposable fixtures. A runner without it cannot prove
     # rollback. Exact pin: matches the prod Semaphore runner image v2.19.11 (ansible-core
     # 2.20.8, Python 3.12) -- bump both together.
-    "ansible-core==2.20.8",
+    "ansible-core==2.21.6",
     # Runs the suite across the runner's cores (`-n auto --dist worksteal`). Pinned because
     # the scheduler flags are its interface, not pytest's.
     "pytest-xdist==3.8.0",

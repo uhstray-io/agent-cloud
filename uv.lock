@@ -1,11 +1,12 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [[package]]
 name = "agent-cloud"
 version = "0.0.0"
 source = { virtual = "." }
+default-groups = ["controller", "test"]
 
 [package.dev-dependencies]
 controller = [
@@ -26,7 +27,7 @@ test = [
 [package.metadata.requires-dev]
 controller = [{ name = "cryptography", specifier = ">=3.4" }]
 test = [
-    { name = "ansible-core", specifier = "==2.20.8" },
+    { name = "ansible-core", specifier = "==2.21.6" },
     { name = "netboxlabs-diode-sdk" },
     { name = "proxmoxer" },
     { name = "pytest" },
@@ -37,7 +38,7 @@ test = [
 
 [[package]]
 name = "ansible-core"
-version = "2.20.8"
+version = "2.21.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -46,9 +47,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "resolvelib" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9f/5b/d09dde47a896ad85f446bbb8d570dfcf83acab981e7f52292cac5573cd23/ansible_core-2.20.8.tar.gz", hash = "sha256:66e0e91ee43d98b3968a612c42c8e6e3d1ea43be501c4f8f6fc8c75b35892cdf", size = 3354686, upload-time = "2026-08-10T16:44:53.097Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ed/9f/c3f578633cd374db6ed981f8abc401885819e94e3d6a8548a1bd0095c575/ansible_core-2.21.6.tar.gz", hash = "sha256:3fa05b4b1af69f2fa19b49dde8edd5a23e693c2c1c3bda2d85fce73bd6cfc36d", size = 3399162, upload-time = "2026-11-02T17:33:27.104Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/be/bf/16dfd21bd81e33e1d2766aa3f39323de865d634422cf610d7613049c29d2/ansible_core-2.20.8-py3-none-any.whl", hash = "sha256:fc6b18073900b6c886124faf5298ae0fc5d148e58635a04c9b358048981136d8", size = 2420535, upload-time = "2026-08-10T16:44:50.871Z" },
+    { url = "https://files.pythonhosted.org/packages/20/5a/9e6cc7686b40bec066211200b6c393a7a333dfcfa91aa67a07c031df87c8/ansible_core-2.21.6-py3-none-any.whl", hash = "sha256:c1fc3cbe821176ba4227b1cae8c748e1d28d42dde605e807d23c58f71b6d1a74", size = 2457874, upload-time = "2026-11-02T17:33:24.88Z" },
 ]
 
 [[package]]
