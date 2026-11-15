@@ -31,6 +31,16 @@ const PVE_HOST: &str = "{{ _pve_host }}";
 const BAO_URL: &str = "{{ _bao_url }}";
 const PURGE_URL: &str = "{{ _pve_host }}/api2/json/nodes/{{ _node }}/qemu/{{ _vmid }}?purge=1";
 const SWEEP_URL: &str = "{{ _pve_host }}/api2/json/nodes/{{ _node }}/storage/{{ (item | split(':'))[0] }}/content/{{ item | urlencode }}";
+/// The play that destroys the VM, by its name. Its own `tasks:` list is where the refusals are read.
+const DESTROY_PLAY: &str = "Destroy a declared VM";
+/// Play keys that reach every task in the play, and so can skip or soften a refusal in it.
+const SOFTENING_PLAY_KEYS: &[&str] = &[
+    "when",
+    "ignore_errors",
+    "ignore_unreachable",
+    "failed_when",
+    "tags",
+];
 
 /// A task's module under any of the three spellings Ansible accepts for a module key: the short
 /// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
@@ -99,6 +109,86 @@ fn module_arg<'a>(task: &'a Node, module_name: &str, arg: &str) -> Option<&'a st
     module(task, module_name)?.get(arg)?.as_str()
 }
 
+/// The destroy play and its own task list. Read from the play, not from `repo::tasks`, which
+/// flattens blocks: a guard wrapped in a block is then not found where it sits, so the check fails
+/// rather than passing blind.
+fn destroy_play_tasks() -> (Node, Vec<Node>) {
+    let doc = yaml::load_one(&repo::path(DESTROY)).expect("destroy-vm.yml has a document");
+    let play = doc
+        .as_seq()
+        .into_iter()
+        .flatten()
+        .find(|play| play.get("name").and_then(Node::as_str) == Some(DESTROY_PLAY))
+        .unwrap_or_else(|| panic!("{DESTROY} has no play named {DESTROY_PLAY:?}"))
+        .clone();
+    let tasks = play
+        .get("tasks")
+        .and_then(Node::as_seq)
+        .map(<[Node]>::to_vec)
+        .unwrap_or_default();
+    (play, tasks)
+}
+
+/// Whether a task writes to Proxmox: a uri call whose method is not GET. A method this check cannot
+/// read counts as a write.
+fn writes_to_the_server(task: &Node) -> bool {
+    module(task, "uri").is_some_and(|uri| match uri.get("method") {
+        None => false,
+        Some(Node::Str(method)) => !method.eq_ignore_ascii_case("GET"),
+        Some(_) => true,
+    })
+}
+
+/// Asserts that a refusal cannot be skipped or softened, and that it runs before any destroy write.
+///
+/// The check is closed rather than a list of bad keys. The refusal carries exactly its name and its
+/// assert, under any spelling of the module, so a `when`, `ignore_errors`, `failed_when`, `tags`,
+/// `loop`, or a key nobody has written yet, fails here. The play itself may not set a softening key
+/// either. The refusal must come before the first task that writes to Proxmox, which is the stop,
+/// and so before the purge DELETE.
+fn assert_unskippable_refusal(name: &str) {
+    let (play, tasks) = destroy_play_tasks();
+
+    for key in SOFTENING_PLAY_KEYS {
+        assert!(
+            play.get(key).is_none(),
+            "{DESTROY}: the play sets {key}, which reaches every refusal in it"
+        );
+    }
+
+    let index = tasks
+        .iter()
+        .position(|task| task_name(task) == name)
+        .unwrap_or_else(|| panic!("{DESTROY}: no task named {name:?} in the play's own task list"));
+    let keys: Vec<&str> = tasks[index]
+        .as_map()
+        .into_iter()
+        .flatten()
+        .filter_map(|(key, _)| key.as_str())
+        .collect();
+    let is_assert =
+        |key: &&str| ["assert", "ansible.builtin.assert", "ansible.legacy.assert"].contains(key);
+    assert!(
+        keys.len() == 2 && keys.contains(&"name") && keys.iter().any(is_assert),
+        "{DESTROY}: {name:?} must carry only its name and its assert, but has keys {keys:?}: a key \
+         such as when, ignore_errors or failed_when can skip or soften the refusal"
+    );
+
+    let first_write = tasks
+        .iter()
+        .position(writes_to_the_server)
+        .unwrap_or_else(|| panic!("{DESTROY}: no task writes to Proxmox"));
+    let purge = tasks
+        .iter()
+        .position(|task| url_of(task) == Some(PURGE_URL) && method_of(task) == "DELETE")
+        .unwrap_or_else(|| panic!("{DESTROY}: no task purges the VM"));
+    assert!(
+        index < first_write && index < purge,
+        "{DESTROY}: {name:?} (task {index}) must run before the first write to Proxmox (task \
+         {first_write}) and before the purge DELETE (task {purge})"
+    );
+}
+
 #[test]
 fn destroy_vm_imports_the_target_group_preflight() {
     // Arrange
@@ -132,6 +222,9 @@ fn destroy_vm_refuses_a_live_vm_that_is_not_the_declared_one() {
         items.contains(&"(_live.node | default('')) == _node"),
         "the live VM's node must equal the declared node"
     );
+
+    // The refusal itself must be unskippable and come before any write to Proxmox.
+    assert_unskippable_refusal("Refuse to destroy a VM that is not the declared one");
 }
 
 #[test]
@@ -203,6 +296,9 @@ fn destroy_vm_refuses_a_launch_that_does_not_name_the_vmid() {
             .contains(&"(confirm_destroy | default('') | string) == (_vmid | string)"),
         "the launch must name the vmid in confirm_destroy"
     );
+
+    // The naming refusal must be unskippable and come before any write to Proxmox.
+    assert_unskippable_refusal("Require the run to NAME the vmid it destroys");
 }
 
 #[test]
@@ -361,12 +457,17 @@ fn provision_vm_stops_on_an_answering_or_unprobeable_declared_address() {
     );
 
     // The override must be in the `that:` logic, not only in the message: a fail_msg that names it
-    // while the condition ignores it would fail closed in name only.
-    assert!(
-        that_items(stop)
-            .iter()
-            .any(|item| item.contains("allow_unverified_address")),
-        "the stop condition must allow the audited override"
+    // while the condition ignores it would fail closed in name only. Both conditions are pinned
+    // exactly, not searched for: a `- ... or true` added to either one would pass a substring test.
+    let items: Vec<&str> = that_items(stop).into_iter().map(str::trim).collect();
+    assert_eq!(
+        items,
+        vec![
+            "_addr_probe.rc != 0",
+            "(_addr_probe.rc in [1, 2]) or (allow_unverified_address | default(false) | bool)",
+        ],
+        "the stop condition must be exactly these two: the probe must not have answered, and its \
+         exit must be a clean no-answer (rc 1 or 2) unless the audited override is set"
     );
 }
 
