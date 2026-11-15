@@ -91,7 +91,7 @@ setup() {
 
 @test "ssh backup: the operator playbook guards the transport it reads over" {
   # A private key crosses this connection. Counted against _bao_url, the same way
-  # every other OpenBao-reaching play is counted in test_credential_leaks.bats —
+  # every other OpenBao-reaching play is counted in platform/tests/suite/credential_leaks.rs —
   # a play that resolves an address and does not guard it is unguarded regardless
   # of what the rest of the file does.
   local n_url n_inc

@@ -7,6 +7,7 @@ mod approle_ttl;
 mod bootstrap_12a;
 mod common_sh;
 mod configure_host_network;
+mod credential_leaks;
 mod deploy_playbooks_preflight;
 mod host_access_gate;
 mod install_podman;

@@ -15,7 +15,12 @@
 6.8 test_local_netbox.bats # ported to platform/tests/suite/local_netbox.rs (plan 24), BATS file deleted 2026-11-13
 6.9 platform/tests/test_restart_policy.bats:4-9 # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
 10.15 platform/tests/test_restart_policy.bats # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
+1.1 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
+2.1 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
+2.18 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
+2.18 test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
 2.21 platform/tests/test_deploy_playbooks_preflight.bats # ported to platform/tests/suite/deploy_playbooks_preflight.rs (plan 24), BATS file deleted 2026-11-13
+5.1 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
 10.29 test_install_podman.bats # ported to platform/tests/suite/install_podman.rs (plan 24), BATS file deleted 2026-11-13
 Index test_deploy_playbooks_preflight.bats # ported to platform/tests/suite/deploy_playbooks_preflight.rs (plan 24), BATS file deleted 2026-11-13
 Index test_install_podman.bats # ported to platform/tests/suite/install_podman.rs (plan 24), BATS file deleted 2026-11-13
