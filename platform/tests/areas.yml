@@ -28,8 +28,9 @@ ignore:
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
 # `local_dev_inventory` holds the local-dev inventory template to localhost-only and no credentials.
 # `yaml_load` checks that every tracked YAML file loads, and plan/** and docs/** hold YAML too.
+# The four modules ported from BATS (plan 24, Phase 4) guard MISTAKES-cited rules, so they are here too.
 always:
-  static: [approle_ttl, configure_host_network, credential_leaks, deploy_playbooks_preflight, host_access_gate, install_podman, ledger, ledger_citation_hook, local_dev_inventory, local_netbox, manage_github_runner_group, yaml_load]
+  static: [approle_ttl, backup_credentials, become_password_resolution, configure_host_network, credential_leaks, deploy_playbooks_preflight, destroy_vm, host_access_gate, install_podman, ledger, ledger_citation_hook, local_dev_inventory, local_netbox, manage_github_runner_group, manage_secrets, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:

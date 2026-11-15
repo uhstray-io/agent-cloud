@@ -17,10 +17,16 @@
 10.15 platform/tests/test_restart_policy.bats # ported to platform/tests/suite/restart_policy.rs (plan 24), BATS file deleted 2026-11-12
 1.1 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
 2.1 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
+2.13 platform/tests/test_become_password_resolution.bats # ported to platform/tests/suite/become_password_resolution.rs (plan 24), BATS file deleted 2026-11-13
+2.16 platform/tests/test_become_password_resolution.bats # ported to platform/tests/suite/become_password_resolution.rs (plan 24), BATS file deleted 2026-11-13
+2.17 platform/tests/test_become_password_resolution.bats # ported to platform/tests/suite/become_password_resolution.rs (plan 24), BATS file deleted 2026-11-13
 2.18 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
 2.18 test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
 2.21 platform/tests/test_deploy_playbooks_preflight.bats # ported to platform/tests/suite/deploy_playbooks_preflight.rs (plan 24), BATS file deleted 2026-11-13
+3.6 test_destroy_vm.bats # ported to platform/tests/suite/destroy_vm.rs (plan 24), BATS file deleted 2026-11-13
 5.1 platform/tests/test_credential_leaks.bats # ported to platform/tests/suite/credential_leaks.rs (plan 24), BATS file deleted 2026-11-13
+10.8 platform/tests/test_backup_credentials.bats # ported to platform/tests/suite/backup_credentials.rs (plan 24), BATS file deleted 2026-11-13
+10.11 platform/tests/test_manage_secrets.bats # ported to platform/tests/suite/manage_secrets.rs (plan 24), BATS file deleted 2026-11-13
 10.29 test_install_podman.bats # ported to platform/tests/suite/install_podman.rs (plan 24), BATS file deleted 2026-11-13
 Index test_deploy_playbooks_preflight.bats # ported to platform/tests/suite/deploy_playbooks_preflight.rs (plan 24), BATS file deleted 2026-11-13
 Index test_install_podman.bats # ported to platform/tests/suite/install_podman.rs (plan 24), BATS file deleted 2026-11-13
