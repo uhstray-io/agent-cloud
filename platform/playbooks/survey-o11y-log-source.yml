@@ -38,7 +38,7 @@
 
     - name: Classify receiver log-source metadata
       ansible.builtin.command:
-        argv: [python3, -]
+        argv: [python3, "-"]
         stdin: "{{ _log_survey }}"
         stdin_add_newline: false
       register: _log_source_report

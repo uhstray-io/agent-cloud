@@ -31,7 +31,7 @@ and why.
 | # | Mistake | Class | Count | Enforced by |
 |---|---------|-------|-------|-------------|
 | 1.1 | Claimed a value was copied verbatim when it had been retyped through a string literal | Unverified claim | 1 | Convention + test |
-| 1.2 | Asserted a config gap that did not exist, without reading the file — **x7** | Unverified claim | 7 | Convention + loader test; hook proposed (count ≥ 3) |
+| 1.2 | Asserted a config gap that did not exist, without reading the file — **x8** | Unverified claim | 8 | Convention + loader test; hook proposed (count ≥ 3) |
 | 1.3 | Reported a background job as successful when its exit code had been masked by a pipe — **x5** | Unverified claim | 5 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention (operator PreToolUse hook outside repo) |
 | 1.4 | **x2** — Guessed a resource id instead of reading the one the create call returned (x2: reported Semaphore task ids from memory, one guessed, one mistyped) | Unverified claim | 2 | Convention |
 | 1.5 | **x2** — Claimed per-job containerisation as an enforced control; a job that asked for nothing ran on the host | Unverified claim | 2 | Test (runner containerisation); Convention (occurrence 2, launch containment) |
@@ -48,7 +48,7 @@ and why.
 | 1.16 | **x4** — Wrote "44 files log in to OpenBao" into a merged plan without running a count; the count is 43 (x3: told a PR body a guard flagged all eight sites; run against the originals it flagged seven; x4: a plan relayed a scout's "12 runners", the files number 41) | Unverified claim | 4 | Convention; mechanical check proposed (count ≥ 3) |
 | 1.17 | Explained a 401 as the token's scope; the service's database had just gone down, and those were the outage's first 401s | Unverified claim | 1 | Convention |
 | 1.18 | **x3** — Listed an auth failure's causes from the code, missed the database-error 401, and chased credentials while the orchestrator's disk was full (x2: listed a Grafana datasource-health 500's causes from one handler and missed two branches, and stated lock-retry timing without reading the retryer; x3: blamed a survey refusal on raise sites its path never reaches and missed the exception handler; widened by 1.32) | Unverified claim | 3 | Test for one helper (`test_o11y_availability_namespace_survey.py`); class guard proposed (count ≥ 3); disk alert proposed |
-| 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6) | Unverified claim | 1 | Convention |
+| 1.19 | A negative claim about a host's state from evidence that cannot establish it (widens 1.6; widened by 1.35, 1.37) | Unverified claim | 1 | Convention |
 | 1.20 | Assumed Semaphore injected a task-id environment variable; the first production drill printed a blank receipt ID | Unverified runtime assumption | 1 | Test (o11y receipt checks) |
 | 1.21 | **x5** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 5 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
@@ -57,7 +57,7 @@ and why.
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
-| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) | Unverified claim | 3 | Convention; guard proposed (count 3) |
+| 1.28 | Relayed a reviewer's claim that a mid-body `[[ ]]` fails a Bats test; its own probe only covered the loop's last pass, where it does (widens 1.25) — **x2** (2026-11-11: wrote a reviewer's "count at the pinned base" into plan 23 and AC-699 without checking `base.sha`; it does not track `dev`) — **x3** (2026-11-12: relayed a reviewer's "26 live templates point at deleted playbooks" into a PR comment, read from `templates.yml` only; the live catalog held none) — **x4** (2026-11-12: relayed three website-repo "conflicts" from a scout that read a stale branch into a reply and a Plane item; on `main` two were resolved and the third already tracked) — **x5** (2026-11-13: relayed a worker's unchecked guess that adding a Plane work item to a milestone moves it out of its old one; a second worker's read-back showed the add changes nothing while the item is in another milestone) | Unverified claim | 5 | Convention; guard proposed (count ≥ 3) |
 | 1.29 | Briefed an executor that a bootstrap task would fix a stale mount, from the task's name; it compares destinations, not sources (widens 1.26; widened by 1.36) — **x2** (2026-11-03: a `target_service` rule from a naming convention, without reading the catalog's other consumers) — **x3** (2026-11-04: called an OpenSpec task source-only from its first line) — **x4** (2026-11-05: credited a Semaphore task with a repair from its name and start time; the ledger's 3.18 records the real repair) — **x5** (2026-11-07: described a merge-guard fix as a one-constant change from a test assertion, without reading the guard's state machine) — **x6** (2026-11-04, recorded late: briefed a playbook as reading an OpenBao token from another playbook's name; it uses the Django shell) — **x7** (2026-11-08: briefed a launch probe with a workflow step named `probe`, which OPA's registry does not have) — **x8** (2026-11-09: briefed the console's proposal contract with `target_service` as `<service>_svc` from a naming convention; hyphenated services need `-` → `_`, and OPA's group pattern refuses the result) — **x9** (2026-11-10: told a PR that two overlay tests fail if an overlay is deleted, from what they assert; both start with a helper that skips) — **x10** (2026-11-10: described a shell helper's inputs in an issue without reading it) — **x11** (2026-11-10: `target_service=opa_svc` for Provision/Resize VM, which want the bare name; same field as x2) — **x12** (2026-11-11: told a PR the OIDC promotion verify fails a malformed redirect; it only checks the live list contains the inventory value) — **x13** (2026-11-12: required a stored URL's format without reading the path's other readers) | Unverified claim | 13 | Convention; guard proposed (count ≥ 3) |
 | 1.30 | Explained a Linux-only failure with an unchecked macOS fact: called macOS `/dev/stdin` a device node; it is a symlink to `/dev/fd/0` (widens 1.29) | Unverified claim | 1 | Convention |
 | 1.31 | Called five site-config branches unmerged from commits-ahead counts; each had been squash-merged | Unverified claim | 1 | Convention |
@@ -68,6 +68,7 @@ and why.
 | 1.36 | Briefed a fix's guarantee from a comment's citation; the cited file says `-e` can set the `inventory_hostname` the fix keyed on (widens 1.29) — **x2** (2026-11-12: wrote "refused before changing anything" from a refusing assert's message; the deploy had already moved the checkout and re-rendered the Alloy config) | Unverified claim | 2 | Instance: tests pin both playbooks' shared derivation; class Convention, no detector |
 | 1.37 | Called a fix impossible ("a wrapper cannot repair" parallel's ignored SIGALRM) from a fact about shells, built a serial fallback on it; a perl job shell fixed it (widens 1.19) | Unverified claim | 1 | Instance: wrapper test with control; class Convention, no detector |
 | 1.38 | Recorded that the console accepts only RS256 ID tokens because that is openidconnect's default and the console never overrides it; the library overrides it on the console's behalf from the discovery document | Unverified claim | 1 | Convention (review caught it; the corrected note cites the library lines) |
+| 1.39 | Told the operator a paid plan would unlock a vendor role, from the code's flag name, without the vendor's plan matrix; Plane's Admin role is Business-only | Unverified claim | 1 | Convention |
 | 2.1 | Test compiled a pattern as raw file text, not as the runtime decodes it | False-green test | 1 | Test |
 | 2.2 | Test pinned the vulnerable form of a security check in place | False-green test | 1 | Test |
 | 2.3 | Negative assertion aborted under `set -e` because a no-match grep exits 1 | False-green test | 1 | Convention |
@@ -168,6 +169,10 @@ and why.
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
 | 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
+| 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
+| 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) | Process | 1 | Convention (a ledger test requiring the note proposed) |
+| 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -275,7 +280,7 @@ confirmed you searched the right artifact. When two files could plausibly be
 
 **Enforced by.** Convention.
 
-**Occurrences: 7** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07
+**Occurrences: 8** — (first undated), 2026-09-05, 2026-09-25, 2026-09-25, 2026-10-07, 2026-11-03, 2026-11-07, 2026-11-12
 
 **Repeat (2026-09-05).** Stale Postiz agent notes said the container sourced its
 configuration. Without checking the actual compose command, a change added shell
@@ -359,6 +364,18 @@ passed. Why the rule did not fire: no file was grepped. The gap was read from a 
 that lists possible causes, and the stored artifact the claim was about was never opened. A guard's
 fail message names what it checks, not what is missing; the cause of a failure comes from the
 failing task's full output and the artifact it names.
+
+**Occurrence 8 — 2026-11-12 (a mechanism inferred from the tracker's state).** Entry 5.27, as
+first written in PR #1134, said the Plane sync "created even the ticked tasks in Backlog" and that no
+change "ticked the task it finished". I inferred both from Plane showing tasks 1.1 to 1.5 in Backlog
+while `tasks.md` on `main` had them ticked. I told the operator the first, and wrote both into the
+entry. Both were false. The sync skips a task already ticked when first seen; 1.1 to 1.5 were ticked
+on `dev` only when the sync first read `main`; and `21ad7e8bc`, my own commit, had ticked 1.5. The
+independent review found it by reading `openspec_to_plane.py` and the git history. Why the rule did
+not fire: no file was grepped. The behaviour was read from the tracker's present state, and the code
+that made that state, and the history of the ticks, were never opened. A tracker's state is an
+output: its cause comes from the code that wrote it and from what that code read, on the branch
+and at the time it read it.
 
 ### 1.3 A masked exit code reported as success
 
@@ -620,6 +637,8 @@ earns the words "works for the current values", nothing stronger.
 ("bootstrap: the INI route table is emitted as a Python literal, not JSON")
 pins the `| string` emission and refuses `| to_json` on that line. Mutation-
 proven by the failure itself: the `to_json` form is what broke.
+
+**Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/local_dev_inventory.rs::bootstrap_emits_the_route_table_as_a_python_literal` is its replacement.
 
 
 ### 1.9 "A feature branch is invisible to the controller" held only in the web UI
@@ -1312,7 +1331,7 @@ its merge date, or say the origin is unverified.
 
 ### 1.28 Relayed a subagent's behavioural claim because it came with its own experiment (widens 1.25)
 
-**Occurrences: 3** — 2026-10-31, 2026-11-11, 2026-11-12
+**Occurrences: 5** — 2026-10-31, 2026-11-11, 2026-11-12, 2026-11-12, 2026-11-13
 
 **What happened.** Reviewing #810 on 2026-10-31, a reviewer subagent reported that a false
 `[[ ]]` inside the new flag-order loop in `platform/tests/test_service_opa.bats` fails the
@@ -1375,6 +1394,31 @@ about what is deployed or registered is a live-state claim, whatever file it was
 The hook does not replace the recheck in The rule: a `repo:` line names a file at a ref, not
 proof that the lead re-read it against the claim, so the recheck stays required with the hook in
 place. Until the hook exists this entry stays at `Convention`, with this proposal as its escalation.
+
+**Occurrence 4 — 2026-11-12** (1.25's stale-checkout shape). Planning the social-content work,
+I sent read-only scouts to extract the brand design from three website repositories. The Zerds
+scout read the primary checkout, which was on a feature branch about eleven weeks behind
+`origin/main`. Its report named the branch and said it was unverified whether the deployed site
+matched it. I relayed its three "conflicts" to Joe as findings and wrote them into the Plane
+brand-profile item for Zerds: the favicon still used the old accent, the docs gave the audience
+three ways, and the product domain was hard-coded although not yet owned. Joe asked for them as
+GitHub issues. Re-read at `origin/main` before filing: the audience and the domain were both
+settled on `main`, and only the favicon still held, already tracked as an open issue in that
+repository. No issue was filed, and the Plane item was corrected. Why the rule did not fire: the
+scout disclosed its ref, and I read the disclosure as provenance attached to a fact, not as a
+reason to stop. The proposed hook would not have caught this: the claim reached a reply and a
+tracker, not a PR comment. Guard proposal, extending the
+one above: a scout brief names the ref to read (`origin/<default>` after a fetch, via `git show`
+or `git grep <ref>`), and its report states that ref and whether it equals the default branch's tip.
+A report on any other ref goes to Joe labelled `unverified:` until re-read at the tip.
+
+**Occurrence 5 — 2026-11-13.** Planning the v0.16.0 merge queue, I relayed a worker's unchecked
+guess about Plane: that adding a work item to a milestone moves it out of the milestone it is already
+in. A second worker read the milestones back and showed the opposite: while the item is in another
+milestone, the add changes nothing, so the item must be removed from the old milestone first. The
+claim was about a tool's behaviour rather than code, which this rule covers all the same; the
+handoff that records it does not say why it went out unchecked. The second worker's read-back is the
+check this rule asks for. The v0.16.0 handoffs now state the quirk and the remove-then-add order.
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
@@ -1737,6 +1781,37 @@ the code makes into that library to where the setting is finally read, not by se
 caller for the setter. Name the line that reads the setting.
 
 **Enforced by.** Convention. The corrected 2.1 note cites the library lines that set the list.
+
+### 1.39 Promised a role from a licence tier without reading the vendor's plan matrix
+
+**Occurrences: 1** — 2026-11-09
+
+**What happened.** Plane refused the Admin workspace role with "Admin role is not available on
+this plan", and the read-only flag check showed `WORKSPACE_ADMIN_ROLE` off. From the flag's name
+and that refusal I told the operator, more than once, that activating the purchased Pro licence
+would make Admin available, and set up the change for it: site-config #169 switched
+`plane_admin_role` to `admin`, to be merged once the licence was active. The licence activated
+(Semaphore task 14291, "workspace plan PRO (activated now)"), and the reconcile still got the same
+403 for the one active member (task 14293). Plane's own documentation
+(docs.plane.so/roles-and-permissions/overview, plan table) offers the Workspace Admin role on
+Business and Enterprise only. The two other "successful" promotions in that run were pending
+invitations, whose update route never checks the flag (`invite.py:228` in the v3.3.3 image), so
+they briefly made it look like a per-person problem. The hourly reconcile failed every run until
+site-config #174 mapped `platform-admins` to Owner.
+
+**Root cause.** A plan gate's name says that something is gated, not which plan opens it. I
+treated "not on this plan" as "not on Free" and never read the vendor's plan matrix, which was one
+fetch away. The earlier spike note "Plane has no Owner role" also went unchallenged for the
+v3.3.3 image, where Owner is a role above Admin.
+
+**The rule.** Before saying a purchase, licence or tier will unlock a feature, read the vendor's
+own plan matrix for that feature by name, and quote it. A gate in the code establishes only that a
+gate exists. When a change is staged on that assumption, label it unverified until the first run
+proves it, and run it read-only first against a row the gate actually applies to (an active
+member, not a pending invitation).
+
+**Enforced by.** Convention. Related: 1.5 (a control asserted from documentation and disproved
+by measurement); this is the reverse, a capability assumed without the documentation.
 
 ## 2. Tests that would have passed for the wrong reason
 
@@ -5137,6 +5212,120 @@ to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the
 operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
 repositories, and the two promotion rounds, which no check counts.
 
+### 5.27 A live service's tasks stayed unticked, and a late tick never reached the tracker
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** The self-hosted runners have run jobs in production since at least 2026-10-12
+(Deploy GitHub Runner (Dev) task 4831), and container jobs since 2026-10-28 (Install Podman (Dev)
+task 9849, Deploy GitHub Runner (Dev) task 9856, site-config smoke run 40717453592). On 2026-11-12
+the `add-github-actions-runners` change's `tasks.md` had 7 of 83 tasks ticked, on both `main` and
+`dev`, and its 81 Plane items were all in Backlog or In Progress. Five of the seven ticks (1.1 to
+1.4 in `ee14db326`, 1.5 in `21ad7e8bc`) were made on `dev`. When the OpenSpec sync first ran, on
+2026-11-09, it read `main`, where only 3.1 and 3.2 were ticked. It skipped those two and imported
+the other 81 tasks as open items, 1.1 to 1.5 included. The five ticks reached `main` with the
+promotion in #1003 on 2026-11-10, and their items stayed in Backlog. Asked to put the runner fix
+in milestone v0.17.0, I could not scope the module from the tracker: six items were closed by hand
+against their evidence, and the rest went to a reconciliation item (AC-859).
+
+**Root cause.** Two gaps, one behind the other:
+1. Most completed work never ticked its task. The PRs and runs cited the change, not the task.
+2. A tick that is made matters to Plane only if it is on `main` before the sync first sees the task;
+   then no item is created for it. The sync reads `main`, skips a task already ticked when first
+   seen, and never writes status once an item exists
+   (`platform/services/plane/lib/openspec_to_plane.py`, `sync-plane-projects.yml`). Plane owns
+   status from then on, so a tick made on `dev` and promoted later moves nothing.
+
+**The rule.** A pull request or live run that completes a task ticks that task in `tasks.md`,
+citing its evidence, in the same change, and sets the task's Plane item to Done itself, because no
+sync will. Before a change whose service is live goes into a milestone, reconcile its open items
+against the evidence.
+
+**Enforced by.** Convention. Proposed: the sync sets an item to Done when its task becomes ticked
+on `main`. That reverses the sync's rule that Plane owns status once an item exists, so it needs
+that decision first.
+
+### 5.28 Wrote a design rule into a plan, then briefed and described code that broke it
+
+**Occurrences: 1** — 2026-11-12
+
+**What happened.** Plan 24 (`plan/development/24-local-mode-from-inventory.md`, merged in #1131) decides
+that every reader takes local-dev mode inline from `(groups['all'] | local_dev_inventory)`, "with no
+intermediate variable", because an underscore play variable can be set with `-e` when the run-start
+guard is skipped (`--limit` excluding localhost, `--start-at-task`). The same day I briefed PR 1b's
+worker that "ensure-service-persistence's existing `_local` stays, its value changes", and the plan's
+Context said skynet and the launch gate "already read the mode this way (AC-784, #1127)". AC-784 had
+moved them to play variables (`_skynet_local` at `deploy-skynet.yml:119,407,494`,
+`_launch_gate_local_mode` at `deploy-launch-gate.yml:74,397,440`). PR #1132's security pass and review
+reproduced the bypass on a production inventory. `-e _local=true --limit alpha` skipped the rootful
+boot-unit task in `ensure-service-persistence.yml` (exit 0). `-e _rootless_podman=false --limit alpha`
+turned `verify-service-persistence.yml`'s failure into a pass.
+
+**Root cause.** The rule was written as the reason for a choice, in the plan's Decision section, and
+the briefs were written from each file's list of reads, never checked against that section. The
+plan's sentence about AC-784 was written from memory ("it reads groups now"), not from the shape of
+the merged code.
+
+**The rule.** Before dispatching a brief that implements a plan, check each decision in the brief
+against the plan's Decision bullets it implements, and name any it departs from. A plan's statement
+that existing code already complies is verified against that code's current form before it is
+written.
+
+**Enforced by.** Convention. Proposed (AC-865): `platform/tests/test_local_mode_reads.py` refuses a
+variable definition whose value contains `local_dev_inventory`, so the plan's rule fails a test, not
+a review. The instance: #1132 is to remove `_local` and `_rootless_podman`, and AC-865
+`_skynet_local`, `_launch_gate_local_mode` and `instrument-host-o11y.yml`'s `_ih_spec` and
+`_ih_rootless` (they read `local_mode`; the facts derived from them are read across hosts through
+`hostvars`). #1136 corrects plan 24's Context.
+
+### 5.29 Briefed six port workers never to edit the ledger, which forbade the note a deleted cited test needs (widens 5.28)
+
+**Occurrences: 1** — 2026-11-13
+
+**What happened.** The BATS port in `plan/development/24-rust-test-platform.md` deletes each ported file. Where `docs/MISTAKES.md` cites the
+file, the ledger's convention is a closing "**Enforcement moved — <date>.**" paragraph on the entry,
+naming the Rust tests that now enforce it: I wrote the first one myself, on entry 10.15, in #1118.
+The wave-1 port briefs (AC-872 to AC-877) all said "Never edit docs/MISTAKES.md" and asked only for a
+ratchet line in `platform/tests/ledger_citation_ratchet.txt`. The ratchet keeps the citation test
+green, so every gate passed. AC-877's review (#1147) caught the missing note; five PRs then needed a
+second commit and another review round for 18 entries. Entry 6.9, which cites the restart-policy BATS
+file deleted in #1118, had gone without the note since that PR.
+
+**Root cause.** The brief's prohibition protected an append-only file and was right for the entries'
+bodies, but it was written from the rule "the ledger is append-only" without checking what the change
+itself owes the ledger. The ratchet, the only mechanical check, proves a dead citation is acknowledged,
+not that the entry says where its rule is enforced now.
+
+**The rule.** A brief's prohibitions are checked against the conventions the change must follow,
+including the ones the briefing session followed itself in an earlier change. A port that deletes a
+cited test adds the "Enforcement moved" paragraph to each citing entry in the same pull request.
+
+**Enforced by.** Convention. Proposed: a `suite/ledger.rs` test that, for every ratchet line whose
+reason says the cited BATS file was deleted, requires an "**Enforcement moved**" paragraph on that
+entry naming at least one `#[test]` fn. Entry 6.9 gains its missing note in this change.
+
+### 5.30 Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14)
+
+**Occurrences: 1** — 2026-11-13
+
+**What happened.** During wave 1 of the BATS port, five `pr-reviewer` agents ran at once, each told
+only to use "scratch" under the session's scratchpad. Two reviewers (AC-874, AC-875) both created
+`scratchpad/mut/`, `mutate.py` and `run.sh`. One ran `git checkout -q -- .` in the other's tree
+several times, reverting its in-flight mutations, and its `mutate.py` replaced the other's. One also
+extracted a whole repository tree into the scratchpad root with a mistyped `tar -C`. Both reported the
+collision. Their findings came from clean re-runs in their own directories, at the cost of a re-run.
+
+**Root cause.** The briefs named the scratch root, not a directory per agent. Agents running at the
+same time choose the same obvious names. 5.14's rule (no writes in a checkout another task owns) was
+broken, but the reviewer could not know the tree was another agent's; 3.10 is the same rule for tests.
+
+**The rule.** Every brief for an agent that may run beside others names its own scratch directory,
+unique to that agent and item (`scratchpad/rv-<item>`, `scratchpad/w<n>`), and forbids writing
+elsewhere in the scratchpad and recursive deletes.
+
+**Enforced by.** Convention (the brief template). Applied to every brief from the AC-874 and AC-875
+delta reviews on.
+
 ## 6. Working from assumptions about files
 
 ### 6.1 Editing against an imagined structure
@@ -5425,6 +5614,8 @@ holds. When a guard elsewhere enforces the same property, the check must accept 
 **Enforced by.** Test: `test_persistence_accepts_only_what_boots` runs the real decision tasks
 on rootful podman and requires `unless-stopped` and `on-failure` to fail while `always` and
 `"no"` pass (mutation-checked).
+
+**Enforcement moved — 2026-11-12.** The BATS file cited above was ported to the Rust suite (plan 24) and deleted in #1118: `platform/tests/suite/restart_policy.rs::every_services_effective_policy_is_always_or_a_labelled_one_shot_no` replaces the compose guard this entry names, and the cited header comment is now the module doc of `platform/tests/suite/restart_policy.rs`. `test_persistence_accepts_only_what_boots` still enforces this entry's rule.
 
 ### 6.10 Acted on a merged plan as current state while a peer session was building the same scope
 
