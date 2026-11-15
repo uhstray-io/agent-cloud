@@ -3,11 +3,14 @@
 //! Run everything: `cargo nextest run` from `platform/tests/`.
 //! Run one area:   `cargo nextest run -E 'test(/^restart_policy::/)'`.
 
+mod approle_ttl;
 mod common_sh;
+mod host_access_gate;
 mod install_qemu_guest_agent;
 mod install_qemu_guest_agent_playbook;
 mod lanes;
 mod ledger;
+mod manage_github_runner_group;
 mod restart_policy;
 mod support;
 mod support_playbook;

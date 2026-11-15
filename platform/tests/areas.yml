@@ -27,7 +27,7 @@ ignore:
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
 # `yaml_load` checks that every tracked YAML file loads, and plan/** and docs/** hold YAML too.
 always:
-  static: [ledger, yaml_load]
+  static: [approle_ttl, host_access_gate, ledger, manage_github_runner_group, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
