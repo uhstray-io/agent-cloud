@@ -89,6 +89,18 @@ fn the_hook_passes_no_filenames_and_prints_its_output_when_it_passes() {
 }
 
 #[test]
+fn the_hook_runs_at_the_commit_stage() {
+    // A stage other than pre-commit takes the citation check off every commit, and the other
+    // tests here still pass (#1147 review).
+    let hook = ledger_hook();
+
+    assert_eq!(
+        hook.get("stages").cloned(),
+        Some(Node::Seq(vec![Node::Str("pre-commit".to_owned())]))
+    );
+}
+
+#[test]
 fn without_pytest_the_entry_skips_with_a_message_and_otherwise_execs_pytest() {
     // Arrange
     let entry = entry();

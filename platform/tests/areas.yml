@@ -71,6 +71,7 @@ areas:
     tiers:
       static: [install_qemu_guest_agent]
       playbook: [install_qemu_guest_agent_playbook]
+
   makefile:
     paths:
       - "Makefile"
