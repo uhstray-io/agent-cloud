@@ -364,15 +364,28 @@ fn the_pfsense_and_proxmox_workers_are_gated_off_on_local_dev() {
     // Arrange
     let template = read(AGENT_TEMPLATE);
 
-    // Act / Assert: the workers render only when the inventory enables them.
-    assert!(
-        template.contains("{% if discovery_workers_enabled | default(true) | bool %}"),
-        "the workers are not gated on discovery_workers_enabled"
-    );
-    assert!(
-        template.lines().any(|l| l == "{% endif %}"),
-        "the worker gate has no closing endif"
-    );
+    // Act: the lines between the gate and the first `{% endif %}` after it. Both workers must be
+    // defined there, not merely somewhere in the file: an endif moved up to just below the gate
+    // would leave them rendering when the flag is false (#1145 review).
+    let lines: Vec<&str> = template.lines().collect();
+    let open = lines
+        .iter()
+        .position(|l| *l == "{% if discovery_workers_enabled | default(true) | bool %}")
+        .expect("the workers are not gated on discovery_workers_enabled");
+    let close = lines[open..]
+        .iter()
+        .position(|l| *l == "{% endif %}")
+        .map(|offset| open + offset)
+        .expect("the worker gate has no closing endif");
+    let gated = &lines[open..close];
+
+    // Assert: the workers render only when the inventory enables them.
+    for worker in ["pfsense_sync:", "proxmox_discovery:"] {
+        assert!(
+            gated.iter().any(|l| l.trim() == worker),
+            "{worker} is not defined inside the discovery_workers_enabled block"
+        );
+    }
 }
 
 #[test]

@@ -243,14 +243,16 @@ fn play(prefix: &str) -> Node {
 }
 
 /// The Docker-compatibility tasks that touch the shim or the CLI client, and how many there are,
-/// with the names of those that have no opt-in as their first condition. Assert and debug tasks
+/// with the names of those whose first condition is not exactly an opt-in. Assert and debug tasks
 /// change nothing on the host and need no gate.
 fn shim_tasks() -> (usize, Vec<String>) {
     let touches = Regex::new(
         r"podman-docker|/etc/containers/nodocker|/usr/bin/docker|docker-ce-cli|add-docker-apt-repo",
     )
     .unwrap();
-    let opt_in = Regex::new(r"^_docker_(cli|api_client)\b").unwrap();
+    // The whole condition, not a prefix: `_docker_cli or true` starts with the opt-in and gates
+    // nothing (#1145 review). A `when:` list is an AND, so later items can only narrow it.
+    let opt_in = Regex::new(r"^_docker_(cli|api_client)$").unwrap();
     let mut touched = 0;
     let mut ungated = vec![];
     for task in repo::tasks(PB).iter().filter(|t| is_task(t)) {
