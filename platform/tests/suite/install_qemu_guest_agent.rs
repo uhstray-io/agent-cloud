@@ -18,6 +18,11 @@ const PLAYBOOK: &str = "platform/playbooks/install-qemu-guest-agent.yml";
 /// The tasks of a playbook in the order Ansible runs them: play by play, each play's `pre_tasks`,
 /// then `tasks`, then `post_tasks`, with a block's `block`, `rescue` and `always` in place.
 fn execution_order(rel: &str) -> Vec<Node> {
+    order_of(&repo::tasks(rel))
+}
+
+/// [`execution_order`] over parsed playbook items, so its order can be tested on inline plays.
+fn order_of(items: &[Node]) -> Vec<Node> {
     fn flatten(items: &[Node], out: &mut Vec<Node>) {
         for item in items {
             out.push(item.clone());
@@ -29,17 +34,31 @@ fn execution_order(rel: &str) -> Vec<Node> {
         }
     }
     let mut out = vec![];
-    for play in repo::tasks(rel)
-        .iter()
-        .filter(|node| node.get("hosts").is_some())
-    {
+    for play in items.iter().filter(|node| node.get("hosts").is_some()) {
         for section in ["pre_tasks", "tasks", "post_tasks"] {
-            if let Some(items) = play.get(section).and_then(Node::as_seq) {
-                flatten(items, &mut out);
+            if let Some(tasks) = play.get(section).and_then(Node::as_seq) {
+                flatten(tasks, &mut out);
             }
         }
     }
     out
+}
+
+#[test]
+fn execution_order_runs_pre_tasks_then_tasks_then_post_tasks() {
+    // The walk in `repo::tasks` visits `tasks` before `pre_tasks`; Ansible runs `pre_tasks` first.
+    // A block's children follow the block in place (#1141 review).
+    let doc = agent_cloud_tests::yaml::parse(
+        "- hosts: all\n  post_tasks:\n    - name: c\n  tasks:\n    - block:\n        - name: b\n  pre_tasks:\n    - name: a\n",
+        "inline",
+    );
+    let items = doc[0].as_seq().expect("a playbook is a list of plays");
+    let ordered = order_of(items);
+    let names: Vec<&str> = ordered
+        .iter()
+        .filter_map(|task| task.get("name").and_then(Node::as_str))
+        .collect();
+    assert_eq!(names, ["a", "b", "c"]);
 }
 
 #[test]

@@ -494,7 +494,7 @@ pub mod process {
 
     /// The directories a sandboxed run may write: `dir`, the caller's temp root (TMPDIR, else
     /// /tmp) and the process's temp directory, each resolved, without repeats.
-    fn writable_roots(dir: &Path) -> Vec<PathBuf> {
+    pub fn writable_roots(dir: &Path) -> Vec<PathBuf> {
         let caller_tmp = std::env::var_os("TMPDIR")
             .filter(|tmp| !tmp.is_empty())
             .map_or_else(|| PathBuf::from("/tmp"), PathBuf::from);

@@ -355,6 +355,18 @@ fn a_sandboxed_playbook_cannot_write_outside_its_directory() {
             .as_nanos()
     ));
     let _cleanup = RemoveOnDrop(outside.clone());
+    // The repository root is outside the writable roots unless the checkout itself sits under
+    // one (a clone in TMPDIR): then the write is allowed by design and the proof proves nothing.
+    let repo_root = repo::root();
+    let overlap: Vec<_> = process::writable_roots(dir.path())
+        .into_iter()
+        .filter(|root| repo_root.starts_with(root))
+        .collect();
+    assert!(
+        overlap.is_empty(),
+        "the checkout {} is under the writable root(s) {overlap:?}, so a write to the probe is allowed and the confinement proof cannot fail; run it from a checkout outside TMPDIR",
+        repo_root.display()
+    );
     assert!(
         !outside.exists(),
         "{} exists before the run, so the run cannot prove anything",
