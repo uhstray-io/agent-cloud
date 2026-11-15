@@ -24,7 +24,7 @@
 //! | orb-agent: the pfSense and Proxmox workers are gated, and off on local-dev | the_pfsense_and_proxmox_workers_are_gated_off_on_local_dev (candidate: pins text) |
 //! | the local scope guard reads the live engine and runs under --check | the_local_scope_guard_reads_the_live_engine_under_check |
 //! | verify-service-persistence selects containers by deploy dir and reports systemd-enablement | verify_service_persistence_selects_containers_by_deploy_dir |
-//! | NetBox containers are found by compose labels, not a guessed name separator | netbox_containers_are_found_by_compose_labels (candidate: pins text) |
+//! | NetBox containers are found by compose labels, not a guessed name separator | netbox_containers_are_found_by_compose_labels_not_a_guessed_name_separator |
 //! | the local controller's OpenBao policy is production's file, not an inline fork | the_local_openbao_policy_is_productions_file |
 
 use agent_cloud_tests::repo;

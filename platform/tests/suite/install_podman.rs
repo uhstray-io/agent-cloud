@@ -22,7 +22,7 @@
 //! | install-podman: the banner marker touch is idempotent | the_banner_marker_touch_is_idempotent |
 //! | install-podman: verification checks presence, not a rootful engine call | verification_checks_presence_not_a_rootful_engine_call |
 //! | install-podman: waits for a freshly-booted host before installing | waits_for_a_freshly_booted_host_before_installing |
-//! | enable-linger: accepts an explicit linger_user, defaulting to ansible_user | enable_linger_accepts_an_explicit_linger_user (candidate: pins text) |
+//! | enable-linger: accepts an explicit linger_user, defaulting to ansible_user | enable_linger_accepts_an_explicit_linger_user_defaulting_to_ansible_user |
 //! | install-podman: installs catatonit, the init podman bind-mounts for a container with init: true | installs_catatonit_and_uidmap_which_podman_only_recommends |
 //! | install-podman: installs uidmap, without which rootless podman cannot start a container | installs_catatonit_and_uidmap_which_podman_only_recommends |
 //! | install-podman: the shim and the Docker CLI client are refused together | the_shim_and_the_docker_cli_client_are_refused_together |
@@ -183,14 +183,50 @@ fn command_line(task: &Node) -> Option<String> {
 }
 
 /// True when a scalar names a Docker engine package, bare or pinned to a version (`docker-ce=5:27.0*`).
-/// The package is the token before the first `=`, trimmed, and it must match exactly: a prefix does
-/// not, so the client `docker-ce-cli`, bare or pinned, is not an engine.
+/// The Docker engine packages a client-only install must not name.
+const ENGINES: [&str; 3] = ["docker-ce", "containerd.io", "docker.io"];
+
+/// Whether an apt package spec names an engine. The package is the token before the version: apt
+/// splits a spec on `=` or `>=` (`ansible.modules.apt.package_split`); `<` is split too, at no
+/// cost. A prefix is not a match, so the client `docker-ce-cli`, bare or pinned, is not an engine.
+/// apt also reads fnmatch wildcards in the name (`apt*`), so a name holding `*`, `?` or `[` is
+/// matched as a pattern against each engine (#1145 review).
 fn names_an_engine(scalar: &str) -> bool {
     let package = scalar
-        .split_once('=')
-        .map_or(scalar, |(name, _)| name)
+        .split(['=', '<', '>'])
+        .next()
+        .unwrap_or_default()
         .trim();
-    matches!(package, "docker-ce" | "containerd.io" | "docker.io")
+    if !package.contains(['*', '?', '[']) {
+        return ENGINES.contains(&package);
+    }
+    let mut pattern = String::from("^");
+    let mut chars = package.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '*' => pattern.push_str(".*"),
+            '?' => pattern.push('.'),
+            '[' => {
+                pattern.push('[');
+                if chars.peek() == Some(&'!') {
+                    chars.next();
+                    pattern.push('^');
+                }
+                for inner in chars.by_ref() {
+                    if inner == ']' {
+                        break;
+                    }
+                    pattern.push_str(&regex::escape(&inner.to_string()));
+                }
+                pattern.push(']');
+            }
+            other => pattern.push_str(&regex::escape(&other.to_string())),
+        }
+    }
+    pattern.push('$');
+    regex::Regex::new(&pattern)
+        .map(|glob| ENGINES.iter().any(|engine| glob.is_match(engine)))
+        .unwrap_or(true)
 }
 
 /// The play whose name starts with `prefix`, as parsed (its `vars:` and its `tasks:`).
@@ -600,8 +636,20 @@ fn the_engine_matcher_reads_the_package_token_not_a_prefix() {
         "docker-ce=5:27.0.3-1~ubuntu",
         " containerd.io ",
         "docker.io=1.0",
+        "docker-ce>=5:27.0",
+        "docker-ce*",
+        "docker*",
+        "containerd.*",
+        "docker.i[!x]",
     ];
-    let clients = ["docker-ce-cli", "docker-ce-cli=5:{{ v }}-*", "podman"];
+    let clients = [
+        "docker-ce-cli",
+        "docker-ce-cli=5:{{ v }}-*",
+        "docker-ce-cli>=5:1",
+        "docker-ce-cli*",
+        "podman",
+        "podman*",
+    ];
 
     // Act / Assert
     for name in engines {
