@@ -235,12 +235,16 @@ fn verify_host_access_is_read_only() {
     ];
 
     // Act
+    // `authorized_key` is ansible.posix's, not a builtin: its own collection name is the spelling
+    // the repository writes (distribute-ssh-keys.yml), so it is checked beside the builtin forms
+    // (#1143 review).
     let writers: Vec<&str> = tasks
         .iter()
         .filter(|task| {
             write_modules
                 .iter()
                 .any(|short| module(task, short).is_some())
+                || task.get("ansible.posix.authorized_key").is_some()
         })
         .map(name)
         .collect();
