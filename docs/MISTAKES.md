@@ -780,10 +780,11 @@ is paused on this PR". It was not paused. The check run behind the label had con
 and the title "Review rate limited" (`gh api repos/<repo>/commits/<sha>/check-runs`), and
 `gh pr checks` files `neutral` under `skipping`. CodeRabbit had reviewed `a56396ac` at 04:15 UTC
 (CHANGES_REQUESTED) and `daed978a` at 04:16 (COMMENTED), about an hour and a half before the
-dismissal at 05:51. It reviewed `55e61090` at 05:59 (check `success`) and resolved its four new
-threads itself, and was rate-limited again on `5e7659f6`. The rule did not fire because I took a
-CLI's bucket name as a status, not as a classifier's label: `gh pr checks` sorts check
-conclusions into buckets exactly as 1.10's keyword test sorted replies. The same rule covers it.
+dismissal at 05:51. It reviewed `55e61090` at 05:59 (check `success`), resolved the four threads it
+had opened since (three on `a56396ac`, one on `55e61090`) itself, and was rate-limited again on
+`5e7659f6`. The rule did not fire because I took a CLI's bucket name as a status, not as a
+classifier's label: `gh pr checks` sorts check conclusions into buckets exactly as 1.10's keyword
+test sorted replies. The same rule covers it.
 Before saying a reviewer will or will not act, read the check run's title and summary and list the
 reviewer's reviews on the pull request, with their commit and time.
 
