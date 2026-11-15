@@ -44,6 +44,16 @@ const RESOLVER: &str = "resolve-become-password";
 const RESOLVER_FILE: &str = "resolve-become-password.yml";
 const GUARD_FILE: &str = "assert-bao-transport.yml";
 const PASSWORD: &str = "become_password";
+/// The stem every task that touches the sudo password shares: the store path `ssh:become_password`,
+/// the play variable `ansible_become_password`, and the alias `ansible_become_pass`. A match on the
+/// full `become_password` would let a task written under the alias fall out of scope.
+const PASSWORD_STEM: &str = "become_pass";
+/// Ansible's truthy strings for a bool field, lowercased and stripped, as `boolean(value,
+/// strict=True)` reads them: `BOOLEANS_TRUE` in `ansible/module_utils/parsing/convert_bool.py:12`
+/// (ansible-core 2.20.8), applied to `become`, which is `isa='bool'` at `ansible/playbook/base.py:716`
+/// and coerced at `base.py:469-470`. The numeric members `1` and `1.0` reach this parser as strings,
+/// since it has no int or float node, so both are listed here.
+const BECOME_TRUE: &[&str] = &["y", "yes", "on", "1", "1.0", "true", "t"];
 /// Ansible's task keywords: the keys of a task that are not a module call. Any other key of a task
 /// names the module it calls. `action` and `local_action` are left out on purpose: they name a
 /// module as their value, so they count as calls. `with_*` loop keys are matched by prefix.
@@ -198,8 +208,17 @@ fn play_name(play: &Node) -> &str {
         .unwrap_or("unnamed play")
 }
 
+/// Whether a play escalates. Ansible coerces `become` to a bool, so `"true"`, `yes`, `1` and `on`
+/// escalate as `true` does; a bool-only comparison let every one of them through unchecked. A
+/// templated value cannot be read without rendering it, so it counts as escalating: a play counted
+/// in error must resolve the password, which costs it nothing.
 fn escalates(play: &Node) -> bool {
-    play.get("become") == Some(&Node::Bool(true))
+    match play.get("become") {
+        Some(Node::Bool(on)) => *on,
+        Some(Node::Str(s)) if s.contains("{{") => true,
+        Some(Node::Str(s)) => BECOME_TRUE.contains(&s.trim().to_lowercase().as_str()),
+        _ => false,
+    }
 }
 
 /// The check the BATS `invalid_become_plays` made. An escalating play is invalid unless fact
@@ -258,6 +277,27 @@ fn the_password_fetch_runs_without_escalation_and_hides_its_output() {
         Some(&Node::Bool(true)),
         "the password fetch must hide its output"
     );
+
+    // Every task that touches the password hides its output, not only the first one. The set_fact
+    // that puts it into the play's variables is the one a first-task check cannot see.
+    let touching: Vec<&Node> = tasks
+        .iter()
+        .filter(|t| mentions(t, PASSWORD_STEM))
+        .collect();
+    assert!(
+        touching.len() >= 2,
+        "the fetch and the task that uses it both touch the password, but {} matched: a rename \
+         would shrink this check to nothing",
+        touching.len()
+    );
+    for task in touching {
+        assert_eq!(
+            task.get("no_log"),
+            Some(&Node::Bool(true)),
+            "task {:?} touches the sudo password and must hide its output",
+            task_name(task)
+        );
+    }
 }
 
 #[test]
