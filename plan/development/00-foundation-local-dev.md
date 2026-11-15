@@ -456,7 +456,7 @@ PB="${REPO}/platform/playbooks"
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'`
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::(no_playbook_defaults_ansible_user_eagerly|deploy_dns_computes_monorepo_dir_with_a_lazy_ansible_user_default)$/)'`
 Expected: both FAIL (eager form still present; lazy form absent).
 
 - [ ] **Step 3: Apply the mechanism fix**
@@ -471,7 +471,7 @@ grep -rl "'/home/' ~ ansible_user ~ '/agent-cloud'" platform/playbooks \
 
 - [ ] **Step 4: Verify the tests pass + nothing else moved**
 
-Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → PASS.
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::(no_playbook_defaults_ansible_user_eagerly|deploy_dns_computes_monorepo_dir_with_a_lazy_ansible_user_default)$/)'` → PASS.
 Run: `git diff --stat platform/playbooks` → only the expected files changed; spot-check `deploy-dns.yml:20`.
 
 - [ ] **Step 5: Commit**
@@ -505,7 +505,7 @@ Append to `platform/tests/test_bootstrap_12a.bats`:
 
 - [ ] **Step 2: Run it to verify it fails**
 
-Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → FAIL.
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::foundation_deploys_pass_compose_cmd_through_with_an_empty_default$/)'` → FAIL.
 
 - [ ] **Step 3: Add the passthrough to each foundation deploy's Phase-2 environment**
 
@@ -522,7 +522,7 @@ In each of the four playbooks, the Phase-2 "Run deploy.sh" task `environment:` b
 
 - [ ] **Step 4: Verify the test passes**
 
-Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::/)'` → PASS.
+Run: `cd platform/tests && cargo nextest run --locked -E 'test(/^bootstrap_12a::foundation_deploys_pass_compose_cmd_through_with_an_empty_default$/)'` → PASS.
 Run: `ansible-playbook --syntax-check platform/playbooks/deploy-dns.yml` (and the other three) → no error.
 
 - [ ] **Step 5: Commit**

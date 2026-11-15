@@ -70,9 +70,10 @@ fn active_lines(gitignore: &str) -> Vec<&str> {
 }
 
 /// Whether an active gitignore line names `path` exactly, with at most trailing blanks after it.
+/// No leading blank: git reads one as part of the pattern, so an indented line ignores nothing
+/// (#1144 review). Trailing blanks git drops, unless escaped.
 fn ignores_exactly(line: &str, path: &str) -> bool {
-    line.trim_start()
-        .strip_prefix(path)
+    line.strip_prefix(path)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
 }
 
