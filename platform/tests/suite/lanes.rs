@@ -443,28 +443,50 @@ fn testsel_reads_the_change_from_git_and_fails_open() {
 
 #[test]
 fn lane_sh_skips_a_workstation_lane_without_nextest_and_refuses_a_ci_lane() {
-    // Arrange: a PATH with no cargo on it
+    // Arrange: a fake cargo first on PATH that records its arguments and fails every call, the
+    // version probe included, so a cargo installed under /usr/bin or /bin on the host cannot answer
+    // in its place, and a lane that never asks cargo is caught (#1152 review)
     let home = TempDir::new().expect("a temporary home");
+    let bin = home.path().join("bin");
+    std::fs::create_dir(&bin).expect("a bin directory");
+    let calls = home.path().join("cargo-calls");
+    let cargo = bin.join("cargo");
+    std::fs::write(
+        &cargo,
+        format!("#!/bin/sh\necho \"$*\" >> '{}'\nexit 1\n", calls.display()),
+    )
+    .expect("write the fake cargo");
+    std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .expect("make the fake cargo executable");
+    let path = format!("{}:/usr/bin:/bin", bin.display());
     let lane_sh = repo::path("platform/tests/lane.sh").display().to_string();
-    let without_cargo = |lane: &str| {
+    let with_failing_cargo = |lane: &str| {
         let mut cmd = process::scrubbed("bash", home.path());
-        cmd.env("PATH", "/usr/bin:/bin").arg(&lane_sh).arg(lane);
+        cmd.env("PATH", &path).arg(&lane_sh).arg(lane);
         cmd
+    };
+
+    let probed = || {
+        let text = std::fs::read_to_string(&calls).unwrap_or_default();
+        let _ = std::fs::remove_file(&calls);
+        text.lines().any(|line| line == "nextest --version")
     };
 
     // Act / Assert: a hook's lane says why it did not run, and lets the commit or push go on
     for lane in ["commit", "push"] {
-        without_cargo(lane)
+        with_failing_cargo(lane)
             .assert()
             .success()
             .stderr(predicates::str::contains("cargo-nextest is not installed"));
+        assert!(probed(), "the {lane} lane never asked cargo for nextest");
     }
     // Act / Assert: CI and the full lane never pass without running the suite
     for lane in ["ci", "full"] {
-        without_cargo(lane)
+        with_failing_cargo(lane)
             .assert()
             .code(1)
             .stderr(predicates::str::contains("needs cargo and cargo-nextest"));
+        assert!(probed(), "the {lane} lane never asked cargo for nextest");
     }
 }
 

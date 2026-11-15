@@ -81,13 +81,10 @@ const LOCAL: [&str; 2] = ["localhost", "127.0.0.1"];
 const PLAYBOOKS: &str = "platform/playbooks";
 const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 
-// Rust's regex has no lookaround, so "not followed by a digit or a dot" is written as a
-// consuming `[^\d.]` or the end of the text. In a whole-text match that is the same condition.
-static POSITIVE: LazyLock<Regex> = LazyLock::new(|| {
-    re(
-        r"\blength\b\s*\)*\s*(?:>\s*0(?:[^\d.]|$)|!=\s*0(?:[^\d.]|$)|(?:>=|==)\s*[1-9]\d*(?:[^\d.]|$))",
-    )
-});
+// The comparison value must end the condition, closing parentheses and blanks aside: anything
+// after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
+static POSITIVE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"\blength\b\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$"));
 static COMPARATOR: LazyLock<Regex> = LazyLock::new(|| re(r"[<>!=]=|[<>]"));
 static NEUTRALISER: LazyLock<Regex> = LazyLock::new(|| re(r"\b(?:and|or|not|if|else)\b"));
 static BRACED_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)"));
@@ -245,14 +242,14 @@ fn hosts_text(play: &Node) -> Option<String> {
     }
 }
 
-/// What a `hosts:` value needs covered: each group of a literal `a:b` union, or the whole
-/// expression when it is templated.
+/// What a `hosts:` value needs covered: each group of a literal `a:b` or `a,b` union (a `hosts:`
+/// list reads as the comma form), or the whole expression when it is templated.
 fn target_parts(hosts: &str) -> Vec<String> {
     if hosts.contains("{{") {
         return vec![hosts.to_owned()];
     }
     hosts
-        .split(':')
+        .split([':', ','])
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .map(str::to_owned)
@@ -289,7 +286,8 @@ fn covered_inline(subject: &str, guards: &[String]) -> bool {
 }
 
 /// Each assert condition in a localhost play's tasks (nested blocks included) that a populated
-/// group alone satisfies.
+/// group alone satisfies, on a task whose own keys, and its blocks' keys, cannot skip or soften it.
+/// The play's keys are not read: the repository's guard plays carry `tags: [verify]` (AC-912).
 fn inline_guard_items(play: &Node) -> Vec<String> {
     let mut out = vec![];
     for task in tasks(play.get("tasks")) {
@@ -322,14 +320,37 @@ fn is_populated_group_check(text: &str) -> bool {
         && !NEUTRALISER.is_match(text)
 }
 
-/// Every mapping under `node` that holds a task or play, depth first (nested block, rescue and
-/// always children after their parent). Nothing is inherited from the parent.
+/// The only keys a guard task, or a block around one, may carry. The set is closed, as in
+/// `destroy_vm.rs`, rather than a list of bad keys: `when` or `tags` can skip an assert, `loop`
+/// over an empty list runs it zero times, `ignore_errors` and `failed_when` swallow its failure,
+/// and a block's `rescue` catches it (#1151 review). A key outside the set refuses the guard,
+/// fail-safe.
+const GUARD_KEYS: [&str; 6] = [
+    "name",
+    "block",
+    "always",
+    "ansible.builtin.assert",
+    "ansible.legacy.assert",
+    "assert",
+];
+
+/// Every mapping under `node` that holds a task or play and is certain to run and stop the run on
+/// failure, depth first (nested block and always children after their parent). A mapping with a
+/// key outside `GUARD_KEYS` is left out together with everything under it.
 fn tasks(node: Option<&Node>) -> Vec<&Node> {
     fn walk<'a>(node: Option<&'a Node>, out: &mut Vec<&'a Node>) {
         let Some(Node::Seq(items)) = node else {
             return;
         };
         for item in items.iter().filter(|item| item.as_map().is_some()) {
+            let closed = item
+                .as_map()
+                .into_iter()
+                .flatten()
+                .all(|(key, _)| key.as_str().is_some_and(|key| GUARD_KEYS.contains(&key)));
+            if !closed {
+                continue;
+            }
             out.push(item);
             for key in TASK_LISTS {
                 walk(item.get(key), out);
@@ -403,17 +424,16 @@ fn fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
 /// A deploy playbook whose only guard is one inline assert on `condition`, then a play that
 /// targets the templated group.
 fn inline_playbook(condition: &str) -> String {
+    guarded_playbook(&format!(
+        "    - name: \"Require a populated group\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n"
+    ))
+}
+
+/// A localhost play running `tasks` (indented as a play's task list), then a play that targets
+/// the templated group.
+fn guarded_playbook(tasks: &str) -> String {
     format!(
-        r#"- name: "Inline guard"
-  hosts: localhost
-  tasks:
-    - name: "Require a populated group"
-      ansible.builtin.assert:
-        that: "{condition}"
-- name: "Work"
-  hosts: "{{{{ target_service }}}}"
-  tasks: []
-"#
+        "- name: \"Inline guard\"\n  hosts: localhost\n  tasks:\n{tasks}- name: \"Work\"\n  hosts: \"{{{{ target_service }}}}\"\n  tasks: []\n"
     )
 }
 
@@ -433,8 +453,10 @@ fn inline_fixture(cases: &[(&str, &str)]) -> tempfile::TempDir {
 /// Inline asserts that are not exactly one accepted positive comparison, or that name a longer
 /// identifier than the target. Each leaves its target unguarded, so each file is an offender. A
 /// fail-safe checker refuses what it does not recognise.
-const NOT_ACCEPTED: [(&str, &str); 11] = [
+const NOT_ACCEPTED: &[(&str, &str)] = &[
     ("ge0", "(groups.get(target_service, []) | length) >= 0"),
+    // `> 0 - 1` is `> -1`: arithmetic after the value lets an empty group pass (#1151 review).
+    ("arith", "(groups.get(target_service, []) | length) > 0 - 1"),
     ("gtneg", "(groups.get(target_service, []) | length) > -1"),
     (
         "or",
@@ -465,7 +487,7 @@ const NOT_ACCEPTED: [(&str, &str); 11] = [
 ];
 
 /// Inline asserts with one accepted positive comparison of `length`. Each guards its target.
-const ACCEPTED: [(&str, &str); 4] = [
+const ACCEPTED: &[(&str, &str)] = &[
     ("gt0", "(groups.get(target_service, []) | length) > 0"),
     ("ge1", "groups[target_service] | length >= 1"),
     ("eq1", "groups[target_service] | length == 1"),
@@ -774,7 +796,7 @@ fn the_repositorys_own_inline_guards_are_recognised() {
 #[test]
 fn inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count() {
     // Arrange: each condition is refused, and each row is named so a miss names its row.
-    let dir = inline_fixture(&NOT_ACCEPTED);
+    let dir = inline_fixture(NOT_ACCEPTED);
 
     // Act
     let report = offenders(dir.path());
@@ -798,7 +820,7 @@ fn inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count() {
 #[test]
 fn each_accepted_positive_comparison_counts() {
     // Arrange
-    let dir = inline_fixture(&ACCEPTED);
+    let dir = inline_fixture(ACCEPTED);
 
     // Act
     let report = offenders(dir.path());
@@ -876,4 +898,72 @@ fn the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines() {
 
     // Assert
     assert!(disagreements.is_empty(), "{disagreements:?}");
+}
+
+#[test]
+fn a_hosts_list_is_covered_by_a_preflight_for_each_group() {
+    // Arrange: `hosts: [a_svc, b_svc]` reads as `a_svc,b_svc`; both groups have a pre-flight.
+    // A second file covers only a_svc, so the split must still name b_svc (#1151 review).
+    let preflight = |group: &str| {
+        format!(
+            "- name: \"Pre-flight {group}\"\n  import_playbook: preflight-target-group.yml\n  vars:\n    preflight_group: {group}\n    preflight_group_expected: {group}\n"
+        )
+    };
+    let work = "- name: \"Work\"\n  hosts: [a_svc, b_svc]\n  tasks: []\n";
+    let both = format!("{}{}{work}", preflight("a_svc"), preflight("b_svc"));
+    let one = format!("{}{work}", preflight("a_svc"));
+    let dir = fixture(&[("deploy-both.yml", &both), ("deploy-one.yml", &one)]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert_eq!(
+        offender_names(&report),
+        vec!["deploy-one.yml"],
+        "{:?}",
+        report.offenders
+    );
+}
+
+#[test]
+fn an_assert_that_can_be_skipped_or_ignored_is_not_a_guard() {
+    // Arrange: an accepted condition on an assert that does not always stop the run.
+    let condition = "(groups.get(target_service, []) | length) > 0";
+    let single = |extra: &str| {
+        guarded_playbook(&format!(
+            "    - name: \"Require\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n      {extra}\n"
+        ))
+    };
+    let rescued = guarded_playbook(&format!(
+        "    - name: \"Block\"\n      block:\n        - name: \"Require\"\n          ansible.builtin.assert:\n            that: \"{condition}\"\n      rescue:\n        - ansible.builtin.debug:\n            msg: caught\n"
+    ));
+    let cases = [
+        ("deploy-when.yml", single("when: false")),
+        ("deploy-ignore.yml", single("ignore_errors: true")),
+        ("deploy-failed-when.yml", single("failed_when: false")),
+        ("deploy-tags.yml", single("tags: [never]")),
+        ("deploy-loop.yml", single("loop: []")),
+        ("deploy-rescue.yml", rescued),
+    ];
+    let refs: Vec<(&str, &str)> = cases.iter().map(|(n, t)| (*n, t.as_str())).collect();
+    let dir = fixture(&refs);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert_eq!(
+        offender_names(&report),
+        [
+            "deploy-failed-when.yml",
+            "deploy-ignore.yml",
+            "deploy-loop.yml",
+            "deploy-rescue.yml",
+            "deploy-tags.yml",
+            "deploy-when.yml"
+        ],
+        "{:?}",
+        report.offenders
+    );
 }

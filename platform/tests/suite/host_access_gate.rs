@@ -254,19 +254,18 @@ fn verify_host_access_is_read_only() {
         .count();
     // Each parsed `uri` task's method, quoted or not, plus a text scan for a method named
     // anywhere else (a `curl -X` in a shell task carries no `method:` key) (#1143 review).
-    let mutating_methods = ["POST", "PUT", "PATCH", "DELETE"];
     let mutating_uri: Vec<&str> = tasks
         .iter()
         .filter(|task| {
             module(task, "uri")
                 .and_then(|args| str_at(args, "method"))
                 .is_some_and(|method| {
-                    mutating_methods.contains(&method.trim().to_uppercase().as_str())
+                    MUTATING_METHODS.contains(&method.trim().to_uppercase().as_str())
                 })
         })
         .map(name)
         .collect();
-    let mutating = Regex::new(r#"method:\s*["']?(POST|PUT|PATCH|DELETE)"#).unwrap();
+    let mutating = mutating_method_text();
 
     // Assert
     assert!(
@@ -933,4 +932,47 @@ fn a_display_variable_in_harden_ssh_always_has_a_default() {
         undefaulted.is_empty(),
         "undefaulted uses of service_name: {undefaulted:?}"
     );
+}
+
+const MUTATING_METHODS: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
+
+/// A mutating HTTP method named anywhere in a playbook's text: a `method:` key, or curl's `-X` and
+/// `--request` options in a shell or command task, `-X` clustered after other short options (`-sX`)
+/// and a shell line continuation between the option and its value included (#1151, #1152 review).
+/// A method curl implies (`-d`, `-F`, `-T`) is not read; AC-912 tracks one shared predicate.
+fn mutating_method_text() -> Regex {
+    Regex::new(&format!(
+        r#"(?:method:\s*|-[A-Za-z]*X(?:\s|\\\n)*|--request(?:=|\s|\\\n)+)["']?(?:{})\b"#,
+        MUTATING_METHODS.join("|")
+    ))
+    .unwrap()
+}
+
+#[test]
+fn the_method_scan_catches_a_named_mutating_method() {
+    // Arrange
+    let mutating = mutating_method_text();
+
+    // Act, Assert
+    for text in [
+        "method: POST",
+        "method: \"DELETE\"",
+        "cmd: curl -X POST https://example.invalid",
+        "cmd: curl -XPUT https://example.invalid",
+        "cmd: curl -sX POST https://example.invalid",
+        "cmd: curl -sSfX DELETE https://example.invalid",
+        "cmd: curl --request PATCH https://example.invalid",
+        "cmd: curl --request=DELETE https://example.invalid",
+        "cmd: curl -X \\\n  POST https://example.invalid",
+        "cmd: curl --request \\\n  PUT https://example.invalid",
+    ] {
+        assert!(mutating.is_match(text), "missed: {text}");
+    }
+    for text in [
+        "method: GET",
+        "cmd: curl -X GET https://example.invalid",
+        "cmd: curl -sS https://example.invalid",
+    ] {
+        assert!(!mutating.is_match(text), "flagged: {text}");
+    }
 }

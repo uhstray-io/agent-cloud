@@ -69,12 +69,35 @@ fn active_lines(gitignore: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Whether an active gitignore line names `path` exactly, with at most trailing blanks after it.
+/// Whether an active gitignore line names `path` exactly, with at most trailing spaces after it.
 /// No leading blank: git reads one as part of the pattern, so an indented line ignores nothing
-/// (#1144 review). Trailing blanks git drops, unless escaped.
+/// (#1144 review). Trailing spaces git drops, unless escaped; a trailing tab it keeps. Nothing else may
+/// follow: git has no inline comment, so `path # note` is a different pattern (#1151 review).
 fn ignores_exactly(line: &str, path: &str) -> bool {
     line.strip_prefix(path)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        .is_some_and(|rest| rest.chars().all(|c| c == ' '))
+}
+
+#[test]
+fn an_entry_ignores_exactly_only_with_nothing_but_trailing_blanks() {
+    // Arrange, Act, Assert
+    assert!(ignores_exactly(WORKING_INVENTORY, WORKING_INVENTORY));
+    assert!(ignores_exactly(
+        &format!("{WORKING_INVENTORY}  "),
+        WORKING_INVENTORY
+    ));
+    assert!(!ignores_exactly(
+        &format!("{WORKING_INVENTORY} # local inventory"),
+        WORKING_INVENTORY
+    ));
+    assert!(!ignores_exactly(
+        &format!("{WORKING_INVENTORY}\t"),
+        WORKING_INVENTORY
+    ));
+    assert!(!ignores_exactly(
+        &format!(" {WORKING_INVENTORY}"),
+        WORKING_INVENTORY
+    ));
 }
 
 /// The names of the `<kind> "<name>"` directives of a Brewfile, in file order.
