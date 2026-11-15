@@ -50,12 +50,12 @@ site-config.
 | The business user | `platform-business` | Member | Invitation pending since Semaphore task 11753 |
 
 `plane_admin_role: owner` is not a per-person setting: the reconcile gives that role to **every**
-member of `platform-admins` (`reconcile-plane-members.yml:111`). Task 14302 applied it to the three
-pending admin invitations. Whether Plane keeps the owner role when an invitation is accepted, and
-whether its member API accepts a later `PATCH` to `role_slug: owner` for an active member
-(`reconcile_members.py:110`), are **unverified**; the production sign-in check is task 2.8 of
-`deploy-plane-work-management`. Known drift: the playbook header still says production keeps the
-default role (`reconcile-plane-members.yml:9`).
+member of `platform-admins` (`reconcile-plane-members.yml:113`). Task 14302 applied it to the three
+admins: one active member, whose `PATCH` to `role_slug: owner` (`reconcile_members.py:114`) held
+(Plane's member list reads `owner`, tasks.md 2.5), and two pending invitations. Whether Plane keeps
+the owner role when an invitation is accepted is **unverified**; the production sign-in check is
+task 2.8 of `deploy-plane-work-management`. The playbook header records the production setting
+(`reconcile-plane-members.yml:8-10`).
 
 Plane's sign-in is admitted for `platform-admins`, `platform-developers` and `platform-business`, plus
 Authentik superusers (`app-catalog.yml:96-99` tier `member`, `zz-sso-bindings.yaml.j2:25-26`).
@@ -80,9 +80,9 @@ flowchart LR
    account, cutting the person off from every app.
 2. **Plane is derived.** `reconcile_members.py` builds the wanted roster from Authentik groups and
    removes anyone outside it, with a guard against removing most of the workspace at once. An applying
-   run is scheduled hourly (`templates.yml:2073-2077`, `Reconcile Plane Members Scheduled (Dev)`, cron
+   run is scheduled hourly (`templates.yml:1839-1843`, `Reconcile Plane Members Scheduled (Dev)`, cron
    `23 * * * *`), so an edit made directly in Plane is reverted within the hour. **Owners are outside
-   its reach:** it never demotes or removes one (`reconcile_members.py:22,69,74,85`). With
+   its reach:** it never demotes or removes one (`reconcile_members.py:23,73,78,89`). With
    `plane_admin_role: owner`, that now covers every admin.
 3. **Inventory sync is manual.** After a site-config merge, an operator runs
    `scripts/semaphore-sync-inventory.py` with their own token. No Semaphore template does this.
@@ -105,10 +105,10 @@ flowchart LR
   and both callers, `skynet` and `console`, may act as `security-agent`.
 - The gate checks survey values for shape and length only (`launch_gate.py`, `_survey`). OPA bounds
   two survey values, `target_service` and `target_host` (`agent_actions.rego:324-347`); nothing bounds
-  `Reconcile Plane Members`' `apply` or `allow_mass_removal` (`templates.yml:2054,2060`).
-- Groups are read once at login and kept in the session for 8 hours of inactivity
-  (`server/auth.rs:195,199`, `server/mod.rs:269-277`). A revoked admin keeps console rights until the
-  session ends.
+  `Reconcile Plane Members`' `apply` or `allow_mass_removal` (`templates.yml:1820,1826`).
+- Groups are read once at login and kept in the session until 8 hours of inactivity or 12 hours
+  after sign-in, whichever comes first (`server/auth.rs` `callback`, `current_user`; `server/mod.rs`
+  `session_layer`; AC-747). A revoked admin keeps console rights until the session ends, at most 12 hours.
 - The console's own sign-in is tier `member` (`app-catalog.yml:117-120`), so developers and business
   users can sign in; only admins can make proposals.
 
@@ -232,7 +232,7 @@ console, and the launch it makes is tagged `skynet <run> <step>` and produces th
 1. Removing a group edits the person's `platform_members` entry; the next reconcile removes them from
    Plane when no member group is left. Offboarding (A7) moves the person to
    `platform_retired_accounts`, and the console shows the account-deletion warning before approval.
-2. Owners are the exception: the reconcile never demotes or removes one (`reconcile_members.py:22,74,85`).
+2. Owners are the exception: the reconcile never demotes or removes one (`reconcile_members.py:23,78,89`).
    With `plane_admin_role: owner` that is every platform admin, so removing an admin from Plane stays a
    manual Plane step, recorded on the proposal as an operator task.
 3. Re-read the caller's groups on each approve, rather than trusting the 8-hour session.

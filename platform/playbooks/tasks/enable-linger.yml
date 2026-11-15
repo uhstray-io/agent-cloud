@@ -14,7 +14,7 @@
 # for users on the Ubuntu 24.04 image (read 2026-09-22). This task used to claim
 # linger was enough; the 2026-09-19 reboot showed otherwise (docs/MISTAKES.md
 # 10.15). The compose-side half — every service declaring `always` — is guarded by
-# platform/tests/test_restart_policy.bats.
+# platform/tests/suite/restart_policy.rs.
 #
 # Rootful podman containers use the SYSTEM podman-restart.service instead, which
 # the image ships enabled; this task does not touch it.
@@ -27,12 +27,14 @@
 # Idempotent: reads the current Linger property first and only enables when off.
 # Requires privilege escalation (become) to set linger for another user.
 #
-# SELF-GATING: skips entirely under local_mode (local-dev containers run on the
-# developer's podman machine, not host linger) — callers just include it, no
-# per-call `when` needed. Its first task refuses a local_mode that disagrees with the
-# inventory, so a forged extra var cannot take that skip on production. Included by the
-# shared prod preamble (tasks/place-monorepo.yml), so every composable service gets reboot
-# persistence without remembering to ask for it.
+# SELF-GATING: skips entirely on a local-dev inventory (local-dev containers run on the
+# developer's podman machine, not host linger) — callers just include it, no per-call
+# `when` needed. The mode is read from the inventory (`groups['all'] | local_dev_inventory`,
+# plan 24), not from local_mode: `groups` cannot be set with -e (tasks/clean-service.yml:85-89),
+# so an extra var cannot take that skip on production. Its first task still refuses a
+# local_mode that disagrees with the inventory. Included by the shared prod preamble
+# (tasks/place-monorepo.yml), so every composable service gets reboot persistence without
+# remembering to ask for it.
 #
 # Required vars: none. Optional `linger_user` names the account to linger when it is
 # NOT the connecting user — needed by any service that runs under a DEDICATED
@@ -51,7 +53,7 @@
   # that is exactly the "needs enabling" case, so tolerate it and let the
   # condition below (no `Linger=yes`) drive the enable.
   failed_when: false
-  when: not (local_mode | default(false) | bool)
+  when: not (groups['all'] | local_dev_inventory)
   check_mode: false
 
 - name: "Enable lingering (rootless containers survive reboot) for {{ linger_user | default(ansible_user) }}"
@@ -59,7 +61,7 @@
   become: true
   when:
     - not ansible_check_mode
-    - not (local_mode | default(false) | bool)
+    - not (groups['all'] | local_dev_inventory)
     - "'Linger=yes' not in (_linger_state.stdout | default(''))"
   changed_when: true
 
@@ -67,17 +69,17 @@
   ansible.builtin.getent:
     database: passwd
     key: "{{ linger_user | default(ansible_user) }}"
-  when: not (local_mode | default(false) | bool)
+  when: not (groups['all'] | local_dev_inventory)
 
 - name: "Check the host ships podman's user boot unit"
   ansible.builtin.stat:
     path: /usr/lib/systemd/user/podman-restart.service
   register: _podman_user_unit
-  when: not (local_mode | default(false) | bool)
+  when: not (groups['all'] | local_dev_inventory)
 
 - name: "Enable podman's user boot unit (starts restart: always containers at boot)"
   when:
-    - not (local_mode | default(false) | bool)
+    - not (groups['all'] | local_dev_inventory)
     - _podman_user_unit.stat.exists | default(false)
   become: true
   become_user: "{{ linger_user | default(ansible_user) }}"

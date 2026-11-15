@@ -187,7 +187,7 @@ a_setup() {
 
 @test "deploy playbooks pass deploy_force_recreate to deploy.sh, default off" {
   local pb
-  for pb in deploy-authentik.yml deploy-o11y.yml; do
+  for pb in deploy-authentik.yml deploy-o11y.yml deploy-opa.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY2'
 import sys
 from pathlib import Path
@@ -483,7 +483,7 @@ SH
 # ── playbooks read the line ──────────────────────────────────────────────────
 @test "deploy playbooks derive changed from DEPLOY_CHANGED, not changed_when: true" {
   local pb
-  for pb in deploy-authentik.yml deploy-o11y.yml; do
+  for pb in deploy-authentik.yml deploy-o11y.yml deploy-opa.yml; do
     python3 - "$REPO_ROOT/platform/playbooks/$pb" <<'PY'
 import sys
 from pathlib import Path
@@ -496,4 +496,45 @@ assert len(tasks) == 1, tasks
 assert tasks[0]["changed_when"] == "'DEPLOY_CHANGED=true' in _deploy.stdout_lines", tasks[0]["changed_when"]
 PY
   done
+}
+
+# OPA reads ./policies only at startup, and its deploy dir has no rendered .env (docs/MISTAKES.md
+# 3.11). Its real deploy.sh must run with no .env present, recreate on a policy or substituted-value
+# change, and leave an unchanged OPA alone.
+opa_setup() {
+  svc_setup opa opa=opa
+  rm -f "$D/.env"
+  unset OPA_IMAGE OPA_LOG_LEVEL OPA_BIND OPA_PORT OPA_SERVER_LEAF
+}
+
+@test "opa: write_env carries every variable the compose files substitute" {
+  # A substitution left out of write_env would change OPA's config without recreating it.
+  local used listed
+  used=$(cat "$REPO_ROOT"/platform/services/opa/deployment/compose*.yml \
+    | grep -o '\${OPA_[A-Z_]*' | tr -d '${' | sort -u)
+  listed=$(sed -n 's/^  for v in \(.*\); do$/\1/p' "$REPO_ROOT/platform/services/opa/deployment/deploy.sh" \
+    | tr ' ' '\n' | sort -u)
+  [ -n "$used" ] && [ "$used" = "$listed" ] || { echo "compose: $used"; echo "write_env: $listed"; false; }
+}
+
+@test "opa: a deploy with no .env runs, writes only the set substitutions and labels OPA" {
+  opa_setup
+  OPA_PORT=8281 deploy
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  [ "$(cat "$D/.env")" = "OPA_PORT=8281" ]
+  [ -s "$S/c/opa/label" ]
+}
+
+@test "opa: same policies and values twice is a no-op; a policy edit or a new port recreates" {
+  opa_setup
+  OPA_PORT=8281 deploy
+  OPA_PORT=8281 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=false"
+  echo "# edited" >> "$D/policies/agentcloud/data.json"
+  OPA_PORT=8281 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  OPA_PORT=8282 deploy
+  assert_contains "$output" "DEPLOY_CHANGED=true"
+  [ "$(cat "$S/recreates")" -eq 3 ]
 }

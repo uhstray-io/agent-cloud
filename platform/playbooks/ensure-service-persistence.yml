@@ -12,7 +12,7 @@
 #
 # podman-restart.service starts only `restart: always` containers. A ROOTFUL podman service
 # whose running containers carry another policy (a legacy compose file's drift; the repo's
-# compose declares `always`, test_restart_policy.bats) gets one boot unit of its own,
+# compose declares `always`, suite/restart_policy.rs) gets one boot unit of its own,
 # agent-cloud-boot-<service>.service, which runs `podman start <names>` at boot. It is
 # installed and enabled, never started, so no running container is touched, which matters on
 # the orchestrator's own host; it is removed again once every container is on `always`.

@@ -63,11 +63,12 @@ fields) and no other extra variable, inventory, limit, tag or argument override.
   defaults, and nothing else
 
 ### Requirement: The code that runs is the branch OPA judged
-The launch gate SHALL take the branch from the template's repository record and MUST refuse a template
-that carries its own different branch. When the template declares a `service_branch` survey field (the
-branch the deploy clones onto the target), the gate MUST set it to that branch and MUST refuse a request
-whose `service_branch` names any other branch. Enum survey fields MUST hold one of their declared
-values and integer fields ASCII digits with at most one leading minus.
+The launch gate SHALL take the branch from the template's repository record (read as `dev` for
+local-dev's working tree, the next requirement) and MUST refuse a template that carries its own different
+branch. When the template declares a `service_branch` survey field (the branch the deploy clones onto the
+target), the gate MUST set it to that branch and MUST refuse a request whose `service_branch` names any
+other branch. Enum survey fields MUST hold one of their declared values and integer fields ASCII digits
+with at most one leading minus.
 
 #### Scenario: Caller names another branch
 - **WHEN** a request for `Deploy agentgateway (Dev)` sets `service_branch` to a branch other than the
@@ -78,6 +79,21 @@ values and integer fields ASCII digits with at most one leading minus.
 - **WHEN** a request omits `service_branch` for a template that declares it
 - **THEN** the created task's environment sets `service_branch` to the repository record's branch, the
   same branch OPA was asked about
+
+### Requirement: Local-dev's working tree is judged as dev
+In local mode only (the gate's `local_mode` setting, which its deploy derives from the host names and refuses
+to take from a disagreeing extra var), the launch gate SHALL read a repository record that declares `HEAD`,
+local-dev's working tree, as `dev`: the branch OPA is asked about and the one `service_branch` is set to. The
+task then runs the working tree, since the gate sends no task branch. Outside local mode `HEAD` SHALL reach OPA
+unchanged.
+
+#### Scenario: Local-dev working tree
+- **WHEN** the gate runs in local mode and a template's repository record declares `HEAD`
+- **THEN** OPA is asked about `dev`, and a declared `service_branch` is set to `dev`
+
+#### Scenario: HEAD outside local mode
+- **WHEN** the gate does not run in local mode and a template's repository record declares `HEAD`
+- **THEN** OPA is asked about `HEAD`, which it refuses
 
 ### Requirement: OPA decides server-side before every launch
 For every request that passes validation, the launch gate SHALL query OPA's decision endpoint itself,

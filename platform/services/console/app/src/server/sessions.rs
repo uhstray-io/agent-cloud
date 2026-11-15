@@ -37,7 +37,7 @@ fn sweep(conn: &Connection, now: i64) -> rusqlite::Result<()> {
     Ok(())
 }
 
-fn now_unix() -> i64 {
+pub(super) fn now_unix() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {

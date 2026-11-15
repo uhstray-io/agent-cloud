@@ -344,19 +344,31 @@ fi
 # ── BATS ────────────────────────────────────────────────────────────────────
 # Started here in the background, so it runs beside pytest, and awaited after pytest
 # (below). It takes CI's flags (.github/workflows/lint-and-test.yml) when GNU parallel is
-# installed, and runs serially otherwise.
+# installed, and runs serially otherwise. Each parallel job runs through
+# platform/tests/bin/parallel-job-shell (PARALLEL_SHELL), which restores SIGALRM; the wrapper
+# says why. bats-core finds parallel as `${BATS_PARALLEL_BINARY_NAME:-parallel}`.
 if [ -d platform/tests ]; then
   if command -v bats >/dev/null 2>&1; then
     bats_args=""
-    if command -v parallel >/dev/null 2>&1; then
-      bats_args="--jobs 4 --no-parallelize-within-files"
-    else
+    if ! command -v "${BATS_PARALLEL_BINARY_NAME:-parallel}" >/dev/null 2>&1; then
       printf 'pre-push: GNU parallel is not installed, so BATS runs serially (slower). Install it,\n' >&2
       printf '  as the Brewfile does:  brew install parallel\n' >&2
+    elif [ ! -x platform/tests/bin/parallel-job-shell ]; then
+      printf 'pre-push: platform/tests/bin/parallel-job-shell is missing from this checkout, so BATS\n' >&2
+      printf '  runs serially (slower): without it GNU parallel jobs ignore SIGALRM.\n' >&2
+    else
+      bats_args="--jobs 4 --no-parallelize-within-files"
+      pp_job_shell="$(pwd)/platform/tests/bin/parallel-job-shell"
     fi
     printf 'pre-push: running BATS suite%s...\n' "${bats_args:+ in parallel}" >&2
+    # A prefix assignment gives PARALLEL_SHELL to bats (and parallel's jobs) only, never the
+    # pytest run below, and keeps bats a direct child of this hook, so $bats_pid is bats.
     # shellcheck disable=SC2086 # bats_args is deliberately word-split into flags.
-    bats $bats_args platform/tests/ > "$bats_out" 2>&1 &
+    if [ -n "${pp_job_shell:-}" ]; then
+      PARALLEL_SHELL=$pp_job_shell bats $bats_args platform/tests/ > "$bats_out" 2>&1 &
+    else
+      bats $bats_args platform/tests/ > "$bats_out" 2>&1 &
+    fi
     bats_pid=$!
   else
     printf '\n' >&2
@@ -518,6 +530,20 @@ if [ -n "$bats_pid" ]; then
   if [ "$bats_rc" != "0" ]; then
     failed=1
   fi
+fi
+
+# ── Rust suite ──────────────────────────────────────────────────────────────
+# The push lane (plan 24): every tier of the areas this push touches since origin/dev, and
+# the security set. lane.sh itself skips, with a message, when cargo-nextest is not installed.
+# It runs after the other suites, so the outputs do not interleave.
+if [ -x platform/tests/lane.sh ]; then
+  printf 'pre-push: running the Rust suite (push lane)...\n' >&2
+  if ! platform/tests/lane.sh push; then
+    printf 'pre-push: Rust suite FAILED.\n' >&2
+    failed=1
+  fi
+else
+  printf 'pre-push: platform/tests/lane.sh is missing from this checkout, so the Rust suite did not run.\n' >&2
 fi
 
 if [ "$failed" != "0" ]; then

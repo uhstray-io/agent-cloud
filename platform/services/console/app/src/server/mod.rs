@@ -276,6 +276,7 @@ pub fn spawn_discovery(state: SharedState) {
 /// the pre-sign-in cookie. If that response lands last, the browser keeps the dead id and the
 /// user signs in again. This fails closed and costs availability only; it is accepted.
 /// Sessions live in the preferences database (`sessions.rs`), so a restart keeps them.
+/// `auth::current_user` also caps a session's age (`auth::SESSION_LIFETIME_SECS`).
 pub fn session_layer(store: SqliteStore) -> SessionManagerLayer<SqliteStore> {
     SessionManagerLayer::new(store)
         .with_name("console_session")
@@ -507,17 +508,42 @@ mod tests {
         Router::new().route(
             path,
             get(move |session: Session| async move {
-                let user = auth::CurrentUser {
-                    sub: "user-1".into(),
-                    email: Some("ada@example.test".into()),
-                    name: Some("Ada".into()),
-                    username: Some("ada".into()),
-                    groups: groups.iter().map(|group| group.to_string()).collect(),
-                };
-                session
-                    .insert(auth::KEY_USER, &user)
+                auth::sign_in(&session, &test_user(groups))
                     .await
                     .expect("insert user");
+                "signed in"
+            }),
+        )
+    }
+
+    /// The user every test login route signs in.
+    fn test_user(groups: &[&str]) -> auth::CurrentUser {
+        auth::CurrentUser {
+            sub: "user-1".into(),
+            email: Some("ada@example.test".into()),
+            name: Some("Ada".into()),
+            username: Some("ada".into()),
+            groups: groups.iter().map(|group| group.to_string()).collect(),
+        }
+    }
+
+    /// Test-only route that signs a user in as if `age_secs` ago, or, with `None`, stores the user
+    /// with no sign-in time, as a session written before the absolute lifetime existed.
+    fn aged_login_route(path: &'static str, age_secs: Option<i64>) -> Router {
+        use dioxus::server::axum::routing::get;
+        use tower_sessions::Session;
+        Router::new().route(
+            path,
+            get(move |session: Session| async move {
+                let user = test_user(&["ops"]);
+                match age_secs {
+                    Some(age) => {
+                        let at = sessions::now_unix() - age;
+                        auth::sign_in_at(&session, &user, at).await
+                    }
+                    None => auth::sign_in_without_time(&session, &user).await,
+                }
+                .expect("insert user");
                 "signed in"
             }),
         )
@@ -1116,13 +1142,12 @@ mod tests {
         assert_eq!(me.cookie, Some(cookie), "the refresh keeps the session id");
     }
 
-    /// The stored expiry moves on a signed-in request, not only the cookie. The row is first
-    /// set to expire in a minute, so the read itself has to move it into the 8-hour window.
-    #[tokio::test]
-    async fn a_signed_in_request_moves_the_stored_session_expiry() {
-        use tower_sessions::cookie::time::OffsetDateTime;
-
-        let path = std::env::temp_dir().join(format!("console-expiry-{}.db", std::process::id()));
+    /// Signs in on a file-backed session store, and returns the address, the session cookie, a
+    /// second connection to the same file and the file's path (the caller removes it).
+    async fn signed_in_on_file(
+        name: &str,
+    ) -> (SocketAddr, String, rusqlite::Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("console-{name}-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let state = state_with_prefs(Prefs::open(&path).expect("open"));
         let app = api_router(state.clone())
@@ -1131,14 +1156,25 @@ mod tests {
         let addr = serve(app).await;
         let login = call(addr, "GET", "/test/login", None, "").await;
         let cookie = login.cookie.expect("session cookie set on login");
-
-        // A second connection to the same file sets the sign-in's one live row to expire soon.
         let other = rusqlite::Connection::open(&path).expect("second connection");
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let rows = other
-            .execute("UPDATE sessions SET expiry_unix = ?1", [now + 60])
-            .expect("expire soon");
+        (addr, cookie, other, path)
+    }
+
+    /// Sets the sign-in's one live session row to expire at `expiry_unix`.
+    fn set_stored_expiry(conn: &rusqlite::Connection, expiry_unix: i64) {
+        let rows = conn
+            .execute("UPDATE sessions SET expiry_unix = ?1", [expiry_unix])
+            .expect("set expiry");
         assert_eq!(rows, 1, "sign-in leaves exactly one live row");
+    }
+
+    /// The stored expiry moves on a signed-in request, not only the cookie. The row is first
+    /// set to expire in a minute, so the read itself has to move it into the 8-hour window.
+    #[tokio::test]
+    async fn a_signed_in_request_moves_the_stored_session_expiry() {
+        let (addr, cookie, other, path) = signed_in_on_file("expiry").await;
+        let now = sessions::now_unix();
+        set_stored_expiry(&other, now + 60);
 
         let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
         let stored: i64 = other
@@ -1151,6 +1187,64 @@ mod tests {
             stored >= now + 7 * 3600,
             "a signed-in read must move the stored expiry into the 8h window: {stored} vs {now}"
         );
+    }
+
+    /// AC-747: a session ends 12 hours after sign-in however active it is. The work board polls
+    /// every 10 seconds and every request re-saves the session, so the inactivity expiry alone
+    /// never ends a session in an open tab. An over-age session answers 401 and is deleted, and a
+    /// session with no sign-in time (stored before the lifetime existed) counts as over-age.
+    #[tokio::test]
+    async fn a_session_ends_at_its_absolute_lifetime_however_active() {
+        let cap = auth::SESSION_LIFETIME_SECS;
+        let app = api_router(test_state())
+            .merge(aged_login_route("/test/fresh", Some(0)))
+            .merge(aged_login_route("/test/almost", Some(cap - 60)))
+            .merge(aged_login_route("/test/expired", Some(cap)))
+            .merge(aged_login_route("/test/legacy", None))
+            .layer(session_layer(memory_sessions()));
+        let addr = serve(app).await;
+        let login = |path: &'static str| async move {
+            call(addr, "GET", path, None, "")
+                .await
+                .cookie
+                .expect("session cookie set on login")
+        };
+
+        for path in ["/test/fresh", "/test/almost"] {
+            let cookie = login(path).await;
+            let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+            assert_eq!(me.status, 200, "{path}: {}", me.body);
+        }
+        for path in ["/test/expired", "/test/legacy"] {
+            let cookie = login(path).await;
+            let me = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+            assert_eq!(me.status, 401, "{path}");
+            assert_eq!(me.body, r#"{"error":"unauthenticated"}"#, "{path}");
+            // A deleted session removes its cookie; one left in the store is re-saved with 8h.
+            let set_cookie = me.set_cookie_line.clone().unwrap_or_default();
+            assert!(
+                set_cookie.contains("Max-Age=0"),
+                "{path}: the over-age session must be deleted: {set_cookie}"
+            );
+            let again = call(addr, "GET", "/v1/work", Some(cookie), "").await;
+            assert_eq!(again.status, 401, "{path}: the old cookie stays signed out");
+        }
+    }
+
+    /// The inactivity expiry still holds: a session whose stored expiry has passed answers 401,
+    /// though it is well inside its absolute lifetime.
+    #[tokio::test]
+    async fn an_idle_session_past_its_inactivity_expiry_answers_401() {
+        let (addr, cookie, other, path) = signed_in_on_file("idle").await;
+        let live = call(addr, "GET", "/v1/me", Some(cookie.clone()), "").await;
+        assert_eq!(live.status, 200, "{}", live.body);
+
+        // The 8 hours of inactivity pass: the row's expiry is now in the past.
+        set_stored_expiry(&other, sessions::now_unix() - 1);
+        let me = call(addr, "GET", "/v1/me", Some(cookie), "").await;
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(me.status, 401);
+        assert_eq!(me.body, r#"{"error":"unauthenticated"}"#);
     }
 
     /// D53: a state-changing `/v1/` request is refused unless its Origin is the console's own and its `Content-Type` is
@@ -1911,10 +2005,7 @@ mod tests {
                     username: None,
                     groups: vec!["platform-admins".into()],
                 };
-                session
-                    .insert(auth::KEY_USER, &user)
-                    .await
-                    .expect("insert user");
+                auth::sign_in(&session, &user).await.expect("insert user");
                 "signed in"
             }),
         )

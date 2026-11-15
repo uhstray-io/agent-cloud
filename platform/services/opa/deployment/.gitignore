@@ -2,3 +2,6 @@
 # (certs/<leaf>/current, certs/step-ca-bundle.crt). Issued per host, never committed. Listed so
 # the rsync filter in tasks/place-monorepo.yml (':- .gitignore') neither copies nor deletes them.
 certs/
+# Written by deploy.sh from its environment (the compose substitutions, no secret); regenerated
+# on every deploy. Listed for the same rsync filter.
+.env

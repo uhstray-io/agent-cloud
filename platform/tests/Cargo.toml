@@ -1,0 +1,35 @@
+[package]
+name = "agent-cloud-tests"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.96"
+publish = false
+autotests = false
+description = "agent-cloud test suite (plan 24): one binary, one module per area, run by cargo-nextest"
+authors = ["Joseph A. Wisneski IV <stray@uhstray.io>"]
+license = "MIT"
+
+# Its own workspace: the console crate (platform/services/console/app) has one too,
+# and the two must not share a lock file or a target directory.
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+doctest = false
+# Its tests live in suite/support.rs, so the crate builds one test binary.
+test = false
+
+[[test]]
+name = "suite"
+path = "suite/main.rs"
+
+[dependencies]
+assert_cmd = "2.2"
+globset = "0.4.21"
+predicates = "3.1"
+regex = "1.13"
+tempfile = "3.27"
+yaml-rust2 = "0.13"
+
+[dev-dependencies]
+proptest = "1.12"

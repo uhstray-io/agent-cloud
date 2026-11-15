@@ -22,6 +22,7 @@ use tower_sessions::Session;
 
 use super::api::error;
 use super::config::Config;
+use super::sessions::now_unix;
 use super::SharedState;
 
 /// Client after discovery: the auth, token and userinfo endpoints are set.
@@ -37,7 +38,15 @@ pub type OidcClient = CoreClient<
 const KEY_PKCE: &str = "auth.pkce_verifier";
 const KEY_CSRF: &str = "auth.csrf_state";
 const KEY_NONCE: &str = "auth.nonce";
-pub const KEY_USER: &str = "user";
+/// Private, so the user is read only through `current_user`, which enforces the lifetime.
+const KEY_USER: &str = "user";
+/// Unix seconds of the sign-in that stored `KEY_USER`.
+const KEY_SIGNED_IN_AT: &str = "auth.signed_in_at";
+
+/// Absolute session lifetime (AC-747): 12 hours from sign-in, however active the session.
+/// The 8-hour inactivity expiry (`session_layer`) never ends a session in an open tab, because
+/// the work board polls every 10 seconds and every request re-saves the session.
+pub const SESSION_LIFETIME_SECS: i64 = 12 * 3600;
 
 /// Identity kept in the session and returned as `claims` by `GET /v1/me`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,7 +205,7 @@ pub async fn callback(
     };
 
     // A new session id on login: the pre-login cookie cannot be reused as a logged-in one.
-    if session.cycle_id().await.is_err() || session.insert(KEY_USER, &user).await.is_err() {
+    if session.cycle_id().await.is_err() || sign_in(&session, &user).await.is_err() {
         return error(StatusCode::INTERNAL_SERVER_ERROR, "session_unavailable");
     }
     found("/")
@@ -209,10 +218,52 @@ pub async fn logout(session: Session) -> Response {
     found("/")
 }
 
+/// Stores `user` in the session with the sign-in time, now.
+pub async fn sign_in(
+    session: &Session,
+    user: &CurrentUser,
+) -> Result<(), tower_sessions::session::Error> {
+    sign_in_at(session, user, now_unix()).await
+}
+
+/// `sign_in` with the sign-in time given, so a test can sign in as if hours ago.
+pub(crate) async fn sign_in_at(
+    session: &Session,
+    user: &CurrentUser,
+    signed_in_at: i64,
+) -> Result<(), tower_sessions::session::Error> {
+    session.insert(KEY_USER, user).await?;
+    session.insert(KEY_SIGNED_IN_AT, signed_in_at).await
+}
+
+/// Stores `user` with no sign-in time, the shape of a session stored before the lifetime existed.
+#[cfg(test)]
+pub(crate) async fn sign_in_without_time(
+    session: &Session,
+    user: &CurrentUser,
+) -> Result<(), tower_sessions::session::Error> {
+    session.insert(KEY_USER, user).await
+}
+
 /// The signed-in user for this request, if any. A session value that does not
-/// parse counts as signed out.
+/// parse counts as signed out. A session past `SESSION_LIFETIME_SECS`, or with no sign-in
+/// time (one stored before the lifetime existed), is deleted and counts as signed out: the
+/// API answers 401 and the UI shows the sign-in page, which goes through Authentik.
 pub async fn current_user(session: &Session) -> Option<CurrentUser> {
-    session.get::<CurrentUser>(KEY_USER).await.ok().flatten()
+    let user = session.get::<CurrentUser>(KEY_USER).await.ok().flatten()?;
+    let signed_in_at = session.get::<i64>(KEY_SIGNED_IN_AT).await.ok().flatten();
+    if signed_in_at.is_some_and(|at| within_lifetime(at, now_unix())) {
+        return Some(user);
+    }
+    // `flush` clears the data before it deletes the row, so a failed delete still signs the
+    // user out: the row is saved back empty and expires 8 hours after the last request.
+    let _ = session.flush().await;
+    None
+}
+
+/// Whether a session signed in at `signed_in_at` is still inside its absolute lifetime at `now`.
+pub fn within_lifetime(signed_in_at: i64, now: i64) -> bool {
+    now.saturating_sub(signed_in_at) < SESSION_LIFETIME_SECS
 }
 
 /// CSRF check on the callback: both values must be present and equal.
@@ -265,6 +316,15 @@ mod tests {
         assert!(!state_matches(Some("abc"), None));
         assert!(!state_matches(None, Some("abc")));
         assert!(!state_matches(Some(""), Some("")));
+    }
+
+    #[test]
+    fn lifetime_ends_twelve_hours_after_sign_in() {
+        let at = 1_000_000;
+        assert!(within_lifetime(at, at));
+        assert!(within_lifetime(at, at + SESSION_LIFETIME_SECS - 1));
+        assert!(!within_lifetime(at, at + SESSION_LIFETIME_SECS));
+        assert!(!within_lifetime(at, at + 30 * 24 * 3600));
     }
 
     #[test]
