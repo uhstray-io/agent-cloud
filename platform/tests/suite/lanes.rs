@@ -454,7 +454,7 @@ fn lane_sh_skips_a_workstation_lane_without_nextest_and_refuses_a_ci_lane() {
         .expect("make the fake cargo executable");
     let path = format!("{}:/usr/bin:/bin", bin.display());
     let lane_sh = repo::path("platform/tests/lane.sh").display().to_string();
-    let without_cargo = |lane: &str| {
+    let with_failing_cargo = |lane: &str| {
         let mut cmd = process::scrubbed("bash", home.path());
         cmd.env("PATH", &path).arg(&lane_sh).arg(lane);
         cmd
@@ -462,14 +462,14 @@ fn lane_sh_skips_a_workstation_lane_without_nextest_and_refuses_a_ci_lane() {
 
     // Act / Assert: a hook's lane says why it did not run, and lets the commit or push go on
     for lane in ["commit", "push"] {
-        without_cargo(lane)
+        with_failing_cargo(lane)
             .assert()
             .success()
             .stderr(predicates::str::contains("cargo-nextest is not installed"));
     }
     // Act / Assert: CI and the full lane never pass without running the suite
     for lane in ["ci", "full"] {
-        without_cargo(lane)
+        with_failing_cargo(lane)
             .assert()
             .code(1)
             .stderr(predicates::str::contains("needs cargo and cargo-nextest"));

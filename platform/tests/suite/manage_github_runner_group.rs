@@ -441,14 +441,15 @@ fn gates_dry_run(when: Option<&Node>) -> bool {
 #[test]
 fn only_an_exact_not_dry_run_condition_gates_a_mutation() {
     // Arrange
-    let when = |text: &str| yaml::parse(&format!("when: {text}\n"), "fixture").remove(0);
+    let gates = |text: &str| {
+        let task = yaml::parse(&format!("when: {text}\n"), "fixture").remove(0);
+        gates_dry_run(task.get("when"))
+    };
 
     // Act, Assert
-    assert!(gates_dry_run(when("not _dry_run").get("when")));
-    assert!(gates_dry_run(
-        when("[_existing is defined, not _dry_run]").get("when")
-    ));
-    assert!(!gates_dry_run(when("not _dry_run or true").get("when")));
-    assert!(!gates_dry_run(when("\"not _dry_run_x\"").get("when")));
+    assert!(gates("not _dry_run"));
+    assert!(gates("[_existing is defined, not _dry_run]"));
+    assert!(!gates("not _dry_run or true"));
+    assert!(!gates("\"not _dry_run_x\""));
     assert!(!gates_dry_run(None));
 }

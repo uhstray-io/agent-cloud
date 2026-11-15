@@ -319,21 +319,35 @@ fn is_populated_group_check(text: &str) -> bool {
         && !NEUTRALISER.is_match(text)
 }
 
-/// Keys that let a task, or every task under a block, be skipped or fail without stopping the run.
-/// An assert under one of them is no guard: `when: false` skips it, `ignore_errors` and
-/// `failed_when` swallow its failure, and a block's `rescue` catches it (#1151 review).
-const BYPASSES: [&str; 4] = ["when", "ignore_errors", "failed_when", "rescue"];
+/// The only keys a guard task, or a block around one, may carry. The set is closed, as in
+/// `destroy_vm.rs`, rather than a list of bad keys: `when` or `tags` can skip an assert, `loop`
+/// over an empty list runs it zero times, `ignore_errors` and `failed_when` swallow its failure,
+/// and a block's `rescue` catches it (#1151 review). A key outside the set refuses the guard,
+/// fail-safe.
+const GUARD_KEYS: [&str; 6] = [
+    "name",
+    "block",
+    "always",
+    "ansible.builtin.assert",
+    "ansible.legacy.assert",
+    "assert",
+];
 
 /// Every mapping under `node` that holds a task or play and is certain to run and stop the run on
-/// failure, depth first (nested block, rescue and always children after their parent). A mapping
-/// carrying a `BYPASSES` key is left out together with everything under it.
+/// failure, depth first (nested block and always children after their parent). A mapping with a
+/// key outside `GUARD_KEYS` is left out together with everything under it.
 fn tasks(node: Option<&Node>) -> Vec<&Node> {
     fn walk<'a>(node: Option<&'a Node>, out: &mut Vec<&'a Node>) {
         let Some(Node::Seq(items)) = node else {
             return;
         };
         for item in items.iter().filter(|item| item.as_map().is_some()) {
-            if BYPASSES.iter().any(|key| item.get(key).is_some()) {
+            let closed = item
+                .as_map()
+                .into_iter()
+                .flatten()
+                .all(|(key, _)| key.as_str().is_some_and(|key| GUARD_KEYS.contains(&key)));
+            if !closed {
                 continue;
             }
             out.push(item);
@@ -409,17 +423,16 @@ fn fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
 /// A deploy playbook whose only guard is one inline assert on `condition`, then a play that
 /// targets the templated group.
 fn inline_playbook(condition: &str) -> String {
+    guarded_playbook(&format!(
+        "    - name: \"Require a populated group\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n"
+    ))
+}
+
+/// A localhost play running `tasks` (indented as a play's task list), then a play that targets
+/// the templated group.
+fn guarded_playbook(tasks: &str) -> String {
     format!(
-        r#"- name: "Inline guard"
-  hosts: localhost
-  tasks:
-    - name: "Require a populated group"
-      ansible.builtin.assert:
-        that: "{condition}"
-- name: "Work"
-  hosts: "{{{{ target_service }}}}"
-  tasks: []
-"#
+        "- name: \"Inline guard\"\n  hosts: localhost\n  tasks:\n{tasks}- name: \"Work\"\n  hosts: \"{{{{ target_service }}}}\"\n  tasks: []\n"
     )
 }
 
@@ -439,9 +452,9 @@ fn inline_fixture(cases: &[(&str, &str)]) -> tempfile::TempDir {
 /// Inline asserts that are not exactly one accepted positive comparison, or that name a longer
 /// identifier than the target. Each leaves its target unguarded, so each file is an offender. A
 /// fail-safe checker refuses what it does not recognise.
-const NOT_ACCEPTED: [(&str, &str); 12] = [
+const NOT_ACCEPTED: &[(&str, &str)] = &[
     ("ge0", "(groups.get(target_service, []) | length) >= 0"),
-    // `0 > -1`: arithmetic after the value lets an empty group pass (#1151 review).
+    // `> 0 - 1` is `> -1`: arithmetic after the value lets an empty group pass (#1151 review).
     ("arith", "(groups.get(target_service, []) | length) > 0 - 1"),
     ("gtneg", "(groups.get(target_service, []) | length) > -1"),
     (
@@ -473,7 +486,7 @@ const NOT_ACCEPTED: [(&str, &str); 12] = [
 ];
 
 /// Inline asserts with one accepted positive comparison of `length`. Each guards its target.
-const ACCEPTED: [(&str, &str); 4] = [
+const ACCEPTED: &[(&str, &str)] = &[
     ("gt0", "(groups.get(target_service, []) | length) > 0"),
     ("ge1", "groups[target_service] | length >= 1"),
     ("eq1", "groups[target_service] | length == 1"),
@@ -782,7 +795,7 @@ fn the_repositorys_own_inline_guards_are_recognised() {
 #[test]
 fn inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count() {
     // Arrange: each condition is refused, and each row is named so a miss names its row.
-    let dir = inline_fixture(&NOT_ACCEPTED);
+    let dir = inline_fixture(NOT_ACCEPTED);
 
     // Act
     let report = offenders(dir.path());
@@ -806,7 +819,7 @@ fn inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count() {
 #[test]
 fn each_accepted_positive_comparison_counts() {
     // Arrange
-    let dir = inline_fixture(&ACCEPTED);
+    let dir = inline_fixture(ACCEPTED);
 
     // Act
     let report = offenders(dir.path());
@@ -916,23 +929,20 @@ fn a_hosts_list_is_covered_by_a_preflight_for_each_group() {
 fn an_assert_that_can_be_skipped_or_ignored_is_not_a_guard() {
     // Arrange: an accepted condition on an assert that does not always stop the run.
     let condition = "(groups.get(target_service, []) | length) > 0";
-    let play = |task: String| {
-        format!(
-            "- name: \"Inline guard\"\n  hosts: localhost\n  tasks:\n{task}- name: \"Work\"\n  hosts: \"{{{{ target_service }}}}\"\n  tasks: []\n"
-        )
-    };
     let single = |extra: &str| {
-        play(format!(
+        guarded_playbook(&format!(
             "    - name: \"Require\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n      {extra}\n"
         ))
     };
-    let rescued = play(format!(
+    let rescued = guarded_playbook(&format!(
         "    - name: \"Block\"\n      block:\n        - name: \"Require\"\n          ansible.builtin.assert:\n            that: \"{condition}\"\n      rescue:\n        - ansible.builtin.debug:\n            msg: caught\n"
     ));
     let cases = [
         ("deploy-when.yml", single("when: false")),
         ("deploy-ignore.yml", single("ignore_errors: true")),
         ("deploy-failed-when.yml", single("failed_when: false")),
+        ("deploy-tags.yml", single("tags: [never]")),
+        ("deploy-loop.yml", single("loop: []")),
         ("deploy-rescue.yml", rescued),
     ];
     let refs: Vec<(&str, &str)> = cases.iter().map(|(n, t)| (*n, t.as_str())).collect();
@@ -942,7 +952,17 @@ fn an_assert_that_can_be_skipped_or_ignored_is_not_a_guard() {
     let report = offenders(dir.path());
 
     // Assert
-    let mut expected: Vec<&str> = cases.iter().map(|(n, _)| *n).collect();
-    expected.sort_unstable();
-    assert_eq!(offender_names(&report), expected, "{:?}", report.offenders);
+    assert_eq!(
+        offender_names(&report),
+        [
+            "deploy-failed-when.yml",
+            "deploy-ignore.yml",
+            "deploy-loop.yml",
+            "deploy-rescue.yml",
+            "deploy-tags.yml",
+            "deploy-when.yml"
+        ],
+        "{:?}",
+        report.offenders
+    );
 }

@@ -254,14 +254,13 @@ fn verify_host_access_is_read_only() {
         .count();
     // Each parsed `uri` task's method, quoted or not, plus a text scan for a method named
     // anywhere else (a `curl -X` in a shell task carries no `method:` key) (#1143 review).
-    let mutating_methods = ["POST", "PUT", "PATCH", "DELETE"];
     let mutating_uri: Vec<&str> = tasks
         .iter()
         .filter(|task| {
             module(task, "uri")
                 .and_then(|args| str_at(args, "method"))
                 .is_some_and(|method| {
-                    mutating_methods.contains(&method.trim().to_uppercase().as_str())
+                    MUTATING_METHODS.contains(&method.trim().to_uppercase().as_str())
                 })
         })
         .map(name)
@@ -935,10 +934,16 @@ fn a_display_variable_in_harden_ssh_always_has_a_default() {
     );
 }
 
+const MUTATING_METHODS: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
+
 /// A mutating HTTP method named anywhere in a playbook's text: a `method:` key, or curl's `-X` and
 /// `--request` options in a shell or command task (#1151 review).
 fn mutating_method_text() -> Regex {
-    Regex::new(r#"(?:method:\s*|-X\s*|--request[=\s]+)["']?(POST|PUT|PATCH|DELETE)\b"#).unwrap()
+    Regex::new(&format!(
+        r#"(?:method:\s*|-X\s*|--request[=\s]+)["']?(?:{})\b"#,
+        MUTATING_METHODS.join("|")
+    ))
+    .unwrap()
 }
 
 #[test]
