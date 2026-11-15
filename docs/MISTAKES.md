@@ -39,7 +39,7 @@ and why.
 | 1.7 | Recorded a memory as retained on a `completed` status whose result list was empty; no retrievable memory or fact was stored | Unverified claim | 1 | Convention |
 | 1.8 | Documented an INI encoding as "verified" from a sample with no booleans; the first `true` made the value a string | Unverified claim | 1 | Test |
 | 1.9 | Documented that a feature branch is invisible to Semaphore; true in the UI only, the API runs any pushed branch | Unverified claim | 1 | OPA branch rule (`agent_actions.rego`; inert until callers send fields) |
-| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused | Unverified claim | 1 | Convention |
+| 1.10 | Reported a CodeRabbit review as started from a keyword match; every request had been refused — **x2** (2026-11-15: called CodeRabbit "paused" on #1152 from `gh pr checks`' `skipping` bucket, to the operator and in a dismissal message; the check's own title read "Review rate limited", and reviews were already on the PR) | Unverified claim | 2 | Convention |
 | 1.11 | Wrote into a gate's own comment that OpenBao returns 404 only to a token allowed to read, without checking; a denied AppRole would have passed the seed access check  | Unverified claim  | 1 | Test (synthetic OpenBao, mutation-proven)  |
 | 1.12 | **x2** — Reported a 30-minute deploy hang from a check-in timer, not the clock; the task was two minutes in | Unverified claim | 2 | Convention |
 | 1.13 | Rejected Semaphore's matching single-environment list projection as if it were a second binding | Unverified claim | 1 | Test |
@@ -752,6 +752,8 @@ indexes, and the regression asserts a sentinel argument is absent from output.
 
 ### 1.10 Reported that a review had started, from a keyword match on a comment I never read
 
+**Occurrences: 2** — 2026-09-23, 2026-11-15
+
 **What happened.** On 2026-09-23 at 15:13Z I posted review requests to CodeRabbit on four
 PRs and sorted its replies with a `jq` keyword test. My patterns for a started review
 included `will review` and `Reviewing`; CodeRabbit's refusal reads "Action not completed —
@@ -769,6 +771,22 @@ against a pattern proven on that exact phrasing. Report a keyword classifier's l
 as a guess, and treat an unmatched or surprising label as a reason to read the text.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-15.** During the v0.16.0 promotion, `gh pr checks 1152` listed CodeRabbit
+as `skipping` on head `daed978a`. From that label alone I told the operator CodeRabbit "is paused
+(check 'skipping'), so it will not resolve" its threads, and asked to resolve them and dismiss its
+review myself. The operator approved. The dismissal message on review 5900511766 says "CodeRabbit
+is paused on this PR". It was not paused. The check run behind the label had conclusion `neutral`
+and the title "Review rate limited" (`gh api repos/<repo>/commits/<sha>/check-runs`), and
+`gh pr checks` files `neutral` under `skipping`. CodeRabbit had reviewed `a56396ac` at 04:15 UTC
+(CHANGES_REQUESTED) and `daed978a` at 04:16 (COMMENTED), about an hour and a half before the
+dismissal at 05:51. It reviewed `55e61090` at 05:59 (check `success`), resolved the four threads it
+had opened since (three on `a56396ac`, one on `55e61090`) itself, and was rate-limited again on
+`5e7659f6`. The rule did not fire because I took a CLI's bucket name as a status, not as a
+classifier's label: `gh pr checks` sorts check conclusions into buckets exactly as 1.10's keyword
+test sorted replies. The same rule covers it.
+Before saying a reviewer will or will not act, read the check run's title and summary and list the
+reviewer's reviews on the pull request, with their commit and time.
 
 ### 1.14 A fact about the private inventory read from the public template
 
