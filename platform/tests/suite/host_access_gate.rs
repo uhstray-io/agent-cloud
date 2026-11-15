@@ -252,7 +252,21 @@ fn verify_host_access_is_read_only() {
         .iter()
         .filter(|task| str_at(task, "delegate_to") == Some("localhost"))
         .count();
-    let mutating = Regex::new(r"method: (POST|PUT|PATCH|DELETE)").unwrap();
+    // Each parsed `uri` task's method, quoted or not, plus a text scan for a method named
+    // anywhere else (a `curl -X` in a shell task carries no `method:` key) (#1143 review).
+    let mutating_methods = ["POST", "PUT", "PATCH", "DELETE"];
+    let mutating_uri: Vec<&str> = tasks
+        .iter()
+        .filter(|task| {
+            module(task, "uri")
+                .and_then(|args| str_at(args, "method"))
+                .is_some_and(|method| {
+                    mutating_methods.contains(&method.trim().to_uppercase().as_str())
+                })
+        })
+        .map(name)
+        .collect();
+    let mutating = Regex::new(r#"method:\s*["']?(POST|PUT|PATCH|DELETE)"#).unwrap();
 
     // Assert
     assert!(
@@ -262,6 +276,10 @@ fn verify_host_access_is_read_only() {
     assert!(
         delegated >= 2,
         "the probe and the verdict's lookup run on the runner: found {delegated} delegate_to: localhost"
+    );
+    assert!(
+        mutating_uri.is_empty(),
+        "the gate sends a mutating HTTP method from uri tasks: {mutating_uri:?}"
     );
     assert!(
         !mutating.is_match(&read(PLAYBOOK)),

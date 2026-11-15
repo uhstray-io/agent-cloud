@@ -20,6 +20,10 @@ use agent_cloud_tests::repo;
 /// the exemption is a note for a reader, and the scan reads the note beside the setting.
 const MARKER: &str = "allow: orchestrator-unlimited-ttl";
 
+/// A zero TTL or use count, as `git grep -E` reads it: the key, then a separator or a quote, then
+/// `0` not followed by a digit. The quotes catch `secret_id_ttl: "0"` and `'0'` (#1143 review).
+const ZERO_TTL: &str = r#"(secret_id_ttl|token_num_uses)[ =:"']+0([^0-9]|$)"#;
+
 const OPENBAO_DEPLOY: &str = "platform/services/openbao/deployment/deploy.sh";
 
 /// The six lines above `line`, and `line` itself: the window the exemption is read from.
@@ -31,9 +35,36 @@ fn window_above(file: &str, line: usize) -> String {
 }
 
 #[test]
+fn the_zero_ttl_pattern_reads_quoted_and_unquoted_values() {
+    // The pattern is ERE for `git grep -E`; the regex crate reads these constructs the same way.
+    let zero = regex::Regex::new(ZERO_TTL).expect("a valid pattern");
+    for line in [
+        "secret_id_ttl: 0",
+        "secret_id_ttl: \"0\"",
+        "secret_id_ttl: '0'",
+        "token_num_uses=0",
+        "token_num_uses: \"0\"",
+        "  secret_id_ttl=0 \\",
+    ] {
+        assert!(zero.is_match(line), "a zero setting is not read: {line}");
+    }
+    for line in [
+        "secret_id_ttl: 90d",
+        "secret_id_ttl: \"10\"",
+        "token_num_uses: 25",
+        "token_num_uses: \"05\"",
+    ] {
+        assert!(
+            !zero.is_match(line),
+            "a bounded setting is read as zero: {line}"
+        );
+    }
+}
+
+#[test]
 fn no_credential_ttl_is_zero_except_the_allow_listed_orchestrator() {
     // Arrange
-    let pattern = r"secret_id_ttl[ =:]+0([^0-9]|$)|token_num_uses[ =:]+0([^0-9]|$)";
+    let pattern = ZERO_TTL;
 
     // Act
     let hits = repo::grep(pattern, &["platform/playbooks", "platform/services"]);
