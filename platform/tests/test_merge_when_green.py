@@ -78,6 +78,10 @@ BATS_PINNED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
 RETIRED_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
     "lint-and-test-retired.txt").read_bytes()
 
+# The workflow dev held until the Rust (tests) job installed the locked Python environment.
+RUST_TESTS_WORKFLOW = Path(__file__).with_name("fixtures").joinpath(
+    "lint-and-test-rust-tests.txt").read_bytes()
+
 
 def _blob_sha(source):
     return hashlib.sha1(b"blob " + str(len(source)).encode() + b"\0" + source).hexdigest()
@@ -98,7 +102,8 @@ assert _blob_sha(RUNNER_PINNED_WORKFLOW) == guard.RUNNER_PINNED_WORKFLOW_BLOB_SH
 assert _blob_sha(SHARDED_WORKFLOW) == guard.SHARDED_WORKFLOW_BLOB_SHA
 assert _blob_sha(BATS_PINNED_WORKFLOW) == guard.BATS_PINNED_WORKFLOW_BLOB_SHA
 assert _blob_sha(RETIRED_WORKFLOW) == guard.RETIRED_WORKFLOW_BLOB_SHA
-assert _blob_sha(CURRENT_WORKFLOW) == guard.RUST_TESTS_WORKFLOW_BLOB_SHA
+assert _blob_sha(RUST_TESTS_WORKFLOW) == guard.RUST_TESTS_WORKFLOW_BLOB_SHA
+assert _blob_sha(CURRENT_WORKFLOW) == guard.RUST_ANSIBLE_WORKFLOW_BLOB_SHA
 # The on-disk workflow carries exactly one Version job; the policy-drift tests below depend on it.
 assert CURRENT_WORKFLOW.count(b"\n    name: Version\n") == 1
 
@@ -306,6 +311,11 @@ class FakeGitHub:
 
     def set_rust_tests_transition(self):
         self.workflow_sources[BASE] = RETIRED_WORKFLOW
+        self.workflow_sources[HEAD] = RUST_TESTS_WORKFLOW
+        self.files = [guard.WORKFLOW]
+
+    def set_rust_ansible_transition(self):
+        self.workflow_sources[BASE] = RUST_TESTS_WORKFLOW
         self.workflow_sources[HEAD] = CURRENT_WORKFLOW
         self.files = [guard.WORKFLOW]
 
@@ -335,6 +345,21 @@ class FakeGitHub:
             return result
 
         self.api = changed
+
+    def move_dev_after_two_reads(self):
+        # Both validations read GitHub's dev at the tip the budget counts; the third read, just before the merge
+        # call, sees dev moved. Returns the list of reads, so a test can assert the third one happened.
+        original, reads = self.api, []
+
+        def moving(endpoint, fields=()):
+            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
+                reads.append(endpoint)
+                sha = self.dev_tip if len(reads) <= 2 else "f" * 40
+                return {"ref": "refs/heads/dev", "object": {"sha": sha, "type": "commit"}}
+            return original(endpoint, fields)
+
+        self.api = moving
+        return reads
 
     def merge(self, pr, sha, title):
         self.merge_calls.append(["gh", "pr", "merge", str(pr), "--repo", guard.REPO,
@@ -1000,24 +1025,79 @@ class MergeGuardTests(unittest.TestCase):
         cases = [
             ("retired to rust-tests with extra byte", lambda api: (
                 api.set_rust_tests_transition(),
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+                api.workflow_sources.__setitem__(HEAD, RUST_TESTS_WORKFLOW + b"# extra\n")),
              "Workflow head is not the exact reviewed retired workflow"),
             ("retired base with extra byte to rust-tests", lambda api: (
                 api.set_rust_tests_transition(),
                 api.workflow_sources.__setitem__(BASE, RETIRED_WORKFLOW + b"# extra\n")),
              "Workflow base is outside the exact pre-partition or reviewed partition states"),
             ("rust-tests base with extra byte", lambda api: (
-                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n")),
+                api.workflow_sources.__setitem__(BASE, RUST_TESTS_WORKFLOW + b"# extra\n")),
              "Workflow base is outside the exact pre-partition or reviewed partition states"),
             ("rust-tests base to edited head", lambda api: (
-                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+                api.workflow_sources.__setitem__(BASE, RUST_TESTS_WORKFLOW),
+                api.workflow_sources.__setitem__(HEAD, RUST_TESTS_WORKFLOW + b"# extra\n")),
              "Workflow head is not the exact reviewed Rust-tests workflow"),
             ("rust-tests base to retired head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUST_TESTS_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, RETIRED_WORKFLOW)),
              "Workflow head is not the exact reviewed Rust-tests workflow"),
             ("rust-tests base to uv head", lambda api: (
+                api.workflow_sources.__setitem__(BASE, RUST_TESTS_WORKFLOW),
                 api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
              "Workflow head is not the exact reviewed Rust-tests workflow"),
+        ]
+        for label, change, message in cases:
+            with self.subTest(label=label):
+                api = FakeGitHub()
+                change(api)
+                run_refusal(self, api, message)
+
+    def test_rust_tests_to_rust_ansible_transition_is_allowed(self):
+        api = FakeGitHub()
+        api.set_rust_ansible_transition()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_rust_tests_to_rust_ansible_transition_requires_one_modified_workflow_record(self):
+        for status, previous in (("renamed", "old-workflow.yml"), ("added", None),
+                                 ("removed", None), ("copied", None), ("modified", "old-workflow.yml")):
+            with self.subTest(status=status, previous=previous):
+                api = FakeGitHub()
+                api.set_rust_ansible_transition()
+                api.file_pages = [[{"filename": guard.WORKFLOW, "status": status,
+                                    **({"previous_filename": previous} if previous else {})}]]
+                run_refusal(self, api, "one modified record")
+        api = FakeGitHub()
+        api.set_rust_ansible_transition()
+        api.files = []
+        run_refusal(self, api, "one modified record")
+
+    def test_only_exact_rust_ansible_transition_or_rust_ansible_baseline_is_accepted(self):
+        cases = [
+            ("rust-tests to rust-ansible with extra byte", lambda api: (
+                api.set_rust_ansible_transition(),
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed Rust-tests workflow"),
+            ("rust-tests to rust-ansible base with extra byte", lambda api: (
+                api.set_rust_ansible_transition(),
+                api.workflow_sources.__setitem__(BASE, RUST_TESTS_WORKFLOW + b"# extra\n")),
+             "Workflow base is outside the exact pre-partition or reviewed partition states"),
+            ("rust-ansible base with extra byte", lambda api: (
+                api.workflow_sources.__setitem__(BASE, CURRENT_WORKFLOW + b"# extra\n")),
+             "Workflow base is outside the exact pre-partition or reviewed partition states"),
+            ("rust-ansible base to edited head", lambda api: (
+                api.workflow_sources.__setitem__(HEAD, CURRENT_WORKFLOW + b"# extra\n")),
+             "Workflow head is not the exact reviewed Rust-ansible workflow"),
+            ("rust-ansible base to rust-tests head", lambda api: (
+                api.workflow_sources.__setitem__(HEAD, RUST_TESTS_WORKFLOW)),
+             "Workflow head is not the exact reviewed Rust-ansible workflow"),
+            ("rust-ansible base to retired head", lambda api: (
+                api.workflow_sources.__setitem__(HEAD, RETIRED_WORKFLOW)),
+             "Workflow head is not the exact reviewed Rust-ansible workflow"),
+            ("rust-ansible base to uv head", lambda api: (
+                api.workflow_sources.__setitem__(HEAD, UV_WORKFLOW)),
+             "Workflow head is not the exact reviewed Rust-ansible workflow"),
         ]
         for label, change, message in cases:
             with self.subTest(label=label):
@@ -1033,8 +1113,30 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_rust_tests_workflow_unchanged_passes_the_workflow_check(self):
         api = FakeGitHub()
+        api.workflow_source = RUST_TESTS_WORKFLOW
         self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
         self.assertEqual(api.merge_calls, [])
+
+    def test_rust_ansible_workflow_unchanged_passes_the_workflow_check(self):
+        api = FakeGitHub()
+        self.assertEqual(guard.main(["--pr", str(PR), "--head", HEAD], api), 0)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_rust_ansible_job_installs_the_locked_python_environment_at_the_repository_root(self):
+        # Playbook-tier Rust tests run ansible-playbook. The job's default directory is platform/tests,
+        # so the install step names the repository root, where pyproject.toml, uv.lock and collections/ are.
+        text = CURRENT_WORKFLOW.decode()
+        job = text[text.index("\n  rust-tests:\n"):text.index("\n  rust-console:\n")]
+        setup = "      - uses: astral-sh/setup-uv@v10.3.3\n        with:\n          version: \"0.11.17\"\n"
+        step_name = "      - name: Install the locked Python environment and Ansible collections\n"
+        assert job.count(setup) == 1
+        assert job.count(step_name) == 1
+        step = job[job.index(step_name):job.index("      - name: Install Rust 1.96\n")]
+        assert job.index(setup) < job.index(step_name)
+        assert "\n        working-directory: .\n" in step
+        assert "\n          uv sync --locked\n" in step
+        assert "\n          echo \"$PWD/.venv/bin\" >> \"$GITHUB_PATH\"\n" in step
+        assert "\n          uv run --locked ansible-galaxy collection install -r collections/requirements.yml\n" in step
 
     def test_retired_workflow_head_without_the_rust_tests_job_is_refused(self):
         # A pull request still on the retired workflow runs no Rust (tests) job, so the required-job gate refuses it.
@@ -1252,8 +1354,10 @@ class MergeGuardTests(unittest.TestCase):
         guard.check_workflow_policy(SHARDED_WORKFLOW, sharded=True)
         guard.check_workflow_policy(BATS_PINNED_WORKFLOW, sharded=True)
         guard.check_workflow_policy(RETIRED_WORKFLOW, sharded=True, retired=True)
+        guard.check_workflow_policy(RUST_TESTS_WORKFLOW, sharded=True, retired=True, rust_tests=True)
         guard.check_workflow_policy(CURRENT_WORKFLOW, sharded=True, retired=True, rust_tests=True)
-        for source in (SHARDED_WORKFLOW, BATS_PINNED_WORKFLOW, RETIRED_WORKFLOW, CURRENT_WORKFLOW):
+        for source in (SHARDED_WORKFLOW, BATS_PINNED_WORKFLOW, RETIRED_WORKFLOW, RUST_TESTS_WORKFLOW,
+                       CURRENT_WORKFLOW):
             assert source.count(b"\n    name: Python (${{ matrix.shard }}/8)\n") == 1
             assert b"shard: [1, 2, 3, 4, 5, 6, 7, 8]" in source
         assert tuple(f"Python ({k}/8)" for k in range(1, 9)) == guard.PYTHON_SHARDS
@@ -1275,8 +1379,14 @@ class MergeGuardTests(unittest.TestCase):
 
     def test_rust_tests_baseline_rejects_misleading_workflow_change_record(self):
         api = FakeGitHub()
+        api.workflow_source = RUST_TESTS_WORKFLOW
         api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
         run_refusal(self, api, "Rust-tests workflow may only remain byte-identical")
+
+    def test_rust_ansible_baseline_rejects_misleading_workflow_change_record(self):
+        api = FakeGitHub()
+        api.file_pages = [[{"filename": guard.WORKFLOW, "status": "modified"}]]
+        run_refusal(self, api, "Rust-ansible workflow may only remain byte-identical")
 
     def test_ruff_pinned_pr_without_the_version_job_is_refused(self):
         # What happens live to a pull request opened before the transition: its workflow runs no
@@ -1691,6 +1801,7 @@ class MergeGuardTests(unittest.TestCase):
         guard.check_workflow_policy(RUNNER_PINNED_WORKFLOW, versioned=True)
         guard.check_workflow_policy(SHARDED_WORKFLOW, sharded=True)
         guard.check_workflow_policy(RETIRED_WORKFLOW, sharded=True, retired=True)
+        guard.check_workflow_policy(RUST_TESTS_WORKFLOW, sharded=True, retired=True, rust_tests=True)
         guard.check_workflow_policy(CURRENT_WORKFLOW, sharded=True, retired=True, rust_tests=True)
         for label, source, kwargs in (
             ("agentgateway workflow read as playbook safety", AGW_WORKFLOW, {"partitioned": True}),
@@ -1723,10 +1834,14 @@ class MergeGuardTests(unittest.TestCase):
                 b"name: Python (${{ matrix.shard }}/8)", b"name: Python shard", 1), {"sharded": True}),
             ("sharded workflow read as retired", SHARDED_WORKFLOW, {"sharded": True, "retired": True}),
             ("retired workflow read as sharded", RETIRED_WORKFLOW, {"sharded": True}),
-            ("rust-tests workflow read as retired", CURRENT_WORKFLOW, {"sharded": True, "retired": True}),
+            ("rust-tests workflow read as retired", RUST_TESTS_WORKFLOW, {"sharded": True, "retired": True}),
+            ("rust-ansible workflow read as retired", CURRENT_WORKFLOW, {"sharded": True, "retired": True}),
             ("retired workflow read as rust-tests", RETIRED_WORKFLOW,
              {"sharded": True, "retired": True, "rust_tests": True}),
-            ("rust-tests job renamed", CURRENT_WORKFLOW.replace(
+            ("rust-tests job renamed", RUST_TESTS_WORKFLOW.replace(
+                b"    name: Rust (tests)\n", b"    name: Rust tests\n", 1),
+             {"sharded": True, "retired": True, "rust_tests": True}),
+            ("rust-ansible job renamed", CURRENT_WORKFLOW.replace(
                 b"    name: Rust (tests)\n", b"    name: Rust tests\n", 1),
              {"sharded": True, "retired": True, "rust_tests": True}),
         ):
@@ -1964,18 +2079,77 @@ class ReleaseBudgetTests(unittest.TestCase):
     def test_dev_moving_after_the_count_refuses_the_merge(self):
         # Both validations count at the tip GitHub reported; a merge into dev before the merge call is refused.
         api = FakeGitHub()
-        original, reads = api.api, []
-
-        def moving(endpoint, fields=()):
-            if endpoint == f"repos/{guard.REPO}/git/ref/heads/dev":
-                reads.append(endpoint)
-                sha = api.dev_tip if len(reads) <= 2 else "f" * 40
-                return {"ref": "refs/heads/dev", "object": {"sha": sha, "type": "commit"}}
-            return original(endpoint, fields)
-
-        api.api = moving
+        reads = api.move_dev_after_two_reads()
         run_refusal(self, api, "dev moved after the release budget was counted")
         self.assertEqual(len(reads), 3)
+
+
+class BudgetAcknowledgedTests(unittest.TestCase):
+    # Policy 10 R10: an operator-approved release may go over a limit at dev intake. The flag passes the budget only;
+    # every later gate still runs, and the stale-count refusals stay unconditional.
+    SUFFIX = " (over the limit: acknowledged by the operator, policy 10 R10)"
+    OVER = {"files": ((5, 120), (6, 121)), "pull requests": ((100, 21), (101, 21))}
+
+    def test_over_a_limit_without_the_flag_refuses(self):
+        for limit, (before, after) in self.OVER.items():
+            with self.subTest(limit=limit):
+                api = FakeGitHub()
+                set_budget(api, before=before, after=after)
+                result, out, err = run_guard(api)
+                self.assertEqual(result, 1)
+                self.assertIn("Release full", err)
+                self.assertNotIn("acknowledged", out)
+
+    def test_with_the_flag_the_budget_passes_and_the_later_gates_still_run(self):
+        for limit, (before, after) in self.OVER.items():
+            with self.subTest(limit=limit):
+                api = FakeGitHub()
+                set_budget(api, before=before, after=after)
+                api.statuses = [status for status in api.statuses if status["context"] != "simplify"]
+                result, out, err = run_guard(api, "--budget-acknowledged")
+                self.assertEqual(result, 1)
+                self.assertNotIn("Release full", err)
+                self.assertIn("Review-pass commit status missing on this head: simplify", err)
+                self.assertIn(f"{after[0]}/100 pull requests and {after[1]}/120 files since v0.14.0", out)
+                self.assertIn(self.SUFFIX, out)
+
+    def test_with_the_flag_an_over_budget_head_merges_once(self):
+        # Both validations in main carry the flag, or the re-read before the merge call would refuse.
+        api = FakeGitHub()
+        set_budget(api, before=(5, 120), after=(6, 121))
+        result, out, _err = run_guard(api, "--merge", "--feedback-addressed", "--budget-acknowledged")
+        self.assertEqual(result, 0)
+        self.assertEqual(out.count(self.SUFFIX), 2)
+        self.assertEqual(len(api.merge_calls), 1)
+
+    def test_with_the_flag_a_stale_local_dev_still_refuses(self):
+        api = FakeGitHub()
+        set_budget(api, before=(5, 120), after=(6, 121))
+        api.budget_dev_sha = "f" * 40
+        result, out, err = run_guard(api, "--budget-acknowledged")
+        self.assertEqual(result, 1)
+        self.assertIn("is not GitHub's dev", err)
+        self.assertNotIn("BUDGET", out)
+        self.assertEqual(api.merge_calls, [])
+
+    def test_with_the_flag_dev_moving_after_the_count_still_refuses_the_merge(self):
+        # The waiver covers the limits only; a merge into dev after the count would leave it, and drift, stale.
+        api = FakeGitHub()
+        set_budget(api, before=(5, 120), after=(6, 121))
+        reads = api.move_dev_after_two_reads()
+        run_refusal(self, api, "dev moved after the release budget was counted", "--budget-acknowledged")
+        self.assertEqual(len(reads), 3)
+
+    def test_under_the_limit_or_in_the_transition_the_flag_changes_nothing(self):
+        # Under R12's transition no limit applies yet, so there is nothing for the operator to acknowledge.
+        for case, (before, after, transition) in {"under": ((5, 119), (6, 120), False),
+                                                  "transition": ((299, 899), (300, 900), True)}.items():
+            with self.subTest(case=case):
+                api = FakeGitHub()
+                set_budget(api, before=before, after=after, transition=transition)
+                plain = run_guard(api)
+                self.assertEqual(run_guard(api, "--budget-acknowledged"), plain)
+                self.assertNotIn("acknowledged", plain[1])
 
 
 def git(cwd, *args):

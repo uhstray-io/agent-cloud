@@ -164,46 +164,69 @@ fn a_quoted_merge_key_is_an_ordinary_key() {
     assert!(m.get("x").is_none());
 }
 
+/// Every `.rs` file under `dir`, at any depth, tracked or not: a new module is untracked until it
+/// is staged, and a nested one is still compiled if a `mod` line reaches it.
+fn rust_files_under(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.expect("a directory entry").path();
+        if path.is_dir() {
+            rust_files_under(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            out.push(path);
+        }
+    }
+}
+
 #[test]
-fn every_tracked_yaml_file_loads_with_the_suite_loader() {
-    // Every file is read even after one fails, so the message names all of them. A parse
-    // error panics in the loader; a panic here is the loader refusing the file.
-    let files = repo::ls_files(&["*.yml", "*.yaml"]);
+fn no_suite_test_starts_ansible_playbook_itself() {
+    // Rule 11 (03 Part 1): a playbook runs through `process::ansible_playbook` and `process::run`,
+    // which confine and bound it. The pattern spans line breaks, so a call split across lines is
+    // caught. It is written with an escaped parenthesis, so this file's own text does not match.
+    let spawn = regex::Regex::new(r#"(?:Command::new|scrubbed)\(\s*"(?:[^"]*/)?ansible-playbook""#)
+        .expect("a valid pattern");
+    let mut files = Vec::new();
+    rust_files_under(&repo::path("platform/tests/suite"), &mut files);
     assert!(
-        !files.is_empty(),
-        "git ls-files found no tracked YAML files"
+        files.iter().any(|path| path.ends_with("main.rs")),
+        "the walk found no suite/main.rs: the guard would pass for the wrong reason"
     );
 
-    let mut failures = Vec::new();
-    for rel in &files {
-        let text = match std::fs::read_to_string(repo::path(rel)) {
-            Ok(text) => text,
-            Err(e) => {
-                failures.push(format!("{rel}: {e}"));
-                continue;
-            }
-        };
-        if let Err(payload) = std::panic::catch_unwind(|| {
-            parse(&text, rel);
-        }) {
-            let reason = payload
-                .downcast_ref::<String>()
-                .map(String::as_str)
-                .or_else(|| payload.downcast_ref::<&str>().copied())
-                .unwrap_or("panicked");
-            // The loader's parse error already names the file it was given.
-            if reason.starts_with(rel.as_str()) {
-                failures.push(reason.to_owned());
-            } else {
-                failures.push(format!("{rel}: {reason}"));
-            }
+    let mut found = Vec::new();
+    for path in &files {
+        let text = std::fs::read_to_string(path).expect("a suite file reads");
+        for hit in spawn.find_iter(&text) {
+            let line = text[..hit.start()].matches('\n').count() + 1;
+            found.push(format!("{}:{line}", path.display()));
         }
     }
     assert!(
-        failures.is_empty(),
-        "{} of {} tracked YAML files do not load with the suite loader:\n{}",
-        failures.len(),
-        files.len(),
-        failures.join("\n")
+        found.is_empty(),
+        "these start ansible-playbook without process::ansible_playbook: {}",
+        found.join(", ")
+    );
+
+    // A playbook run outside a `*_playbook` module escapes the `playbook` test-group, which caps
+    // concurrent runs, and the playbook tier lanes select it by (#1141 review). The needle has no
+    // `process::` prefix, so an imported, bare call is caught too. It is built
+    // with concat! so this file's own text does not match.
+    let call = concat!("ansible_playbook", "(");
+    let misplaced: Vec<String> = files
+        .iter()
+        .filter(|path| {
+            !path
+                .file_stem()
+                .is_some_and(|stem| stem.to_string_lossy().ends_with("_playbook"))
+        })
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .expect("a suite file reads")
+                .contains(call)
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    assert!(
+        misplaced.is_empty(),
+        "these run a playbook outside a *_playbook module: {}",
+        misplaced.join(", ")
     );
 }
