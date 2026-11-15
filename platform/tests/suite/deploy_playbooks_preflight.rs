@@ -286,7 +286,8 @@ fn covered_inline(subject: &str, guards: &[String]) -> bool {
 }
 
 /// Each assert condition in a localhost play's tasks (nested blocks included) that a populated
-/// group alone satisfies, and that always runs and stops the run when it fails.
+/// group alone satisfies, on a task whose own keys, and its blocks' keys, cannot skip or soften it.
+/// The play's keys are not read: the repository's guard plays carry `tags: [verify]` (AC-912).
 fn inline_guard_items(play: &Node) -> Vec<String> {
     let mut out = vec![];
     for task in tasks(play.get("tasks")) {

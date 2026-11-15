@@ -938,6 +938,7 @@ const MUTATING_METHODS: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
 
 /// A mutating HTTP method named anywhere in a playbook's text: a `method:` key, or curl's `-X` and
 /// `--request` options in a shell or command task (#1151 review).
+/// A method curl implies (`-d`, `-F`, `-T`) is not read; AC-912 tracks one shared predicate.
 fn mutating_method_text() -> Regex {
     Regex::new(&format!(
         r#"(?:method:\s*|-X\s*|--request[=\s]+)["']?(?:{})\b"#,
@@ -947,7 +948,7 @@ fn mutating_method_text() -> Regex {
 }
 
 #[test]
-fn the_method_scan_catches_every_mutating_spelling() {
+fn the_method_scan_catches_a_named_mutating_method() {
     // Arrange
     let mutating = mutating_method_text();
 

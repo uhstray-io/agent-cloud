@@ -69,7 +69,7 @@ fn active_lines(gitignore: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Whether an active gitignore line names `path` exactly, with at most trailing blanks after it.
+/// Whether an active gitignore line names `path` exactly, with at most trailing spaces after it.
 /// No leading blank: git reads one as part of the pattern, so an indented line ignores nothing
 /// (#1144 review). Trailing spaces git drops, unless escaped; a trailing tab it keeps. Nothing else may
 /// follow: git has no inline comment, so `path # note` is a different pattern (#1151 review).
