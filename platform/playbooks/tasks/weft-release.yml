@@ -231,6 +231,10 @@
     - not ansible_check_mode
     - _weft_role == 'workspace'
 
+- name: "Front door: the client address header and its proxies"
+  ansible.builtin.include_tasks: weft-door-header.yml
+  when: _weft_role == 'door'
+
 - name: "Pull the verified images by digest"
   ansible.builtin.command:
     argv: ["{{ container_engine | default('podman') }}", pull, "{{ item }}"]
