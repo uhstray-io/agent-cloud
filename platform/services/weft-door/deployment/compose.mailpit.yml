@@ -1,0 +1,42 @@
+# weft front door — staging's mail catcher. deploy.sh appends this overlay only when .env carries
+# WEFT_DOOR_MAILPIT_IMAGE, which templates/door.env.j2 renders only when the inventory sets
+# weft_door_mailpit. tasks/weft-door-mail.yml refuses that on any environment but staging, before
+# anything stops, so the rack never runs it. .env is the one decision point, so this file and the
+# variables it needs cannot disagree.
+#
+# The front door refuses to start without mail (weft #541), and its sign-up and reset links are
+# working credentials. Mailpit catches every message and sends none: no relay or forward is
+# configured, so staging cannot mail a real address whatever is typed into its sign-up form.
+#
+# Mailpit shares the door's network namespace, because the door speaks plain SMTP only to its own
+# loopback (WEFT_FRONT_DOOR_SMTP_SECURITY=plain to anything else refuses to start). The accepted
+# cost: podman refuses to remove a container another one shares the namespace of, so the two are
+# stopped and recreated together (deploy.sh), and the catcher's messages do not survive a deploy.
+#
+# The web UI is published on the VM's loopback only. It has no sign-in and shows live staging
+# links, so it is reached through an SSH tunnel to the door VM (README.md, "Staging mail").
+
+services:
+  mailpit:
+    image: ${WEFT_DOOR_MAILPIT_IMAGE:?the digest vars/weft.yml pins, rendered into .env}
+    container_name: weft-door-mailpit
+    restart: always
+    network_mode: "service:door"
+    environment:
+      # SMTP on the namespace's loopback: nothing but the door can hand it a message.
+      MP_SMTP_BIND_ADDR: 127.0.0.1:1025
+      # The UI listens inside the namespace; the VM publishes it on its own loopback below.
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+      MP_DISABLE_VERSION_CHECK: "true"
+
+  door:
+    environment:
+      WEFT_FRONT_DOOR_SMTP_HOST: 127.0.0.1
+      WEFT_FRONT_DOOR_SMTP_PORT: "1025"
+      WEFT_FRONT_DOOR_SMTP_SECURITY: plain
+      WEFT_FRONT_DOOR_MAIL_FROM: ${WEFT_DOOR_MAIL_FROM:?the sender address, rendered into .env}
+      # Every link in an email points here, never at a request's Host.
+      WEFT_FRONT_DOOR_URL: ${WEFT_DOOR_URL:?the front door's https address, rendered into .env}
+    # The namespace is the door's, so the catcher's UI port is published on the door.
+    ports:
+      - "127.0.0.1:${WEFT_DOOR_MAILPIT_UI_PORT:?rendered into .env}:8025"

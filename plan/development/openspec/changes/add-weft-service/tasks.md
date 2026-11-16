@@ -54,14 +54,16 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 - [ ] 5.3 A failing-health drill, a migration-failure drill followed by "Roll Back weft Host", `reboot-host.yml` on each staging VM, and the hairpin check, each recorded as a Semaphore task id.
 - [ ] 5.4 A weft-only package-read credential, read by `tasks/registry-login.yml` through `registry_login_key`, in place of the shared `secret/services/github:pat`, which until then sits in the deploy user's `auth.json` on every weft VM: a GitHub App installation token if GitHub's container registry accepts one for these packages. Before the rack.
 - [ ] 5.5 The orchestrator gets the podman socket of a separate unprivileged user, who runs only agent and egress-proxy containers, so its compromise no longer owns the deploy user's image store and containers (`design.md`, known gaps). Before the rack.
-- [ ] 5.6 Validation gate: scenarios "Staging runs the commit a person launched" and "Health fails within the watch window" hold on staging.
+- [ ] 5.6 Staging's front door mails Mailpit (`weft_door_mailpit`, `compose.mailpit.yml`), because a front door from weft #541 on refuses to start without mail and no provider is chosen yet. Its UI is reached through an SSH tunnel to the door VM, and a sign-up on staging is proved from it.
+- [ ] 5.7 Validation gate: scenarios "Staging runs the commit a person launched", "Health fails within the watch window" and "Staging's front door keeps its mail" hold on staging.
 
 ## 6. The rack [step 28]
 
 - [ ] 6.0 Before the rack: `roll-out-weft-release.yml` imports `snapshot-vm.yml` for each host whose pin changed, before that host's deploy, meeting `PRINCIPLES.md` §5's snapshot [TARGET] for weft (`design.md`, D10). Until then the snapshot is a person's step with "Snapshot VM".
 - [ ] 6.1 The rack's first rollout: each host pinned in site-config, a Proxmox snapshot of each, then "Roll Out weft Release" (Dev until promotion).
 - [ ] 6.2 Seal custody (#108) settled; a migration-failure drill and a rollback drill on Bench.
-- [ ] 6.3 Validation gate: scenario "A rack host moves only to its pin" holds on the rack.
+- [ ] 6.3 A transactional mail provider for the platform (its DNS records on Cloudflare, its credential in OpenBao), rendered into the rack's front door as a 0600 password file. Before the rack: from weft #541 on, a front door with no mail refuses to start.
+- [ ] 6.4 Validation gate: scenario "A rack host moves only to its pin" holds on the rack, and scenario "A rack front door never names the mail catcher" holds.
 
 ## 7. Observability [steps 34, 35, 38a, 45]
 

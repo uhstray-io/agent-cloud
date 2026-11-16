@@ -1,0 +1,42 @@
+---
+# weft-door-mail.yml — staging's mail catcher: allowed on staging alone, pinned by digest, and
+# pulled, all before anything stops.
+#
+# The front door refuses to start without mail (weft #541). Until a transactional provider is
+# chosen for the platform, staging's door hands every message to Mailpit (weft_door_mailpit,
+# compose.mailpit.yml), which keeps it and sends nothing. On the rack that would be a front door
+# whose sign-ups and resets silently reach nobody, so a rack host (or any host not in staging) with
+# weft_door_mailpit set is refused here, where the running door is left untouched, rather than
+# found by a customer who never gets their link.
+#
+# Caller is tasks/weft-release.yml, for the door role, in a deploy and in a rollback: a rollback
+# renders door.env.j2 too, so the rule has to hold on both paths.
+
+- name: "Front door: refuse the mail catcher outside staging"
+  ansible.builtin.assert:
+    that:
+      - not (weft_door_mailpit | default(false) | bool) or weft_environment | default('') == 'staging'
+    fail_msg: >-
+      {{ inventory_hostname }} sets weft_door_mailpit, and its weft_environment is
+      '{{ weft_environment | default('') }}'. Mailpit keeps every email and sends none, so on the
+      rack every sign-up and reset link would reach nobody. Only staging may run it: remove
+      weft_door_mailpit from this host. Nothing has changed on this host.
+
+- name: "Front door: the mail catcher"
+  when: weft_door_mailpit | default(false) | bool
+  block:
+    # A digest, never a tag, as for every image a weft host runs: a tag can move after review.
+    - name: "Require the mail catcher's image by digest"
+      ansible.builtin.assert:
+        that:
+          - _weft_mailpit_image | string is match('^[^@\s]+@sha256:[0-9a-f]{64}$')
+        fail_msg: >-
+          weft_mailpit_image is {{ _weft_mailpit_image }}, which is not pinned by digest. Nothing
+          has changed on this host.
+
+    # Here rather than at `compose up`: a pull that fails after the stop leaves no front door.
+    - name: "Pull the mail catcher by digest"
+      ansible.builtin.command:
+        argv: ["{{ container_engine | default('podman') }}", pull, "{{ _weft_mailpit_image }}"]
+      changed_when: false
+      when: not ansible_check_mode

@@ -327,3 +327,25 @@ PY
   # The id is still what weft.toml binds sign-in claims to.
   assert_grep -qF 'known_as = "{{ weft_workspace_id }}"' "$WS_DIR/templates/weft.toml.j2"
 }
+
+@test "weft: staging's mail catcher is checked before anything stops, by digest, and never named on the rack" {
+  # weft #541: the front door refuses to start without mail, and there is no provider yet. Staging's
+  # door hands every message to Mailpit, which sends none. The rule that only staging runs it is in
+  # weft-release.yml, which every deploy and every rollback reaches before the stop, so a refusal
+  # leaves a running door untouched (test_weft_deploy_runs.py runs the check itself).
+  local inc
+  inc=$(sed -n '/weft-door-mail.yml/,/^$/p' "$PB/tasks/weft-release.yml")
+  assert_grep -qF "when: _weft_role == 'door'" <<<"$inc"
+  [ "$(grep -n 'weft-door-mail.yml' "$PB/tasks/weft-release.yml" | cut -d: -f1)" -lt \
+    "$(grep -n 'Pull the verified images' "$PB/tasks/weft-release.yml" | cut -d: -f1)" ]
+  assert_grep -qF "weft_environment | default('') == 'staging'" "$PB/tasks/weft-door-mail.yml"
+  # By digest, as every image a weft host runs, with no default in compose: any default is a tag.
+  assert_grep -qE "_weft_mailpit_image: .*@sha256:[0-9a-f]{64}'" "$PB/vars/weft.yml"
+  assert_grep -qE '^\s+image: \$\{WEFT_DOOR_MAILPIT_IMAGE:\?[^}]+\}$' "$DOOR_DIR/compose.mailpit.yml"
+  assert_grep -qF 'require_digest "$MAILPIT_IMAGE"' "$DOOR_DIR/deploy.sh"
+  # .env is the one decision point: the overlay is loaded from it, and only the template writes it.
+  assert_grep -qF "grep -E '^WEFT_DOOR_MAILPIT_IMAGE='" "$DOOR_DIR/deploy.sh"
+  assert_grep -qF "{% if weft_door_mailpit | default(false) | bool %}" "$DOOR_DIR/templates/door.env.j2"
+  # It catches and never sends: no relay and no forward. The code, not its comments, which say so.
+  refute_grep -qiE 'relay|forward' <<<"$(grep -vE '^\s*#' "$DOOR_DIR/compose.mailpit.yml")"
+}

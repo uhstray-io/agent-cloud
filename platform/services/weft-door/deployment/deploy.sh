@@ -35,6 +35,19 @@ CONTAINER=weft-door
 REQUIRED=(WEFT_DOOR_IMAGE WEFT_DOOR_DIR WEFT_DOOR_BIND WEFT_DOOR_PORT WEFT_DOOR_WORKSPACE_URL
   WEFT_DOOR_CLIENT_ADDRESS_HEADER WEFT_DOOR_TRUSTED_PROXIES)
 
+# Staging's mail catcher (compose.mailpit.yml): .env carries WEFT_DOOR_MAILPIT_IMAGE only when the
+# inventory sets weft_door_mailpit, which tasks/weft-door-mail.yml refuses outside staging. .env is
+# the one decision point, so the overlay and the variables it needs cannot disagree. Undeclared,
+# the overlay is not loaded and the stack is the door alone.
+SERVICES=(door)
+MAILPIT_IMAGE=$(grep -E '^WEFT_DOOR_MAILPIT_IMAGE=' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)
+if [ -n "$MAILPIT_IMAGE" ]; then
+  COMPOSE_OVERLAYS="compose.mailpit.yml ${COMPOSE_OVERLAYS:-}"
+  # The catcher lives in the door's network namespace, and podman will not remove a container
+  # another shares the namespace of: the two stop and start together.
+  SERVICES=(door mailpit)
+fi
+
 usage() {
   echo "Usage: ./deploy.sh <pull|up|stop|images|backup|restore|health|restarts> [args]"
   exit 1
@@ -74,18 +87,30 @@ cmd_pull() {
   require_digest "$WEFT_DOOR_IMAGE"
   info "Pulling ${WEFT_DOOR_IMAGE}..."
   "$CONTAINER_ENGINE" pull "$WEFT_DOOR_IMAGE"
+  if [ -n "$MAILPIT_IMAGE" ]; then
+    require_digest "$MAILPIT_IMAGE"
+    "$CONTAINER_ENGINE" pull "$MAILPIT_IMAGE"
+  fi
 }
 
 cmd_up() {
   require_digest "$WEFT_DOOR_IMAGE"
+  [ -z "$MAILPIT_IMAGE" ] || require_digest "$MAILPIT_IMAGE"
+  # A catcher left from a .env that named one still holds the door's namespace, stopped or not, and
+  # podman then refuses to recreate the door: podman-compose reports that and exits 0, and the OLD
+  # door starts again, on the old image (measured with podman 6.2, podman-compose 1.6).
+  if [ -z "$MAILPIT_IMAGE" ] && "$CONTAINER_ENGINE" container exists "${CONTAINER}-mailpit" 2>/dev/null; then
+    info "Removing the mail catcher this .env no longer names..."
+    "$CONTAINER_ENGINE" rm -f "${CONTAINER}-mailpit" >/dev/null
+  fi
   info "Starting the front door..."
-  compose up -d --no-deps --force-recreate door
+  compose up -d --no-deps --force-recreate "${SERVICES[@]}"
   wait_for_http "http://${WEFT_DOOR_BIND}:${WEFT_DOOR_PORT}/" "front door" 120
 }
 
 cmd_stop() {
   info "Stopping the front door..."
-  compose stop door || warn "the front door was not running"
+  compose stop "${SERVICES[@]}" || warn "the front door was not running"
 }
 
 # Read only, and needs no .env: the deploy asks before it renders one.
