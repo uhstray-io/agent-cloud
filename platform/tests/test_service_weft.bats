@@ -231,6 +231,20 @@ PY
   assert_grep -qF '{ name: signing_key, type: hex, length: 64 }' "$PB/weft-door.yml"
 }
 
+@test "weft: the front door is checked for its client address before anything stops, in a deploy and a rollback" {
+  # weft #484: a door given WEFT_FRONT_DOOR_BEHIND_A_PROXY alone refuses to start, and so does one
+  # given a header with no proxies. weft-release.yml is reached by every deploy and every rollback
+  # before the stop, so the check there leaves a running door untouched when it fails.
+  refute_grep -rqE '^[[:space:]]*[A-Z_]*BEHIND_A_PROXY *[:=]' "$DOOR_DIR/compose.yml" "$DOOR_DIR/templates"
+  local inc
+  inc=$(sed -n '/weft-door-header.yml/,/^$/p' "$PB/tasks/weft-release.yml")
+  assert_grep -qF "when: _weft_role == 'door'" <<<"$inc"
+  [ "$(grep -n 'weft-door-header.yml' "$PB/tasks/weft-release.yml" | cut -d: -f1)" -lt \
+    "$(grep -n 'Pull the verified images' "$PB/tasks/weft-release.yml" | cut -d: -f1)" ]
+  assert_grep -qF 'include_tasks: tasks/weft-release.yml' "$PB/rollback-weft-host.yml"
+  assert_grep -qE 'WEFT_DOOR_CLIENT_ADDRESS_HEADER WEFT_DOOR_TRUSTED_PROXIES\)$' "$DOOR_DIR/deploy.sh"
+}
+
 @test "weft: the_workspace_env_names_no_model_key_or_forge_token" {
   # D539: a workspace's model keys and forge token are entered by its admin on Settings >
   # Credentials and live only in its catalog, under its seal. Nothing the platform renders may

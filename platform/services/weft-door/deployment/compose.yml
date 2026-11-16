@@ -29,9 +29,12 @@ services:
       # https://{name}.<weft domain>: a workspace's address is the company name its admin chose.
       WEFT_FRONT_DOOR_WORKSPACE_URL: ${WEFT_DOOR_WORKSPACE_URL}
       WEFT_FRONT_DOOR_SECURE: "true"
-      # Caddy is in front, so the client address is in X-Forwarded-For. Without this, the
-      # per-address sign-in counter is one counter for the whole world.
-      WEFT_FRONT_DOOR_BEHIND_A_PROXY: "true"
+      # Caddy is in front, so the client is named by a header Cloudflare overwrites, believed only
+      # from Caddy's address. Without them, the per-address sign-in counter is one counter for the
+      # whole world. weft #484 retired WEFT_FRONT_DOOR_BEHIND_A_PROXY: given alone, the door
+      # refuses to start. tasks/weft-door-header.yml requires both before anything stops.
+      WEFT_FRONT_DOOR_CLIENT_ADDRESS_HEADER: ${WEFT_DOOR_CLIENT_ADDRESS_HEADER:?the header the edge overwrites, rendered into .env}
+      WEFT_FRONT_DOOR_TRUSTED_PROXIES: ${WEFT_DOOR_TRUSTED_PROXIES:?the edge Caddy host as CIDR blocks, rendered into .env}
     volumes:
       - ${WEFT_DOOR_DIR}:${WEFT_DOOR_DIR}
       - ./door.key:/run/weft/door.key:ro
