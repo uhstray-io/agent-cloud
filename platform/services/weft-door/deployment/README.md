@@ -39,7 +39,7 @@ deployment/
 ├── compose.yml              the front door; its key as a 0600 file, read-only
 ├── lib/door_public_key.py   the public key from the signing key, on stdin (controller only)
 └── templates/
-    ├── door.env.j2          .env: image digest, paths, the workspace address template (no secret)
+    ├── door.env.j2          .env: image digest, paths, the workspace address template, the client address header and its proxies (no secret)
     ├── door.key.j2          the signing key (0600)
     └── caddy-site.j2        <domain> -> front door, <name>.<domain> -> each workspace, anything else -> front door
 ```
@@ -55,6 +55,8 @@ door's `weft_release` pin are described in the workspace README. The front door'
 | `weft_door_bind` | the front door host | the address the Caddy host reaches it on | `ansible_host` |
 | `weft_door_port` | the front door host | its published port | `8081` |
 | `weft_door_dir` | optional | the records' directory on the VM's own disk | `/srv/weft-door` |
+| `weft_door_trusted_proxies` | the front door host, required | the edge Caddy host's address, as a list of CIDR blocks, the only peers the client address header is believed from | none: a deploy refuses before anything stops |
+| `weft_door_client_address_header` | optional | the header the edge overwrites with the client's address; every weft name is proxied by Cloudflare | `CF-Connecting-IP` |
 | `weft_caddy_tls` | optional | the `tls` block of the Caddy fragment | `dns cloudflare {$CLOUDFLARE_API_KEY}` |
 
 The fragment also reads each workspace's `weft_workspace_name`, `weft_board_bind` and

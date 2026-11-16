@@ -79,7 +79,7 @@ Before every deploy the binary takes its own backup set beside the data and veri
 
 Every platform hostname is proxied by Cloudflare, and grey-clouding was rejected because it publishes the origin address in DNS (`plan/architecture/05-platform-infra.md`). weft's names follow, with no exception. The costs and where each lands: live voice over UDP cannot pass the HTTP proxy and waits on decision V (tasks 4.4, 5.2, 8.3); the front door's per-address sign-in counter needs the real client (C5 below, task 4.3); the WAF challenge faces weft's non-browser paths and needs a skip (C6 below, task 4.2); the proxy's request timeout and body limit apply to uploads.
 
-Until task 4.3 lands, the front door's `WEFT_FRONT_DOOR_BEHIND_A_PROXY` reads `X-Forwarded-For` as Caddy sets it, which behind Cloudflare is Cloudflare's address: one counter per edge node, not per client. That is not safe for the rack, and the rack is not deployed before task 4.3.
+The front door reads the client from `CF-Connecting-IP` (`WEFT_FRONT_DOOR_CLIENT_ADDRESS_HEADER`) and believes it only from the edge Caddy host (`WEFT_FRONT_DOOR_TRUSTED_PROXIES`, from `weft_door_trusted_proxies`), as the board does from `[board] client_address_header` and `trusted_proxies`; a deploy refuses a front door without the proxies before anything stops. weft #484 retired `WEFT_FRONT_DOOR_BEHIND_A_PROXY`, which read `X-Forwarded-For`, and a door given it alone refuses to start. Caddy passes `CF-Connecting-IP` through as it arrives, so until task 4.3 lands a client that reaches Caddy without crossing Cloudflare can name its own address. That is not safe for the rack, and the rack is not deployed before task 4.3.
 
 ### D12. Scrubbed platform logs to Loki, and liveness from the scrape (Jacob, 2026-11-10)
 

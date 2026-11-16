@@ -258,6 +258,56 @@ def test_a_release_before_the_header_deploys_when_no_proxy_is_trusted(host):
     assert not [line for line in _board_table(host) if line.startswith("client_address_header")]
 
 
+def _door_env(tmp_path: Path, extra: dict) -> tuple:
+    """The front door's real header check, then its real .env template, as weft-release.yml and the
+    deploy run them: the check first, the render only if it passed."""
+    env_file = tmp_path / "door.env"
+    play = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"_weft_release_name": NEW, "_weft_images": {"weft-door": f"{REGISTRY}/weft-door@{DIGEST}"},
+                 "_weft_door_dir": "/srv/weft-door", "weft_door_bind": "127.0.0.1",
+                 "weft_domain": "weft.example.test", **extra},
+        "tasks": [
+            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-header.yml")},
+            {"ansible.builtin.template": {"src": str(DOOR_DIR / "templates/door.env.j2"),
+                                          "dest": str(env_file), "mode": "0600"}},
+        ],
+    }]
+    playbook = tmp_path / "door.yml"
+    playbook.write_text(yaml.safe_dump(play, width=10**6))
+    proc = run_playbook(playbook, tmp_path, env={"ANSIBLE_NOCOLOR": "1"})
+    return proc, env_file
+
+
+def test_the_front_door_is_told_which_header_names_the_client_and_which_proxy_to_believe(tmp_path):
+    # weft #484 retired WEFT_FRONT_DOOR_BEHIND_A_PROXY: a door given it alone refuses to start.
+    # What replaced it is a header the edge overwrites and the proxies it is believed from, and the
+    # door needs both or refuses to start on the one it got.
+    proc, env_file = _door_env(tmp_path, {"weft_door_trusted_proxies": ["192.0.2.5/32", " 192.0.2.6/32 "]})
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    env = env_file.read_text()
+    assert "WEFT_DOOR_CLIENT_ADDRESS_HEADER=CF-Connecting-IP\n" in env, (
+        "every weft name is proxied by Cloudflare, so the client is in CF-Connecting-IP:\n" + env)
+    assert "WEFT_DOOR_TRUSTED_PROXIES=192.0.2.5/32,192.0.2.6/32\n" in env, env
+    compose = yaml.safe_load((DOOR_DIR / "compose.yml").read_text())["services"]["door"]["environment"]
+    assert "WEFT_FRONT_DOOR_BEHIND_A_PROXY" not in compose, "a door given it alone refuses to start"
+    assert compose["WEFT_FRONT_DOOR_CLIENT_ADDRESS_HEADER"].startswith("${WEFT_DOOR_CLIENT_ADDRESS_HEADER:?"), compose
+    assert compose["WEFT_FRONT_DOOR_TRUSTED_PROXIES"].startswith("${WEFT_DOOR_TRUSTED_PROXIES:?"), compose
+
+
+@pytest.mark.parametrize("extra", [{}, {"weft_door_trusted_proxies": []}, {"weft_door_trusted_proxies": [" "]},
+                                   {"weft_door_trusted_proxies": "192.0.2.5/32"}],
+                         ids=["unset", "empty", "blank", "a-string-not-a-list"])
+def test_a_front_door_with_no_proxy_to_believe_is_refused_before_its_env_is_rendered(tmp_path, extra):
+    # Behind Caddy with no proxies, every sign-in counts against Caddy's address and ten failures
+    # lock everybody out; with the header and no proxies the door refuses to start. Either way the
+    # refusal belongs before the stop, so the running door is left as it is.
+    proc, env_file = _door_env(tmp_path, extra)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "has no weft_door_trusted_proxies" in proc.stdout, proc.stdout[-4000:]
+    assert not env_file.exists(), "the .env was rendered after the refusal"
+
+
 def test_a_host_already_on_its_pin_is_left_alone(host):
     # Waves come from per-host pins, so a rollout reaches hosts whose pins did not change; each of
     # them must be left running, not stopped, backed up and restarted.
