@@ -2,7 +2,7 @@
 
 > **Depends on:** 14 (Postiz), 26 (deploy-activepieces), 27 (agentgateway-content-generation)
 >
-> Plans 26 and 27 are cited here by their OpenSpec change names. Their design is not restated in this plan. Plan 27 ([27-agentgateway-content-generation.md](27-agentgateway-content-generation.md)) is on `dev` since 2026-11-17. Plan 26 is not yet, so facts attributed to change `deploy-activepieces` are unverified here until it merges.
+> Plans 26 and 27 are cited here by their OpenSpec change names. Their design is not restated in this plan. Plans 26 ([26-activepieces.md](26-activepieces.md)) and 27 ([27-agentgateway-content-generation.md](27-agentgateway-content-generation.md)) are on `dev` since 2026-11-17.
 
 **Author:** Joseph A. Wisneski IV
 **Date:** 2026-11-16
@@ -194,7 +194,7 @@ Each task's blockers, inside and outside this change, are the "Blocked by" lines
 - **Model output (R7).** The guardrail (D10), the forbidden-claims list in each brand profile, and the human approval act together. Neither the guardrail nor the approval is sufficient alone.
 - **Blast radius.** A failing flow can create drafts. Two controls stand between a draft and a post the pipeline schedules, and neither is built yet: the static check (scenario "Static check over the committed flow definitions") and the handoff, which refuses a schedule without an approval record for that revision (task 4.4). A compromised Activepieces, or a flow edited outside the repository, holds the publishing key and is bounded by neither (R5); Open Question 6 is the control that would close this. Brand isolation (D9) keeps a committed flow's drafts to their brand's mapped account.
 - **Budget.** The gateway's per-client budgets bound generation for each identity. The publishing service's post-creation ceiling (R6) bounds post creation through the handoff's shared budget.
-- **Network exposure.** The Activepieces Community edition sits behind the platform's forward-auth gate at the edge, as change `deploy-activepieces` sets it (unverified here until that change merges). Gateway calls take the path plan 27 decides ([27-agentgateway-content-generation.md](27-agentgateway-content-generation.md), D1 and D8; AC-783, AC-825, AC-826), not the public inference edge.
+- **Network exposure.** The Activepieces Community edition sits behind the platform's forward-auth gate at the edge (plan 26, D2). Gateway calls take the path plan 27 decides ([27-agentgateway-content-generation.md](27-agentgateway-content-generation.md), D1 and D8; AC-783, AC-825, AC-826), not the public inference edge.
 - **Edition (R1).** The upstream documentation ties API keys to the Platform and Enterprise editions. Flows as code (D3) and connections as code (D4) depend on a spike against the edition the platform runs.
 
 ## Risks
@@ -253,7 +253,7 @@ Repository facts:
 |---|---|
 | [14-postiz-social-publishing.md](14-postiz-social-publishing.md) | The publishing service that drafts are handed to. D1 here repeats its scheduling decision. |
 | [deploy-postiz-social-publishing](openspec/changes/deploy-postiz-social-publishing/) | The change that delivers the publishing service, its API key and its capability `platform/postiz-publishing`. |
-| Change `deploy-activepieces` (plan 26) | Delivers the flow engine this plan builds on. Cited by change name. |
+| [26-activepieces.md](26-activepieces.md), change `deploy-activepieces` | Delivers the flow engine this plan builds on; its spike O8 (task 1.5, AC-772) is this plan's risk R1. |
 | [27-agentgateway-content-generation.md](27-agentgateway-content-generation.md), change `agentgateway-content-generation` | Delivers the gateway text path, the image path and the `activepieces` client identity. |
 | [social-content-automation](openspec/changes/social-content-automation/) | The OpenSpec change that carries this plan's design, tasks and spec. |
 | [use-cases.md](../../platform/services/postiz/context/use-cases.md) | The publishing service's automation endpoint and key. |
