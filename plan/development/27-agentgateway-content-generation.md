@@ -22,7 +22,7 @@
 | D2 | Identity `activepieces`. The instance declares `agw_verify_client` as an operator identity, and `activepieces` is never the first entry of `agw_clients`. It is not in `agw_openrouter_identities`. Its `allowed_models` names the text model only for now; the image model joins after task 3.3. | The deploy's keyed verify runs as `agw_verify_client`, else the first identity of the merged list (`deploy-agentgateway.yml:968-971`, `:1165`). Naming it explicitly keeps every deploy from spending this identity's budget, whatever the list order. OpenRouter names are removed from every identity outside the union (`config.yaml.j2:55`, `:65`, `:140`). | `deploy-agentgateway.yml:968-971,1165`; `config.yaml.j2:55-65,140` |
 | D3 | Token budget `tokens_per_hour` of 250,000, provisional. Task 2.3 (AC-785) sets it, and gate 2.4 (AC-791) re-measures it from the response usage fields. The value lives in site-config under `agw_client_policies.activepieces.tokens_per_hour`. | The arithmetic in "Identity and budget" below. The budget is the gateway's only per-identity control (`config.yaml.j2:163-165`), so it sits well below the default. A looping flow then cannot take a large share of the shared pair. Plane declares no numeric post cadence (AC-802, AC-836), so the figure rests on the assumptions listed there. | `config.yaml.j2:124,171`; AC-802; AC-836 |
 | D4 | No studio identity for now. | A studio identity is needed only if the studio calls models directly. That is undecided. | AC-810 |
-| D5 | Two phases. The text path (tasks 2.1 to 2.4) goes first. The image path (tasks 3.1 to 3.6) waits for AC-870 and for image serving on the DGX Spark pair. | The image model's licence is unresolved (AC-870). The image module is planned, not built. | AC-870; dgx-spark module `qwen-image-nvfp4-serving` |
+| D5 | Two phases. The text path (tasks 2.1 to 2.4) goes first. The image path (tasks 3.1 to 3.6) waits until the image model the dgx-spark fit test selects (Z-Image-Turbo first, AC-870 decision 2026-11-16) passes its fit test on the DGX Spark pair and the dgx-spark handoff names its endpoint. | The operator decided on 2026-11-16 to switch away from the first candidate model (AC-870). Image serving on the DGX Spark pair is not built. | AC-870; dgx-spark items DGXSPARK-10, DGXSPARK-12 to DGXSPARK-16 |
 | D6 | A per-identity request limit is not decided here. Task 3.3 (AC-788) decides it, for every identity, not only for images. Only a limit the gateway enforces meets the image requirement in the spec, so the image model waits for one. The options: a gateway release with a per-key request limit; rewriting the gateway config into the full `binds`/`listeners`/`routes` shape, where a per-identity `conditional` limit is accepted on v1.5.0; a count kept by the calling flow, which is cooperative, not enforced, and acceptable only as a text-path stopgap; an edge rule, which is off the decided path (D1). Recommendation: the gateway release; the config rewrite if no release ships one in time. | The gap is gateway-wide: v1.5.0 has no per-identity request bucket under the `llm` shortcut, which the gateway config uses for every identity (`config.yaml.j2:358-366`); the `conditional` form is accepted only on `binds[].listeners[].routes[]` policies (`:362-363`). The same question was settled for token budgets on 2026-09-17, leaving "wait for the release that ships `key`" as the path to a request bucket (`inference-gateway-agentgateway` change, `design.md:439-446`). Images are the sharpest case: a response without usage is not charged (`config.yaml.j2:156-158`), and whether image responses carry usage is UNVERIFIED (task 3.1). | `config.yaml.j2:156-158,358-371`; `inference-gateway-agentgateway/design.md:439-446` |
 | D7 | The key is generated once by Deploy agentgateway and reused, as `secret/services/agentgateway:client_activepieces`. It reaches Activepieces through a `no_log` playbook that reads OpenBao and writes the Activepieces connection through its API. That playbook belongs to `social-content-automation` (AC-797). No person pastes the key by hand. | Each enrolled identity gets one generated `client_<name>` field (`secret-declarations/agentgateway.yml:249-254`). One automated handout keeps the key out of chat, shell history and task output. | `secret-declarations/agentgateway.yml:249-254`; AC-797 |
 | D8 | Whether an Activepieces piece can present a client certificate is UNVERIFIED. Spike 2.1 (AC-826) decides it. If a piece cannot, the fallback is a minimal mTLS egress sidecar in the Activepieces compose project, on an internal network only, holding the leaf and the CA bundle. Renewal proof: the Activepieces host sets `agw_verify_base_url` to an `https://` URL and holds one client leaf. Reload `none` is acceptable only if the piece or sidecar re-reads the leaf for each connection; otherwise task 2.2 adds a declared reload and an in-use proof through the consumer's own client path, as the Caddy client leaf has. | A caller that cannot present a leaf has no path to the listener. Renewal proves a per-call client leaf from a fresh probe on its host (`renew-internal-certs.yml:235-243`), which shows the files on disk, not that a long-running consumer presents them. The per-call client leaf proof is a fresh probe process (`:37-44`), and reload `none` elsewhere relies on the consumer re-reading `current` itself (`:20-30`); the Caddy client leaf is proven through Caddy's own route instead (`:214-222`). | AC-826; `renew-internal-certs.yml:20-30,37-44,214-222,235-243,251-254` |
@@ -48,7 +48,7 @@
 | The operator decided the network path on 2026-11-12. The item is Done. | Plane AC-783 |
 | No numeric post cadence is declared. AC-802 names a declared cadence, derived from a topic backlog, but gives no figure. AC-836 names five target accounts across two brands. | Plane AC-802, AC-836 |
 | Every scheduling or publishing step needs a person's approval. Drafts may be created automatically. | Plane AC-795, AC-801 |
-| The image model's module is planned, not built. Its licence question is open. | Plane AC-870 (module `social-content-automation`); dgx-spark module `qwen-image-nvfp4-serving` |
+| The image model is switched: the dgx-spark work fit-tests Z-Image-Turbo first, with a fallback order. Agent-cloud image tasks stay blocked until the fit test passes and the dgx-spark handoff names the endpoint and model. | Plane AC-870 (Done 2026-11-16, decision comment; module `social-content-automation`); DGXSPARK-10, DGXSPARK-12 to DGXSPARK-16 |
 | Whether a studio identity is needed is undecided. | Plane AC-810 |
 
 Facts marked as Plane items come from the Plane records named in the table, read on 2026-11-16.
@@ -73,7 +73,7 @@ flowchart LR
         LIM["Identity allow-list and<br/>hourly token budget,<br/>global request bucket"]
     end
     VLLM["vLLM text upstream<br/>DGX Spark pair"]
-    IMG["Image upstream<br/>(blocked: AC-870 and image serving)"]
+    IMG["Image upstream<br/>(blocked: fit test and image serving)"]
     EDGE["Public edge: Caddy and Cloudflare<br/>not on this path"]
     AP -- "client leaf, mTLS" --> LIS
     AP -. "egress via sidecar, if spike 2.1 says so" .-> SC
@@ -119,11 +119,11 @@ The budget is charged after each response, from its usage fields. The request th
 
 ### Images
 
-- The image path is blocked on two things. The image model's licence is open (AC-870). The image model is not served, because the dgx-spark module `qwen-image-nvfp4-serving` is planned, not built.
+- The image path is blocked until the image model the dgx-spark fit test selects (Z-Image-Turbo first, AC-870 decision 2026-11-16) passes its fit test and the dgx-spark handoff (DGXSPARK-10) names its endpoint and model.
 - No image route is defined in the gateway's template, its deploy playbook or its secret declaration. Whether v1.5.0 proxies the OpenAI images API is **UNVERIFIED**. Task 3.1 (AC-786) checks it. If it does not, the pin at `compose.yml:36` moves, and the move is verified at that point.
 - The image route's shape, its format type and its upstream configuration keys are open. Tasks 3.1 and 3.2 decide them.
 - A second upstream needs a template branch, a wider validator (`secret-declarations/agentgateway.yml:309-310` refuses any provider value other than `openrouter` today), a new `existing` secret seeded with `Seed OpenBao Key` and never generated, and tests. The pattern to follow is the `agentgateway-openrouter` change and `platform/tests/test_agw_openrouter.py`.
-- The image model's card is reported to have no safety checker. This was **not checked** in this session and is UNVERIFIED. The control in this plan is a person's approval before anything is published (AC-795, AC-801).
+- An output safety filter for the chosen image model is tracked in dgx-spark (DGXSPARK-16). Whatever it finds, a person approves each item before it is published (AC-795, AC-801).
 
 ### Limits
 
@@ -142,7 +142,7 @@ The Plane module `agentgateway-content-generation` holds 12 items: AC-782, AC-78
 
 Not blocked by the image model. It depends on `deploy-activepieces` delivering the Activepieces host, which holds the leaf. That change is not on `dev`. Task text and acceptance are in `tasks.md`.
 
-- Rollout order follows the o11y inference probe's client leaf, the same pattern, first run in production on 2026-10-05 (`platform/services/o11y/deployment/README.md:843-848`):
+- Rollout order follows the o11y inference probe's client leaf, the same pattern, first run in production on 2026-10-05 (`platform/services/o11y/deployment/README.md:843-849`):
   1. site-config declarations together: the leaf, the allowlist entry, the `agw_clients` entry (2.3), the gateway host's firewall rule admitting the Activepieces host, and `agw_verify_base_url`; then an inventory sync;
   2. `Deploy step-ca (Dev)`, because the CA signs only declared SANs;
   3. `Deploy agentgateway (Dev)` (allowlist rule, `client_activepieces` minted), once, so the gateway container is recreated once;
@@ -157,7 +157,7 @@ Phase 1 acceptance: gate 2.4 passes. The `activepieces` identity gets chat and j
 
 ### Phase 2: image path (tasks 3.1 to 3.6)
 
-Blocked on AC-870 (the image model's licence) and on image serving on the DGX Spark pair (dgx-spark module `qwen-image-nvfp4-serving`, planned, not built). Task text and acceptance are in `tasks.md`.
+Blocked until the image model the dgx-spark fit test selects (Z-Image-Turbo first, AC-870 decision 2026-11-16) passes its fit test on the DGX Spark pair and the dgx-spark handoff names its endpoint (DGXSPARK-10). Task text and acceptance are in `tasks.md`.
 
 - The image model joins the `activepieces` allow-list only once task 3.3's request limit is in force (spec requirement "An image model is served only with a per-identity request limit in force").
 - Task 3.2's recommended shape: a per-model upstream declaration on each `agw_models` entry (base URL, key secret, formats), from which the template renders each entry's `baseUrl` and conformance takes each case's direct URL, rather than a second hard-wired branch. The direct side is hard-wired to vLLM today (`config.yaml.j2:430`, `run-agw-conformance.yml:407`). Task 3.2 decides it.
@@ -188,16 +188,16 @@ Phase 2 acceptance: gate 3.6 passes.
 - **No paid models.** The identity is outside the OpenRouter union, so OpenRouter names are removed from its allow-list (`config.yaml.j2:55`, `:65`, `:140`).
 - **Sidecar.** If it is needed, it sits on an internal network only, and it holds only the leaf and the CA bundle.
 - **Public edge.** Unchanged (D1).
-- **Published images.** The image model's card is reported to have no safety checker. This is UNVERIFIED. A person approves each item before it is published (AC-795, AC-801).
+- **Published images.** An output safety filter for the chosen model is tracked in DGXSPARK-16. A person approves each item before it is published (AC-795, AC-801).
 
 ## Open Questions and Unverified Items
 
 - **UNVERIFIED: the images API in v1.5.0.** Task 3.1 (AC-786).
 - **UNVERIFIED: whether an Activepieces piece can present a client certificate.** Task 2.1 (AC-826).
 - **UNVERIFIED: a per-key request limit in any gateway release.** Tasks 3.1 and 3.3 (AC-786, AC-788).
-- **UNVERIFIED: the image model's safety checker.** Stated on its card, not checked here.
+- **Open: the image model's output safety filter.** DGXSPARK-16.
 - **Undeclared: the post cadence.** The budget figure rests on the assumptions in "Identity and budget". Gate 2.4 re-measures it (AC-791).
-- **Open: the image model's licence.** AC-870.
+- **Open: which image model passes the fit test.** Z-Image-Turbo first (AC-870, DGXSPARK-13).
 - **Open: a studio identity.** AC-810.
 - **Dependency: the Activepieces host.** Phase 1 needs `deploy-activepieces`, which is not on `dev`.
 
@@ -225,3 +225,4 @@ A promotion carries at most 100 pull requests and 120 changed files (`plan/archi
 | Date | Change |
 |---|---|
 | 2026-11-16 | Initial draft (PROPOSED): text path and image path, the `activepieces` identity and its budget, and the internal-listener client-leaf path decided under AC-783. |
+| 2026-11-16 | Image path: AC-870 decided (switch model; Z-Image-Turbo fit-tested first); the image tasks now wait on the dgx-spark fit test and serving handoff. |

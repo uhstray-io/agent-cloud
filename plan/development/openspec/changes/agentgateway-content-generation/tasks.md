@@ -17,7 +17,7 @@ Every task is safe to rerun. Nothing here runs against production until the oper
 - [ ] 2.4 Validation gate (text): chat and json_schema completions through the gateway from the Activepieces host; keyless call refused (AC-791)
       Proven by the spec scenarios "Content identity budget and allow-list", "Keyless request with an admitted certificate" and "Request without a client certificate". Records the measured token usage per draft against the budget assumptions in plan 27. Run again if task 3.1 moves the pin.
 
-## 3. Image path (blocked: AC-870 and the dgx-spark image serving)
+## 3. Image path (blocked: the dgx-spark image model fit test and serving handoff)
 - [ ] 3.1 Verify the pinned gateway proxies the OpenAI images API; upgrade if not; check per-key request limits in the same release (AC-786)
       Acceptance: a recorded result for the release tested, from exercising the route. Records whether image responses carry usage. Any pin change goes through `AGW_IMAGE` in compose.yml and a deploy.
 - [ ] 3.2 Add the image upstream and route by model name (AC-787)

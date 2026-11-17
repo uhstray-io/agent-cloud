@@ -29,7 +29,7 @@ should not sit behind.
   probe path.
 - A text path first (tasks 2.1 to 2.4). An image path after it (tasks 3.1 to 3.6): an image
   upstream, a per-identity request limit, a conformance case and dashboards. The image path waits
-  on the image model's licence (AC-870) and on image serving on the DGX Spark pair.
+  until the image model the dgx-spark fit test selects (Z-Image-Turbo first, AC-870 decision 2026-11-16) passes its fit test and is served on the DGX Spark pair.
 - This change adds documentation only. No code, template, playbook or inventory changes in this
   repository.
 
@@ -62,6 +62,6 @@ should not sit behind.
   (AGENTS.md, `Deploy agentgateway` row).
 - Out of this repository: declaring the identity, its budget, its allowlist entry and the leaf in
   site-config; the Activepieces host and its connection (`deploy-activepieces`,
-  `social-content-automation`); and image serving on the DGX Spark pair (dgx-spark module
-  `qwen-image-nvfp4-serving`, planned, not built). Each is an open task here, not done by this
+  `social-content-automation`); and image serving on the DGX Spark pair (dgx-spark items
+  DGXSPARK-10 and DGXSPARK-12 to DGXSPARK-16). Each is an open task here, not done by this
   change.
