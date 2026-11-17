@@ -59,7 +59,12 @@ fn a_seed_run_logs_in_with_the_role_and_shows_the_inputs_and_the_inventory() {
     );
     let opts = RunOpts {
         inputs: vec![("SEED_X".to_owned(), "synthetic-seed-input".to_owned())],
-        inventory_vars: json!({"seed_marker": "synthetic-inventory-marker"}),
+        inventory_vars: [(
+            "seed_marker".to_owned(),
+            json!("synthetic-inventory-marker"),
+        )]
+        .into_iter()
+        .collect(),
         ..RunOpts::default()
     };
 

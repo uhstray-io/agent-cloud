@@ -113,14 +113,14 @@ pub fn reply(status: u16, body: &Value) -> ResponseTemplate {
 
 /// What a seed run is given: the keyword arguments of `seed_harness.run_seed`. `Default` is the
 /// usual run, with the address declared, no inputs and no extra vars.
+#[derive(Default)]
 pub struct RunOpts {
-    /// Extra `-e` vars, a JSON object. They override the AppRole credentials of [`role`]
-    /// (`extra`). [`run_seed`] panics when this is not an object.
-    pub extra: Value,
+    /// Extra `-e` vars. They override the AppRole credentials of [`role`] (`extra`).
+    pub extra: Map<String, Value>,
     /// Seed inputs: process-environment variables whose values the run must never print
     /// (`inputs`).
     pub inputs: Vec<(String, String)>,
-    /// `true` writes an inventory that declares no address (`declare=False`).
+    /// `true` writes an inventory that declares no address and no vars (`declare=False`).
     pub undeclared: bool,
     /// `OPENBAO_ADDR` in the run's environment, when non-empty (`env_addr`).
     pub env_addr: Option<String>,
@@ -129,41 +129,14 @@ pub struct RunOpts {
     /// The address the inventory declares as `openbao_addr`, when it is not the server's and not
     /// empty (`declared`).
     pub declared: Option<String>,
-    /// More `all.vars` in the inventory, a JSON object, after `openbao_addr` (`inventory_vars`).
-    /// [`run_seed`] panics when this is not an object.
-    pub inventory_vars: Value,
+    /// More `all.vars` in the inventory, after `openbao_addr` (`inventory_vars`).
+    pub inventory_vars: Map<String, Value>,
 }
 
-impl Default for RunOpts {
-    fn default() -> Self {
-        RunOpts {
-            extra: json!({}),
-            inputs: Vec::new(),
-            undeclared: false,
-            env_addr: None,
-            verbose: false,
-            declared: None,
-            inventory_vars: json!({}),
-        }
-    }
-}
-
-/// The JSON object a [`RunOpts`] field holds. Panics naming the field when it holds anything else,
-/// without printing the value.
-fn object_field<'a>(field: &str, value: &'a Value) -> &'a Map<String, Value> {
-    value
-        .as_object()
-        .unwrap_or_else(|| panic!("RunOpts.{field} must be a JSON object"))
-}
-
-/// Writes the inventory `run_seed` runs against: `openbao_addr` declared as `address`, or as
-/// `opts.declared`, plus `inventory_vars`; unless `opts.undeclared` declares no address at all.
-fn write_inventory(
-    dir: &Path,
-    address: &str,
-    opts: &RunOpts,
-    inventory_vars: &Map<String, Value>,
-) -> PathBuf {
+/// Writes the inventory `run_seed` runs against. Declared: `openbao_addr` is `address`, or
+/// `opts.declared`, followed by `opts.inventory_vars`. Undeclared (`opts.undeclared`): no vars at
+/// all, so `inventory_vars` is dropped too, as Python's `declare=False` did.
+fn write_inventory(dir: &Path, address: &str, opts: &RunOpts) -> PathBuf {
     let group = if opts.undeclared {
         json!({"hosts": {}})
     } else {
@@ -174,7 +147,7 @@ fn write_inventory(
             .unwrap_or(address);
         let mut vars = Map::new();
         vars.insert("openbao_addr".to_owned(), json!(declared));
-        for (name, value) in inventory_vars {
+        for (name, value) in &opts.inventory_vars {
             vars.insert(name.clone(), value.clone());
         }
         json!({"vars": vars})
@@ -184,9 +157,8 @@ fn write_inventory(
 
 /// Runs `playbook` once against the fake at `address` and returns its exit code and its output,
 /// stdout then stderr (`seed_harness.run_seed`). `playbook` is a path, relative to the repository
-/// root or absolute; it must be UTF-8. The address is declared as `openbao_addr` in the inventory,
-/// as in production, where the seed refuses any other
-/// (`tasks/assert-bao-addr-declared.yml`).
+/// root or absolute. The address is declared as `openbao_addr` in the inventory, as in production,
+/// where the seed refuses any other (`tasks/assert-bao-addr-declared.yml`).
 ///
 /// The output must hold none of [`NEVER_PRINTED`] and no input's value. A leak panics naming each
 /// entry or input that leaked, never its value. A timeout panics without the child's output
@@ -197,25 +169,16 @@ pub fn run_seed(
     address: &str,
     opts: &RunOpts,
 ) -> (i32, String) {
-    let playbook_path = playbook.as_ref();
-    let playbook = playbook_path.to_str().unwrap_or_else(|| {
-        panic!(
-            "the playbook path is not UTF-8: {}",
-            playbook_path.display()
-        )
-    });
-    let inventory_vars = object_field("inventory_vars", &opts.inventory_vars);
-    let extra_vars = object_field("extra", &opts.extra);
-
-    let inventory = write_inventory(dir, address, opts, inventory_vars);
+    let inventory = write_inventory(dir, address, opts);
     let mut extra = role();
-    for (name, value) in extra_vars {
+    for (name, value) in &opts.extra {
         extra.insert(name.clone(), value.clone());
     }
     let extra_json =
         serde_json::to_string(&Value::Object(extra)).expect("a JSON object serializes");
 
-    let mut cmd = process::ansible_playbook(dir, &inventory.display().to_string(), playbook);
+    let playbook = playbook.as_ref().display().to_string();
+    let mut cmd = process::ansible_playbook(dir, &inventory.display().to_string(), &playbook);
     cmd.args(["-c", "local", "-e", extra_json.as_str()]);
     if opts.verbose {
         cmd.arg("-v");
