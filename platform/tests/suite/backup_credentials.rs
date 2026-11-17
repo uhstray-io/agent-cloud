@@ -25,7 +25,7 @@
 //! | cred backup: no non-deterministic lookup sits in a play's vars block | `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, with the self-check `two_same_named_vars_entries_in_one_file_count_twice`, `the_branch_name_is_frozen_by_a_set_fact_task` and, candidate: pins text, `the_frozen_branch_is_written_as_a_folded_scalar` |
 //! | cred backup: every git call carrying a space uses argv, not cmd | `every_git_call_carrying_a_space_uses_argv_not_cmd`, with the self-check `a_free_form_git_command_is_not_argv` |
 //! | cred backup: the scratch dir is wiped even when the run fails | `the_scratch_dir_is_wiped_even_when_the_run_fails` |
-//! | cred backup: nothing it prints can carry a credential value | `no_debug_task_prints_a_secret_field_value`, with `the_secret_value_write_is_no_log` and the self-check `a_set_fact_alias_of_the_payload_is_flagged` |
+//! | cred backup: nothing it prints can carry a credential value | `no_debug_task_prints_a_secret_field_value`, with `the_secret_value_write_is_no_log` and the self-checks `a_set_fact_alias_of_the_payload_is_flagged` and `a_vars_alias_of_the_payload_is_flagged` |
 //! | cred backup: the store path is built from a validated name, not taken whole | `the_store_path_is_built_from_a_validated_name_not_taken_whole` |
 //! | cred backup: the deploy key exists on the runner only inside the dir that is always wiped | `the_deploy_key_is_read_from_one_fixed_store_path`, `the_materialised_key_is_0600_no_log_under_the_scratch_dir`, `git_ssh_names_only_the_deploy_key_with_strict_host_keys` (with the self-check `a_changed_ssh_command_is_refused`), `the_key_is_written_only_after_the_scratch_dir_exists` |
 //! | cred backup: the key is never taken from a task parameter, and the seed path says why | `the_deploy_key_is_never_a_task_parameter`, with candidate: pins text `every_key_missing_message_says_how_to_seed_the_key` |
@@ -106,6 +106,16 @@ fn collect_maps<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
 /// The value of every mapping entry with this key, at any depth.
 fn values_of<'a>(node: &'a Node, key: &str) -> Vec<&'a Node> {
     maps(node).into_iter().filter_map(|m| m.get(key)).collect()
+}
+
+/// Every `vars:` entry at any depth (play, block, task, include), as `(key, value)`.
+fn vars_entries(node: &Node) -> Vec<(&str, &Node)> {
+    values_of(node, "vars")
+        .into_iter()
+        .filter_map(Node::as_map)
+        .flatten()
+        .map(|(key, value)| (key.as_str().unwrap_or("(non-string key)"), value))
+        .collect()
 }
 
 /// A string at any depth, in a key or a value.
@@ -307,20 +317,12 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
 /// one entry per offender: two same-named entries in one file are two entries, so each counts.
 /// No position goes into the name, so an edit elsewhere in the file renames nothing.
 fn vars_offenders(file: &str, text: &str) -> Vec<String> {
-    let mut offenders = Vec::new();
-    let docs = yaml::parse(text, file);
-    for map in docs.iter().flat_map(maps) {
-        let Some(vars) = map.get("vars").and_then(Node::as_map) else {
-            continue;
-        };
-        for (key, value) in vars {
-            if any_string(value, &|s: &str| NONDETERMINISTIC.is_match(s)) {
-                let key = key.as_str().unwrap_or("(non-string key)");
-                offenders.push(format!("{file}:{key}"));
-            }
-        }
-    }
-    offenders
+    yaml::parse(text, file)
+        .iter()
+        .flat_map(vars_entries)
+        .filter(|(_, value)| any_string(value, &|s: &str| NONDETERMINISTIC.is_match(s)))
+        .map(|(key, _)| format!("{file}:{key}"))
+        .collect()
 }
 
 #[test]
@@ -457,13 +459,13 @@ fn strings_of<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
     }
 }
 
-/// The `_secret` expressions in a task that are not on [`DEBUG_SECRET_READS`]. Every occurrence in
-/// every string of the task is judged. The match stops at a space or a filter, so `| dict2items` is
+/// The `_secret` expressions in a node (a task, or a vars value) that are not on
+/// [`DEBUG_SECRET_READS`]. Every occurrence in every string under the node is judged. The match stops at a space or a filter, so `| dict2items` is
 /// judged by its base, `_secret.json.data.data`, which is not allowed. The word boundaries keep
 /// `_bao_secret_id` and `_secret_id` out of it.
-fn undeclared_secret_reads(task: &Node) -> Vec<String> {
+fn undeclared_secret_reads(node: &Node) -> Vec<String> {
     let mut strings = Vec::new();
-    strings_of(task, &mut strings);
+    strings_of(node, &mut strings);
     strings
         .into_iter()
         .flat_map(|text| SECRET_READ.find_iter(text).map(|found| found.as_str()))
@@ -498,34 +500,24 @@ fn no_debug_task_prints_a_secret_field_value() {
          {DEBUG_SECRET_READS:?} may appear: {leaks:?}"
     );
 
-    // A set_fact that copies the payload into a fact is an alias a later debug can print without
-    // naming `_secret`, so every set_fact is held to the same allow-list.
-    let aliases: Vec<String> = tasks.iter().flat_map(set_fact_secret_reads).collect();
+    // A set_fact or a `vars:` entry (play, block, task or include) that copies the payload is an
+    // alias a later debug can print without naming `_secret`, so both are held to the same
+    // allow-list.
+    let mut aliases: Vec<String> = tasks.iter().flat_map(set_fact_secret_reads).collect();
+    aliases.extend(vars_secret_reads(&load(PB)));
     assert!(
         aliases.is_empty(),
-        "a set_fact copies the secret payload into a fact, which a later debug can print; only \
+        "a set_fact or vars entry copies the secret payload, which a later debug can print; only \
          {DEBUG_SECRET_READS:?} may appear: {aliases:?}"
-    );
-
-    // A `vars:` entry (play, block, task or include) is the same alias, and lazy: a debug that
-    // names it reads the payload.
-    let vars_aliases = vars_secret_reads(&load(PB));
-    assert!(
-        vars_aliases.is_empty(),
-        "a vars entry copies the secret payload, which a later debug can print; only \
-         {DEBUG_SECRET_READS:?} may appear: {vars_aliases:?}"
     );
 }
 
 /// The undeclared `_secret` reads in every `vars:` mapping of a document, at any depth, each named
 /// by its vars key.
 fn vars_secret_reads(doc: &Node) -> Vec<String> {
-    maps(doc)
+    vars_entries(doc)
         .into_iter()
-        .filter_map(|m| m.get("vars").and_then(Node::as_map))
-        .flatten()
         .flat_map(|(key, value)| {
-            let key = key.as_str().unwrap_or("(non-string key)");
             undeclared_secret_reads(value)
                 .into_iter()
                 .map(move |expr| format!("vars {key}: {expr}"))
