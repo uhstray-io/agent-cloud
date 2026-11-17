@@ -138,8 +138,8 @@ A draft MUST name exactly one target account. A handoff MUST refuse a target int
 
 #### Scenario: Fan-out to another account requires its own approval
 
-- **WHEN** an approved draft is to be posted to a second account
-- **THEN** the handoff schedules that second post only with its own recorded approval
+- **WHEN** the content of an approved draft is to be posted to a second account
+- **THEN** a separate draft names the second account, and the handoff schedules it only with its own recorded approval
 
 ### Requirement: Flows and connections are declared as code and applied by playbook
 
