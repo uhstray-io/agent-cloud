@@ -250,6 +250,8 @@ fn a_guard_bound_to_another_url_is_refused() {
     assert!(bound("{{ _bao_url }}"));
     assert!(bound("{{_bao_url}}"));
     assert!(!bound("{{ other_url }}"));
+    assert!(!bound("{{ _bao_url_other }}"));
+    assert!(!bound("{{ x ~ _bao_url }}"));
 }
 
 #[test]
@@ -503,6 +505,49 @@ fn no_debug_task_prints_a_secret_field_value() {
         aliases.is_empty(),
         "a set_fact copies the secret payload into a fact, which a later debug can print; only \
          {DEBUG_SECRET_READS:?} may appear: {aliases:?}"
+    );
+
+    // A `vars:` entry (play, block, task or include) is the same alias, and lazy: a debug that
+    // names it reads the payload.
+    let vars_aliases = vars_secret_reads(&load(PB));
+    assert!(
+        vars_aliases.is_empty(),
+        "a vars entry copies the secret payload, which a later debug can print; only \
+         {DEBUG_SECRET_READS:?} may appear: {vars_aliases:?}"
+    );
+}
+
+/// The undeclared `_secret` reads in every `vars:` mapping of a document, at any depth, each named
+/// by its vars key.
+fn vars_secret_reads(doc: &Node) -> Vec<String> {
+    maps(doc)
+        .into_iter()
+        .filter_map(|m| m.get("vars").and_then(Node::as_map))
+        .flatten()
+        .flat_map(|(key, value)| {
+            let key = key.as_str().unwrap_or("(non-string key)");
+            undeclared_secret_reads(value)
+                .into_iter()
+                .map(move |expr| format!("vars {key}: {expr}"))
+        })
+        .collect()
+}
+
+#[test]
+fn a_vars_alias_of_the_payload_is_flagged() {
+    let doc = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    for flagged in [
+        "- hosts: h\n  vars:\n    _shape: \"{{ _secret.json.data.data }}\"\n  tasks: []\n",
+        "- hosts: h\n  tasks:\n    - block:\n        - ansible.builtin.debug: {msg: x}\n      vars:\n        _s: \"{{ _secret }}\"\n",
+        "- hosts: h\n  tasks:\n    - ansible.builtin.include_tasks: x.yml\n      vars:\n        _s: \"{{ _secret.json | to_json }}\"\n",
+    ] {
+        assert_eq!(vars_secret_reads(&doc(flagged)).len(), 1, "{flagged}");
+    }
+    assert!(
+        vars_secret_reads(&doc(
+            "- hosts: h\n  vars:\n    _st: \"{{ _secret.status }}\"\n  tasks: []\n"
+        ))
+        .is_empty()
     );
 }
 
