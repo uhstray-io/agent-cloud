@@ -17,8 +17,8 @@ OpenRouter model. The deploy's keyed verify MUST NOT run as this identity.
 - THEN the rendered configuration gives it that budget and that allow-list, and no other model
 
 #### Scenario: Content identity is not the verify identity
-- WHEN `activepieces` is enrolled and another identity precedes it in the merged identity list
-- THEN the deploy's keyed verify runs as that preceding identity
+- WHEN `activepieces` is enrolled and `agw_verify_client` names another enrolled identity
+- THEN the deploy's keyed verify runs as that identity and spends none of the `activepieces` budget
 
 #### Scenario: Content identity denied OpenRouter models
 - WHEN `activepieces` is not in `agw_openrouter_identities` and an OpenRouter model is declared

@@ -19,13 +19,13 @@
 | # | Decision | Rationale | Source |
 |---|---|---|---|
 | D1 | Activepieces reaches the gateway on the gateway's own internal listener, with an internal-CA (step-ca) client leaf. The public inference route is not used. | The rejected route carries a Cloudflare per-source limit of 10 requests per 10 seconds on `/v1/*` and a 125-second read timeout (AGENTS.md, Deployment Status, inference edge entry). A content flow should not sit behind either. The public edge stays unchanged. | AC-783, decided 2026-11-12 by the operator |
-| D2 | Identity `activepieces`. It is never the first entry of `agw_clients`. It is not in `agw_openrouter_identities`. Its `allowed_models` names the text model only for now; task 3.2 adds the image model. | The deploy's keyed verify runs as the first identity of the merged list (`deploy-agentgateway.yml:971`), so a first position would make every deploy spend this identity's budget and depend on it. OpenRouter names are removed from every identity outside the union (`config.yaml.j2:55`, `:65`, `:140`). | `deploy-agentgateway.yml:971`; `config.yaml.j2:55-65,140` |
+| D2 | Identity `activepieces`. The instance declares `agw_verify_client` as an operator identity, and `activepieces` is never the first entry of `agw_clients`. It is not in `agw_openrouter_identities`. Its `allowed_models` names the text model only for now; the image model joins after task 3.3. | The deploy's keyed verify runs as `agw_verify_client`, else the first identity of the merged list (`deploy-agentgateway.yml:968-971`, `:1165`). Naming it explicitly keeps every deploy from spending this identity's budget, whatever the list order. OpenRouter names are removed from every identity outside the union (`config.yaml.j2:55`, `:65`, `:140`). | `deploy-agentgateway.yml:968-971,1165`; `config.yaml.j2:55-65,140` |
 | D3 | Token budget `tokens_per_hour` of 250,000, provisional. Task 2.3 (AC-785) sets it, and gate 2.4 (AC-791) re-measures it from the response usage fields. The value lives in site-config under `agw_client_policies.activepieces.tokens_per_hour`. | The arithmetic in "Identity and budget" below. The budget is the gateway's only per-identity control (`config.yaml.j2:163-165`), so it sits well below the default. A looping flow then cannot take a large share of the shared pair. Plane declares no numeric post cadence (AC-802, AC-836), so the figure rests on the assumptions listed there. | `config.yaml.j2:124,171`; AC-802; AC-836 |
 | D4 | No studio identity for now. | A studio identity is needed only if the studio calls models directly. That is undecided. | AC-810 |
 | D5 | Two phases. The text path (tasks 2.1 to 2.4) goes first. The image path (tasks 3.1 to 3.6) waits for AC-870 and for image serving on the DGX Spark pair. | The image model's licence is unresolved (AC-870). The image module is planned, not built. | AC-870; dgx-spark module `qwen-image-nvfp4-serving` |
-| D6 | The per-identity request limit for images is not decided here. Task 3.3 (AC-788) decides it. The options are (a) a gateway release with a per-key request limit, enforced by the gateway; (b) a count kept by the calling flow, which is cooperative and not enforced; (c) an edge rule, which is off the decided path (D1). Recommendation: (a), with (b) and the global bucket as the interim. | The gateway has no per-identity request bucket in v1.5.0 (`config.yaml.j2:358-366`). The template comment says the `key` field was on main only as of 2026-09-17 (`config.yaml.j2:360-361`). Whether any release ships it is UNVERIFIED. | `config.yaml.j2:358-371` |
+| D6 | A per-identity request limit is not decided here. Task 3.3 (AC-788) decides it, for every identity, not only for images. The options: a gateway release with a per-key request limit, enforced by the gateway; a count kept by the calling flow, which is cooperative and not enforced; an edge rule, which is off the decided path (D1). Recommendation: the gateway release, with the flow's count and the global bucket as the interim. | The gap is gateway-wide: v1.5.0 has no per-identity request bucket for any identity (`config.yaml.j2:358-366`). The same question was settled for token budgets on 2026-09-17, leaving "wait for the release that ships `key`" as the path to a request bucket (`inference-gateway-agentgateway` change, `design.md:439-446`). Images are the sharpest case: a response without usage is not charged (`config.yaml.j2:156-158`), and whether image responses carry usage is UNVERIFIED (task 3.1). | `config.yaml.j2:156-158,358-371`; `inference-gateway-agentgateway/design.md:439-446` |
 | D7 | The key is generated once by Deploy agentgateway and reused, as `secret/services/agentgateway:client_activepieces`. It reaches Activepieces through a `no_log` playbook that reads OpenBao and writes the Activepieces connection through its API. That playbook belongs to `social-content-automation` (AC-797). No person pastes the key by hand. | Each enrolled identity gets one generated `client_<name>` field (`secret-declarations/agentgateway.yml:249-254`). One automated handout keeps the key out of chat, shell history and task output. | `secret-declarations/agentgateway.yml:249-254`; AC-797 |
-| D8 | Whether an Activepieces piece can present a client certificate is UNVERIFIED. Spike 2.1 (AC-826) decides it. If a piece cannot, the fallback is a minimal mTLS egress sidecar in the Activepieces compose project, on an internal network only, holding the leaf and the CA bundle. Renewal proof: the Activepieces host sets `agw_verify_base_url` to an `https://` URL and holds one client leaf with reload `none`. | A caller that cannot present a leaf has no path to the listener. Renewal proves a per-call client leaf only from the host that holds it (`renew-internal-certs.yml:235-243`). | AC-826; `renew-internal-certs.yml:235-243,251-254` |
+| D8 | Whether an Activepieces piece can present a client certificate is UNVERIFIED. Spike 2.1 (AC-826) decides it. If a piece cannot, the fallback is a minimal mTLS egress sidecar in the Activepieces compose project, on an internal network only, holding the leaf and the CA bundle. Renewal proof: the Activepieces host sets `agw_verify_base_url` to an `https://` URL and holds one client leaf. Reload `none` is acceptable only if the piece or sidecar re-reads the leaf for each connection; otherwise task 2.2 adds a declared reload and an in-use proof through the consumer's own client path, as the Caddy client leaf has. | A caller that cannot present a leaf has no path to the listener. Renewal proves a per-call client leaf from a fresh probe on its host (`renew-internal-certs.yml:235-243`), which shows the files on disk, not that a long-running consumer presents them. Reload `none` relies on the consumer re-reading `current` itself (`:20-30`); the Caddy client leaf is proven through Caddy's own route instead (`:214-222`). | AC-826; `renew-internal-certs.yml:20-30,214-222,235-243,251-254` |
 
 ## Verified facts
 
@@ -105,9 +105,9 @@ set budget            rounded up                                   = 250,000
 
 250,000 is one eighth of the 2,000,000 default (`config.yaml.j2:171`). The value is set in site-config (`agw_client_policies.activepieces.tokens_per_hour`, read at `config.yaml.j2:124` and `:171`).
 
-The budget is charged after each response, from its usage fields. The request that crosses the limit completes, and the next one is refused (`config.yaml.j2:156-158`). Each model's transformation asks for usage on every streamed chunk, so a stream is charged even when the client disconnects early (`config.yaml.j2:159-160`).
+The budget is charged after each response, from its usage fields. The request that crosses the limit completes, and the next one is refused (`config.yaml.j2:156-158`). Each model's transformation asks for usage on every streamed chunk, so a stream is charged even when the client disconnects early (`config.yaml.j2:159-160`). The residual: a client that disconnects before the first token is charged nothing (`platform/services/agentgateway/context/architecture.md:737`).
 
-The existing `Probe agentgateway Isolation (Dev)` refuses a burst identity whose budget is above 1000 tokens (AGENTS.md, workflow table, that probe's row). So `activepieces` cannot be its burst identity. The budget refusal at cap is therefore **not proven** for this identity until a drill in the style of that probe exists. Task 3.3 puts that drill in the plan.
+`Probe agentgateway Isolation (Dev)` refuses a burst identity whose budget is above 1000 tokens (`probe-agentgateway-isolation.yml:91`), so it proves the budget mechanism on a dedicated low-budget probe identity, not on `activepieces`. The `activepieces` figure itself is not drilled at cap; gate 2.4 records its measured usage instead.
 
 ### Network path
 
@@ -116,7 +116,6 @@ The existing `Probe agentgateway Isolation (Dev)` refuses a burst identity whose
 - The SAN rule admits a leaf named on `agw_client_cert_allowlist`, or one that shares a SAN with an allowlisted leaf (`probe-agentgateway-client-tls.yml:17-20`). The allowlist holds leaf names, not SANs. The deploy refuses any entry that names no declared client-profile leaf (`deploy-agentgateway.yml:294-305`). Task 2.2 therefore adds the leaf's **name**. AC-825's text says "add its SAN"; this plan corrects that wording.
 - Proof of admission comes from renewal. `Renew Internal Certs (Dev)` gets a keyless 401 through the probe path with the leaf, and a refusal without a certificate (AGENTS.md, `Renew Internal Certs (Dev)` row; `renew-internal-certs.yml:958`). A 401 with the leaf and no key means the gateway reached its key check.
 - **Correction to AC-825.** Its text names `Probe agentgateway Client TLS (Dev)` as the way to prove the leaf. That probe refuses an allowlisted leaf by design (`probe-agentgateway-client-tls.yml:17-20`, `:108-115`), so it cannot prove this leaf is admitted. The renewal path is the proof. The owner of AC-825 should correct the Plane text. This change does not edit Plane.
-- No Caddy or Cloudflare rule sits on this path (D1).
 
 ### Images
 
@@ -128,13 +127,7 @@ The existing `Probe agentgateway Isolation (Dev)` refuses a burst identity whose
 
 ### Limits
 
-The gateway has one request bucket for every client (`config.yaml.j2:367-371`). A flow that loops can exhaust it for everyone, whatever its token budget. The template names the budget as the only per-identity control (`config.yaml.j2:163-165`), and it does not cap requests. The image path therefore needs a per-identity request limit of its own. D6 lists the options:
-
-- **(a) A gateway release with a per-key request limit.** The gateway enforces it, and the gateway owns the identities. Recommended. Whether any release ships it is UNVERIFIED (task 3.1).
-- **(b) A count kept by the calling flow.** It is cooperative. The caller limits itself, and nothing enforces the limit.
-- **(c) An edge rule.** It is off the decided path (D1). It would only apply if the path changed.
-
-Until (a) exists, (b) and the global bucket are the interim controls. Task 3.3 makes the choice. The choice is not made in this plan.
+The gateway has one request bucket for every client (`config.yaml.j2:367-371`), and the token budget caps tokens, not requests (`config.yaml.j2:163-165`). A flow that loops can exhaust the shared bucket for everyone, whatever its token budget. Task 3.3 closes that gap for every identity; D6 lists the options and the recommendation. The choice is not made in this plan.
 
 ### Conformance and dashboards
 
@@ -147,25 +140,19 @@ The Plane module `agentgateway-content-generation` holds 12 items: AC-782, AC-78
 
 ### Phase 1: text path (tasks 2.1 to 2.4)
 
-Not blocked by the image model. It depends on `deploy-activepieces` delivering the Activepieces host, which holds the leaf. That change is not on `dev`.
+Not blocked by the image model. It depends on `deploy-activepieces` delivering the Activepieces host, which holds the leaf. That change is not on `dev`. Task text and acceptance are in `tasks.md`.
 
-- **2.1 (AC-826)** Spike: can an Activepieces piece present a client certificate. Acceptance: a recorded yes or no for the piece tested. On no, the sidecar goes into the Activepieces compose project (D8).
-- **2.2 (AC-825)** Issue the Activepieces host a client leaf, add its leaf name to `agw_client_cert_allowlist`, and give it a renewal proof path. Acceptance: `Renew Internal Certs (Dev)` proves the leaf (scenario "Allowlisted leaf proven at renewal").
-- **2.3 (AC-785)** Enroll the `activepieces` identity with its budget and text-only allow-list. Acceptance: the rendered configuration gives it that budget and that allow-list (scenario "Content identity budget and allow-list"). The deploy's verify does not run as it (scenario "Content identity is not the verify identity").
-- **2.4 (AC-791)** Validation gate (text). Chat and json_schema completions go through the gateway from the Activepieces host, and a keyless call is refused. Proven by the spec scenarios "Content identity budget and allow-list", "Keyless request with an admitted certificate" and "Request without a client certificate".
+- The leaf must be issued before the gateway deploy that adds it to the allowlist: the deploy refuses a leaf not yet issued (AGENTS.md, `Deploy agentgateway` row). Declare the identity (2.3) and the allowlist entry (2.2) together and run `Deploy agentgateway` once after issuance, so the gateway container is recreated once.
+- If task 3.1 later moves the pin, gate 2.4 runs again on the new pin.
 
 Phase 1 acceptance: gate 2.4 passes. The `activepieces` identity gets chat and json_schema completions through the gateway in production, from the Activepieces host, and a keyless call is refused.
 
 ### Phase 2: image path (tasks 3.1 to 3.6)
 
-Blocked on AC-870 (the image model's licence) and on image serving on the DGX Spark pair (dgx-spark module `qwen-image-nvfp4-serving`, planned, not built). Nothing in this phase starts until both clear.
+Blocked on AC-870 (the image model's licence) and on image serving on the DGX Spark pair (dgx-spark module `qwen-image-nvfp4-serving`, planned, not built). Task text and acceptance are in `tasks.md`.
 
-- **3.1 (AC-786)** Verify that the pinned gateway proxies the OpenAI images API, and whether a release ships per-key request limits. Upgrade the pin if it does not. Acceptance: a recorded result for the release tested, from exercising the route, not from inference.
-- **3.2 (AC-787)** Add the image upstream and route by model name. Acceptance: a template branch, a validator change, a new `existing` secret seeded with `Seed OpenBao Key`, and tests in the pattern of `agentgateway-openrouter`. The image model joins the `activepieces` allow-list.
-- **3.3 (AC-788)** Choose and encode a per-identity request limit for images (D6). Acceptance: the choice is recorded in this plan, under D6. A drill in the style of `Probe agentgateway Isolation (Dev)` shows that a request past the cap is refused for that identity while another identity is still served (scenario "Request past the image cap").
-- **3.4 (AC-789)** Conformance: add an images case that compares the gateway with the direct image upstream. Acceptance: `run-agw-conformance.yml` gains a second direct URL, and the case passes against both sides.
-- **3.5 (AC-790)** Dashboards: image latency, errors and per-identity volume. Acceptance: `Verify o11y Dashboard Data (Dev)` passes for the new panels.
-- **3.6 (AC-792)** Validation gate (image). The image route renders through the gateway in production, and the cap holds. Proven by the spec scenario "Request past the image cap".
+- The image model joins the `activepieces` allow-list only once task 3.3's request limit is in force (spec requirement "An image model is served only with a per-identity request limit in force").
+- Task 3.2's recommended shape: a per-model upstream declaration on each `agw_models` entry (base URL, key secret, formats), from which the template renders each entry's `baseUrl` and conformance takes each case's direct URL, rather than a second hard-wired branch. The direct side is hard-wired to vLLM today (`config.yaml.j2:430`, `run-agw-conformance.yml:407`). Task 3.2 decides it.
 
 Phase 2 acceptance: gate 3.6 passes.
 
@@ -178,7 +165,7 @@ Phase 2 acceptance: gate 3.6 passes.
 | No certificate refused | The no-certificate probe stops in the TLS handshake (scenario "Request without a client certificate"). |
 | Keyless request refused | An admitted leaf with no API key gets HTTP 401 (scenario "Keyless request with an admitted certificate"). |
 | Text gate | Chat and json_schema completions from the Activepieces host succeed, and a keyless call is refused (task 2.4). |
-| Budget refusal at cap | **Not proven** for `activepieces`. The isolation probe refuses a burst identity above 1000 tokens. A drill on a low-budget identity must show HTTP 429 with `budget_exceeded` for the burst identity and HTTP 200 for a control. |
+| Budget refusal at cap | `Probe agentgateway Isolation (Dev)` on a dedicated low-budget probe identity: HTTP 429 with `budget_exceeded` for it and HTTP 200 for a control. The `activepieces` figure is not drilled at cap (it is above the probe's 1000-token limit); gate 2.4 records its usage. |
 | Image cap | A request past the image cap is refused for that identity, and another identity is still served (scenario "Request past the image cap"). |
 | Conformance images case | `run-agw-conformance.yml` passes its images case against both the gateway and the direct image upstream. |
 | Dashboard data | `Verify o11y Dashboard Data (Dev)` passes for the image panels. |
