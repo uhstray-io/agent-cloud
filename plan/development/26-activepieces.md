@@ -316,7 +316,6 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `platform/services/authentik/deployment/blueprints/activepieces-forward-auth.yaml` | new |
 | Shared dump task under `platform/playbooks/tasks/` (task 2.7, extracted from `backup-plane-db.yml`) | new |
 | Shared staged-restore task under `platform/playbooks/tasks/` (task 2.7, extracted from `restore-plane-db.yml`) | new |
-| Shared roster-entry assert task under `platform/playbooks/tasks/` (task 1.4, extracted from `validate-platform-admins.yml:21-25`) | new |
 | One or two test files | new |
 | `plan/development/26-activepieces.md` | new (this pull request) |
 | `plan/development/openspec/changes/deploy-activepieces/.openspec.yaml` | new (this pull request) |
@@ -332,7 +331,6 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `platform/playbooks/bootstrap-local-dev.yml` | changed |
 | `platform/services/authentik/deployment/app-catalog.yml` | changed |
 | `platform/playbooks/tasks/load-platform-admins.yml` | changed (its agentgateway gate becomes a parameter, task 1.4) |
-| `platform/playbooks/tasks/validate-platform-admins.yml` | changed (its per-entry asserts move to a shared task, task 1.4) |
 | `platform/services/authentik/deployment/templates/env.j2` | changed |
 | `platform/infra/cloudflare/dns.tf` | changed |
 | `AGENTS.md` | changed |
@@ -341,7 +339,7 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `plan/architecture/network-architecture.md` | changed |
 | `platform/playbooks/README.md` | changed |
 
-The list has about 23 new files (one row may be two test files) and about 16 changed files, so about 39 in total. `platform/playbooks/deploy-authentik.yml` is changed only if task 2.4 widens its `prod_required` filter (O9), which would make the total about 40. Site-config changes do not count against this repository's budget.
+The list has about 22 new files (one row may be two test files) and about 15 changed files, so about 37 in total. `platform/playbooks/deploy-authentik.yml` is changed only if task 2.4 widens its `prod_required` filter (O9), which would make the total about 38. Site-config changes do not count against this repository's budget.
 
 ## Risk: no API key on Community edition
 
@@ -370,7 +368,7 @@ Each open item is owned by one task. None is stated as fact in this plan.
 | O11 | Does the host firewall's enforce mode refuse a rootless container's outbound traffic? Enforce restricts host-sent traffic (`apply-firewall.yml:185-188`); the firewall's comments say rootless podman never crosses host UFW, in the inbound DNS context only (`:156-158`, `:209-211`). | Task 2.6 | Open. Prove it with a connection from inside the worker container to an undeclared address. If it is not refused, task 2.6 stops before the 2.8 gate and the control for the containers' outbound traffic is planned as a new Plane sub-item of AC-779, with its mechanism recorded here first. |
 | O12 | Does `/api/v1/authentication/sign-in` create an account for an unknown email at 0.93.0? | Task 1.4 | Answered from source: the password check throws `INVALID_CREDENTIALS` when no identity has the email (`user-identity-service.ts:48-55` at tag 0.93.0), so sign-in creates nothing. Task 1.4 still probes an uninvited sign-in and an `/otp/request` once, as defence in depth. |
 | O13 | The shared admin policy also admits Authentik superusers who are not in `platform-admins` (R4). Should the Activepieces gate admit them? | Task 2.4 | Open, the operator's decision; the route (task 2.5) does not open until it is decided. Admitting superusers requires an explicit exception added to the spec first; otherwise the 2.4 read-back fails on the superuser clause. Narrowing it means a group-only policy for this app or a change to the shared template, which affects every admin-tier app. The spec keeps the decided rule (platform-admins only, AC-767); until O13 is decided, the shared policy also admits superusers, so the 2.4 read-back fails and the route stays closed. |
-| O14 | On a host declaring `activepieces_restore_pending`, what does the first deploy do before the restore runs: create an owner, sign in, render the declared bind? The proposed rule is to stop after compose up on the loopback bind, with no owner, no sign-in and no declared bind, until the restore has run and the flag is removed; the next deploy then takes the re-run path, including the uninvited sign-up probe. The answer also covers who removes the flag, what a dry run reports for such a host, and the local proof. | Task 2.7 | Open. |
+| O14 | On a host declaring `activepieces_restore_pending`, what does the first deploy do before the restore runs: create an owner, sign in, render the declared bind? The proposed rule is to stop after compose up on the loopback bind, with no owner, no sign-in and no declared bind, until the restore has run and the flag is removed; the next deploy then takes the re-run path. The answer also covers who removes the flag, what a dry run reports for such a host, the local proof, and how the production off-VM copy is read before `Destroy VM` in a rollback. | Task 2.7 | Open. |
 
 ## Instance values (in site-config)
 
