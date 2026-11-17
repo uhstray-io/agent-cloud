@@ -122,9 +122,9 @@ impl Calls {
     }
 
     /// Queues one parametrized case of pytest item `item`: `filter(*args)` must give `want`.
-    fn case(&mut self, item: String, filter: &str, args: Value, want: Want) {
+    fn case(&mut self, item: impl Into<String>, filter: &str, args: Value, want: Want) {
         let id = self.call(filter, args);
-        self.cases.push((item, id, want));
+        self.cases.push((item.into(), id, want));
     }
 
     /// `ufw_desired_rules(["192.0.2.0/24"], **kw)`, the Python `_desired` helper's call.
@@ -251,8 +251,10 @@ fn dual_by_spec(rules: &Value) -> Value {
     Value::Object(map)
 }
 
-fn held(spec: &str, tag: &str) -> Value {
-    json!({"spec": spec, "tag": tag, "family": "", "peer": ""})
+/// A rule as `ufw_parse_added` reads it back: its spec and tag, family and peer blank (the
+/// Python `_held`, which takes any tag).
+fn held(spec: &str, tag: impl Into<Value>) -> Value {
+    json!({"spec": spec, "tag": tag.into(), "family": "", "peer": ""})
 }
 
 /// A refusal: a NON-EMPTY list (null or a non-list is not one, as pytest's `assert problems`),
@@ -451,11 +453,11 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     let held_rules = c.desired(json!({"allow_rules": [{"port": 8080, "from": "192.0.2.5"}]}));
     let masked = held(
         "allow from 203.0.113.9 to any port 5432 proto tcp",
-        &ssh_tag,
+        ssh_tag.as_str(),
     );
     let absent_masked = c.call(
         "ufw_absent",
-        json!([desired_expr, [masked, held(&web_spec, &web_tag)]]),
+        json!([desired_expr, [masked, held(&web_spec, web_tag.as_str())]]),
     );
     let absent_retag = c.call(
         "ufw_absent",
@@ -468,7 +470,10 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         "ufw_absent",
         json!([
             desired_expr,
-            [held(&ssh_spec, &ssh_tag), held(&web_spec, &web_tag)]
+            [
+                held(&ssh_spec, ssh_tag.as_str()),
+                held(&web_spec, web_tag.as_str())
+            ]
         ]),
     );
     let masking = c.call(
@@ -476,7 +481,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         json!([
             [
                 masked,
-                held(&web_spec, &web_tag),
+                held(&web_spec, web_tag.as_str()),
                 held("allow 8443/tcp", "")
             ],
             desired_expr
@@ -617,7 +622,6 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             Want::Refused(Some(why)),
         );
     }
-    let egress = "ufw_egress_problems";
     // A /32 SSH CIDR and the bare address are one host; a broad range over a single-host SSH
     // source contains it; IPv6: a supernet is refused, and families never contain each other.
     let item = "test_egress_containment_is_compared_in_the_spelling_ufw_stores";
@@ -635,41 +639,44 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     ];
     for (entries, cidrs) in spelling {
         c.case(
-            item.into(),
-            egress,
+            item,
+            "ufw_egress_problems",
             json!([entries, cidrs]),
             Want::Refused(None),
         );
     }
     c.case(
-        item.into(),
-        egress,
+        item,
+        "ufw_egress_problems",
         json!([[{"to": "192.0.0.0/8", "broad": true, "reason": "x"}], ["2001:db8::/32"]]),
         Want::Exact(json!([])),
     );
     let item = "test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe";
     c.case(
-        item.into(),
-        egress,
+        item,
+        "ufw_egress_problems",
         json!([[], ["mgmt-net"]]),
         Want::Exact(json!([])),
     );
-    let mgmt_one = c.call(egress, json!([[{"to": "198.51.100.1"}], ["mgmt-net"]]));
+    let mgmt_one = c.call(
+        "ufw_egress_problems",
+        json!([[{"to": "198.51.100.1"}], ["mgmt-net"]]),
+    );
     // `any` is the whole address space: a host inside it is fine, the whole space is not
     c.case(
-        item.into(),
-        egress,
+        item,
+        "ufw_egress_problems",
         json!([[{"to": "198.51.100.1"}], ["any"]]),
         Want::Exact(json!([])),
     );
     c.case(
-        item.into(),
-        egress,
+        item,
+        "ufw_egress_problems",
         json!([[{"to": "::/0", "broad": true, "reason": "x"}], ["any"]]),
         Want::Refused(None),
     );
     let every_problem = c.call(
-        egress,
+        "ufw_egress_problems",
         json!([[{"to": "192.0.0.0/16", "port": 0, "proto": "icmp"}], mgmt()]),
     );
 
@@ -686,7 +693,6 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         json!([[]]),
         json!({"allow_egress": [{"port": 443}, {"port": 3100, "to": "192.0.2.9"}], "egress_audit": true}),
     );
-    let allow = "ufw_allow_egress_problems";
     let allow_ok = [
         json!([{"port": 443}]),
         json!([{"port": "80:81", "proto": "tcp"}]),
@@ -731,25 +737,28 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             Want::Refused(Some(why)),
         );
     }
-    let mode_block = c.call(allow, json!([[], "block"]));
-    let mode_audit = c.call(allow, json!([[], "audit"]));
+    let mode_block = c.call("ufw_allow_egress_problems", json!([[], "block"]));
+    let mode_audit = c.call("ufw_allow_egress_problems", json!([[], "audit"]));
     let dns = json!({"port": 53, "proto": "udp"});
     let probe = json!([{"host": "prime.plane.so", "port": 443}]);
-    let enforce_ok = c.call(allow, json!([[{"port": 443}, dns], "enforce", probe]));
+    let enforce_ok = c.call(
+        "ufw_allow_egress_problems",
+        json!([[{"port": 443}, dns], "enforce", probe]),
+    );
     let enforce_range = c.call(
-        allow,
+        "ufw_allow_egress_problems",
         json!([[{"port": "50:60", "proto": "udp"}], "enforce", probe]),
     );
     let enforce_no_dns = c.call(
-        allow,
+        "ufw_allow_egress_problems",
         json!([[{"port": 443}, {"port": 53}], "enforce", probe]),
     );
-    let enforce_no_probe = c.call(allow, json!([[dns], "enforce", []]));
+    let enforce_no_probe = c.call("ufw_allow_egress_problems", json!([[dns], "enforce", []]));
     let enforce_bad_probe = c.call(
-        allow,
+        "ufw_allow_egress_problems",
         json!([[dns], "enforce", [{"host": "x"}, "x:443", {"host": "x", "port": 0}]]),
     );
-    let enforce_empty = c.call(allow, json!([[], "enforce"]));
+    let enforce_empty = c.call("ufw_allow_egress_problems", json!([[], "enforce"]));
     let timeouts = [
         (json!(5), true),
         (json!("30"), true),
@@ -1050,8 +1059,10 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // the declared spec without its tag (untagged, or an old tag) is absent too: it is retagged
     k.eq(item, &r[absent_retag], desired);
     k.eq(item, &r[absent_held], &json!([]));
-    let masked_held = json!({"spec": "allow from 203.0.113.9 to any port 5432 proto tcp",
-        "tag": desired[0]["tag"], "family": "", "peer": ""});
+    let masked_held = held(
+        "allow from 203.0.113.9 to any port 5432 proto tcp",
+        desired[0]["tag"].clone(),
+    );
     k.eq(item, &r[masking], &json!([masked_held]));
 
     let item = "test_a_rule_naming_no_address_is_re_asserted_even_when_held";
@@ -1165,7 +1176,10 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             .unwrap()
             .iter()
             .any(|cmd| cmd.as_str().is_some_and(|cmd| cmd.contains("log")));
-        k.that(item, !logged, || format!("no audit rule: {}", r[id]));
+        // a non-list is not "no audit rule" (pytest would raise on it)
+        k.that(item, r[id].is_array() && !logged, || {
+            format!("no audit rule: {}", r[id])
+        });
     }
 
     k.eq(
