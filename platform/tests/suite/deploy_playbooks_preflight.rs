@@ -18,22 +18,26 @@
 //!    default only; either takes an optional `| default([])`), piped straight to `length`. It is
 //!    compared ONCE, `> 0`, `!= 0`, or `>=`/`==` a positive integer, and has no
 //!    `and`/`or`/`not`/`if`/`else` and no backslash.
-//!    A literal target (`app_svc`) is covered by a key that is that quoted name, never by a
-//!    variable. A templated target is covered only when it is exactly `{{ <identifier> }}` or
-//!    `{{ <identifier> | default('<name>') }}`, and by a key on that same identifier whose
-//!    `| default('<name>')` is absent or empty, or equals the target's default (AC-915). An absent
-//!    or empty key default leaves an undefined variable failing the guard or the play, so a
-//!    populated group never stands in for the group the play runs. A non-empty key default the
-//!    target does not share covers nothing: the variable can be set where the guard does not see
-//!    it (an inventory value, say), and the play would then run unguarded. Ansible templates a
-//!    play's `hosts:` with that play's own `vars:`
-//!    (`ansible/executor/playbook_executor.py:151-153`). So when the target play sets the
-//!    identifier, or has `vars_files` or `vars_prompt`, only an absent or empty key default covers
-//!    it. A localhost guard play's own `vars:`, `vars_files` or
-//!    `vars_prompt` do not reach the target play, so a guard that sets the identifier does not
-//!    count. So a key default of `other_svc` covers neither `{{ target_service }}` nor
-//!    `{{ target_service | default('app_svc') }}`, and an empty one covers both. Quoted text is
-//!    blanked, length for length, before the shape check (AC-907).
+//!    The key binds to the target (AC-915), and this paragraph is the one statement of the rule:
+//!    - A literal target (`app_svc`) is covered by a key that is that quoted name, never by a
+//!      variable.
+//!    - A templated target is covered only when it is exactly `{{ <identifier> }}` or
+//!      `{{ <identifier> | default('<name>') }}`, by a key on that same identifier whose
+//!      `| default('<name>')` is absent or empty, or equals the target's default.
+//!    - Ansible templates a play's `hosts:` with that play's own `vars:` (ansible-core 2.20.8,
+//!      `ansible/executor/playbook_executor.py`, `get_vars(play=play)` before `post_validate`). So
+//!      when the target play sets the identifier, or has `vars_files` or `vars_prompt`, only an
+//!      absent or empty key default covers it; and a localhost guard play that sets the
+//!      identifier itself does not count.
+//!    - So a key default of `other_svc` covers neither `{{ target_service }}` nor
+//!      `{{ target_service | default('app_svc') }}`, and an empty one covers both. Quoted text is
+//!      blanked, length for length, before the shape check (AC-907).
+//!    - Known limits, accepted: the check reads `vars:`, not every way a value is set. A value the
+//!      guard play sees but `hosts:` does not (an inventory variable, a `set_fact` or `register`
+//!      in the guard play, a role default on either play) can still let the guard test one group
+//!      while the play runs another; so can play-level `tags` or `ignore_errors` on the guard
+//!      play. No deploy playbook does any of these (the variable arrives as a Semaphore survey
+//!      extra var, which both plays see). Tracked as follow-ups.
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
 //! judged by the plays it runs.
@@ -222,16 +226,7 @@ fn check_playbook(path: &Path) -> (Option<String>, bool) {
             continue;
         };
         if LOCAL.contains(&hosts.trim()) {
-            // A variable this guard play sets is not the one the target reads: play vars do not
-            // reach another play, so the guard would test a value the target never runs (AC-915).
-            inline.extend(
-                inline_guard_items(&play)
-                    .into_iter()
-                    .filter(|key| match key {
-                        GuardKey::Var { name, .. } => !play_defines(&play, name),
-                        GuardKey::Group(_) => true,
-                    }),
-            );
+            inline.extend(inline_guard_items(&play));
             continue;
         }
         targets = true;
@@ -340,18 +335,13 @@ fn play_name(play: &Node) -> String {
     format!("{name:?}")
 }
 
-/// Whether an inline guard covers the subject group. A literal subject needs a group key of that
-/// name, and a variable key never covers it (`groups['target_service']` names a group). A templated
-/// subject is covered only when it is exactly `HOSTS_TEMPLATE`, by a variable key naming that same
-/// variable. Its default is absent or empty (an undefined variable then fails the guard), or equals
-/// the target's default and the target's play does not set the variable itself (`play_defines`):
-/// a play's own value is one the guard cannot see, so only an empty or absent key default covers
-/// it (AC-915). A target with no default is covered by an empty or absent key default only, since
-/// a variable the target sees and the guard does not (an inventory value) would run unguarded.
-/// Any other templated subject is not covered.
+/// Whether an inline guard key covers the subject group of the target `play`, by the binding rule
+/// in the module doc (point 2).
 fn covered_inline(subject: &str, keys: &[GuardKey], play: &Node) -> bool {
     if !subject.contains("{{") {
-        return keys.contains(&GuardKey::Group(subject.to_owned()));
+        return keys
+            .iter()
+            .any(|key| matches!(key, GuardKey::Group(group) if group == subject));
     }
     let Some(caps) = HOSTS_TEMPLATE.captures(subject.trim()) else {
         return false;
@@ -384,8 +374,9 @@ fn play_defines(play: &Node, name: &str) -> bool {
 
 /// The lookup key of each assert condition in a localhost play's tasks (nested blocks included)
 /// that a populated group alone satisfies, on a task whose own keys, and its blocks' keys, cannot
-/// skip or soften it. The play's keys are not read: the repository's guard plays carry
-/// `tags: [verify]` (AC-912).
+/// skip or soften it, minus any variable key the play sets itself (its value is not the one the
+/// target reads; module doc, point 2). The play's other keys are not read: the repository's guard
+/// plays carry `tags: [verify]` (AC-912).
 fn inline_guard_items(play: &Node) -> Vec<GuardKey> {
     let mut out = vec![];
     for task in tasks(play.get("tasks")) {
@@ -402,7 +393,11 @@ fn inline_guard_items(play: &Node) -> Vec<GuardKey> {
                 conditions
                     .into_iter()
                     .filter_map(Node::as_str)
-                    .filter_map(guard_key),
+                    .filter_map(guard_key)
+                    .filter(|key| match key {
+                        GuardKey::Var { name, .. } => !play_defines(play, name),
+                        GuardKey::Group(_) => true,
+                    }),
             );
         }
     }
@@ -560,7 +555,7 @@ fn inline_playbook(condition: &str) -> String {
 
 /// As `inline_playbook`, with the target play's `hosts:` value given.
 fn inline_playbook_for(hosts: &str, condition: &str) -> String {
-    guarded_playbook_for(
+    guarded_playbook(
         hosts,
         &format!(
             "    - name: \"Require a populated group\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n"
@@ -568,15 +563,9 @@ fn inline_playbook_for(hosts: &str, condition: &str) -> String {
     )
 }
 
-/// A localhost play running `tasks` (indented as a play's task list), then a play that targets
-/// the templated group.
-fn guarded_playbook(tasks: &str) -> String {
-    guarded_playbook_for("{{ target_service }}", tasks)
-}
-
-/// As `guarded_playbook`, with the target play's `hosts:` value given (a YAML double-quoted
-/// scalar).
-fn guarded_playbook_for(hosts: &str, tasks: &str) -> String {
+/// A localhost play running `tasks` (indented as a play's task list), then a play whose `hosts:`
+/// is `hosts` (a YAML double-quoted scalar).
+fn guarded_playbook(hosts: &str, tasks: &str) -> String {
     format!(
         "- name: \"Inline guard\"\n  hosts: localhost\n  tasks:\n{tasks}- name: \"Work\"\n  hosts: \"{hosts}\"\n  tasks: []\n"
     )
@@ -1416,13 +1405,19 @@ fn an_assert_that_can_be_skipped_or_ignored_is_not_a_guard() {
     // Arrange: an accepted condition on an assert that does not always stop the run.
     let condition = "(groups.get(target_service, []) | length) > 0";
     let single = |extra: &str| {
-        guarded_playbook(&format!(
-            "    - name: \"Require\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n      {extra}\n"
-        ))
+        guarded_playbook(
+            "{{ target_service }}",
+            &format!(
+                "    - name: \"Require\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n      {extra}\n"
+            ),
+        )
     };
-    let rescued = guarded_playbook(&format!(
-        "    - name: \"Block\"\n      block:\n        - name: \"Require\"\n          ansible.builtin.assert:\n            that: \"{condition}\"\n      rescue:\n        - ansible.builtin.debug:\n            msg: caught\n"
-    ));
+    let rescued = guarded_playbook(
+        "{{ target_service }}",
+        &format!(
+            "    - name: \"Block\"\n      block:\n        - name: \"Require\"\n          ansible.builtin.assert:\n            that: \"{condition}\"\n      rescue:\n        - ansible.builtin.debug:\n            msg: caught\n"
+        ),
+    );
     let cases = [
         ("deploy-when.yml", single("when: false")),
         ("deploy-ignore.yml", single("ignore_errors: true")),
