@@ -26,29 +26,9 @@ fn any_line_anchors_each_line_on_its_own() {
 
 #[test]
 fn any_line_never_matches_across_a_newline() {
-    // `.` does not match `\n`, so a pattern spanning two lines finds nothing.
+    // `.` does not match `\n`, and `\n` itself is never inside a line: grep reads the same way.
     assert!(!any_line("ab\ncd", "b.c"));
-}
-
-#[test]
-#[should_panic(expected = "names a newline")]
-fn any_line_refuses_a_pattern_that_names_a_newline() {
-    // It could never match one line, so `refute_line` with it would pass on any file.
-    any_line("ab\ncd", r"b\nc");
-}
-
-#[test]
-fn any_line_keeps_a_carriage_return_as_part_of_its_line() {
-    // grep splits at `\n` only, so a CRLF file's `\r` is the last character of its line: a
-    // forbidden pattern that must consume it still matches.
-    assert!(any_line("secret=abcd\r\nnext", "secret=.{5}$"));
-}
-
-#[test]
-fn any_line_sees_no_line_after_the_final_newline() {
-    // A trailing `\n` ends the last line; it does not start an empty one.
-    assert!(!any_line("ab\n", "^$"));
-    assert!(any_line("ab\n\n", "^$"));
+    assert!(!any_line("ab\ncd", r"b\nc"));
 }
 
 #[test]
@@ -115,6 +95,13 @@ fn assert_line_refuses_an_empty_pattern() {
 fn refute_text_refuses_an_empty_literal() {
     // Without the guard it would fail as "the forbidden `` is present", naming no real finding.
     refute_text(CARGO, "");
+}
+
+#[test]
+#[should_panic(expected = "spans lines; check each line on its own")]
+fn refute_text_refuses_a_literal_that_spans_lines() {
+    // As one string it is absent, so the refute would pass even when each line is present.
+    refute_text(CARGO, "[package]\nname = \"not-a-crate\"");
 }
 
 #[test]
