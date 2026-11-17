@@ -176,6 +176,7 @@ and why.
 | 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
 | 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
+| 5.33 | One batch unit bundled eleven guard-test fixes across five test modules and a BATS port; it went back nine times and was closed and cut into three | Process | 1 | Convention (three-returns rule; split past about three files) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
 | 6.3 | Repeated 6.2 — assumed openssl and jq exist on the orchestrator image; neither does — **x3** (CI never installed the playbook collections) | Process | 3 | Convention -> **Test + declared dep**; CI installs `collections/requirements.yml` |
@@ -5470,6 +5471,18 @@ delta reviews on.
 **The rule.** No forced or recursive delete. One plain delete per item, and a refusal is the answer: stop and report it.
 
 **Enforced by.** Convention. Proposed: permission deny rules for `git branch -D` and `git branch --delete --force` (the operator's decision).
+
+### 5.33 One unit bundled eleven guard-test fixes across five modules; it went back nine times and was cut again
+
+**Occurrences: 1** — 2026-11-17
+
+**What happened.** The coordinator's brief 06 for batch v0.17.0 (`handoffs-v0.17.0/06-now-vars-and-guards-b.md:24`) put "all eight AC-911 points and three AC-909 points" into one pull request, #1185. Those points spanned five Rust test modules (`backup_credentials.rs`, `become_password_resolution.rs`, `credential_leaks.rs`, `ledger.rs`, `manage_secrets.rs`), the deletion of a BATS test, and a plan cell. #1185 went back nine times: the owner sent the executor eight correction rounds after review and security passes, and three review rounds asked for changes (CodeRabbit on `8e1c1c01` and `4adf1fed`, `pr-reviewer` on `e8bf4630`), two of them overlapping with executor rounds. Each fix to one guard surfaced a bypass in another. Under the three-returns rule, Joseph closed #1185 (batch index decision 28), and it was cut into three pull requests (decision 31; AC-972, AC-973, AC-974).
+
+**Root cause.** The brief made one unit of eleven independent guard fixes because they shared a source review. The global split rule (more than about three files, or more than about five steps, is split into one area per task) was not applied when the brief was cut. Every review round then re-read all five modules, so a finding in any one sent the whole unit back.
+
+**The rule.** Cut a unit by the files it changes, not by the review or ticket it came from: a unit past about three files, or past about five independent fixes, is split before dispatch. Modules that call each other's helpers stay in one unit, so that the split units carry no merge order between them.
+
+**Enforced by.** Convention (the split rule in the global instructions, and the three-returns rule, which caught this one only after the fact).
 
 ## 6. Working from assumptions about files
 
