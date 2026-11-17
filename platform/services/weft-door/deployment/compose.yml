@@ -55,4 +55,5 @@ services:
       - ./door.key:/run/weft/door.key:ro
     network_mode: pasta
     ports:
+      # An IPv6 bind arrives bracketed (door.env.j2): podman refuses it bare before a port.
       - "${WEFT_DOOR_BIND}:${WEFT_DOOR_PORT}:8081"

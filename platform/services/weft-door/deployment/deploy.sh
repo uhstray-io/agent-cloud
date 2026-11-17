@@ -105,6 +105,7 @@ cmd_up() {
   fi
   info "Starting the front door..."
   compose up -d --no-deps --force-recreate "${SERVICES[@]}"
+  # .env writes an IPv6 bind bracketed (door.env.j2), so this is a URL for either family.
   wait_for_http "http://${WEFT_DOOR_BIND}:${WEFT_DOOR_PORT}/" "front door" 120
 }
 

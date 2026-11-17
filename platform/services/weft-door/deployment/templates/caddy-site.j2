@@ -17,6 +17,9 @@
     this fragment does not route yet (a rename before inventory catches up), and a 404 for
     anything else. Never somebody else's board.
 
+    Each upstream is the host's bind, an IPv6 one bracketed (weft_host_for_port): bare, its port
+    cannot be told from its last group.
+
     Calls are NOT here: the edge routes by hostname, a UDP datagram has none, and the rack forwards
     each workspace's UDP port straight to its VM.
     Do NOT edit by hand. -#}
@@ -26,7 +29,7 @@
 	tls {
 		{{ tls }}
 	}
-	reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) }}:{{ hostvars[door].weft_door_port | default(8081) }}
+	reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) | weft_host_for_port }}:{{ hostvars[door].weft_door_port | default(8081) }}
 }
 
 *.{{ weft_domain }} {
@@ -37,10 +40,10 @@
 {% set h = hostvars[host] %}
 	@ws{{ loop.index }} host {{ h.weft_workspace_name }}.{{ weft_domain }}
 	handle @ws{{ loop.index }} {
-		reverse_proxy {{ h.weft_board_bind | default(h.ansible_host) }}:{{ h.weft_board_port | default(8080) }}
+		reverse_proxy {{ h.weft_board_bind | default(h.ansible_host) | weft_host_for_port }}:{{ h.weft_board_port | default(8080) }}
 	}
 {% endfor %}
 	handle {
-		reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) }}:{{ hostvars[door].weft_door_port | default(8081) }}
+		reverse_proxy {{ hostvars[door].weft_door_bind | default(hostvars[door].ansible_host) | weft_host_for_port }}:{{ hostvars[door].weft_door_port | default(8081) }}
 	}
 }

@@ -33,10 +33,31 @@ def test_a_wildcard_or_loopback_bind_is_refused_under_any_spelling(bind):
     assert weft.weft_bind_problems(bind, "weft_board_bind"), f"{bind!r} was accepted as a published address"
 
 
-@pytest.mark.parametrize("bind", ["192.0.2.10", "[2001:db8::10]", "2001:db8::10", "::ffff:192.0.2.10",
-                                  "weft-ws1.example.test"])
-def test_the_vm_s_own_address_or_name_is_accepted_as_a_bind(bind):
+@pytest.mark.parametrize("bind", ["192.0.2.10", "[2001:db8::10]", "2001:db8::10", "::ffff:192.0.2.10"])
+def test_the_vm_s_own_address_is_accepted_as_a_bind(bind):
     assert weft.weft_bind_problems(bind) == []
+
+
+@pytest.mark.parametrize("bind", ["weft-ws1.example.test", "weft-ws1", "weft-ws1.example.test.", "[weft-ws1]",
+                                  "192.0.2.10:8080", "192.0.2.0/24"])
+def test_a_bind_that_is_not_an_ip_address_is_refused(bind):
+    # weft #585: the bind is the host IP of a published port, and podman takes only a literal there.
+    # A name was refused at `compose up`, after the stop, and one resolving to loopback was never judged.
+    problems = weft.weft_bind_problems(bind, "weft_door_bind")
+    assert problems and all(p.startswith("weft_door_bind ") and "not an IP address" in p for p in problems), problems
+
+
+@pytest.mark.parametrize("bind, host", [
+    ("2001:db8::10", "[2001:db8::10]"), ("[2001:db8::10]", "[2001:db8::10]"), (" 2001:db8::10 ", "[2001:db8::10]"),
+    ("::ffff:192.0.2.10", "[::ffff:192.0.2.10]"), ("192.0.2.10", "192.0.2.10"), ("[192.0.2.10]", "192.0.2.10"),
+    (" 192.0.2.10 ", "192.0.2.10"),
+    # Local mode judges nothing, so a name can reach a render there; it is left as written.
+    ("weft.localhost", "weft.localhost"),
+])
+def test_an_ipv6_bind_is_bracketed_before_a_port_and_brackets_are_never_doubled(bind, host):
+    # weft #585: `2001:db8::10:8080` is not a host and a port; podman refuses it as a published port
+    # (`invalid port format`, measured on podman 6.2), and neither curl nor Caddy can split it.
+    assert weft.weft_host_for_port(bind) == host
 
 
 @pytest.mark.parametrize("proxies", [["192.0.2.0/24"], ["192.0.2.4/31"], ["2001:db8::/64"],
