@@ -41,7 +41,7 @@ An approval SHALL apply only to the revision it names. A revision covers the pos
 #### Scenario: Edit to a scheduled revision is refused
 
 - **GIVEN** a revision's post is already scheduled
-- **WHEN** a flow edits that post's text, media, target account or publish time
+- **WHEN** a flow edits that post's text, media, target account, publish time or platform settings
 - **THEN** the edit is refused and the scheduled post is left unchanged
 
 #### Scenario: Publish time changed after approval is not scheduled
