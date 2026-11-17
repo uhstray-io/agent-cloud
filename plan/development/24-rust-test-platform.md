@@ -202,7 +202,7 @@ port phase is split into one sub-item per area when it starts.
 The workflow changes in Phases 1, 2, 4 and 10 touch `.github/workflows/`, so they are operator merges
 (plan 23, Part A). The main-to-dev sync cannot carry them.
 
-**Release fit.** Goal: wave 1 in v0.16.0, the full suite by v0.17.0 (operator decision, 2026-11-14).
+**Release fit.** The goal set on 2026-11-14 was wave 1 in v0.16.0 and the full suite by v0.17.0; it has since been revised.
 Wave 1 (AC-872 to AC-879, AC-881) and Phases 0 to 3 shipped in v0.16.0. The operator then put the
 mechanism first (2026-11-16): v0.17.0 carries the port mechanism (AC-918, #1175), the first port group
 (AC-940, #1181) and the support helpers merged in its cut (plan 23's v0.17.0 row lists them). On
