@@ -233,7 +233,7 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
     }
 
     // A ratchet: the vars entries built from now(...) before the check read now() with
-    // arguments (#1149 review, docs/MISTAKES.md 2.40). AC-910 moved all four to set_fact, so
+    // arguments (#1149 review, docs/MISTAKES.md 2.40). AC-910 moved every one to set_fact, so
     // the list is empty and stays empty: a new offender fails, and so does an entry that is
     // fixed but still listed.
     const KNOWN: &[&str] = &[];
