@@ -19,6 +19,7 @@ unhealthy.
 
 import grp
 import hashlib
+import ipaddress
 import json
 import os
 import shutil
@@ -421,7 +422,9 @@ def _bind_check(tmp_path: Path, role: str, bind: dict, inventory: str = "localho
 
 
 REFUSED_BINDS = ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "127.0.0.1", "127.1.2.3", "::1", "[::1]",
-                 "::ffff:127.0.0.1", "localhost", "LOCALHOST", " "]
+                 "::ffff:127.0.0.1", "localhost", "LOCALHOST", " ",
+                 # weft #582: spellings the text match let through.
+                 "::0", "0::0", "0::1", "::ffff:7f00:1"]
 
 
 @pytest.mark.parametrize("role, key", [("workspace", "weft_board_bind"), ("door", "weft_door_bind")])
@@ -460,6 +463,67 @@ def test_local_mode_publishes_on_loopback(tmp_path):
 ], ids=["board-address", "door-ipv6", "host-address", "own-key"])
 def test_the_vm_s_own_address_is_accepted_as_a_bind(tmp_path, role, bind):
     proc = _bind_check(tmp_path, role, bind)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert (tmp_path / "stopped").exists()
+
+
+def _default_gateway() -> str | None:
+    """This machine's IPv4 default gateway, which the real task gathers as the VM's (/proc/net/route)."""
+    try:
+        lines = Path("/proc/net/route").read_text().splitlines()[1:]
+    except OSError:
+        return None
+    for fields in (line.split() for line in lines):
+        if len(fields) > 3 and fields[1] == "00000000" and int(fields[3], 16) & 2:  # RTF_GATEWAY
+            return str(ipaddress.IPv4Address(int(fields[2], 16).to_bytes(4, "little")))
+    return None
+
+
+@pytest.mark.parametrize("role, peers", [
+    ("workspace", {"weft_board_trusted_proxies": ["192.0.2.0/24"]}),
+    ("door", {"weft_door_trusted_proxies": ["192.0.2.0/24"]}),
+    ("workspace", {"weft_board_ingest_from": ["169.254.1.2/32"]}),
+    ("door", {"weft_door_trusted_proxies": ["169.254.1.2/32"]}),
+], ids=["board-range", "door-range", "ingest-pasta-guest", "door-pasta-guest"])
+def test_believed_peers_that_hold_the_vm_s_own_processes_are_refused_before_anything_stops(tmp_path, role, peers):
+    # weft #582: under pasta a process or container on the VM arrives as the default gateway
+    # (podman 4.9.3) or 169.254.1.2 (5.3 on), and a trusted proxy may name any client it likes. A
+    # range trusts whatever else is in it, so trusted_proxies is the Caddy host alone, as a /32.
+    bind = {"weft_board_bind": "192.0.2.10"} if role == "workspace" else {"weft_door_bind": "192.0.2.11"}
+    proc = _bind_check(tmp_path, role, {**bind, **peers})
+    assert proc.returncode != 0, f"{peers} was accepted\n" + proc.stdout[-4000:]
+    assert "Nothing has changed" in proc.stdout, proc.stdout[-4000:]
+    assert not (tmp_path / "stopped").exists(), "the stop was reached after the refusal"
+
+
+@pytest.mark.parametrize("key", ["weft_board_trusted_proxies", "weft_board_ingest_from"])
+def test_the_gateway_the_task_gathers_is_refused_as_a_believed_peer(tmp_path, key):
+    # The gateway is read from the host the play runs on, not passed in: every weft play runs
+    # gather_facts: false, so a task that only read the fact would never see one.
+    gateway = _default_gateway()
+    if gateway is None:
+        pytest.skip("this machine has no IPv4 default route to stand in for the VM's")
+    proc = _bind_check(tmp_path, "workspace", {"weft_board_bind": "192.0.2.10", key: [f"{gateway}/32"]})
+    assert proc.returncode != 0, f"{key} holding the gateway {gateway} was accepted\n" + proc.stdout[-4000:]
+    assert f"holds {gateway}" in proc.stdout, proc.stdout[-4000:]
+    assert not (tmp_path / "stopped").exists(), "the stop was reached after the refusal"
+
+
+@pytest.mark.parametrize("role, peers", [
+    ("workspace", {"weft_board_trusted_proxies": ["198.51.100.5/32"], "weft_board_ingest_from": ["203.0.113.0/24"]}),
+    ("door", {"weft_door_trusted_proxies": ["198.51.100.5/32"]}),
+], ids=["board", "door"])
+def test_the_caddy_host_alone_and_ingest_sources_clear_of_the_vm_are_accepted(tmp_path, role, peers):
+    bind = {"weft_board_bind": "192.0.2.10"} if role == "workspace" else {"weft_door_bind": "192.0.2.11"}
+    proc = _bind_check(tmp_path, role, {**bind, **peers})
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert (tmp_path / "stopped").exists()
+
+
+def test_local_mode_does_not_judge_believed_peers(tmp_path):
+    # Local mode is the operator's own machine; its edge and every collector are on it.
+    proc = _bind_check(tmp_path, "workspace", {"weft_board_bind": "127.0.0.1",
+                                               "weft_board_ingest_from": ["192.0.2.0/24"]}, inventory=LOCAL_DEV)
     assert proc.returncode == 0, proc.stdout[-4000:]
     assert (tmp_path / "stopped").exists()
 
