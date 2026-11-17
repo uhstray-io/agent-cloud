@@ -309,14 +309,15 @@ pub mod yaml {
     ///   here, the later value replacing the earlier, where PyYAML keeps both: such a mapping
     ///   yields one value fewer;
     /// - `playbook_yaml.py` reads a node with a local `!tag` as null, a tagged collection's
-    ///   children included; here the tag is ignored and the node read as if untagged;
-    /// - PyYAML refuses a plain `=` or `<<` as a value (it accepts either as a key); here each is
-    ///   read as its text.
+    ///   children included; here a tagged scalar is read as its text, a tagged collection as if
+    ///   untagged;
+    /// - PyYAML refuses a plain `=` or `<<` as a value (it accepts `=` as a key, and `<<` as a key
+    ///   whose value is a mapping); here each is read as its text.
     ///
-    /// `support_scan_python` holds this to the Python on every scanned repository file: no file
-    /// may carry an explicit tag, every string the Python yields is yielded here, and every extra
-    /// one is a plain scalar PyYAML reads as an int, float or timestamp. No scanned file has a
-    /// tag, a plain `=` or `<<` value or a mapping with both key forms (checked 2026-11-17).
+    /// `support_scan_python` holds this to the Python on every scanned repository file, with
+    /// PyYAML's numbers and dates read as their text: the two walks yield the same strings. No
+    /// scanned file has a tag, a plain `=` or `<<` value or a mapping with both key forms
+    /// (checked 2026-11-17).
     pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
         fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
             match node {
@@ -383,12 +384,12 @@ pub mod repo {
     /// roots is listed, as the Python checkers list it ([`ls_files`] lists tracked files only).
     /// Only the `.yml` extension counts, as in the Python: a `.yaml` file is not listed.
     ///
-    /// It refuses, by panicking, three things the Python handles otherwise: a root or directory
-    /// that cannot be read (`rglob` yields nothing for a missing root); any symlink under the
-    /// roots (`rglob` lists a symlinked `.yml` file but does not descend a symlinked directory,
-    /// whose playbooks a path through the link still reaches, so every guard built on this list
-    /// would skip them); and a directory named `*.yml` (which `rglob` lists and `playbook_yaml`
-    /// then fails to load). None exists under the roots (checked 2026-11-17).
+    /// It refuses, by panicking, four things the Python handles otherwise: a root or directory
+    /// that cannot be read (`rglob` yields nothing for a missing root); a name that is not UTF-8;
+    /// any symlink under the roots (`rglob` lists a symlinked `.yml` file but does not descend a
+    /// symlinked directory, whose playbooks a path through the link still reaches, so every guard
+    /// built on this list would skip them); and a directory named `*.yml` (which `rglob` lists and
+    /// `playbook_yaml` then fails to load). None exists under the roots (checked 2026-11-17).
     pub fn playbook_files() -> Vec<String> {
         fn walk(dir: &Path, parts: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
             let entries =
