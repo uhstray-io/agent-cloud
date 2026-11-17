@@ -14,6 +14,7 @@
 //! | `run_seed` | [`run_seed`] |
 //! | `ROOT` (the working directory) | [`crate::repo::root`], which [`process::ansible_playbook`] uses |
 //! | `writes` | [`writes`] |
+//! | `for value in (..., *NEVER_PRINTED)` in a test that runs ansible itself | [`assert_never_printed`] |
 //!
 //! A Python test subclasses `FakeBao` and keeps its state on the class. A Rust test mounts a
 //! closure on the server instead, and keeps its state in what the closure captures (a `Mutex`
@@ -21,14 +22,24 @@
 //! wiremock reads the whole request body before it matches, so a reply never leaves bytes unread
 //! (`src/http.rs`).
 //!
+//! Five Python tests run `ansible-playbook` themselves, without `run_seed`, and check
+//! `NEVER_PRINTED` inline: `test_agw_conformance.py`, `test_agw_isolation_probe.py`,
+//! `test_backup_step_ca.py`, `test_renew_internal_certs.py` and `test_rollback_inference_route.py`.
+//! Once they are ported, each calls [`assert_never_printed`] on its output.
+//!
 //! Differences from the Python harness, on purpose:
 //! - The run is confined and its environment is scrubbed. [`process::ansible_playbook`] sets the
 //!   environment to [`process::playbook_env`], under a kernel sandbox where one exists. Python kept
 //!   the caller's environment, minus the `SEED_*` inputs, `BAO_VALUE` and `OPENBAO_ADDR`.
 //! - A timeout panics without the child's output ([`process::run`]). Python's `TimeoutExpired`
 //!   carried the argv, and the argv holds the `-e` JSON with the role secret.
-//! - A leaked value panics naming its entry (`NEVER_PRINTED[i]`) or its input by name, never the
+//! - A run killed by a signal panics. Python returned the `returncode`, which is negative for a
+//!   signal.
+//! - A leaked value panics naming its entry (`NEVER_PRINTED[i]`) or its input name, never the
 //!   value. Python's bare `assert` named nothing.
+//! - [`recorded`] counts every request, including one to a method or path no mock handles. Python's
+//!   `record` ran only inside the `do_*` methods a test defined, so a request no `do_*` handled was
+//!   never recorded. The Rust fake is stricter.
 //! - `ANSIBLE_LOCAL_TEMP` is `.ansible-state/local` under the run's directory, from
 //!   [`process::playbook_env`].
 //! - [`writes`] does not count a DELETE, as `seed_harness.writes` does not. A DELETE changes the
@@ -155,6 +166,28 @@ fn write_inventory(dir: &Path, address: &str, opts: &RunOpts) -> PathBuf {
     playbook::write(dir, "inventory.json", &json!({"all": group}))
 }
 
+/// Panics when `output` holds one of [`NEVER_PRINTED`], or the value of one of `extra`, a list of
+/// `(name, value)` seed inputs. The panic names each entry that leaked, as `NEVER_PRINTED[i]` or by
+/// its input name in backticks, and never a value or the output.
+pub fn assert_never_printed(output: &str, extra: &[(&str, &str)]) {
+    let mut leaked: Vec<String> = Vec::new();
+    for (index, value) in NEVER_PRINTED.iter().enumerate() {
+        if output.contains(*value) {
+            leaked.push(format!("NEVER_PRINTED[{index}]"));
+        }
+    }
+    for &(name, value) in extra {
+        if output.contains(value) {
+            leaked.push(format!("`{name}`"));
+        }
+    }
+    assert!(
+        leaked.is_empty(),
+        "the output printed {}; the output itself is not shown",
+        leaked.join(", ")
+    );
+}
+
 /// Runs `playbook` once against the fake at `address` and returns its exit code and its output,
 /// stdout then stderr (`seed_harness.run_seed`). `playbook` is a path, relative to the repository
 /// root or absolute. The address is declared as `openbao_addr` in the inventory, as in production,
@@ -198,22 +231,12 @@ pub fn run_seed(
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let mut leaked: Vec<String> = Vec::new();
-    for (index, value) in NEVER_PRINTED.iter().enumerate() {
-        if output.contains(*value) {
-            leaked.push(format!("NEVER_PRINTED[{index}]"));
-        }
-    }
-    for (name, value) in &opts.inputs {
-        if output.contains(value.as_str()) {
-            leaked.push(format!("input `{name}`"));
-        }
-    }
-    assert!(
-        leaked.is_empty(),
-        "the seed run printed {}; its output is not shown",
-        leaked.join(", ")
-    );
+    let inputs: Vec<(&str, &str)> = opts
+        .inputs
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    assert_never_printed(&output, &inputs);
     let code = out
         .status
         .code()

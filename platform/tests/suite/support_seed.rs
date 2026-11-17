@@ -155,3 +155,42 @@ fn the_role_and_the_never_printed_values_are_the_python_ones() {
         ]
     );
 }
+
+#[test]
+fn assert_never_printed_names_the_entry_that_leaked_and_never_the_value() {
+    let output = format!("debug: {ROLE_SECRET} and more text");
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        seed::assert_never_printed(&output, &[])
+    }));
+
+    let message = panic_message(outcome.expect_err("a printed secret panics").as_ref());
+    assert!(message.contains("NEVER_PRINTED[1]"), "{message}");
+    assert!(!message.contains(ROLE_SECRET), "{message}");
+    assert!(
+        !message.contains("more text"),
+        "the panic echoed the output: {message}"
+    );
+}
+
+#[test]
+fn assert_never_printed_names_an_extra_input_that_leaked_by_its_name() {
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        seed::assert_never_printed(
+            "prints synthetic-extra-value",
+            &[("SEED_EXTRA", "synthetic-extra-value")],
+        )
+    }));
+
+    let message = panic_message(outcome.expect_err("a printed input panics").as_ref());
+    assert!(message.contains("`SEED_EXTRA`"), "{message}");
+    assert!(!message.contains("synthetic-extra-value"), "{message}");
+}
+
+#[test]
+fn assert_never_printed_passes_output_that_holds_no_value() {
+    seed::assert_never_printed(
+        "nothing secret is printed here",
+        &[("SEED_EXTRA", "synthetic-extra-value")],
+    );
+}
