@@ -1,0 +1,8 @@
+# The backup-storage survey's summarizer receipt: the newest archive per guest, CephFS sharing and
+# pools, and node disks (suite/survey_backup_storage.rs, cli tier). A change to the playbook or
+# its helper selects this area.
+paths:
+  - "platform/playbooks/survey-proxmox-backup-storage.yml"
+  - "platform/playbooks/files/survey_backup_storage.py"
+tiers:
+  cli: [survey_backup_storage]
