@@ -45,6 +45,14 @@ _weft_service_dir_by_role:
   workspace: platform/services/weft-workspace/deployment
   door: platform/services/weft-door/deployment
 
+# The podman-compose release every weft host runs, installed by hash by
+# tasks/install-podman-compose.yml (which tasks/place-monorepo.yml includes) and linked ahead of
+# apt's. Both compose files put their internet-facing service on `network_mode: pasta`, so it sees
+# the Caddy host's address rather than its own bridge address (weft #580), and Ubuntu 24.04's
+# podman-compose 1.0.6 refuses that mode. Host-wide (the link is in /usr/local/bin), so anything
+# else composed on a weft VM runs this release too.
+podman_compose_version: "1.6.0"
+
 # Local-dev mode, read from the inventory's identity rather than a variable (plan 24,
 # 24-local-mode-from-inventory.md): every host but the controller named <name>-local.
 _weft_local: "{{ groups['all'] | local_dev_inventory }}"

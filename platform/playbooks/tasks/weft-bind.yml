@@ -1,0 +1,39 @@
+---
+# weft-bind.yml — refuse a wildcard or loopback address for the published port, before anything stops.
+#
+# The board and the front door run on pasta (compose.yml), which keeps the source address of a
+# connection to the published port. Published on a wildcard or a loopback address, a process on the
+# VM that connects to 127.0.0.1 arrives as 127.0.0.1 (measured on Ubuntu 24.04's podman 4.9.3), and
+# the board's ingest_from always admits loopback, for its own healthcheck (weft.toml.j2): any local
+# process would be admitted as if it were that healthcheck. Published on the VM's address, the one
+# the edge Caddy reaches, loopback has nothing to connect to. The edge proxies to this same address
+# (caddy-site.j2), so neither a wildcard nor loopback was ever an upstream it could reach.
+#
+# Not in local mode (_weft_local, vars/weft.yml): there every host is the operator's own machine at
+# 127.0.0.1, and the edge in front of it is on that machine too.
+#
+# Caller is tasks/weft-release.yml, for both roles, in a deploy and in a rollback.
+
+- name: "Refuse a wildcard or loopback address for the published port"
+  vars:
+    _wb_name: "{{ 'weft_board_bind' if _weft_role == 'workspace' else 'weft_door_bind' }}"
+    # What workspace.env.j2 and door.env.j2 render: the bind, or the host's address.
+    _wb_bind: >-
+      {{ (weft_board_bind | default(ansible_host | default(''))) if _weft_role == 'workspace'
+         else (weft_door_bind | default(ansible_host | default(''))) }}
+    _wb_address: "{{ _wb_bind | string | trim | lower | regex_replace('^\\[(.*)\\]$', '\\1') }}"
+  ansible.builtin.assert:
+    that:
+      - _wb_address | length > 0
+      # Every address: 0.0.0.0, ::, and their spelled-out and mapped forms.
+      - _wb_address is not match('^(0+\.0+\.0+\.0+|::|(0+:){7}0+|::ffff:0+\.0+\.0+\.0+)$')
+      # Loopback: 127.0.0.0/8, ::1, the IPv4-mapped 127/8, and the name.
+      - _wb_address is not match('^(127\.[0-9.]+|::1|(0+:){7}0*1|::ffff:127\.[0-9.]+|localhost(\..*)?)$')
+    fail_msg: >-
+      {{ inventory_hostname }}'s {{ _wb_name }} is '{{ _wb_bind }}'. Publish on the address the edge
+      Caddy host reaches this VM on (the default is ansible_host), never a wildcard or loopback: the
+      service runs on pasta, which keeps a connection's source address, so through a wildcard or
+      loopback every process on this VM arrives as 127.0.0.1, and the board admits loopback for its
+      healthcheck. Nothing has changed on this host.
+    quiet: true
+  when: not (_weft_local | bool)

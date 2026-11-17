@@ -13,8 +13,23 @@
 # A file and not a variable: a variable is inherited by every child, shown by `podman inspect`,
 # and readable in /proc/<pid>/environ. The front door refuses a key file others can read. This
 # key signs for every company's workspace; no backup set holds it.
+#
+# The door is on pasta, not a bridge, so it sees the real peer: rootless podman forwards a port
+# published from a bridge through rootlessport, which connects onward from the container's own
+# bridge address, so the Caddy host the trusted proxies name never matched and every sign-in
+# counted against one address (weft #580). pasta keeps the source address. The door talks to
+# nothing on this VM but staging's mail catcher, which shares its namespace (compose.mailpit.yml).
+# The accepted cost: anything on this VM that connects to the published address arrives as the
+# VM's default gateway (podman 4.9.3), or 169.254.1.2 from podman 5.3 on, so the trusted proxies
+# name the Caddy host alone, as a /32, never a range that could hold the gateway. The published
+# address is never a wildcard or loopback (tasks/weft-bind.yml).
+# podman-compose 1.6.0 (vars/weft.yml), because 1.0.6 refuses `network_mode: pasta`; told not to
+# make a pod, which refuses userns keep-id.
 
 name: weft-door
+
+x-podman:
+  in_pod: false
 
 services:
   door:
@@ -38,5 +53,6 @@ services:
     volumes:
       - ${WEFT_DOOR_DIR}:${WEFT_DOOR_DIR}
       - ./door.key:/run/weft/door.key:ro
+    network_mode: pasta
     ports:
       - "${WEFT_DOOR_BIND}:${WEFT_DOOR_PORT}:8081"

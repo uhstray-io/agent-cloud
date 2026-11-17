@@ -65,6 +65,12 @@
     - name: "Place the monorepo + ensure podman/compose"
       ansible.builtin.include_tasks: tasks/place-monorepo.yml
 
+    # compose.yml puts the front door on pasta, so it sees the Caddy host's address (weft #580).
+    - name: "Refuse a host whose podman has no pasta, before anything stops"
+      ansible.builtin.include_tasks: tasks/assert-podman-pasta.yml
+      vars:
+        _app_for: "weft's front door"
+
     - name: "Make the records' directory on the VM's own disk"
       ansible.builtin.file:
         path: "{{ _weft_door_dir }}"
