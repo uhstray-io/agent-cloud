@@ -112,12 +112,12 @@ def _job_guests(job, vms):
     node drops the existing guests living elsewhere. A listed vmid that no longer exists stays.
     """
     existing = {int(v["vmid"]): v for v in vms if str(v.get("vmid", "")).isdigit()}
+    listed = _vmids(job.get("vmid"))
     if job.get("pool"):
         selects = "pool"
         guests = {vmid for vmid, v in existing.items() if v.get("pool") == job["pool"]}
-    elif _vmids(job.get("vmid")):
-        selects = "list"
-        guests = _vmids(job.get("vmid"))
+    elif listed:
+        selects, guests = "list", listed
     elif str(job.get("all", 0)) == "1":
         selects = "all"
         guests = set(existing) - _vmids(job.get("exclude"))
@@ -142,9 +142,9 @@ def plan(data):
         node = _name(listing.get("item"), "node name")
         for row in (listing.get("json") or {}).get("data") or []:
             storage = _name(row.get("storage"), "storage ID")
-            if not (_has_backup(row.get("content")) and row.get("active") in (1, True)):
+            if not (_has_backup(row.get("content")) and row.get("active") == 1):
                 continue
-            key = storage if row.get("shared") in (1, True) else f"{node}/{storage}"
+            key = storage if row.get("shared") == 1 else f"{node}/{storage}"
             if key in seen:
                 continue
             seen.add(key)
@@ -168,10 +168,14 @@ def _day(ts):
     return datetime.fromtimestamp(int(ts), UTC).strftime("%Y-%m-%d") if ts else None
 
 
+# The privilege Proxmox checks for each read (pve-storage: content listing, PruneBackups.pm dryrun).
+PRIVILEGE = {"content": "Datastore.Audit", "prune preview": "Datastore.Allocate"}
+
+
 def _ok(read, what, storage):
     if read.get("status") == 403:
         raise Refusal(f"The Proxmox token may not read {what} on storage {storage} "
-                      "(needs Datastore.Audit there). Nothing was summarized.")
+                      f"(needs {PRIVILEGE[what]} there). Nothing was summarized.")
     if read.get("status") != 200:
         raise Refusal(f"Proxmox answered {read.get('status')} reading {what} on storage {storage}.")
     return (read.get("json") or {}).get("data") or []
@@ -211,6 +215,7 @@ def summarize(data):
     names = {int(v["vmid"]): v.get("name") for v in vms if str(v.get("vmid", "")).isdigit()}
     config = {c.get("storage"): c for c in data["storage_config"]}
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
+    job_guests = [(job, *_job_guests(job, vms)) for job in jobs]  # (job, selects, guests)
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
     reads = {}
     for r in data["content_reads"]:
@@ -218,7 +223,7 @@ def summarize(data):
     for r in data["prune_reads"]:
         read, retention = r["item"]
         reads[(read["node"], read["storage"])]["prunes"].append({**r, "retention": retention})
-    storages = []
+    storages, sizes = [], {}  # sizes: raw bytes per storage row, for the backend comparison only
     for item in data["plan"]["reads"]:
         node, storage = item["node"], item["storage"]
         r = reads.get((node, storage))
@@ -237,9 +242,9 @@ def summarize(data):
                                              if row.get("mark") == "remove"}
         # A guest's retentions are those of the vzdump jobs on this storage that back it up.
         retention_of = {}
-        for job in jobs:
+        for job, _, guests in job_guests:
             if job.get("storage") == storage:
-                for vmid in _job_guests(job, vms)[1]:
+                for vmid in guests:
                     retention_of.setdefault(vmid, set()).add(_retention(job))
         cfg = config.get(storage)
 
@@ -252,7 +257,7 @@ def summarize(data):
             size, ctime, volid = int(v.get("size") or 0), int(v.get("ctime") or 0), v.get("volid")
             g["archives"] += 1
             g["bytes"] += size
-            g["protected"] += 1 if v.get("protected") in (1, True) else 0
+            g["protected"] += 1 if v.get("protected") == 1 else 0
             g["oldest"] = ctime if g["oldest"] is None else min(g["oldest"], ctime)
             if g["newest"] is None or ctime > g["newest"]:
                 g["newest"], g["newest_bytes"] = ctime, size
@@ -276,7 +281,7 @@ def summarize(data):
         total, used = int(status.get("total") or 0), int(status.get("used") or 0)
         storages.append({
             "storage": storage, "read_on_node": node, "type": status.get("type"),
-            "shared": status.get("shared") in (1, True),
+            "shared": status.get("shared") == 1,
             "total_gib": _gib(total), "used_gib": _gib(used), "avail_gib": _gib(status.get("avail")),
             "used_percent": round(100 * used / total, 1) if total else None,
             "backup_archives": len(backups), "backup_gib": _gib(backup_bytes),
@@ -290,8 +295,8 @@ def summarize(data):
             "retention_need_unknown_guests": sorted(vmid for vmid, kept in needs.items() if kept is None),
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
-            "_used": used, "_all": all_bytes, "_total": total,
         })
+        sizes[(node, storage)] = (total, used, all_bytes)
 
     shared_backends = []
     for i, a in enumerate(storages):
@@ -299,27 +304,24 @@ def summarize(data):
             # Node-local storages on different nodes are separate disks, whatever their paths say.
             if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
                 continue
-            reason = _same_backend(config.get(a["storage"], {"storage": a["storage"]}),
-                                   config.get(b["storage"], {"storage": b["storage"]}))
-            if not reason and a["_total"] and a["_total"] == b["_total"] and a["_used"] == b["_used"]:
+            a_total, a_used, a_all = sizes[(a["read_on_node"], a["storage"])]
+            b_total, b_used, b_all = sizes[(b["read_on_node"], b["storage"])]
+            reason = _same_backend(config.get(a["storage"], {}), config.get(b["storage"], {}))
+            if not reason and a_total and a_total == b_total and a_used == b_used:
                 reason = "identical total and used bytes (inferred, not proven)"
             if reason:
-                unaccounted = max(a["_used"], b["_used"]) - a["_all"] - b["_all"]
+                unaccounted = max(a_used, b_used) - a_all - b_all
                 shared_backends.append({"storages": [a["storage"], b["storage"]], "reason": reason,
                                         "combined_unaccounted_gib": _gib(unaccounted)})
-    for s in storages:
-        for k in ("_used", "_all", "_total"):
-            s.pop(k)
 
     job_rows = []
-    for job in jobs:
-        selects, guests = _job_guests(job, vms)
+    for job, selects, guests in job_guests:
         job_rows.append({"id": job.get("id"), "enabled": str(job.get("enabled", 1)) != "0",
                          "schedule": job.get("schedule") or job.get("starttime"),
                          "node": job.get("node") or "all", "storage": job.get("storage"),
                          "retention": _retention(job), "mode": job.get("mode"),
                          "selects": selects, "guests": len(guests),
-                         "missing_guests": sorted(v for v in guests if v not in names) if selects == "list" else []})
+                         "missing_guests": sorted(v for v in guests if v not in names)})
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows}
 
 

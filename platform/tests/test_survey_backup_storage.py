@@ -147,6 +147,14 @@ def test_a_storage_the_token_may_not_read_is_refused_by_name():
     assert "Datastore.Audit" in json.loads(out.getvalue())["refusal"]
 
 
+def test_a_prune_preview_the_token_may_not_read_names_the_privilege_proxmox_checks():
+    payload = _payload()
+    payload["prune_reads"][0]["status"] = 403
+    out = io.StringIO()
+    assert survey.main(["summarize"], stdin=io.StringIO(json.dumps(payload)), stdout=out) == 1
+    assert "Datastore.Allocate" in json.loads(out.getvalue())["refusal"]
+
+
 def test_a_malformed_node_name_is_refused_before_any_url_is_built():
     listing = _listing("n1/../x")
     out = io.StringIO()
