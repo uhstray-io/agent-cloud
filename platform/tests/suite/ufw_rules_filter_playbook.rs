@@ -806,11 +806,11 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             // the peer is the last field, so an IPv6 peer keeps its colons
             {"spec": "allow from 2001:db8::1 to any port 80 proto tcp", "tag": "agent-cloud:in:80/tcp:2001:db8::1",
              "family": "in", "peer": "2001:db8::1"},
-            {"spec": "allow 8443/tcp", "tag": "", "family": "", "peer": ""},
+            held("allow 8443/tcp", ""),
             // a hand comment is not a tag; its spec still loses the comment
-            {"spec": "allow from 203.0.113.9 to any port 5432 proto tcp", "tag": "", "family": "", "peer": ""},
+            held("allow from 203.0.113.9 to any port 5432 proto tcp", ""),
             // a reserved-prefix comment IS a tag (it is pruned when undeclared), whatever its shape
-            {"spec": "deny out to 198.51.100.2", "tag": "agent-cloud:legacy", "family": "", "peer": ""},
+            held("deny out to 198.51.100.2", "agent-cloud:legacy"),
         ]),
     );
 
@@ -1171,15 +1171,14 @@ fn ufw_filters_give_the_results_their_tests_expect() {
 
     let item = "test_the_audit_rule_exists_only_in_audit_mode_and_only_with_an_allowlist";
     for id in [audit_without_mode, audit_without_list] {
-        let logged = column(&r[id], "cmd")
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|cmd| cmd.as_str().is_some_and(|cmd| cmd.contains("log")));
-        // a non-list is not "no audit rule" (pytest would raise on it)
-        k.that(item, r[id].is_array() && !logged, || {
-            format!("no audit rule: {}", r[id])
+        // every rule's cmd is text without `log`; a non-list, or a rule with no text cmd, fails
+        // as pytest's `"log" in r["cmd"]` raised on it
+        let no_audit = r[id].as_array().is_some_and(|rules| {
+            rules
+                .iter()
+                .all(|rule| rule["cmd"].as_str().is_some_and(|cmd| !cmd.contains("log")))
         });
+        k.that(item, no_audit, || format!("no audit rule: {}", r[id]));
     }
 
     k.eq(
