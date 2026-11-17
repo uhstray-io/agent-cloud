@@ -332,9 +332,14 @@ pub mod repo {
 
     /// `git -C <root> <args>`; panics unless the exit status is at most `max_status`.
     fn git(args: &[&str], max_status: i32) -> String {
+        git_in(root(), args, max_status)
+    }
+
+    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`.
+    fn git_in(dir: &Path, args: &[&str], max_status: i32) -> String {
         let out = Command::new("git")
             .arg("-C")
-            .arg(root())
+            .arg(dir)
             .args(args)
             .output()
             .expect("git");
@@ -349,8 +354,19 @@ pub mod repo {
     /// Tracked files matching git pathspecs, relative to the root. Untracked files are not
     /// part of the repository and never decide a test.
     pub fn ls_files(pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["ls-files", "--"], pathspecs].concat();
-        git(&args, 0).lines().map(str::to_owned).collect()
+        ls_files_in(root(), pathspecs)
+    }
+
+    /// `ls_files` for the repository at `dir`. `-z` keeps each path as it is on disk: without it
+    /// git quotes a non-ASCII name (`caf\303\251.yml`), so a caller's `is_file()` fails (AC-908).
+    /// A path that is not UTF-8 panics, as every other git output here does.
+    pub fn ls_files_in(dir: &Path, pathspecs: &[&str]) -> Vec<String> {
+        let args = [&["ls-files", "-z", "--"], pathspecs].concat();
+        git_in(dir, &args, 0)
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git

@@ -4,8 +4,8 @@
 
 use std::process::Command;
 
-use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{Node, load_one, parse, resolve_plain};
+use agent_cloud_tests::{process, repo};
 
 #[test]
 fn the_repository_root_is_the_checkout_under_test() {
@@ -229,4 +229,64 @@ fn no_suite_test_starts_ansible_playbook_itself() {
         "these run a playbook outside a *_playbook module: {}",
         misplaced.join(", ")
     );
+
+    // `run_for` is the bound under `process::run`, and a child started through it skips the
+    // route CONTRIBUTING.md (playbook tier, line 269) names. Only the harness's own timeout tests
+    // call it, on `sh`, from `support_playbook`; every other suite file must not name it. The
+    // needle is built with concat! so this file's own text does not match.
+    let direct = concat!("run_for", "(");
+    let harness = "support_playbook";
+    let outside: Vec<String> = files
+        .iter()
+        .filter(|path| path.file_stem().is_none_or(|stem| stem != harness))
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .expect("a suite file reads")
+                .contains(direct)
+        })
+        .map(|path| path.display().to_string())
+        .collect();
+    assert!(
+        outside.is_empty(),
+        "these name run_for outside support_playbook: {}",
+        outside.join(", ")
+    );
+
+    // The pin: `support_playbook` makes exactly three such calls (its three timeout tests, on
+    // `sh`). A fourth is a new route around `process::run` and needs review before the pin moves.
+    let pinned = concat!("process::run_for", "(");
+    let calls = std::fs::read_to_string(repo::path("platform/tests/suite/support_playbook.rs"))
+        .expect("support_playbook.rs reads")
+        .matches(pinned)
+        .count();
+    assert_eq!(
+        calls, 3,
+        "support_playbook.rs calls process::run_for {calls} times, not the pinned 3"
+    );
+}
+
+#[test]
+fn ls_files_reads_a_non_ascii_path_as_it_is_on_disk() {
+    // Arrange: a repository whose tracked names are not all ASCII. Git quotes a non-ASCII name
+    // unless asked for `-z`, and a quoted name is not a file on disk.
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("café.yml"), "a: 1\n").unwrap();
+    std::fs::write(dir.path().join("plain.yml"), "b: 2\n").unwrap();
+    for args in [&["init", "-q"][..], &["add", "."][..]] {
+        process::scrubbed("git", home.path())
+            .current_dir(dir.path())
+            .args(args)
+            .assert()
+            .success();
+    }
+
+    // Act
+    let tracked = repo::ls_files_in(dir.path(), &[]);
+
+    // Assert
+    assert_eq!(tracked, ["café.yml", "plain.yml"]);
+    for path in &tracked {
+        assert!(dir.path().join(path).is_file(), "{path} is not a file");
+    }
 }
