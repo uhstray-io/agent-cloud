@@ -27,3 +27,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1200 (AC-965).
 - **DERIVED:** rustup gives a directory override precedence over a `rust-toolchain.toml` in the same directory, so CI's `rustup override set` decides CI's compiler and the toolchain file decides only a workstation's. A Rust version change moves the file's `channel`, `Cargo.toml`'s `rust-version` and every `rustup toolchain install` and `rustup override set` in the Rust (tests) job together; `local_dev_setup::the_rust_toolchain_file_matches_cargo_and_ci` refuses a mismatch.
 - **APPLIES TO:** Rust version bumps: `platform/tests/rust-toolchain.toml`, `platform/tests/Cargo.toml` and the Rust (tests) job in `.github/workflows/lint-and-test.yml`.
+
+### L-005 · 2026-11-17 · tests
+
+- **ACCEPTED:** #1195 (AC-951).
+- **DERIVED:** The Rust test crate's library target sets `test = false` (`platform/tests/Cargo.toml`), so a `#[cfg(test)]` test inside `platform/tests/src/` never runs. Test every branch of a shared helper from a `suite/support_*.rs` module through its public API; a branch that real repository input cannot reach needs a public entry that takes made-up input, or it stays untested.
+- **APPLIES TO:** shared support code in `platform/tests/src/` and the support PRs that add or change it.
