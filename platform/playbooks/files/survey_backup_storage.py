@@ -109,7 +109,7 @@ def _flag(value):
 
 def _vmids(text):
     """A vmid list as Proxmox splits it (pve-common split_list): commas, semicolons or whitespace."""
-    return {int(v) for v in re.split(r"[,;\s]+", str(text or "")) if v.isdigit()}
+    return {int(v) for v in re.split(r"[,;\s]+", str(text or "")) if re.fullmatch(r"[0-9]+", v)}
 
 
 def _job_guests(job, vms):
@@ -291,7 +291,7 @@ def summarize(data):
                          "prunable_gib": _gib(g["prunable_bytes"]),
                          "job_retention": sorted(retention_of.get(g["vmid"], set())),
                          "retained_at_job_retention": kept,
-                         "gib_at_full_retention": _gib(need_bytes[g["vmid"]]) if kept else None})
+                         "gib_at_full_retention": _gib(need_bytes[g["vmid"]]) if g["vmid"] in need_bytes else None})
         total, used = int(status.get("total") or 0), int(status.get("used") or 0)
         storages.append({
             "storage": storage, "read_on_node": node, "type": status.get("type"),
