@@ -13,10 +13,11 @@
 //!    `preflight_group_expected` both set, non-empty and equal. It covers that exact group; a
 //!    `hosts: a:b` union needs both covered.
 //! 2. An inline localhost play whose assert takes the `length` of a group lookup, and names the
-//!    target: `groups[<name>]`, or `groups.get(<key>, [])` where `<key>` is one identifier or
-//!    quoted name, optionally `| default('<name>')` (an empty-list default only, with an optional
-//!    `| default([])`), piped straight to `length`. It is compared ONCE, `> 0`, `!= 0`, or
-//!    `>=`/`==` a positive integer, and has no `and`/`or`/`not`/`if`/`else` and no backslash.
+//!    target: `groups[<key>]` or `groups.get(<key>, [])`, where `<key>` is one identifier or quoted
+//!    name, optionally `| default('<name>')` (`get` takes an empty-list default only; either takes
+//!    an optional `| default([])`), piped straight to `length`. It is compared ONCE, `> 0`,
+//!    `!= 0`, or `>=`/`==` a positive integer, and has no `and`/`or`/`not`/`if`/`else` and no
+//!    backslash.
 //!    Quoted text is ignored by that shape check (AC-907); the target name is read from the whole
 //!    condition.
 //!
@@ -89,13 +90,14 @@ const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 // as `1 + (...)`, a list around it, or a subscript inside a string would otherwise pass (AC-907).
 // Quoted text is blanked first, so a group name or a `groups` word in a string cannot stand in for
 // the lookup; a condition holding a backslash is refused, since `QUOTED` does not model escapes
-// and `'\''` would end a span early (#1169 security review). A `get` key is one name, so its
-// `, [])` cannot close another filter (#1169 review).
+// and `'\''` would end a span early (#1169 security review). A key is one name: a `get` key that
+// could cross `)` lets its `, [])` close another filter, and a subscript built with `~` reads
+// another group (#1169 reviews).
 // The comparison value must end the condition, closing parentheses and blanks aside:
 // anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
 static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"^\s*\(*\s*groups(?:\[[^\]]*\]|\.get\(\s*(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$",
+        r"^\s*\(*\s*groups(?:\[\s*(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?\s*\]|\.get\(\s*(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$",
     )
 });
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| re(r#"'[^']*'|"[^"]*""#));
@@ -525,6 +527,12 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
     (
         "ziplongest",
         "(groups.get(target_service) | zip_longest(['x'], []) | length) > 0",
+    ),
+    // A subscript key is one name too: `~` builds another group's name, so an empty target passes
+    // when that group is populated (#1169 CodeRabbit review).
+    (
+        "subconcat",
+        "(groups[target_service ~ '_backup'] | length) > 0",
     ),
 ];
 
