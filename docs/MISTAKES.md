@@ -196,7 +196,7 @@ and why.
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 1 | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
-| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-11-14: five `vars` entries built from `now(utc=true)` stood while the closed rule claimed to refuse them; its pattern matched bare `now()` only) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
+| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | 2 | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | 1 | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | 1 | Test |
@@ -6217,15 +6217,20 @@ answer. Both mutation-proven by reintroducing the exact original bug.
 refuse `now()` in any play's `vars` block: `_agw_today` in both the Phase 1 and Phase 3
 plays of `deploy-agentgateway.yml`, the task-local `_today` in `rollback-inference-route.yml`,
 and the include var `pbs_receipt_observed_end` in `verify-o11y-pbs-artifact.yml` and
-`sync-o11y-protected-pbs-copy.yml`. `_agw_today` fed play vars read at several tasks, and
-the two plays computed it apart, so a deploy spanning midnight UTC could read two dates; the
-receipt task reads its end time twice, so a receipt could validate one end time and record
-another; the rollback `_today` was read once, so it was harmless there. The rule did not
-fire because its enforcement did not cover the case: the BATS pattern matched the bare call
-`now()` only, never the argumented form the playbooks use. The Rust port (above) matches
-`now` with any arguments and held them in a shrink-only ratchet; AC-910 computed each value
-once with `set_fact` and emptied the ratchet, so any new offender fails. A check for a call
-is mutation-tested with an argumented call, not only the bare one.
+`sync-o11y-protected-pbs-copy.yml`. They were added between 2026-10-02 and 2026-10-21
+(`7010cbd5`, `9081af7f`, `05a3b0e1`, `f119bd78`). `_agw_today` fed play vars read at several
+tasks, and the two plays computed it apart, so a deploy spanning midnight UTC could read two
+dates; the receipt task reads its end time twice, so a receipt could validate one end time
+and record another; the rollback `_today` was read once, so it was harmless there. Counted
+as one occurrence: one gap in the guard, found once. The rule did not fire because its
+enforcement did not cover the case: when they were added, the BATS pattern matched the bare
+call `now()` only, never the argumented form the playbooks use, and its mutation proof used
+the pipe lookup, so the `now()` branch was never exercised. The Rust port (above) kept the
+gap until the #1149 review widened its pattern to `now` with any arguments; it then admitted
+the five only through a shrink-only `KNOWN` list, so "closed" was still not true. AC-910
+computed each value once with `set_fact` and emptied the list, and putting `_agw_today` back
+into the Phase 1 `vars` turns the test red (checked 2026-11-17). A check for a call is
+mutation-tested with an argumented call, not only the bare one.
 
 ### 10.9 Local validation ran GitHub's code, not the working tree
 

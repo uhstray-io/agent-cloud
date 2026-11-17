@@ -323,7 +323,7 @@ def test_the_verify_play_reads_the_grace_period_the_way_phase_one_does():
 
 
 def test_both_plays_freeze_today_once_with_the_same_expression():
-    # A play var re-renders at every reference (docs/MISTAKES.md 10.8): today must be a fact set once.
+    # Each task that reads a play var renders it again (docs/MISTAKES.md 10.8): today must be a fact set once.
     assert "_agw_today" not in PHASE1["vars"] and "_agw_today" not in PHASE3["vars"]
     p1, p3 = PHASE1["tasks"][0], PHASE3["tasks"][0]
     assert p1["name"] == FREEZE and p3["name"] == FREEZE

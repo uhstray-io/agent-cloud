@@ -158,7 +158,7 @@
       - { src: config.yaml.j2, dest: config.yaml, mode: "0644" }
 
   tasks:
-    # A play var re-renders at every reference, so a run spanning midnight UTC could read two
+    # Each task that reads a play var renders it again, so a run spanning midnight UTC could read two
     # dates; set_fact freezes it once (docs/MISTAKES.md 10.8).
     - name: "Freeze today's UTC date for the shared-key grace period"
       ansible.builtin.set_fact:
