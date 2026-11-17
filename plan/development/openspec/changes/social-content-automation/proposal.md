@@ -34,7 +34,7 @@ This pull request: revert its merge commit (`git revert -m 1 <merge commit>`); t
 The planned build:
 
 1. Throw the kill switch (plan 28 D13). It stops every flow that creates a draft or schedules a post.
-2. Remove the publishing-service connection through the apply playbook. Without it no flow can create or schedule a post, once task 3.3 shows the status-change call uses it (plan 28 R3).
+2. Remove the publishing-service connection through the apply playbook. Without it no flow can create or schedule a post, once task 3.3 shows the status-change call uses it (plan 28 R2).
 3. Revoke the `activepieces` gateway client key with `Manage agentgateway Client Key` (`action=revoke`, after the identity leaves the merged identity list, as that playbook requires). This stops generation.
 4. Remove the declared flows from the repository and apply; the playbook never deletes a flow it does not own.
 5. Leave drafts, scheduled posts and published posts in the publishing service alone. Removing them is a separate operator decision.

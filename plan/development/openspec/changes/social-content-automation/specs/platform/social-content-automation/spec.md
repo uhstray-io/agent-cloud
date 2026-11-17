@@ -55,7 +55,7 @@ No flow SHALL create a post that publishes immediately. Every post a flow create
 #### Scenario: Static check over the committed flow definitions
 
 - **WHEN** the repository's tests run over the committed flow definitions
-- **THEN** a definition that requests immediate publication, calls the schedule step without an approval step before it, or calls the publishing service's host from any step other than the handoff, fails the check
+- **THEN** a definition that requests immediate publication, calls the schedule step without a recorded approval (an approval step or form) before it, or calls the publishing service's host from any step other than the handoff, fails the check
 
 ### Requirement: Handoff to the publishing service is exactly once
 
