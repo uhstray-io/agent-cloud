@@ -119,7 +119,7 @@ fn cephfs_storages_on_one_filesystem_list_each_other_and_an_external_one_names_n
             {"item": "fs", "status": 200, "json": {"data": [
                 {"name": "cephfs", "data_pool": "cephfs_data", "data_pools": ["cephfs_data"], "metadata_pool": "cephfs_metadata"}]}},
             {"item": "pool", "status": 200, "json": {"data": [
-                {"pool_name": "cephfs_data", "bytes_used": 1073741824, "percent_used": 37.36, "size": 3}]}}
+                {"pool_name": "cephfs_data", "bytes_used": 1073741824, "percent_used": 0.3736, "size": 3}]}}
         ]
     }"#;
 

@@ -330,9 +330,11 @@ def _cephfs(config, ceph_reads):
                 if other is not row and other["filesystem"] == row["filesystem"])
     named = {pool for row in rows for pool in row["data_pools"]}
     # Proxmox sets bytes_used and percent_used only when ceph df has stats for the pool; without them both are unknown.
+    # Ceph's percent_used is a fraction of 1 (src/mon/PGMap.cc: used / (used + avail)) and Proxmox passes it on
+    # unscaled, so it is multiplied by 100 here.
     usage = [{"pool": p.get("pool_name"),
               "used_gib": None if p.get("bytes_used") is None else _gib(p["bytes_used"]),
-              "percent_used": None if p.get("percent_used") is None else round(float(p["percent_used"]), 1),
+              "percent_used": None if p.get("percent_used") is None else round(float(p["percent_used"]) * 100, 1),
               "replicas": p.get("size")}
              for p in sorted(pools, key=lambda p: str(p.get("pool_name"))) if p.get("pool_name") in named]
     return {"status": status, "reason": reason, "storages": rows, "pools": usage}
