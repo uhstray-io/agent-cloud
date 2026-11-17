@@ -9,10 +9,10 @@ change owns is named by that change and requirement, not restated. Plan 27
 ## ADDED Requirements
 
 ### Requirement: The content caller has its own identity, budget and allow-list
-The gateway SHALL serve the content caller under its own identity, `activepieces`, enrolled as the
-inference-gateway-agentgateway requirement "Every client has its own identity and limit" enrolls a
-client, with its own `tokens_per_hour` budget and an `allowed_models` list that names the text
-model. `activepieces` MUST NOT be named in `agw_openrouter_identities`, so the
+The gateway SHALL serve the content caller under its own identity, `activepieces`, with an
+`allowed_models` list that names the text model. Its key and its own `tokens_per_hour` budget are
+those of the inference-gateway-agentgateway requirement "Every client has its own identity and
+limit". `activepieces` MUST NOT be named in `agw_openrouter_identities`, so the
 agentgateway-openrouter requirement "An OpenRouter model is declared by name and reachable only by
 named identities" keeps every OpenRouter model from it. The deploy's keyed verify MUST NOT run as
 this identity.
@@ -33,9 +33,9 @@ in use". The leaf's name SHALL be on `agw_client_cert_allowlist`. Admission at t
 the gateway's listener TLS on; see the inference-gateway-agentgateway requirement "The gateway
 admits only declared client certificates".
 
-#### Scenario: Content caller's leaf reaches the key check
-- WHEN the gateway's listener TLS is on and the Activepieces host presents its leaf with no API key
-- THEN the handshake completes and the request reaches the gateway's key check
+#### Scenario: Keyless request from the Activepieces host
+- WHEN the gateway's listener TLS is on and a request presents the Activepieces leaf with no API key
+- THEN it is refused with HTTP 401 (gate 2.4, AC-791)
 
 ### Requirement: An image model is served only with a per-identity request limit in force
 The gateway SHALL serve an image model only after a per-identity request limit for that model is in

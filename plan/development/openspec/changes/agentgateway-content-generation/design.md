@@ -19,9 +19,9 @@ adds the risks the tasks carry.
 - **Pin upgrade.** If v1.5.0 lacks images support, the pin moves for every client, and gate 2.4 is
   run again on the new pin.
 - **Renewed leaf not in use.** A piece or sidecar that reads its certificate once keeps presenting
-  the old one after renewal, and renewal has no proof for such a holder until production-internal-ca
-  task 6.1 (plan 27, D8).
+  the old one after renewal, and a reload-`none` declaration would still pass renewal. Task 2.2 waits
+  for spike 2.1 and AC-928 (plan 27, D8).
 - **Plane item keys.** The module already carries the sync's key (external source `openspec`,
   `uhstray-io/agent-cloud/agentgateway-content-generation`, read 2026-11-16). The ten open
   tasks (2.1 to 3.6) must carry their task keys before the first sync, or it creates them again;
-  1.1 and 1.2 are ticked and skipped. All twelve items were keyed and read back in Plane on 2026-11-16, before the change merged.
+  1.1 and 1.2 are ticked and skipped. Read 2026-11-16: all twelve items carry their task keys.
