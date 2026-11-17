@@ -8,10 +8,8 @@ request limit before any image model is served. These requirements describe plan
 ## ADDED Requirements
 
 ### Requirement: The content caller has its own identity, budget and allow-list
-The gateway SHALL serve the content caller under its own identity, `activepieces`, with its own token
-budget (`tokens_per_hour`) and an explicit model allow-list that names the text model. The budget
-mechanics are those of the inference-gateway-agentgateway requirement "Every client has its own
-identity and limit". The content caller is not among the named identities that the
+The gateway SHALL serve the content caller under its own identity, `activepieces`, with its own rolling
+hourly token budget (`tokens_per_hour`) and an explicit model allow-list that names the text model. The content caller is not among the named identities that the
 agentgateway-openrouter requirement "An OpenRouter model is declared by name and reachable only by
 named identities" allows, so its allow-list MUST NOT name an OpenRouter model. The deploy's keyed
 verify MUST NOT run as this identity.
