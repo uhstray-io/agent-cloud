@@ -39,7 +39,7 @@ source "${LIB_DIR}/common.sh"
 # it, and nothing else may race that.
 SERVICES=(board orchestrator capture)
 CONTAINERS=(weft-board weft-orchestrator weft-capture)
-REQUIRED=(WEFT_WORKSPACE_IMAGE WEFT_WORKSPACE_DIR WEFT_WORKSPACE_CONFIG WEFT_BOARD_BIND WEFT_BOARD_PORT WEFT_VOICE_UDP WEFT_PODMAN_SOCKET)
+REQUIRED=(WEFT_WORKSPACE_IMAGE WEFT_WORKSPACE_DIR WEFT_WORKSPACE_CONFIG WEFT_BOARD_BIND WEFT_BOARD_PORT WEFT_PODMAN_SOCKET)
 
 usage() {
   echo "Usage: ./deploy.sh <pull|up|stop|images|backup|restore|health|restarts> [args]"

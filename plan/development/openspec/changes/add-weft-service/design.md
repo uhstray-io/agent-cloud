@@ -77,7 +77,7 @@ Before every deploy the binary takes its own backup set beside the data and veri
 
 ### D11. Every weft name is proxied (Jacob, 2026-11-10)
 
-Every platform hostname is proxied by Cloudflare, and grey-clouding was rejected because it publishes the origin address in DNS (`plan/architecture/05-platform-infra.md`). weft's names follow, with no exception. The costs and where each lands: live voice over UDP cannot pass the HTTP proxy and waits on decision V (tasks 4.4, 5.2, 8.3); the front door's per-address sign-in counter needs the real client (C5 below, task 4.3); the WAF challenge faces weft's non-browser paths and needs a skip (C6 below, task 4.2); the proxy's request timeout and body limit apply to uploads.
+Every platform hostname is proxied by Cloudflare, and grey-clouding was rejected because it publishes the origin address in DNS (`plan/architecture/05-platform-infra.md`). weft's names follow, with no exception. The costs and where each lands: live voice over UDP cannot pass the HTTP proxy, so calls are off on the rack until a media route is chosen (weft D578; tasks 4.4, 5.2, 8.3); the front door's per-address sign-in counter needs the real client (C5 below, task 4.3); the WAF challenge faces weft's non-browser paths and needs a skip (C6 below, task 4.2); the proxy's request timeout and body limit apply to uploads.
 
 The front door reads the client from `CF-Connecting-IP` (`WEFT_FRONT_DOOR_CLIENT_ADDRESS_HEADER`) and believes it only from the edge Caddy host (`WEFT_FRONT_DOOR_TRUSTED_PROXIES`, from `weft_door_trusted_proxies`), as the board does from `[board] client_address_header` and `trusted_proxies`; a deploy refuses a front door without the proxies before anything stops. weft #484 retired `WEFT_FRONT_DOOR_BEHIND_A_PROXY`, which read `X-Forwarded-For`, and a door given it alone refuses to start. Caddy passes `CF-Connecting-IP` through as it arrives, so until task 4.3 lands a client that reaches Caddy without crossing Cloudflare can name its own address. That is not safe for the rack, and the rack is not deployed before task 4.3.
 
@@ -139,7 +139,7 @@ Until task 8.5 lands there is no supported path to retire a host's data. The int
 
 ## Open decisions
 
-- **V**: how live voice reaches a workspace now that every name is proxied. Blocks tasks 4.4 (the UDP allow), 5.2 and 8.3.
+- **V**: how live voice reaches a workspace now that every name is proxied. Narrowed by weft D578 (Jacob, 2026-11-17): live calls are off on the rack until a media route is chosen, so no workspace renders `[voice]`, publishes a UDP port, or needs a UDP allow or forward. Blocks task 8.3.
 - **D17**: TLS on the LAN hop. Blocks task 8.2.
 - **D19**: a company's data after it leaves. Blocks task 8.5.
 - **#108**: seal custody beyond OpenBao. Blocks task 6.2.

@@ -10,13 +10,17 @@ also holds the site-config shape for both roles.
 ```text
 browser ──> Caddy (edge: TLS, hostname routing) ─┬─ <domain>        ──> front door VM  :8081  weft-door
                                                  └─ <name>.<domain> ──> workspace VM   :8080  weft-board
-browser ──(UDP, calls)──> rack firewall ──────────────────────────────> workspace VM   :<udp> weft-board (weft-voice)
 
 workspace VM:  weft-board ─┐
                weft-orchestrator ─┼─ /srv/weft/<id>/ (weft.db, seal.key, models, checkouts)
                weft-capture ─┘     │
                weft-orchestrator ──┴─ podman socket ──> agent + egress-proxy containers (never the directory)
 ```
+
+**Live calls are off on the rack** until a media route is chosen (weft D578, weft #332). Every weft
+name is proxied by Cloudflare, which carries no UDP, so a workspace's `weft.toml` has no `[voice]`,
+its board binds no UDP port, and no firewall allow or forward is made for one. Recordings and
+everything else work.
 
 ## How a version reaches a VM
 
@@ -124,10 +128,8 @@ The front door's own variables are in its README; the shared ones are here.
 | `weft_domain` | each group | the rack's weft domain, or staging's |
 | `weft_secret_root` | each group | `weft` (rack) or `weft-staging` |
 | `weft_release` | each rack host | `<version>@sha256:<64 hex>`: a version (`vX.Y.Z`) and the digest of its signed `weft-release` artifact. Staging has none: it takes the survey value |
-| `weft_public_address` | workspace groups | the rack's public IP (an address, never a name): browsers send call audio there |
 | `weft_workspace_id` | each workspace host | the id the front door minted, a DNS label: sign-in claims are bound to it; it names the VM's directory |
 | `weft_workspace_name` | each workspace host | the company name its admin chose, a DNS label: the subdomain, `<name>.<domain>` (weft D540) |
-| `weft_voice_udp` | each workspace host | its own UDP port; the rack forwards the same number |
 | `weft_providers` | each workspace host | a dict of `[providers.*]` tables: `name`, `endpoint`, `wire`, `budget`, `models` (`economy`, `standard`, `frontier`). No key and no key variable |
 | `weft_default_provider` | each workspace host | one of the keys of `weft_providers` |
 | `weft_daily_tokens` | each workspace host | an integer; weft has no default |

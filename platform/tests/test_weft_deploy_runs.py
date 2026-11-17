@@ -134,7 +134,7 @@ def _deploy(tmp_path: Path, release: dict, extra: dict | None = None):
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
         "vars": {
-            "weft_release": f"{release['commit']}@{DIGEST}", "weft_workspace_id": "ws1", "weft_voice_udp": 40000,
+            "weft_release": f"{release['commit']}@{DIGEST}", "weft_workspace_id": "ws1",
             "weft_root": str(srv / "weft"), "weft_state_root": str(srv / "weft-state"),
             "weft_health_minutes": 0, "weft_watch_minutes": 0, "weft_board_bind": "192.0.2.10",
             "_weft_role": "workspace", "_weft_workspace_dir": str(srv / "weft/ws1"),
@@ -146,7 +146,7 @@ def _deploy(tmp_path: Path, release: dict, extra: dict | None = None):
             "_weft_health_argv": ["bash", "deploy.sh", "health"],
             "test_release": release,
             # What weft.toml.j2 reads.
-            "weft_domain": "weft.example.test", "weft_public_address": "127.0.0.1",
+            "weft_domain": "weft.example.test",
             "weft_default_provider": "p", "weft_daily_tokens": 1000, "weft_tracker_bot_login": "bot",
             "weft_providers": {"p": {"name": "p", "endpoint": "https://p.example.test", "wire": "openai",
                                      "budget": 1, "models": {"standard": "m"}}},
@@ -215,6 +215,22 @@ def test_the_first_deploy_to_a_host_with_no_env_reaches_up(host):
     assert f"WEFT_RELEASE={NEW}" in env, env
     assert (_state(host) / "deploy.state").read_text() == f"healthy {DIGEST}\n"
     assert (host / "github-record").exists()
+
+
+def test_a_workspace_holds_no_call_port_while_calls_are_off_on_the_rack(host):
+    # weft D578: every weft name is proxied by Cloudflare, which carries no UDP, so live calls are
+    # off on the rack until a media route is chosen. A [voice] table would start weft-voice and tell
+    # browsers to send audio to a port nothing forwards, and a published UDP port is an opening no
+    # firewall rule was made for. The deploy above declares no weft_voice_udp and must still pass.
+    proc, _ = _deploy(host, _release(NEW, "a"))
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    toml = (_state(host) / "weft.toml").read_text()
+    assert not [line for line in toml.splitlines() if line.strip().startswith("[voice")], (
+        "a rack workspace's weft.toml names no [voice] while calls are off (D578):\n" + toml)
+    assert "WEFT_VOICE_UDP" not in _env(host), _env(host)
+    ports = yaml.safe_load((WS_DIR / "compose.yml").read_text())["services"]["board"]["ports"]
+    assert not [port for port in ports if str(port).endswith("/udp")], (
+        "the board publishes no UDP port while calls are off on the rack (D578): " + str(ports))
 
 
 @pytest.mark.parametrize("bind", ["2001:db8::10", "[2001:db8::10]"])

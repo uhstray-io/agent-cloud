@@ -44,13 +44,13 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 - [ ] 4.1 weft's fragment on production Caddy's flat layout, managed by `manage-caddy-sites.yml` (`design.md`, C4).
 - [ ] 4.2 weft's four records in `platform/infra/cloudflare/dns.tf` with `proxied = true`; the edge certificate for each two-level wildcard proved on staging; a WAF challenge skip for weft's non-browser paths (`/api/*`, `/mcp`, the hand-off), extending the existing skip without reordering rules (`design.md`, C6).
 - [ ] 4.3 The client address from `CF-Connecting-IP`, trusted only from Cloudflare's published ranges, and the forwarding header to the front door overwritten with that one address: proposed to Joe for Caddy's global configuration (`design.md`, C5), with the range list kept as data with a refresh task.
-- [ ] 4.4 Host firewall on every weft VM: Caddy-only ports, single-host egress denies to OpenBao, Semaphore, the hypervisors and every other weft VM, `o11y_svc` on 9100, and a bats test for the denies. The voice UDP allow waits on decision V (how live voice reaches a workspace when every name is proxied).
+- [ ] 4.4 Host firewall on every weft VM: Caddy-only ports, single-host egress denies to OpenBao, Semaphore, the hypervisors and every other weft VM, `o11y_svc` on 9100, and a bats test for the denies. No voice UDP allow: live calls are off on the rack until a media route is chosen (weft D578).
 - [ ] 4.5 Validation gate: scenarios "The plan holds every weft name proxied", "A client-supplied forwarding header does not reach the door" and "A weft VM attempting OpenBao is refused" hold on staging.
 
 ## 5. Staging [steps 24 to 27, 42]
 
 - [ ] 5.1 weft's slow checks on the platform's ephemeral runners (`github_runner_lifecycle: ephemeral`); weft's repository added to the runner group in `manage-github-runner-group.yml`, reviewed by Joe. No runner VM of weft's own.
-- [x] 5.2 Until V is decided, the workspace's deploy does not assert the voice UDP port.
+- [x] 5.2 Live calls are off on the rack (weft D578): a workspace's `weft.toml` has no `[voice]`, its compose publishes no UDP port, and its deploy requires no `weft_voice_udp` or `weft_public_address`.
 - [ ] 5.3 A failing-health drill, a migration-failure drill followed by "Roll Back weft Host", `reboot-host.yml` on each staging VM, and the hairpin check, each recorded as a Semaphore task id.
 - [ ] 5.4 A weft-only package-read credential, read by `tasks/registry-login.yml` through `registry_login_key`, in place of the shared `secret/services/github:pat`, which until then sits in the deploy user's `auth.json` on every weft VM: a GitHub App installation token if GitHub's container registry accepts one for these packages. Before the rack.
 - [ ] 5.5 The orchestrator gets the podman socket of a separate unprivileged user, who runs only agent and egress-proxy containers, so its compromise no longer owns the deploy user's image store and containers (`design.md`, known gaps). Before the rack.
@@ -78,7 +78,7 @@ Every task is safe to rerun after an interruption. Deploy work goes through the 
 
 - [ ] 8.1 Off-VM durability: weft's hosts in the platform's Proxmox Backup Server jobs once `pbs-vm-and-restore-gate` lands.
 - [ ] 8.2 TLS from Caddy to each weft VM with the internal CA (decision D17).
-- [ ] 8.3 The voice path, by decision V.
+- [ ] 8.3 The voice path, by decision V, once a media route is chosen (weft D578 turned calls off on the rack until then).
 - [ ] 8.5 "Onboard weft workspace" and "Offboard weft workspace". Offboarding is weft's only destructive path (it has no Clean Deploy): it takes a final backup, keeps the company's data for the retention period (D19), and only then runs `destroy-vm.yml`, confirmed like any destructive step.
 - [ ] 8.6 A reboot procedure over `reboot-host.yml`, launched by a person per host.
 - [ ] 8.7 Validation gate: scenario "A rack host moves only to its pin" holds for a held host, and scenario "Health fails within the watch window" holds for a workspace onboarded and offboarded on a scratch host.
