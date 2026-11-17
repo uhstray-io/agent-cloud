@@ -686,7 +686,8 @@ means the suites passed on your machine or were skipped, which is not evidence C
 pass — and CI never sees a push the hook stopped.
 
 It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
-`cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead), when
+`cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead; the Brewfile
+installs it, and it runs under the Rust toolchain's `cargo`), when
 the Python suite is not collectable because pytest or a test dependency is missing, and on
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test

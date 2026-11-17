@@ -105,6 +105,7 @@ brew install uv              # Python dependencies and tools are managed with uv
 uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
 brew install shellcheck bats-core parallel hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
+brew install cargo-nextest   # the Rust suite's runner (plan 24); also in Brewfile; needs cargo (rustup)
 
 # The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
 # `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,

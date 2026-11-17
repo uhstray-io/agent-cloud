@@ -4,6 +4,7 @@
 brew "ansible"
 brew "ansible-lint"
 brew "bats-core"
+brew "cargo-nextest"  # Rust test runner for the commit and push hook lanes (plan 24); Homebrew's current release, CI pins its own
 brew "gh"
 brew "git"
 brew "go"
