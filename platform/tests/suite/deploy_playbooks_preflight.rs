@@ -319,11 +319,9 @@ fn inline_guard_items(play: &Node) -> Vec<String> {
     out
 }
 
-/// One condition that a populated group alone satisfies: it is the `length` of a group lookup (an
-/// empty-list default only, see `GROUP_LENGTH`), holds exactly one comparison, that comparison is a
-/// positive `length` test, and it has no `and`/`or`/`not`/`if`/`else` that could neutralise it.
-/// The shape is matched with quoted text blanked, so a string cannot dress up the lookup; the
-/// comparison count and the neutralisers read the whole condition, quotes included.
+/// One condition that a populated group alone satisfies: the `GROUP_LENGTH` shape (quotes
+/// blanked), exactly one comparison, and no `and`/`or`/`not`/`if`/`else`, the last two read with
+/// quotes included.
 fn is_populated_group_check(text: &str) -> bool {
     let unquoted = QUOTED.replace_all(text, "''");
     GROUP_LENGTH.is_match(&unquoted)

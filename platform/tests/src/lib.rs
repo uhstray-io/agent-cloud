@@ -330,19 +330,24 @@ pub mod repo {
         root().join(rel)
     }
 
-    /// `git -C <root> <args>`; panics unless the exit status is at most `max_status`.
-    fn git(args: &[&str], max_status: i32) -> String {
-        git_in(root(), args, max_status)
-    }
-
-    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`.
+    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. The variables
+    /// that locate a repository are removed: a git hook exports them, and they would override
+    /// `-C` (a test run from a hook would read the hook's repository, not `dir`).
     fn git_in(dir: &Path, args: &[&str], max_status: i32) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .expect("git");
+        let mut cmd = Command::new("git");
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_NAMESPACE",
+            "GIT_PREFIX",
+        ] {
+            cmd.env_remove(name);
+        }
+        let out = cmd.arg("-C").arg(dir).args(args).output().expect("git");
         assert!(
             out.status.code().is_some_and(|c| c <= max_status),
             "git {args:?} failed: {}",
@@ -363,8 +368,7 @@ pub mod repo {
     pub fn ls_files_in(dir: &Path, pathspecs: &[&str]) -> Vec<String> {
         let args = [&["ls-files", "-z", "--"], pathspecs].concat();
         git_in(dir, &args, 0)
-            .split('\0')
-            .filter(|path| !path.is_empty())
+            .split_terminator('\0')
             .map(str::to_owned)
             .collect()
     }
@@ -373,7 +377,10 @@ pub mod repo {
     /// grep exits 1 for no match).
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
         let args = [&["grep", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
-        git(&args, 1).lines().map(str::to_owned).collect()
+        git_in(root(), &args, 1)
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
@@ -622,7 +629,17 @@ pub mod process {
     /// only. A worker `ansible-playbook` forked is not killed and can outlive the timeout on every
     /// runner path: sandboxed under `sandbox-exec` or `bwrap`, unconfined without either. The Python
     /// harness has the same limit; AC-882 tracks a process-group kill.
+    ///
+    /// A playbook run (the program, or a sandbox argument, is `ansible-playbook`) is held to
+    /// [`PLAYBOOK_TIMEOUT`]: [`run`] is its only route (CONTRIBUTING.md, playbook tier; AC-906).
     pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
+        let runs_playbook = std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .any(|arg| std::path::Path::new(arg).file_name() == Some("ansible-playbook".as_ref()));
+        assert!(
+            !runs_playbook || timeout == PLAYBOOK_TIMEOUT,
+            "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run"
+        );
         let started = Instant::now();
         let output = cmd
             .write_stdin(Vec::new())

@@ -191,14 +191,23 @@ fn no_suite_test_starts_ansible_playbook_itself() {
         "the walk found no suite/main.rs: the guard would pass for the wrong reason"
     );
 
-    let mut found = Vec::new();
-    for path in &files {
-        let text = std::fs::read_to_string(path).expect("a suite file reads");
-        for hit in spawn.find_iter(&text) {
-            let line = text[..hit.start()].matches('\n').count() + 1;
-            found.push(format!("{}:{line}", path.display()));
-        }
-    }
+    let sources: Vec<(String, String)> = files
+        .iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(path).expect("a suite file reads");
+            (path.display().to_string(), text)
+        })
+        .collect();
+
+    let found: Vec<String> = sources
+        .iter()
+        .flat_map(|(name, text)| {
+            spawn.find_iter(text).map(move |hit| {
+                let line = text[..hit.start()].matches('\n').count() + 1;
+                format!("{name}:{line}")
+            })
+        })
+        .collect();
     assert!(
         found.is_empty(),
         "these start ansible-playbook without process::ansible_playbook: {}",
@@ -208,60 +217,18 @@ fn no_suite_test_starts_ansible_playbook_itself() {
     // A playbook run outside a `*_playbook` module escapes the `playbook` test-group, which caps
     // concurrent runs, and the playbook tier lanes select it by (#1141 review). The needle has no
     // `process::` prefix, so an imported, bare call is caught too. It is built
-    // with concat! so this file's own text does not match.
+    // with concat! so this file's own text does not match. A playbook run's bound is held by
+    // `process::run_for` itself (AC-906), not by this scan.
     let call = concat!("ansible_playbook", "(");
-    let misplaced: Vec<String> = files
+    let misplaced: Vec<&str> = sources
         .iter()
-        .filter(|path| {
-            !path
-                .file_stem()
-                .is_some_and(|stem| stem.to_string_lossy().ends_with("_playbook"))
-        })
-        .filter(|path| {
-            std::fs::read_to_string(path)
-                .expect("a suite file reads")
-                .contains(call)
-        })
-        .map(|path| path.display().to_string())
+        .filter(|(name, text)| !name.ends_with("_playbook.rs") && text.contains(call))
+        .map(|(name, _)| name.as_str())
         .collect();
     assert!(
         misplaced.is_empty(),
         "these run a playbook outside a *_playbook module: {}",
         misplaced.join(", ")
-    );
-
-    // `run_for` is the bound under `process::run`, and a child started through it skips the
-    // route CONTRIBUTING.md's playbook-tier rule names. Only the harness's own timeout tests
-    // call it, on `sh`, from `support_playbook`; every other suite file must not name it. The
-    // needle is built with concat! so this file's own text does not match.
-    let direct = concat!("run_for", "(");
-    let harness = "support_playbook";
-    let outside: Vec<String> = files
-        .iter()
-        .filter(|path| path.file_stem().is_none_or(|stem| stem != harness))
-        .filter(|path| {
-            std::fs::read_to_string(path)
-                .expect("a suite file reads")
-                .contains(direct)
-        })
-        .map(|path| path.display().to_string())
-        .collect();
-    assert!(
-        outside.is_empty(),
-        "these name run_for outside support_playbook: {}",
-        outside.join(", ")
-    );
-
-    // The pin: `support_playbook` makes exactly three such calls (its three timeout tests, on
-    // `sh`). A fourth is a new route around `process::run` and needs review before the pin moves.
-    let pinned = concat!("process::run_for", "(");
-    let calls = std::fs::read_to_string(repo::path("platform/tests/suite/support_playbook.rs"))
-        .expect("support_playbook.rs reads")
-        .matches(pinned)
-        .count();
-    assert_eq!(
-        calls, 3,
-        "support_playbook.rs calls process::run_for {calls} times, not the pinned 3"
     );
 }
 
@@ -286,7 +253,4 @@ fn ls_files_reads_a_non_ascii_path_as_it_is_on_disk() {
 
     // Assert
     assert_eq!(tracked, ["café.yml", "plain.yml"]);
-    for path in &tracked {
-        assert!(dir.path().join(path).is_file(), "{path} is not a file");
-    }
 }

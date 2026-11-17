@@ -17,6 +17,7 @@
 //! | `test_env_for_keeps_the_callers_collections_visible` | `playbook_env_keeps_the_callers_collections_visible` |
 //! | `test_a_playbook_run_through_the_harness_resolves_an_installed_collection` | `a_playbook_run_resolves_an_installed_collection` |
 //! | (no Python counterpart: the confinement proof) | `a_sandboxed_playbook_cannot_write_outside_its_directory` |
+//! | (no Python counterpart: AC-906) | `run_for_refuses_a_playbook_run_with_another_bound` |
 //!
 //! Tests here run `ansible-playbook`, so the `playbook` test-group caps them (`.config/nextest.toml`).
 
@@ -127,6 +128,23 @@ fn run_gives_the_child_no_stdin() {
     assert!(out.status.success(), "{}", stdout_and_stderr(&out));
     assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "rc=1");
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn run_for_refuses_a_playbook_run_with_another_bound() {
+    // A playbook started through `run_for` with its own bound would skip `PLAYBOOK_TIMEOUT`; the
+    // refusal comes before anything is spawned (AC-906).
+    let dir = TempDir::new().unwrap();
+    let mut cmd = process::ansible_playbook(dir.path(), "localhost,", "x.yml");
+
+    let message = panic_message(|| {
+        process::run_for(&mut cmd, Duration::from_secs(3600));
+    });
+
+    assert_eq!(
+        message,
+        "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run"
+    );
 }
 
 #[test]
