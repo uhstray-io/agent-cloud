@@ -8,7 +8,7 @@ Provides AI-assisted drafting of social posts for the instance's brands, with a 
 
 Generation MAY create a draft without an approval. The platform MUST NOT schedule or publish a post unless a recorded approval names the approver and the revision of that post.
 
-An approval SHALL apply only to the revision it names. An edit to an approved post creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
+An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media and its target account, so an edit to any of them, a replaced image included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
 
 #### Scenario: Draft created without approval
 
@@ -26,6 +26,12 @@ An approval SHALL apply only to the revision it names. An edit to an approved po
 - **WHEN** the draft is edited to revision 2 and a handoff attempts to schedule it
 - **THEN** revision 2 is not scheduled until it has its own recorded approval
 
+#### Scenario: Image changed after approval is not published
+
+- **GIVEN** a post's text and image were approved together
+- **WHEN** the image is replaced and a handoff attempts to schedule the post
+- **THEN** the post is not scheduled until the new revision has its own recorded approval
+
 ### Requirement: Flows never publish immediately
 
 No flow SHALL create a post that publishes immediately. Every post a flow creates is a draft, and a post becomes scheduled only through the status change that follows a recorded approval.
@@ -39,6 +45,11 @@ No flow SHALL create a post that publishes immediately. Every post a flow create
 
 - **WHEN** a generation run completes and creates a post
 - **THEN** the post is in draft state and has been neither scheduled nor published
+
+#### Scenario: Static check over the committed flow definitions
+
+- **WHEN** the repository's tests run over the committed flow definitions
+- **THEN** a definition that requests immediate publication, or that calls the schedule step without an approval step before it, fails the check
 
 ### Requirement: Handoff to the publishing service is exactly once
 
@@ -163,18 +174,3 @@ Every brand profile SHALL validate against the brand-profile schema, and every f
 
 - **WHEN** the placeholder example in the repository is validated
 - **THEN** it passes the schema and contains no value belonging to a real brand
-
-### Requirement: An image is approved and checked with the text it accompanies
-
-An image attached to a post MUST pass through the same approval as its text. The recorded approval SHALL name the revision of the text and the image together, and a changed image MUST NOT be published on the strength of an earlier approval.
-
-#### Scenario: Image changed after approval is not published
-
-- **GIVEN** a post's text and image were approved together
-- **WHEN** the image is replaced and a handoff attempts to schedule the post
-- **THEN** the post is not scheduled until the new revision has its own recorded approval
-
-#### Scenario: Image never reaches a post without approval
-
-- **WHEN** a generation run produces an image for a draft
-- **THEN** the image is attached only to the draft, and nothing is scheduled until a person approves the text and image together

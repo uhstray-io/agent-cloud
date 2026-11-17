@@ -18,20 +18,20 @@ Needs nothing outside this change. Values for each brand live in site-config; th
 - [ ] 2.3 First brand profile (Gate A critical path) (AC-829)
       Plane: AC-829. Blocked by: 2.1. Acceptance: the profile validates against the schema from 2.1 and records a source for each field.
 - [ ] 2.4 Second brand profile (AC-830)
-      Plane: AC-830. Blocked by: 2.1. Acceptance: the profile validates against the schema from 2.1 and records a source for each field.
+      Plane: AC-830. Blocked by: 2.1. Acceptance: as 2.3.
 - [ ] 2.5 Third brand profile (AC-831)
-      Plane: AC-831. Blocked by: 2.1. Acceptance: the profile validates against the schema from 2.1 and records a source for each field. Gate: Requirement "Brand profiles follow the schema and hold no brand value in the repository", scenario "Profile missing a source for a field is refused".
+      Plane: AC-831. Blocked by: 2.1. Acceptance: as 2.3. Gate: Requirement "Brand profiles follow the schema and hold no brand value in the repository", scenario "Profile missing a source for a field is refused".
 
 ## 3. Flows as code and connections (needs a running Activepieces: change `deploy-activepieces`)
 
 Needs a running Activepieces instance from change `deploy-activepieces`. The local bring-up comes first; production use waits for that change's validation gate.
 
 - [ ] 3.1 Flows as code: `Manage Activepieces Flows` playbook (AC-796)
-      Plane: AC-796. Blocked by: deploy-activepieces local bring-up (AC-772) for the spike; production use after its validation gate (AC-781). First spike: R1. Acceptance: spike R1 runs first; if the Community edition does not support the flow API path, stop and return the decision to the operator (edition, AC-768). Otherwise a dry run shows the diff, a second run reports no change, and an unowned flow is left in place.
+      Plane: AC-796. Blocked by: deploy-activepieces local bring-up (AC-772) for the spike; production use after its validation gate (AC-781). First spike: R1. Acceptance: spike R1 runs first; if the Community edition does not support the flow API path, stop and return the decision to the operator (edition, AC-768). Otherwise one apply playbook writes the connections, then the flows; a dry run shows the diff, a second run reports no change, and an unowned flow is left in place. It also delivers the kill switch (plan 28 D13) and the static check of Requirement "Flows never publish immediately".
 - [ ] 3.2 Connection to agentgateway through the HTTP piece, key written from OpenBao by a no_log playbook, proven with one completion (AC-797)
       Plane: AC-797. Blocked by: 3.1; plan 27 identity (AC-785), client leaf (AC-825), egress spike (AC-826). Spike: R3. Acceptance: one completion returns through the `activepieces` identity, and no key appears in a flow definition. If the HTTP piece cannot take its key from a stored connection, choose another mechanism before this task closes.
 - [ ] 3.3 Connection to Postiz through the Postiz piece (base_url and api_key upsert), key from OpenBao (AC-798)
-      Plane: AC-798. Blocked by: 3.1; production Postiz key captured (AC-763). Acceptance: the connection upserts by its external id, a second apply changes nothing, and the key is read from the `postiz_api_key` field at `secret/services/postiz`. Gate: Requirement "Flows and connections are declared as code and applied by playbook", scenario "Re-run of the apply playbook converges".
+      Plane: AC-798. Blocked by: 3.1; production Postiz key captured (AC-763). Acceptance: the connection upserts by its external id, a second apply changes nothing, and the key is read from the `postiz_api_key` field at `secret/services/postiz`. The procedure to revoke the key is recorded (plan 28, Open Questions). Gate: Requirement "Flows and connections are declared as code and applied by playbook", scenario "Re-run of the apply playbook converges".
 
 ## 4. Text pipeline (no connected social account needed, except where R2 says)
 
@@ -44,9 +44,9 @@ Needs the gateway and Postiz connections from phase 3 and the brand profile from
 - [ ] 4.3 Brand-to-integration mapping and refusal (plan 28 D9) (AC-836)
       Plane: AC-836. Blocked by: 2.1. Integration ids are filled once accounts are connected. Acceptance: a target integration the mapping does not assign to the draft's brand is refused; the mapping values live in site-config.
 - [ ] 4.4 Handoff flow: Postiz draft without approval; schedule only after a recorded approval, exactly once (plan 28 D2, D7) (AC-801)
-      Plane: AC-801. Blocked by: 3.3, 4.2, 4.3. Spikes: R2 and the approval surface choice (a or b). Acceptance: the spike records whether a draft can exist with no connected integration (R2) and whether the status route exists on the pinned Postiz version; the approval surface is chosen and recorded in plan 28 Open Questions; a retried handoff creates no second post.
+      Plane: AC-801. Blocked by: 3.3, 4.2, 4.3. Spikes: R2 and the approval surface choice (a or b). Acceptance: the spike records whether a draft can exist with no connected integration (R2) and whether the status route exists on the pinned Postiz version; the approval surface is chosen and recorded in plan 28 Open Questions; a retried handoff creates no second post; `platform/services/postiz/context/use-cases.md` is updated from schedule-at-create to draft then status change.
 - [ ] 4.5 Scheduled generation: a Schedule-trigger flow on a declared cadence from a topic backlog held in site-config; drafts still pass guardrail and approval (AC-802)
-      Plane: AC-802. Blocked by: 4.4. Acceptance: the declared cadence stays under the Postiz post-creation ceiling (R6), and every generated draft passes 4.2 and then 4.4.
+      Plane: AC-802. Blocked by: 4.4. Acceptance: the declared cadence stays under the post-creation ceiling (plan 28 R6), and every generated draft passes 4.2 and then 4.4.
 - [ ] 4.6 Failure alerting for content flows through the o11y alert path (AC-804)
       Plane: AC-804. Blocked by: 3.1. Acceptance: a forced failing run raises an alert on the observability alert route. Gate: Requirement "Guardrail checks run before approval", scenario "Draft naming an internal hostname is refused"; Requirement "Handoff to the publishing service is exactly once", scenario "Retried handoff creates no second post"; Requirement "A failed content flow run raises an alert", scenario "Failed run raises an alert".
 
@@ -64,4 +64,4 @@ Blocked on the image path in plan 27 and on the licence decision (AC-870). No ta
 - [ ] 6.1 Image step: brand image through the gateway's image route, approved with the text, uploaded to Postiz media and attached (AC-803)
       Plane: AC-803. Blocked by: gateway image gate (AC-792), licence decision (AC-870). Acceptance: the image is generated through the gateway, approved with its text, and attached to the post in Postiz.
 - [ ] 6.2 Gate B: Gate A plus an approved AI-generated brand image (AC-806)
-      Plane: AC-806. Blocked by: 6.1, 5.1. Acceptance: Gate A holds, and an approved AI-generated brand image is published with an approved text post. Gate: Requirement "An image is approved and checked with the text it accompanies", scenario "Image changed after approval is not published".
+      Plane: AC-806. Blocked by: 6.1, 5.1. Acceptance: Gate A holds, and an approved AI-generated brand image is published with an approved text post. Gate: Requirement "Drafts need no approval; scheduling and publishing need a recorded approval", scenario "Image changed after approval is not published".
