@@ -18,15 +18,15 @@
 //! with YAML 1.1 types. The Python read stdout only; this reads stdout, then stderr, as the other
 //! playbook-tier modules do.
 //!
-//! Known gap, found while porting (not changed by the port): in the stale and missing cases the
-//! play does not reach the `meta: end_play` task. Its `include_tasks` of
-//! `tasks/emit-step-result.yml` resolves against the harness file's own directory, a scratch
-//! directory with no `tasks/`, and fails first. So these two tests pass with `end_play` removed:
-//! the stop they assert is the include failure, not `end_play`.
+//! The harness points the dry run's `include_tasks` of `tasks/emit-step-result.yml` at the
+//! repository's file: relative, it would resolve against the scratch directory and fail, and the
+//! Python original stopped on that failure rather than on the playbook's `meta: end_play`. Found
+//! while porting: with the include fixed, the stale and missing cases stop at `end_play`, and a
+//! run that does not record its step result fails the test.
 
 use std::os::unix::fs::PermissionsExt;
 
-use agent_cloud_tests::{playbook, process};
+use agent_cloud_tests::{playbook, process, repo};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -83,6 +83,14 @@ fn output_of(out: &std::process::Output) -> String {
 /// A marker task after them prints `REACHED-INIT` when the dry run gets past its guard.
 fn dry_run(existing: Option<&str>) -> String {
     let mut tasks = wanted_tasks();
+    // The playbook's relative include resolves against the playbook's directory; the harness lives
+    // in a scratch directory, so the include is given the repository's file.
+    let emit = repo::path("platform/playbooks/tasks/emit-step-result.yml");
+    for task in &mut tasks {
+        if let Some(include) = task.get_mut("ansible.builtin.include_tasks") {
+            *include = json!(emit.display().to_string());
+        }
+    }
     let dir = TempDir::new().unwrap();
     let tf_dir = dir.path().join("tf");
     std::fs::create_dir(&tf_dir).unwrap();
@@ -117,6 +125,15 @@ fn dry_run(existing: Option<&str>) -> String {
 fn assert_stopped(out: &str) {
     assert!(out.contains("missing or differs"), "{out}");
     assert!(!out.contains("REACHED-INIT"), "{out}");
+    // It stopped at the playbook's own end_play, after recording the step, not on an error.
+    assert!(
+        !out.contains("fatal:"),
+        "the dry run failed instead of stopping:\n{out}"
+    );
+    assert!(
+        out.contains("step_result"),
+        "the dry run did not record its step result:\n{out}"
+    );
 }
 
 #[test]
