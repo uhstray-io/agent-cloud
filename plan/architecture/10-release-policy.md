@@ -49,7 +49,7 @@ A promotion that size cost far more than the sum of its parts:
 - **One implementation of every count.** The counts come from `scripts/semver.py` and from
   git, the same sources plan 20 uses. No second parser.
 - **Through the platform, not around it** (`PRINCIPLES.md`). An over-limit release is
-  split, never waived.
+  split, unless the operator approves it going over a limit by name (R10).
 
 ## The rules
 
@@ -170,4 +170,4 @@ The enforcement phases and the release roadmap live in
 | 2026-11-10 | Initial policy: 100-PR and 120-file limits per release (operator), counting rules, intake gate, planning rules. |
 | 2026-11-11 | Review fixes: R12 transition, its scope fixed to plan 23's Release 1 row with R6 off for it (operator: limits start after v0.15.0, the carry-over release); R5 lets reverts and in-scope promotion fixes merge into a full release; R2 states that main-only pull requests are counted; R3 counts a rename once; size table and intake figures recomputed with R2's own count and explicit UTC windows; R9's two-round rule given its source; plan renumbered to 23. |
 | 2026-11-12 | Enforcement built: the count (#1081), the dev merge guard's intake check (#1093) and the promotion check's `Release size` step (#1083). The interim manual commands are replaced by the gates' own readouts and `semver.py release-budget`. |
-| 2026-11-16 | R10 opens "Overrides are the operator's, by name." instead of "No waivers.", which contradicted its own operator-approved `dev`-intake override; Enforcement status gains a row for that approval (`--budget-acknowledged`, #1154): named pull requests only, and the guard does not check which. |
+| 2026-11-16 | R10 opens "Overrides are the operator's, by name." instead of "No waivers.", which contradicted its own operator-approved `dev`-intake override; Enforcement status gains a row for that approval (`--budget-acknowledged`, #1154): named pull requests only, and the guard does not check which. The Design Principles line "split, never waived" now names that exception. |
