@@ -14,6 +14,7 @@ pub mod http;
 pub mod lanes;
 pub mod text;
 
+pub mod forgeries;
 pub mod playbook;
 
 pub mod yaml {
