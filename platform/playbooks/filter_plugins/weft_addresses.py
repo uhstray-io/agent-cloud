@@ -4,9 +4,13 @@ The board and the front door run on pasta, which keeps a connection's source add
 so who they believe is decided by addresses, and those are compared here as addresses, by stdlib
 ipaddress, never as text: `::0`, `0::1` and `::ffff:7f00:1` are the wildcard and loopback too.
 
-- weft_bind_problems: a published address that is a wildcard or loopback, under any spelling, or a
-  numeric spelling ipaddress cannot read (`127.1`, which inet_aton reads as loopback). A host name
-  other than localhost passes: it is not an address to judge.
+- weft_bind_problems: a published address that is a wildcard or loopback, under any spelling, an
+  IPv6 address with a zone, or anything that is not an IP address at all. The bind is the host IP of a published port
+  (compose.yml), and podman takes only an IP literal there: a host name is refused at `compose up`,
+  after the stop, and one that resolves to loopback would never have been judged.
+- weft_host_for_port: the bind as it is written before `:port` (the compose port lines, deploy.sh's
+  readiness URL, caddy-site.j2): an IPv6 address bracketed, since `2001:db8::10:8080` is ambiguous
+  and podman refuses it.
 - weft_peer_problems: trusted_proxies entries wider than one address, and trusted_proxies or
   ingest_from entries holding an address a process on the VM itself arrives as. Under pasta that
   is the VM's default gateway (podman 4.9.3) or 169.254.1.2 (podman 5.3 on), so either in a list
@@ -17,15 +21,10 @@ platform/tests/test_weft_addresses_filter.py.
 """
 
 import ipaddress
-import re
 
 # What pasta reports for a connection from the VM itself from podman 5.3 on (its --map-guest-addr
 # default). On 4.9.3 it is the default gateway, which the caller passes.
 PASTA_GUEST_ADDRESS = "169.254.1.2"
-
-# Text ipaddress refuses but a C resolver may still read as an address (inet_aton: `127.1`,
-# `0x7f.1`, `2130706433`), or a colon form ipaddress refuses. Never passed as a host name.
-_NUMERIC = re.compile(r"^(0x[0-9a-f]+|[0-9]+)(\.(0x[0-9a-f]+|[0-9]+))*\.?$|:")
 
 
 def _address(text):
@@ -54,15 +53,32 @@ def weft_bind_problems(bind, name="bind"):
         lowered = text.lower().rstrip(".")
         if lowered == "localhost" or lowered.endswith(".localhost"):
             return [f"{name} {text!r} is loopback"]
-        if _NUMERIC.search(lowered.strip("[]")):
-            return [f"{name} {text!r} is not an address in a form that can be checked"]
-        return []
+        # A name, or a numeric spelling ipaddress cannot read (`127.1`, which inet_aton reads as
+        # loopback). Either way podman would refuse it as a published port's host IP.
+        return [f"{name} {text!r} is not an IP address, and podman publishes a port only on one"]
     ip = _unmapped(ip)
     if ip.is_unspecified:
         return [f"{name} {text!r} is a wildcard ({ip})"]
     if ip.is_loopback:
         return [f"{name} {text!r} is loopback ({ip})"]
+    if ip.version == 6 and ip.scope_id:
+        # ipaddress reads a zone (`fe80::1%eth0`), but podman refuses one as a published port's host
+        # IP, and only at `compose up`, after the stop. The edge never reaches a VM by link-local.
+        return [f"{name} {text!r} names a zone ({ip.scope_id}); publish on an address without one"]
     return []
+
+
+def weft_host_for_port(bind):
+    """`bind` as the host before `:port`: an IPv6 address in brackets, anything else as written.
+
+    Brackets already written are not doubled. A value that is not an address is returned as written:
+    only local mode, where weft-bind.yml judges nothing, can reach a render with one."""
+    text = str(bind if bind is not None else "").strip()
+    bare = text[1:-1] if text.startswith("[") and text.endswith("]") else text
+    ip = _address(bare)
+    if ip is None:
+        return text
+    return f"[{bare}]" if ip.version == 6 else bare
 
 
 def _block(text):
@@ -145,4 +161,5 @@ def weft_peer_problems(trusted_proxies, ingest_from=(), gateways=(), names=("tru
 
 class FilterModule:
     def filters(self):
-        return {"weft_bind_problems": weft_bind_problems, "weft_peer_problems": weft_peer_problems}
+        return {"weft_bind_problems": weft_bind_problems, "weft_host_for_port": weft_host_for_port,
+                "weft_peer_problems": weft_peer_problems}

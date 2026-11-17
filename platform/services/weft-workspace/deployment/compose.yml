@@ -73,6 +73,7 @@ services:
       - ${WEFT_WORKSPACE_DIR}:${WEFT_WORKSPACE_DIR}
       - ${WEFT_WORKSPACE_CONFIG}:${WEFT_WORKSPACE_CONFIG}:ro
     ports:
+      # An IPv6 bind arrives bracketed (workspace.env.j2): podman refuses it bare before a port.
       - "${WEFT_BOARD_BIND}:${WEFT_BOARD_PORT}:8080"
       - "${WEFT_VOICE_UDP}:${WEFT_VOICE_UDP}/udp"
     healthcheck:

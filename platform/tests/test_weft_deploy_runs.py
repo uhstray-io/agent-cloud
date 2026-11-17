@@ -24,6 +24,7 @@ import json
 import os
 import shutil
 import subprocess
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -216,6 +217,16 @@ def test_the_first_deploy_to_a_host_with_no_env_reaches_up(host):
     assert (host / "github-record").exists()
 
 
+@pytest.mark.parametrize("bind", ["2001:db8::10", "[2001:db8::10]"])
+def test_a_workspace_on_an_ipv6_address_is_published_with_it_bracketed(host, bind):
+    # weft #585: compose.yml publishes "${WEFT_BOARD_BIND}:${WEFT_BOARD_PORT}:8080", and podman
+    # refuses `2001:db8::10:8080:8080` ("invalid port format"); bracketed it is that address.
+    proc, log = _deploy(host, _release(NEW, "a"), {"weft_board_bind": bind})
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert "WEFT_BOARD_BIND=[2001:db8::10]\n" in _env(host), _env(host)
+    assert len(_ups(log)) == 1, log
+
+
 def _board_table(tmp_path: Path) -> list[str]:
     toml = (_state(tmp_path) / "weft.toml").read_text()
     board = toml.split("[board]\n", 1)[1].split("\n[", 1)[0]
@@ -343,6 +354,16 @@ def test_a_front_door_with_no_proxy_to_believe_is_refused_before_its_env_is_rend
 PROXIES = {"weft_door_trusted_proxies": ["192.0.2.5/32"]}
 
 
+@pytest.mark.parametrize("bind, rendered", [("2001:db8::11", "[2001:db8::11]"), ("[2001:db8::11]", "[2001:db8::11]"),
+                                            ("192.0.2.11", "192.0.2.11")])
+def test_a_front_door_s_bind_is_rendered_as_the_host_before_a_port(tmp_path, bind, rendered):
+    # weft #585: compose.yml's port line and deploy.sh's readiness URL both put WEFT_DOOR_BIND
+    # before `:port`, so .env carries an IPv6 address bracketed, and never twice.
+    proc, env_file = _door_env(tmp_path, {**PROXIES, "weft_door_bind": bind})
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert _env_lines(env_file)["WEFT_DOOR_BIND"] == rendered, env_file.read_text()
+
+
 def _env_lines(env_file: Path) -> dict:
     return dict(line.split("=", 1) for line in env_file.read_text().splitlines()
                 if line and not line.startswith("#"))
@@ -424,12 +445,14 @@ def _bind_check(tmp_path: Path, role: str, bind: dict, inventory: str = "localho
 REFUSED_BINDS = ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "127.0.0.1", "127.1.2.3", "::1", "[::1]",
                  "::ffff:127.0.0.1", "localhost", "LOCALHOST", " ",
                  # weft #582: spellings the text match let through.
-                 "::0", "0::0", "0::1", "::ffff:7f00:1"]
+                 "::0", "0::0", "0::1", "::ffff:7f00:1",
+                 # weft #585: a name, which podman refused at `compose up`, after the stop.
+                 "weft-ws1.example.test"]
 
 
 @pytest.mark.parametrize("role, key", [("workspace", "weft_board_bind"), ("door", "weft_door_bind")])
 @pytest.mark.parametrize("bind", REFUSED_BINDS)
-def test_a_wildcard_or_loopback_bind_is_refused_before_anything_stops(tmp_path, role, key, bind):
+def test_a_wildcard_loopback_or_named_bind_is_refused_before_anything_stops(tmp_path, role, key, bind):
     # weft #580: the board and the door run on pasta, which keeps a connection's source address.
     # Published on a wildcard or loopback, a process on the VM connecting to 127.0.0.1 arrives as
     # 127.0.0.1 (measured on podman 4.9.3), and the board's ingest_from always admits loopback for
@@ -446,6 +469,17 @@ def test_an_unset_bind_is_the_host_s_address_and_is_held_to_the_same_rule(tmp_pa
     proc = _bind_check(tmp_path, role, {"ansible_host": "127.0.0.1"})
     assert proc.returncode != 0, proc.stdout[-4000:]
     assert not (tmp_path / "stopped").exists()
+
+
+@pytest.mark.parametrize("role, key", [("workspace", "weft_board_bind"), ("door", "weft_door_bind")])
+def test_an_unset_bind_on_a_host_addressed_by_name_is_refused_naming_ansible_host(tmp_path, role, key):
+    # weft #585: with no bind, the env templates publish on ansible_host, which inventory may give as
+    # a name. The refusal names where the value came from, so the person knows which line to change.
+    proc = _bind_check(tmp_path, role, {"ansible_host": "weft-ws1.example.test"})
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert f"ansible_host ({key} is unset) is 'weft-ws1.example.test'" in proc.stdout, proc.stdout[-4000:]
+    assert "not an IP address" in proc.stdout and "Nothing has changed" in proc.stdout, proc.stdout[-4000:]
+    assert not (tmp_path / "stopped").exists(), "the stop was reached after the refusal"
 
 
 def test_local_mode_publishes_on_loopback(tmp_path):
@@ -588,7 +622,56 @@ esac
 """
 
 
-def _door_deploy_sh(tmp_path: Path, port: int, catcher: bool, left_behind: bool, command: str):
+EDGE_INVENTORY = """\
+localhost ansible_connection=local
+[weft_door]
+door1 ansible_host={door}
+[weft_workspaces]
+ws1 ansible_host=192.0.2.10 weft_workspace_name=acme {board}
+"""
+
+
+def _edge_fragment(tmp_path: Path, door: str, board: str) -> str:
+    """caddy-site.j2 rendered as weft-edge.yml renders it, from an inventory of one door and one workspace."""
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text(EDGE_INVENTORY.format(door=door, board=board))
+    out = tmp_path / "site.caddy"
+    play = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars": {"weft_domain": "weft.example.test", "_weft_door_hosts": "{{ groups['weft_door'] }}",
+                 "_weft_workspace_hosts": "{{ groups['weft_workspaces'] }}"},
+        "tasks": [{"ansible.builtin.template": {"src": str(DOOR_DIR / "templates/caddy-site.j2"),
+                                                "dest": str(out), "mode": "0644"}}],
+    }]
+    playbook = tmp_path / "edge.yml"
+    playbook.write_text(yaml.safe_dump(play, width=10**6))
+    proc = run_playbook(playbook, tmp_path, inventory=inventory, env={"ANSIBLE_NOCOLOR": "1"})
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    return out.read_text()
+
+
+@pytest.mark.parametrize("door, board", [
+    ("2001:db8::11", "weft_board_bind=2001:db8::10"),
+    ("192.0.2.99 weft_door_bind=[2001:db8::11]", "weft_board_bind=[2001:db8::10]"),
+], ids=["bare", "already-bracketed"])
+def test_the_edge_reaches_a_door_and_a_workspace_published_on_ipv6(tmp_path, door, board):
+    # weft #585: `reverse_proxy 2001:db8::10:8080` is not a host and a port Caddy can split. Each
+    # upstream is the host's bind (or ansible_host), bracketed once, whichever way inventory wrote it.
+    proxied = sorted(line.strip() for line in _edge_fragment(tmp_path, door, board).splitlines()
+                     if line.strip().startswith("reverse_proxy "))
+    assert proxied == ["reverse_proxy [2001:db8::10]:8080",
+                       "reverse_proxy [2001:db8::11]:8081", "reverse_proxy [2001:db8::11]:8081"], proxied
+
+
+def test_the_edge_reaches_an_ipv4_host_as_written(tmp_path):
+    proxied = sorted(line.strip() for line in _edge_fragment(tmp_path, "192.0.2.11", "").splitlines()
+                     if line.strip().startswith("reverse_proxy "))
+    assert proxied == ["reverse_proxy 192.0.2.10:8080",
+                       "reverse_proxy 192.0.2.11:8081", "reverse_proxy 192.0.2.11:8081"], proxied
+
+
+def _door_deploy_sh(tmp_path: Path, port: int, catcher: bool, left_behind: bool, command: str,
+                    bind: str = "127.0.0.1"):
     """The front door's real deploy.sh, against a podman that logs its arguments and says whether a
     catcher container is left on the host."""
     clone = tmp_path / "clone/platform"
@@ -596,7 +679,7 @@ def _door_deploy_sh(tmp_path: Path, port: int, catcher: bool, left_behind: bool,
     shutil.copytree(DOOR_DIR, door_dir, ignore=shutil.ignore_patterns(".env", "door.key"))
     (clone / "lib").symlink_to(REPO / "platform/lib")
     env = (f"WEFT_DOOR_IMAGE={REGISTRY}/weft-door@{DIGEST}\nWEFT_DOOR_DIR=/srv/weft-door\n"
-           f"WEFT_DOOR_BIND=127.0.0.1\nWEFT_DOOR_PORT={port}\n"
+           f"WEFT_DOOR_BIND={bind}\nWEFT_DOOR_PORT={port}\n"
            "WEFT_DOOR_WORKSPACE_URL=https://{name}.weft.example.test\n"
            "WEFT_DOOR_CLIENT_ADDRESS_HEADER=CF-Connecting-IP\nWEFT_DOOR_TRUSTED_PROXIES=192.0.2.5/32\n")
     if catcher:
@@ -636,6 +719,20 @@ def test_the_mail_catcher_stops_and_starts_with_the_door_whose_namespace_it_shar
     composed = [line for line in log if line.startswith("compose ")]
     assert composed and all("-f compose.mailpit.yml" in line for line in composed), log
     assert composed[-1].endswith(" door mailpit"), composed
+
+
+def test_a_front_door_on_an_ipv6_address_passes_its_readiness_check(tmp_path):
+    # weft #585: deploy.sh waits on http://${WEFT_DOOR_BIND}:${WEFT_DOOR_PORT}/. With the bind as
+    # door.env.j2 writes it, bracketed, that is a URL; bare, `up` would wait out its timeout and fail.
+    with ExitStack() as stack:
+        try:
+            url = stack.enter_context(serve(_Page, host="::1"))
+        except OSError as e:
+            pytest.skip(f"this machine cannot listen on IPv6 loopback: {e}")
+        port = int(url.rsplit(":", 1)[1])
+        proc, _ = _door_deploy_sh(tmp_path, port, False, False, "up", bind="[::1]")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"front door at http://[::1]:{port}/" in proc.stdout + proc.stderr, proc.stdout + proc.stderr
 
 
 def test_a_mail_catcher_the_env_no_longer_names_is_removed_before_the_door_is_recreated(tmp_path):
