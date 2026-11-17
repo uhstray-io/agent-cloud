@@ -5,10 +5,29 @@
 //! pattern, a refusal of an invalid pattern. The fixture is `platform/tests/Cargo.toml`, a tracked
 //! file whose `name` line these tests read.
 
-use agent_cloud_tests::text::{any_line, assert_line, assert_text, read, refute_line, refute_text};
+use agent_cloud_tests::text::{
+    any_line, assert_line, assert_precedes, assert_text, read, refute_line, refute_text, task_block,
+};
 
 /// The tracked fixture: its `name` line is `name = "agent-cloud-tests"`.
 const CARGO: &str = "platform/tests/Cargo.toml";
+
+/// Two tasks at the top level, one of them with a block whose child task is one level deeper, then
+/// a last task at the top level.
+const PLAY: &str = r#"- name: "Compute the declared rules"
+  ansible.builtin.set_fact:
+    rules: []
+- name: "Allow SSH (22/tcp) from each admin CIDR"
+  ansible.builtin.ufw:
+    rule: allow
+  block:
+    - name: "Nested child"
+      ansible.builtin.debug:
+        msg: child
+- name: "Last task"
+  ansible.builtin.debug:
+    msg: last
+"#;
 
 #[test]
 fn any_line_matches_a_line_of_the_text() {
@@ -28,7 +47,14 @@ fn any_line_anchors_each_line_on_its_own() {
 fn any_line_never_matches_across_a_newline() {
     // `.` does not match `\n`, and `\n` itself is never inside a line: grep reads the same way.
     assert!(!any_line("ab\ncd", "b.c"));
-    assert!(!any_line("ab\ncd", r"b\nc"));
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_a_backslash_n_pattern_that_could_only_match_across_lines() {
+    // Compiled, `b\nc` matches no line of "ab\ncd", so the refusal is the difference between a
+    // check and a silent pass.
+    any_line("ab\ncd", r"b\nc");
 }
 
 #[test]
@@ -166,4 +192,175 @@ fn read_returns_the_file_as_text() {
 #[should_panic(expected = "platform/tests/no-such-file.toml: ")]
 fn read_panics_on_a_missing_file_with_its_path() {
     read("platform/tests/no-such-file.toml");
+}
+
+#[test]
+fn task_block_is_the_body_after_the_header_without_the_header() {
+    assert_eq!(
+        task_block(PLAY, "Compute the declared rules"),
+        "  ansible.builtin.set_fact:\n    rules: []"
+    );
+}
+
+#[test]
+fn task_block_stops_at_the_next_task_at_the_same_indent() {
+    // The next task is at column 1, the header's column: the body ends before it.
+    let body = task_block(PLAY, "Compute the declared rules");
+    assert!(!body.contains("Allow SSH"), "{body}");
+}
+
+#[test]
+fn task_block_stops_at_a_shallower_task() {
+    // The child sits at column 5; the top-level `Last task` at column 1 is shallower and ends it.
+    assert_eq!(
+        task_block(PLAY, "Nested child"),
+        "      ansible.builtin.debug:\n        msg: child"
+    );
+}
+
+#[test]
+fn task_block_keeps_a_deeper_task_inside_its_body() {
+    assert_eq!(
+        task_block(PLAY, "Allow SSH (22/tcp) from each admin CIDR"),
+        "  ansible.builtin.ufw:\n    rule: allow\n  block:\n    - name: \"Nested child\"\n      ansible.builtin.debug:\n        msg: child"
+    );
+}
+
+#[test]
+fn task_block_takes_the_first_task_a_prefix_matches() {
+    let text = "- name: \"Foo bar\"\n  first: 1\n- name: \"Foo\"\n  second: 2\n";
+    assert_eq!(task_block(text, "Foo"), "  first: 1");
+}
+
+#[test]
+fn task_block_matches_a_name_with_regex_characters_as_a_literal() {
+    // As a regex, `(22/tcp)` is a group that also matches `22/tcp`: the first task would be taken.
+    let text = "- name: \"Allow SSH 22/tcp from each admin CIDR\"\n  other: 1\n- name: \"Allow SSH (22/tcp) from each admin CIDR\"\n  real: 2\n";
+    assert_eq!(
+        task_block(text, "Allow SSH (22/tcp) from each admin CIDR"),
+        "  real: 2"
+    );
+}
+
+#[test]
+fn task_block_keeps_a_carriage_return_on_its_body_line() {
+    let text = "- name: \"X\"\r\n  body: 1\r\n- name: \"Y\"\r\n";
+    assert_eq!(task_block(text, "X"), "  body: 1\r");
+}
+
+#[test]
+#[should_panic(expected = "no task named \"Absent\"")]
+fn task_block_panics_on_a_missing_task() {
+    // An empty body would pass every refute on it, so the absence is the failure.
+    task_block(PLAY, "Absent");
+}
+
+#[test]
+fn assert_precedes_passes_when_the_first_pattern_comes_first() {
+    assert_precedes("alpha\nbeta\n", "^alpha", "^beta");
+}
+
+#[test]
+#[should_panic(expected = "`^beta` (line 2) is not before `^alpha` (line 1)")]
+fn assert_precedes_panics_when_reversed_naming_both_line_numbers() {
+    assert_precedes("alpha\nbeta\n", "^beta", "^alpha");
+}
+
+#[test]
+#[should_panic(expected = "`both` (line 1) is not before `both` (line 1)")]
+fn assert_precedes_panics_when_one_line_matches_both_patterns() {
+    assert_precedes("both\n", "both", "both");
+}
+
+#[test]
+#[should_panic(expected = "no line matches `^absent`")]
+fn assert_precedes_names_a_missing_first_pattern() {
+    assert_precedes("alpha\n", "^absent", "^alpha");
+}
+
+#[test]
+#[should_panic(expected = "no line matches `^absent`")]
+fn assert_precedes_names_a_missing_second_pattern() {
+    assert_precedes("alpha\n", "^alpha", "^absent");
+}
+
+#[test]
+#[should_panic(expected = "an empty pattern checks nothing")]
+fn assert_precedes_refuses_an_empty_pattern() {
+    assert_precedes("alpha\n", "", "^alpha");
+}
+
+#[test]
+#[should_panic(expected = "an empty pattern checks nothing")]
+fn any_line_refuses_an_empty_pattern() {
+    any_line("ab", "");
+}
+
+#[test]
+#[should_panic(expected = "holds a newline")]
+fn any_line_refuses_a_raw_line_feed_in_the_pattern() {
+    any_line("ab\ncd", "a\nb");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_a_hex_line_feed_with_two_lowercase_digits() {
+    any_line("a\nb", r"\x0a");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_a_hex_line_feed_with_two_uppercase_digits() {
+    any_line("a\nb", r"\x0A");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_a_braced_hex_line_feed() {
+    any_line("a\nb", r"\x{a}");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_a_four_digit_unicode_line_feed() {
+    any_line("a\nb", r"\u000a");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_a_braced_unicode_line_feed() {
+    any_line("a\nb", r"\u{A}");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_an_eight_digit_unicode_line_feed() {
+    any_line("a\nb", r"\U0000000A");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn any_line_refuses_a_braced_long_unicode_line_feed() {
+    any_line("a\nb", r"\U{a}");
+}
+
+#[test]
+#[should_panic(expected = "holds a line feed escape")]
+fn refute_line_refuses_a_line_feed_escape() {
+    // Compiled, `\n` matches no line, so the refute would pass whatever the file held.
+    refute_line(CARGO, r"\n");
+}
+
+#[test]
+fn escapes_that_do_not_write_a_line_feed_are_allowed() {
+    // An escaped backslash then `n` is the two characters `\n` in the text, not an escape.
+    assert!(any_line(r"a\nb", r"\\n"));
+    assert!(any_line("a b", r"a\sb"));
+    assert!(any_line("a\u{b}b", r"\x0b"));
+    assert!(any_line("a\u{a0}b", r"\x{a0}"));
+}
+
+#[test]
+fn a_brace_escaped_pattern_compiles_and_matches_a_literal_brace() {
+    assert!(any_line("mv {{ x }}", r"mv \{\{"));
 }

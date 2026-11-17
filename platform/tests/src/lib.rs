@@ -469,8 +469,11 @@ pub mod process {
     //! [`scrubbed`] and [`bash_with`] start a program with a scrubbed environment and a 30 s
     //! bound. [`ansible_playbook`] starts `ansible-playbook` confined to one directory, and
     //! [`run`] and [`run_for`] run any of these to completion, bounded and with no stdin.
+    //! [`output_text`] joins a child's stdout and stderr as the Python tests do, and [`fake_bin`]
+    //! builds the PATH of test doubles (`harness_sandbox.py`'s `fake_bin`).
 
     use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
     use std::process::Output;
@@ -711,5 +714,40 @@ pub mod process {
 
     fn shell_quote(s: &str) -> String {
         format!("'{}'", s.replace('\'', r"'\''"))
+    }
+
+    /// A child's stdout, then its stderr, as one string with no separator between them: the
+    /// Python tests' `out.stdout + out.stderr`. Bytes that are not UTF-8 are replaced, as
+    /// `String::from_utf8_lossy` replaces them.
+    pub fn output_text(out: &Output) -> String {
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    }
+
+    /// The test doubles of one run, `harness_sandbox.py`'s `fake_bin`. Each `(name, body)` of
+    /// `scripts` becomes `<dir>/fakebin/<name>`, a `#!/bin/sh` script running `body`, with mode
+    /// 0755 set after the write so the umask cannot narrow it. Returns the PATH value a child gets
+    /// from `.env("PATH", ..)`: `fakebin` first, then this process's own PATH, so a command no
+    /// double replaces still resolves. A caller that needs another tail builds its own from
+    /// `dir.join("fakebin")`. Panics when `fakebin` already exists, as the Python `mkdir()` does.
+    pub fn fake_bin(dir: &Path, scripts: &[(&str, &str)]) -> OsString {
+        let bindir = dir.join("fakebin");
+        std::fs::create_dir(&bindir).unwrap_or_else(|e| panic!("{}: {e}", bindir.display()));
+        for (name, body) in scripts {
+            let script = bindir.join(name);
+            std::fs::write(&script, format!("#!/bin/sh\n{body}"))
+                .unwrap_or_else(|e| panic!("{}: {e}", script.display()));
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+                .unwrap_or_else(|e| panic!("{}: {e}", script.display()));
+        }
+        let mut entries = vec![bindir.clone()];
+        if let Some(inherited) = std::env::var_os("PATH").filter(|path| !path.is_empty()) {
+            entries.extend(std::env::split_paths(&inherited));
+        }
+        std::env::join_paths(entries)
+            .unwrap_or_else(|e| panic!("PATH cannot hold {}: {e}", bindir.display()))
     }
 }
