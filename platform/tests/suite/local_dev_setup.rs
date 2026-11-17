@@ -215,3 +215,49 @@ fn socat_line_documents_make_local_https() {
         "the socat line does not name make local-https: {socat}"
     );
 }
+
+/// The value of the first `<key> = "<value>"` line of a TOML file, the way the files here write it.
+fn toml_string(rel: &str, key: &str) -> String {
+    let prefix = format!("{key} = \"");
+    text(rel)
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str())?.strip_suffix('"'))
+        .unwrap_or_else(|| panic!("{rel}: no `{key} = \"...\"` line"))
+        .to_owned()
+}
+
+#[test]
+fn the_rust_toolchain_file_matches_cargo_and_ci() {
+    // The toolchain file picks the version on a workstation; CI installs its own and overrides the
+    // file. All three must name one version, or a workstation tests with another compiler than CI.
+    let channel = toml_string("platform/tests/rust-toolchain.toml", "channel");
+    let rust_version = toml_string("platform/tests/Cargo.toml", "rust-version");
+    assert_eq!(
+        channel, rust_version,
+        "rust-toolchain.toml's channel must equal Cargo.toml's rust-version"
+    );
+    // The Rust (tests) job: from its key to the next job's key.
+    let workflow = text(".github/workflows/lint-and-test.yml");
+    let job: String = workflow
+        .lines()
+        .skip_while(|line| *line != "  rust-tests:")
+        .skip(1)
+        .take_while(|line| {
+            !(line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':'))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let installed = job
+        .lines()
+        .find_map(|line| {
+            line.trim_start()
+                .strip_prefix("rustup toolchain install ")?
+                .split_whitespace()
+                .next()
+        })
+        .unwrap_or_else(|| panic!("the Rust (tests) job installs no toolchain"));
+    assert_eq!(
+        channel, installed,
+        "rust-toolchain.toml's channel must equal the version the Rust (tests) job installs"
+    );
+}

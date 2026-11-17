@@ -108,8 +108,8 @@ brew install go              # Go 1.26+ for the full test/pre-push suite; also i
 brew install cargo-nextest   # the Rust suite's runner (plan 24); also in Brewfile
 brew install rustup          # also in Brewfile; keg-only, so its bin goes on PATH:
 export PATH="$(brew --prefix rustup)/bin:$PATH"   # add to your shell profile; puts cargo, rustc and rustfmt on PATH
-rustup toolchain install 1.96 --profile minimal -c rustfmt   # the version CI pins; rustfmt for the rust_format test
-rustup default 1.96          # or, to pin one checkout only: `rustup override set 1.96` from its root
+# The toolchain comes from platform/tests/rust-toolchain.toml (the version CI pins, with
+# rustfmt); rustup installs it on first use there (RUSTUP_AUTO_INSTALL, default 1).
 
 # The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
 # `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,
@@ -180,9 +180,9 @@ pass — and CI never sees a push the hook stopped.
 
 It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
 `cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead). The
-Brewfile installs `cargo-nextest` and `rustup`; `cargo` needs rustup's one-time toolchain step
-(CONTRIBUTING.md, Tool Installation), and without it the Rust lanes skip the same way. The hook
-also skips when
+Brewfile installs `cargo-nextest` and `rustup`; rustup's bin must be on `PATH` (CONTRIBUTING.md,
+Tool Installation), and the toolchain comes from `platform/tests/rust-toolchain.toml`. Without
+them the Rust lanes skip the same way. The hook also skips when
 the Python suite is not collectable because pytest or a test dependency is missing, and on
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test

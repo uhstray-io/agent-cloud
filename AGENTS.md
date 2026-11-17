@@ -687,9 +687,9 @@ pass — and CI never sees a push the hook stopped.
 
 It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
 `cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead). The
-Brewfile installs `cargo-nextest` and `rustup`; `cargo` needs rustup's one-time toolchain step
-(CONTRIBUTING.md, Tool Installation), and without it the Rust lanes skip the same way. The hook
-also skips when
+Brewfile installs `cargo-nextest` and `rustup`; rustup's bin must be on `PATH` (CONTRIBUTING.md,
+Tool Installation), and the toolchain comes from `platform/tests/rust-toolchain.toml`. Without
+them the Rust lanes skip the same way. The hook also skips when
 the Python suite is not collectable because pytest or a test dependency is missing, and on
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
