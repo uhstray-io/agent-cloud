@@ -6,7 +6,7 @@ Provides AI-assisted drafting of social posts for the instance's brands, with a 
 
 ### Requirement: Drafts need no approval; scheduling and publishing need a recorded approval
 
-Generation MAY create a draft without an approval. No flow and no handoff SHALL schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post. The handoff's schedule step SHALL stay disabled in production until a status change conditional on the approved revision is shown on the pinned publishing service, and once enabled it SHALL schedule only through that conditional change. A member scheduling a generated draft by hand in the publishing interface is outside this requirement until plan 28 Open Question 8 is decided.
+Generation MAY create a draft without an approval. No flow and no handoff SHALL schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post. The handoff's schedule step SHALL stay disabled in production until a status change conditional on the approved revision's hash is shown on the pinned publishing service, and once enabled it SHALL schedule only through that conditional change. A member scheduling a generated draft by hand in the publishing interface is outside this requirement until plan 28 Open Question 8 is decided.
 
 An approval SHALL apply only to the revision it names, identified by its draft and a per-draft revision number, never by content alone. A revision covers the post's text, its attached media, its target account, its publish time and its platform settings, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
 
@@ -120,7 +120,7 @@ The checks cover the length limit of each target platform, a list of banned term
 
 #### Scenario: Schedule refused without a passing guardrail verdict
 
-- **WHEN** a handoff attempts to schedule a revision that has no passing guardrail verdict
+- **WHEN** a handoff attempts to schedule a revision that has no passing guardrail verdict for its hash
 - **THEN** the revision is not scheduled, and the refusal is recorded
 
 #### Scenario: Applied guardrail differs from the module
