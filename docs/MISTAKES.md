@@ -86,7 +86,7 @@ and why.
 | 2.15 | Matched a substring/token instead of the anchored construct, three times — a commented guard passed; a port number matched inside another (2026-11-02, false red); a disabled `when:` still matched a BATS grep (2026-11-04) | **x4** False green | 4 | Test (anchored + active-construct) |
 | 2.16 | Test population selected by the presence of the fix, so deleting the fix made it skip, not fail | Vacuous test | 1 | Test (selector on condition) |
 | 2.17 | A `become:` keyword on a dynamic `include_tasks` — invalid at runtime, invisible to every static gate | Unrunnable playbook, green suite | 1 | Test (closed rule, mutation-proven) |
-| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) | Vacuous coverage | 2 | Test (derived population + ratchet) |
+| 2.18 | A coverage test asserting "every play" over a hand-typed list of four — 40 of 52 were unguarded — **x2** (check-mode guard rooted in one directory) **x3** (selected by a `_bao_url` play var, so a task file building its URL inline was unseen) | Vacuous coverage | 3 | Test (derived population + ratchet) |
 | 2.19 | The app healthcheck probed the path nginx serves from the FRONTEND — green across a backend that never bound | False green | 1 | Test (probe path pinned) |
 | 2.20 | Idempotency proven on the wrong steady state: the route retire tool refused the adopted-into-managed case, and a `changed_when` parse hid its message | False-green test | 1 | Test (adopted-state case + rc-guarded parse) |
 | 2.21 | A new deploy playbook shipped without the zero-hosts pre-flight; the orchestrator recorded success with nothing deployed — **x2** | Wrong-reason pass | 2 | Test (`test_deploy_playbooks_preflight.bats` + ratchet) |
@@ -2484,7 +2484,7 @@ its previous form required the very construct that broke the runtime.
 
 ### 2.18 "Every play that reaches OpenBao" — a hand-typed list of four
 
-**Occurrences: 2** — 2026-08-28, 2026-09-22
+**Occurrences: 3** — 2026-08-28, 2026-09-22, 2026-11-17
 
 **What happened.** `test_credential_leaks.bats` carried a test named *every play
 that resolves an OpenBao URL includes the transport guard*. Its body looped over
@@ -2540,6 +2540,31 @@ four were then retrofitted by hand. `setup-templates.yml --check` against local
 Semaphore reported changed=0, with templates and schedules byte-identical before and after.
 
 **Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
+
+**Occurrence 3 — 2026-11-17.** `platform/playbooks/tasks/manage-cloudflare-record.yml` sent
+the AppRole `role_id` and `secret_id` to `<openbao_addr, else $OPENBAO_ADDR>/v1/auth/approle/login`, then sent the
+client token as `X-Vault-Token` to `secret/services/caddy`. Neither it nor its one caller,
+`manage-cloudflare-records.yml` (the `Manage Cloudflare Records` template), included the
+transport guard, so nothing refused a public `http://` OpenBao address before the credentials
+crossed it. Found by the altitude review of AC-911 (Plane AC-936). The guard check,
+`credential_leaks.rs::every_openbao_play_includes_the_transport_guard`, stayed green. It derives
+its population from the code, as the rule says, but through a stand-in: it walks the top-level
+playbooks and selects plays that declare a `_bao_url` var. The caller's play declared only
+`_records`, and the task file built its URL inline inside each request, so neither was a
+candidate. Why the rule did not fire: the population was "plays
+that declare `_bao_url`", and that is not X. X is "every play that reaches OpenBao", and a
+naming habit is a snapshot of how plays were written on the day, the same failure as the
+hand-typed list. Fixed in the shared task file, so every caller is covered: the address is
+resolved once, the guard checks that value before the login, and both requests use it. Enforced
+for this file by
+`platform/tests/suite/cloudflare_record_bao_transport.rs::the_transport_guard_runs_before_every_openbao_request`,
+`platform/tests/suite/cloudflare_record_bao_transport.rs::every_openbao_request_uses_the_url_the_guard_checked`
+and
+`platform/tests/suite/cloudflare_record_bao_transport.rs::the_guard_runs_whenever_an_openbao_request_runs`,
+which select a request by its shape (a `/v1/` URL or an `X-Vault-Token` header). Removing
+the include turns all three red; moving it after the login turns the first red. Widening the
+repository-wide check to select by the request shape in every playbook and task file is Plane
+AC-937; that is this entry's guard proposal.
 
 ### 2.19 The healthcheck watched the frontend while the backend was dead
 
