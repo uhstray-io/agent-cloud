@@ -10,9 +10,10 @@
 //! - A dropped connection (accept, read, close with no reply): mount the mock with
 //!   `Mock::respond_with_err`, whose error makes the server close the connection after zero bytes.
 //! - A reply held until the test releases it: a closure responder that blocks, for example on a
-//!   channel. It runs under the server's state lock on the server's one thread, so while it holds,
-//!   no other request is served and [`Server::requests`] and the drop wait too. Give it its own
-//!   timeout, as the Python fakes do.
+//!   `Mutex<mpsc::Receiver<()>>` with `recv_timeout` (a responder must be `Sync`, which a bare
+//!   `Receiver` is not). It runs under the server's state lock on the server's one thread, so
+//!   while it holds the server accepts nothing, and [`Server::requests`], [`Server::mount`] and
+//!   the drop all wait. The timeout bounds that, as the Python fakes' 30 s wait does.
 //!
 //! Not covered, because wiremock 0.6.5 has neither: TLS (`serve(ssl_context=...)`, its listener is
 //! a plain `TcpListener`) and response bodies written in timed parts or cut off mid-stream (a reply

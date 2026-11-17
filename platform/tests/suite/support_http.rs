@@ -141,11 +141,8 @@ fn a_wildcard_bind_reports_a_loopback_url() {
 
 #[test]
 fn an_ipv6_bind_reports_a_bracketed_url() {
-    // As fake_http's own test does, a machine with no IPv6 loopback has nothing to check here.
-    if std::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, 0)).is_err() {
-        eprintln!("no IPv6 loopback on this machine: the bracketed-URL check does not apply");
-        return;
-    }
+    // Needs an IPv6 loopback, as CI's ubuntu-24.04 has. It fails rather than passing unseen:
+    // libtest has no skip, and an early return would read as a pass.
     let server = Server::bind("::1");
     reply_on(&server, "/", 200, "here");
 
@@ -228,9 +225,9 @@ fn a_child_process_reaches_the_server() {
 
 #[test]
 fn an_error_responder_drops_the_connection_without_a_reply() {
-    // fake_http callers that accept a request and close the socket with no reply
-    // (test_semaphore_inventory_sync.py) use this: the request is read and recorded, the client
-    // gets zero bytes.
+    // The Rust form of a fake that accepts a request and closes the socket with no reply
+    // (test_semaphore_inventory_sync.py, `accept_then_drop`): the request is read and recorded,
+    // and the client gets zero bytes.
     let server = Server::start();
     server.mount(Mock::given(matchers::path("/drop")).respond_with_err(
         |_: &agent_cloud_tests::http::Request| std::io::Error::from(ErrorKind::ConnectionReset),
@@ -251,9 +248,8 @@ fn an_error_responder_drops_the_connection_without_a_reply() {
         "the server replied: {:?}",
         String::from_utf8_lossy(&reply)
     );
-    assert!(
-        read.is_ok() || read.as_ref().unwrap_err().kind() == ErrorKind::ConnectionReset,
-        "{read:?}"
-    );
+    if let Err(e) = &read {
+        assert_eq!(e.kind(), ErrorKind::ConnectionReset, "{e}");
+    }
     assert_eq!(server.requests().len(), 1);
 }
