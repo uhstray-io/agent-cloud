@@ -250,22 +250,28 @@ fn the_rust_toolchain_file_matches_cargo_and_ci() {
         .and_then(|job| job.get("steps"))
         .and_then(Node::as_seq)
         .expect("the workflow has no jobs.rust-tests.steps");
-    // Each run read as one stream of words, continuation backslashes dropped, so a command after
-    // `&&` or `;`, inside `if ... then`, or split across lines is still found.
-    let words: Vec<&str> = steps
+    // Each run is read on its own with backslash continuations joined, then line by line: a line
+    // is split at whitespace and at the shell's `;`, `&`, `|`, `(` and `)`, and stops at a `#`
+    // comment. So a command after `&&` or `;`, inside `if ... then`, or continued with `\` is found;
+    // a commented-out command, or one whose words a bare newline splits, is not.
+    let runs: Vec<String> = steps
         .iter()
         .filter_map(|step| step.get("run").and_then(Node::as_str))
-        .flat_map(|run| run.split_whitespace().filter(|word| *word != "\\"))
+        .map(|run| run.replace("\\\n", " "))
         .collect();
     for command in [
         ["rustup", "toolchain", "install"],
         ["rustup", "override", "set"],
     ] {
-        let versions: Vec<&str> = words
-            .windows(4)
-            .filter(|w| w[..3] == command)
-            .map(|w| w[3])
-            .collect();
+        let mut versions: Vec<&str> = Vec::new();
+        for line in runs.iter().flat_map(|run| run.lines()) {
+            let words: Vec<&str> = line
+                .split(|c: char| c.is_whitespace() || ";&|()".contains(c))
+                .filter(|word| !word.is_empty())
+                .take_while(|word| !word.starts_with('#'))
+                .collect();
+            versions.extend(words.windows(4).filter(|w| w[..3] == command).map(|w| w[3]));
+        }
         let shown = command.join(" ");
         assert!(
             !versions.is_empty(),
