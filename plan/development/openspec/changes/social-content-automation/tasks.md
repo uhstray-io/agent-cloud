@@ -33,9 +33,9 @@ Needs a running Activepieces instance from change `deploy-activepieces`. The loc
 - [ ] 3.3 Connection to Postiz through the Postiz piece (base_url and api_key upsert), key from OpenBao (AC-798)
       Plane: AC-798. Blocked by: 3.1 for the connection; a local Postiz key (`Store Postiz API Key (Local)`). The production key (AC-763) gates 5.1. Acceptance includes that the status-change call takes its key from this connection (plan 28 R2, D6). Spike, which needs only the local Postiz and its key and runs first: R2 on the pinned version (a draft with no integration; the status route; the status-change key source); if any answer is no, work stops and the decision returns to the operator. Acceptance: the connection upserts by its external id, a second apply changes nothing, and the key is read from the `postiz_api_key` field at `secret/services/postiz`. The procedure to revoke the key is recorded (plan 28, Open Questions). Gate: Requirement "Flows and connections are declared as code and applied by playbook", scenarios "Re-run of the apply playbook converges" and "Owned connection or flow dropped from the declaration is removed".
 
-## 4. Text pipeline (no connected social account needed, except where R2 says)
+## 4. Text pipeline (no connected social account needed)
 
-Needs the gateway and Postiz connections from phase 3 and the brand profile from phase 2. Drafts are proven end to end before Gate A. Risk R2 limits what this phase can prove without a connected account.
+Needs the gateway and Postiz connections from phase 3 and the brand profile from phase 2. Drafts are proven end to end before Gate A. Risk R2 (task 3.3) can stop the work before this phase.
 
 - [ ] 4.1 Flow: generate one draft per platform from a brief, json_schema output within each platform's length limit, prompt built from the brand profile (AC-799)
       Plane: AC-799. Blocked by: 3.2, 2.3. Acceptance: one draft per target platform, each reply parses against its schema, and the prompt is built from the brand profile.
