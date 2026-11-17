@@ -11,6 +11,7 @@
 //!   tasks through [`process::ansible_playbook`] (AC-943).
 
 pub mod lanes;
+pub mod text;
 
 pub mod playbook;
 
@@ -190,11 +191,16 @@ pub mod yaml {
     /// loader refuses them all rather than construct some and misread others.
     pub(crate) const CORE_TAG: &str = "tag:yaml.org,2002:";
 
-    // `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the verbatim
-    // `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Join them so both match.
+    /// A tag's full text. `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the
+    /// verbatim `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Joined, both
+    /// start with [`CORE_TAG`].
+    pub(crate) fn tag_text(tag: &yaml_rust2::parser::Tag) -> String {
+        format!("{}{}", tag.handle, tag.suffix)
+    }
+
     fn refuse_core_tag(tag: Option<&yaml_rust2::parser::Tag>, origin: &str) {
         if let Some(t) = tag {
-            let full = format!("{}{}", t.handle, t.suffix);
+            let full = tag_text(t);
             if let Some(name) = full.strip_prefix(CORE_TAG) {
                 panic!("{origin}: core tag `!!{name}` is not supported by the test loader");
             }
@@ -377,14 +383,54 @@ pub mod repo {
             .collect()
     }
 
-    /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git
-    /// grep exits 1 for no match).
+    /// `grep_in` at the repository root: an extended regular expression over tracked files, the
+    /// matching lines as `path:line:text`, empty when none match (git grep exits 1 for no match).
+    /// The git flags and the record format are `grep_in`'s.
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["grep", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
-        git_in(root(), &args, 1)
-            .lines()
-            .map(str::to_owned)
-            .collect()
+        grep_in(root(), pattern, pathspecs)
+    }
+
+    /// `grep` for the repository at `dir`, as `path:line:text` lines. `-z` keeps each path as it
+    /// is on disk, as `ls_files_in` does: without it git quotes a non-ASCII name
+    /// (`"caf\303\251.yml":1:...`), and the caller's path is then not a file (AC-916). `-a` reads
+    /// a binary file as text, so every hit, binary or not, is `path NUL line NUL text NEWLINE`
+    /// and a binary match is reported as its line, never a `Binary file ... matches` notice: a
+    /// caller asserting a pattern is absent still fails on it, and a notice for a path holding a
+    /// newline cannot glue onto the next hit (#1180 review). The path is verbatim and may hold a
+    /// newline, so the two NUL fields are read before the text. `--no-color` and `--no-column` hold
+    /// the format whatever the git configuration says (`color.grep`, `grep.column`). A matched line
+    /// that is not UTF-8 panics in `git_in`; a record without its fields panics here.
+    pub fn grep_in(dir: &Path, pattern: &str, pathspecs: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "grep",
+            "-z",
+            "-n",
+            "-a",
+            "--no-color",
+            "--no-column",
+            "-E",
+            "-e",
+            pattern,
+            "--",
+        ];
+        args.extend_from_slice(pathspecs);
+        let out = git_in(dir, &args, 1);
+        let mut hits = vec![];
+        let mut rest = out.as_str();
+        while !rest.is_empty() {
+            let mut fields = rest.splitn(3, '\0');
+            let (Some(path), Some(line), Some(tail)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                panic!("a git grep record without path, line and text: {rest:?}");
+            };
+            let (text, after) = tail
+                .split_once('\n')
+                .unwrap_or_else(|| panic!("a git grep record without its newline: {rest:?}"));
+            hits.push(format!("{path}:{line}:{text}"));
+            rest = after;
+        }
+        hits
     }
 
     /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`

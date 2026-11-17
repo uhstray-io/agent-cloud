@@ -1,29 +1,35 @@
 //! Repository playbooks lifted to JSON, so a playbook-tier test can run a play's tasks through
 //! [`process::ansible_playbook`](crate::process::ansible_playbook) (plan 24, AC-943).
 //!
-//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML. Each test that
-//! runs a lifted play calls `yaml.safe_dump` itself, so `ansible-playbook` runs the play as the
-//! repository wrote it. This module is the Rust side of the reading. It cannot reuse
-//! [`yaml::parse`](crate::yaml::parse): a [`yaml::Node`] has no number type, so every plain scalar
-//! that is not a bool or null is a string, and `"53"` and `53` are the same `Node::Str`. A lifted
-//! play must carry `port: 53` as a number, so this loader builds [`serde_json::Value`] from the
-//! event stream instead. Bool and null come from [`yaml::resolve_plain`]. Numbers and timestamps
-//! follow PyYAML 6.0.3's resolvers (`yaml/resolver.py`) and constructors (`yaml/constructor.py`).
+//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML, and a Python
+//! test that runs a lifted play dumps it with `yaml.safe_dump` or `json.dumps`, so `ansible-playbook` runs the play
+//! as the repository wrote it. Here [`write`] puts it in a file as JSON instead. The reading cannot
+//! reuse [`yaml::parse`](crate::yaml::parse): a [`yaml::Node`] has no number type, so every plain
+//! scalar that is not a bool or null is a string, and `"53"` and `53` are the same `Node::Str`. A
+//! lifted play must carry `port: 53` as a number, so this loader builds [`serde_json::Value`] from
+//! the event stream instead. Bool and null come from [`yaml::resolve_plain`]. Numbers and
+//! timestamps follow PyYAML 6.0.3's resolvers (`yaml/resolver.py`) and constructors
+//! (`yaml/constructor.py`).
 //!
 //! Mapping order is kept (serde_json's `preserve_order`): Jinja iterates a dict in insertion
 //! order, so a sorted map would change what a lifted play does.
 //!
 //! A refusal panics with the file, the mapping key and the scalar. Each one is a node PyYAML
 //! reads in a way JSON cannot keep, or one this loader will not read the way PyYAML does:
-//! - a tag (`!!str`, `!custom`): PyYAML's loader nulls a tagged value. No repository file has one,
-//!   so the loader refuses rather than read it differently;
+//! - a tag. The Python helper's loader (`playbook_yaml.Loader`) reads a local tag such as
+//!   `!custom` as null and keeps a core tag's value (`!!str x` is `x`). No file under
+//!   `platform/playbooks` or `platform/semaphore` has a tag (a compose file has `!reset`), so this
+//!   loader refuses every one rather than copy that split;
 //! - a plain timestamp, `.inf` or `.nan`, or an integer beyond `i64`;
-//! - a mapping key that is not a string. PyYAML keeps `200`, `yes` or `[a]` as a key; a JSON
-//!   object key is a string.
+//! - a plain `=` or `<<` as a value: PyYAML refuses both (as a key, `=` is a string and `<<` a
+//!   merge);
+//! - a mapping key that is not a string. PyYAML keeps `200` or `yes` as an int or bool key (and
+//!   refuses a sequence or mapping key as unhashable); a JSON object key is a string.
 //!
 //! `<<` merges follow [`yaml`]'s builder: a mapping, or a list of mappings read last-first, is
-//! merged under the explicit keys, and a later duplicate key wins. The `support_lift` tests pin
-//! the two loaders together over every repository file.
+//! merged under the explicit keys, and a later duplicate key wins. An alias of a `<<` key is read
+//! as a literal `<<` key, as `yaml::parse` reads it, where PyYAML merges or refuses it; no
+//! repository file has one (AC-944 folds the two loaders).
 //!
 //! | `playbook_yaml.py` | Rust |
 //! |---|---|
@@ -117,7 +123,9 @@ pub fn plays(rel: &str) -> Vec<Value> {
 }
 
 /// Writes `playbook` as JSON to `dir/name` and returns the path. JSON is YAML, so
-/// `ansible-playbook` reads the file as a playbook.
+/// `ansible-playbook` reads the file as a playbook, with one exception it shares with Python's
+/// `json.dumps`: a float written with an exponent and no dot (`1e+20`) reads back as a string.
+/// No repository file holds such a float.
 pub fn write(dir: &Path, name: &str, playbook: &Value) -> PathBuf {
     let path = dir.join(name);
     let json = serde_json::to_string_pretty(playbook).expect("a JSON value serializes");
@@ -144,11 +152,18 @@ fn refuse(origin: &str, key: &str, reason: &str, scalar: Option<&str>) -> ! {
 }
 
 /// A plain untagged scalar's value, as PyYAML's implicit resolvers and constructors read it.
-/// `Err` names why JSON cannot hold the value.
-fn resolve_plain_value(text: &str) -> Result<Value, &'static str> {
+/// `Err` names why JSON cannot hold the value. `key` is true for a mapping key.
+fn resolve_plain_value(text: &str, key: bool) -> Result<Value, &'static str> {
     match yaml::resolve_plain(text) {
         Node::Bool(b) => Ok(Value::Bool(b)),
         Node::Null => Ok(Value::Null),
+        // PyYAML resolves a plain `=` to its value tag and a plain `<<` to its merge tag. As a key,
+        // `=` reads as a string and `<<` is a merge (`on_event`); as a value, PyYAML has no
+        // constructor for either.
+        Node::Str(_) if text == "=" && !key => Err("PyYAML has no constructor for a plain `=`"),
+        Node::Str(_) if text == "<<" => {
+            Err("PyYAML has no constructor for a plain `<<` outside a mapping key")
+        }
         // PyYAML tries the float, int and timestamp resolvers in turn; a text matches at most one.
         Node::Str(_) if FLOAT.is_match(text) => float_value(text),
         Node::Str(_) if INT.is_match(text) => int_value(text),
@@ -291,7 +306,7 @@ impl Builder<'_> {
     fn refuse_tag(&self, tag: Option<&Tag>, scalar: Option<&str>) {
         let Some(tag) = tag else { return };
         let own = scalar.unwrap_or("<collection>");
-        let full = format!("{}{}", tag.handle, tag.suffix);
+        let full = yaml::tag_text(tag);
         let reason = match full.strip_prefix(CORE_TAG) {
             Some(name) => format!("core tag `!!{name}` is not supported by the playbook loader"),
             None => format!("application tag `{full}` is not supported by the playbook loader"),
@@ -361,9 +376,6 @@ fn apply_merges(
     merges: Vec<Value>,
     origin: &str,
 ) -> Map<String, Value> {
-    if merges.is_empty() {
-        return explicit.into_iter().collect();
-    }
     let mut out = Map::new();
     for merge in merges {
         let list = match merge {
@@ -404,11 +416,11 @@ impl MarkedEventReceiver for Builder<'_> {
             Event::Scalar(text, style, anchor, tag) => {
                 self.refuse_tag(tag.as_ref(), Some(text.as_str()));
                 let plain = style == TScalarStyle::Plain;
-                let is_merge_key = plain
-                    && text == "<<"
-                    && matches!(self.stack.last(), Some(Frame::Map { key: None, .. }));
-                let item = if plain {
-                    let value = resolve_plain_value(&text).unwrap_or_else(|why| {
+                let key = matches!(self.stack.last(), Some(Frame::Map { key: None, .. }));
+                let is_merge_key = plain && key && text == "<<";
+                // A merge key is never read as a value (`push`), so it is not resolved.
+                let item = if plain && !is_merge_key {
+                    let value = resolve_plain_value(&text, key).unwrap_or_else(|why| {
                         refuse(self.origin, &self.key_label(&text), why, Some(&text))
                     });
                     Item {

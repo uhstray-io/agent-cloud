@@ -2,12 +2,15 @@
 //!
 //! The 6c agreement is the reason this module is in the security set (`areas.d/support_lift.yml`,
 //! `always`): it pins the lifting loader to `yaml::parse` over every repository playbook, so a
-//! change that drops, reorders or retypes a value in one file fails every commit.
+//! change that drops or reorders a value, or changes a string's text, in one file fails every
+//! commit. It accepts any number where `yaml::parse` has a string, so numbers are checked
+//! elsewhere: by `plain_scalars_lift_with_pyyaml_types` here, and over the repository files by
+//! `support_lift_pyyaml` (cli tier).
 
 use std::collections::BTreeSet;
 
 use agent_cloud_tests::yaml::{self, Node};
-use agent_cloud_tests::{playbook, repo};
+use agent_cloud_tests::{playbook, repo, text};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -115,13 +118,19 @@ fn plain_scalars_lift_with_pyyaml_types() {
         let doc = playbook::loads(&format!("v: {text}"));
         assert_eq!(doc["v"], expected, "plain or quoted scalar {text:?}");
     }
+    // As a key, a plain `=` is a string (PyYAML's flatten_mapping); as a value it is refused.
+    assert_eq!(
+        playbook::loads("=: a"),
+        json!({"=": "a"}),
+        "a plain `=` key"
+    );
 }
 
 /// The forms JSON cannot keep, or the loader will not read as PyYAML does, are refused, and the
 /// refusal names the file's mapping key and the offending text.
 #[test]
 fn forms_json_cannot_hold_are_refused_by_name() {
-    let cases: [(&str, &[&str]); 8] = [
+    let cases: [(&str, &[&str]); 11] = [
         ("v: .inf", &["key `v`", ".inf"]),
         ("v: .nan", &["key `v`", ".nan"]),
         ("v: 2026-11-17", &["key `v`", "2026-11-17"]),
@@ -130,6 +139,9 @@ fn forms_json_cannot_hold_are_refused_by_name() {
         ("200: a", &["key `200`", "200"]),
         ("yes: a", &["key `yes`", "yes"]),
         ("? [a]\n: b", &["key `<non-scalar key>`", "a sequence"]),
+        ("v: =", &["key `v`", "plain `=`"]),
+        ("v: <<", &["key `v`", "plain `<<`"]),
+        ("- <<", &["key `<root>`", "plain `<<`"]),
     ];
     for (text, needles) in cases {
         let payload = std::panic::catch_unwind(|| playbook::loads(text))
@@ -155,11 +167,18 @@ fn every_repository_yaml_file_has_the_structure_yaml_parse_gives() {
         ":(glob)platform/semaphore/**/*.yml",
     ]);
     for file in files {
-        let text =
-            std::fs::read_to_string(repo::path(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
-        let Ok(lifted) = std::panic::catch_unwind(|| playbook::parse(&text, &file)) else {
-            refused.insert(file);
-            continue;
+        let text = text::read(&file);
+        let lifted = match std::panic::catch_unwind(|| playbook::parse(&text, &file)) {
+            Ok(lifted) => lifted,
+            Err(payload) => {
+                let message = panic_message(payload.as_ref());
+                assert!(
+                    message.contains("a mapping key must be a string"),
+                    "{file}: refused for another reason: {message}"
+                );
+                refused.insert(file);
+                continue;
+            }
         };
         let nodes = yaml::parse(&text, &file);
         assert_eq!(lifted.len(), nodes.len(), "{file}: document count");
@@ -218,7 +237,7 @@ listed:
 #[test]
 fn plays_drops_only_the_leading_extra_var_guard() {
     let rel = "platform/playbooks/apply-firewall.yml";
-    let text = std::fs::read_to_string(repo::path(rel)).expect(rel);
+    let text = text::read(rel);
     let mut docs = playbook::parse(&text, rel);
     let Value::Array(all) = docs.remove(0) else {
         panic!("{rel}: the document is a list of plays");
