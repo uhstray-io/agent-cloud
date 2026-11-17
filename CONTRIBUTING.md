@@ -105,7 +105,11 @@ brew install uv              # Python dependencies and tools are managed with uv
 uv tool install ruff && uv tool install ansible-lint && uv tool install yamllint && uv tool install bandit
 brew install shellcheck bats-core parallel hadolint
 brew install go              # Go 1.26+ for the full test/pre-push suite; also in Brewfile
-brew install cargo-nextest   # the Rust suite's runner (plan 24); also in Brewfile; needs cargo (rustup)
+brew install cargo-nextest   # the Rust suite's runner (plan 24); also in Brewfile
+brew install rustup          # also in Brewfile; keg-only, so its bin goes on PATH:
+export PATH="$(brew --prefix rustup)/bin:$PATH"   # add to your shell profile; puts cargo, rustc and rustfmt on PATH
+# The toolchain comes from platform/tests/rust-toolchain.toml (the version CI pins, with
+# rustfmt); rustup installs it on first use there (RUSTUP_AUTO_INSTALL, default 1).
 
 # The test suites' dependencies: pyproject.toml's dependency groups, locked in uv.lock.
 # `uv sync --locked` installs Python 3.12 (.python-version) and both groups into .venv,
@@ -176,8 +180,9 @@ pass — and CI never sees a push the hook stopped.
 
 It skips, with a message, when `SKIP_TESTS=1` is set, when `bats` is not installed, when
 `cargo-nextest` is not installed (the Rust lanes; `lane.sh ci` and `full` fail instead). The
-Brewfile installs `cargo-nextest`; `cargo` itself comes from rustup, not the Brewfile, and
-without it the Rust lanes skip the same way. It also skips when
+Brewfile installs `cargo-nextest` and `rustup`; rustup's bin must be on `PATH` (Tool
+Installation, above), and the toolchain comes from `platform/tests/rust-toolchain.toml`. Without
+them the Rust lanes skip the same way. The hook also skips when
 the Python suite is not collectable because pytest or a test dependency is missing, and on
 a branch-deletion push. Failing open like that is deliberate and the opposite of the
 pre-commit secret gate, which fails closed: a leaked secret is irreversible, a skipped test
