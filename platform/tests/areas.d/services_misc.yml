@@ -1,0 +1,11 @@
+# Services misc (plan 24, Phase 4): the ERPNext and honcho static tests, ported from BATS.
+paths:
+  - "platform/services/erpnext/deployment/**"
+  - "platform/playbooks/deploy-erpnext.yml"
+  - "platform/playbooks/clean-deploy-erpnext.yml"
+  - "platform/services/honcho/deployment/**"
+  - "platform/playbooks/deploy-honcho.yml"
+  - "platform/playbooks/validate-secrets.yml"
+  - "platform/services/authentik/deployment/blueprints/honcho-docs-forward-auth.yaml"
+tiers:
+  static: [service_erpnext, service_honcho]
