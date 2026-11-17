@@ -2333,6 +2333,20 @@ templates:
         type: string
         required: true
 
+  - name: Survey Proxmox Backup Storage (Dev)
+    playbook: platform/playbooks/survey-proxmox-backup-storage.yml
+    repository: agent-cloud dev
+    survey_vars:
+      - name: expected_repository_sha
+        title: "Reviewed commit SHA"
+        description: "Exact reviewed Dev revision for the read-only backup-storage survey"
+        type: string
+        required: true
+    # Read-only: every backup-capable storage's capacity, archives per guest, what a prune at
+    # each enabled job's own retention would remove, unexplained bytes, storages that share a
+    # filesystem, and every backup job's schedule and retention. It reads the whole cluster,
+    # so the only input is the reviewed commit. Proxmox requests are GET only; a dry run reports the same.
+
   - name: Survey o11y Backup Readiness (Dev)
     playbook: platform/playbooks/survey-o11y-backup-readiness.yml
     repository: agent-cloud dev
