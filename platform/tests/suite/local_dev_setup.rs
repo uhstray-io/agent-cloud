@@ -1,5 +1,6 @@
-//! The local-dev setup files: `.gitignore` (the working inventory) and the `Brewfile` toolchain
-//! (static tier).
+//! The local-dev setup files: `.gitignore` (the working inventory), the `Brewfile` toolchain and
+//! the Rust toolchain pin, `platform/tests/rust-toolchain.toml`, kept equal to `Cargo.toml`'s
+//! `rust-version` and to the version CI's Rust (tests) job installs and selects (static tier).
 //!
 //! The working inventory `platform/inventory/local-dev.yml` holds a machine's own values, so it
 //! must be ignored by git, while the committed template beside it must not be. The Brewfile is
@@ -35,6 +36,7 @@
 //! | Brewfile: socat comment references make local-https (documents purpose) | `socat_line_documents_make_local_https` (candidate: pins text) |
 
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::{self, Node};
 
 const GITIGNORE: &str = ".gitignore";
 const BREWFILE: &str = "Brewfile";
@@ -236,28 +238,34 @@ fn the_rust_toolchain_file_matches_cargo_and_ci() {
         channel, rust_version,
         "rust-toolchain.toml's channel must equal Cargo.toml's rust-version"
     );
-    // The Rust (tests) job: from its key to the next job's key.
-    let workflow = text(".github/workflows/lint-and-test.yml");
-    let job: String = workflow
-        .lines()
-        .skip_while(|line| *line != "  rust-tests:")
-        .skip(1)
-        .take_while(|line| {
-            !(line.starts_with("  ") && !line.starts_with("   ") && line.ends_with(':'))
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    let installed = job
-        .lines()
-        .find_map(|line| {
-            line.trim_start()
-                .strip_prefix("rustup toolchain install ")?
-                .split_whitespace()
-                .next()
-        })
-        .unwrap_or_else(|| panic!("the Rust (tests) job installs no toolchain"));
-    assert_eq!(
-        channel, installed,
-        "rust-toolchain.toml's channel must equal the version the Rust (tests) job installs"
-    );
+    // The Rust (tests) job's step that installs the toolchain and selects it with a directory
+    // override, which is what CI builds with: both commands must name the file's channel.
+    let workflow = yaml::load_one(&repo::path(".github/workflows/lint-and-test.yml"))
+        .expect("the workflow is empty");
+    let steps = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("rust-tests"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Node::as_seq)
+        .expect("the workflow has no jobs.rust-tests.steps");
+    let run = steps
+        .iter()
+        .filter_map(|step| step.get("run").and_then(Node::as_str))
+        .find(|run| run.contains("rustup toolchain install "))
+        .expect("the Rust (tests) job installs no toolchain");
+    for command in ["rustup toolchain install ", "rustup override set "] {
+        let version = run
+            .lines()
+            .find_map(|line| {
+                line.trim_start()
+                    .strip_prefix(command)?
+                    .split_whitespace()
+                    .next()
+            })
+            .unwrap_or_else(|| panic!("the Rust (tests) job's toolchain step has no `{command}`"));
+        assert_eq!(
+            channel, version,
+            "rust-toolchain.toml's channel must equal the Rust (tests) job's `{command}` version"
+        );
+    }
 }
