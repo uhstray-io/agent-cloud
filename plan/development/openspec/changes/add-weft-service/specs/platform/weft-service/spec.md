@@ -145,3 +145,17 @@ No template, inventory variable, environment file or OpenBao path SHALL hold or 
 
 - **WHEN** the workspace's compose file, templates and playbooks are read
 - **THEN** no service has an `env_file`, no environment variable names a key, token, secret or password, and no playbook reads a workspace credential from inventory or OpenBao
+
+### Requirement: Staging's front door keeps its mail, and the rack's never does
+
+The front door SHALL refuse to start without mail (weft #541). Staging's front door SHALL hand every message to a mail catcher that sends none, reached by plain SMTP on the door's own loopback, with its interface published on the VM's loopback only. A front door outside staging that names the catcher SHALL be refused before anything stops.
+
+#### Scenario: Staging's front door keeps its mail
+
+- **WHEN** a person signs up on staging's front door
+- **THEN** the sign-up email is in the catcher, reached through an SSH tunnel to the door VM, and no message leaves the VM
+
+#### Scenario: A rack front door never names the mail catcher
+
+- **WHEN** a deploy or a rollback reaches a front door whose `weft_environment` is not `staging` and which sets `weft_door_mailpit`
+- **THEN** the run fails before anything stops, and the running front door is left as it was
