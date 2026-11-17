@@ -250,8 +250,10 @@ fn includes_path(task: &Node, suffix: &str) -> bool {
     included_file(task).is_some_and(|f| std::path::Path::new(f).ends_with(suffix))
 }
 
+/// Exactly `tasks/<guard>`, as every playbook includes it: a templated path (`{{ dir }}/tasks/...`)
+/// could render to another file, so it is not the guard.
 fn is_controller_only_guard(task: &Node) -> bool {
-    includes_path(task, &format!("tasks/{CONTROLLER_ONLY_GUARD}"))
+    included_file(task) == Some(format!("tasks/{CONTROLLER_ONLY_GUARD}").as_str())
 }
 
 /// The first task a play actually runs. `pre_tasks` run before `tasks`, and so do `roles`, which
@@ -293,7 +295,12 @@ fn first_in(seq: &[Node]) -> Option<&Node> {
 /// Whether a task makes escalation possible: an include or import of the resolver task file, or a
 /// set_fact of `ansible_become_password`.
 fn resolves(task: &Node) -> bool {
-    let sets = module(task, "set_fact").is_some_and(|f| f.get("ansible_become_password").is_some());
+    // The value must read the store's password: a literal (or an extra var) is not resolution.
+    let sets = module(task, "set_fact").is_some_and(|f| {
+        f.get("ansible_become_password")
+            .and_then(Node::as_str)
+            .is_some_and(|v| v.contains(SECRET_PATH))
+    });
     includes_path(task, RESOLVER_FILE) || sets
 }
 
@@ -559,7 +566,21 @@ const FIRST_EXECUTED_CASES: &str = r#"
   tasks:
     - block:
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
-        - ansible.builtin.set_fact: {ansible_become_password: x}
+        - ansible.builtin.set_fact:
+            ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
+- name: bad set_fact of a literal password
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact: {ansible_become_password: x}
+- name: bad templated guard path, then the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: "{{ _d }}/tasks/refuse-var-overrides.yml"
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad debug then resolver inside a block
   hosts: h
   become: true

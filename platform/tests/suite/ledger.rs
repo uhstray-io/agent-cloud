@@ -211,7 +211,7 @@ fn defines(path: &Path, name: &str) -> bool {
 /// attributes (on its line or the lines above, blank lines between), `pub`/`pub(..)` and `async`
 /// allowed before it. Comments and literals are blanked first, so a fn inside one does not count.
 /// With `require_test`, its attributes must include `#[test]` and no `#[cfg(...)]` other than
-/// exactly `#[cfg(test)]`, which could compile the test out.
+/// exactly `#[cfg(test)]`, which could compile the test out, and no `#[ignore]`, which skips it.
 fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
     let code = blank_comments_and_literals(text);
     let name = regex::escape(fn_name);
@@ -225,6 +225,7 @@ fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
         }
         let attrs: Vec<&str> = ATTRIBUTE.find_iter(&c[1]).map(|m| m.as_str()).collect();
         attrs.contains(&"#[test]")
+            && !attrs.iter().any(|a| a.starts_with("#[ignore"))
             && !attrs
                 .iter()
                 .any(|a| a.starts_with("#[cfg(") && *a != "#[cfg(test)]")
@@ -918,4 +919,9 @@ fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
     let cfg_out = "#[cfg(any())]\n#[test]\nfn x() {}\n#[cfg(test)]\n\n#[test]\nfn y() {}\n";
     assert!(!defines_test(cfg_out, "x"));
     assert!(defines_test(cfg_out, "y"));
+    assert!(!defines_test("#[test]\n#[ignore]\nfn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#[ignore = \"slow\"]\n#[test]\nfn x() {}\n",
+        "x"
+    ));
 }
