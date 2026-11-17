@@ -6,9 +6,17 @@
 //! [`Server::requests`]. wiremock reads the whole request body before it matches, so a reply
 //! never leaves bytes unread in the socket (the reset `DrainingHandler` exists to prevent).
 //!
-//! Not covered, because wiremock 0.6.5 has none of them: TLS (`serve(ssl_context=...)`),
-//! streamed or chunk-timed response bodies, replies held until a test event, and dropped
-//! connections. A test that needs one stays on the Python fixture until this grows it (AC-956).
+//! Two fake behaviours are done with wiremock as it is:
+//! - A dropped connection (accept, read, close with no reply): mount the mock with
+//!   `Mock::respond_with_err`, whose error makes the server close the connection after zero bytes.
+//! - A reply held until the test releases it: a closure responder that blocks, for example on a
+//!   channel. It runs under the server's state lock on the server's one thread, so while it holds,
+//!   no other request is served and [`Server::requests`] and the drop wait too. Give it its own
+//!   timeout, as the Python fakes do.
+//!
+//! Not covered, because wiremock 0.6.5 has neither: TLS (`serve(ssl_context=...)`, its listener is
+//! a plain `TcpListener`) and response bodies written in timed parts or cut off mid-stream (a reply
+//! is one body plus an optional delay). A test that needs one stays on the Python fixture (AC-956).
 
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
