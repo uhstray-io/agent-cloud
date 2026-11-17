@@ -62,7 +62,7 @@
 //! | the transport pattern accepts internal endpoints and refuses public ones | `transport_pattern_accepts_internal_endpoints_and_refuses_public_ones` |
 //! | repo: no generated Python bytecode is tracked | `no_python_bytecode_is_tracked` (its two .gitignore lines: candidate: pins text) |
 //! | bao-merge-keys: creation is CAS-guarded, and losing the race falls back to a merge | `bao_merge_keys_creates_a_path_only_under_cas` |
-//! | seed-openbao-key: the read-only access check ends the play before any write | `seed_access_check_ends_the_play_before_any_write` |
+//! | seed-openbao-key: the read-only access check ends the play before any write | `seed_access_check_ends_the_play_before_any_write` (self-check: `the_seed_chain_check_refuses_an_end_play_that_may_not_run`) |
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
@@ -1468,7 +1468,8 @@ pub(crate) fn when_is_constant_false(task: &Node) -> bool {
 
 /// Whether a task carries the `never` tag. Whether it then runs depends on the run's `--tags` (and
 /// a task tagged `always` as well runs by default), so a caller decides what that means for it:
-/// every caller here treats it as not running, which can only refuse a task that would run.
+/// [`never_runs`] counts it as not running, and the first-task search reads it as unknown. Either
+/// can only refuse a task that would run.
 pub(crate) fn tagged_never(task: &Node) -> bool {
     match task.get("tags") {
         // Ansible splits a comma-separated tags string into tags.
@@ -1806,10 +1807,10 @@ fn seed_chain_problem(seed: &Node) -> Option<String> {
             "missing: access check at {access:?}, merge at {merge:?}, named end_play at {end:?}"
         ));
     };
-    if access > merge {
+    if access >= merge {
         return Some("the access check runs after the merge".into());
     }
-    if end > merge {
+    if end >= merge {
         return Some("the play can write before it ends".into());
     }
     // The named end_play with every block around it: Ansible applies a block's `when` and `tags`
@@ -1893,6 +1894,10 @@ fn the_seed_chain_check_refuses_an_end_play_that_may_not_run() {
         in_block("      tags: [never]\n"),
         format!(
             "    - name: outer\n      block:\n        - ansible.builtin.debug: {{msg: hi}}\n      rescue:\n        - name: {SEED_END_PLAY}\n          ansible.builtin.meta: end_play\n          when: {gate}\n"
+        ),
+        // One task that is both the end_play and the merge include: the order check sees one map.
+        format!(
+            "    - name: {SEED_END_PLAY}\n      ansible.builtin.meta: end_play\n      ansible.builtin.include_tasks: tasks/bao-merge-keys.yml\n      when: {gate}\n"
         ),
         // A same-named, same-gated task in the tree stands in for the end_play in a rescue.
         format!(

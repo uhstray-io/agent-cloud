@@ -60,6 +60,11 @@ const PASSWORD_STEM: &str = "become_pass";
 /// and coerced at `base.py:469-470`. The numeric members `1` and `1.0` reach this parser as strings,
 /// since it has no int or float node, so both are listed here.
 const BECOME_TRUE: &[&str] = &["y", "yes", "on", "1", "1.0", "true", "t"];
+/// A task key that loops the task: `loop`, or a `with_<lookup>`.
+fn is_loop_key(key: &str) -> bool {
+    key == "loop" || key.starts_with("with_")
+}
+
 /// Ansible's task keywords: the keys of a task that are not a module call. Any other key of a task
 /// names the module it calls. `action` and `local_action` are left out on purpose: they name a
 /// module as their value, so they count as calls. `with_*` loop keys are matched by prefix.
@@ -293,19 +298,12 @@ fn first_in(seq: &[Node]) -> First<'_> {
         }
         // Any other `when` may be false at run time, so this task (or block) may not run and the
         // first task cannot be proven: fail closed.
-        if task.get("when").is_some() {
-            return First::Unknown;
-        }
-        // A loop over an empty list runs nothing (`loop: []`, `with_items: []`), and its list is
-        // decided at run time: fail closed.
-        let loops = match task {
-            Node::Map(entries) => entries.iter().any(|(k, _)| {
-                k.as_str()
-                    .is_some_and(|k| k == "loop" || k.starts_with("with_"))
-            }),
-            _ => false,
-        };
-        if loops {
+        // A loop may run zero times (`loop: []`, `with_items: []`), and its list is decided at run
+        // time like a `when`: fail closed.
+        let loops = task
+            .as_map()
+            .is_some_and(|e| e.iter().any(|(k, _)| k.as_str().is_some_and(is_loop_key)));
+        if task.get("when").is_some() || loops {
             return First::Unknown;
         }
         let Some(block) = task.get("block").and_then(Node::as_seq) else {
@@ -915,7 +913,7 @@ fn called_modules(task: &Node) -> Vec<String> {
         Node::Map(entries) => entries
             .iter()
             .filter_map(|(k, _)| k.as_str())
-            .filter(|k| !TASK_KEYWORDS.contains(k) && !k.starts_with("with_"))
+            .filter(|k| !TASK_KEYWORDS.contains(k) && !is_loop_key(k))
             .map(|k| {
                 k.strip_prefix("ansible.builtin.")
                     .or_else(|| k.strip_prefix("ansible.legacy."))
