@@ -284,6 +284,8 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `platform/playbooks/backup-activepieces-db.yml` | new |
 | `platform/playbooks/restore-activepieces-db.yml` | new |
 | `platform/services/authentik/deployment/blueprints/activepieces-forward-auth.yaml` | new |
+| Shared dump task under `platform/playbooks/tasks/` (task 2.7, extracted from `backup-plane-db.yml`) | new |
+| Shared staged-restore task under `platform/playbooks/tasks/` (task 2.7, extracted from `restore-plane-db.yml`) | new |
 | One or two test files | new |
 | `plan/development/26-activepieces.md` | new (this pull request) |
 | `plan/development/openspec/changes/deploy-activepieces/.openspec.yaml` | new (this pull request) |
@@ -305,7 +307,7 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `plan/architecture/network-architecture.md` | changed |
 | `platform/playbooks/README.md` | changed |
 
-The list has about 21 new files and about 13 changed files, so about 34 in total. Without the hex type, `manage-secrets.yml` is not changed, and the total is about 33. Site-config changes do not count against this repository's budget.
+The list has about 23 new files and about 13 changed files, so about 36 in total. Without the hex type, `manage-secrets.yml` is not changed, and the total is about 35. Site-config changes do not count against this repository's budget.
 
 ## Risk: no API key on Community edition
 

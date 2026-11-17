@@ -13,7 +13,7 @@ Task ids are permanent Plane keys (R3). To supersede a task, strike its id throu
       Deploy creates the owner over loopback (D10b), with the email from the platform-admins roster key named by activepieces_owner. AP_ALLOW_OPEN_SIGN_UP refused by the template. Verify that an uninvited sign-up is refused. Spikes O5 and O6. The code ships in the task 1.3 pull request where it can; its live proof is the task 1.5 gate.
 - [ ] 1.5 Local-dev bring-up. (AC-772)
       O8 spike, run once before task 1.2, or cite AC-796's recorded result: see plan 26, Risk: no API key on Community edition.
-      make local-deploy-activepieces; owner exists; health 200; one scheduled flow runs. Validation gate: scenarios "A scheduled flow runs on the local stack", "The deploy creates the owner before the port is reachable", "An uninvited sign-up is refused", "A re-run reports no change", "A redeploy keeps the encryption key" and "A restore swaps in only a fully loaded copy" hold locally.
+      make local-deploy-activepieces; owner exists; health 200; one scheduled flow runs. Validation gate: scenarios "A scheduled flow runs on the local stack", "The deploy creates the owner before the port is reachable", "An uninvited sign-up is refused", "A re-run reports no change" and "A redeploy keeps the encryption key" hold locally.
 
 ## 2. Production
 
@@ -30,6 +30,6 @@ Task ids are permanent Plane keys (R3). To supersede a task, strike its id throu
 - [ ] 2.6 Boot persistence, health and host observability. (AC-779)
       Ensure/Verify Service Persistence, Verify Service Health, Instrument Host Observability.
 - [ ] 2.7 Back Up and Restore Activepieces DB playbooks. (AC-780)
-      Extract the dump and staged-swap steps of backup-plane-db.yml and restore-plane-db.yml into shared tasks, parameterised by group, container, database, user, data services and a post-restore hook. Build the Activepieces playbooks on them. Needs task 2.3 (a running database), not the edge. Encryption key backed up with Back Up Credentials to site-config.
+      Extract the dump and staged-swap steps of backup-plane-db.yml and restore-plane-db.yml into shared tasks, parameterised by group, container, database, user, data services and a post-restore hook. Build the Activepieces playbooks on them. Prove "A restore swaps in only a fully loaded copy" on local-dev first, with a restore that fails part-way; production then runs one real dump-and-restore. Needs task 2.3 (a running database), not the edge. Encryption key backed up with Back Up Credentials to site-config.
 - [ ] 2.8 Validation gate. (AC-781)
       Scenarios "A platform-admin passes the gate", "A non-admin is refused at the edge", "A scheduled flow runs in production", "An undeclared webhook path stays gated", "A redeploy keeps the encryption key" (read the encryption_key KV version before and after the re-run), "A re-run reports no change", "An uninvited sign-up is refused" and "A restore swaps in only a fully loaded copy" (one real dump-and-restore from 2.7) hold in production. Cites task 2.3 for "The deploy creates the owner before the port is reachable" and "A direct connection from another LAN host is refused".
