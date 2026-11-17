@@ -182,7 +182,7 @@ Phase 2 acceptance: gate 3.6 passes.
 ## Open Questions and Unverified Items
 
 - **UNVERIFIED: the images API in v1.5.0.** Task 3.1 (AC-786).
-- **UNVERIFIED: whether an Activepieces piece can present a client certificate.** Task 2.1 (AC-826).
+- **UNVERIFIED: whether an Activepieces piece can present a client certificate, and whether the holder of the leaf opens the leaf files on each call (D8).** Task 2.1 (AC-826).
 - **UNVERIFIED: a per-key request limit in any gateway release.** Tasks 3.1 and 3.3 (AC-786, AC-788).
 - **Open: the image model's output safety filter.** DGXSPARK-16.
 - **Undeclared: the post cadence.** The budget figure rests on the assumptions in "Identity and budget". Gate 2.4 re-measures it (AC-791).

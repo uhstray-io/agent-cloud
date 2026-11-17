@@ -9,7 +9,7 @@ Every task is safe to rerun. Nothing here runs against production until the oper
 
 ## 2. Text path (blocked: deploy-activepieces delivers the Activepieces host)
 - [ ] 2.1 Spike: can an Activepieces piece present a client certificate; if not, add an mTLS egress sidecar (AC-826)
-      Acceptance: a recorded yes or no for the piece tested. On no, add the sidecar to the Activepieces compose project, on an internal network only.
+      Acceptance: a recorded yes or no for the piece tested; on no, add the sidecar to the Activepieces compose project, on an internal network only. Also a recorded yes or no on whether the piece or sidecar that holds the leaf opens the leaf files on each call (plan 27, D8).
 - [ ] 2.2 Issue the Activepieces host a client leaf, add its leaf name to agw_client_cert_allowlist, give it a Renew Internal Certs proof path (AC-825)
       Acceptance: `Issue Internal Leaf (Dev)` with `leaf_action=inspect` passes for the leaf on the Activepieces host. The first `Renew Internal Certs (Dev)` run that renews the leaf reports a proof for it, not `left alone` (production-internal-ca requirement "Leaves are renewed on a schedule and the new certificate is in use"). The allowlist takes leaf names, not SANs (inference-gateway-agentgateway task 6.1). Blocked by spike 2.1 (AC-826) and AC-928 (plan 27, D8); AC-928 closes without work if AC-826 shows the holder opens the leaf files on each call. Follows the rollout order in plan 27, Phase 1.
 - [ ] 2.3 Enroll the activepieces identity with its budget and model allow-list (AC-785)
