@@ -1,0 +1,91 @@
+## Purpose
+
+Provides a self-hosted workflow-automation service: platform automation builds and runs flows that call other platform services. The service is deployed and operated through Semaphore playbooks. Its interactive interface is reachable only by platform administrators through the platform's identity provider, and it holds no privileged containers.
+
+## ADDED Requirements
+
+### Requirement: Deployed through Semaphore with secrets from OpenBao
+
+The service SHALL be deployed, redeployed and cleaned only through Semaphore playbooks. Its secrets SHALL come from OpenBao. A deploy MUST NOT regenerate a secret that already exists, and in particular MUST NOT regenerate the encryption key that protects stored connections.
+
+#### Scenario: A redeploy keeps the encryption key
+
+- **GIVEN** the service holds stored connections that were encrypted with the current encryption key
+- **WHEN** the service is redeployed with unchanged inputs
+- **THEN** the encryption key in the secret store is unchanged, and the stored connections still decrypt
+
+#### Scenario: A re-run reports no change
+
+- **WHEN** the deploy is run a second time with unchanged inputs
+- **THEN** the run reports no changed task
+
+### Requirement: Flows run without privileged containers
+
+The service SHALL execute flow code under the sandbox mode that runs without privileged containers. No container in the service's compose project MUST be granted privileged execution.
+
+#### Scenario: A scheduled flow runs on the local stack
+
+- **WHEN** a scheduled flow is created on the local-dev instance and its time arrives
+- **THEN** the flow runs to completion under the code-only sandbox, and no container in the project is privileged
+
+#### Scenario: A scheduled flow runs in production
+
+- **WHEN** a scheduled flow is created on the production instance and its time arrives
+- **THEN** the flow runs to completion under the code-only sandbox, and no container in the project is privileged
+
+### Requirement: Account creation is closed after the owner
+
+The service MUST create its owner account before the application port is reachable from any host other than the reverse proxy. The service SHALL refuse a sign-up for an address that holds no invitation once the owner exists. The service MUST NOT be configured to allow open sign-up.
+
+#### Scenario: The deploy creates the owner before the port is reachable
+
+- **WHEN** the service is deployed for the first time
+- **THEN** the owner account exists before the reverse proxy host is admitted to the application port, and no other host reached the port before then
+
+#### Scenario: An uninvited sign-up is refused
+
+- **GIVEN** the owner account exists
+- **WHEN** a sign-up is requested for an address that holds no invitation
+- **THEN** the request is refused, and no account is created
+
+### Requirement: Only platform-admins reach the application
+
+The service SHALL serve its interface only to members of the `platform-admins` group, who authenticate through the platform's identity provider at the reverse proxy. A request from anyone else MUST be refused before it reaches the application.
+
+#### Scenario: A platform-admin passes the gate
+
+- **WHEN** a member of `platform-admins` opens the service's public address and signs in through the identity provider
+- **THEN** the request reaches the application and the member sees the application's interface
+
+#### Scenario: A non-admin is refused at the edge
+
+- **WHEN** a signed-in user outside `platform-admins` opens the service's public address
+- **THEN** the reverse proxy refuses the request, and the application receives no request from that user
+
+### Requirement: The application port is reachable from the Caddy host only
+
+The host firewall SHALL admit the application port from the reverse proxy host and from no other host. The port MUST NOT be reachable from any other address on the local network.
+
+#### Scenario: A direct connection from another LAN host is refused
+
+- **WHEN** a host on the local network other than the reverse proxy host opens a connection to the application port
+- **THEN** the connection fails, and a connection from the reverse proxy host succeeds
+
+### Requirement: Webhook paths are exempted by exact path only
+
+The service's inbound webhook paths SHALL be behind the identity gate unless a flow is approved for one. A webhook exemption MUST name one exact path declared in inventory. An exemption MUST NOT cover a path prefix or a group of paths.
+
+#### Scenario: An undeclared webhook path stays gated
+
+- **WHEN** a request arrives on a webhook path that no inventory entry declares
+- **THEN** the identity gate applies to the request, and the request is refused without a valid platform-admin session
+
+### Requirement: The database can be backed up and restored
+
+The service SHALL provide a database dump that is written into an owner-only directory. A restore MUST load the dump into a staging database and MUST swap that copy in only after it has loaded completely. A restore that fails part-way MUST leave the live database unchanged.
+
+#### Scenario: A restore swaps in only a fully loaded copy
+
+- **GIVEN** a valid database dump exists
+- **WHEN** a restore is started and fails before the staging copy has loaded completely
+- **THEN** the live database is unchanged, and no partial copy replaces it

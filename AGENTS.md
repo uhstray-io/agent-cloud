@@ -140,6 +140,7 @@ plan/                        Architecture, implementation, and composability pla
 - `plan/development/22-console-access-requests.md` — Console access requests and the skynet iam-agent (PROPOSED handoff plan): the site-config declaration stays the authority, a request becomes a reviewed site-config PR, Plane follows the Authentik groups
 - `plan/architecture/10-release-policy.md` — Release policy: one `dev` → `main` promotion per release, hard limits of 100 PRs and 120 changed files, checked when work enters `dev`. `plan/development/23-release-train.md` builds the gates and orders the active work into releases
 - `plan/development/24-rust-test-platform.md` — Rust test platform (PROPOSED): one `cargo-nextest` crate in `platform/tests/` replaces pytest and BATS, tests run by lane (commit, push, ci, full) selected from `platform/tests/areas.yml`, Python product code ported to Rust where the runtime is ours
+- `plan/development/26-activepieces.md` — Activepieces workflow automation (PROPOSED): Community edition behind an Authentik forward-auth gate for platform-admins, app + worker + Postgres + Redis on its own VM under rootless podman, sandboxed code without privileged containers, OpenSpec change `deploy-activepieces`
 
 The private **site-config** repository has its own `plan/ARCHITECTURE-REFERENCE.md` covering the public/private repo boundary, credential backup policy, and inventory structure.
 
