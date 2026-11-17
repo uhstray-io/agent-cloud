@@ -1,0 +1,9 @@
+# The backup-archive cleanup's helper: which archives it lists, its refusals, the sha256 confirm
+# gate, and the authorize and verify checks (suite/cleanup_backup_archives.rs, cli tier). A change to
+# the playbook, its helper or the survey helper it reuses selects this area.
+paths:
+  - "platform/playbooks/cleanup-proxmox-backup-archives.yml"
+  - "platform/playbooks/files/cleanup_backup_archives.py"
+  - "platform/playbooks/files/survey_backup_storage.py"
+tiers:
+  cli: [cleanup_backup_archives]
