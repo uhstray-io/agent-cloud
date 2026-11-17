@@ -191,6 +191,37 @@ def test_an_all_job_takes_its_node_and_leaves_out_the_excluded_guests():
     assert guest == {200: 3, 201: 0, 202: 0, 203: 3}
 
 
+@pytest.mark.parametrize("separator", [",", ";", " "])
+def test_guest_lists_split_on_every_delimiter_proxmox_accepts(separator):
+    vms = [{"vmid": v, "node": "n1"} for v in (200, 201, 202)]
+    jobs = [{"id": "list", "type": "vzdump", "storage": "backups", "vmid": f"200{separator}201",
+             "prune-backups": "keep-last=2"},
+            {"id": "all", "type": "vzdump", "storage": "other", "all": 1, "exclude": f"200{separator}201"}]
+    archives = [_archive("backups", vmid, 0, GIB) for vmid in (200, 201, 202)]
+    _, result = _one_store(jobs, vms, archives)
+    rows = {j["id"]: j for j in result["jobs"]}
+    assert rows["list"]["selects"] == "list" and rows["list"]["guests"] == 2
+    assert rows["all"]["guests"] == 1  # only 202 is left once both excluded guests are read
+
+
+def test_protected_archives_add_to_the_need_and_a_protecting_job_has_no_bound():
+    vms = [{"vmid": 701, "node": "n1"}, {"vmid": 702, "node": "n1"}]
+    jobs = [{"id": "keep2", "type": "vzdump", "storage": "backups", "vmid": "701", "prune-backups": "keep-last=2"},
+            {"id": "prot", "type": "vzdump", "storage": "backups", "vmid": "702", "prune-backups": "keep-last=2",
+             "protected": 1}]
+    archives = [{**_archive("backups", 701, day, 10 * GIB), "protected": 1} for day in range(5)]
+    archives.append(_archive("backups", 701, 5, 10 * GIB))
+    archives.append(_archive("backups", 702, 0, GIB))
+    _, result = _one_store(jobs, vms, archives, previews={"keep-last=2": []})
+    storage = result["storages"][0]
+    guest = {g["vmid"]: g for g in storage["by_guest"]}
+    assert guest[701]["protected"] == 5
+    assert guest[701]["gib_at_full_retention"] == 70.0  # two kept at the newest size, plus 50 GiB protected
+    assert guest[702]["retained_at_job_retention"] is None and guest[702]["gib_at_full_retention"] is None
+    assert storage["retention_need_unknown_guests"] == [702]
+    assert storage["gib_needed_at_job_retention"] == 70.0
+
+
 def test_calendar_retention_is_bounded_by_its_buckets_and_keep_all_is_not():
     vms = [{"vmid": 401, "node": "n1"}, {"vmid": 402, "node": "n1"}]
     jobs = [{"id": "cal", "type": "vzdump", "storage": "backups", "vmid": "401",

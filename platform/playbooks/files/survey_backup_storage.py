@@ -103,7 +103,8 @@ def _archives_kept(retentions, storage_cfg):
 
 
 def _vmids(text):
-    return {int(v) for v in str(text or "").split(",") if v.strip().isdigit()}
+    """A vmid list as Proxmox splits it (pve-common split_list): commas, semicolons or whitespace."""
+    return {int(v) for v in re.split(r"[,;\s]+", str(text or "")) if v.isdigit()}
 
 
 def _job_guests(job, vms):
@@ -239,11 +240,13 @@ def summarize(data):
             marks = _ok(prune, "prune preview", storage, "Datastore.Allocate")
             previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
         # A guest's retentions are those of the vzdump jobs on this storage that back it up.
-        retention_of = {}
+        retention_of, protects_every_archive = {}, set()
         for job, _, guests in job_guests:
             if job.get("storage") == storage:
                 for vmid in guests:
                     retention_of.setdefault(vmid, set()).add(_retention(job))
+                if str(job.get("protected", 0)) == "1":  # vzdump --protected: pruning never removes these
+                    protects_every_archive |= guests
         cfg = config.get(storage)
 
         by_vmid = {}
@@ -251,11 +254,14 @@ def summarize(data):
             vmid = int(v.get("vmid") or 0)
             g = by_vmid.setdefault(vmid, {"vmid": vmid, "name": names.get(vmid), "archives": 0, "bytes": 0,
                                          "oldest": None, "newest": None, "newest_bytes": 0,
-                                         "protected": 0, "prunable": 0, "prunable_bytes": 0})
+                                         "protected": 0, "protected_bytes": 0,
+                                         "prunable": 0, "prunable_bytes": 0})
             size, ctime, volid = int(v.get("size") or 0), int(v.get("ctime") or 0), v.get("volid")
             g["archives"] += 1
             g["bytes"] += size
-            g["protected"] += 1 if v.get("protected") == 1 else 0
+            if v.get("protected") == 1:
+                g["protected"] += 1
+                g["protected_bytes"] += size
             g["oldest"] = ctime if g["oldest"] is None else min(g["oldest"], ctime)
             if g["newest"] is None or ctime > g["newest"]:
                 g["newest"], g["newest_bytes"] = ctime, size
@@ -264,7 +270,12 @@ def summarize(data):
             if wanted and all(volid in previewed.get(x, set()) for x in wanted):
                 g["prunable"] += 1
                 g["prunable_bytes"] += size
-        needs = {vmid: _archives_kept(retention_of.get(vmid, set()), cfg) for vmid in by_vmid}
+        # A protected archive is kept on top of what keep-* keeps (Proxmox marks it before counting),
+        # so the need adds its bytes; a guest whose job protects every archive has no bound.
+        needs = {vmid: None if vmid in protects_every_archive else _archives_kept(retention_of.get(vmid, set()), cfg)
+                 for vmid in by_vmid}
+        need_bytes = {vmid: g["newest_bytes"] * needs[vmid] + g["protected_bytes"]
+                      for vmid, g in by_vmid.items() if needs[vmid]}
         rows = []
         for g in sorted(by_vmid.values(), key=lambda g: -g["bytes"]):
             kept = needs[g["vmid"]]
@@ -275,7 +286,7 @@ def summarize(data):
                          "prunable_gib": _gib(g["prunable_bytes"]),
                          "job_retention": sorted(retention_of.get(g["vmid"], set())),
                          "retained_at_job_retention": kept,
-                         "gib_at_full_retention": _gib(g["newest_bytes"] * kept) if kept else None})
+                         "gib_at_full_retention": _gib(need_bytes[g["vmid"]]) if kept else None})
         total, used = int(status.get("total") or 0), int(status.get("used") or 0)
         storages.append({
             "storage": storage, "read_on_node": node, "type": status.get("type"),
@@ -288,8 +299,7 @@ def summarize(data):
             "prunable_archives": sum(g["prunable"] for g in by_vmid.values()),
             "prunable_gib": _gib(sum(g["prunable_bytes"] for g in by_vmid.values())),
             "orphan_guest_gib": _gib(sum(g["bytes"] for g in by_vmid.values() if g["vmid"] not in names)),
-            "gib_needed_at_job_retention": _gib(sum(
-                g["newest_bytes"] * needs[vmid] for vmid, g in by_vmid.items() if needs[vmid] is not None)),
+            "gib_needed_at_job_retention": _gib(sum(need_bytes.values())),
             "retention_need_unknown_guests": sorted(vmid for vmid, kept in needs.items() if kept is None),
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
