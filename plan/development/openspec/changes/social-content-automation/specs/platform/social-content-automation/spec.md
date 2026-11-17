@@ -46,11 +46,11 @@ An approval SHALL apply only to the revision it names. A revision covers the pos
 
 ### Requirement: Flows never publish immediately
 
-No flow SHALL create a post that publishes immediately. Every post a flow creates is a draft, and a post becomes scheduled only through the status change that follows a recorded approval.
+No flow SHALL create a post of any type other than draft, so none publishes immediately or at a scheduled time on creation. Every post a flow creates is a draft, and a post becomes scheduled only through the status change that follows a recorded approval.
 
 #### Scenario: Flow definition requests immediate publication
 
-- **WHEN** a flow definition is checked before it is applied and the definition requests a post type that publishes immediately
+- **WHEN** a flow definition is checked before it is applied and the definition creates a post of any type other than draft, scheduled or immediate
 - **THEN** the check fails and the flow is not applied
 
 #### Scenario: Generated draft is not published at creation
@@ -61,7 +61,7 @@ No flow SHALL create a post that publishes immediately. Every post a flow create
 #### Scenario: Static check over the committed flow definitions
 
 - **WHEN** the repository's tests run over the committed flow definitions
-- **THEN** a definition that requests immediate publication, calls the schedule step without a recorded approval (an approval step or form) before it, or calls the publishing service's host from any step other than the handoff, fails the check
+- **THEN** a definition that creates a post of any type other than draft, calls the schedule step without a recorded approval (an approval step or form) before it, or calls the publishing service's host from any step other than the handoff, fails the check
 
 ### Requirement: Handoff to the publishing service is exactly once
 
