@@ -181,7 +181,7 @@ Flow definitions and connections SHALL be declared in the repository and applied
 
 ### Requirement: A kill switch stops content flows
 
-One switch, thrown by a playbook, MUST stop every flow that creates a draft or schedules a post. While it is thrown no draft SHALL be created and no post SHALL be scheduled.
+Each flow that creates a draft or schedules a post MUST have its own kill switch, and one playbook action MUST throw all of them. While they are thrown no draft SHALL be created and no post SHALL be scheduled.
 
 #### Scenario: Thrown kill switch stops drafting and scheduling
 
