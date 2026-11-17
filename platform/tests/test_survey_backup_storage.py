@@ -123,10 +123,11 @@ def test_summary_explains_where_the_space_went():
     assert guest[205]["guest_exists"] is False and guest[205]["name"] is None
     assert guest[103]["retained_at_job_retention"] == 10 and guest[103]["job_retention"] == ["keep-last=10"]
     assert guest[200]["prunable"] == 1 and guest[200]["job_retention"] == ["keep-last=8"]
-    assert backups["retention_need_unknown_guests"] == []
+    assert backups["retention_need_unknown_guests"] == [201]  # job "main" backs it up; no archive to size
 
     assert result["shared_backends"] == [{"storages": ["backups", "isos"], "reason": "same server and export",
-                                          "combined_unaccounted_gib": 100 - 75 - 22.0}]
+                                          # guest 200's days 0-2 are listed by both IDs: counted once
+                                          "combined_unaccounted_gib": 100 - (75 + 5 + 2.0)}]
     jobs = {j["id"]: j for j in result["jobs"]}
     assert jobs["main"]["missing_guests"] == [205] and jobs["game"]["retention"] == "keep-last=10"
     assert jobs["main"]["selects"] == "list" and jobs["main"]["guests"] == 3
@@ -250,6 +251,55 @@ def test_protected_archives_add_to_the_need_and_a_protecting_job_has_no_bound():
     assert storage["gib_needed_at_job_retention"] == 70.0
 
 
+def test_a_node_local_storage_takes_only_the_retention_of_jobs_that_run_on_its_node():
+    vms = [{"vmid": 100, "node": "n1"}]  # guest 100 moved to n1; old archives stay on n2's local disk
+    jobs = [{"id": "j", "type": "vzdump", "storage": "local", "vmid": "100", "prune-backups": "keep-last=1"}]
+    listings = [{"item": node, "status": 200, "json": {"data": [
+        {"storage": "local", "content": "backup", "active": 1, **_status(10 * GIB, 5 * GIB, 0)}]}}
+        for node in ("n1", "n2")]
+    plan = survey.plan({"nodes": NODES, "jobs": jobs, "storage_listings": listings, "storage_config": []})
+    old = [_archive("local", 100, day, GIB) for day in range(3)]
+    reads = {r["node"]: r for r in plan["reads"]}
+    summary = {"plan": plan, "vms": vms, "storage_config": [], "jobs": jobs,
+               "content_reads": [{"item": reads["n1"], "status": 200, "json": {"data": []}},
+                                 {"item": reads["n2"], "status": 200, "json": {"data": old}}],
+               "prune_reads": [{"item": [reads[n], "keep-last=1"], "status": 200,
+                                "json": {"data": [_mark(a) for a in old[:2]]}} for n in ("n1", "n2")]}
+    stores = {s["read_on_node"]: s for s in survey.summarize(summary)["storages"]}
+    assert stores["n2"]["prunable_archives"] == 0 and stores["n2"]["by_guest"][0]["job_retention"] == []
+    assert stores["n1"]["retention_need_unknown_guests"] == [100]
+
+
+def test_pbs_sizes_are_logical_so_unexplained_and_reclaimable_bytes_are_unknown():
+    listing = {"item": "n1", "status": 200, "json": {"data": [
+        {"storage": "pbs", "type": "pbs", "content": "backup", "active": 1, "shared": 1,
+         "total": 100 * GIB, "used": 10 * GIB, "avail": 90 * GIB}]}}
+    jobs = [{"id": "j", "type": "vzdump", "storage": "pbs", "vmid": "300", "prune-backups": "keep-last=1"}]
+    plan = survey.plan({"nodes": NODES, "jobs": jobs, "storage_listings": [listing], "storage_config": []})
+    archives = [_archive("pbs", 300, day, 30 * GIB) for day in range(2)]
+    summary = {"plan": plan, "vms": [{"vmid": 300, "node": "n1"}], "storage_config": [], "jobs": jobs,
+               "content_reads": [{"item": plan["reads"][0], "status": 200, "json": {"data": archives}}],
+               "prune_reads": [{"item": [plan["reads"][0], "keep-last=1"], "status": 200,
+                                "json": {"data": [_mark(archives[0])]}}]}
+    store = survey.summarize(summary)["storages"][0]
+    assert store["sizes_are_logical"] is True and store["backup_gib"] == 60.0
+    assert store["unaccounted_gib"] is None and store["prunable_gib"] is None and store["prunable_archives"] == 1
+
+
+def test_two_ids_for_one_export_listing_the_same_archives_count_them_once():
+    config = [{"storage": a, "type": "nfs", "server": "192.0.2.10", "export": "/tank"} for a in ("a", "b")]
+    listing = {"item": "n1", "status": 200, "json": {"data": [
+        {"storage": s, "content": "backup", "active": 1, **_status(200 * GIB, 100 * GIB)} for s in ("a", "b")]}}
+    plan = survey.plan({"nodes": NODES, "jobs": [], "storage_listings": [listing], "storage_config": config})
+    same = [{"volid": f"{s}:backup/vzdump-qemu-1-0.vma.zst", "vmid": 1, "size": 60 * GIB, "ctime": T0}
+            for s in ("a", "b")]
+    summary = {"plan": plan, "vms": [], "storage_config": config, "jobs": [],
+               "content_reads": [{"item": r, "status": 200, "json": {"data": [v]}}
+                                 for r, v in zip(plan["reads"], same, strict=True)],
+               "prune_reads": []}
+    assert survey.summarize(summary)["shared_backends"][0]["combined_unaccounted_gib"] == 40.0
+
+
 def test_calendar_retention_is_bounded_by_its_buckets_and_keep_all_is_not():
     vms = [{"vmid": 401, "node": "n1"}, {"vmid": 402, "node": "n1"}]
     jobs = [{"id": "cal", "type": "vzdump", "storage": "backups", "vmid": "401",
@@ -304,7 +354,7 @@ def test_a_storage_default_the_storage_does_not_set_is_unknown_and_never_preview
     storage = result["storages"][0]
     guest = {g["vmid"]: g for g in storage["by_guest"]}
     assert guest[501]["retained_at_job_retention"] is None and guest[501]["prunable"] == 0
-    assert storage["retention_need_unknown_guests"] == [501]
+    assert storage["retention_need_unknown_guests"] == [501, 502]  # 502 is backed up but has no archive yet
     assert storage["retentions_previewed"] == ["keep-last=2"]
 
 

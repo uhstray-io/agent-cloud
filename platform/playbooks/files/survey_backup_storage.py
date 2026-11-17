@@ -237,6 +237,9 @@ def summarize(data):
         if r is None:
             raise Refusal(f"The survey has no reads for storage {storage}.")
         status = item["status"]
+        shared = _flag(status.get("shared"))
+        # PBS snapshots share chunks: their listed sizes are logical, not bytes on the disk.
+        logical = status.get("type") == "pbs"
         volumes = _ok(r["content"], "content", storage, "Datastore.Audit")
         backups = [v for v in volumes if ":backup/" in str(v.get("volid"))]
         all_bytes = sum(int(v.get("size") or 0) for v in volumes)
@@ -248,10 +251,13 @@ def summarize(data):
             # Proxmox checks Datastore.Allocate for the preview (pve-storage PruneBackups.pm, dryrun).
             marks = _ok(prune, "prune preview", storage, "Datastore.Allocate")
             previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
-        # A guest's retentions are those of the vzdump jobs on this storage that back it up.
+        # A guest's retentions are those of the vzdump jobs on this storage that back it up. A job
+        # runs, and prunes, on the guest's current node, so a node-local copy elsewhere is never pruned.
         retention_of, protects_every_archive = {}, set()
         for job, _, guests in job_guests:
             if job.get("storage") == storage:
+                if not shared:
+                    guests = {vmid for vmid in guests if existing.get(vmid, {}).get("node") == node}
                 for vmid in guests:
                     retention_of.setdefault(vmid, set()).add(_retention(job))
                 if _flag(job.get("protected")):  # vzdump --protected: pruning never removes these
@@ -304,19 +310,24 @@ def summarize(data):
             "used_percent": round(100 * used / total, 1) if total else None,
             "backup_archives": len(backups), "backup_gib": _gib(backup_bytes),
             "other_volume_gib": _gib(all_bytes - backup_bytes),
-            "unaccounted_gib": _gib(used - all_bytes),
+            "sizes_are_logical": logical,
+            "unaccounted_gib": None if logical else _gib(used - all_bytes),
             "prunable_archives": sum(g["prunable"] for g in by_vmid.values()),
-            "prunable_gib": _gib(sum(g["prunable_bytes"] for g in by_vmid.values())),
+            "prunable_gib": None if logical else _gib(sum(g["prunable_bytes"] for g in by_vmid.values())),
             "orphan_guest_gib": _gib(sum(g["bytes"] for g in by_vmid.values() if g["vmid"] not in names)),
             "gib_needed_at_job_retention": _gib(sum(need_bytes.values())),
-            "retention_need_unknown_guests": sorted(vmid for vmid, kept in needs.items() if kept is None),
+            # A backed-up guest with no archive here yet has no size to multiply: unknown, not zero.
+            "retention_need_unknown_guests": sorted(
+                {vmid for vmid, kept in needs.items() if kept is None}
+                | {vmid for vmid in retention_of if vmid in existing and vmid not in by_vmid}),
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
         })
-        measured.append((storages[-1], (total, used, all_bytes)))
+        files = {str(v.get("volid")).split(":", 1)[-1]: int(v.get("size") or 0) for v in volumes}
+        measured.append((storages[-1], (total, used, files)))
 
     shared_backends = []
-    for (a, (a_total, a_used, a_all)), (b, (b_total, b_used, b_all)) in combinations(measured, 2):
+    for (a, (a_total, a_used, a_files)), (b, (b_total, b_used, b_files)) in combinations(measured, 2):
         # Node-local storages on different nodes are separate disks, whatever their paths say.
         if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
             continue
@@ -324,9 +335,12 @@ def summarize(data):
         if not reason and a_total and a_total == b_total and a_used == b_used:
             reason = "identical total and used bytes (inferred, not proven)"
         if reason:
-            unaccounted = max(a_used, b_used) - a_all - b_all
+            # Aliases of one filesystem list the same files: count each relative path once.
+            listed = sum(max(a_files.get(f, 0), b_files.get(f, 0)) for f in a_files.keys() | b_files.keys())
+            logical = a["sizes_are_logical"] or b["sizes_are_logical"]
+            unaccounted = None if logical else _gib(max(a_used, b_used) - listed)
             shared_backends.append({"storages": [a["storage"], b["storage"]], "reason": reason,
-                                    "combined_unaccounted_gib": _gib(unaccounted)})
+                                    "combined_unaccounted_gib": unaccounted})
 
     job_rows = []
     for job, selects, guests in job_guests:
