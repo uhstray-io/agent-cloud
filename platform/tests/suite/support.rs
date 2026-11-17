@@ -260,7 +260,7 @@ fn ls_files_reads_a_non_ascii_path_as_it_is_on_disk() {
 }
 
 #[test]
-fn grep_reads_a_non_ascii_path_as_it_is_on_disk() {
+fn grep_reads_every_hit_path_and_line_as_they_are_on_disk() {
     // Arrange: a tracked name that is not ASCII. Without `-z` git prints it quoted
     // (`"caf\303\251.yml":1:...`), so a caller's path is not a file on disk (AC-916).
     let dir = tempfile::TempDir::new().unwrap();
