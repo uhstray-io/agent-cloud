@@ -728,7 +728,7 @@ fn comment_end(src: &str, i: usize) -> Option<usize> {
     }
 }
 
-/// The index after the char literal starting at byte `i` (`'"'`, `'\\''`), or `None` when none
+/// The index after the char literal starting at byte `i` (`'"'`, `'\''`), or `None` when none
 /// starts there; a lifetime (`'a`) is not one.
 fn char_end(src: &str, i: usize) -> Option<usize> {
     let rest = src[i..].strip_prefix('\'')?;
