@@ -8,11 +8,12 @@
 # every value, numbers included.
 # `support_lift_playbook` runs lifted plays through ansible-playbook in the playbook tier.
 #
-# paths: the files support_lift_pyyaml reads, so a playbook-only change runs the PyYAML oracle
-# (a change under platform/tests/** is a full trigger anyway).
+# paths: playbook YAML, so a playbook-only change runs the PyYAML oracle. Semaphore YAML, which
+# the oracle also reads, is left out on purpose: no area claims it, so a change there stays
+# unclassified and push and CI run every test, the oracle included. A change under
+# platform/tests/** is a full trigger anyway.
 paths:
   - "platform/playbooks/**/*.yml"
-  - "platform/semaphore/**/*.yml"
 tiers:
   cli: [support_lift_pyyaml]
   playbook: [support_lift_playbook]

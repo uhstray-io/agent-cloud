@@ -49,7 +49,6 @@ use serde_json::{Map, Number, Value};
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
-use crate::repo;
 use crate::yaml::{self, CORE_TAG, Node};
 
 /// The import every workflow executor opens with (`playbook_yaml.OVERRIDE_GUARD`).
@@ -102,8 +101,7 @@ pub fn loads(text: &str) -> Value {
 /// an absolute path also works), without its leading extra-var guard import. Freshly parsed, so
 /// a harness may edit the result.
 pub fn plays(rel: &str) -> Vec<Value> {
-    let path = repo::path(rel);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let text = crate::text::read(rel);
     let items = match document(&text, rel) {
         Value::Null => return vec![],
         Value::Array(items) => items,
