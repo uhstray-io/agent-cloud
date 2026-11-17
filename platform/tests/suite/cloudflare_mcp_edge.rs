@@ -23,7 +23,7 @@
 //! | `cloudflare mcp: the inference skip rule and rate-limit rule are not widened to MCP` | `inference_rules_are_not_widened_to_mcp` |
 //! | `cloudflare mcp: exactly one MCP rate-limit rule, log-first, its own bucket, two rules on the zone (Pro cap)` | `exactly_one_mcp_rate_limit_rule_log_first_with_its_own_bucket` |
 //! | `cloudflare mcp: the mcp record is a proxied platform subdomain` | `mcp_record_is_a_proxied_platform_subdomain` |
-//! | `cloudflare mcp: the HCL is formatted (tofu fmt -check)` | dropped: never ran anywhere (BATS skipped it without tofu; no tofu in CI or on workstations); CI follow-up not yet filed |
+//! | `cloudflare mcp: the HCL is formatted (tofu fmt -check)` | dropped: never ran anywhere (BATS skipped it without tofu; no tofu in CI or on workstations); CI follow-up AC-953 |
 
 use regex::Regex;
 
