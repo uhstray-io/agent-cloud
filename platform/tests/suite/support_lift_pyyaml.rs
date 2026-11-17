@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use agent_cloud_tests::{playbook, process, repo};
+use agent_cloud_tests::{playbook, process, repo, text};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -93,8 +93,7 @@ fn pyyaml_types_every_repository_file_as_the_lifting_loader_does() {
             Some(file.as_str()),
             "PyYAML answers the files in argv order"
         );
-        let text =
-            std::fs::read_to_string(repo::path(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let text = text::read(file);
         let got = serde_json::to_string(&Value::Array(playbook::parse(&text, file)))
             .expect("a JSON value serializes");
         let expected = serde_json::to_string(&record["docs"]).expect("a JSON value serializes");

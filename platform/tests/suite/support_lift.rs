@@ -10,7 +10,7 @@
 use std::collections::BTreeSet;
 
 use agent_cloud_tests::yaml::{self, Node};
-use agent_cloud_tests::{playbook, repo};
+use agent_cloud_tests::{playbook, repo, text};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -167,8 +167,7 @@ fn every_repository_yaml_file_has_the_structure_yaml_parse_gives() {
         ":(glob)platform/semaphore/**/*.yml",
     ]);
     for file in files {
-        let text =
-            std::fs::read_to_string(repo::path(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let text = text::read(&file);
         let lifted = match std::panic::catch_unwind(|| playbook::parse(&text, &file)) {
             Ok(lifted) => lifted,
             Err(payload) => {
@@ -238,7 +237,7 @@ listed:
 #[test]
 fn plays_drops_only_the_leading_extra_var_guard() {
     let rel = "platform/playbooks/apply-firewall.yml";
-    let text = std::fs::read_to_string(repo::path(rel)).expect(rel);
+    let text = text::read(rel);
     let mut docs = playbook::parse(&text, rel);
     let Value::Array(all) = docs.remove(0) else {
         panic!("{rel}: the document is a list of plays");

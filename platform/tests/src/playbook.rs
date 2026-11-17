@@ -1,8 +1,8 @@
 //! Repository playbooks lifted to JSON, so a playbook-tier test can run a play's tasks through
 //! [`process::ansible_playbook`](crate::process::ansible_playbook) (plan 24, AC-943).
 //!
-//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML, and each Python
-//! test that runs a lifted play dumps it with `yaml.safe_dump`, so `ansible-playbook` runs the play
+//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML, and a Python
+//! test that runs a lifted play dumps it with `yaml.safe_dump` or `json.dumps`, so `ansible-playbook` runs the play
 //! as the repository wrote it. Here [`write`] puts it in a file as JSON instead. The reading cannot
 //! reuse [`yaml::parse`](crate::yaml::parse): a [`yaml::Node`] has no number type, so every plain
 //! scalar that is not a bool or null is a string, and `"53"` and `53` are the same `Node::Str`. A
@@ -123,7 +123,9 @@ pub fn plays(rel: &str) -> Vec<Value> {
 }
 
 /// Writes `playbook` as JSON to `dir/name` and returns the path. JSON is YAML, so
-/// `ansible-playbook` reads the file as a playbook.
+/// `ansible-playbook` reads the file as a playbook, with one exception it shares with Python's
+/// `json.dumps`: a float written with an exponent and no dot (`1e+20`) reads back as a string.
+/// No repository file holds such a float.
 pub fn write(dir: &Path, name: &str, playbook: &Value) -> PathBuf {
     let path = dir.join(name);
     let json = serde_json::to_string_pretty(playbook).expect("a JSON value serializes");
