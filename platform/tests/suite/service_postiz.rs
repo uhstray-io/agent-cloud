@@ -30,18 +30,22 @@
 //!   deploy playbook, so a pathspec that matches nothing fails;
 //! - the `Report` block is `task_block`'s: it ends at the next `- name:` at the same or shallower
 //!   indent, where the BATS awk ended only at a four-space one (the Report task is the file's last);
-//! - stricter, where the BATS regex passed for the wrong reason (simplify review of this port):
-//!   the compose checks also read the parsed file (the five services, the app's healthy
-//!   dependencies, the app command's read source, the healthcheck's `/api/` path and its `<500`
-//!   threshold); the psql check reads its own task (a `command` with `argv`, no `shell`); the seed
-//!   playbook's transport guard precedes its first request; the OIDC chain refutes a second
-//!   declaration of the secret in the deploy playbook; every app-template secret slot is declared
-//!   or shared-read; and deploy.sh runs no plain `up -d` in a non-comment line;
+//! - stricter, where a BATS regex matched lines it was not about: beside each kept BATS line, the
+//!   compose checks read the parsed file (the five services, each healthcheck's probe, the app's
+//!   healthy dependencies, the app's command and environment, the healthcheck's `/api/` path and
+//!   `<500` threshold, the engine probe's address); the deploy playbook's own app-health probe
+//!   is held to the same path and threshold; the psql check reads its own task (a `command` with
+//!   `argv`, no `shell`, the password by environment); the seed playbook's transport guard
+//!   precedes its first request; the OIDC chain refutes a second declaration of the secret; the
+//!   blueprint's live redirect ends in `/settings`; every app-template secret slot is declared or
+//!   shared-read; deploy.sh runs no plain `up -d`; and the engine's Postgres password is a
+//!   substitution too;
+//! - the DNS-instruction refute matches any postiz host, not one instance's;
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
 //!
 //! Helpers this file keeps privately until the batch's shared-support PR S7 lands: `task_block`,
-//! `assert_precedes` and `assert_contains`/`refute_contains`. The `text` helpers come from
+//! `assert_precedes`, `assert_contains`/`refute_contains` and `assert_in`/`refute_in`. The `text` helpers come from
 //! `agent_cloud_tests::text`.
 //!
 //! ## Port map (BATS @test -> Rust fn)
@@ -309,7 +313,7 @@ fn five_container_stack() {
     text::assert_line(COMPOSE, r"^\s+temporal-postgresql:");
     // The lines above also match `depends_on` keys; the parsed services are the five, no more.
     let services = compose_services();
-    let names: Vec<&str> = services
+    let names: BTreeSet<&str> = services
         .as_map()
         .unwrap_or_default()
         .iter()
@@ -317,13 +321,13 @@ fn five_container_stack() {
         .collect();
     assert_eq!(
         names,
-        [
+        BTreeSet::from([
             "postiz",
             "postiz-postgres",
             "postiz-redis",
             "temporal",
             "temporal-postgresql"
-        ],
+        ]),
         "{COMPOSE}: the services"
     );
 }
@@ -415,13 +419,10 @@ fn mounted_app_config_is_actually_loaded() {
         .and_then(Node::as_seq)
         .unwrap_or_else(|| panic!("{COMPOSE}: the app has no command list"));
     let argv: Vec<&str> = command.iter().filter_map(Node::as_str).collect();
-    assert_eq!(
-        argv.len(),
-        3,
-        "{COMPOSE}: the app command is `sh -c <script>`"
-    );
-    assert_eq!(argv[..2], ["sh", "-c"], "{COMPOSE}: the app command");
-    let cmd = argv[2];
+    let cmd = match argv.as_slice() {
+        ["sh", "-c", script] => *script,
+        _ => panic!("{COMPOSE}: the app command is not `sh -c <script>`: {argv:?}"),
+    };
     // The loop reads the mounted file itself: without this the read source is unchecked.
     assert_contains(cmd, "done < /config/postiz.env;", "the command value");
 
@@ -447,7 +448,8 @@ fn mounted_app_config_is_actually_loaded() {
 #[test]
 fn nothing_probes_the_workflow_engine_on_loopback() {
     // The engine binds its frontend to the container IP, so a loopback probe is refused forever.
-    // Asserted repo-wide, because the bug was a missed copy. Scoped to EXECUTABLE artifacts: the
+    // Asserted across platform/, because the bug was a missed copy. Scoped to the YAML, shell and
+    // Jinja artifacts the BATS scan read (its globs, not `.py` or `.yaml`): the
     // scan reads the tracked files (git pathspecs, where BATS ran `find` over the working tree;
     // git's `*` crosses `/`, as find's recursion did). A comment line is excluded where the BATS
     // filter excluded a `:` followed by optional whitespace and `#`, as in `grep -Hn` output.
@@ -462,9 +464,6 @@ fn nothing_probes_the_workflow_engine_on_loopback() {
     let mut hits = Vec::new();
     for rel in &scanned {
         let body = text::read(rel);
-        if !body.contains("127.0.0.1:7233") {
-            continue;
-        }
         hits.extend(
             body.split_terminator('\n')
                 .enumerate()
@@ -484,6 +483,9 @@ fn nothing_probes_the_workflow_engine_on_loopback() {
     text::assert_text(DEPLOY_PB, "a=$(hostname -i)");
     text::refute_text(COMPOSE, "hostname -i | awk");
     text::refute_text(DEPLOY_PB, "hostname -i | awk");
+    // And both probes use that address: dropping `--address` would leave the CLI's own default.
+    text::assert_text(COMPOSE, r#"--address "$${a%% *}:7233""#);
+    text::assert_text(DEPLOY_PB, r#"--address "${a%% *}:7233""#);
 }
 
 #[test]
@@ -504,9 +506,17 @@ fn healthchecks_on_all_five_containers_app_dependencies_gated() {
     let services = compose_services();
     for (name, svc) in services.as_map().unwrap_or_default() {
         let name = name.as_str().unwrap_or("?");
+        let check = svc.get("healthcheck");
         assert!(
-            svc.get("healthcheck").is_some(),
-            "{COMPOSE}: {name} has no healthcheck"
+            check
+                .and_then(|h| h.get("test"))
+                .and_then(Node::as_seq)
+                .is_some_and(|t| !t.is_empty()),
+            "{COMPOSE}: {name} has no healthcheck test"
+        );
+        assert!(
+            check.and_then(|h| h.get("disable")).is_none(),
+            "{COMPOSE}: {name}'s healthcheck is disabled"
         );
     }
     let depends = service(&services, "postiz").get("depends_on");
@@ -537,6 +547,15 @@ fn app_config_does_not_go_through_compose_interpolation() {
     // The setting, not the name: the name legitimately appears in comments explaining why.
     text::refute_line(COMPOSE, r"^[^#]*DATABASE_URL[:=]");
     text::refute_line(COMPOSE, "CLIENT_SECRET");
+    // The names above are a sample; the app service carries no environment of its own at all.
+    let services = compose_services();
+    let app = service(&services, "postiz");
+    for key in ["environment", "env_file"] {
+        assert!(
+            app.get(key).is_none(),
+            "{COMPOSE}: the app service sets {key}"
+        );
+    }
 }
 
 #[test]
@@ -551,6 +570,12 @@ fn compose_has_no_hardcoded_credentials_or_ips() {
     // Every password is a substitution reference.
     text::assert_line(COMPOSE, r"POSTGRES_PASSWORD: \$\{POSTIZ_DB_PASSWORD\}");
     text::assert_line(COMPOSE, r"POSTGRES_PWD: \$\{TEMPORAL_DB_PASSWORD\}");
+    // The engine's own Postgres takes the same value under the other variable name.
+    text::refute_line(
+        COMPOSE,
+        r"POSTGRES_(PASSWORD|PWD):\s*(temporal|postiz-password)\s*$",
+    );
+    text::assert_line(COMPOSE, r"POSTGRES_PASSWORD: \$\{TEMPORAL_DB_PASSWORD\}");
 }
 
 #[test]
@@ -702,6 +727,8 @@ fn oidc_blueprint_redirect_matches_upstream() {
     assert_file(BLUEPRINT);
     // Upstream builds the redirect as ${FRONTEND_URL}/settings, so the redirect must end in /settings.
     text::assert_line(BLUEPRINT, "/settings");
+    // The line above also matches comments; the live default ends in /settings.
+    text::assert_line(BLUEPRINT, r#"^\s+postiz_redirect: ".*/settings'\) \}\}"$"#);
     text::assert_line(BLUEPRINT, "matching_mode: strict");
     text::assert_line(BLUEPRINT, "client_secret: !Env POSTIZ_OIDC_CLIENT_SECRET");
     // email is load-bearing: identity comes from /userinfo.
@@ -817,6 +844,9 @@ fn psql_check_preserves_its_exit_status() {
     assert_in(&task, r"^\s+ansible\.builtin\.command:$", "the psql task");
     assert_in(&task, r"^\s+argv:$", "the psql task");
     refute_in(&task, r"^\s+(ansible\.builtin\.)?shell:", "the psql task");
+    // The password travels by environment and is forwarded by NAME, never in argv.
+    assert_in(&task, r"^\s+PGPASSWORD: ", "the psql task's environment");
+    refute_in(&task, r"^\s+- .*PGPASSWORD=", "the psql task's argv");
 }
 
 #[test]
@@ -854,10 +884,8 @@ fn seed_playbook_uses_the_shared_cleartext_guard() {
 fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
     let seed = captured(&text::read(SEED_PB), r"(?m)^      - ([a-z0-9_]+)$");
     assert!(!seed.is_empty(), "{SEED_PB}: no seedable keys");
-    let declared = captured(
-        &text::read(DEPLOY_PB),
-        r"name: postiz_([a-z0-9_]+), type: existing",
-    );
+    let deploy = text::read(DEPLOY_PB);
+    let declared = captured(&deploy, r"name: postiz_([a-z0-9_]+), type: existing");
     assert!(
         seed == declared,
         "DRIFT seed-only={:?} declared-only={:?}",
@@ -866,7 +894,6 @@ fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
     );
     // Every secret slot of the app template reaches it: declared by the deploy (existing or
     // random) or shared-read from authentik. A template-only slot would render empty.
-    let deploy = text::read(DEPLOY_PB);
     let mut reachable = captured(
         &deploy,
         r"name: postiz_([a-z0-9_]+), type: (?:existing|random)",
@@ -885,10 +912,7 @@ fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
 fn docs_do_not_tell_an_operator_to_create_dns() {
     // The zone is config-as-code via OpenTofu and the record already exists.
     text::refute_line(README, r"^- Create the public DNS record\.$");
-    text::refute_line(
-        PLAN_14,
-        r"Operator: create the `postiz\.uhstray\.io` DNS record",
-    );
+    text::refute_line(PLAN_14, r"Operator: create the `postiz\.[^`]+` DNS record");
 }
 
 #[test]
@@ -946,17 +970,31 @@ fn app_healthcheck_probes_the_backend_path() {
     // The probe itself, parsed: it asks /api/ and counts only an answer under 500 as healthy, so
     // a 502 from nginx (the backend down) fails it.
     let services = compose_services();
-    let probe: Vec<&str> = service(&services, "postiz")
+    let probe = service(&services, "postiz")
         .get("healthcheck")
         .and_then(|h| h.get("test"))
         .and_then(Node::as_seq)
         .unwrap_or_default()
         .iter()
         .filter_map(Node::as_str)
-        .collect();
-    let probe = probe.join(" ");
+        .collect::<Vec<_>>()
+        .join(" ");
     assert_contains(&probe, "http://127.0.0.1:5000/api/'", "the app healthcheck");
     assert_contains(&probe, "s.statusCode<500?0:1", "the app healthcheck");
+    // The deploy playbook probes the app again after starting it: the same path and threshold, or
+    // fixing one copy leaves the other green over a dead backend.
+    let deploy_probe = task_block(DEPLOY_PB, "App health");
+    assert_contains(
+        &deploy_probe,
+        "get('http://127.0.0.1:5000/api/',",
+        "the deploy app-health probe",
+    );
+    assert_contains(
+        &deploy_probe,
+        "s.statusCode<500?0:1",
+        "the deploy app-health probe",
+    );
+    refute_contains(&deploy_probe, "5000/',", "the deploy app-health probe");
 }
 
 #[test]
