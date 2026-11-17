@@ -141,6 +141,27 @@ fn service<'a>(services: &'a Node, name: &str) -> &'a Node {
         .unwrap_or_else(|| panic!("{COMPOSE}: no service {name}"))
 }
 
+/// The parsed task of `rel` whose name starts with `prefix` (`repo::tasks`, blocks included).
+fn task_named(rel: &str, prefix: &str) -> Node {
+    repo::tasks(rel)
+        .into_iter()
+        .find(|t| {
+            t.get("name")
+                .and_then(Node::as_str)
+                .is_some_and(|n| n.starts_with(prefix))
+        })
+        .unwrap_or_else(|| panic!("{rel}: no task named {prefix:?}"))
+}
+
+/// The parsed task sets `no_log: true` itself: a commented line in its text does not count.
+fn assert_task_no_log(rel: &str, prefix: &str) {
+    assert_eq!(
+        task_named(rel, prefix).get("no_log"),
+        Some(&Node::Bool(true)),
+        "{rel}: `{prefix}` does not set no_log: true"
+    );
+}
+
 /// `[ -x <rel> ]`, checked as any execute bit. Git stores a file as 644 or 755, so any bit and the
 /// owner bit agree on a checkout.
 fn assert_executable(rel: &str) {
@@ -1020,6 +1041,8 @@ fn api_key_capture_is_read_only_with_fixed_path_and_no_log() {
         let block = task_block(STORE_KEY_PB, name);
         assert!(!block.is_empty(), "{STORE_KEY_PB}: `{name}` has no body");
         assert_contains(&block, "no_log: true", name);
+        // The text above also matches a commented line; the parsed task must set it.
+        assert_task_no_log(STORE_KEY_PB, name);
     }
     for name in [
         "Fetch the current secret",
@@ -1031,6 +1054,7 @@ fn api_key_capture_is_read_only_with_fixed_path_and_no_log() {
         let block = task_block(BAO_MERGE, name);
         assert!(!block.is_empty(), "{BAO_MERGE}: `{name}` has no body");
         assert_contains(&block, "no_log: true", name);
+        assert_task_no_log(BAO_MERGE, name);
     }
     // This caller refuses to create the path: deploy-postiz owns it.
     assert_contains(
