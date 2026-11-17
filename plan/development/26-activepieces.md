@@ -25,7 +25,7 @@ Two upstream properties drive the design. Stored connections are encrypted with 
 The platform rules in `AGENTS.md` (Critical Deployment Rules, Engineering Principles) and `PRINCIPLES.md` apply unchanged. Service-specific constraints:
 
 - The encryption key is generated once and never regenerated (D8, F5).
-- The worker starts only after the app is ready to migrate and serve, not merely alive (O1, R11).
+- The worker starts only after the app has finished migrating, not merely after it answers (O1, R11). Until O1 finds a signal that proves it, the start order in `deploy.sh` is a labelled stopgap.
 - The first-account window is closed by the publish bind and the firewall, not by captcha (D10).
 - No container is privileged (D3).
 
@@ -46,7 +46,7 @@ Each rationale cites the fact or repository fact it rests on. The alternatives t
 | D7 | **Greenfield.** Nothing is migrated from n8n. | Joseph, 2026-11-12. |
 | D8 | **Secrets at `secret/services/activepieces`, generated once and reused, never rotated by a deploy:** `encryption_key`, `jwt_secret`, `db_password`, `owner_password`. `worker_token` only if O2 finds it needed. The hex type is added to `manage-secrets` only if O3 needs it. | A new encryption key makes every stored connection unreadable (F4, F5). `manage-secrets` cannot emit hex (R1), and spike O3 decides whether that matters. The worker gets no secret beyond what spike 1.2 proves it needs. |
 | D9 | **`AP_TELEMETRY_ENABLED=false` and `AP_QUEUE_UI_ENABLED=false`.** | The upstream default for both is `true` (F7, F9). The queue UI would add a web surface and a credential that the platform does not need. |
-| D10 | **The first-account window is closed in one run, by four means.** (a) The app publishes only on `activepieces_publish_bind`, which defaults to `127.0.0.1`. (b) The deploy creates the owner over loopback from the VM, with the email taken from the platform-admins roster entry named by `activepieces_owner` and the password from `owner_password`. (c) The declared bind is rendered only after the owner exists. The firewall admits the Caddy group to the app port, with detected-port admission off. (d) The Caddy route opens only after the owner exists and the gate is live. `AP_ALLOW_OPEN_SIGN_UP` is never set, the template refuses it, and the deploy verify proves that an uninvited sign-up is refused (F19). | The bind is the gate. The firewall is the backstop (R6, R7). Captcha does not gate this: `assertSolved` returns unless both Turnstile keys are set (F26). Owner creation is F20, and the sign-up call is F21. AC-776, AC-771. |
+| D10 | **The first-account window is closed in one run, by four means.** (a) While no owner exists, the deploy publishes the app on `127.0.0.1`, a fixed value that inventory cannot override. (b) The deploy creates the owner over loopback from the VM, with the email taken from the platform-admins roster entry named by `activepieces_owner` and the password from `owner_password`. (c) The declared `activepieces_publish_bind` (site-config) is rendered only after the deploy has read back that the owner exists, in the same run or a later one. The firewall admits the Caddy group to the app port, with detected-port admission off. (d) The Caddy route opens only after the owner exists and the gate is live. `AP_ALLOW_OPEN_SIGN_UP` is never set, the template refuses it, and the deploy verify proves that an uninvited sign-up is refused (F19). | The bind is the gate. The firewall is the backstop (R6, R7). The check-then-create shape follows Plane's first-run script, which signs up the admin only while the instance is not set up, so a re-run changes nothing (R17). Captcha does not gate this: `assertSolved` returns unless both Turnstile keys are set (F26). Owner creation is F20, and the sign-up call is F21. AC-776, AC-771. |
 | D11 | **`AP_NETWORK_MODE=STRICT`.** `AP_SSRF_ALLOW_LIST` is declared in inventory and is empty by default. The inference-gateway entry is added by plan 27, not here. | The default is `UNRESTRICTED` (F23). Exemptions are comma-separated IPs and CIDRs (F23). |
 | D12 | **No inbound webhook is exempt by default.** A flow that needs one gets an exact-path exemption declared in inventory: a Caddy forward-auth skip, and a Cloudflare WAF skip only if the path is challenged. Joseph approves each flow. Scheduled flows need no inbound path. | Webhook routes are `/v1/webhooks/:flowId`, served under `/api` as the health route is (F22, F17). The per-flow decision is open item O7. |
 | D13 | **Out of scope:** the inference-gateway client certificate and identity (plan 27, `agentgateway-content-generation`, AC-785, AC-825, AC-826). The content flows (plan 28, `social-content-automation`). S3. SAML and paid SSO. Any data migration. | Each item belongs to a later plan or to a decision not yet taken. |
@@ -105,6 +105,7 @@ Repository facts, read on the base commit `1ae46279` of this branch. Each row is
 | R14 | The honcho docs forward-auth blueprint reads its external host with `!Env`, and the NetBox blueprint hard-codes its host. | `platform/services/authentik/deployment/blueprints/honcho-docs-forward-auth.yaml` line 24 |
 | R15 | `deploy-authentik.yml` collects the `prod_required` values only from apps whose type is `oidc`, so a forward_auth app is not in that check. | `platform/playbooks/deploy-authentik.yml` lines 239 to 243 |
 | R16 | The shared pattern files exist: `backup-plane-db.yml`, `restore-plane-db.yml`, `reconcile-plane-members.yml`, `probe-reachability.yml` and `tasks/clean-service.yml`. | `platform/playbooks/` |
+| R17 | Plane's first-run script signs up the instance admin only while `is_setup_done` is false, then signs in on every run. | `platform/services/plane/deployment/configure_instance.py:14-16` and `:26-31` |
 
 ## Architecture
 
@@ -170,10 +171,10 @@ Pipeline. Each playbook has one `templates.yml` entry with `dev_variant: true` (
 
 | Key | Type | Behaviour |
 |---|---|---|
-| `encryption_key` | 32 hexadecimal characters, or 32 alphanumeric characters if O3 shows Activepieces accepts them | Generated once and reused. Never regenerated (D8, F4, F5). |
+| `encryption_key` | 32 alphanumeric characters from `manage-secrets`, or 32 hexadecimal characters if spike O3 shows Activepieces refuses alphanumeric | Generated once and reused. Never regenerated (D8, F4, F5). |
 | `jwt_secret` | Generated once | Reused. Its length is open item O3, because the upstream docs disagree (F4). |
 | `db_password` | Generated once | Reused. Its type follows O3. The upstream docs suggest `openssl rand -hex 32` for this variable (F25). |
-| `owner_password` | Generated once | Used once to create the owner (D10b), then kept for the owner's local sign-in. |
+| `owner_password` | Generated once | Used once to create the owner (D10b), then kept for the owner's local sign-in. Handed to the owner through `Back Up Credentials to site-config` with `credential_fields=owner_password` (task 1.4), never printed. |
 | `worker_token` | Generated once, only if O2 finds it needed | Minted by a playbook task, not by a manual `npx` step (F16). |
 
 ### Environment settings
@@ -218,13 +219,13 @@ The production route is a Caddy block in site-config `caddy_managed_sites`, with
 
 ### Publish bind and firewall
 
-The publish bind is the gate. The app publishes on `activepieces_publish_bind`, which defaults to `127.0.0.1`. The precedent is skynet's `skynet_publish_bind` (R6). The declared bind is rendered only after the owner exists.
+The publish bind is the gate. While no owner exists, the deploy publishes the app on `127.0.0.1`, a fixed value. Once the deploy reads back that the owner exists, it renders the declared `activepieces_publish_bind` from site-config. The precedent for a declared publish bind is skynet's `skynet_publish_bind` (R6).
 
 The firewall is the backstop. Detected-port admission is off, through `firewall_detect_ports: false`. With it on, the firewall would admit the published port from `firewall_upstream_source` before the owner exists (R7). The app port is admitted from the Caddy group through `firewall_allow_groups` (R7). SSH is admitted from the controller only (task 2.2).
 
 ### Backup and restore
 
-The dump and staged-swap steps of `backup-plane-db.yml` and `restore-plane-db.yml` are extracted into shared tasks. The shared tasks are parameterised by group, container, database, user, data services and a post-restore hook (R16). The Activepieces playbooks are built on them. Converting the Plane playbooks is a follow-up, not part of this change, because it touches the live Plane restore path. The backup needs task 2.3, which provides a running database, and does not need the edge. The encryption key is backed up with `Back Up Credentials to site-config`, because a dump without it cannot decrypt stored connections (F5).
+The dump and staged-swap steps of `backup-plane-db.yml` and `restore-plane-db.yml` are extracted into shared tasks. The shared tasks are parameterised by group, container, database, user, data services and a post-restore hook (R16). The Activepieces playbooks are built on them. Converting the Plane playbooks is a follow-up, not part of this change, because it touches the live Plane restore path. It is tracked as AC-917, blocked by AC-780. The backup needs task 2.3, which provides a running database, and does not need the edge. The encryption key is backed up with `Back Up Credentials to site-config`, because a dump without it cannot decrypt stored connections (F5).
 
 ## Implementation phases
 
@@ -323,7 +324,7 @@ Each open item is owned by one task. None is stated as fact in this plan.
 
 | # | Question | Owner | Status |
 |---|---|---|---|
-| O1 | Readiness. Is there an app healthcheck that proves migrations have run, so the worker can wait on `service_healthy` (R11)? F18 shows the health route does not check migrations. | Task 1.2 | Open. Preferred: such a healthcheck. Fallback: `deploy.sh` starts the app, waits for its health, then starts the worker. The fallback is labelled a stopgap, and its follow-up is recorded. |
+| O1 | Readiness. Is there an app healthcheck that proves migrations have run, so the worker can wait on `service_healthy` (R11)? F18 shows the health route does not check migrations. | Task 1.2 | Open. Preferred: such a healthcheck. Fallback: `deploy.sh` starts the app, waits for its health, then starts the worker. The fallback is labelled a stopgap in `deploy.sh`, and its follow-up is filed as a Plane sub-item of AC-770 when the stopgap is used. |
 | O2 | Does a co-located compose worker need `AP_WORKER_TOKEN`? F16 describes a separate worker, and the upstream compose worker sets none (F14). | Tasks 1.2 and 1.3 | Open. If yes, a playbook task mints it and stores it as `worker_token`. |
 | O3 | Secret format. Spike first: does Activepieces accept a 32-character alphanumeric `encryption_key`, which is what `manage-secrets` generates (R1)? Only if it refuses one, add `type: hex` with a length to `manage-secrets`. The JWT length conflict (F4) and uppercase hex are also open. | Task 1.3 | Open. The format is checked before the first generate, because a generated key is never regenerated. |
 | O4 | Does the image need pgvector, as upstream's `pgvector/pgvector:0.8.0-pg14` suggests (F14), or does plain Postgres suffice? | Task 1.2 | Open. The chosen image is pinned by digest. |
@@ -342,7 +343,7 @@ This repository holds templates and placeholders. The values below live in the p
 | `activepieces.<zone>` | The public hostname. The public URL built from it is the value of `AP_FRONTEND_URL` on the app. | site-config inventory and `caddy_managed_sites` |
 | `activepieces_svc` | The inventory group for the VM. | site-config inventory |
 | `activepieces_owner` | The roster key of the owner account (D10b). | site-config inventory |
-| `activepieces_publish_bind` | The declared bind, rendered after the owner exists (D10c). | site-config inventory |
+| `activepieces_publish_bind` | The declared LAN bind, rendered only after the owner exists (D10c). Before that the deploy uses `127.0.0.1`, which is not configurable. | site-config inventory |
 | VM address and VM id | The VM's declared address and id, with the NetBox reservation for the address. | site-config `vm-specs` and inventory |
 | Caddy group | The inventory group admitted to the app port (D10c). | site-config inventory |
 | `AP_SSRF_ALLOW_LIST` entries | Reviewed exemptions from the SSRF guard (D11). | site-config inventory |
