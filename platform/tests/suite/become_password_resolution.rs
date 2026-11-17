@@ -23,7 +23,7 @@
 //! | become: the resolver reads the same secret path harden-ssh does | `harden_ssh_reads_the_secret_path_the_resolver_reads` |
 //! | become: every play-level-become playbook resolves a sudo password | `every_playbook_that_escalates_at_play_level_resolves_a_sudo_password` |
 //! | become: automatic fact gathering is OFF wherever the resolver is used | `fact_gathering_is_off_in_every_play_that_uses_the_resolver` |
-//! | become: the first task is what makes escalation possible | `the_first_task_of_every_escalating_play_resolves_the_password`, with the two self-checks `the_first_task_check_rejects_a_later_play_without_the_resolver` and `the_first_task_check_rejects_gathering_before_the_resolver` |
+//! | become: the first task is what makes escalation possible | `the_first_task_of_every_escalating_play_resolves_the_password`, with the two self-checks `the_first_task_check_rejects_a_later_play_without_the_resolver` and `the_first_task_check_rejects_gathering_before_the_resolver`, and the self-check `the_first_task_check_follows_pre_tasks_roles_blocks_and_the_guard` |
 //! | become: gathering, where it happens at all, happens after escalation is possible | `explicit_gathering_comes_straight_after_the_resolver` |
 //! | become: the resolver guards the transport it sends the credential over | `the_resolver_guards_the_transport_before_it_fetches` |
 //! | become: the known gap is still the only one, and is named | `the_known_gap_still_resolves_no_password` |
@@ -148,16 +148,6 @@ fn any_string(node: &Node, pred: &dyn Fn(&str) -> bool) -> bool {
     }
 }
 
-/// A string at any depth in a value. Keys are names, not data, so they are not searched.
-fn any_value(node: &Node, pred: &dyn Fn(&str) -> bool) -> bool {
-    match node {
-        Node::Str(s) => pred(s),
-        Node::Seq(items) => items.iter().any(|item| any_value(item, pred)),
-        Node::Map(entries) => entries.iter().any(|(_, v)| any_value(v, pred)),
-        Node::Null | Node::Bool(_) => false,
-    }
-}
-
 fn mentions(node: &Node, needle: &str) -> bool {
     any_string(node, &|s: &str| s.contains(needle))
 }
@@ -222,26 +212,89 @@ fn escalates(play: &Node) -> bool {
 }
 
 /// The check the BATS `invalid_become_plays` made. An escalating play is invalid unless fact
-/// gathering is explicitly off AND its first task resolves the password. Only values are searched:
-/// a key named `become_password` is a name, not a resolver.
+/// gathering is explicitly off AND the first task it actually runs ([`first_executed_task`])
+/// resolves the password ([`resolves`]). A task that merely names the resolver does not count.
 fn escalating_plays_not_resolving_first(plays: &[Node]) -> Vec<String> {
     plays
         .iter()
         .filter(|play| escalates(play))
         .filter(|play| {
-            let first = play
-                .get("tasks")
-                .and_then(Node::as_seq)
-                .and_then(<[Node]>::first);
-            let resolves = first.is_some_and(|task| {
-                any_value(task, &|s: &str| {
-                    s.contains(RESOLVER_FILE) || s.contains(PASSWORD)
-                })
-            });
-            play.get("gather_facts") != Some(&Node::Bool(false)) || !resolves
+            let resolved = first_executed_task(play).is_some_and(resolves);
+            play.get("gather_facts") != Some(&Node::Bool(false)) || !resolved
         })
         .map(|play| play_name(play).to_owned())
         .collect()
+}
+
+/// The one include allowed to run before the resolver. Verified 2026-11-17: it runs only
+/// ansible.builtin.assert and set_fact (platform/playbooks/tasks/refuse-var-overrides.yml:28,37,41),
+/// which run on the controller, so nothing escalates before the resolver. harden-ssh.yml:55-80 is
+/// the case: its block refuses overrides first, then sets the password.
+const CONTROLLER_ONLY_GUARD: &str = "refuse-var-overrides.yml";
+
+/// The file an include_tasks or import_tasks names, under any spelling, as a string or a `file:`.
+fn included_file(task: &Node) -> Option<&str> {
+    ["include_tasks", "import_tasks"]
+        .iter()
+        .filter_map(|m| module(task, m))
+        .find_map(|v| match v {
+            Node::Str(s) => Some(s.as_str()),
+            Node::Map(_) => v.get("file").and_then(Node::as_str),
+            _ => None,
+        })
+}
+
+fn is_controller_only_guard(task: &Node) -> bool {
+    included_file(task).is_some_and(|f| {
+        let path = std::path::Path::new(f);
+        path.file_name().and_then(|n| n.to_str()) == Some(CONTROLLER_ONLY_GUARD)
+            && path
+                .parent()
+                .and_then(|d| d.file_name())
+                .and_then(|n| n.to_str())
+                == Some("tasks")
+    })
+}
+
+/// The first task a play actually runs. `pre_tasks` run before `tasks`, and so do `roles`, which
+/// this check cannot see into, so a play with roles has none. A block is entered at its first
+/// item, and a leading controller-only guard include is skipped.
+fn first_executed_task(play: &Node) -> Option<&Node> {
+    let non_empty = |key: &str| {
+        play.get(key)
+            .and_then(Node::as_seq)
+            .filter(|s| !s.is_empty())
+    };
+    if let Some(pre) = non_empty("pre_tasks") {
+        return first_in(pre);
+    }
+    if non_empty("roles").is_some() {
+        return None;
+    }
+    first_in(play.get("tasks").and_then(Node::as_seq)?)
+}
+
+fn first_in(seq: &[Node]) -> Option<&Node> {
+    for task in seq {
+        if is_controller_only_guard(task) {
+            continue;
+        }
+        if let Some(block) = task.get("block").and_then(Node::as_seq) {
+            return first_in(block);
+        }
+        return Some(task);
+    }
+    None
+}
+
+/// Whether a task makes escalation possible: an include or import of the resolver task file, or a
+/// set_fact of `ansible_become_password`.
+fn resolves(task: &Node) -> bool {
+    let includes = included_file(task).is_some_and(|f| {
+        std::path::Path::new(f).file_name().and_then(|n| n.to_str()) == Some(RESOLVER_FILE)
+    });
+    let sets = module(task, "set_fact").is_some_and(|f| f.get("ansible_become_password").is_some());
+    includes || sets
 }
 
 /// The plays of an in-memory playbook, for the self-checks.
@@ -440,6 +493,74 @@ fn the_first_task_check_rejects_gathering_before_the_resolver() {
 
     // Assert
     assert_eq!(invalid, vec!["gathering before resolver".to_owned()]);
+}
+
+/// Each play names its expected verdict: `ok ...` must pass, `bad ...` must be flagged.
+const FIRST_EXECUTED_CASES: &str = r#"
+- name: bad pre_tasks before the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - ansible.builtin.debug: {msg: hi}
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad roles before the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  roles: [something]
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad debug naming the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.debug: {msg: resolve-become-password.yml}
+- name: ok resolver in pre_tasks
+  hosts: h
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+  tasks:
+    - ansible.builtin.debug: {msg: hi}
+- name: ok guard then set_fact inside a block
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+        - ansible.builtin.set_fact: {ansible_become_password: x}
+- name: bad debug then resolver inside a block
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.debug: {msg: hi}
+        - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad guard then debug
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
+    - ansible.builtin.debug: {msg: hi}
+"#;
+
+#[test]
+fn the_first_task_check_follows_pre_tasks_roles_blocks_and_the_guard() {
+    let plays = synthetic_plays(FIRST_EXECUTED_CASES);
+    let invalid = escalating_plays_not_resolving_first(&plays);
+    let expected: Vec<String> = plays
+        .iter()
+        .map(|p| play_name(p).to_owned())
+        .filter(|n| n.starts_with("bad "))
+        .collect();
+    assert_eq!(invalid, expected);
 }
 
 #[test]
