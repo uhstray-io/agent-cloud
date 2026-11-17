@@ -8,9 +8,9 @@
 # so its static tests run whatever path a change touches (areas.d/README.md, "A test that reads
 # beyond its area"). The walk only lists and stats entries.
 #
-# paths: the YAML files support_scan_python reads. Playbook YAML, and templates.yml because
-# cloudflare_edge claims it. The other Semaphore YAML is left out while no area claims it: a change
-# there stays unclassified, so push and CI run every test, as in support_lift.yml.
+# paths: what support_scan_python reads (every *.yml under both roots) that another area claims, so
+# a change there would not otherwise select it: playbook YAML, and templates.yml, which
+# cloudflare_edge claims. The other Semaphore YAML is left out for the reason in support_lift.yml.
 paths:
   - "platform/playbooks/**/*.yml"
   - "platform/semaphore/templates.yml"
