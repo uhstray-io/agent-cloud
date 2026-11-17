@@ -7,15 +7,15 @@ Every task is safe to rerun. Nothing here runs against production until the oper
 - [x] 1.2 Decide how Activepieces reaches the gateway: internal listener with a step-ca client leaf (AC-783)
       Phase gate: `openspec validate agentgateway-content-generation --strict` passes, and the sync parser lists the ten open tasks of this change. This phase is planning, so no runtime spec scenario applies.
 
-## 2. Text path
+## 2. Text path (blocked: deploy-activepieces delivers the Activepieces host)
 - [ ] 2.1 Spike: can an Activepieces piece present a client certificate; if not, add an mTLS egress sidecar (AC-826)
       Acceptance: a recorded yes or no for the piece tested. On no, add the sidecar to the Activepieces compose project, on an internal network only.
 - [ ] 2.2 Issue the Activepieces host a client leaf, add its leaf name to agw_client_cert_allowlist, give it a Renew Internal Certs proof path (AC-825)
-      Acceptance: Renew Internal Certs proves the leaf (scenario "Allowlisted leaf proven at renewal"), and the running piece or sidecar presents the renewed leaf (plan 27, D8). The allowlist takes leaf names, not SANs (the `_allowlist` check in deploy-agentgateway.yml). Follows the rollout order in plan 27, Phase 1 (the o11y probe leaf's precedent): declarations, Deploy step-ca, one Deploy agentgateway carrying this entry and task 2.3, Apply Firewall on the gateway host, Issue Internal Leaf, the Activepieces deploy placing the CA bundle and the gateway name, then Renew Internal Certs.
+      Acceptance: Renew Internal Certs proves the leaf (scenarios "Allowlisted leaf proven at renewal" or "Long-running holder proven at renewal"), and the running piece or sidecar presents the renewed leaf (plan 27, D8). The allowlist takes leaf names, not SANs (the `_allowlist` check in deploy-agentgateway.yml). Follows the rollout order in plan 27, Phase 1.
 - [ ] 2.3 Enroll the activepieces identity with its budget and model allow-list (AC-785)
       Acceptance: the rendered configuration gives it the tokens_per_hour value from site-config and a text-only allowed_models (scenario "Content identity budget and allow-list"). `agw_verify_client` names another identity, so the deploy's keyed verify does not run as it (scenario "Content identity is not the verify identity").
 - [ ] 2.4 Validation gate (text): chat and json_schema completions through the gateway from the Activepieces host; keyless call refused (AC-791)
-      Proven by the spec scenarios "Content identity budget and allow-list", "Keyless request with an admitted certificate" and "Request without a client certificate". Records the measured token usage per draft against the budget assumptions in plan 27. Run again if task 3.1 moves the pin.
+      Proven by the spec scenarios "Content identity budget and allow-list" and "Keyless request with an admitted certificate", and the inference-gateway-agentgateway scenario "A request without a client certificate is refused". Records the measured token usage per draft against the budget assumptions in plan 27. Run again if task 3.1 moves the pin.
 
 ## 3. Image path (blocked: the dgx-spark image model fit test and serving handoff)
 - [ ] 3.1 Verify the pinned gateway proxies the OpenAI images API; upgrade if not; check per-key request limits in the same release (AC-786)

@@ -29,7 +29,7 @@ should not sit behind.
   probe path.
 - A text path first (tasks 2.1 to 2.4). An image path after it (tasks 3.1 to 3.6): an image
   upstream, a per-identity request limit, a conformance case and dashboards. The image path waits
-  until the image model the dgx-spark fit test selects (Z-Image-Turbo first, AC-870 decision 2026-11-16) passes its fit test and is served on the DGX Spark pair.
+  until the image path's blockers in plan 27, D5, clear.
 - This change adds documentation only. No code, template, playbook or inventory changes in this
   repository.
 
@@ -46,7 +46,7 @@ should not sit behind.
   the identity.
 - **Image path, after tasks 3.1 and 3.2 are deployed.** Remove the image entries from `agw_models`
   in site-config and redeploy. If the pin moved in task 3.1, restore the previous tag in
-  `platform/services/agentgateway/deployment/compose.yml` (line 36) and redeploy through the
+  the `AGW_IMAGE` default in `platform/services/agentgateway/deployment/compose.yml` and redeploy through the
   Semaphore template. Task 3.3 adds the request limit; its removal is written with that task.
 - Each rollback step is a Semaphore template run or a site-config change. None is a manual edit on
   a host.
