@@ -25,8 +25,8 @@ should not sit behind.
 - One gateway identity, `activepieces`, with its own rolling hourly token budget and an explicit
   model allow-list. It is declared in site-config, not in this repository.
 - The caller's client leaf is issued on the Activepieces host, its name is added to
-  `agw_client_cert_allowlist` in site-config, and its renewal is proven through the existing
-  probe path.
+  `agw_client_cert_allowlist` in site-config, and its renewal is proven in use as the spec
+  requirement "The content caller's client leaf is proven in use at renewal" requires.
 - A text path first (tasks 2.1 to 2.4). An image path after it (tasks 3.1 to 3.6): an image
   upstream, a per-identity request limit, a conformance case and dashboards. The image path waits
   until the image path's blockers in plan 27, D5, clear.
