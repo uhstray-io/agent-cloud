@@ -71,19 +71,19 @@ No flow SHALL create a post of any type other than draft, so none publishes imme
 
 ### Requirement: Handoff to the publishing service is exactly once
 
-A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes only while that post is still a draft; an edit to a revision whose post is scheduled is refused, so a scheduled post is never replaced. It SHALL schedule each approved revision at most once. Its create and schedule records SHALL be keyed by the draft and the revision number. A retried handoff MUST NOT create another post: it finds the post it already created when the publishing service lists it, and otherwise keeps the record pending for a person to resolve. A record a person marks abandoned closes its draft for good: the content returns only as a new draft with its own revision and approval. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
+A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes only while that post is still a draft; an edit to a revision whose post is scheduled is refused, so a scheduled post is never replaced. It SHALL schedule each approved revision at most once. Its create and schedule records SHALL be keyed by the draft and the revision number. A retried handoff MUST NOT create another post and MUST NOT match a pending create to a listed post automatically: a pending record with no post identifier stays pending for a person, who attaches the post by hand or marks the record abandoned. A record a person marks abandoned closes its draft for good: the content returns only as a new draft with its own revision and approval. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
 
 #### Scenario: Retried handoff creates no second post
 
 - **GIVEN** a handoff created a publishing-service post for a draft and then failed before it recorded the result
 - **WHEN** the handoff is retried
-- **THEN** the existing post is found, and no second post is created for that draft
+- **THEN** no second post is created for that draft, and the record stays pending for a person
 
-#### Scenario: Unlisted pending create is not retried
+#### Scenario: Pending create is not matched automatically
 
-- **GIVEN** a handoff recorded a pending create and the publishing service's post list shows no matching post
+- **GIVEN** a handoff recorded a pending create with no post identifier, and the publishing service lists a post with the same content
 - **WHEN** the handoff is retried
-- **THEN** no post is created, and the pending record is raised for a person to mark created or abandoned
+- **THEN** no post is created, the listed post is not attached to the record, and the record stays pending for a person to attach the post by hand or mark the record abandoned
 
 #### Scenario: Retried schedule creates no second schedule
 
