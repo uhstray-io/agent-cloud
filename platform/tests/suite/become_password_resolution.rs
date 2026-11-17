@@ -273,16 +273,22 @@ fn first_executed_task(play: &Node) -> Option<&Node> {
 
 fn first_in(seq: &[Node]) -> Option<&Node> {
     for task in seq {
-        if is_controller_only_guard(task) || crate::credential_leaks::never_runs(task) {
+        // A `never` tag runs or not by the run's --tags, so the first task cannot be known: fail
+        // closed. A constant-false `when` never runs, so the next sibling runs first.
+        if crate::credential_leaks::tagged_never(task) {
+            return None;
+        }
+        if is_controller_only_guard(task) || crate::credential_leaks::when_is_constant_false(task) {
             continue;
         }
-        // A block whose every task is skipped runs nothing: the next sibling runs first.
-        match task.get("block").and_then(Node::as_seq) {
-            Some(block) => match first_in(block) {
-                Some(first) => return Some(first),
-                None => continue,
-            },
-            None => return Some(task),
+        let Some(block) = task.get("block").and_then(Node::as_seq) else {
+            return Some(task);
+        };
+        // A block whose every task is skipped still runs its `always:`; only when that is empty
+        // too does the next sibling run first.
+        let always = task.get("always").and_then(Node::as_seq).unwrap_or(&[]);
+        if let Some(first) = first_in(block).or_else(|| first_in(always)) {
+            return Some(first);
         }
     }
     None
@@ -646,6 +652,25 @@ const FIRST_EXECUTED_CASES: &str = r#"
     - block:
         - ansible.builtin.debug: {msg: hi}
           when: false
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad skipped block whose always runs first
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.debug: {msg: hi}
+          when: false
+      always:
+        - ansible.builtin.command: x
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad a never-tagged task before the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.command: x
+      tags: [never]
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad guard then debug
   hosts: h

@@ -1396,25 +1396,35 @@ impl Guard {
 /// for that tag. A constant false is `false`, `False`, `FALSE`, `no`, `No` or `0`, also wrapped once
 /// in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
 pub(crate) fn never_runs(task: &Node) -> bool {
+    when_is_constant_false(task) || tagged_never(task)
+}
+
+/// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
+/// list (the items are ANDed).
+pub(crate) fn when_is_constant_false(task: &Node) -> bool {
     let is_false = |item: &Node| match item {
         Node::Bool(b) => !b,
         Node::Str(s) => constant_false(s),
         _ => false,
     };
-    let tagged_never = match task.get("tags") {
+    match task.get("when") {
+        Some(Node::Seq(items)) => items.iter().any(is_false),
+        Some(item) => is_false(item),
+        None => false,
+    }
+}
+
+/// Whether a task carries the `never` tag. Whether it then runs depends on the run's `--tags`, so
+/// a caller decides what that means for it.
+pub(crate) fn tagged_never(task: &Node) -> bool {
+    match task.get("tags") {
         // Ansible splits a comma-separated tags string into tags.
         Some(Node::Str(s)) => s.split(',').any(|t| t.trim() == "never"),
         Some(Node::Seq(items)) => items
             .iter()
             .any(|t| t.as_str().map(str::trim) == Some("never")),
         _ => false,
-    };
-    tagged_never
-        || match task.get("when") {
-            Some(Node::Seq(items)) => items.iter().any(is_false),
-            Some(item) => is_false(item),
-            None => false,
-        }
+    }
 }
 
 /// An integer comparison with a constant result, `a == b` or `a != b`.

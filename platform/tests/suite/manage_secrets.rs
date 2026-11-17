@@ -165,8 +165,9 @@ const COMMAND_MODULES: &[&str] = &["command", "shell", "raw", "script", "expect"
 /// whitespace, a path separator, a quote, `=`, or a shell separator `; & | ( `` ` ``), so options
 /// before the subcommand (`bao -address=x kv put`) and `x;bao kv put` do not hide it, while a path
 /// that only ends in `vault` is not a call.
-static STORE_CLI: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?:^|[\s/"'=;&|(`])(?:bao|vault)\s"#).expect("a valid regex"));
+static STORE_CLI: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:^|[\s/"'=;&|(`\\])(?:bao|vault)["']?\s+\S"#).expect("a valid regex")
+});
 
 /// Every string under a node; a list of strings (an argv) also yields its items joined by spaces,
 /// so `[bao, kv, put]` reads as the command line it runs.
@@ -235,6 +236,18 @@ fn a_store_cli_call_is_detected() {
     )));
     assert!(!runs_store_cli(&task(
         "ansible.builtin.command: podman ps\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: \\bao kv put secret/x a=b\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: '\"bao\" kv put secret/x a=b'\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.command: ansible-vault encrypt x\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.command: ls /opt/vault\n"
     )));
     assert!(runs_store_cli(&task(
         "ansible.builtin.command: bao -address=http://x kv put secret/x a=b\n"
