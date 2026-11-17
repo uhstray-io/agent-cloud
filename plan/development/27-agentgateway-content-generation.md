@@ -172,7 +172,7 @@ Phase 2 acceptance: gate 3.6 passes.
 
 - **Keys.** Each identity's key is generated once and reused (`secret-declarations/agentgateway.yml:249-254`). The Activepieces key goes only to the Activepieces connection, through a `no_log` playbook (D7). The OpenRouter credential is rendered into the gateway's 0600 `.env` (`agentgateway-openrouter/proposal.md:31`). The image upstream's key is planned to follow the same pattern (task 3.2).
 - **Leaf keys.** The leaf's private key is made on the Activepieces host. `Issue Internal Leaf (Dev)` inspect refuses a key that is not 0600 (AGENTS.md, `Issue Internal Leaf (Dev)` row).
-- **Allowlist.** Admission is the inference-gateway-agentgateway requirement "The gateway admits only declared client certificates". Its refusals (no certificate, a leaf off the allowlist) belong to that change's task 6.4, whose two refusal legs were recorded 2026-10-09 (second-hand: the note's author did not read the task output); the task is still open.
+- **Allowlist.** Admission is the inference-gateway-agentgateway requirement "The gateway admits only declared client certificates". Its refusals (no certificate, a leaf off the allowlist) belong to that change's task 6.4, which is still open.
 - **Budget.** The budget's semantics are the inference-gateway-agentgateway requirement "Every client has its own identity and limit". Request limits are discussed in D6.
 - **No paid models.** The identity is not in `agw_openrouter_identities` (D2).
 - **Sidecar.** If it is needed, it sits on an internal network only, and it holds only the leaf and the CA bundle.
