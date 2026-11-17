@@ -37,8 +37,8 @@ Needs a running Activepieces instance from change `deploy-activepieces`. The loc
 
 Needs the gateway and Postiz connections from phase 3 and the brand profile from phase 2. Drafts are proven end to end before Gate A. Risk R2 (task 3.3) can stop the work before this phase.
 
-- [ ] 4.1 Flow: generate one draft per platform from a brief, json_schema output within each platform's length limit, prompt built from the brand profile (AC-799)
-      Plane: AC-799. Blocked by: 3.2, 2.3. Acceptance: one draft per target platform, each reply parses against its schema, and the prompt is built from the brand profile.
+- [ ] 4.1 Flow: generate one draft per target account from a brief, json_schema output within each platform's length limit, prompt built from the brand profile (AC-799)
+      Plane: AC-799. Blocked by: 3.2, 2.3. Acceptance: one draft per target account, each reply parses against its schema, and the prompt is built from the brand profile.
 - [ ] 4.2 Guardrail step (plan 28 D10) (AC-800)
       Plane: AC-800. Blocked by: 4.1 for the flow wiring; the guardrail module itself needs nothing. Acceptance: a draft over a platform's length limit, or naming an internal hostname, is returned with its reason and does not reach approval; the apply playbook reads the applied flow back and fails the run when the inlined guardrail's sha256 differs from the module's (plan 28 D10).
 - [ ] 4.3 Brand-to-integration mapping and refusal (plan 28 D9) (AC-836)
