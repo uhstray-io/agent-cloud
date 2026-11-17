@@ -6,7 +6,7 @@ Provides AI-assisted drafting of social posts for the instance's brands, with a 
 
 ### Requirement: Drafts need no approval; scheduling and publishing need a recorded approval
 
-Generation MAY create a draft without an approval. The platform MUST NOT schedule or publish a post unless a recorded approval names the approver and the revision of that post.
+Generation MAY create a draft without an approval. The platform MUST NOT schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post.
 
 An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media, its target account and its publish time, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
 
@@ -65,7 +65,7 @@ No flow SHALL create a post of any type other than draft, so none publishes imme
 
 ### Requirement: Handoff to the publishing service is exactly once
 
-A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes while that post is still a draft, and a scheduled post is never replaced. It SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
+A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes only while that post is still a draft; an edit to a revision whose post is scheduled is refused, so a scheduled post is never replaced. It SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
 
 #### Scenario: Retried handoff creates no second post
 
