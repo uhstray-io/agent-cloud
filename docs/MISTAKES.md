@@ -196,7 +196,7 @@ and why.
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 1 | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
-| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
+| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-10-02, found 2026-11-14: the closed rule's pattern missed `now(args)`; five `vars` entries got past it) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | 2 | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | 1 | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | 1 | Test |
@@ -6161,7 +6161,7 @@ was the one outside the thing being looked for.
 
 ### 10.8 Two constructs that lint cleanly and mean something else when they run
 
-**Occurrences: 2** — 2026-08-26, 2026-11-14
+**Occurrences: 2** — 2026-08-26, 2026-10-02 (found 2026-11-14)
 
 **What happened.** A new playbook copies credentials from OpenBao into the private
 repo and pushes a branch. It passed `ansible-lint` at the `production` profile and
@@ -6212,7 +6212,7 @@ answer. Both mutation-proven by reintroducing the exact original bug.
 
 **Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/backup_credentials.rs::no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, `platform/tests/suite/backup_credentials.rs::the_branch_name_is_frozen_by_a_set_fact_task`, `platform/tests/suite/backup_credentials.rs::the_frozen_branch_is_written_as_a_folded_scalar` and `platform/tests/suite/backup_credentials.rs::every_git_call_carrying_a_space_uses_argv_not_cmd` are its replacements.
 
-**Occurrence 2 — 2026-11-14.** The review of #1149 found five `vars` entries built from
+**Occurrence 2 — 2026-10-02, found 2026-11-14.** The review of #1149 found five `vars` entries built from
 `now(utc=true...)`, in four playbooks, standing while this entry's closed rule claimed to
 refuse `now()` in any play's `vars` block: `_agw_today` in both the Phase 1 and Phase 3
 plays of `deploy-agentgateway.yml`, the task-local `_today` in `rollback-inference-route.yml`,
