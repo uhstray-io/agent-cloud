@@ -87,7 +87,9 @@ const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 // The condition must BE a `length` of one group lookup, from its start to its end: a prefix such
 // as `1 + (...)`, a list around it, or a subscript inside a string would otherwise pass (AC-907).
 // Quoted text is blanked first, so a group name or a `groups` word in a string cannot stand in for
-// the lookup. A `get` key is one name, so its `, [])` cannot close another filter (#1169 review).
+// the lookup; a condition holding a backslash is refused, since `QUOTED` does not model escapes
+// and `'\''` would end a span early (#1169 security review). A `get` key is one name, so its
+// `, [])` cannot close another filter (#1169 review).
 // The comparison value must end the condition, closing parentheses and blanks aside:
 // anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
 static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
@@ -326,7 +328,8 @@ fn inline_guard_items(play: &Node) -> Vec<String> {
 /// quotes included.
 fn is_populated_group_check(text: &str) -> bool {
     let unquoted = QUOTED.replace_all(text, "''");
-    GROUP_LENGTH.is_match(&unquoted)
+    !text.contains('\\')
+        && GROUP_LENGTH.is_match(&unquoted)
         && COMPARATOR.find_iter(text).count() == 1
         && !NEUTRALISER.is_match(text)
 }
@@ -855,6 +858,21 @@ fn inline_asserts_that_are_not_one_accepted_positive_comparison_do_not_count() {
         counted.is_empty(),
         "these inline asserts counted as a pre-flight: {counted:?}"
     );
+}
+
+#[test]
+fn a_condition_with_a_backslash_is_refused() {
+    // Arrange: an escaped quote ends `QUOTED`'s span early, so the blanked text shows a bare
+    // `groups[...] | length > 0` while Jinja renders the whole condition true for an empty group
+    // (#1169 security review). Asserted on the check itself: the fixture tables embed each
+    // condition in a YAML double-quoted string, where a backslash is an escape of its own.
+    let bypass = r"groups[('\'' ~ target_service)[1:]] | length + ['\''] | length > 0";
+
+    // Act and assert
+    assert!(!is_populated_group_check(bypass), "{bypass}");
+    assert!(is_populated_group_check(
+        "(groups.get(target_service, []) | length) > 0"
+    ));
 }
 
 #[test]
