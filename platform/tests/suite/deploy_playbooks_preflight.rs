@@ -12,9 +12,11 @@
 //! 1. `import_playbook: preflight-target-group.yml` with `preflight_group` and
 //!    `preflight_group_expected` both set, non-empty and equal. It covers that exact group; a
 //!    `hosts: a:b` union needs both covered.
-//! 2. An inline localhost play whose assert reads `groups` and names the target, with ONE
-//!    comparison of the `length` that only a populated group passes: `> 0`, `!= 0`, or `>=`/`==`
-//!    a positive integer, and no `and`/`or`/`not`/`if`/`else`.
+//! 2. An inline localhost play whose assert takes the `length` of a group lookup, and names the
+//!    target: `groups[<name>]`, or `groups.get(<name>, [])` (an empty-list default only, with an
+//!    optional `| default([])`), piped straight to `length`. It is compared ONCE, `> 0`, `!= 0`, or
+//!    `>=`/`==` a positive integer, and has no `and`/`or`/`not`/`if`/`else`. Quoted text is ignored
+//!    by that shape check (AC-907); the target name is read from the whole condition.
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
 //! judged by the plays it runs.
@@ -81,10 +83,17 @@ const LOCAL: [&str; 2] = ["localhost", "127.0.0.1"];
 const PLAYBOOKS: &str = "platform/playbooks";
 const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 
-// The comparison value must end the condition, closing parentheses and blanks aside: anything
-// after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
-static POSITIVE: LazyLock<Regex> =
-    LazyLock::new(|| re(r"\blength\b\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$"));
+// The condition must BE a `length` of one group lookup, from its start to its end: a prefix such
+// as `1 + (...)`, a list around it, or a subscript inside a string would otherwise pass (AC-907).
+// Quoted text is blanked first, so a group name or a `groups` word in a string cannot stand in for
+// the lookup. The comparison value must end the condition, closing parentheses and blanks aside:
+// anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
+static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"^\s*\(*\s*groups(?:\[[^\]]*\]|\.get\(\s*[^,]+?,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$",
+    )
+});
+static QUOTED: LazyLock<Regex> = LazyLock::new(|| re(r#"'[^']*'|"[^"]*""#));
 static COMPARATOR: LazyLock<Regex> = LazyLock::new(|| re(r"[<>!=]=|[<>]"));
 static NEUTRALISER: LazyLock<Regex> = LazyLock::new(|| re(r"\b(?:and|or|not|if|else)\b"));
 static BRACED_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)"));
@@ -310,13 +319,15 @@ fn inline_guard_items(play: &Node) -> Vec<String> {
     out
 }
 
-/// One condition that a populated group alone satisfies: it names `groups`, holds exactly one
-/// comparison, that comparison is a positive `length` test, and it has no `and`/`or`/`not`/`if`/
-/// `else` that could neutralise it.
+/// One condition that a populated group alone satisfies: it is the `length` of a group lookup (an
+/// empty-list default only, see `GROUP_LENGTH`), holds exactly one comparison, that comparison is a
+/// positive `length` test, and it has no `and`/`or`/`not`/`if`/`else` that could neutralise it.
+/// The shape is matched with quoted text blanked, so a string cannot dress up the lookup; the
+/// comparison count and the neutralisers read the whole condition, quotes included.
 fn is_populated_group_check(text: &str) -> bool {
-    text.contains("groups")
+    let unquoted = QUOTED.replace_all(text, "''");
+    GROUP_LENGTH.is_match(&unquoted)
         && COMPARATOR.find_iter(text).count() == 1
-        && POSITIVE.is_match(text)
         && !NEUTRALISER.is_match(text)
 }
 
@@ -484,6 +495,21 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
         "longer_name",
         "(groups.get(target_service_x, []) | length) > 0",
     ),
+    // AC-907: the condition must be a `length` of one group lookup, from its start to its end.
+    // A string, a list, a prefix, a default that is not an empty list, or no default at all each
+    // leave the lookup unproven, so each is refused.
+    (
+        "stringonly",
+        "([1, 'groups', 'target_service'] | length) > 0",
+    ),
+    (
+        "getdefault1",
+        "(groups.get(target_service, [1]) | length) > 0",
+    ),
+    ("quoted", "('groups[target_service] | length' | length) > 0"),
+    ("listwrap", "[groups[target_service] | length] | length > 0"),
+    ("prefixarith", "(1 + (groups[target_service] | length)) > 0"),
+    ("nodefault", "(groups.get(target_service) | length) > 0"),
 ];
 
 /// Inline asserts with one accepted positive comparison of `length`. Each guards its target.
@@ -492,6 +518,14 @@ const ACCEPTED: &[(&str, &str)] = &[
     ("ge1", "groups[target_service] | length >= 1"),
     ("eq1", "groups[target_service] | length == 1"),
     ("ne0", "(groups.get(target_service, []) | length) != 0"),
+    (
+        "getdefaultexpr",
+        "(groups.get(target_service | default('x_svc'), []) | length) > 0",
+    ),
+    (
+        "subdefault",
+        "(groups[target_service] | default([]) | length) > 0",
+    ),
 ];
 
 #[test]
