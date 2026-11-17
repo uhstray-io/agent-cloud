@@ -15,7 +15,7 @@ The earlier flow engine, n8n, was retired on 2026-11-10. Activepieces replaces i
 
 ### New Capabilities
 
-- `platform/social-content-automation`: AI-drafted social posts for the instance's brands, each approved by a person before any scheduling; flows and connections as code; an exactly-once handoff to the publishing service; guardrail checks before approval; brand isolation; and alerting on failed runs.
+- `platform/social-content-automation`: AI-drafted social posts for the instance's brands, each approved by a person before any scheduling; flows and connections as code; an exactly-once handoff to the publishing service; guardrail checks before approval; brand isolation; brand profiles validated against a schema, with values kept private; images approved together with their text; and alerting on failed runs.
 
 ### Modified Capabilities
 

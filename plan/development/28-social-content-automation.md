@@ -100,7 +100,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 - Each brand's profile validates against the schema, and each field records its source.
 - No brand value appears in the repository. Every value is in site-config.
 
-**Gate:** Scenario "Target integration not mapped to the brand is refused". No requirement covers brand profiles directly, so the gate maps to brand isolation (see Open Questions).
+**Gate:** Scenario "Profile missing a source for a field is refused".
 
 ### Phase 3: Flows as code and connections (needs a running Activepieces, change deploy-activepieces)
 
@@ -153,7 +153,11 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 - The image is generated through the gateway, approved with its text, and attached to the post in the publishing service.
 - Gate A holds.
 
-**Gate:** Scenarios "Schedule refused without a recorded approval" and "Failing draft returned with its reason", applied to the attached image. This change has no image scenario yet (see Open Questions).
+**Gate:** Scenario "Image changed after approval is not published".
+
+### Release budget
+
+The build these phases describe adds about 16 files (an estimate, not a measurement): the brand-profile schema and its placeholder example (2), three flow definitions for generation, handoff and scheduled generation (3), two playbooks for flows and connections (2), the Semaphore template entries in `platform/semaphore/templates.yml` (1), static tests over the flow definitions and the schema (2), an alert rule (1 to 2), the Activepieces and Postiz context documents (2), the `AGENTS.md` workflow table (1) and the task tick-offs in this change (1). Policy 10 limits a release to 120 changed files ([10-release-policy.md](../architecture/10-release-policy.md)).
 
 ### Dependency order
 
@@ -209,6 +213,8 @@ The requirement numbers in the rows below follow the order of the requirements i
 | No credential in definitions (Requirement 6) | The committed flow definitions contain no literal credential value. |
 | Gateway identity (Requirement 7) | A completion made by a flow is recorded under the `activepieces` identity, and no flow calls a model backend directly. |
 | Failure alert (Requirement 8) | A forced failing run raises an alert on the observability alert route, and a successful run raises none. |
+| Brand profiles (Requirement 9) | Every profile validates against the schema with a source on each field, and the repository example holds placeholders only. |
+| Image approval (Requirement 10) | An image replaced after approval is not scheduled until its new revision is approved. |
 | Gate A | One AI-drafted, human-approved text post is published to the first brand's X and LinkedIn accounts through the publishing service in production, and a rerun of the handoff adds no post. |
 | Gate B | Gate A holds, and an approved AI-generated brand image is attached to an approved text post. |
 | Post-creation ceiling | The scheduled cadence stays under the lower documented ceiling until the pinned version is checked (R6). |
@@ -243,10 +249,9 @@ The requirement numbers in the rows below follow the order of the requirements i
    - (c) The studio (AC-810). It is the intended long-term interface and is outside the v0.17.0 scope.
 2. **R1 outcome (task 3.1).** Not yet known. If the Community edition does not support the flow API path, the decision returns to the operator.
 3. **R2 outcome (task 4.4).** Not yet known.
-4. **Image path and licence (phase 6).** The image step waits on the image path of plan 27 (AC-792) and on the licence decision (AC-870). This change has no image scenario in its spec, so one must be added before task 6.1 starts. Phase 6 also carries no requirement of its own.
-5. **Phase 2 gate mapping (task 2.5).** The phase 2 gate maps to brand isolation because no requirement covers brand profiles directly. Whether brand profiles need a requirement of their own is open.
-6. **Post-creation ceiling.** The documented values conflict (90 and 30 per hour). The pinned version must be checked before a cadence is set.
-7. **Publishing-service key revocation.** The procedure to revoke the key is not yet established. It is an open item for task 3.3.
+4. **Image path and licence (phase 6).** The image step waits on the image path of plan 27 (AC-792) and on the licence decision (AC-870).
+5. **Post-creation ceiling.** The documented values conflict (90 and 30 per hour). The pinned version must be checked before a cadence is set.
+6. **Publishing-service key revocation.** The procedure to revoke the key is not yet established. It is an open item for task 3.3.
 
 ## Upstream facts used
 

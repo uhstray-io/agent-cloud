@@ -149,3 +149,32 @@ A content flow run that ends in failure MUST raise an alert through the platform
 
 - **WHEN** a content flow run completes without failure
 - **THEN** no failure alert is raised for that run
+
+### Requirement: Brand profiles follow the schema and hold no brand value in the repository
+
+Every brand profile SHALL validate against the brand-profile schema, and every field in a profile MUST name the source it was taken from. The repository MUST hold only the schema and a placeholder example; brand values MUST live in the private configuration repository.
+
+#### Scenario: Profile missing a source for a field is refused
+
+- **WHEN** a brand profile is validated and one of its fields names no source
+- **THEN** validation fails and the profile is not used to build a prompt
+
+#### Scenario: Repository example holds placeholders only
+
+- **WHEN** the placeholder example in the repository is validated
+- **THEN** it passes the schema and contains no value belonging to a real brand
+
+### Requirement: An image is approved and checked with the text it accompanies
+
+An image attached to a post MUST pass through the same approval as its text. The recorded approval SHALL name the revision of the text and the image together, and a changed image MUST NOT be published on the strength of an earlier approval.
+
+#### Scenario: Image changed after approval is not published
+
+- **GIVEN** a post's text and image were approved together
+- **WHEN** the image is replaced and a handoff attempts to schedule the post
+- **THEN** the post is not scheduled until the new revision has its own recorded approval
+
+#### Scenario: Image never reaches a post without approval
+
+- **WHEN** a generation run produces an image for a draft
+- **THEN** the image is attached only to the draft, and nothing is scheduled until a person approves the text and image together
