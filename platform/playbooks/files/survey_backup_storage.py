@@ -6,17 +6,21 @@ Two modes, JSON on stdin, JSON on stdout:
   plan       {nodes, storage_listings, jobs, storage_config} -> which (node, storage) pairs to
              read, which prune retentions to dry-run on each, and whether to read the Ceph listing
              (`ceph`, the one gate for it). A shared storage is read once.
-  summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads, disk_reads, ceph_reads}
-             -> the receipt the playbook prints. disk_reads and ceph_reads are optional, so a payload
-             without them still summarizes (their sections then read "not read" or are empty).
+  summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads, disk_reads, ceph_reads,
+              ceph_capacity_reads}
+             -> the receipt the playbook prints. disk_reads, ceph_reads and ceph_capacity_reads are optional,
+             so a payload without them still summarizes (their sections then read "not read" or are empty).
 
 The receipt carries storage IDs, guest IDs and names, sizes, dates and job settings, the CephFS
-filesystems and pools, and each node's disks: device path, size, model, vendor, serial, Proxmox's
-`used` tag, the in-use flag that tag implies, and OSD id. A CephFS storage shares a filesystem with
-another when their filesystem names agree: the storage's `fs-name`, or the cluster's only filesystem.
+filesystems and pools, each Ceph OSD's fill and host with each host's total, the cluster's Ceph health
+status and check codes (never a check's message), and each node's disks: device path, size, model,
+vendor, serial, Proxmox's `used` tag, the in-use flag that tag implies, and OSD id. A CephFS storage
+shares a filesystem with another when their filesystem names agree: the storage's `fs-name`, or the
+cluster's only filesystem.
 A storage whose filesystem resolves neither way is unknown, and so is what it shares; it is never
 listed as another storage's sharer, so a resolved storage lists only the resolved storages it shares with. The receipt
-never carries a server address, export, mount path, volume ID, note text, WWN, SMART health or token.
+never carries a server address, export, mount path, volume ID, note text, WWN, SMART health, token,
+a Ceph health message, or a monitor or manager map (addresses).
 A refusal exits 1 with {"refusal": "..."} so the play can print why without the input.
 """
 
@@ -349,6 +353,118 @@ def _cephfs(config, ceph_reads):
     return {"status": status, "reason": reason, "storages": rows, "pools": usage}
 
 
+CEPH_STATUS_ITEM = "cluster/ceph/status"
+
+
+def _is_osd_item(item):
+    text = str(item)
+    return text.startswith("nodes/") and text.endswith("/ceph/osd")
+
+
+def _capacity_not_read(reason):
+    return {"status": "not read", "reason": reason, "osds": [], "hosts": [], "fullest_osd": None,
+            "health": None, "flags": []}
+
+
+def _osd_leaves(bucket, host, out):
+    """Each OSD leaf under a CRUSH bucket, with its host: the leaf's `host`, else the nearest host bucket above.
+
+    A bucket is a dict with `type` and `children`; a non-dict child is skipped.
+    """
+    if not isinstance(bucket, dict):
+        return out
+    if bucket.get("type") == "host":
+        host = bucket.get("name", host)
+    if bucket.get("type") == "osd":
+        out.append((bucket, bucket.get("host") or host))
+    for child in bucket.get("children") or []:
+        _osd_leaves(child, host, out)
+    return out
+
+
+def _osd_row(leaf, host):
+    """One OSD's fill. Proxmox sets its usage only when Ceph reported it: absent is null, never 0."""
+    total, used, percent = leaf.get("total_space"), leaf.get("bytes_used"), leaf.get("percent_used")
+    return {"osd": leaf.get("id"), "name": leaf.get("name"), "host": host,
+            "device_class": leaf.get("device_class"), "status": leaf.get("status"), "in": leaf.get("in"),
+            "total_gib": None if total is None else _gib(total),
+            "used_gib": None if used is None else _gib(used),
+            # Proxmox computes bytes_used * 100 / total_space itself, so it is already a percent (not a fraction).
+            "percent_used": None if percent is None else round(float(percent), 1),
+            "version": leaf.get("ceph_version_short")}
+
+
+def _flags(text):
+    """The cluster's OSD flags as a list; the OSD tree carries them as one comma-separated string, when set."""
+    if not isinstance(text, str):
+        return []
+    return [flag.strip() for flag in text.split(",") if flag.strip()]
+
+
+def _health(detail):
+    """The cluster's health status and its check codes with their severity. Never a check's message."""
+    if not isinstance(detail, dict):
+        return {"status": None, "checks": None}
+    checks = detail.get("checks")
+    rows = None if not isinstance(checks, dict) else [
+        {"code": code, "severity": value.get("severity") if isinstance(value, dict) else None}
+        for code, value in sorted(checks.items())]
+    return {"status": detail.get("status"), "checks": rows}
+
+
+def _ceph_capacity(config, reads):
+    """Each Ceph OSD's fill and host, and the cluster's health status and check codes.
+
+    The reads are the OSD tree (`nodes/<node>/ceph/osd`) and the status (`cluster/ceph/status`), gated
+    like the CephFS listing and read on this cluster's own Ceph only. A host's totals are null when any
+    of its OSDs reports no usage, so a partial sum never reads as the whole.
+    """
+    if not any(_own_cephfs(c) for c in config.values()):
+        return _capacity_not_read("no CephFS storage on this cluster's own Ceph")
+    osd_read = next((r for r in reads if not r.get("skipped") and _is_osd_item(r.get("item"))), None)
+    status_read = next((r for r in reads if not r.get("skipped") and r.get("item") == CEPH_STATUS_ITEM), None)
+    if osd_read is None or status_read is None:
+        return _capacity_not_read("the Ceph OSD tree and health were not read")
+    reason = _ceph_problem({"osd": osd_read, "status": status_read})
+    osds, hosts, flags, fullest_osd, health = [], [], [], None, None
+    if osd_read.get("status") == 200:
+        tree = (osd_read.get("json") or {}).get("data")
+        root = tree.get("root") if isinstance(tree, dict) else None
+        if not isinstance(root, dict):
+            raise Refusal("Proxmox returned no Ceph OSD tree; nothing was summarized.")
+        flags = _flags(tree.get("flags"))
+        leaves = _osd_leaves(root, None, [])
+        osds = sorted((_osd_row(leaf, host) for leaf, host in leaves), key=lambda row: row["osd"])
+        sums = {}
+        for leaf, host in leaves:
+            entry = sums.setdefault(host, {"osds": 0, "total": 0, "used": 0, "complete": True})
+            total, used = leaf.get("total_space"), leaf.get("bytes_used")
+            entry["osds"] += 1
+            if total is None or used is None:
+                entry["complete"] = False
+            else:
+                entry["total"] += total
+                entry["used"] += used
+        for host in sorted(sums, key=lambda h: (h is None, h or "")):
+            entry = sums[host]
+            full = entry["complete"] and entry["total"] > 0
+            hosts.append({"host": host, "osds": entry["osds"],
+                          "total_gib": _gib(entry["total"]) if entry["complete"] else None,
+                          "used_gib": _gib(entry["used"]) if entry["complete"] else None,
+                          "percent_used": round(100 * entry["used"] / entry["total"], 1) if full else None})
+        known = [row for row in osds if row["percent_used"] is not None]
+        if known:
+            top = max(known, key=lambda row: (row["percent_used"], -row["osd"]))
+            fullest_osd = {"osd": top["osd"], "host": top["host"], "percent_used": top["percent_used"]}
+    if status_read.get("status") == 200:
+        data = (status_read.get("json") or {}).get("data")
+        if not isinstance(data, dict):
+            raise Refusal("Proxmox returned no Ceph status; nothing was summarized.")
+        health = _health(data.get("health"))
+    return {"status": "unavailable" if reason else "read", "reason": reason, "osds": osds, "hosts": hosts,
+            "fullest_osd": fullest_osd, "health": health, "flags": flags}
+
+
 def _disks(disk_reads):
     """Each online node's disks as Proxmox lists them.
 
@@ -543,6 +659,7 @@ def summarize(data):
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows,
             "guests": _guests(storages),
             "cephfs": cephfs,
+            "ceph_capacity": _ceph_capacity(config, data.get("ceph_capacity_reads", [])),
             "disks": _disks(data.get("disk_reads", []))}
 
 
