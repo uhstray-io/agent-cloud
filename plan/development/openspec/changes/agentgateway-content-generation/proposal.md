@@ -24,9 +24,10 @@ should not sit behind.
 
 - One gateway identity, `activepieces`, with its own rolling hourly token budget and an explicit
   model allow-list. It is declared in site-config, not in this repository.
-- The caller's client leaf is issued on the Activepieces host, its name is added to
-  `agw_client_cert_allowlist` in site-config, and its renewal is proven in use as the spec
-  requirement "The content caller's client leaf is proven in use at renewal" requires.
+- The caller's client leaf is issued on the Activepieces host and its name is added to
+  `agw_client_cert_allowlist` in site-config. Admission, issuance and renewal are owned by the
+  `inference-gateway-agentgateway` and `production-internal-ca` changes, which plan 27 names by
+  requirement.
 - A text path first (tasks 2.1 to 2.4). An image path after it (tasks 3.1 to 3.6): an image
   upstream, a per-identity request limit, a conformance case and dashboards. The image path waits
   until the image path's blockers in plan 27, D5, clear.
@@ -57,8 +58,8 @@ should not sit behind.
   (`plan/development/27-agentgateway-content-generation.md`), and one line in `AGENTS.md`. Later
   tasks add files on the text and image paths; plan 27, "Release-Budget Cost (estimate)", has the counts.
 - No new container. No new listener. No change to the public edge. The text path uses the gateway's
-  internal listener, which already requires client certificates when `agw_listener_tls` is on
-  (AGENTS.md, `Deploy agentgateway` row).
+  internal listener and requires its listener TLS on (`inference-gateway-agentgateway`, requirement
+  "The gateway admits only declared client certificates").
 - Out of this repository: declaring the identity, its budget, its allowlist entry and the leaf in
   site-config; the Activepieces host and its connection (`deploy-activepieces`,
   `social-content-automation`); and image serving on the DGX Spark pair (dgx-spark items
