@@ -49,12 +49,12 @@ every declared leaf (`platform/playbooks/renew-internal-certs.yml`, task "Refuse
 with no proof path").
 
 #### Scenario: Allowlisted leaf proven at renewal
-- WHEN renewal renews the content caller's leaf and its user opens the files on each call (host sets `agw_verify_base_url` to an `https://` URL)
+- WHEN renewal renews the content caller's leaf and its user opens the files for each TLS connection (host sets `agw_verify_base_url` to an `https://` URL)
 - THEN the probe answers 401 with the leaf, refuses the same URL without a certificate, and the run records the leaf as proven
 
-#### Scenario: Long-running holder proven at renewal
+#### Scenario: Once-reading holder proven at renewal
 - WHEN renewal renews the content caller's leaf and its holder (an Activepieces piece or the egress sidecar) reads the files once and keeps them, rather than re-reading them for each connection
-- THEN renewal runs the holder's declared reload, which loads the files from the mounted directory into the holder, the serial in the mounted directory matches the one issued, and a request along that process's path, sent without an API key, answers 401 (the key check was reached) before the leaf is recorded as proven
+- THEN the holder's declared reload is not `none`, renewal runs it, it loads the files from the mounted directory into the holder, the serial in the mounted directory matches the one issued, and a request along that process's path, sent without an API key, answers 401 (the key check was reached) before the leaf is recorded as proven
 
 #### Scenario: Client leaf without a proof path
 - WHEN a client leaf is declared with no proof path
