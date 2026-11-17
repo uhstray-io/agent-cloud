@@ -54,6 +54,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text::{any_line, read};
 use agent_cloud_tests::yaml;
 use regex::Regex;
 
@@ -71,11 +72,6 @@ const DATA_JSON: &str = "platform/services/opa/deployment/policies/agentcloud/da
 const AUTHZ: &str = "platform/services/opa/deployment/policies/system/authz.rego";
 const AUTHZ_TEST: &str = "platform/services/opa/deployment/policies/system/authz_test.rego";
 const PLAYBOOK: &str = "platform/playbooks/deploy-opa.yml";
-
-/// The file at `rel`, read as text. A missing file panics with its path.
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
-}
 
 /// `[ -f ]`: `rel` is a regular file in the checkout.
 fn assert_file(rel: &str) {
@@ -105,18 +101,16 @@ fn re(pattern: &str) -> Regex {
 
 /// `grep -qE pattern`: some line of `text` matches the regex.
 fn assert_re(label: &str, text: &str, pattern: &str) {
-    let re = re(pattern);
     assert!(
-        text.lines().any(|line| re.is_match(line)),
+        any_line(text, pattern),
         "{label}: no line matches `{pattern}`"
     );
 }
 
 /// `! grep -qE pattern`: no line of `text` may match the regex.
 fn refute_re(label: &str, text: &str, pattern: &str) {
-    let re = re(pattern);
     assert!(
-        !text.lines().any(|line| re.is_match(line)),
+        !any_line(text, pattern),
         "{label}: a line matches the forbidden `{pattern}`"
     );
 }
@@ -139,15 +133,6 @@ fn assert_exact(label: &str, text: &str, literal: &str) {
     assert!(
         text.lines().any(|line| line == literal),
         "{label}: no line is exactly `{literal}`"
-    );
-}
-
-/// `grep -qx pattern`: some whole line of `text` matches the regex.
-fn assert_whole(label: &str, text: &str, pattern: &str) {
-    let re = re(&format!("^(?:{pattern})$"));
-    assert!(
-        text.lines().any(|line| re.is_match(line)),
-        "{label}: no whole line matches `{pattern}`"
     );
 }
 
@@ -191,7 +176,7 @@ fn command_args(text: &str) -> Vec<String> {
 
 /// The awk `task_with`: the first `    - name:` task of a playbook whose text matches `pattern`.
 /// A task runs from its `- name:` line to the next one; the text before the first task is a chunk
-/// too. Empty when no chunk matches.
+/// too. Panics, naming the pattern, when no chunk matches.
 fn task_with(text: &str, pattern: &str) -> String {
     let pat = re(pattern);
     let mut chunks = Vec::new();
@@ -207,7 +192,7 @@ fn task_with(text: &str, pattern: &str) -> String {
     chunks
         .into_iter()
         .find(|chunk| pat.is_match(chunk))
-        .unwrap_or_default()
+        .unwrap_or_else(|| panic!("no task matches `{pattern}`"))
 }
 
 /// `sed -n '/start/,/end/p'`: each line from a line matching `start` through the next line matching
@@ -380,7 +365,7 @@ fn server_leaf_is_minted_after_placement_only_under_opa_tls() {
         "{PLAYBOOK}: the leaf is minted (line {mint:?}) before the repo is placed (line {place:?})"
     );
     let task = task_with(&pb, "tasks/mint-internal-cert.yml");
-    assert_whole(PLAYBOOK, &task, "      when: _opa_tls");
+    assert_exact(PLAYBOOK, &task, "      when: _opa_tls");
     assert_lit(PLAYBOOK, &task, "_mint_name: \"{{ _opa_server_leaf }}\"");
     assert_lit(
         PLAYBOOK,
@@ -394,7 +379,7 @@ fn server_leaf_is_minted_after_placement_only_under_opa_tls() {
 fn trust_bundle_is_placed_in_certs_only_under_opa_tls() {
     let pb = read(PLAYBOOK);
     let task = task_with(&pb, "tasks/distribute-ca-root.yml");
-    assert_whole(PLAYBOOK, &task, "      when: _opa_tls");
+    assert_exact(PLAYBOOK, &task, "      when: _opa_tls");
     assert_lit(PLAYBOOK, &task, "_ca_root_dest_dir: \"{{ _deploy_dir }}\"");
     assert_lit(
         PLAYBOOK,
@@ -443,16 +428,16 @@ fn declaration_names_the_leaf_profile_dir_reload_and_verify_url() {
 fn verify_probes_https_through_curl_and_refuses_a_plain_http_200() {
     let pb = read(PLAYBOOK);
     let args = sed_range(&pb, "^    _opa_tls_args:", "^  tasks:");
-    assert_whole(PLAYBOOK, &args, "      - --cacert");
+    assert_exact(PLAYBOOK, &args, "      - --cacert");
     assert_lit(
         PLAYBOOK,
         &args,
         "\"{{ _deploy_dir }}/certs/step-ca-bundle.crt\"",
     );
-    assert_whole(PLAYBOOK, &args, "      - --resolve");
+    assert_exact(PLAYBOOK, &args, "      - --resolve");
     let health = task_with(&pb, "OPA health over TLS");
     assert_lit(PLAYBOOK, &health, "_opa_tls_args");
-    assert_whole(PLAYBOOK, &health, "      when: _opa_tls");
+    assert_exact(PLAYBOOK, &health, "      when: _opa_tls");
     let plain = task_with(&pb, "Plain HTTP to the TLS listener");
     assert_lit(PLAYBOOK, &plain, "failed_when: false");
     let refuse = task_with(&pb, "Refuse a plain-HTTP 200");
@@ -463,27 +448,27 @@ fn verify_probes_https_through_curl_and_refuses_a_plain_http_200() {
 fn decisions_are_gated_on_opa_tls_and_the_plain_ones_on_its_absence() {
     let pb = read(PLAYBOOK);
     let uri = task_with(&pb, "ansible.builtin.uri:");
-    assert_whole(PLAYBOOK, &uri, "      when: not _opa_tls");
+    assert_exact(PLAYBOOK, &uri, "      when: not _opa_tls");
     let plain_allow = task_with(&pb, "Sample decision: infra-agent read netbox -> allow");
-    assert_whole(
+    assert_exact(
         PLAYBOOK,
         &plain_allow,
         "      when: not ansible_check_mode and not _opa_tls",
     );
     let plain_deny = task_with(&pb, "Sample decision: unknown agent -> deny");
-    assert_whole(
+    assert_exact(
         PLAYBOOK,
         &plain_deny,
         "      when: not ansible_check_mode and not _opa_tls",
     );
     let tls_allow = task_with(&pb, "Sample decision over TLS: infra-agent");
-    assert_whole(
+    assert_exact(
         PLAYBOOK,
         &tls_allow,
         "      when: _opa_tls and not ansible_check_mode",
     );
     let tls_deny = task_with(&pb, "Sample decision over TLS: unknown agent");
-    assert_whole(
+    assert_exact(
         PLAYBOOK,
         &tls_deny,
         "      when: _opa_tls and not ansible_check_mode",
@@ -510,7 +495,8 @@ fn verify_runs_the_rego_tests_as_a_bundle() {
     // any caller the firewall admits; the :ro mount protects the files, not the running policy.
     // Both command lists ending in "--bundle /policies" is asserted by the --authorization test,
     // whose suffix includes it. The Rego tests load the tree the way the server does.
-    assert_lit(PLAYBOOK, &read(PLAYBOOK), "/opa test --bundle /policies\"");
+    let rego = task_with(&read(PLAYBOOK), "Run Rego unit tests");
+    assert_lit(PLAYBOOK, &rego, "/opa test --bundle /policies\"");
 }
 
 #[test]
@@ -642,9 +628,10 @@ fn tls_refusal_drops_fail_and_passes_only_on_a_last_line_401() {
     let tls = task_with(&pb, "Authorization refusals over TLS");
     assert_lit(PLAYBOOK, &tls, "{{ _opa_tls_probe_args");
     // The probe args are the TLS args without --fail, so the expected 401 exits 0.
+    let vars = sed_range(&pb, "^    _opa_tls_args:", "^  tasks:");
     assert_exact(
         PLAYBOOK,
-        &pb,
+        &vars,
         "    _opa_tls_probe_args: \"{{ _opa_tls_args | reject('equalto', '--fail') | list }}\"",
     );
     refute_lit(PLAYBOOK, &tls, "_opa_tls_args");
@@ -690,8 +677,8 @@ fn authz_admits_exactly_the_decision_post_and_the_health_get() {
     // changes what an admitted caller may reach, so it must be an explicit, reviewed change here.
     let authz = read(AUTHZ);
     let tests = read(AUTHZ_TEST);
-    assert_whole(AUTHZ, &authz, "package system.authz");
-    assert_whole(AUTHZ, &authz, "default allow := false");
+    assert_exact(AUTHZ, &authz, "package system.authz");
+    assert_exact(AUTHZ, &authz, "default allow := false");
     assert_eq!(
         count_re(&authz, "^allow if"),
         2,
@@ -723,11 +710,9 @@ fn both_command_lists_pass_authorization_basic_directly_before_bundle() {
             .filter(|arg| arg.as_str() == "--authorization=basic")
             .count();
         assert_eq!(flags, 1, "{rel}: `--authorization=basic` must appear once");
-        // The list, space-joined with a trailing space, ends with the flag and then the bundle it
-        // guards.
-        let joined: String = args.iter().map(|arg| format!("{arg} ")).collect();
+        // The list ends with the flag and then the bundle it guards.
         assert!(
-            joined.ends_with(" --authorization=basic --bundle /policies "),
+            args.ends_with(&["--authorization=basic", "--bundle", "/policies"].map(String::from)),
             "{rel}: the command list must end `--authorization=basic --bundle /policies`"
         );
     }
@@ -744,9 +729,10 @@ fn deploy_sh_recreates_opa_when_the_policies_it_loads_change() {
         "^[[:space:]]*compose_up_if_changed policies$",
     );
     refute_re(DEPLOY_SH, &deploy, "^[[:space:]]*compose up -d");
+    let deploy = task_with(&read(PLAYBOOK), "Run deploy.sh");
     assert_lit(
         PLAYBOOK,
-        &read(PLAYBOOK),
+        &deploy,
         "changed_when: \"'DEPLOY_CHANGED=true' in _deploy.stdout_lines\"",
     );
 }
