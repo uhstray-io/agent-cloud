@@ -112,10 +112,18 @@ fn refute_text_refuses_an_empty_literal() {
 }
 
 #[test]
-#[should_panic(expected = "spans lines; check each line on its own")]
+#[should_panic(expected = "holds a newline; check each of its lines on its own")]
 fn refute_text_refuses_a_literal_that_spans_lines() {
     // As one string it is absent, so the refute would pass even when each line is present.
     refute_text(CARGO, "[package]\nname = \"not-a-crate\"");
+}
+
+#[test]
+#[should_panic(expected = "holds a newline; check each of its lines on its own")]
+fn refute_line_refuses_a_pattern_that_holds_a_newline() {
+    // grep reads it as two patterns and would match the `name` line; one regex never matches a
+    // line, so the refute would pass.
+    refute_line(CARGO, "zzz\nname = \"agent-cloud-tests\"");
 }
 
 #[test]

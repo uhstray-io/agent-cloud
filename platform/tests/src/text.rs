@@ -11,9 +11,9 @@
 //! constructs the ported BATS patterns use; its escapes such as `\d` and `\t` are its own, not
 //! GNU grep's.
 //!
-//! An empty pattern or literal is found in every line and every text, so it checks nothing: each
-//! assertion refuses one, naming the file. A literal is one line; one that holds a newline is
-//! refused, because `grep -F` would read it as several literals.
+//! An empty pattern or literal is found in every line and every text, so it checks nothing; grep
+//! reads one that holds a newline as several needles. Each assertion refuses both, naming the
+//! file.
 
 use regex::Regex;
 
@@ -31,21 +31,17 @@ pub fn any_line(text: &str, pattern: &str) -> bool {
     text.split_terminator('\n').any(|line| re.is_match(line))
 }
 
-/// Refuse an empty pattern or literal: it is found everywhere, so it checks nothing.
+/// Refuse a pattern or literal grep would read differently: an empty one is found everywhere, and
+/// grep reads each line of one that holds a newline as a separate needle, which neither `any_line`
+/// nor `contains` does.
 fn require_needle(rel: &str, needle: &str) {
     assert!(
         !needle.is_empty(),
         "{rel}: an empty pattern or literal checks nothing"
     );
-}
-
-/// Refuse a literal that holds a newline: `grep -F` reads each of its lines as a separate
-/// literal, but `contains` would look for the whole string, so the two would disagree.
-fn require_one_line(rel: &str, literal: &str) {
-    require_needle(rel, literal);
     assert!(
-        !literal.contains('\n'),
-        "{rel}: literal `{literal}` spans lines; check each line on its own"
+        !needle.contains('\n'),
+        "{rel}: `{needle}` holds a newline; check each of its lines on its own"
     );
 }
 
@@ -69,13 +65,13 @@ pub fn refute_line(rel: &str, pattern: &str) {
 
 /// `grep -qF literal file` must succeed.
 pub fn assert_text(rel: &str, literal: &str) {
-    require_one_line(rel, literal);
+    require_needle(rel, literal);
     assert!(read(rel).contains(literal), "{rel}: `{literal}` is missing");
 }
 
 /// `! grep -qF literal file`: the literal must be absent.
 pub fn refute_text(rel: &str, literal: &str) {
-    require_one_line(rel, literal);
+    require_needle(rel, literal);
     assert!(
         !read(rel).contains(literal),
         "{rel}: the forbidden `{literal}` is present"
