@@ -877,23 +877,21 @@ fn skip_trivia(src: &str, mut i: usize) -> usize {
 /// the argument holding its pathspecs, and the byte of its `(`. Rust allows whitespace and
 /// comments between the path's tokens and before the `(`, and a raw name (`r#grep`).
 fn scan_call_at(src: &str, i: usize) -> Option<(&'static str, usize, usize)> {
-    let after = src[i..].strip_prefix("repo")?;
-    if src[..i].ends_with(is_ident) || after.starts_with(is_ident) {
+    // `::` must follow `repo`, and `(` must follow the name (comments and whitespace aside). That
+    // alone rejects `repository::` and `grep_in(`; the check before `repo` keeps `my_repo::grep`
+    // out.
+    if src[..i].ends_with(is_ident) || !src[i..].starts_with("repo") {
         return None;
     }
     let colons = skip_trivia(src, i + "repo".len());
-    src[colons..].starts_with("::").then_some(())?;
+    src[colons..].strip_prefix("::")?;
     let mut name_at = skip_trivia(src, colons + 2);
     if src[name_at..].starts_with("r#") {
         name_at += 2;
     }
     let (name, arg) = [("grep", 1), ("ls_files", 0)]
         .into_iter()
-        .find(|(name, _)| {
-            src[name_at..]
-                .strip_prefix(name)
-                .is_some_and(|rest| !rest.starts_with(is_ident))
-        })?;
+        .find(|(name, _)| src[name_at..].starts_with(name))?;
     let open = skip_trivia(src, name_at + name.len());
     src[open..].starts_with('(').then_some((name, arg, open))
 }
@@ -952,6 +950,7 @@ fn f() {
     repo/* c */::grep("x", &["inpath"]);
     repo::r#ls_files(&["raw"]);
     repo:: /* c */ r#grep("x", &["afterpath"]);
+    repository::grep("no", &["prefix"]);
 }
 "##;
 
