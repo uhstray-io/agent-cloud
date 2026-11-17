@@ -721,16 +721,32 @@ fn literal_at(src: &str, i: usize) -> Option<(String, usize)> {
     ))
 }
 
-/// The index after the comment starting at byte `i`, or `None` when none starts there.
+/// The index after the comment starting at byte `i`, or `None` when none starts there. Block
+/// comments nest, as in Rust: an inner `*/` does not end the outer one.
 fn comment_end(src: &str, i: usize) -> Option<usize> {
     let rest = &src[i..];
     if rest.starts_with("//") {
-        Some(rest.find('\n').map_or(src.len(), |n| i + n))
-    } else if rest.starts_with("/*") {
-        Some(i + rest.find("*/").expect("a closed block comment") + 2)
-    } else {
-        None
+        return Some(rest.find('\n').map_or(src.len(), |n| i + n));
     }
+    if !rest.starts_with("/*") {
+        return None;
+    }
+    let (mut depth, mut j) = (0, 0);
+    while j < rest.len() {
+        if rest[j..].starts_with("/*") {
+            depth += 1;
+            j += 2;
+        } else if rest[j..].starts_with("*/") {
+            depth -= 1;
+            j += 2;
+            if depth == 0 {
+                return Some(i + j);
+            }
+        } else {
+            j += rest[j..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    panic!("an unclosed block comment at byte {i}");
 }
 
 /// The index after the char literal starting at byte `i` (`'"'`, `'\''`), or `None` when none
@@ -844,8 +860,10 @@ fn literals_of(expr: &str, src: &str) -> Result<Vec<String>, String> {
 }
 
 /// Every `repo::grep(pattern, pathspecs)` and `repo::ls_files(pathspecs)` call in the code of
-/// `src` (comments and string literals skipped), as its line and its pathspecs.
+/// `src` (comments and string literals skipped), as its line and its pathspecs. Whitespace and
+/// comments may stand between the callee and its `(`, as Rust allows.
 fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut scans = vec![];
     let mut i = 0;
     while i < src.len() {
@@ -853,25 +871,30 @@ fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
             i = end;
             continue;
         }
-        let ident_before = src[..i]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        let call = [("repo::grep(", 1), ("repo::ls_files(", 0)]
+        let ident_before = src[..i].chars().next_back().is_some_and(is_ident);
+        let call = [("repo::grep", 1), ("repo::ls_files", 0)]
             .into_iter()
-            .find(|(needle, _)| !ident_before && src[i..].starts_with(needle));
-        if let Some((needle, arg)) = call {
-            let line = src[..i].matches('\n').count() + 1;
-            let open = i + needle.len() - 1;
-            let args = call_args(src, open);
-            let specs = args
-                .get(arg)
-                .ok_or_else(|| format!("line {line}: `{needle}` without its pathspecs"))?;
-            scans.push((
-                line,
-                literals_of(specs, src).map_err(|e| format!("line {line}: {e}"))?,
-            ));
-            i = open;
+            .find(|(callee, _)| !ident_before && src[i..].starts_with(callee));
+        if let Some((callee, arg)) = call {
+            let mut open = i + callee.len();
+            while let Some(end) = comment_end(src, open).or_else(|| {
+                let c = src[open..].chars().next().filter(|c| c.is_whitespace())?;
+                Some(open + c.len_utf8())
+            }) {
+                open = end;
+            }
+            if src[open..].starts_with('(') {
+                let line = src[..i].matches('\n').count() + 1;
+                let args = call_args(src, open);
+                let specs = args
+                    .get(arg)
+                    .ok_or_else(|| format!("line {line}: `{callee}` without its pathspecs"))?;
+                scans.push((
+                    line,
+                    literals_of(specs, src).map_err(|e| format!("line {line}: {e}"))?,
+                ));
+                i = open;
+            }
         }
         i += src[i..].chars().next().map_or(1, char::len_utf8);
     }
@@ -883,7 +906,8 @@ fn repo_wide_scans_reads_literals_constants_and_skips_comments_and_strings() {
     // Arrange: a pattern holding a paren and a comma; a constant list with an exclusion, after a
     // constant whose name it prefixes and a doc comment that quotes it; char literals of a quote
     // and a paren; a scan named only in a comment, in a string and in a raw string holding an
-    // unpaired quote; a non-ASCII name in code; and a lookalike function.
+    // unpaired quote; a non-ASCII name in code; a lookalike function; a nested block comment whose
+    // inner `*/` does not end it; and a comment between a callee and its `(`.
     let src = r##"
 /// `const SPECS: [&str; 1] = ["decoy"];` in a doc comment is not the definition.
 const SPECS_2: [&str; 1] = ["wrong"];
@@ -897,6 +921,9 @@ fn f() {
     my_repo::grep("no", &["lookalike"]);
     repo::grep(r"a(b, c", &["platform", "agents"]);
     repo::ls_files(&SPECS);
+    /* outer /* inner */ repo::grep("no", &["nested"]); // */ repo::ls_files(&["after"]);
+    repo::ls_files /* files */ (&["spaced"]);
+    repo::grep_in(dir, "no", &["boundary"]);
 }
 "##;
 
@@ -915,6 +942,8 @@ fn f() {
                     ":!platform/x.yml".to_owned()
                 ]
             ),
+            (14, vec!["after".to_owned()]),
+            (15, vec!["spaced".to_owned()]),
         ]
     );
 }
