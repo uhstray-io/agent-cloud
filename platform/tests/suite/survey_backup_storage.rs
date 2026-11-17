@@ -333,6 +333,29 @@ fn an_unresolved_cephfs_storage_leaves_every_sharing_claim_on_this_cluster_unkno
 }
 
 #[test]
+fn unresolved_cephfs_storages_with_identical_bytes_are_not_paired_by_their_byte_counts() {
+    // Arrange: neither storage names a filesystem and the cluster has two, so both are unresolved,
+    // and their total and used bytes are identical.
+    let payload = cephfs_payload(
+        &[("cephA", 10_737_418_240), ("cephB", 10_737_418_240)],
+        json!([
+            {"storage": "cephA", "type": "cephfs", "content": "backup"},
+            {"storage": "cephB", "type": "cephfs", "content": "backup"}
+        ]),
+        json!([{"name": "fsA", "data_pools": ["a_data"]}, {"name": "fsB", "data_pools": ["b_data"]}]),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: the cephfs section says sharing is unknown, and shared_backends does not contradict it.
+    assert_eq!(out["shared_backends"], json!([]), "{out}");
+    for row in cephfs_rows(&out) {
+        assert_eq!(row["shares_filesystem_with"], json!(null), "{out}");
+    }
+}
+
+#[test]
 fn a_disabled_cephfs_storage_is_left_out_of_every_cephfs_figure() {
     // Arrange: cephOff is disabled (`disable` set), so it is listed nowhere, not even as unavailable.
     let payload = cephfs_payload(

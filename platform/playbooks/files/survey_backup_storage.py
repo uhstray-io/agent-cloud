@@ -488,10 +488,11 @@ def summarize(data):
         if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
             continue
         row_a, row_b = cephfs_rows.get(a["storage"]), cephfs_rows.get(b["storage"])
-        if row_a and row_b and row_a["filesystem"] is not None and row_b["filesystem"] is not None:
-            # Two CephFS storages with a known filesystem: the name decides. The byte counts are not compared,
-            # since whether two subdirectories of one filesystem overlap is unknown, so no byte inference either.
-            if row_a["filesystem"] == row_b["filesystem"]:
+        if row_a and row_b:
+            # Two CephFS storages: the cephfs section decides, never the byte counts. A known filesystem name
+            # on both says same or different; with either unresolved, sharing is unknown there, so no pair here.
+            # Whether two subdirectories of one filesystem overlap is unknown, so the combined figure is null.
+            if row_a["filesystem"] is not None and row_a["filesystem"] == row_b["filesystem"]:
                 shared_backends.append({"storages": [a["storage"], b["storage"]],
                                         "reason": "same CephFS filesystem", "combined_unaccounted_gib": None})
             continue
