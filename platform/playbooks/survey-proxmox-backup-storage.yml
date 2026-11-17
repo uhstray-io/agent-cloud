@@ -23,6 +23,16 @@
 - name: "Refuse extra vars that set internal names"
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
+# The run reads the Proxmox token and executes the helper from the Dev checkout, so it runs only
+# at the exact commit a review approved (expected_repository_sha), as every other survey does.
+- name: Require the exact reviewed checkout
+  ansible.builtin.import_playbook: require-reviewed-checkout.yml
+  vars:
+    _reviewed_checkout_payload_paths:
+      - platform/playbooks/survey-proxmox-backup-storage.yml
+      - platform/playbooks/files/survey_backup_storage.py
+      - platform/semaphore/templates.yml
+
 - name: Survey Proxmox backup storage
   hosts: localhost
   connection: local

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "platform/playbooks/files"))
@@ -284,3 +285,13 @@ def test_a_node_local_storage_on_two_nodes_is_not_reported_as_one_filesystem():
                "content_reads": [{"item": r, "status": 200, "json": {"data": []}} for r in plan["reads"]],
                "prune_reads": []}
     assert [b["storages"] for b in survey.summarize(summary)["shared_backends"]] == [["local", "scratch"]]
+
+
+def test_the_survey_runs_only_at_the_reviewed_commit():
+    plays = yaml.safe_load((ROOT / "platform/playbooks/survey-proxmox-backup-storage.yml").read_text())
+    gate = plays[1]
+    assert gate["ansible.builtin.import_playbook"] == "require-reviewed-checkout.yml"
+    assert "platform/playbooks/files/survey_backup_storage.py" in gate["vars"]["_reviewed_checkout_payload_paths"]
+    templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
+    template = next(t for t in templates if t["name"] == "Survey Proxmox Backup Storage (Dev)")
+    assert [(v["name"], v["required"]) for v in template["survey_vars"]] == [("expected_repository_sha", True)]

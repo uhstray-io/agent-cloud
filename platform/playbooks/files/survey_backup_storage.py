@@ -168,14 +168,10 @@ def _day(ts):
     return datetime.fromtimestamp(int(ts), UTC).strftime("%Y-%m-%d") if ts else None
 
 
-# The privilege Proxmox checks for each read (pve-storage: content listing, PruneBackups.pm dryrun).
-PRIVILEGE = {"content": "Datastore.Audit", "prune preview": "Datastore.Allocate"}
-
-
-def _ok(read, what, storage):
+def _ok(read, what, storage, privilege):
     if read.get("status") == 403:
         raise Refusal(f"The Proxmox token may not read {what} on storage {storage} "
-                      f"(needs {PRIVILEGE[what]} there). Nothing was summarized.")
+                      f"(needs {privilege} there). Nothing was summarized.")
     if read.get("status") != 200:
         raise Refusal(f"Proxmox answered {read.get('status')} reading {what} on storage {storage}.")
     return (read.get("json") or {}).get("data") or []
@@ -223,14 +219,14 @@ def summarize(data):
     for r in data["prune_reads"]:
         read, retention = r["item"]
         reads[(read["node"], read["storage"])]["prunes"].append({**r, "retention": retention})
-    storages, sizes = [], {}  # sizes: raw bytes per storage row, for the backend comparison only
+    storages, sizes = [], []  # sizes[i]: storages[i]'s raw bytes, for the backend comparison only
     for item in data["plan"]["reads"]:
         node, storage = item["node"], item["storage"]
         r = reads.get((node, storage))
         if r is None:
             raise Refusal(f"The survey has no reads for storage {storage}.")
         status = item["status"]
-        volumes = _ok(r["content"], "content", storage)
+        volumes = _ok(r["content"], "content", storage, "Datastore.Audit")
         backups = [v for v in volumes if ":backup/" in str(v.get("volid"))]
         all_bytes = sum(int(v.get("size") or 0) for v in volumes)
         backup_bytes = sum(int(v.get("size") or 0) for v in backups)
@@ -238,8 +234,9 @@ def summarize(data):
         # Each previewed retention maps to the volumes its prune would remove on this storage.
         previewed = {}
         for prune in r["prunes"]:
-            previewed[prune["retention"]] = {row["volid"] for row in _ok(prune, "prune preview", storage)
-                                             if row.get("mark") == "remove"}
+            # Proxmox checks Datastore.Allocate for the preview (pve-storage PruneBackups.pm, dryrun).
+            marks = _ok(prune, "prune preview", storage, "Datastore.Allocate")
+            previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
         # A guest's retentions are those of the vzdump jobs on this storage that back it up.
         retention_of = {}
         for job, _, guests in job_guests:
@@ -296,16 +293,16 @@ def summarize(data):
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
         })
-        sizes[(node, storage)] = (total, used, all_bytes)
+        sizes.append((total, used, all_bytes))
 
     shared_backends = []
     for i, a in enumerate(storages):
-        for b in storages[i + 1:]:
+        for j in range(i + 1, len(storages)):
+            b = storages[j]
             # Node-local storages on different nodes are separate disks, whatever their paths say.
             if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
                 continue
-            a_total, a_used, a_all = sizes[(a["read_on_node"], a["storage"])]
-            b_total, b_used, b_all = sizes[(b["read_on_node"], b["storage"])]
+            (a_total, a_used, a_all), (b_total, b_used, b_all) = sizes[i], sizes[j]
             reason = _same_backend(config.get(a["storage"], {}), config.get(b["storage"], {}))
             if not reason and a_total and a_total == b_total and a_used == b_used:
                 reason = "identical total and used bytes (inferred, not proven)"
@@ -321,6 +318,7 @@ def summarize(data):
                          "node": job.get("node") or "all", "storage": job.get("storage"),
                          "retention": _retention(job), "mode": job.get("mode"),
                          "selects": selects, "guests": len(guests),
+                         # only a vmid list can name a guest that is gone
                          "missing_guests": sorted(v for v in guests if v not in names)})
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows}
 
