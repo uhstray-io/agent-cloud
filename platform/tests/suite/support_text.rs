@@ -228,6 +228,17 @@ fn task_block_matches_a_name_with_regex_characters_as_a_literal() {
 }
 
 #[test]
+fn task_block_ends_at_a_header_indented_with_any_posix_blank() {
+    // The BATS `^[[:space:]]*- name:` takes tab, vertical tab, form feed and carriage return as
+    // indent too. `Y`'s dash is in X's dash column (3), behind the blank and a space, so it ends
+    // the block only when the blank counts as indent.
+    for blank in ["\t", "\u{b}", "\u{c}", "\r"] {
+        let text = format!("  - name: \"X\"\n    body: 1\n{blank} - name: \"Y\"\n    other: 2\n");
+        assert_eq!(task_block(&text, "X"), "    body: 1", "blank {blank:?}");
+    }
+}
+
+#[test]
 fn task_block_keeps_a_carriage_return_on_its_body_line() {
     let text = "- name: \"X\"\r\n  body: 1\r\n- name: \"Y\"\r\n";
     assert_eq!(task_block(text, "X"), "  body: 1\r");
