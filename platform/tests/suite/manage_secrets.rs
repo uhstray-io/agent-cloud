@@ -14,10 +14,13 @@
 //!
 //! | BATS @test | Rust fn |
 //! |---|---|
-//! | manage-secrets: the store-back is a sibling-preserving merge, never a whole-document write | `the_store_back_goes_through_the_shared_merge_task`, with `no_task_writes_to_the_service_secret_path_directly` |
+//! | manage-secrets: the store-back is a sibling-preserving merge, never a whole-document write | `the_store_back_goes_through_the_shared_merge_task`, with `no_task_writes_to_the_service_secret_path_directly`, with `no_task_runs_the_bao_or_vault_cli` and its self-check `a_store_cli_call_is_detected` |
+
+use std::sync::LazyLock;
 
 use agent_cloud_tests::repo;
-use agent_cloud_tests::yaml::Node;
+use agent_cloud_tests::yaml::{self, Node};
+use regex::Regex;
 
 const MANAGE: &str = "platform/playbooks/tasks/manage-secrets.yml";
 const MERGE_TASK: &str = "bao-merge-keys.yml";
@@ -153,4 +156,182 @@ fn no_task_writes_to_the_service_secret_path_directly() {
         logins, 1,
         "{MANAGE} must log in to OpenBao exactly once, at {LOGIN_URL}"
     );
+}
+
+/// Task-level `args` keys that name a path or a flag, never a command line to run.
+const PATH_OR_FLAG_ARGS: &[&str] = &[
+    "chdir",
+    "creates",
+    "removes",
+    "warn",
+    "stdin_add_newline",
+    "strip_empty_ends",
+];
+
+/// The modules that run a program, under which a `bao` or `vault` CLI call could write the store.
+const COMMAND_MODULES: &[&str] = &["command", "shell", "raw", "script", "expect"];
+
+/// A `bao` or `vault` CLI call: the program name followed by an argument (at the start, or after
+/// whitespace, a path separator, a quote, `=`, or a shell separator `; & | ( `` ` ``), so options
+/// before the subcommand (`bao -address=x kv put`) and `x;bao kv put` do not hide it, while a path
+/// that only ends in `vault` is not a call.
+static STORE_CLI: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:^|[\s/"'=;&|(`\\])(?:bao|vault)["']?\s+\S"#).expect("a valid regex")
+});
+
+/// Every string under a node; a list of strings (an argv) also yields its items joined by spaces,
+/// so `[bao, kv, put]` reads as the command line it runs.
+fn command_lines(node: &Node, out: &mut Vec<String>) {
+    match node {
+        Node::Str(s) => out.push(s.clone()),
+        Node::Seq(items) => {
+            let words: Vec<&str> = items.iter().filter_map(Node::as_str).collect();
+            if !words.is_empty() {
+                out.push(words.join(" "));
+            }
+            for item in items {
+                command_lines(item, out);
+            }
+        }
+        Node::Map(entries) => {
+            for (k, v) in entries {
+                command_lines(k, out);
+                command_lines(v, out);
+            }
+        }
+        Node::Null | Node::Bool(_) => {}
+    }
+}
+
+/// Whether a task runs the OpenBao (`bao`) or Vault (`vault`) CLI through a command-family module,
+/// which the uri and hashi_vault checks above cannot see.
+///
+/// The module is read under its key (any spelling) and from `action:` / `local_action:` (a string's
+/// first word, or a mapping's `module`); for a command-family call, that value and the task-level
+/// `args` (all of it, except the [`PATH_OR_FLAG_ARGS`] keys of a mapping) are scanned.
+fn runs_store_cli(task: &Node) -> bool {
+    let is_command = |name: &str| {
+        let short = name
+            .strip_prefix("ansible.builtin.")
+            .or_else(|| name.strip_prefix("ansible.legacy."))
+            .unwrap_or(name);
+        COMMAND_MODULES.contains(&short)
+    };
+    let mut scanned: Vec<&Node> = COMMAND_MODULES
+        .iter()
+        .filter_map(|m| module(task, m))
+        .collect();
+    for key in ["action", "local_action"] {
+        let Some(action) = task.get(key) else {
+            continue;
+        };
+        let name = match action {
+            Node::Str(s) => s.split_whitespace().next(),
+            Node::Map(_) => action.get("module").and_then(Node::as_str),
+            _ => None,
+        };
+        if name.is_some_and(is_command) {
+            scanned.push(action);
+        }
+    }
+    if scanned.is_empty() {
+        return false;
+    }
+    // The task-level args, closed: every key but the known path and flag options, since a command
+    // line can arrive under `cmd`, `argv`, `stdin` (the program for `bash -s`), or `expect`'s
+    // `responses` (lines typed into the spawned shell). A templated string `args:` is read whole.
+    match task.get("args") {
+        Some(Node::Map(entries)) => scanned.extend(
+            entries
+                .iter()
+                .filter(|(key, _)| !key.as_str().is_some_and(|k| PATH_OR_FLAG_ARGS.contains(&k)))
+                .map(|(_, value)| value),
+        ),
+        Some(other) => scanned.push(other),
+        None => {}
+    }
+    scanned.into_iter().any(|node| {
+        let mut lines = Vec::new();
+        command_lines(node, &mut lines);
+        lines.iter().any(|l| STORE_CLI.is_match(l))
+    })
+}
+
+#[test]
+fn no_task_runs_the_bao_or_vault_cli() {
+    // Part 3: a `command: podman exec openbao bao kv put ...` writes the whole document exactly as
+    // a KV-v2 POST does, and neither check above reads a command line.
+    let tasks = repo::tasks(MANAGE);
+    let offenders: Vec<&str> = tasks
+        .iter()
+        .filter(|t| runs_store_cli(t))
+        .map(|t| t.get("name").and_then(Node::as_str).unwrap_or("(unnamed)"))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{MANAGE} runs the bao or vault CLI; a store-back goes through {MERGE_TASK}: {offenders:?}"
+    );
+}
+
+#[test]
+fn a_store_cli_call_is_detected() {
+    let task = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    for flagged in [
+        "action: command bao kv put x\n",
+        "local_action: {module: ansible.builtin.command, cmd: bao kv put x}\n",
+        "ansible.builtin.command: {}\nargs: {cmd: bao kv put x}\n",
+        "ansible.builtin.command: bash -s\nargs: {stdin: \"bao kv put x\"}\n",
+        "action: command\nargs: \"{{ {'cmd': 'bao kv put secret/x a=b'} }}\"\n",
+        "ansible.builtin.expect:\n  command: bash\nargs:\n  responses: {'\\$ ': 'bao kv put secret/x a=b'}\n",
+    ] {
+        assert!(runs_store_cli(&task(flagged)), "{flagged}");
+    }
+    for clean in [
+        "action: debug msg=\"bao kv put\"\n",
+        "ansible.builtin.command: echo hi\nargs: {chdir: /tmp}\n",
+    ] {
+        assert!(!runs_store_cli(&task(clean)), "{clean}");
+    }
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.command: podman exec openbao bao kv put secret/x a=b\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "command:\n  argv: [podman, exec, openbao, bao, kv, put, secret/x, a=b]\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.legacy.shell: vault kv put secret/x a=b\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.command: podman ps\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: \\bao kv put secret/x a=b\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: '\"bao\" kv put secret/x a=b'\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.command: ansible-vault encrypt x\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.command: ls /opt/vault\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.command: bao -address=http://x kv put secret/x a=b\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: vault -format=json kv put secret/x a=b\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.debug:\n  msg: bao kv put\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: set -e;bao kv put secret/x a=b\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: echo $(vault kv put secret/x a=b)\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.command: ls /opt/vault\n"
+    )));
 }
