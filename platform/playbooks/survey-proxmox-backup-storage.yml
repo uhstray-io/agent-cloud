@@ -23,12 +23,12 @@
 #     one shares none here), decided by filesystem name (its
 #     fs-name, or the cluster's only filesystem; unknown, and listed as no one's sharer, when neither
 #     resolves), and that filesystem's data pools: Ceph's used bytes and percent used, under Ceph's
-#     names (all copies on disk when every OSD reports per-pool stats, logical bytes otherwise;
-#     Proxmox does not say which, so neither compares with a storage's used bytes), type and size
+#     names (what they count depends on the Ceph release and on whether every OSD reports per-pool
+#     stats, which Proxmox does not say, so neither compares with a storage's used bytes), type and size
 #     (replicas, or data plus coding chunks when erasure-coded) (a CephFS with a monitor list names an
 #     external cluster and is not read);
-#   - the pool percent is right from Ceph 13 on; Ceph 12 sent it already multiplied by 100, which the
-#     value cannot show, so on a Ceph 12 cluster it reads 100 times too high;
+#   - the pool percent is right from Ceph 13 on; Ceph 12 sent it already multiplied by 100, so on a
+#     Ceph 12 cluster it reads 100 times too high (a value over 100 shows it; 100 or less cannot);
 #   - a Proxmox release from before pve-manager's 2026-05 change lists only a filesystem's first data
 #     pool; its rows then say data_pools_complete false, since more pools may exist than are named;
 #   - a disabled storage of any type is left out of every storage and CephFS figure, whatever its
