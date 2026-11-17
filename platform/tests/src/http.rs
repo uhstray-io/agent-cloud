@@ -50,8 +50,8 @@ impl Server {
             .enable_time()
             .build()
             .expect("a tokio runtime for the fake HTTP server");
-        // The builder, not MockServer::start(): start() hands out a pooled server that
-        // outlives this one and may carry another test's mocks.
+        // The builder, not MockServer::start(): start() hands out a pooled server that is
+        // reused, never stopped, so its port would stay open after this Server is dropped.
         let server = runtime.block_on(wiremock::MockServer::builder().listener(listener).start());
         Server {
             runtime,
@@ -95,8 +95,9 @@ impl Drop for Server {
     /// not an error: a parallel test can be handed the freed port and keep it open.
     ///
     /// wiremock's own drop panics when a `Mock::expect` is unmet, and that panic prints every
-    /// recorded request with its headers, unredacted (wiremock `exposed_server.rs`, `request.rs`).
-    /// A fixture must therefore never send a real credential to this server.
+    /// recorded request: method, full URL, every header unredacted, and the body up to a print
+    /// limit (wiremock `exposed_server.rs`, `request.rs`). A fixture must therefore never send a
+    /// real credential to this server.
     fn drop(&mut self) {
         let Some(server) = self.server.take() else {
             return;

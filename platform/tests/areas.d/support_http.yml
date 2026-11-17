@@ -1,5 +1,6 @@
-# Support library: the fake HTTP server (src/http.rs), the port of fake_http.py (AC-952).
-paths:
-  - "platform/tests/src/http.rs"
+# The fake HTTP server's own tests (src/http.rs, suite/support_http.rs), the port of fake_http.py
+# (AC-952). A change under platform/tests/ hits `full`, which is checked before any area, so this
+# area names no paths: it only gives the module its one listing (areas.yml, test_platform).
+paths: []
 tiers:
   http: [support_http]
