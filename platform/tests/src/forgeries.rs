@@ -19,8 +19,10 @@
 //!
 //! Each `-e` string is byte for byte the text the Python produces for the same inputs: JSON as
 //! `json.dumps` writes it (`", "` and `": "`, non-ASCII escaped), which serde_json's compact
-//! writer is not, so [`dumps`] writes it here. A float is written by serde_json (shortest
-//! round-trip), which agrees with Python's `repr` for ordinary values such as `1.5`.
+//! writer is not, so [`dumps`] writes it here. One exception: a float is written by serde_json
+//! (shortest round-trip), which matches Python's `repr` for ordinary values such as `1.5` but
+//! spells a magnitude below 1e-4 differently (`0.00001` for Python's `1e-05`). Ansible and Jinja's
+//! `from_json` read both spellings as the same float, so a forgery's value is unchanged.
 //!
 //! | `forgeries.py` | Rust |
 //! |---|---|
@@ -38,7 +40,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::Value;
 
-use crate::{playbook, repo};
+use crate::{playbook, text};
 
 /// Every underscore name the run-start guard itself references, read from the guard file (strings
 /// and mapping keys, comments excluded by parsing). The guard reads the forged value of these names
@@ -47,40 +49,25 @@ use crate::{playbook, repo};
 /// land here too.
 pub static GUARD_REFERENCED: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
     let rel = format!("platform/playbooks/{}", playbook::OVERRIDE_GUARD);
-    let path = repo::path(&rel);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
-    // The regex crate has no lookbehind; the Python pattern is
-    // `(?<![A-Za-z0-9])_[A-Za-z][A-Za-z0-9_]*`, so a candidate preceded by an ASCII letter or
-    // digit is dropped by hand. A preceding `_` does not block: `__x` yields `_x` in Python,
-    // because its scan retries at the second underscore. Matching every `_` start below does the
-    // same.
+    let text = text::read(&rel);
+    // Python's `(?<![A-Za-z0-9])_[A-Za-z][A-Za-z0-9_]*` as a consumed prefix: the regex crate has no
+    // lookbehind. A match ends before a character outside `[A-Za-z0-9_]`, and the next name's `_`
+    // cannot sit there (the greedy class would have taken it), so the consumed prefix never overlaps
+    // the previous match. A `_` start preceded by a `_` still matches, as in Python (`__x` yields `_x`).
     static NAME: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^_[A-Za-z][A-Za-z0-9_]*").expect("the name pattern compiles")
+        Regex::new(r"(?:^|[^A-Za-z0-9])(_[A-Za-z][A-Za-z0-9_]*)")
+            .expect("the name pattern compiles")
     });
     let docs = playbook::parse(&text, &rel);
     let mut strings = Vec::new();
     for doc in &docs {
         walk_strings(doc, &mut strings);
     }
-    let mut found = BTreeSet::new();
-    for s in strings {
-        let mut i = 0;
-        while let Some(off) = s[i..].find('_') {
-            let at = i + off;
-            let blocked = s[..at]
-                .chars()
-                .next_back()
-                .is_some_and(|c| c.is_ascii_alphanumeric());
-            match NAME.find(&s[at..]) {
-                Some(m) if !blocked => {
-                    found.insert(m.as_str().to_string());
-                    i = at + m.end();
-                }
-                _ => i = at + 1,
-            }
-        }
-    }
-    found
+    strings
+        .iter()
+        .flat_map(|s| NAME.captures_iter(s))
+        .map(|c| c[1].to_string())
+        .collect()
 });
 
 /// Every string inside a value, and every mapping key (`playbook_yaml.strings(..., keys=True)`).
@@ -271,70 +258,47 @@ fn literal(value: &Value) -> String {
 
 /// `json.dumps({name: value})`.
 fn dumps_one(name: &str, value: &Value) -> String {
-    let mut map = serde_json::Map::new();
-    map.insert(name.to_string(), value.clone());
-    dumps(&Value::Object(map))
+    format!("{{{}: {}}}", ascii_str(name), dumps(value))
 }
 
 /// JSON as Python's `json.dumps` writes it by default: `", "` and `": "` separators, insertion
-/// order, and every non-ASCII character escaped as `\uXXXX` (surrogate pairs above U+FFFF).
-pub(crate) fn dumps(value: &Value) -> String {
-    let mut out = String::new();
-    write_value(value, &mut out);
-    out
-}
-
-fn write_value(value: &Value, out: &mut String) {
+/// order, and every non-ASCII character (and DEL) escaped as `\uXXXX`, surrogate pairs above U+FFFF.
+/// serde_json's compact writer has the separators wrong and passes non-ASCII through, so this
+/// builds each container itself and takes each string from serde_json, then escapes what remains.
+fn dumps(value: &Value) -> String {
     match value {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) => out.push_str(&n.to_string()),
-        Value::String(s) => write_str(s, out),
         Value::Array(items) => {
-            out.push('[');
-            for (i, v) in items.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_value(v, out);
-            }
-            out.push(']');
+            let parts: Vec<String> = items.iter().map(dumps).collect();
+            format!("[{}]", parts.join(", "))
         }
         Value::Object(map) => {
-            out.push('{');
-            for (i, (k, v)) in map.iter().enumerate() {
-                if i > 0 {
-                    out.push_str(", ");
-                }
-                write_str(k, out);
-                out.push_str(": ");
-                write_value(v, out);
-            }
-            out.push('}');
+            let parts: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", ascii_str(k), dumps(v)))
+                .collect();
+            format!("{{{}}}", parts.join(", "))
         }
+        Value::String(s) => ascii_str(s),
+        // null, true, false and a number: serde_json's compact text, which matches Python's for
+        // ordinary values (the module doc says where it does not).
+        scalar => scalar.to_string(),
     }
 }
 
-fn write_str(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{8}' => out.push_str("\\b"),
-            '\u{c}' => out.push_str("\\f"),
-            // Python escapes everything outside space..tilde (`[^\ -~]`), DEL included.
-            ' '..='~' => out.push(c),
-            c => {
-                let mut buf = [0u16; 2];
-                for unit in c.encode_utf16(&mut buf) {
-                    let _ = write!(out, "\\u{unit:04x}");
-                }
+fn ascii_str(s: &str) -> String {
+    let quoted = serde_json::to_string(s).expect("a string serializes");
+    let mut out = String::with_capacity(quoted.len());
+    for c in quoted.chars() {
+        // Python escapes everything outside space..tilde (`[^\ -~]`), DEL included. serde_json has
+        // already escaped the quote, the backslash and the control characters the way Python does.
+        if (' '..='~').contains(&c) {
+            out.push(c);
+        } else {
+            let mut buf = [0u16; 2];
+            for unit in c.encode_utf16(&mut buf) {
+                let _ = write!(out, "\\u{unit:04x}");
             }
         }
     }
-    out.push('"');
+    out
 }

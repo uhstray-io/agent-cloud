@@ -21,7 +21,7 @@ fn values(dir: &Path, extra: &str) -> Vec<String> {
     let mut cmd = process::ansible_playbook(dir, "localhost,", &path.display().to_string());
     cmd.arg("-e").arg(extra);
     let out = process::run(&mut cmd);
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         out.status.success(),
         "{stdout}{}",
