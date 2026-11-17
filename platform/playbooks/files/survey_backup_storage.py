@@ -3,7 +3,7 @@
 
 Two modes, JSON on stdin, JSON on stdout:
 
-  plan       {storage_listings, jobs, storage_config} -> which (node, storage) pairs to
+  plan       {nodes, storage_listings, jobs, storage_config} -> which (node, storage) pairs to
              read and which prune retentions to dry-run on each. A shared storage is read once.
   summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads} -> the receipt the playbook prints.
 
@@ -140,7 +140,9 @@ def _job_guests(job, existing):
 
 
 def plan(data):
-    # The playbook has already refused an empty or malformed set of online nodes.
+    # The playbook refuses these first; the planner checks again so its own tests hold the rule.
+    if not [_name(n.get("node"), "node name") for n in data["nodes"] if n.get("status") == "online"]:
+        raise Refusal("No Proxmox node is online.")
     configs = {c.get("storage"): c for c in data.get("storage_config") or []}
     retentions = {}
     for job in data["jobs"]:

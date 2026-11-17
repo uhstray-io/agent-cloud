@@ -32,6 +32,8 @@ def _listing(node):
     ]}}
 
 
+NODES = [{"node": "n1", "status": "online"}, {"node": "n2", "status": "online"},
+         {"node": "n3", "status": "offline"}]
 JOBS = [
     {"id": "main", "type": "vzdump", "storage": "backups", "prune-backups": "keep-last=8",
      "vmid": "200,201,205", "schedule": "03:00", "enabled": 1},
@@ -56,7 +58,7 @@ def _mark(archive):
 
 
 def _payload():
-    plan = survey.plan({"jobs": JOBS, "storage_listings": [_listing("n1"), _listing("n2")],
+    plan = survey.plan({"nodes": NODES, "jobs": JOBS, "storage_listings": [_listing("n1"), _listing("n2")],
                         "storage_config": STORAGE_CONFIG})
     backups = [_archive("backups", 200, d, 10 * GIB) for d in range(3)]
     backups += [_archive("backups", 205, d, 20 * GIB) for d in range(2)]  # guest 205 was destroyed
@@ -87,7 +89,7 @@ def _one_store(jobs, vms, archives, storage_config=(), previews=None):
     """Plan and summarize one shared backup storage, `backups`, read through node n1."""
     listing = {"item": "n1", "status": 200, "json": {"data": [
         {"storage": "backups", "content": "backup", "active": 1, **_status(100 * GIB, 10 * GIB)}]}}
-    plan = survey.plan({"jobs": jobs, "storage_listings": [listing],
+    plan = survey.plan({"nodes": NODES, "jobs": jobs, "storage_listings": [listing],
                         "storage_config": list(storage_config)})
     read = plan["reads"][0]
     summary = {"plan": plan, "vms": vms, "storage_config": list(storage_config), "jobs": jobs,
@@ -98,7 +100,7 @@ def _one_store(jobs, vms, archives, storage_config=(), previews=None):
 
 
 def test_plan_reads_each_shared_backup_storage_once_with_each_job_retention():
-    plan = survey.plan({"jobs": JOBS, "storage_listings": [_listing("n1"), _listing("n2")],
+    plan = survey.plan({"nodes": NODES, "jobs": JOBS, "storage_listings": [_listing("n1"), _listing("n2")],
                         "storage_config": STORAGE_CONFIG})
     assert [(r["node"], r["storage"], r["retentions"]) for r in plan["reads"]] == [
         ("n1", "backups", ["keep-last=10", "keep-last=8"]),
@@ -153,10 +155,21 @@ def test_a_prune_preview_the_token_may_not_read_names_the_privilege_proxmox_chec
     assert "Datastore.Allocate" in json.loads(out.getvalue())["refusal"]
 
 
+@pytest.mark.parametrize("nodes", [
+    [{"node": "n3", "status": "offline"}],
+    [{"node": "n1/../x", "status": "online"}],
+])
+def test_the_planner_refuses_no_online_node_or_a_malformed_online_node_name(nodes):
+    out = io.StringIO()
+    data = {"nodes": nodes, "jobs": JOBS, "storage_listings": [_listing("n1")]}
+    assert survey.main(["plan"], stdin=io.StringIO(json.dumps(data)), stdout=out) == 1
+    assert "node" in json.loads(out.getvalue())["refusal"]
+
+
 def test_a_malformed_node_name_is_refused_before_any_url_is_built():
     listing = _listing("n1/../x")
     out = io.StringIO()
-    data = {"jobs": JOBS, "storage_listings": [listing]}
+    data = {"nodes": NODES, "jobs": JOBS, "storage_listings": [listing]}
     assert survey.main(["plan"], stdin=io.StringIO(json.dumps(data)), stdout=out) == 1
     assert "node name" in json.loads(out.getvalue())["refusal"]
 
@@ -317,7 +330,7 @@ def test_a_node_local_storage_on_two_nodes_is_not_reported_as_one_filesystem():
     config = [{"storage": "local", "type": "dir", "path": "/var/lib/vz"},
               {"storage": "scratch", "type": "dir", "path": "/var/lib/vz"}]
     listings = [_dir_listing("n1", ["local"]), _dir_listing("n2", ["local"])]
-    plan = survey.plan({"jobs": [], "storage_listings": listings, "storage_config": config})
+    plan = survey.plan({"nodes": NODES, "jobs": [], "storage_listings": listings, "storage_config": config})
     assert [(r["node"], r["storage"]) for r in plan["reads"]] == [("n1", "local"), ("n2", "local")]
     summary = {"plan": plan, "vms": [], "storage_config": config, "jobs": [],
                "content_reads": [{"item": r, "status": 200, "json": {"data": []}} for r in plan["reads"]],
@@ -326,7 +339,7 @@ def test_a_node_local_storage_on_two_nodes_is_not_reported_as_one_filesystem():
 
     # The same path on one node is one filesystem, whatever the storage IDs say.
     same_node = [_dir_listing("n1", ["local", "scratch"])]
-    plan = survey.plan({"jobs": [], "storage_listings": same_node, "storage_config": config})
+    plan = survey.plan({"nodes": NODES, "jobs": [], "storage_listings": same_node, "storage_config": config})
     summary = {"plan": plan, "vms": [], "storage_config": config, "jobs": [],
                "content_reads": [{"item": r, "status": 200, "json": {"data": []}} for r in plan["reads"]],
                "prune_reads": []}
@@ -341,17 +354,3 @@ def test_the_survey_runs_only_at_the_reviewed_commit():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(t for t in templates if t["name"] == "Survey Proxmox Backup Storage (Dev)")
     assert [(v["name"], v["required"]) for v in template["survey_vars"]] == [("expected_repository_sha", True)]
-
-
-def test_the_playbook_selects_online_nodes_and_checks_their_names_with_the_helpers_rule():
-    # The playbook builds storage URLs from these nodes before the planner runs, so the online
-    # filter and the name check live in the playbook; this holds the parsed tasks to them.
-    plays = yaml.safe_load((ROOT / "platform/playbooks/survey-proxmox-backup-storage.yml").read_text())
-    tasks = {t.get("name"): t for t in plays[2]["tasks"]}
-    select = tasks["Select the online nodes"]["ansible.builtin.set_fact"]["_online_nodes"]
-    assert "selectattr('status', 'equalto', 'online')" in select
-    guard_task = tasks["Require well-formed node names before building storage URLs"]
-    guard = guard_task["ansible.builtin.assert"]
-    assert "_online_nodes | length > 0" in guard["that"]
-    assert f"_online_nodes | reject('match', '{survey.NAME.pattern}') | list | length == 0" in guard["that"]
-    assert not {"ignore_errors", "failed_when"} & set(guard_task)
