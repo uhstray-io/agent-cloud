@@ -156,7 +156,7 @@ it reports the overrun in the job summary, as the shards do today.
 
 ## Implementation Phases
 
-One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (see "Release fit" below the phase table). A
+One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` for the foundation (Phases 0 to 3) and wave 1, `v0.17.0` for the rest (see "Release fit" below the phase table). A
 port phase is split into one sub-item per area when it starts.
 
 | Phase | Work | Blocked by | Done when |
@@ -176,7 +176,10 @@ port phase is split into one sub-item per area when it starts.
 The workflow changes in Phases 1, 2, 4 and 10 touch `.github/workflows/`, so they are operator merges
 (plan 23, Part A). The main-to-dev sync cannot carry them.
 
-**Release fit.** The whole module ships from v0.16.0. Phases 0 to 3 were built during the v0.15.0
+**Release fit.** Goal: wave 1 in v0.16.0, the full suite by v0.17.0 (operator decision, 2026-11-14).
+Wave 1 (AC-872 to AC-879, AC-881) shipped in v0.16.0; wave 2, the remaining phases (AC-735 to AC-737,
+AC-739 to AC-741), is planned for v0.17.0, which goes over policy 10's file limit by operator decision
+(2026-11-16). Phases 0 to 3 were built during the v0.15.0
 carry-over promotion and are held until v0.15.0 is released, since nothing merges into `dev` before then
 (operator decision, 2026-11-12). Phases 4 to 10 port about 140,000 lines of tests and 42,000 lines of
 product code. The release limits apply from v0.16.0, so each port phase is cut into area pull requests that
@@ -231,6 +234,7 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 
 | Date | Change |
 |---|---|
+| 2026-11-16 | Goal set by the operator (2026-11-14): wave 1 in v0.16.0, the full suite by v0.17.0. Wave 2, the remaining phases, is in milestone v0.17.0, over policy 10's file limit by operator decision (2026-11-16). |
 | 2026-11-12 | D6 decided by the operator: pinned release binaries, recorded in 05. |
 | 2026-11-12 | Review: the security set includes the ledger-enforced tests (03 item 2), as the original principles had it; modules are per area and tier, not one per area; an unclassified path runs everything in `push` and `ci` but adds nothing in `commit`, to keep the commit lane inside its 10 s budget. |
 | 2026-11-12 | Phases 0 to 3 also move to v0.16.0: no merges into `dev` until v0.15.0 is released (operator decision). |
