@@ -1,5 +1,5 @@
 # The static-scan helpers (repo::playbook_files, yaml::strings and yaml::tasks in src/lib.rs,
-# AC-958): suite/support_scan.rs pins them on fixtures and on the repository,
+# AC-958): suite/support_scan.rs pins them on fixtures, and playbook_files on the repository;
 # suite/support_scan_fixture.rs runs playbook_files over a temporary tree (its order and refusals),
 # and suite/support_scan_python.rs holds all three to playbook_yaml.py on every scanned repository
 # file.
