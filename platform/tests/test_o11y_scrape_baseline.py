@@ -1390,6 +1390,16 @@ def test_native_promql_runner_fails_closed_on_nonsemantic_mutant_errors():
     assert not any(argument in forbidden_args for argument in command)
 
 
+# The runner keeps a quarter of the time left (up to PROCESS_CLEANUP_RESERVE_SECONDS) for cleanup
+# and PROCESS_REAP_FRACTION of that for reaping a killed child. A 0.2 s deadline left 30 ms, which
+# a loaded scheduler overran on pre-push (AC-968); 2 s leaves 0.3 s. A real run has TOTAL_SECONDS
+# 300, so its reserve is the full 5 s. The refusal itself is proven without timing, below.
+DEADLINE_TEST_SECONDS = 2.0
+# Past the deadline the runner only closes a pipe and returns. A loaded scheduler can still delay
+# that; the bound stays under the child's 5 s sleep, so a runner that waited for the child fails.
+DEADLINE_TEST_RETURN_MARGIN = 1.0
+
+
 def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monkeypatch):
     real_popen = NATIVE_PROMQL.subprocess.Popen
     processes = []
@@ -1423,18 +1433,57 @@ def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monk
         started = NATIVE_PROMQL.time.monotonic()
         result = NATIVE_PROMQL._bounded_process(
             [NATIVE_PROMQL.sys.executable, "-c", program],
-            deadline=started + 0.2,
+            deadline=started + DEADLINE_TEST_SECONDS,
             input_bytes=input_bytes,
         )
         elapsed = NATIVE_PROMQL.time.monotonic() - started
         assert result[2] is True
-        assert elapsed < 1.0
+        assert elapsed < DEADLINE_TEST_SECONDS + DEADLINE_TEST_RETURN_MARGIN
         process = processes[-1]
         assert process.was_killed
         assert process.post_kill_wait_timeouts
         assert process.post_kill_wait_timeouts[-1] > 0
         assert process.reaped_after_kill
         assert process.returncode is not None
+
+
+def test_native_promql_runner_refuses_a_child_not_reaped_in_its_window(monkeypatch):
+    real_popen = NATIVE_PROMQL.subprocess.Popen
+    processes = []
+
+    class UnreapedPopen(real_popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.was_killed = False
+            processes.append(self)
+
+        def kill(self):
+            self.was_killed = True
+            return super().kill()
+
+        def wait(self, timeout=None):
+            if self.was_killed:
+                raise NATIVE_PROMQL.subprocess.TimeoutExpired(self.args, timeout)
+            return super().wait(timeout=timeout)
+
+    monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", UnreapedPopen)
+    try:
+        with pytest.raises(NATIVE_PROMQL.RunnerError, match="not reaped within its reserved cleanup window"):
+            NATIVE_PROMQL._bounded_process(
+                [NATIVE_PROMQL.sys.executable, "-c", "import time; time.sleep(5)"],
+                deadline=NATIVE_PROMQL.time.monotonic() + 0.2,
+            )
+        assert processes[-1].was_killed
+    finally:
+        for process in processes:
+            process.kill()
+            real_popen.wait(process)
+        # The runner raised before joining its output reader; it ends at the dead child's EOF.
+        for thread in threading.enumerate():
+            if thread.name == "native-promql-output":
+                thread.join(timeout=5)
+        for process in processes:
+            process.stdout.close()
 
 
 def test_native_promql_runner_caps_subprocess_output_while_draining():
