@@ -15,8 +15,9 @@ Three modes, JSON on stdin, JSON on stdout:
              non-empty and whose confirm_delete equals the list's sha256; a real run with any other
              confirm_delete is refused.
   authorize  {volumes, permission_reads} -> refused unless the token holds Datastore.AllocateSpace
-             on /storage/<storage> and VM.Backup on /vms/<vmid> for every listed archive: the
-             privileges Proxmox checks to delete a backup volume that has an owner vmid.
+             on /storage/<storage> and VM.Backup on /vms/<vmid> for every listed archive (the
+             privileges Proxmox checks to delete a backup volume that has an owner vmid), and VM.Audit
+             on /vms/<vmid> for a gone guest's (without it the guest listing hides a live guest).
   verify     {volumes, before, after} -> refused if a listed archive is still present, or an archive
              not listed disappeared between the two content reads.
 
@@ -109,8 +110,10 @@ def list_archives(data):
         if job.get("type", "vzdump") != "vzdump" or not survey._enabled(job):
             continue
         _, guests = survey._job_guests(job, existing)
+        # A job with no storage writes to vzdump's default (pve-manager VZDump.pm get_storage_param:
+        # `storage || 'local'`, or vzdump.conf's), so it counts as covering every declared storage.
         for vmid, storage in sorted(pairs):
-            if job.get("storage") == storage and vmid in guests:
+            if job.get("storage") in (None, "", storage) and vmid in guests:
                 raise Refusal(f"Enabled backup job {job.get('id')} still backs up guest {vmid} "
                               f"to storage {storage}; disable it or drop the declared pair.")
     offline = [f"{n.get('node')} is {n.get('status')}" for n in data["nodes"] if n.get("status") != "online"]
@@ -181,8 +184,13 @@ def authorize(data):
         privileges[path] = ((read.get("json") or {}).get("data") or {}).get(path) or {}
     missing = []
     for v in data["volumes"]:
-        for priv, path in (("Datastore.AllocateSpace", f"/storage/{v['storage']}"),
-                           ("VM.Backup", f"/vms/{v['vmid']}")):
+        needed = [("Datastore.AllocateSpace", f"/storage/{v['storage']}"), ("VM.Backup", f"/vms/{v['vmid']}")]
+        # A guest is "gone" because cluster/resources did not list it, and that listing leaves out every
+        # guest the token lacks VM.Audit on (pve-manager PVE/API2/Cluster.pm resources). Without VM.Audit on
+        # the guest, "gone" may be a live guest the token cannot see.
+        if v.get("source") == "gone":
+            needed.append(("VM.Audit", f"/vms/{v['vmid']}"))
+        for priv, path in needed:
             if path not in privileges:
                 raise Refusal(f"The token's permissions on {path} were not read.")
             # A privilege is held when its key is present: the value is only its propagate flag

@@ -24,12 +24,12 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 
 ### L-004 · 2026-11-17 · playbooks
 
-- **ACCEPTED:** PR B of AC-856 (backup archive cleanup).
+- **ACCEPTED:** #1206 (AC-856).
 - **DERIVED:** Proxmox's `GET /access/permissions` maps each held privilege to its propagate flag, so a privilege is held when its key is present, whatever the value (0 included); Proxmox's own permission check tests only that the key is defined. A check that reads the value as the grant refuses a token Proxmox would allow.
 - **APPLIES TO:** playbooks and helpers under `platform/playbooks/` that read `access/permissions` to decide whether a token may act.
 
 ### L-005 · 2026-11-17 · playbooks
 
-- **ACCEPTED:** PR B of AC-856 (backup archive cleanup).
+- **ACCEPTED:** #1206 (AC-856).
 - **DERIVED:** A vmid that this cluster does not know is "gone" only on a storage no other cluster can write to: node-local storage, or CephFS on this cluster's own Ceph (no monitor list). On shared NFS, CIFS, PBS or an external CephFS the vmid may be another cluster's guest, and a storage whose sharing is unknown counts as shared. Work that deletes by "guest no longer exists" restricts itself the same way, or needs the operator to declare each pair.
 - **APPLIES TO:** playbooks that remove or prune Proxmox volumes because their guest is missing.

@@ -1285,7 +1285,7 @@ reading. When they disagree, report the bound each one gives, not the product of
 
 **Occurrence 2 — 2026-11-17.** After the production backup-storage survey (Semaphore task 17695), the
 operator was told, on Plane AC-856 and in chat, that the planned retention (6 archives per guest, 3 for
-honcho) needs about 628.5 of the CephFS storage `vm_backups`' 752.8 GiB, and that the chosen cleanup frees
+honcho) needs about 628.5 of the CephFS backup storage's 752.8 GiB, and that the chosen cleanup frees
 only 78.5 GiB on that storage. Both read the storage's `total` by its label as a fixed capacity. For a
 CephFS storage it is used space plus what Ceph can still place in the pool, so it moves with the free
 space of every pool on the same OSDs. The same receipt contradicted the reading: both CephFS storages

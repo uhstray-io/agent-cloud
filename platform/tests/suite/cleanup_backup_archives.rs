@@ -558,3 +558,45 @@ fn a_storage_whose_sharing_is_unknown_counts_as_shared() {
         "{out}"
     );
 }
+
+#[test]
+fn authorize_requires_vm_audit_for_a_gone_guests_archive() {
+    // Arrange: the listed archive is a gone guest's. Proxmox's guest listing hides a guest the token
+    // lacks VM.Audit on, so without it "gone" may be a live guest the token cannot see.
+    let mut without = auth_payload(
+        json!({"Datastore.AllocateSpace": 1}),
+        json!({"VM.Backup": 1}),
+    );
+    without["volumes"][0]["source"] = json!("gone");
+    let mut with = auth_payload(
+        json!({"Datastore.AllocateSpace": 1}),
+        json!({"VM.Backup": 1, "VM.Audit": 0}),
+    );
+    with["volumes"][0]["source"] = json!("gone");
+
+    // Act
+    let text = refusal("authorize", &without);
+
+    // Assert: refused without VM.Audit, naming it; authorized with it (a held privilege, propagate 0).
+    assert!(text.contains("VM.Audit on /vms/900"), "{text}");
+    assert_eq!(ok("authorize", &with)["authorized"], 1);
+}
+
+#[test]
+fn a_declared_pair_an_enabled_job_without_a_storage_backs_up_is_refused() {
+    // Arrange: an enabled job names no storage, so vzdump writes to its default storage; it backs
+    // up guest 100, which is declared on `backups`.
+    let mut payload = base(vec![read(
+        "n1",
+        "backups",
+        vec![archive("backups", 100, 1)],
+    )]);
+    payload["jobs"] = json!([{"id": "job-default", "type": "vzdump", "enabled": 1, "vmid": "100"}]);
+    payload["pairs"] = json!([{"vmid": 100, "storage": "backups"}]);
+
+    // Act
+    let text = refusal("list", &payload);
+
+    // Assert
+    assert!(text.contains("job-default"), "{text}");
+}
