@@ -68,7 +68,7 @@ static FILE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FILE_RS: LazyLock<Regex> =
     LazyLock::new(|| re(r"^(?P<path>(?:[\w.-]+/)*suite/[\w-]+\.rs)(?:::(?P<name>\w+))?$"));
-static INNER_CFG: LazyLock<Regex> = LazyLock::new(|| re(r"#!\[cfg(?:_attr)?\([^\]]*\]"));
+static INNER_CFG: LazyLock<Regex> = LazyLock::new(|| re(r"#!\s*\[\s*cfg(?:_attr)?\s*\([^\]]*\]"));
 static ATTRIBUTE: LazyLock<Regex> = LazyLock::new(|| re(r"#\[[^\]]*\]"));
 static NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^test_\w+$"));
 static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| re(r"^(?:test_\w+\.py|[\w-]+\.bats)$"));
@@ -221,7 +221,7 @@ fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
     if require_test
         && INNER_CFG
             .find_iter(&code)
-            .any(|m| m.as_str() != "#![cfg(test)]")
+            .any(|m| m.as_str().split_whitespace().collect::<String>() != "#![cfg(test)]")
     {
         return false;
     }
@@ -937,6 +937,12 @@ fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
     assert!(!defines_test("#[test]\n#[ignore]\nfn x() {}\n", "x"));
     assert!(!defines_test("#[ignore]\n\n#[test]\nfn x() {}\n", "x"));
     assert!(!defines_test("#![cfg(any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test("#![cfg (any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#! [ cfg(any()) ]\n#[test]\nfn x() {}\n",
+        "x"
+    ));
+    assert!(defines_test("#! [cfg(test)]\n#[test]\nfn x() {}\n", "x"));
     assert!(!defines_test(
         "#![cfg_attr(any(), ignore)]\n#[test]\nfn x() {}\n",
         "x"

@@ -1397,10 +1397,10 @@ pub(crate) fn never_runs(task: &Node) -> bool {
 }
 
 /// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
-/// list (the items are ANDed). A constant false is the YAML bool, the strings `false`, `False` or `0`,
-/// also wrapped once in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
-/// (ansible-core 2.20 aborts the run on an integer-valued condition such as `0` rather than skipping
-/// the task; either way the task does not run, so counting it as never running stays the safe side.)
+/// list (the items are ANDed). A constant false is the YAML bool, the strings `false` or `False`,
+/// also wrapped once in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false:
+/// each is a boolean, so Ansible skips the task silently. An integer-valued condition such as `0` is
+/// not one: ansible-core 2.20 raises on it, and the error runs an enclosing block's `rescue:`.
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
     let is_false = |item: &Node| match item {
         Node::Bool(b) => !b,
@@ -1439,8 +1439,8 @@ fn constant_false(text: &str) -> bool {
         .and_then(|t| t.strip_suffix("}}"))
         .map_or(trimmed, str::trim);
     // A quoted `no` is a Jinja variable name, and unquoted YAML `no` is already a bool, so only
-    // Jinja's own false literals count.
-    if matches!(bare, "false" | "False" | "0") {
+    // Jinja's own false literals count. `0` is an integer, which Ansible refuses rather than skips.
+    if matches!(bare, "false" | "False") {
         return true;
     }
     let Some(c) = INT_COMPARISON.captures(bare) else {
@@ -1462,7 +1462,7 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
         "when: \"{{False}}\"\n",
         "when: 1 == 2\n",
         "when: \"{{ 3 != 3 }}\"\n",
-        "when: [true, \"{{ 0 }}\"]\n",
+        "when: [true, \"{{ false }}\"]\n",
         "tags: never\n",
         "tags: [deploy, never]\n",
         "tags: \"never,deploy\"\n",
@@ -1473,6 +1473,8 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
         "when: true\n",
         "when: \"no\"\n",
         "when: \"{{ No }}\"\n",
+        "when: \"0\"\n",
+        "when: \"{{ 0 }}\"\n",
         "when: 1 == 1\n",
         "when: 1 != 2\n",
         "when: some_flag | bool\n",
