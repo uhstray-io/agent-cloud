@@ -58,7 +58,7 @@
 //! | seed-openbao-key uses the resolved value everywhere, not the raw extra var | `seed_openbao_key_merges_the_resolved_value_only` (candidate: pins text) |
 //! | no Semaphore template still instructs operators to pass a secret as -e | `no_template_asks_for_a_secret_as_an_extra_var` (candidate: pins text) |
 //! | NetBox token bootstrap guards AppRole transport before login | `netbox_token_bootstrap_guards_transport_before_login` |
-//! | every play that resolves an OpenBao URL includes the transport guard | `every_openbao_play_includes_the_transport_guard` |
+//! | every play that resolves an OpenBao URL includes the transport guard | `every_openbao_play_includes_the_transport_guard`, with the self-check `never_runs_reads_wrapped_comparisons_and_the_never_tag` |
 //! | the transport pattern accepts internal endpoints and refuses public ones | `transport_pattern_accepts_internal_endpoints_and_refuses_public_ones` |
 //! | repo: no generated Python bytecode is tracked | `no_python_bytecode_is_tracked` (its two .gitignore lines: candidate: pins text) |
 //! | bao-merge-keys: creation is CAS-guarded, and losing the race falls back to a merge | `bao_merge_keys_creates_a_path_only_under_cas` |
@@ -1390,18 +1390,76 @@ impl Guard {
     }
 }
 
-/// Whether a task's `when` is a constant that is always false: `false`, `False`, `no` or `0`, alone
-/// or as any item of a `when:` list (the items are ANDed).
+/// Whether a task never runs: its `when` is a constant that is always false, alone or as any item of
+/// a `when:` list (the items are ANDed), or it is tagged `never`, which skips it unless a run asks
+/// for that tag. A constant false is `false`, `False`, `FALSE`, `no`, `No` or `0`, also wrapped once
+/// in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
 fn never_runs(task: &Node) -> bool {
     let is_false = |item: &Node| match item {
         Node::Bool(b) => !b,
-        Node::Str(s) => matches!(s.trim(), "false" | "False" | "FALSE" | "no" | "No" | "0"),
+        Node::Str(s) => constant_false(s),
         _ => false,
     };
-    match task.get("when") {
-        Some(Node::Seq(items)) => items.iter().any(is_false),
-        Some(item) => is_false(item),
-        None => false,
+    let tagged_never = match task.get("tags") {
+        Some(Node::Str(s)) => s.trim() == "never",
+        Some(Node::Seq(items)) => items
+            .iter()
+            .any(|t| t.as_str().map(str::trim) == Some("never")),
+        _ => false,
+    };
+    tagged_never
+        || match task.get("when") {
+            Some(Node::Seq(items)) => items.iter().any(is_false),
+            Some(item) => is_false(item),
+            None => false,
+        }
+}
+
+/// Whether a `when` string is a constant that is always false.
+fn constant_false(text: &str) -> bool {
+    let trimmed = text.trim();
+    let bare = trimmed
+        .strip_prefix("{{")
+        .and_then(|t| t.strip_suffix("}}"))
+        .map_or(trimmed, str::trim);
+    if matches!(bare, "false" | "False" | "FALSE" | "no" | "No" | "0") {
+        return true;
+    }
+    let cmp = Regex::new(r"^\s*(-?\d+)\s*(==|!=)\s*(-?\d+)\s*$").expect("a valid regex");
+    cmp.captures(bare).is_some_and(|c| {
+        let (a, b) = (c[1].parse::<i128>().ok(), c[3].parse::<i128>().ok());
+        match (a, b, &c[2]) {
+            (Some(a), Some(b), "==") => a != b,
+            (Some(a), Some(b), "!=") => a == b,
+            _ => false,
+        }
+    })
+}
+
+#[test]
+fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
+    let task = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    for never in [
+        "when: false\n",
+        "when: \"{{ false }}\"\n",
+        "when: \"{{False}}\"\n",
+        "when: 1 == 2\n",
+        "when: \"{{ 3 != 3 }}\"\n",
+        "when: [true, \"{{ no }}\"]\n",
+        "tags: never\n",
+        "tags: [deploy, never]\n",
+    ] {
+        assert!(never_runs(&task(&format!("name: t\n{never}"))), "{never}");
+    }
+    for runs in [
+        "when: true\n",
+        "when: 1 == 1\n",
+        "when: 1 != 2\n",
+        "when: some_flag | bool\n",
+        "tags: [deploy]\n",
+        "become: true\n",
+    ] {
+        assert!(!never_runs(&task(&format!("name: t\n{runs}"))), "{runs}");
     }
 }
 
@@ -1607,8 +1665,12 @@ fn seed_access_check_ends_the_play_before_any_write() {
     let merge = position(&seed_maps, |m| {
         include_target(m, &INCLUDE_SHORTS) == Some("tasks/bao-merge-keys.yml")
     });
+    // The named end_play, not the first: an inert end_play placed early would pass an order check
+    // while the real one sat after the merge.
     let end = position(&seed_maps, |m| {
-        module(m, "meta").and_then(Node::as_str) == Some("end_play")
+        m.get("name").and_then(Node::as_str)
+            == Some("End read-only verification before every secret-store write")
+            && module(m, "meta").and_then(Node::as_str) == Some("end_play")
     });
 
     // Assert: the access check and the end of play both come before the merge.
