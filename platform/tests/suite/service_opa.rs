@@ -98,7 +98,12 @@ fn re(pattern: &str) -> Regex {
 
 // The assertions below take the text they test, so one helper serves a whole file and an awk
 // chunk alike. `label` names that text in a failure. Each mirrors one grep form of the BATS file.
-// Lines are split as grep splits them: at each `\n`, with a `\r` before it kept on its line.
+// Lines are split as grep splits them (`lines`).
+
+/// The lines of `text` as grep reads them: split at each `\n`, a `\r` before it kept on its line.
+fn lines(text: &str) -> std::str::SplitTerminator<'_, char> {
+    text.split_terminator('\n')
+}
 
 /// `grep -qE pattern`: some line of `text` matches the regex.
 fn assert_re(label: &str, text: &str, pattern: &str) {
@@ -132,7 +137,7 @@ fn refute_lit(label: &str, text: &str, literal: &str) {
 /// `grep -qxF literal`: some whole line of `text` equals the literal.
 fn assert_exact(label: &str, text: &str, literal: &str) {
     assert!(
-        text.split_terminator('\n').any(|line| line == literal),
+        lines(text).any(|line| line == literal),
         "{label}: no line is exactly `{literal}`"
     );
 }
@@ -140,15 +145,13 @@ fn assert_exact(label: &str, text: &str, literal: &str) {
 /// `grep -c pattern`: how many lines of `text` match the regex.
 fn count_re(text: &str, pattern: &str) -> usize {
     let re = re(pattern);
-    text.split_terminator('\n')
-        .filter(|line| re.is_match(line))
-        .count()
+    lines(text).filter(|line| re.is_match(line)).count()
 }
 
 /// `grep -n pattern | head -n 1 | cut -d: -f1`: the 1-based number of the first matching line.
 fn first_line(text: &str, pattern: &str) -> Option<usize> {
     let re = re(pattern);
-    text.split_terminator('\n')
+    lines(text)
         .position(|line| re.is_match(line))
         .map(|index| index + 1)
 }
@@ -180,7 +183,7 @@ fn task_with(text: &str, pattern: &str) -> String {
     let pat = re(pattern);
     let mut chunks = Vec::new();
     let mut current = String::new();
-    for line in text.split_terminator('\n') {
+    for line in lines(text) {
         if line.starts_with("    - name:") {
             chunks.push(std::mem::take(&mut current));
         }
@@ -201,7 +204,7 @@ fn sed_range(text: &str, start: &str, end: &str) -> String {
     let (start, end) = (re(start), re(end));
     let mut out = String::new();
     let mut open = false;
-    for line in text.split_terminator('\n') {
+    for line in lines(text) {
         if open {
             out.push_str(line);
             out.push('\n');
@@ -320,30 +323,34 @@ fn tls_overlay_keeps_the_uid_and_mounts_certs_read_only() {
 
 #[test]
 fn tls_overlay_command_repeats_the_base_and_adds_three_tls_flags() {
-    let over = read(COMPOSE_TLS);
+    // Both lists come from the opa service's own `command`, so an argument elsewhere in the file
+    // (another key, a comment) cannot stand in for one the command lacks.
     let base_args = command_args(COMPOSE);
+    let over_args = command_args(COMPOSE_TLS);
     assert!(!base_args.is_empty(), "{COMPOSE}: no command list");
     for arg in &base_args {
-        assert_exact(COMPOSE_TLS, &over, &format!("      - {arg}"));
+        assert!(
+            over_args.contains(arg),
+            "{COMPOSE_TLS}: the overlay command lacks the base argument `{arg}`"
+        );
     }
     assert_eq!(
-        command_args(COMPOSE_TLS).len(),
+        over_args.len(),
         base_args.len() + 3,
         "{COMPOSE_TLS}: the overlay must add exactly three arguments to the base list"
     );
-    assert_exact(
-        COMPOSE_TLS,
-        &over,
-        "      - --tls-cert-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/cert.pem",
-    );
-    assert_exact(
-        COMPOSE_TLS,
-        &over,
-        "      - --tls-private-key-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/key.pem",
-    );
-    assert_exact(COMPOSE_TLS, &over, "      - --tls-cert-refresh-period=30s");
+    for flag in [
+        "--tls-cert-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/cert.pem",
+        "--tls-private-key-file=/certs/${OPA_SERVER_LEAF:-opa-server}/current/key.pem",
+        "--tls-cert-refresh-period=30s",
+    ] {
+        assert!(
+            over_args.iter().any(|arg| arg == flag),
+            "{COMPOSE_TLS}: the overlay command lacks `{flag}`"
+        );
+    }
     assert_eq!(
-        command_args(COMPOSE_TLS).last().map(String::as_str),
+        over_args.last().map(String::as_str),
         Some("/policies"),
         "{COMPOSE_TLS}: the command list must end with `/policies`"
     );
@@ -452,8 +459,8 @@ fn verify_probes_https_through_curl_and_refuses_a_plain_http_200() {
 #[test]
 fn decisions_are_gated_on_opa_tls_and_the_plain_ones_on_its_absence() {
     let pb = read(PLAYBOOK);
-    // BATS took the first chunk holding `ansible.builtin.uri:`, which is this task (deploy-opa.yml's
-    // first uri task, line 252): the same chunk, now found by its name.
+    // The original took the first task chunk holding `ansible.builtin.uri:`, which is this health
+    // task: the same chunk, now found by its name.
     let health = task_with(&pb, r"OPA health \(/health -> 200\)");
     assert_exact(PLAYBOOK, &health, "      when: not _opa_tls");
     let plain_allow = task_with(&pb, "Sample decision: infra-agent read netbox -> allow");
