@@ -1568,18 +1568,14 @@ else:
     return executable, inspected, removals
 
 
-# _cleanup's fake-engine calls (ps, inspect, then rm and a final ps for an owned name) share one
-# budget, which a slow start under load used up at 2 s (AC-968). 15 s is the sum of the runner's
-# per-call caps (4 + 3 + 4 + 4 s), so only those caps bind; it bounds a hung fake, nothing else.
-CLEANUP_TEST_SECONDS = 15
-
-
+# _cleanup gets the runner's own budget (cleanup_deadline is started + TOTAL_SECONDS), so only its
+# per-call caps bind, as in a real run; a 2 s budget was used up by slow starts under load (AC-968).
 def test_native_promql_runner_cleans_only_exact_name_and_label_owned_containers(tmp_path):
     name = "o11y-promql-unique-1"
     owner = "invocation-unique"
     engine, inspected, removals = _write_fake_container_engine(tmp_path, name, owner)
     NATIVE_PROMQL._cleanup(
-        str(engine), owner, [name, name + "-absent"], NATIVE_PROMQL.time.monotonic() + CLEANUP_TEST_SECONDS,
+        str(engine), owner, [name, name + "-absent"], NATIVE_PROMQL.time.monotonic() + NATIVE_PROMQL.TOTAL_SECONDS,
     )
     assert inspected.read_text(encoding="utf-8") == name
     assert json.loads(removals.read_text(encoding="utf-8")) == [
@@ -1595,7 +1591,7 @@ def test_native_promql_runner_refuses_cleanup_when_labels_do_not_prove_ownership
     )
     with pytest.raises(NATIVE_PROMQL.RunnerError, match="ownership mismatch"):
         NATIVE_PROMQL._cleanup(
-            str(engine), owner, [name], NATIVE_PROMQL.time.monotonic() + CLEANUP_TEST_SECONDS,
+            str(engine), owner, [name], NATIVE_PROMQL.time.monotonic() + NATIVE_PROMQL.TOTAL_SECONDS,
         )
     assert not removals.exists()
 
