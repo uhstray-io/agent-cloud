@@ -30,8 +30,8 @@
 //!   deploy playbook, so a pathspec that matches nothing fails;
 //! - the `Report` block is `task_block`'s: it ends at the next `- name:` at the same or shallower
 //!   indent, where the BATS awk ended only at a four-space one (the Report task is the file's last);
-//! - stricter, where a BATS regex matched lines it was not about: beside each kept BATS line, a
-//!   stricter check, with a comment saying what the BATS line missed;
+//! - stricter: beside each kept BATS line, checks the port adds where that line matched text it
+//!   was not about or passed on empty input, each with a comment saying what the line missed;
 //! - the DNS-instruction refute matches any postiz host, not one instance's;
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
@@ -405,6 +405,8 @@ fn mounted_app_config_is_actually_loaded() {
     // Mounting the config file is not sufficient on its own: the image entrypoint is a generic node
     // wrapper that never reads it, so the app starts with no DATABASE_URL. The command below reads
     // the file into the environment; it never sources it.
+    // Parsed, not the BATS text range: the command is exactly `sh -c <script>`, so the checks below
+    // read the script the container runs and nothing around it.
     let services = compose_services();
     let command = service(&services, "postiz")
         .get("command")
@@ -447,6 +449,7 @@ fn nothing_probes_the_workflow_engine_on_loopback() {
     // filter excluded a `:` followed by optional whitespace and `#`, as in `grep -Hn` output.
     let comment = Regex::new(r":[[:space:]]*#").expect("comment pattern");
     let scanned = repo::ls_files(&["platform/*.yml", "platform/*.sh", "platform/*.j2"]);
+    // A scan that reads nothing finds nothing: the BATS check passed on an empty file list.
     for rel in [COMPOSE, DEPLOY_PB] {
         assert!(
             scanned.iter().any(|f| f == rel),
@@ -880,6 +883,7 @@ fn seed_playbook_uses_the_shared_cleartext_guard() {
 #[test]
 fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
     let seed = captured(&text::read(SEED_PB), r"(?m)^      - ([a-z0-9_]+)$");
+    // Two empty sets are equal: the BATS comparison passed when neither file listed a key.
     assert!(!seed.is_empty(), "{SEED_PB}: no seedable keys");
     let deploy = text::read(DEPLOY_PB);
     let declared = captured(&deploy, r"name: postiz_([a-z0-9_]+), type: existing");
@@ -909,6 +913,7 @@ fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
 fn docs_do_not_tell_an_operator_to_create_dns() {
     // The zone is config-as-code via OpenTofu and the record already exists.
     text::refute_line(README, r"^- Create the public DNS record\.$");
+    // Any postiz host, not the BATS line's one instance hostname, which this repo does not name.
     text::refute_line(PLAN_14, r"Operator: create the `postiz\.[^`]+` DNS record");
 }
 
