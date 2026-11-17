@@ -1568,11 +1568,10 @@ else:
     return executable, inspected, removals
 
 
-# _cleanup runs up to four fake-engine calls (ps, inspect, rm, ps) under one budget, each a Python
-# start. At 2 s a start slowed by load starved the later calls (refused at a 0.5 s start delay; the
-# runner's own per-call caps of 3-4 s were never reached); 6 s leaves each call its own cap (AC-968).
-# The fake returns at once, so a passing run takes no longer.
-CLEANUP_TEST_SECONDS = 6
+# _cleanup's fake-engine calls (ps, inspect, then rm and a final ps for an owned name) share one
+# budget, which a slow start under load used up at 2 s (AC-968). 15 s is the sum of the runner's
+# per-call caps (4 + 3 + 4 + 4 s), so only those caps bind; it bounds a hung fake, nothing else.
+CLEANUP_TEST_SECONDS = 15
 
 
 def test_native_promql_runner_cleans_only_exact_name_and_label_owned_containers(tmp_path):
