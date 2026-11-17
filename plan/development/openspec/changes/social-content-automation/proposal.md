@@ -25,7 +25,7 @@ None. The publishing service's capability belongs to change `deploy-postiz-socia
 - It depends on the changes `deploy-postiz-social-publishing`, `deploy-activepieces` and `agentgateway-content-generation`.
 - It reads two OpenBao fields that other changes create and that do not exist yet: `postiz_api_key` at `secret/services/postiz` (AC-763) and the `activepieces` client key at `secret/services/agentgateway` (plan 27, AC-785). It declares no new OpenBao path.
 - Brand values live in site-config.
-- Operator prerequisites: the X and LinkedIn developer apps and connected accounts (AC-760, AC-761) and the production Postiz API key (AC-763).
+- Operator prerequisites and decisions: plan 28 Open Questions and the operator blockers in `tasks.md`.
 
 ## Rollback Plan
 

@@ -8,7 +8,7 @@ Provides AI-assisted drafting of social posts for the instance's brands, with a 
 
 Generation MAY create a draft without an approval. The platform MUST NOT schedule or publish a post unless a recorded approval names the approver and the revision of that post.
 
-An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media and its target account, so an edit to any of them, a replaced image included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
+An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media, its target account and its publish time, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
 
 #### Scenario: Draft created without approval
 
@@ -30,6 +30,12 @@ An approval SHALL apply only to the revision it names. A revision covers the pos
 
 - **GIVEN** a post's text and image were approved together
 - **WHEN** the image is replaced and a handoff attempts to schedule the post
+- **THEN** the post is not scheduled until the new revision has its own recorded approval
+
+#### Scenario: Publish time changed after approval is not scheduled
+
+- **GIVEN** a post was approved for one publish time
+- **WHEN** its publish time is changed and a handoff attempts to schedule it
 - **THEN** the post is not scheduled until the new revision has its own recorded approval
 
 ### Requirement: Flows never publish immediately
