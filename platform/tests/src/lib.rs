@@ -381,21 +381,54 @@ pub mod repo {
 
     /// `grep` for the repository at `dir`, as `path:line:text` lines. `-z` keeps each path as it
     /// is on disk, as `ls_files_in` does: without it git quotes a non-ASCII name
-    /// (`"caf\303\251.yml":1:...`), and the caller's path is then not a file (AC-916). Each hit is
-    /// `path NUL line NUL text`, so the joined line reads exactly as the callers expect. A record
-    /// without its three fields panics rather than being read as a hit.
+    /// (`"caf\303\251.yml":1:...`), and the caller's path is then not a file (AC-916). A hit is
+    /// `path NUL line NUL text NEWLINE`; the path is verbatim and may itself hold a newline, so the
+    /// two NUL fields are read before the text. `--no-color` and `--no-column` hold the format
+    /// whatever the user's git configuration says (`color.grep`, `grep.column`). A matching binary
+    /// file prints `Binary file <path> matches` and is returned as `<path>:0:Binary file matches`,
+    /// so a caller that asserts a pattern is absent still fails on it (#1180 review). Anything else
+    /// panics rather than being read as a hit.
     pub fn grep_in(dir: &Path, pattern: &str, pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["grep", "-z", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
-        git_in(dir, &args, 1)
-            .lines()
-            .map(|record| {
-                let fields: Vec<&str> = record.splitn(3, '\0').collect();
-                match fields.as_slice() {
-                    [path, line, text] => format!("{path}:{line}:{text}"),
-                    _ => panic!("a git grep record without path, line and text: {record:?}"),
-                }
-            })
-            .collect()
+        let args = [
+            &[
+                "grep",
+                "-z",
+                "-n",
+                "--no-color",
+                "--no-column",
+                "-E",
+                "-e",
+                pattern,
+                "--",
+            ],
+            pathspecs,
+        ]
+        .concat();
+        let out = git_in(dir, &args, 1);
+        let mut hits = vec![];
+        let mut rest = out.as_str();
+        while !rest.is_empty() {
+            let line_end = rest.find('\n').unwrap_or(rest.len());
+            let binary = rest[..line_end]
+                .strip_prefix("Binary file ")
+                .and_then(|tail| tail.strip_suffix(" matches"))
+                .filter(|path| !path.contains('\0'));
+            if let Some(path) = binary {
+                hits.push(format!("{path}:0:Binary file matches"));
+                rest = rest.get(line_end + 1..).unwrap_or("");
+                continue;
+            }
+            let mut fields = rest.splitn(3, '\0');
+            let (Some(path), Some(line), Some(tail)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                panic!("a git grep record without path, line and text: {rest:?}");
+            };
+            let (text, after) = tail.split_once('\n').unwrap_or((tail, ""));
+            hits.push(format!("{path}:{line}:{text}"));
+            rest = after;
+        }
+        hits
     }
 
     /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
