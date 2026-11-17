@@ -42,6 +42,8 @@ const PLAYBOOK: &str = "platform/playbooks/apply-firewall.yml";
 const COMPUTE: &str = "Compute the declared rules";
 const SSH_ALLOW: &str = "Allow SSH (22/tcp) from each admin CIDR";
 const OTHER_ADD: &str = "Add each other declared rule";
+const CONTROLLER_REFUSAL: &str =
+    "Refuse a firewall that would drop the orchestrator's SSH source (anti-orphan)";
 
 /// 1-based position of the first `-` in a line, 0 when none (awk `index($0, "-")`).
 fn dash_at(line: &str) -> usize {
@@ -361,14 +363,18 @@ fn controller_cidr_is_checked_before_enable_and_the_ssh_allows() {
     // Semaphore reaches every host over SSH; a firewall without its source orphans the host.
     // Compared in the spelling ufw stores (behaviour: apply_firewall_convergence_playbook.rs).
     let pb = text::read(PLAYBOOK);
-    let refusal = "Refuse a firewall that would drop the orchestrator's SSH source (anti-orphan)";
     assert_contains(
-        &task_block(&pb, refusal),
+        &task_block(&pb, CONTROLLER_REFUSAL),
         "(firewall_controller_cidr | ufw_address) in _fw_ssh_cidrs_stored",
         "the refusal task",
     );
-    let name = regex::escape("Refuse a firewall that would drop the orchestrator's SSH source");
-    assert_precedes(&pb, &name, "ufw --force enable");
+    let name = regex::escape(CONTROLLER_REFUSAL);
+    // The enable task, not the first comment that names the command.
+    assert_precedes(
+        &pb,
+        &name,
+        r#"ansible\.builtin\.command: "ufw --force enable""#,
+    );
     assert_precedes(
         &pb,
         &name,

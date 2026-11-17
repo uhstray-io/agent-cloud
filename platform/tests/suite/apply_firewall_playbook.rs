@@ -3,8 +3,8 @@
 //!
 //! Three tasks of the real play are lifted (the upstream normalisation, its refusal, and the
 //! declared-rule computation), fed fixed detected ports, and run with one host per
-//! `firewall_upstream_source` value. A good value must yield both detected-port rules for every source; a blank one must stop the
-//! run before the rules are computed. Each value is a host var, so the good values share one
+//! `firewall_upstream_source` value. A good value must yield both detected-port rules for every
+//! source; a blank one must stop the run before the rules are computed. Each value is a host var, so the good values share one
 //! run and the blank ones another (plan 21 F1). Runs go through `process::ansible_playbook`, so
 //! they are bounded, and confined to the test's directory where a kernel sandbox
 //! (sandbox-exec, bwrap) is present (`process::sandbox`).
@@ -49,7 +49,8 @@ fn lifted() -> Value {
 }
 
 /// Runs the lifted play ONCE over one host per `firewall_upstream_source` value (a host var,
-/// so the values share one ansible-playbook spawn); returns whether it passed and its stdout.
+/// so the values share one ansible-playbook spawn); returns whether it passed and its stdout,
+/// then stderr.
 fn run(dir: &TempDir, values: &[(&str, Value)]) -> (bool, String) {
     let path = playbook::write(dir.path(), "upstream.json", &lifted());
     let mut hosts = Map::new();

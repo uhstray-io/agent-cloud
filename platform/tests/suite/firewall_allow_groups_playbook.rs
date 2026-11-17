@@ -24,8 +24,9 @@ const REFUSAL: &str =
 
 /// Runs the lifted vars and refusal against `hosts` (name, host vars) with `groups`
 /// (`{group: {member: ansible_host}}`); each host's computed `_rules` land in
-/// `dir/rules-<host>.json`. Returns whether the run passed and its stdout.
-fn render(dir: &TempDir, hosts: &[(&str, Value)], groups: Value) -> (bool, String) {
+/// `dir/rules-<host>.json`. Returns whether the run passed, its stdout (the refusal checks read
+/// only stdout, as the pytest did) and its stderr (for failure messages).
+fn render(dir: &TempDir, hosts: &[(&str, Value)], groups: Value) -> (bool, String, String) {
     let play = playbook::plays(PLAYBOOK).remove(0);
     let refusal: Vec<&Value> = play["tasks"]
         .as_array()
@@ -75,6 +76,7 @@ fn render(dir: &TempDir, hosts: &[(&str, Value)], groups: Value) -> (bool, Strin
     (
         run.status.success(),
         String::from_utf8_lossy(&run.stdout).into_owned(),
+        String::from_utf8_lossy(&run.stderr).into_owned(),
     )
 }
 
@@ -89,7 +91,7 @@ fn rules(dir: &TempDir) -> Value {
 #[test]
 fn a_group_rule_expands_to_one_rule_per_member() {
     let dir = TempDir::new().unwrap();
-    let (ok, output) = render(
+    let (ok, output, stderr) = render(
         &dir,
         &[(
             "target",
@@ -100,7 +102,7 @@ fn a_group_rule_expands_to_one_rule_per_member() {
         )],
         json!({"members": {"a": "192.0.2.10", "b": "192.0.2.11"}}),
     );
-    assert!(ok, "{output}");
+    assert!(ok, "{output}{stderr}");
     assert_eq!(
         rules(&dir),
         json!([
@@ -114,7 +116,7 @@ fn a_group_rule_expands_to_one_rule_per_member() {
 #[test]
 fn no_group_rules_leaves_the_static_rules_alone() {
     let dir = TempDir::new().unwrap();
-    let (ok, output) = render(
+    let (ok, output, stderr) = render(
         &dir,
         &[(
             "target",
@@ -122,7 +124,7 @@ fn no_group_rules_leaves_the_static_rules_alone() {
         )],
         json!({}),
     );
-    assert!(ok, "{output}");
+    assert!(ok, "{output}{stderr}");
     assert_eq!(rules(&dir), json!([{"port": 22, "from": "192.0.2.1"}]));
 }
 
@@ -149,8 +151,8 @@ fn an_unresolvable_group_rule_is_refused() {
         })
         .collect();
     let dir = TempDir::new().unwrap();
-    let (ok, output) = render(&dir, &hosts, groups);
-    assert!(!ok, "every case must be refused:\n{output}");
+    let (ok, output, stderr) = render(&dir, &hosts, groups);
+    assert!(!ok, "every case must be refused:\n{output}{stderr}");
     for (host, _) in cases {
         assert!(
             output.contains(&format!("fatal: [{host}]: FAILED!")),

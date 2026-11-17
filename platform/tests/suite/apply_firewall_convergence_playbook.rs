@@ -85,6 +85,7 @@ const CONVERGED_READS: [&str; 2] = [
     r#"["ufw", "show", "added"]"#,
     r#"["ufw", "status", "verbose"]"#,
 ];
+
 fn controller() -> Value {
     json!({"firewall_controller_cidr": SSH})
 }
