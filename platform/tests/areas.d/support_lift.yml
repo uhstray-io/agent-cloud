@@ -1,0 +1,14 @@
+# The lifting loader (src/playbook.rs, AC-943): the suite's own helper for running playbook
+# tasks through ansible-playbook with YAML 1.1 types.
+#
+# `support_lift` is in the security set (`always`), not only in this area: its agreement test
+# pins the lifting loader to yaml::parse over every repository playbook, so a change that drops
+# or retypes one value fails every commit. `support_lift_playbook` runs lifted plays through
+# ansible-playbook in the playbook tier.
+#
+# paths: [] because platform/tests/** is a full trigger (as in areas.yml's test_platform area).
+paths: []
+tiers:
+  playbook: [support_lift_playbook]
+always:
+  static: [support_lift]
