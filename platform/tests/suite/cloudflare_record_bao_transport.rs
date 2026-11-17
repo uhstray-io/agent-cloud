@@ -8,9 +8,8 @@
 //! sits in the shared task file, so every caller is covered.
 //!
 //! A request to OpenBao is selected by its shape, not by a variable name: a `uri` task whose URL
-//! holds `/v1/` (the OpenBao API prefix every path this repository calls uses, as
-//! `platform/lib/bao-client.sh` does; the Cloudflare API is `.../client/v4`) or whose headers carry
-//! `X-Vault-Token`.
+//! holds `/v1/` (the prefix of every OpenBao URL this task file writes; its Cloudflare URLs are
+//! `{{ _cf_api }}/...`) or whose headers carry `X-Vault-Token`.
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::Node;
@@ -40,8 +39,9 @@ fn sends_to_openbao(task: &Node) -> bool {
     url.contains("/v1/") || token_header
 }
 
-/// A task that includes or imports the transport guard, in the string or the `{file: x}` form,
-/// under one of the two names the repository uses for it.
+/// A task that includes or imports the transport guard, in the string or the `{file: x}` form, as
+/// `assert-bao-transport.yml` (from `platform/playbooks/tasks/`) or `tasks/assert-bao-transport.yml`
+/// (from `platform/playbooks/`).
 fn is_guard(task: &Node) -> bool {
     [
         "ansible.builtin.include_tasks",
