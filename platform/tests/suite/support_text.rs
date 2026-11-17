@@ -285,7 +285,7 @@ fn assert_precedes_names_a_missing_second_pattern() {
     expected = "platform/tests/Cargo.toml: `\\n` cannot match any text free of a line feed"
 )]
 fn refute_line_refuses_a_pattern_that_needs_a_line_feed_naming_the_file() {
-    // Compiled, `\n` matches no line, so the refute would pass whatever the file held.
+    // Were it compiled, `\n` would match no line, so the refute would pass whatever the file held.
     refute_line(CARGO, r"\n");
 }
 
@@ -304,17 +304,19 @@ fn patterns_with_a_match_free_of_a_line_feed_are_allowed() {
     // An empty group matches the empty text, which every line holds.
     assert!(any_line("x", r"(?:)"));
     // Under `(?x)` blanks before a class's leading `]` keep it a member, so this class is `]` or a
-    // line feed; and a `#` comment runs to the end of the pattern, so its `\n` is text.
+    // line feed; and a `#` comment runs to the end of its line, here the pattern's end, so its `\n`
+    // is text.
     assert!(any_line("]", r"(?x)[ ]\n]"));
     assert!(any_line("a", r"(?x)a # \n"));
 }
 
 #[test]
 fn any_line_refuses_every_pattern_that_needs_a_line_feed() {
-    // Compiled, each matches no line of the text, so the refusal is the difference between a check
-    // and a silent pass. `[\n]`, `(?x)\x 0a` and `[!-[]\n` got past the old byte scan (AC-963): a
-    // class of the line feed alone, an escape spread over blanks, and a line feed after a class
-    // whose range ends in `[`.
+    // Were they compiled, none would match a line of the text, so the refusal is the difference
+    // between a check and a silent pass. `[\n]`, `(?x)\x 0a` and `[!-[]\n` got past the old byte
+    // scan (AC-963): a class of the line feed alone, an escape spread over blanks, and a line feed
+    // after a class whose range ends in `[`. `\x{000A}` and `\U0000000A` pin the brace and
+    // eight-digit spellings.
     for pattern in [
         r"b\nc",
         r"\x0a",

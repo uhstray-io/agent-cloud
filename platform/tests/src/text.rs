@@ -10,14 +10,13 @@
 //! would satisfy matches nothing. Patterns are the `regex` crate's syntax, which reads the ERE
 //! constructs the ported BATS patterns use; its escapes such as `\d` and `\t` are its own, not
 //! GNU grep's. A bare `{` is a compile error there (`mv {{`), so a ported pattern writes `\{`.
-//! A pattern that needs a line feed (`\n`, `\x0a`, `[\n]`) is refused like a raw newline, since no
-//! line holds one. The check never refuses a pattern that can match a line, but it does not catch
-//! every pattern that cannot: `matches_without_line_feed` says which it keeps.
+//! A pattern that cannot match text free of a line feed (`\n`, `\x0a`, `[\n]`) is refused like a
+//! raw newline, since no line holds one. `matches_without_line_feed` says what that check covers.
 //!
 //! An empty pattern or literal is found in every line and every text, so it checks nothing; grep
-//! reads one that holds a newline as several needles. Each assertion refuses both, naming the
-//! file. Only the empty string is refused: a pattern that matches the empty text (`(?:)`, `a*`) is
-//! found in every line too, and is kept.
+//! reads one that holds a newline as several needles. Each assertion refuses both; the file
+//! assertions name the file. Only the empty pattern is refused: `(?:)` and `a*` also match every
+//! line, and are kept.
 //!
 //! `task_block` and `assert_precedes` are the `assert_helpers.bash` forms (`task_block`,
 //! `assert_precedes`) over this text: one Ansible task's body, and the order of two first matches.
