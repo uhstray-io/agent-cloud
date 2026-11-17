@@ -123,6 +123,16 @@ fn file_span(span: &str) -> Option<FileSpan> {
     })
 }
 
+/// The file a Rust citation names: a path starting `suite/` is relative to `platform/tests/`,
+/// any other to the repository root.
+fn rust_citation_path(root: &Path, path: &str) -> PathBuf {
+    if path.starts_with("suite/") {
+        root.join("platform/tests").join(path)
+    } else {
+        root.join(path)
+    }
+}
+
 fn looks_like_bats_name(span: &str) -> bool {
     let words: Vec<&str> = span.split(' ').collect();
     words.len() >= 5
@@ -388,16 +398,6 @@ fn load_ratchet(root: &Path) -> Vec<(String, String)> {
 }
 
 /// Every `*.txt` in the ratchet directory under `root`, by name; none when it is missing.
-/// The file a Rust citation names: a path starting `suite/` is relative to `platform/tests/`,
-/// any other to the repository root.
-fn rust_citation_path(root: &Path, path: &str) -> PathBuf {
-    if path.starts_with("suite/") {
-        root.join("platform/tests").join(path)
-    } else {
-        root.join(path)
-    }
-}
-
 fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(root.join(RATCHET_DIR))
         .into_iter()
