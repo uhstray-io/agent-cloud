@@ -348,7 +348,9 @@ def summarize(data):
         if not reason and a_total and a_total == b_total and a_used == b_used:
             reason = "identical total and used bytes (inferred, not proven)"
         if reason:
-            if reason in ("same server and export", "same path"):
+            if config.get(a["storage"], {}).get("content-dirs") or config.get(b["storage"], {}).get("content-dirs"):
+                listed = None  # a content-dirs override moves the dump directory: overlap cannot be told
+            elif reason in ("same server and export", "same path"):
                 # One directory under two IDs lists the same files: count each relative path once.
                 listed = sum(max(a_files.get(f, 0), b_files.get(f, 0)) for f in a_files.keys() | b_files.keys())
             elif reason == "one path inside the other":

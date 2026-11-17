@@ -295,14 +295,18 @@ def test_pbs_sizes_are_logical_so_unexplained_and_reclaimable_bytes_are_unknown(
     assert store["by_guest"][0]["prunable_gib"] is None
 
 
-@pytest.mark.parametrize(("paths", "reason", "unexplained"), [
-    (("/srv/dump", "/srv/dump/"), "same path", 70.0),                  # one directory: one 30 GiB file
-    (("/srv", "/srv/inner"), "one path inside the other", 40.0),       # two directories: two files
-    (("/srv/a", "/srv/b"), "identical total and used bytes (inferred, not proven)", None),
+@pytest.mark.parametrize(("paths", "dirs", "reason", "unexplained"), [
+    (("/srv/dump", "/srv/dump/"), "", "same path", 70.0),             # one directory: one 30 GiB file
+    (("/srv", "/srv/inner"), "", "one path inside the other", 40.0),  # two directories: two files
+    # /srv with backup=inner/dump lists /srv/inner/dump, the inner storage's own dump directory
+    (("/srv", "/srv/inner"), "backup=inner/dump", "one path inside the other", None),
+    (("/srv/a", "/srv/b"), "", "identical total and used bytes (inferred, not proven)", None),
 ])
 def test_combined_unexplained_bytes_count_a_shared_listing_once_and_unknown_overlap_as_unknown(
-        paths, reason, unexplained):
+        paths, dirs, reason, unexplained):
     config = [{"storage": s, "type": "dir", "path": path} for s, path in zip(("a", "b"), paths, strict=True)]
+    if dirs:
+        config[0]["content-dirs"] = dirs
     listing = {"item": "n1", "status": 200, "json": {"data": [
         {"storage": s, "content": "backup", "active": 1, **_status(200 * GIB, 100 * GIB)} for s in ("a", "b")]}}
     plan = survey.plan({"nodes": NODES, "jobs": [], "storage_listings": [listing], "storage_config": config})
