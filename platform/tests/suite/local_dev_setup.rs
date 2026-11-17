@@ -238,8 +238,10 @@ fn the_rust_toolchain_file_matches_cargo_and_ci() {
         channel, rust_version,
         "rust-toolchain.toml's channel must equal Cargo.toml's rust-version"
     );
-    // The Rust (tests) job's step that installs the toolchain and selects it with a directory
-    // override, which is what CI builds with: both commands must name the file's channel.
+    // Every toolchain the Rust (tests) job installs or selects with a directory override, across
+    // all its steps (rustup's last override wins, so a later one counts too): at least one of
+    // each, and all must name the file's channel. A guard against drift between the three pins,
+    // not a shell parser: `cargo +<tc>` or a RUSTUP_TOOLCHAIN env in the job is not read.
     let workflow = yaml::load_one(&repo::path(".github/workflows/lint-and-test.yml"))
         .expect("the workflow is empty");
     let steps = workflow
@@ -248,24 +250,33 @@ fn the_rust_toolchain_file_matches_cargo_and_ci() {
         .and_then(|job| job.get("steps"))
         .and_then(Node::as_seq)
         .expect("the workflow has no jobs.rust-tests.steps");
-    let run = steps
+    // Shell continuation lines joined, so a version on the next line is read as part of its
+    // command.
+    let runs: Vec<String> = steps
         .iter()
         .filter_map(|step| step.get("run").and_then(Node::as_str))
-        .find(|run| run.contains("rustup toolchain install "))
-        .expect("the Rust (tests) job installs no toolchain");
+        .map(|run| run.replace("\\\n", " "))
+        .collect();
     for command in ["rustup toolchain install ", "rustup override set "] {
-        let version = run
-            .lines()
-            .find_map(|line| {
+        let versions: Vec<&str> = runs
+            .iter()
+            .flat_map(|run| run.lines())
+            .filter_map(|line| {
                 line.trim_start()
                     .strip_prefix(command)?
                     .split_whitespace()
                     .next()
             })
-            .unwrap_or_else(|| panic!("the Rust (tests) job's toolchain step has no `{command}`"));
-        assert_eq!(
-            channel, version,
-            "rust-toolchain.toml's channel must equal the Rust (tests) job's `{command}` version"
+            .collect();
+        assert!(
+            !versions.is_empty(),
+            "the Rust (tests) job has no `{command}` line"
         );
+        for version in versions {
+            assert_eq!(
+                channel, version,
+                "rust-toolchain.toml's channel must equal every `{command}` version in the Rust (tests) job"
+            );
+        }
     }
 }
