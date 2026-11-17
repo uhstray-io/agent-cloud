@@ -47,8 +47,8 @@ with no proof path").
 - THEN the probe answers 401 with the leaf, refuses the same URL without a certificate, and the run records the leaf as proven
 
 #### Scenario: Long-running holder proven at renewal
-- WHEN renewal renews the content caller's leaf and the leaf is held by a long-running process (an Activepieces piece or the egress sidecar)
-- THEN renewal runs the holder's declared reload (a long-running holder does not re-read its files, so its reload is never `none`), which loads the files from the mounted directory into the holder, the serial in the mounted directory matches the one issued, and a request along that process's path, sent without an API key, answers 401 (the key check was reached) before the leaf is recorded as proven
+- WHEN renewal renews the content caller's leaf and its holder (an Activepieces piece or the egress sidecar) reads the files once and keeps them, rather than re-reading them for each connection
+- THEN renewal runs the holder's declared reload, which loads the files from the mounted directory into the holder, the serial in the mounted directory matches the one issued, and a request along that process's path, sent without an API key, answers 401 (the key check was reached) before the leaf is recorded as proven
 
 #### Scenario: Client leaf without a proof path
 - WHEN a client leaf is declared with no proof path
