@@ -373,8 +373,8 @@ pub mod repo {
             .collect()
     }
 
-    /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git
-    /// grep exits 1 for no match).
+    /// `grep_in` at the repository root: `git grep -z -n -E` over tracked files, the matching
+    /// lines as `path:line:text`, empty when none match (git grep exits 1 for no match).
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
         grep_in(root(), pattern, pathspecs)
     }
