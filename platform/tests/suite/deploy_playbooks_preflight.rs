@@ -35,10 +35,12 @@
 //!    - Known limits, accepted: the check reads `vars:`, not every way a value is set. A value the
 //!      guard play sees but `hosts:` does not (an inventory variable, a `set_fact` or `register`
 //!      in the guard play, a role default on either play) can still let the guard test one group
-//!      while the play runs another; so can play-level `tags` (other than `always`) or
-//!      `ignore_errors` on the guard play. The templated deploys do none of these: their guard
-//!      plays carry only `tags: [always]`, and the variable arrives as a Semaphore survey extra
-//!      var, which both plays see. Tracked as follow-ups.
+//!      while the play runs another group, or none; so can play-level `tags` (other than
+//!      `always`) or `ignore_errors` on the guard play. The templated deploys do none of these.
+//!      Their guard plays carry only `tags: [always]`. The variable arrives as a survey extra var
+//!      (`deploy-github-runner.yml`) or a wrapper's import var (`deploy-service.yml`, through
+//!      `deploy-openbao.yml` and `deploy-semaphore.yml`), and both plays see either. Tracked as
+//!      follow-ups.
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
 //! judged by the plays it runs.
