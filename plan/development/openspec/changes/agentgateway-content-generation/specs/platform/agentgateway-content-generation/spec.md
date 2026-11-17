@@ -34,8 +34,8 @@ the gateway's listener TLS on; see the inference-gateway-agentgateway requiremen
 admits only declared client certificates".
 
 #### Scenario: Keyless request from the Activepieces host
-- WHEN the gateway's listener TLS is on and a request presents the Activepieces leaf with no API key
-- THEN it is refused with HTTP 401 (gate 2.4, AC-791)
+- WHEN the gateway's listener TLS is on and a request presents the Activepieces leaf, named on the allowlist, with no API key
+- THEN it is refused with HTTP 401
 
 ### Requirement: An image model is served only with a per-identity request limit in force
 The gateway SHALL serve an image model only after a per-identity request limit for that model is in
