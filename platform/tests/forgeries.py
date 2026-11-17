@@ -51,10 +51,18 @@ def _literal(value) -> str:
 
 def _render_counter(name: str, tmp_path: Path) -> tuple[Path, str]:
     """The counter file for one name's renderings, and the shell that counts one rendering: it prints
-    the number of renderings BEFORE this one and leaves the file one higher."""
+    the number of renderings BEFORE this one and leaves the file one higher. Renders from parallel
+    hosts are serialized by the lock directory beside the counter (AC-902): the truncating write let
+    a concurrent read see an empty file, count 0, and render the honest value again. mkdir is the lock
+    because macOS ships no flock command."""
     counter = tmp_path / f"forgery-renders-{name}"
+    lock = counter.with_name(counter.name + ".lock")
     assert " " not in str(counter), counter
-    return counter, f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; echo $n"
+    # ponytail: a render killed while holding the lock leaves a stale .lock, and every later render
+    # spins until the harness timeout. Upgrade path: a trap that removes the lock on exit, once seen.
+    return counter, (f"until mkdir {lock} 2>/dev/null; do sleep 0.01; done; "
+                     f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; "
+                     f"rmdir {lock}; echo $n")
 
 
 def _ternary(cond: str, good, bad) -> str:

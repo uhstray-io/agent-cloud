@@ -44,7 +44,8 @@ REFUSED = "The shared key is refused once retired"
 ROTATED_NOTE = "Shared-key grace period: the vLLM key was rotated, so admission is not probed"
 ADMITTED_ASSERT = "Require the shared key to be admitted until legacy_shared_expires"
 REFUSED_ASSERT = "Require the shared key to be refused after legacy_shared_expires"
-LEGACY_VARS = ("_legacy_expires", "_agw_today", "_legacy_shared_active", "_legacy_shared_retired")
+LEGACY_VARS = ("_legacy_expires", "_legacy_shared_active", "_legacy_shared_retired")
+FREEZE = "Freeze today's UTC date for the shared-key grace period"
 OLD = "shared-vllm-key-OLD-0000"
 NEW = "rotated-vllm-key-NEW-1111"
 OTHER_FP = "f" * 64
@@ -107,13 +108,14 @@ def _run(tmp: Path, url: str, vllm: str, *args: str, fp: str = "", live_fp: str 
             "agw_upstream_base_url": "http://u.invalid/v1", "service_name": "agentgateway",
             "secrets": secrets, "_resolved": secrets, "_existing": existing,
             "_bao_auth": {"json": {"auth": {"client_token": seed_harness.LOGIN}}}, **hv}
-    play_vars = {k: v for k, v in PHASE1["vars"].items() if k.startswith(("_legacy", "_agw_today"))}
+    play_vars = {k: v for k, v in PHASE1["vars"].items() if k.startswith("_legacy")}
     play_vars["_bao_url"] = url
     include = dict(TASKS[INCLUDE], **{"ansible.builtin.include_tasks": str(CHECK)})
     render = {"name": "render", "ansible.builtin.template": {"src": str(CONFIG), "dest": str(tmp / "config.yaml")}}
     deploy = {"name": "deploy.sh stand-in", "ansible.builtin.copy": {
         "src": str(tmp / "config.yaml"), "dest": str(tmp / "deployed")}, "when": "not ansible_check_mode"}
-    plays = [{"hosts": "all", "gather_facts": False, "vars": play_vars, "tasks": [TASKS[GUARD], render, include]},
+    plays = [{"hosts": "all", "gather_facts": False, "vars": play_vars,
+              "tasks": [TASKS[FREEZE], TASKS[GUARD], render, include]},
              {"hosts": "all", "gather_facts": False, "tasks": [deploy]},
              dict(PHASE4, hosts="all")]
     if show:
@@ -290,7 +292,7 @@ def _verify(tmp: Path, url: str, *args: str, **hv) -> subprocess.CompletedProces
     """The verify play's shared-key probe and assert tasks, run for real against the stub gateway."""
     names = [ADMITTED, "Shared-key grace period: keep the probe's status", ADMITTED_ASSERT, ROTATED_NOTE, REFUSED,
              "Shared-key retirement: keep the probe's status", REFUSED_ASSERT]
-    tasks = []
+    tasks = [VERIFY_TASKS[FREEZE]]
     for n in names:
         t = dict(VERIFY_TASKS[n])
         if "ansible.builtin.include_tasks" in t:
@@ -318,6 +320,16 @@ def test_the_rotated_key_flag_is_set_and_read_under_one_name():
 
 def test_the_verify_play_reads_the_grace_period_the_way_phase_one_does():
     assert all(PHASE3["vars"][k] == PHASE1["vars"][k] for k in LEGACY_VARS)
+
+
+def test_both_plays_freeze_today_once_with_the_same_expression():
+    # Each task that reads a play var renders it again (docs/MISTAKES.md 10.8): today must be a fact set once.
+    assert "_agw_today" not in PHASE1["vars"] and "_agw_today" not in PHASE3["vars"]
+    p1, p3 = PHASE1["tasks"][0], PHASE3["tasks"][0]
+    assert p1["name"] == FREEZE and p3["name"] == FREEZE
+    assert p1["ansible.builtin.set_fact"] == p3["ansible.builtin.set_fact"]
+    assert "when" not in p1
+    assert p3["when"] == "_agw_today is not defined"
 
 
 def test_the_shared_key_is_proven_admitted_before_expiry(tmp_path, gateway):

@@ -330,14 +330,24 @@ pub mod repo {
         root().join(rel)
     }
 
-    /// `git -C <root> <args>`; panics unless the exit status is at most `max_status`.
-    fn git(args: &[&str], max_status: i32) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(root())
-            .args(args)
-            .output()
-            .expect("git");
+    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. The variables
+    /// that locate a repository are removed: a hook exports them and they override `-C`. `lane.sh`
+    /// unsets them too, but a direct `cargo nextest run` does not pass through it (#1169 review).
+    fn git_in(dir: &Path, args: &[&str], max_status: i32) -> String {
+        let mut cmd = Command::new("git");
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+        ] {
+            cmd.env_remove(name);
+        }
+        let out = cmd.arg("-C").arg(dir).args(args).output().expect("git");
         assert!(
             out.status.code().is_some_and(|c| c <= max_status),
             "git {args:?} failed: {}",
@@ -349,15 +359,28 @@ pub mod repo {
     /// Tracked files matching git pathspecs, relative to the root. Untracked files are not
     /// part of the repository and never decide a test.
     pub fn ls_files(pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["ls-files", "--"], pathspecs].concat();
-        git(&args, 0).lines().map(str::to_owned).collect()
+        ls_files_in(root(), pathspecs)
+    }
+
+    /// `ls_files` for the repository at `dir`. `-z` keeps each path as it is on disk: without it
+    /// git quotes a non-ASCII name (`caf\303\251.yml`), so a caller's `is_file()` fails (AC-908).
+    /// A path that is not UTF-8 panics, as every other git output here does.
+    pub fn ls_files_in(dir: &Path, pathspecs: &[&str]) -> Vec<String> {
+        let args = [&["ls-files", "-z", "--"], pathspecs].concat();
+        git_in(dir, &args, 0)
+            .split_terminator('\0')
+            .map(str::to_owned)
+            .collect()
     }
 
     /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git
     /// grep exits 1 for no match).
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
         let args = [&["grep", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
-        git(&args, 1).lines().map(str::to_owned).collect()
+        git_in(root(), &args, 1)
+            .lines()
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
@@ -606,7 +629,19 @@ pub mod process {
     /// only. A worker `ansible-playbook` forked is not killed and can outlive the timeout on every
     /// runner path: sandboxed under `sandbox-exec` or `bwrap`, unconfined without either. The Python
     /// harness has the same limit; AC-882 tracks a process-group kill.
+    ///
+    /// A playbook run (the program, or any argument, is `ansible-playbook`) is held to
+    /// [`PLAYBOOK_TIMEOUT`]: `run_for` refuses any other bound, so [`run`] is the route that passes
+    /// (CONTRIBUTING.md, playbook tier; AC-906). The builder's own `.output()` or `.assert()` skips
+    /// this check and keeps the `PLAYBOOK_TIMEOUT` that [`ansible_playbook`] sets.
     pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
+        let runs_playbook = std::iter::once(cmd.get_program())
+            .chain(cmd.get_args())
+            .any(|arg| Path::new(arg).file_name() == Some("ansible-playbook".as_ref()));
+        assert!(
+            !runs_playbook || timeout == PLAYBOOK_TIMEOUT,
+            "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run"
+        );
         let started = Instant::now();
         let output = cmd
             .write_stdin(Vec::new())
