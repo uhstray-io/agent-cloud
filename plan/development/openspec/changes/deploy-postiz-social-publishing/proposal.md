@@ -74,8 +74,8 @@ None — this store has no existing specs.
 - **Secret store**: a new service path holding three generated values that must stay
   stable across redeploys, plus nine seeded platform credentials; one cross-service
   read of the OIDC client secret owned by the identity provider.
-- **External, operator-performed**: OAuth redirect-URI updates at four social
-  platforms — not automatable from here. DNS is *not* in this list: the zone is
+- **External, operator-performed**: OAuth redirect-URI updates at the first-rollout social
+  platforms, X and LinkedIn (YouTube and Discord deferred, AC-762) — not automatable from here. DNS is *not* in this list: the zone is
   config-as-code via OpenTofu and the record is already declared and live.
 - **Dependencies**: adds a Temporal workflow engine and a second Postgres to the
   service host — the largest single cost of this change, and the reason the upstream
