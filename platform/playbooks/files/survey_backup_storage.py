@@ -107,6 +107,11 @@ def _flag(value):
     return value in (1, "1")
 
 
+def _enabled(job):
+    """Whether Proxmox runs a job: a disabled one never backs up or prunes. False == 0 in Python."""
+    return job.get("enabled", 1) not in (0, "0")
+
+
 def _is_vmid(text):
     return re.fullmatch(r"[0-9]+", str(text)) is not None
 
@@ -146,7 +151,7 @@ def plan(data):
     configs = {c.get("storage"): c for c in data.get("storage_config") or []}
     retentions = {}
     for job in data["jobs"]:
-        if job.get("type", "vzdump") == "vzdump" and job.get("storage"):
+        if job.get("type", "vzdump") == "vzdump" and job.get("storage") and _enabled(job):
             retentions.setdefault(_name(job["storage"], "job storage ID"), set()).add(_retention(job))
     reads, seen = [], set()
     for listing in data["storage_listings"]:  # raw uri results, one per online node
@@ -256,12 +261,12 @@ def summarize(data):
             # With no vmid given, Proxmox checks Datastore.Allocate for the preview (pve-storage PruneBackups.pm).
             marks = _ok(prune, "prune preview", storage, "Datastore.Allocate")
             previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
-        # A guest's retentions are those of the vzdump jobs on this storage that back it up. A job backs
+        # A guest's retentions are those of the enabled vzdump jobs on this storage that back it up. A job backs
         # up and prunes a guest on the node it lives on, so on a node-local storage only the guests
         # living on that node take a retention.
         retention_of, protects_every_archive = {}, set()
         for job, _, guests in job_guests:
-            if job.get("storage") == storage:
+            if job.get("storage") == storage and _enabled(job):
                 if not shared:
                     guests = {vmid for vmid in guests if existing.get(vmid, {}).get("node") == node}
                 for vmid in guests:
@@ -357,7 +362,7 @@ def summarize(data):
 
     job_rows = []
     for job, selects, guests in job_guests:
-        job_rows.append({"id": job.get("id"), "enabled": job.get("enabled", 1) not in (0, "0"),
+        job_rows.append({"id": job.get("id"), "enabled": _enabled(job),
                          "schedule": job.get("schedule") or job.get("starttime"),
                          "node": job.get("node") or "all", "storage": job.get("storage"),
                          "retention": _retention(job), "mode": job.get("mode"),

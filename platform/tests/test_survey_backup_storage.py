@@ -343,6 +343,18 @@ def test_two_ids_for_one_export_listing_the_same_archives_count_them_once():
     assert survey.summarize(summary)["shared_backends"][0]["combined_unaccounted_gib"] == 40.0
 
 
+def test_a_disabled_job_neither_previews_nor_marks_anything_prunable():
+    vms = [{"vmid": 801, "node": "n1"}]
+    jobs = [{"id": "off", "type": "vzdump", "storage": "backups", "vmid": "801", "prune-backups": "keep-last=1",
+             "enabled": 0}]
+    archives = [_archive("backups", 801, day, GIB) for day in range(4)]
+    plan, result = _one_store(jobs, vms, archives, previews={"keep-last=1": [_mark(a) for a in archives[:3]]})
+    assert plan["reads"][0]["retentions"] == []
+    storage = result["storages"][0]
+    assert storage["prunable_archives"] == 0 and storage["by_guest"][0]["job_retention"] == []
+    assert result["jobs"][0]["enabled"] is False
+
+
 def test_protected_archives_count_toward_the_need_even_when_no_job_keeps_any():
     vms = [{"vmid": 901, "node": "n1"}]
     archives = [{**_archive("backups", 901, day, 10 * GIB), "protected": 1} for day in range(3)]
