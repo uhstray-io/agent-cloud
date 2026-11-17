@@ -98,15 +98,15 @@ SUDO = (
 )
 
 
-def _production_run(tmp_path: Path, rootful: bool, *extra: str, playbook: Path = PLAYBOOK):
+def _production_run(tmp_path: Path, rootful: bool, *extra: str, playbook: Path = PLAYBOOK, linger: str = "yes"):
     """One production host on rootless or rootful podman, with test doubles first on PATH: podman answers as
-    FAKE_ENGINE, loginctl reports linger on, getent names testuser at a home with no boot unit, sudo runs its
+    FAKE_ENGINE, loginctl reports Linger=<linger>, getent names testuser at a home with no boot unit, sudo runs its
     argument, and systemctl reports every unit disabled. Nothing real is started or read."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     doubles = {
         "podman": FAKE_ENGINE,
-        "loginctl": "#!/bin/sh\necho Linger=yes\n",
+        "loginctl": f"#!/bin/sh\necho Linger={linger}\n",
         "getent": f'#!/bin/sh\necho "testuser:x:1000:1000::{tmp_path / "home"}:/bin/sh"\n',
         "sudo": SUDO,
         "systemctl": "#!/bin/sh\necho disabled\nexit 1\n",
@@ -127,10 +127,19 @@ def _production_run(tmp_path: Path, rootful: bool, *extra: str, playbook: Path =
 
 
 @pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True)[:2])
-def test_verify_checks_linger_and_the_boot_unit_on_production_under_a_forged_local_mode(tmp_path, forge):
-    result = _result(_production_run(tmp_path, False, "-e", forge(tmp_path)).stdout)
+@pytest.mark.parametrize(
+    "linger, expected",
+    [
+        ("yes", "podman-restart.service is not enabled for the deploying user"),
+        ("no", "linger is off for the deploying user"),
+    ],
+)
+def test_verify_checks_linger_and_the_boot_unit_on_production_under_a_forged_local_mode(
+    tmp_path, forge, linger, expected
+):
+    result = _result(_production_run(tmp_path, False, "-e", forge(tmp_path), linger=linger).stdout)
     assert result["status"] == "fail", result
-    assert "podman-restart.service is not enabled for the deploying user" in result["error"], result
+    assert expected in result["error"], result
 
 
 @pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True)[:2])

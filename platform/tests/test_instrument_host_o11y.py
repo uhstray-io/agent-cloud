@@ -777,8 +777,10 @@ def test_refuses_a_target_it_must_not_instrument(estate, target):
 
 @needs_ansible
 def test_production_budget_failure_on_distinct_receiver_stops_exporter_play(estate):
-    # A production inventory (plan 24): no host is named -local, so the budget check's production branch is taken by
-    # the inventory alone. Both service hosts run the fake engine, so the empty engine-call logs are a real claim.
+    # A production inventory: no host is named -local. The budget check (tasks/assert-o11y-scrape-limits.yml) still
+    # reads local_mode (plan 24 step 3), so its production branch is taken here because the inventory sets
+    # local_mode=false, not by the inventory's identity. Both service hosts run the fake engine, so the empty
+    # engine-call logs are a real claim.
     proc = _run_inventory(_production_inventory(estate, fake_alpha=True))
 
     assert proc.returncode != 0, proc.stdout[-4000:]
