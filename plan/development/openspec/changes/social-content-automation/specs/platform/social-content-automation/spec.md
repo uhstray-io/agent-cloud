@@ -6,7 +6,7 @@ Provides AI-assisted drafting of social posts for the instance's brands, with a 
 
 ### Requirement: Drafts need no approval; scheduling and publishing need a recorded approval
 
-Generation MAY create a draft without an approval. The platform MUST NOT schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post.
+Generation MAY create a draft without an approval. No flow and no handoff SHALL schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post. A member scheduling a generated draft by hand in the publishing interface is outside this requirement until plan 28 Open Question 8 is decided.
 
 An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media, its target account and its publish time, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
 
@@ -37,6 +37,12 @@ An approval SHALL apply only to the revision it names. A revision covers the pos
 - **GIVEN** a revision was approved
 - **WHEN** the post as the publishing service holds it no longer matches that revision, read back just before the schedule
 - **THEN** the post is not scheduled, and the mismatch is recorded
+
+#### Scenario: Edit to a scheduled revision is refused
+
+- **GIVEN** a revision's post is already scheduled
+- **WHEN** a flow edits that post's text, media, target account or publish time
+- **THEN** the edit is refused and the scheduled post is left unchanged
 
 #### Scenario: Publish time changed after approval is not scheduled
 
