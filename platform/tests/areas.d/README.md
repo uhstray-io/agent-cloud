@@ -8,7 +8,8 @@ shared one. `Config::load` in `src/lanes.rs` reads every `*.yml` here, in name o
 - `paths` (required): the globs whose change selects the area. May be `[]`.
 - `tiers` (required): tier name (`static`, `unit`, `cli`, `http`, `playbook`) to module list.
   May be `{}`.
-- `always` (optional): a tier map whose modules join the security set every lane runs.
+- `always` (optional): a tier map whose modules join the security set: every lane runs its
+  static tier, and the push and CI lanes run every tier.
 - No other key. An area already defined, here or in `areas.yml`, is refused.
 - Each module (`suite/<module>.rs`) is listed exactly once across `areas.yml` and every file
   here; the `lanes` test `every_suite_module_is_listed_exactly_once_in_areas_yml` checks it.
@@ -18,7 +19,8 @@ globs: a changed path selects every area whose globs match it.
 
 ## A test that reads beyond its area
 
-A module outside `always` runs only when a change selects its area. Any file it reads must
+A module outside `always` runs only when a change selects its area, or when a change runs
+everything (a `full` path, or in the push and CI lanes an unclassified one). Any file it reads must
 therefore select it in the push lane: by its area's `paths`, by `full`, or by being unclassified
 (a path no area claims, which runs everything). Otherwise a change that adds an offender to that
 file, where another area claims it, skips the test.

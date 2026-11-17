@@ -771,15 +771,17 @@ fn call_args(src: &str, open: usize) -> Vec<&str> {
             }
             _ => {}
         }
-        i += 1;
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
     }
     panic!("an unclosed call at byte {open}");
 }
 
 /// The byte where `const NAME:` or `static NAME:` starts in the code of `src` (comments and
-/// literals skipped, so a doc comment quoting it does not count), or `None`.
-fn definition(src: &str, name: &str) -> Option<usize> {
+/// literals skipped, so a doc comment quoting it does not count). A name defined twice, in two
+/// scopes, cannot be told apart without parsing them, so it is an error, as is no definition.
+fn definition(src: &str, name: &str) -> Result<usize, String> {
     let heads = [format!("const {name}:"), format!("static {name}:")];
+    let mut found = None;
     let mut i = 0;
     while i < src.len() {
         if let Some(end) = skip_at(src, i) {
@@ -790,12 +792,15 @@ fn definition(src: &str, name: &str) -> Option<usize> {
             .chars()
             .next_back()
             .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        if !ident_before && heads.iter().any(|head| src[i..].starts_with(head.as_str())) {
-            return Some(i);
+        if !ident_before
+            && heads.iter().any(|head| src[i..].starts_with(head.as_str()))
+            && found.replace(i).is_some()
+        {
+            return Err(format!("`{name}` is defined twice in this file"));
         }
         i += src[i..].chars().next().map_or(1, char::len_utf8);
     }
-    None
+    found.ok_or_else(|| format!("`{name}` is not a const or static of this file"))
 }
 
 /// The string literals of `expr`, which may hold only literals, constants defined in `src`,
@@ -816,12 +821,12 @@ fn literals_of(expr: &str, src: &str) -> Result<Vec<String>, String> {
                 .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
                 .collect();
             i += name.len();
-            let def = definition(src, &name)
-                .ok_or_else(|| format!("`{name}` is not a const or static of this file"))?;
+            let def = definition(src, &name)?;
             let eq = def + src[def..].find('=').ok_or("a constant without `=`")?;
             let mut end = eq + 1;
             while !src[end..].starts_with(';') {
-                end = skip_at(src, end).unwrap_or(end + 1);
+                end = skip_at(src, end)
+                    .unwrap_or_else(|| end + src[end..].chars().next().map_or(1, char::len_utf8));
             }
             out.extend(literals_of(&src[eq + 1..end], src)?);
         } else if expr[i..].starts_with(|c: char| c.is_whitespace() || "&[],".contains(c)) {
@@ -872,15 +877,16 @@ fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
 fn repo_wide_scans_reads_literals_constants_and_skips_comments_and_strings() {
     // Arrange: a pattern holding a paren and a comma; a constant list with an exclusion, after a
     // constant whose name it prefixes and a doc comment that quotes it; char literals of a quote
-    // and a paren; a scan named only in a comment, in a string and in a raw string holding
-    // quotes; and a lookalike function.
+    // and a paren; a scan named only in a comment, in a string and in a raw string holding an
+    // unpaired quote; a non-ASCII name in code; and a lookalike function.
     let src = r##"
 /// `const SPECS: [&str; 1] = ["decoy"];` in a doc comment is not the definition.
 const SPECS_2: [&str; 1] = ["wrong"];
 const SPECS: [&str; 2] = [":(glob)platform/**/*.yml", ":!platform/x.yml"];
 fn f() {
     let (q, p) = ('"', '(');
-    let raw = r#"a "quoted" repo::grep("x", &["raw"])"#;
+    let raw = r#"a " repo::grep("x", &["raw"])"#;
+    let café = 1;
     // repo::grep("no", &["comment"])
     let s = "repo::ls_files(&[\"string\"])";
     my_repo::grep("no", &["lookalike"]);
@@ -896,9 +902,9 @@ fn f() {
     assert_eq!(
         scans,
         [
-            (11, vec!["platform".to_owned(), "agents".to_owned()]),
+            (12, vec!["platform".to_owned(), "agents".to_owned()]),
             (
-                12,
+                13,
                 vec![
                     ":(glob)platform/**/*.yml".to_owned(),
                     ":!platform/x.yml".to_owned()
@@ -909,15 +915,95 @@ fn f() {
 }
 
 #[test]
-fn repo_wide_scans_refuses_a_pathspec_it_cannot_read() {
-    // Arrange: a pathspec list held in a variable.
-    let src = "fn f(dirs: &[&str]) { repo::grep(\"x\", dirs); }";
+fn repo_wide_scans_refuses_a_constant_defined_twice() {
+    // Arrange: one name in two scopes.
+    let src = "const S: [&str; 1] = [\"outer\"];\nfn f() { const S: [&str; 1] = [\"inner\"]; repo::ls_files(&S); }";
 
     // Act
     let refusal = repo_wide_scans(src).expect_err("a refusal");
 
     // Assert
-    assert!(refusal.contains("`dirs` is not a literal"), "{refusal}");
+    assert!(refusal.contains("`S` is defined twice"), "{refusal}");
+}
+
+#[test]
+fn repo_wide_scans_refuses_a_pathspec_it_cannot_read() {
+    // Arrange: a pathspec list held in a variable, a non-ASCII name in a call's arguments, and
+    // one in a constant's value; each is refused by name, never a panic.
+    let cases = [
+        ("fn f(dirs: &[&str]) { repo::grep(\"x\", dirs); }", "`dirs`"),
+        ("fn f() { repo::grep(\"x\", café); }", "`café`"),
+        (
+            "const S: [&str; 1] = [café];\nfn f() { repo::ls_files(&S); }",
+            "`[café]`",
+        ),
+    ];
+
+    for (src, name) in cases {
+        // Act
+        let refusal = repo_wide_scans(src).expect_err("a refusal");
+
+        // Assert
+        assert!(
+            refusal.contains(&format!("{name} is not a literal")),
+            "{refusal}"
+        );
+    }
+}
+
+/// The scans in `src` (module `module`, file `rel`) whose files do not all select the module in
+/// the push lane under `config`, as one line each, and how many scans it read.
+fn unselected_scans(config: &Config, module: &str, rel: &str, src: &str) -> (usize, Vec<String>) {
+    let scans = repo_wide_scans(src).unwrap_or_else(|e| panic!("{rel}: {e}"));
+    let mut problems = vec![];
+    for (line, specs) in &scans {
+        let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
+        let files = repo::ls_files(&specs);
+        assert!(
+            !files.is_empty(),
+            "{rel}:{line}: {specs:?} cover no tracked file"
+        );
+        let missed: Vec<String> = files
+            .into_iter()
+            .filter(
+                |file| match select(config, Lane::Push, std::slice::from_ref(file)) {
+                    Selection::All => false,
+                    Selection::Modules(selected) => !selected.contains(module),
+                },
+            )
+            .collect();
+        if !missed.is_empty() {
+            problems.push(format!(
+                "{rel}:{line} scans {} file(s) whose change does not select {module}, e.g. {}",
+                missed.len(),
+                missed[..missed.len().min(3)].join(", ")
+            ));
+        }
+    }
+    (scans.len(), problems)
+}
+
+#[test]
+fn a_scan_beyond_its_area_is_reported_and_one_within_it_is_not() {
+    // Arrange: BASE's `common_sh` area claims platform/lib/common.sh only, and its
+    // `restart_policy` area claims the compose files.
+    let config = config(BASE);
+    let within = r#"fn t() { repo::grep("x", &[":(glob)platform/**/*compose*.yml"]); }"#;
+    let beyond = r#"fn t() { repo::grep("x", &["platform/lib/common.sh", ":(glob)platform/**/*compose*.yml"]); }"#;
+
+    // Act
+    let (_, as_restart_policy) = unselected_scans(&config, "restart_policy", "inline.rs", within);
+    let (scans, as_common_sh) = unselected_scans(&config, "common_sh", "inline.rs", beyond);
+
+    // Assert
+    assert!(as_restart_policy.is_empty(), "{as_restart_policy:?}");
+    assert_eq!(scans, 1);
+    assert_eq!(as_common_sh.len(), 1, "{as_common_sh:?}");
+    assert!(
+        as_common_sh[0].starts_with("inline.rs:1 scans ")
+            && as_common_sh[0].contains("whose change does not select common_sh"),
+        "{as_common_sh:?}"
+    );
 }
 
 /// A module outside the security set runs only when a change selects its area. A scan that
@@ -944,31 +1030,9 @@ fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
         }
         let rel = format!("platform/tests/suite/{module}.rs");
         let src = std::fs::read_to_string(repo::path(&rel)).expect("the module reads");
-        for (line, specs) in repo_wide_scans(&src).unwrap_or_else(|e| panic!("{rel}: {e}")) {
-            scans += 1;
-            let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
-            let files = repo::ls_files(&specs);
-            assert!(
-                !files.is_empty(),
-                "{rel}:{line}: {specs:?} cover no tracked file"
-            );
-            let missed: Vec<String> = files
-                .into_iter()
-                .filter(
-                    |file| match select(&config, Lane::Push, std::slice::from_ref(file)) {
-                        Selection::All => false,
-                        Selection::Modules(selected) => !selected.contains(*module),
-                    },
-                )
-                .collect();
-            if !missed.is_empty() {
-                problems.push(format!(
-                    "{rel}:{line} scans {} file(s) whose change does not select {module}, e.g. {}",
-                    missed.len(),
-                    missed[..missed.len().min(3)].join(", ")
-                ));
-            }
-        }
+        let (read, found) = unselected_scans(&config, module, &rel, &src);
+        scans += read;
+        problems.extend(found);
     }
 
     // Assert
