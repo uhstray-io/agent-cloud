@@ -1,22 +1,22 @@
 //! The suite's fake HTTP server (`src/http.rs`), the port of `fake_http.py`.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use agent_cloud_tests::http::{Mock, ResponseTemplate, Server, matchers, refused_port};
+use agent_cloud_tests::http::{Mock, ResponseTemplate, Server, matchers, refused_port, refuses};
 use agent_cloud_tests::process;
 
-/// The address a server URL names ("http://host:port" or "http://[v6]:port").
-fn addr(url: &str) -> SocketAddr {
-    let authority = url.strip_prefix("http://").unwrap();
-    authority.to_socket_addrs().unwrap().next().unwrap()
-}
-
 /// One raw HTTP/1.1 request with `Connection: close`; returns the whole response text.
-fn send(url: &str, method: &str, path: &str, headers: &[(&str, &str)], body: &[u8]) -> String {
-    let mut stream = TcpStream::connect_timeout(&addr(url), Duration::from_secs(5)).unwrap();
+fn send(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> String {
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(5)).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
@@ -60,7 +60,7 @@ fn a_mounted_mock_answers_its_method_and_path_and_records_the_request() {
     );
 
     let response = send(
-        server.url(),
+        server.addr(),
         "POST",
         "/x",
         &[("X-Probe", "one")],
@@ -81,7 +81,7 @@ fn a_mounted_mock_answers_its_method_and_path_and_records_the_request() {
 fn a_request_no_mock_matches_gets_404_and_is_recorded() {
     let server = Server::start();
 
-    let response = send(server.url(), "GET", "/nothing", &[], b"");
+    let response = send(server.addr(), "GET", "/nothing", &[], b"");
 
     assert_eq!(status(&response), "404");
     let requests = server.requests();
@@ -103,8 +103,8 @@ fn a_closure_responder_can_change_its_reply_between_calls() {
         },
     ));
 
-    let first = send(server.url(), "GET", "/flaky", &[], b"");
-    let second = send(server.url(), "GET", "/flaky", &[], b"");
+    let first = send(server.addr(), "GET", "/flaky", &[], b"");
+    let second = send(server.addr(), "GET", "/flaky", &[], b"");
 
     assert_eq!(status(&first), "500");
     assert_eq!(status(&second), "200");
@@ -117,7 +117,7 @@ fn a_large_request_body_is_read_before_the_reply() {
     reply_on(&server, "/auth", 401, "denied");
     let large = vec![b'a'; 4 * 1024 * 1024];
 
-    let response = send(server.url(), "POST", "/auth", &[], &large);
+    let response = send(server.addr(), "POST", "/auth", &[], &large);
 
     assert_eq!(status(&response), "401");
     assert_eq!(body(&response), "denied");
@@ -129,7 +129,7 @@ fn a_wildcard_bind_reports_a_loopback_url() {
     let server = Server::bind("0.0.0.0");
     reply_on(&server, "/", 200, "here");
 
-    let response = send(server.url(), "GET", "/", &[], b"");
+    let response = send(server.addr(), "GET", "/", &[], b"");
 
     assert!(
         server.url().starts_with("http://127.0.0.1:"),
@@ -144,7 +144,7 @@ fn an_ipv6_bind_reports_a_bracketed_url() {
     let server = Server::bind("::1");
     reply_on(&server, "/", 200, "here");
 
-    let response = send(server.url(), "GET", "/", &[], b"");
+    let response = send(server.addr(), "GET", "/", &[], b"");
 
     assert!(
         server.url().starts_with("http://[::1]:"),
@@ -154,25 +154,17 @@ fn an_ipv6_bind_reports_a_bracketed_url() {
     assert_eq!(body(&response), "here");
 }
 
-fn refused(address: SocketAddr) -> bool {
-    // A small race: once the port is free, a parallel test's bind to 0 could be handed it.
-    // The check runs at once after the drop, so that window is tiny.
-    matches!(
-        TcpStream::connect_timeout(&address, Duration::from_secs(2)),
-        Err(e) if e.kind() == ErrorKind::ConnectionRefused
-    )
-}
-
 #[test]
 fn dropping_the_server_stops_it() {
     let server = Server::start();
     reply_on(&server, "/", 200, "up");
-    let address = addr(server.url());
-    assert_eq!(body(&send(server.url(), "GET", "/", &[], b"")), "up");
+    let address = server.addr();
+    assert_eq!(body(&send(server.addr(), "GET", "/", &[], b"")), "up");
 
     drop(server);
 
-    assert!(refused(address), "{address} still accepts after the drop");
+    // A small race: once the port is free, a parallel test's bind to 0 could be handed it.
+    assert!(refuses(address), "{address} still accepts after the drop");
 }
 
 #[test]
@@ -182,14 +174,15 @@ fn a_panic_while_serving_still_stops_it() {
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let server = Server::start();
         reply_on(&server, "/", 200, "up");
-        address = Some(addr(server.url()));
-        assert_eq!(body(&send(server.url(), "GET", "/", &[], b"")), "up");
+        address = Some(server.addr());
+        assert_eq!(body(&send(server.addr(), "GET", "/", &[], b"")), "up");
         panic!("the test body failed");
     }));
 
     assert!(outcome.is_err());
     let address = address.unwrap();
-    assert!(refused(address), "{address} still accepts after the panic");
+    // A small race: once the port is free, a parallel test's bind to 0 could be handed it.
+    assert!(refuses(address), "{address} still accepts after the panic");
 }
 
 #[test]

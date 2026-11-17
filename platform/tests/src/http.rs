@@ -8,11 +8,11 @@
 //!
 //! Not covered, because wiremock 0.6.5 has none of them: TLS (`serve(ssl_context=...)`),
 //! streamed or chunk-timed response bodies, replies held until a test event, and dropped
-//! connections. A test that needs one stays on the Python fixture until this grows it.
+//! connections. A test that needs one stays on the Python fixture until this grows it (AC-956).
 
 use std::io::ErrorKind;
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
+use std::time::{Duration, Instant};
 
 use tokio::runtime::Runtime;
 
@@ -22,7 +22,7 @@ pub use wiremock::{Mock, Request, ResponseTemplate, matchers};
 pub struct Server {
     runtime: Runtime,
     server: Option<wiremock::MockServer>,
-    url: String,
+    addr: SocketAddr,
 }
 
 impl Server {
@@ -31,22 +31,21 @@ impl Server {
         Server::bind("127.0.0.1")
     }
 
-    /// A server on an ephemeral port of `host`. Its URL names loopback for a wildcard bind
-    /// ("0.0.0.0" gives 127.0.0.1, "::" gives ::1) and brackets an IPv6 host.
+    /// A server on an ephemeral port of `host`. A wildcard bind ("0.0.0.0", "::") is reached on
+    /// loopback, so its address and URL name loopback.
     pub fn bind(host: &str) -> Server {
         let listener = TcpListener::bind((host, 0))
             .unwrap_or_else(|e| panic!("cannot bind a fake HTTP server on {host}: {e}"));
-        let port = listener.local_addr().unwrap().port();
-        let url_host = match host {
-            "0.0.0.0" => "127.0.0.1",
-            "::" => "::1",
-            other => other,
-        };
-        let url = if url_host.contains(':') {
-            format!("http://[{url_host}]:{port}")
-        } else {
-            format!("http://{url_host}:{port}")
-        };
+        let mut addr = listener
+            .local_addr()
+            .expect("a bound listener has an address");
+        if addr.ip().is_unspecified() {
+            addr.set_ip(if addr.is_ipv6() {
+                IpAddr::V6(Ipv6Addr::LOCALHOST)
+            } else {
+                IpAddr::V4(Ipv4Addr::LOCALHOST)
+            });
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -57,13 +56,19 @@ impl Server {
         Server {
             runtime,
             server: Some(server),
-            url,
+            addr,
         }
     }
 
-    /// The server's base URL, "http://<host>:<port>" with no trailing slash.
-    pub fn url(&self) -> &str {
-        &self.url
+    /// The address a client connects to.
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// The server's base URL, "http://<host>:<port>" with no trailing slash; an IPv6 host is
+    /// bracketed.
+    pub fn url(&self) -> String {
+        format!("http://{}", self.addr)
     }
 
     /// Mounts `mock`: requests it matches get its reply from now on.
@@ -84,52 +89,52 @@ impl Server {
 }
 
 impl Drop for Server {
-    /// Stops the server and waits until its port refuses connections. Dropping the MockServer
-    /// only signals its accept loop, which runs on a detached thread (wiremock
-    /// `bare_server.rs`), so the listener closes a moment later; the wait makes "dropped" mean
-    /// "stopped". Bounded at 2 s: a parallel test handed the freed port would keep it open.
+    /// Stops the server and waits, about 2 s at most, until its port refuses connections:
+    /// dropping the MockServer only signals its accept loop, which runs on a detached thread
+    /// (wiremock `bare_server.rs`), so the listener closes a moment later. Running out of time is
+    /// not an error: a parallel test can be handed the freed port and keep it open.
+    ///
+    /// wiremock's own drop panics when a `Mock::expect` is unmet, and that panic prints every
+    /// recorded request with its headers, unredacted (wiremock `exposed_server.rs`, `request.rs`).
+    /// A fixture must therefore never send a real credential to this server.
     fn drop(&mut self) {
         let Some(server) = self.server.take() else {
             return;
         };
-        let address = *server.address();
         drop(server);
-        for _ in 0..200 {
-            match TcpStream::connect_timeout(&address, Duration::from_millis(50)) {
-                Err(e) if e.kind() == ErrorKind::ConnectionRefused => return,
-                _ => std::thread::sleep(Duration::from_millis(10)),
-            }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !refuses(self.addr) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+/// Whether a TCP connection to `addr` is refused; an attempt that neither connects nor is refused
+/// within 50 ms counts as not refused.
+pub fn refuses(addr: SocketAddr) -> bool {
+    matches!(
+        TcpStream::connect_timeout(&addr, Duration::from_millis(50)),
+        Err(e) if e.kind() == ErrorKind::ConnectionRefused
+    )
 }
 
 /// The port aimed at when a test needs "nothing listens here": 1, below every ephemeral range,
 /// so a bind to port 0 never hands it out. A port freed by stopping a server is not that: a
 /// parallel test can be handed it (`fake_http.py`, `docs/MISTAKES.md` 2.33). Panics, naming the
-/// address, when 127.0.0.1 or ::1 does not refuse a connection to it; ::1 is skipped on a
-/// machine with no IPv6 loopback.
+/// address, unless 127.0.0.1, and ::1 where this machine has an IPv6 loopback, refuse it.
 pub fn refused_port() -> u16 {
     const PORT: u16 = 1;
-    for (address, v6) in [("127.0.0.1", false), ("::1", true)] {
-        let addr = SocketAddr::new(address.parse().unwrap(), PORT);
+    let mut loopbacks = vec![IpAddr::V4(Ipv4Addr::LOCALHOST)];
+    if TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok() {
+        loopbacks.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+    for ip in loopbacks {
+        let addr = SocketAddr::new(ip, PORT);
         match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-            Ok(_) => {
-                panic!("something listens on [{address}]:{PORT}; refused_port() needs it closed")
-            }
             Err(e) if e.kind() == ErrorKind::ConnectionRefused => {}
-            Err(e)
-                if v6
-                    && (matches!(
-                        e.kind(),
-                        ErrorKind::AddrNotAvailable | ErrorKind::NetworkUnreachable
-                    ) || e.raw_os_error() == Some(libc_eafnosupport())) => {}
-            Err(e) => panic!("[{address}]:{PORT} did not refuse a connection: {e}"),
+            Ok(_) => panic!("something listens on {addr}; refused_port() needs it closed"),
+            Err(e) => panic!("{addr} did not refuse a connection: {e}"),
         }
     }
     PORT
-}
-
-/// EAFNOSUPPORT, the "address family not supported" errno: 47 on macOS, 97 on Linux.
-fn libc_eafnosupport() -> i32 {
-    if cfg!(target_os = "macos") { 47 } else { 97 }
 }
