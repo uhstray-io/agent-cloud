@@ -29,9 +29,9 @@ file, where another area claims it, skips the test.
   `platform`, say) goes under `always: static:`. Static tests are cheap, and that is what the set
   is for.
 - Any other module gets its area's `paths` widened to what it reads.
-- A file in `ignore` (`**/*.md`, `plan/**`, `docs/**`) selects nothing unless an area lists it in
-  `paths` (area paths are matched first), so a module that reads one either has its area list
-  that file or goes in `always`.
+- A file in `ignore` (`**/*.md`, `plan/**`, `docs/**`) selects nothing only when neither `full`
+  nor any area's `paths` match it (both are matched first), so the two rules above apply to it
+  as to any other file.
 
 The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks this for every
 `repo::grep` and `repo::ls_files` call outside `always`. It reads the pathspecs from the module's
