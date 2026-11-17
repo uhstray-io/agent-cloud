@@ -1,0 +1,12 @@
+# Git hooks and commit gates (plan 24, Phase 4; AC-949): the BATS and Python tests these lines cite
+# were ported to platform/tests/suite/ and deleted on 2026-11-17. Format and rules: see
+# ../ledger_citation_ratchet.txt and this directory's README.md. Each reason names the Rust test
+# that now enforces the cited rule.
+1.37 platform/tests/test_pre_push_parallel_sigalrm.bats # ported to suite/pre_push_parallel_sigalrm.rs::a_job_started_with_sigalrm_ignored_runs_with_it_at_default (plan 24), platform/tests/test_pre_push_parallel_sigalrm.bats deleted 2026-11-17
+3.7 platform/tests/test_pre_push_git_env.bats # ported to suite/pre_push_git_env.rs::a_suites_git_commands_cannot_reach_the_pushing_repository (plan 24), platform/tests/test_pre_push_git_env.bats deleted 2026-11-17
+3.7 test_graph_artifact_guard.bats # ported to suite/pre_push_git_env.rs::a_suites_git_commands_cannot_reach_the_pushing_repository (plan 24), platform/tests/test_graph_artifact_guard.bats deleted 2026-11-17
+4.11 platform/tests/test_machine_path_hook.bats # ported to suite/machine_path_hook.rs::a_macos_home_directory_is_refused (plan 24), platform/tests/test_machine_path_hook.bats deleted 2026-11-17
+5.11 platform/tests/test_pre_push_branch_lock.bats # ported to suite/pre_push_branch_lock.rs::a_second_push_of_the_same_branch_is_refused_while_the_first_runs (plan 24), platform/tests/test_pre_push_branch_lock.bats deleted 2026-11-17
+5.9 platform/tests/test_commit_msg_hook.bats # ported to suite/commit_msg_hook.rs::an_assistant_co_author_trailer_is_refused (plan 24), platform/tests/test_commit_msg_hook.bats deleted 2026-11-17
+6.6 platform/tests/test_graph_artifact_guard.bats # ported to suite/graph_artifact_guard.rs::refuses_a_path_derived_project_id (plan 24), platform/tests/test_graph_artifact_guard.bats deleted 2026-11-17
+Index test_pre_push_branch_lock.bats # ported to suite/pre_push_branch_lock.rs::a_second_push_of_the_same_branch_is_refused_while_the_first_runs (plan 24), platform/tests/test_pre_push_branch_lock.bats deleted 2026-11-17
