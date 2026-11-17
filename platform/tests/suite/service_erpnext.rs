@@ -6,9 +6,10 @@
 //! `compose.local.yml` overlay; and a composable (not legacy) deploy playbook. Slim tier: a single
 //! `queue` worker, no MinIO.
 //!
-//! Replaces `platform/tests/test_service_erpnext.bats`. The BATS absence checks (`! grep ...`)
-//! never failed under `set -e` (CONTRIBUTING.md, "Writing BATS Tests"), so every check here that
-//! must not match is a real assertion.
+//! Replaces `platform/tests/test_service_erpnext.bats`. A BATS `! grep ...` line that was not its
+//! test's last command never failed under `set -e` (CONTRIBUTING.md, "Writing BATS Tests"), so
+//! every check here that must not match is a real assertion. The service checks read the compose
+//! files as YAML, so each is bound to its service.
 //!
 //! Port map (BATS @test → Rust fn):
 //!
@@ -36,6 +37,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::{self, Node};
 use regex::Regex;
 
 const COMPOSE: &str = "platform/services/erpnext/deployment/compose.yml";
@@ -100,42 +102,32 @@ fn refute_text(rel: &str, literal: &str) {
     );
 }
 
-/// The first line of `text`, as `head -1` prints it.
-fn first_line(text: &str) -> &str {
-    text.lines().next().unwrap_or("")
-}
-
-/// `[ -x file ]`, read as the file's execute bits.
-fn is_executable(rel: &str) -> bool {
+/// The script at `rel`, after checking it is executable and starts `#!/usr/bin/env bash`.
+fn bash_script(rel: &str) -> String {
     let meta = std::fs::metadata(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
-    meta.permissions().mode() & 0o111 != 0
+    assert!(
+        meta.permissions().mode() & 0o111 != 0,
+        "{rel} is not executable"
+    );
+    let text = read(rel);
+    assert!(
+        text.starts_with("#!/usr/bin/env bash"),
+        "{rel}: the first line is not `#!/usr/bin/env bash`"
+    );
+    text
 }
 
-/// The lines of the `frontend:` service block, read the way the BATS awk program read them: the
-/// lines after the first `  frontend:` line, up to (not including) the first later line that
-/// starts with at most two spaces and then a character that is neither a space nor `#`.
-fn frontend_block(text: &str) -> Vec<&str> {
-    let block_end = Regex::new(r"^(  ?)?[^ #]").expect("a valid pattern");
-    let mut inside = false;
-    let mut block = vec![];
-    for line in text.lines() {
-        if inside && block_end.is_match(line) {
-            break;
-        }
-        if inside {
-            block.push(line);
-        }
-        if line == "  frontend:" {
-            inside = true;
-        }
-    }
-    block
+/// One service of the compose file at `rel`.
+fn service(rel: &str, name: &str) -> Node {
+    let doc = yaml::load_one(&repo::path(rel)).unwrap_or_else(|| panic!("{rel} is empty"));
+    doc.get("services")
+        .and_then(|services| services.get(name))
+        .cloned()
+        .unwrap_or_else(|| panic!("{rel}: no `{name}` service"))
 }
 
 #[test]
 fn compose_has_the_expected_top_level_shape() {
-    // grep-based (portable, no PyYAML dependency); yamllint gates YAML validity.
-    assert!(repo::path(COMPOSE).is_file(), "{COMPOSE} does not exist");
     assert_line(COMPOSE, r"^name: erpnext");
     assert_line(COMPOSE, r"^services:");
     assert_line(COMPOSE, r"^\s+frontend:");
@@ -164,12 +156,14 @@ fn images_are_fully_qualified_and_pinned_with_no_latest_tag() {
 
 #[test]
 fn compose_defines_the_slim_tier_services_with_explicit_container_names() {
-    let text = read(COMPOSE);
     for svc in SLIM_SERVICES {
-        let line = format!("container_name: erpnext-{svc}");
-        assert!(
-            text.contains(&line),
-            "{COMPOSE}: the slim tier has no `{line}`"
+        let want = format!("erpnext-{svc}");
+        let found = service(COMPOSE, svc);
+        let name = found.get("container_name").and_then(Node::as_str);
+        assert_eq!(
+            name,
+            Some(want.as_str()),
+            "{COMPOSE}: `{svc}` must set `container_name: {want}`"
         );
     }
 }
@@ -196,16 +190,7 @@ fn compose_has_no_rfc1918_addresses() {
 
 #[test]
 fn deploy_sh_is_executable_bash_sources_common_and_holds_no_secrets() {
-    assert!(
-        repo::path(DEPLOY_SH).is_file(),
-        "{DEPLOY_SH} does not exist"
-    );
-    assert!(is_executable(DEPLOY_SH), "{DEPLOY_SH} is not executable");
-    let text = read(DEPLOY_SH);
-    assert!(
-        first_line(&text).starts_with("#!/usr/bin/env bash"),
-        "{DEPLOY_SH}: the first line is not `#!/usr/bin/env bash`"
-    );
+    bash_script(DEPLOY_SH);
     assert_text(DEPLOY_SH, "common.sh");
     assert_line(DEPLOY_SH, r"\bcompose (pull|up|run)");
     refute_line(DEPLOY_SH, r"\b(gen_secret|put_secret|get_secret|bao_|BAO_)");
@@ -218,19 +203,7 @@ fn deploy_sh_never_hardcodes_a_container_engine() {
 
 #[test]
 fn post_deploy_sh_is_an_executable_idempotent_bootstrap_with_no_secret_handling() {
-    assert!(
-        repo::path(POST_DEPLOY_SH).is_file(),
-        "{POST_DEPLOY_SH} does not exist"
-    );
-    assert!(
-        is_executable(POST_DEPLOY_SH),
-        "{POST_DEPLOY_SH} is not executable"
-    );
-    let text = read(POST_DEPLOY_SH);
-    assert!(
-        first_line(&text).starts_with("#!/usr/bin/env bash"),
-        "{POST_DEPLOY_SH}: the first line is not `#!/usr/bin/env bash`"
-    );
+    bash_script(POST_DEPLOY_SH);
     assert_text(POST_DEPLOY_SH, "bench new-site");
     assert_line(POST_DEPLOY_SH, r"test -d sites/");
     refute_line(
@@ -241,10 +214,6 @@ fn post_deploy_sh_is_an_executable_idempotent_bootstrap_with_no_secret_handling(
 
 #[test]
 fn env_template_pulls_every_credential_from_openbao_with_no_literals() {
-    assert!(
-        repo::path(ENV_TEMPLATE).is_file(),
-        "{ENV_TEMPLATE} does not exist"
-    );
     assert_text(
         ENV_TEMPLATE,
         "DB_PASSWORD={{ secrets.mariadb_root_password }}",
@@ -260,8 +229,7 @@ fn env_template_pulls_every_credential_from_openbao_with_no_literals() {
 
 #[test]
 fn env_template_uses_only_the_approved_jinja2_namespaces() {
-    // The variable name is the identifier after each `{{` and its spaces. A bare `{{` would
-    // orphan a token, so the pattern takes the identifier alone.
+    // The variable name is the identifier after each `{{` and its spaces.
     let text = read(ENV_TEMPLATE);
     let variable = Regex::new(r"\{\{ *([a-z_.]+)").expect("a valid pattern");
     let tokens: Vec<&str> = variable
@@ -284,10 +252,6 @@ fn env_template_uses_only_the_approved_jinja2_namespaces() {
 
 #[test]
 fn local_overlay_adds_limits_selinux_and_local_dev_but_publishes_no_ports() {
-    assert!(
-        repo::path(COMPOSE_LOCAL).is_file(),
-        "{COMPOSE_LOCAL} does not exist"
-    );
     assert_text(COMPOSE_LOCAL, "mem_limit:");
     assert_text(COMPOSE_LOCAL, "label=disable");
     assert_text(COMPOSE_LOCAL, "local-dev");
@@ -296,26 +260,22 @@ fn local_overlay_adds_limits_selinux_and_local_dev_but_publishes_no_ports() {
 
 #[test]
 fn local_overlay_puts_the_frontend_on_local_dev() {
-    // The frontend service's own block, scoped by construct (see `frontend_block`), not by a
-    // line window.
-    let text = read(COMPOSE_LOCAL);
-    let block = frontend_block(&text).join("\n");
+    // The frontend service's own networks, in list or mapping form, so another service joining
+    // local-dev cannot stand in for it.
+    let frontend = service(COMPOSE_LOCAL, "frontend");
+    let networks: Vec<&str> = match frontend.get("networks") {
+        Some(Node::Seq(items)) => items.iter().filter_map(Node::as_str).collect(),
+        Some(Node::Map(entries)) => entries.iter().filter_map(|(k, _)| k.as_str()).collect(),
+        _ => vec![],
+    };
     assert!(
-        block.lines().any(|line| !line.is_empty()),
-        "{COMPOSE_LOCAL}: no `  frontend:` service block"
-    );
-    assert!(
-        any_line(&block, r"^ +- local-dev$"),
-        "{COMPOSE_LOCAL}: the frontend block does not join the `local-dev` network"
+        networks.contains(&"local-dev"),
+        "{COMPOSE_LOCAL}: the frontend does not join the `local-dev` network (networks: {networks:?})"
     );
 }
 
 #[test]
 fn deploy_playbook_is_composable_and_not_legacy() {
-    assert!(
-        repo::path(DEPLOY_PLAYBOOK).is_file(),
-        "{DEPLOY_PLAYBOOK} does not exist"
-    );
     assert_text(DEPLOY_PLAYBOOK, "tasks/place-monorepo.yml");
     assert_text(DEPLOY_PLAYBOOK, "tasks/manage-secrets.yml");
     assert_text(DEPLOY_PLAYBOOK, "bash deploy.sh");
@@ -326,16 +286,9 @@ fn deploy_playbook_is_composable_and_not_legacy() {
 
 #[test]
 fn clean_deploy_playbook_destroys_then_redeploys() {
-    assert!(
-        repo::path(CLEAN_PLAYBOOK).is_file(),
-        "{CLEAN_PLAYBOOK} does not exist"
-    );
     assert_text(CLEAN_PLAYBOOK, "tasks/clean-service.yml");
     assert_text(CLEAN_PLAYBOOK, "import_playbook: deploy-erpnext.yml");
-    assert!(
-        read(CLEAN_PLAYBOOK).to_lowercase().contains("danger"),
-        "{CLEAN_PLAYBOOK}: no DANGER warning (case-insensitive)"
-    );
+    assert_line(CLEAN_PLAYBOOK, r"(?i)danger");
 }
 
 #[test]

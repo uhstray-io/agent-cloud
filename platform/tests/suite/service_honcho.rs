@@ -8,8 +8,9 @@
 //! config-as-code Authentik forward_auth blueprint for `/docs`. No hardcoded IPs or credentials.
 //!
 //! Replaces `platform/tests/test_service_honcho.bats`. Structural only: file reads, no live deploy.
-//! The BATS absence checks (`! grep ...`) never failed under `set -e` (CONTRIBUTING.md, "Writing
-//! BATS Tests"), so every check here that must not match is a real assertion.
+//! A BATS `! grep ...` line that was not its test's last command never failed under `set -e`
+//! (CONTRIBUTING.md, "Writing BATS Tests"), so every check here that must not match is a real
+//! assertion. The service checks read the compose file as YAML, so each is bound to its service.
 //!
 //! Port map (BATS @test → Rust fn):
 //!
@@ -33,6 +34,7 @@
 use std::os::unix::fs::PermissionsExt;
 
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::{self, Node};
 use regex::Regex;
 
 const COMPOSE: &str = "platform/services/honcho/deployment/compose.yml";
@@ -85,20 +87,48 @@ fn refute_text(rel: &str, literal: &str) {
     );
 }
 
-/// The first line of `text`, as `head -1` prints it.
-fn first_line(text: &str) -> &str {
-    text.lines().next().unwrap_or("")
+/// The script at `rel`, after checking it is executable and starts `#!/usr/bin/env bash`.
+fn bash_script(rel: &str) -> String {
+    let meta = std::fs::metadata(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
+    assert!(
+        meta.permissions().mode() & 0o111 != 0,
+        "{rel} is not executable"
+    );
+    let text = read(rel);
+    assert!(
+        text.starts_with("#!/usr/bin/env bash"),
+        "{rel}: the first line is not `#!/usr/bin/env bash`"
+    );
+    text
 }
 
-/// `[ -x file ]`, read as the file's execute bits.
-fn is_executable(rel: &str) -> bool {
-    let meta = std::fs::metadata(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
-    meta.permissions().mode() & 0o111 != 0
+/// The compose file's services, by name.
+fn services(rel: &str) -> Vec<(String, Node)> {
+    let doc = yaml::load_one(&repo::path(rel)).unwrap_or_else(|| panic!("{rel} is empty"));
+    let entries = doc
+        .get("services")
+        .and_then(Node::as_map)
+        .unwrap_or_else(|| panic!("{rel}: no `services` mapping"));
+    entries
+        .iter()
+        .map(|(name, svc)| {
+            let name = name.as_str().unwrap_or_else(|| panic!("{rel}: {name:?}"));
+            (name.to_owned(), svc.clone())
+        })
+        .collect()
+}
+
+/// The names of the services in `rel` that set `key`.
+fn services_with(rel: &str, key: &str) -> Vec<String> {
+    services(rel)
+        .into_iter()
+        .filter(|(_, svc)| svc.get(key).is_some())
+        .map(|(name, _)| name)
+        .collect()
 }
 
 #[test]
 fn compose_env_parameterizes_image_and_bind_and_port() {
-    assert!(repo::path(COMPOSE).is_file(), "{COMPOSE} does not exist");
     assert_line(COMPOSE, r"\$\{HONCHO_IMAGE");
     assert_line(COMPOSE, r"\$\{HONCHO_BIND");
     assert_line(COMPOSE, r"\$\{HONCHO_PORT");
@@ -115,39 +145,40 @@ fn prod_default_image_is_a_pinned_ghcr_tag() {
 
 #[test]
 fn compose_is_the_four_container_stack() {
-    assert_line(COMPOSE, r"^\s+honcho-api:");
-    assert_line(COMPOSE, r"^\s+honcho-deriver:");
-    assert_line(COMPOSE, r"^\s+honcho-db:");
-    assert_line(COMPOSE, r"^\s+honcho-redis:");
+    let names: Vec<String> = services(COMPOSE)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    for want in ["honcho-api", "honcho-deriver", "honcho-db", "honcho-redis"] {
+        assert!(
+            names.iter().any(|name| name == want),
+            "{COMPOSE}: no `{want}` service (services: {names:?})"
+        );
+    }
     // The db is honcho's OWN pgvector Postgres, not the platform Postgres.
     assert_line(COMPOSE, r"pgvector/pgvector:pg");
 }
 
 #[test]
 fn only_the_api_publishes_a_port() {
-    // A single ports: stanza, the api's. A stray db or redis publish would add a second one.
-    let port_key = Regex::new(r"^\s+ports:").expect("a valid pattern");
-    let stanzas = read(COMPOSE)
-        .lines()
-        .filter(|line| port_key.is_match(line))
-        .count();
+    // A stray db, redis or deriver publish would expose a datastore.
     assert_eq!(
-        stanzas, 1,
-        "{COMPOSE}: expected exactly one `ports:` stanza (the api's), found {stanzas}"
+        services_with(COMPOSE, "ports"),
+        ["honcho-api"],
+        "{COMPOSE}: only the api may set `ports`"
     );
 }
 
 #[test]
 fn api_and_datastores_have_healthchecks_and_the_api_probes_health() {
     // api (python urlopen), db (pg_isready) and redis (redis-cli) are each healthchecked.
-    let healthchecks = read(COMPOSE)
-        .lines()
-        .filter(|line| line.contains("healthcheck:"))
-        .count();
-    assert!(
-        healthchecks >= 3,
-        "{COMPOSE}: expected at least 3 `healthcheck:` keys, found {healthchecks}"
-    );
+    let checked = services_with(COMPOSE, "healthcheck");
+    for want in ["honcho-api", "honcho-db", "honcho-redis"] {
+        assert!(
+            checked.iter().any(|name| name == want),
+            "{COMPOSE}: `{want}` has no healthcheck (healthchecked: {checked:?})"
+        );
+    }
     assert_line(COMPOSE, r"CMD-SHELL.*python");
     assert_text(COMPOSE, "/health");
     assert_text(COMPOSE, "pg_isready");
@@ -171,16 +202,7 @@ fn compose_has_no_rfc1918_addresses() {
 
 #[test]
 fn deploy_sh_is_executable_bash_sources_common_and_holds_no_secrets() {
-    assert!(
-        repo::path(DEPLOY_SH).is_file(),
-        "{DEPLOY_SH} does not exist"
-    );
-    assert!(is_executable(DEPLOY_SH), "{DEPLOY_SH} is not executable");
-    let text = read(DEPLOY_SH);
-    assert!(
-        first_line(&text).starts_with("#!/usr/bin/env bash"),
-        "{DEPLOY_SH}: the first line is not `#!/usr/bin/env bash`"
-    );
+    bash_script(DEPLOY_SH);
     assert_text(DEPLOY_SH, "common.sh");
     assert_line(DEPLOY_SH, r"\bcompose (pull|up)");
     // Lifecycle only: no secret generation and no OpenBao interaction (Deploy Rule #2).
@@ -200,10 +222,6 @@ fn deploy_sh_detects_the_engine_and_tolerates_a_local_built_image() {
 
 #[test]
 fn env_template_pulls_secrets_from_openbao_with_no_literals_or_addresses() {
-    assert!(
-        repo::path(ENV_TEMPLATE).is_file(),
-        "{ENV_TEMPLATE} does not exist"
-    );
     assert_text(
         ENV_TEMPLATE,
         "AUTH_JWT_SECRET={{ secrets.honcho_jwt_secret }}",
@@ -226,7 +244,6 @@ fn env_template_pulls_secrets_from_openbao_with_no_literals_or_addresses() {
 
 #[test]
 fn deploy_playbook_is_composable_with_an_existing_gemini_key() {
-    assert!(repo::path(PLAYBOOK).is_file(), "{PLAYBOOK} does not exist");
     assert_text(PLAYBOOK, "tasks/manage-secrets.yml");
     assert_text(PLAYBOOK, "_secret_definitions:");
     assert_text(PLAYBOOK, "honcho_jwt_secret");
@@ -237,10 +254,7 @@ fn deploy_playbook_is_composable_with_an_existing_gemini_key() {
     assert_text(PLAYBOOK, "_required_existing_secrets: [gemini_api_key]");
     // No shared read from another platform's path.
     refute_text(PLAYBOOK, "_shared_reads:");
-    assert!(
-        !read(PLAYBOOK).to_lowercase().contains("nemoclaw"),
-        "{PLAYBOOK}: the forbidden `nemoclaw` is present (case-insensitive)"
-    );
+    refute_line(PLAYBOOK, r"(?i)nemoclaw");
     assert_text(PLAYBOOK, "_env_templates:");
 }
 
@@ -263,16 +277,9 @@ fn playbook_gates_on_the_pinned_image_and_enables_reboot_linger() {
 
 #[test]
 fn authentik_docs_forward_auth_blueprint_is_config_as_code_with_no_client_secret() {
-    assert!(
-        repo::path(BLUEPRINT).is_file(),
-        "{BLUEPRINT} does not exist"
-    );
     assert_line(BLUEPRINT, r"^version: 1");
     assert_text(BLUEPRINT, "authentik_providers_proxy.proxyprovider");
     assert_text(BLUEPRINT, "mode: forward_single");
     // The proxy provider manages its own tokens, so no client secret is committed to git.
-    assert!(
-        !read(BLUEPRINT).to_lowercase().contains("client_secret"),
-        "{BLUEPRINT}: the forbidden `client_secret` is present (case-insensitive)"
-    );
+    refute_line(BLUEPRINT, r"(?i)client_secret");
 }
