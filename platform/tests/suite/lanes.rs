@@ -931,8 +931,8 @@ fn repo_wide_scans_reads_literals_constants_and_skips_comments_and_strings() {
     // constant whose name it prefixes and a doc comment that quotes it; char literals of a quote
     // and a paren; a scan named only in a comment, in a string and in a raw string holding an
     // unpaired quote; a non-ASCII name in code; a lookalike function; a nested block comment whose
-    // inner `*/` does not end it; a comment between a callee and its `(`, and inside the path; and
-    // a raw name.
+    // inner `*/` does not end it; a comment between a callee and its `(`, and before and after the
+    // path's `::`; and a raw name.
     let src = r##"
 /// `const SPECS: [&str; 1] = ["decoy"];` in a doc comment is not the definition.
 const SPECS_2: [&str; 1] = ["wrong"];
@@ -951,6 +951,7 @@ fn f() {
     repo::grep_in(dir, "no", &["boundary"]);
     repo/* c */::grep("x", &["inpath"]);
     repo::r#ls_files(&["raw"]);
+    repo:: /* c */ r#grep("x", &["afterpath"]);
 }
 "##;
 
@@ -973,6 +974,7 @@ fn f() {
             (15, vec!["spaced".to_owned()]),
             (17, vec!["inpath".to_owned()]),
             (18, vec!["raw".to_owned()]),
+            (19, vec!["afterpath".to_owned()]),
         ]
     );
 }
