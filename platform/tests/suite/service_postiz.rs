@@ -30,8 +30,8 @@
 //!   deploy playbook, so a pathspec that matches nothing fails;
 //! - the `Report` block is `task_block`'s: it ends at the next `- name:` at the same or shallower
 //!   indent, where the BATS awk ended only at a four-space one (the Report task is the file's last);
-//! - stricter: beside each kept BATS line, checks the port adds where that line matched text it
-//!   was not about or passed on empty input, each with a comment saying what the line missed;
+//! - stricter: checks the port adds beside the kept BATS lines, each saying why in its own
+//!   comment;
 //! - the DNS-instruction refute matches any postiz host, not one instance's;
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
@@ -913,7 +913,7 @@ fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
 fn docs_do_not_tell_an_operator_to_create_dns() {
     // The zone is config-as-code via OpenTofu and the record already exists.
     text::refute_line(README, r"^- Create the public DNS record\.$");
-    // Any postiz host, not the BATS line's one instance hostname, which this repo does not name.
+    // Any postiz host, not the one instance hostname the BATS line named.
     text::refute_line(PLAN_14, r"Operator: create the `postiz\.[^`]+` DNS record");
 }
 
