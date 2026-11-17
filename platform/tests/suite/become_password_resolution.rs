@@ -609,6 +609,16 @@ const FIRST_EXECUTED_CASES: &str = r#"
         - ansible.builtin.include_tasks: tasks/refuse-var-overrides.yml
         - ansible.builtin.set_fact:
             ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
+- name: bad a task gated on a variable named no, bound true, before the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  vars:
+    "no": true
+  tasks:
+    - ansible.builtin.command: id
+      when: "no"
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad set_fact of a literal password
   hosts: h
   become: true
