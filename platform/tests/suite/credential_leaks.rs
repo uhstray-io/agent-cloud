@@ -58,7 +58,7 @@
 //! | seed-openbao-key uses the resolved value everywhere, not the raw extra var | `seed_openbao_key_merges_the_resolved_value_only` (candidate: pins text) |
 //! | no Semaphore template still instructs operators to pass a secret as -e | `no_template_asks_for_a_secret_as_an_extra_var` (candidate: pins text) |
 //! | NetBox token bootstrap guards AppRole transport before login | `netbox_token_bootstrap_guards_transport_before_login` |
-//! | every play that resolves an OpenBao URL includes the transport guard | `every_openbao_play_includes_the_transport_guard` |
+//! | every play that resolves an OpenBao URL includes the transport guard | `every_openbao_play_includes_the_transport_guard`, with the self-check `never_runs_reads_wrapped_comparisons_and_the_never_tag` |
 //! | the transport pattern accepts internal endpoints and refuses public ones | `transport_pattern_accepts_internal_endpoints_and_refuses_public_ones` |
 //! | repo: no generated Python bytecode is tracked | `no_python_bytecode_is_tracked` (its two .gitignore lines: candidate: pins text) |
 //! | bao-merge-keys: creation is CAS-guarded, and losing the race falls back to a merge | `bao_merge_keys_creates_a_path_only_under_cas` |
@@ -70,6 +70,7 @@ use std::net::Ipv4Addr;
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
@@ -1390,19 +1391,172 @@ impl Guard {
     }
 }
 
-/// Whether a task's `when` is a constant that is always false: `false`, `False`, `no` or `0`, alone
-/// or as any item of a `when:` list (the items are ANDed).
-fn never_runs(task: &Node) -> bool {
-    let is_false = |item: &Node| match item {
+/// Whether a task never runs: a `when` with any constant-false item (the items are ANDed, so one
+/// false item means it skips or an earlier item raises: either way it does not run), a `when` that
+/// always errors, or the `never` tag. A guard counted under any of them would not run, so the
+/// transport-guard count and the seed chain refuse all three. The first-executed search needs the
+/// stricter, order-aware [`when_is_constant_false`], since an error there runs a `rescue:` first.
+pub(crate) fn never_runs(task: &Node) -> bool {
+    when_any(task, item_constant_false) || when_always_errors(task) || tagged_never(task)
+}
+
+/// Whether one `when` item is a constant false: the YAML bool or a [`constant_false`] string.
+fn item_constant_false(item: &Node) -> bool {
+    match item {
         Node::Bool(b) => !b,
-        Node::Str(s) => matches!(s.trim(), "false" | "False" | "FALSE" | "no" | "No" | "0"),
+        Node::Str(s) => constant_false(s),
+        _ => false,
+    }
+}
+
+/// Whether any item of a task's `when` (one value, or a `when:` list, whose items are ANDed)
+/// satisfies `pred`. A task without `when` has none.
+fn when_any(task: &Node, pred: impl Fn(&Node) -> bool) -> bool {
+    match task.get("when") {
+        Some(Node::Seq(items)) => items.iter().any(pred),
+        Some(item) => pred(item),
+        None => false,
+    }
+}
+
+/// A `when` string with surrounding whitespace and one `{{ }}` wrapper removed.
+fn bare_when(text: &str) -> &str {
+    let trimmed = text.trim();
+    trimmed
+        .strip_prefix("{{")
+        .and_then(|t| t.strip_suffix("}}"))
+        .map_or(trimmed, str::trim)
+}
+
+/// Whether a task's `when` (or any item of a `when:` list) is a constant ansible-core raises on
+/// instead of skipping: `0`, a non-boolean result, or a quoted `no`, `No` or `FALSE`, which Jinja
+/// reads as an undefined name. Bare or wrapped once in `{{ }}`.
+fn when_always_errors(task: &Node) -> bool {
+    when_any(task, |item| {
+        item.as_str()
+            .is_some_and(|s| matches!(bare_when(s), "0" | "no" | "No" | "FALSE"))
+    })
+}
+
+/// Whether a task's `when` is a constant that is always false, so Ansible skips it silently: a
+/// single constant-false value, or a `when:` list whose first item that is not a literal true is a
+/// constant false (the items are evaluated in order, so an earlier unknown item may raise first and
+/// run a `rescue:`). A constant false is the YAML bool, the strings `false` or `False`,
+/// also wrapped once in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false:
+/// each is a boolean, so Ansible skips the task silently. An integer-valued condition such as `0` is
+/// not one: ansible-core 2.20 raises on it, and the error runs an enclosing block's `rescue:`.
+pub(crate) fn when_is_constant_false(task: &Node) -> bool {
+    let is_false = item_constant_false;
+    let is_true = |item: &Node| match item {
+        Node::Bool(b) => *b,
+        Node::Str(s) => matches!(bare_when(s), "true" | "True"),
         _ => false,
     };
     match task.get("when") {
-        Some(Node::Seq(items)) => items.iter().any(is_false),
+        // Ansible evaluates the items in order and an earlier one may raise first, so a list is
+        // constant-false only when every item before the false one is a literal true.
+        Some(Node::Seq(items)) => {
+            for item in items {
+                if is_false(item) {
+                    return true;
+                }
+                if !is_true(item) {
+                    return false;
+                }
+            }
+            false
+        }
         Some(item) => is_false(item),
         None => false,
     }
+}
+
+/// Whether a task carries the `never` tag. Whether it then runs depends on the run's `--tags`, so
+/// a caller decides what that means for it.
+pub(crate) fn tagged_never(task: &Node) -> bool {
+    match task.get("tags") {
+        // Ansible splits a comma-separated tags string into tags.
+        Some(Node::Str(s)) => s.split(',').any(|t| t.trim() == "never"),
+        Some(Node::Seq(items)) => items
+            .iter()
+            .any(|t| t.as_str().map(str::trim) == Some("never")),
+        _ => false,
+    }
+}
+
+/// An integer comparison with a constant result, `a == b` or `a != b`.
+static INT_COMPARISON: LazyLock<Regex> =
+    LazyLock::new(|| re(r"^\s*(-?\d+)\s*(==|!=)\s*(-?\d+)\s*$"));
+
+/// Whether a `when` string is a constant that is always false.
+fn constant_false(text: &str) -> bool {
+    let bare = bare_when(text);
+    // A quoted `no` is a Jinja variable name, and unquoted YAML `no` is already a bool, so only
+    // Jinja's own false literals count. `0` is an integer, which Ansible refuses rather than skips.
+    if matches!(bare, "false" | "False") {
+        return true;
+    }
+    let Some(c) = INT_COMPARISON.captures(bare) else {
+        return false;
+    };
+    let (Ok(a), Ok(b)) = (c[1].parse::<i128>(), c[3].parse::<i128>()) else {
+        return false;
+    };
+    // The pattern admits only `==` and `!=`.
+    if &c[2] == "==" { a != b } else { a == b }
+}
+
+#[test]
+fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
+    let task = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    for never in [
+        "when: false\n",
+        "when: \"{{ false }}\"\n",
+        "when: \"{{False}}\"\n",
+        "when: 1 == 2\n",
+        "when: \"{{ 3 != 3 }}\"\n",
+        "when: [true, \"{{ false }}\"]\n",
+        "tags: never\n",
+        "tags: [deploy, never]\n",
+        "tags: \"never,deploy\"\n",
+        "when: \"0\"\n",
+        "when: \"{{ 0 }}\"\n",
+        "when: \"no\"\n",
+        "when: \"{{ No }}\"\n",
+        "when: \"FALSE\"\n",
+        "when: \"No\"\n",
+        "when: [true, \"0\"]\n",
+    ] {
+        assert!(never_runs(&task(&format!("name: t\n{never}"))), "{never}");
+    }
+    for runs in [
+        "when: true\n",
+        "when: 1 == 1\n",
+        "when: 1 != 2\n",
+        "when: some_flag | bool\n",
+        "tags: [deploy]\n",
+        "become: true\n",
+    ] {
+        assert!(!never_runs(&task(&format!("name: t\n{runs}"))), "{runs}");
+    }
+    // An erroring constant never runs, but it is not a constant false: the first-executed search
+    // reads it as unknown, since the error runs an enclosing rescue.
+    assert!(!when_is_constant_false(&task("name: t\nwhen: \"0\"\n")));
+    // In a list, an item before the false one may raise first.
+    let erroring_first = task("name: t\nwhen: [\"0\", false]\n");
+    assert!(!when_is_constant_false(&erroring_first));
+    assert!(never_runs(&erroring_first));
+    assert!(when_is_constant_false(&task(
+        "name: t\nwhen: [true, false]\n"
+    )));
+    assert!(when_is_constant_false(&task(
+        "name: t\nwhen: [\"{{ True }}\", false]\n"
+    )));
+    assert!(!when_is_constant_false(&task(
+        "name: t\nwhen: [flag, false]\n"
+    )));
+    // ...but it never runs: a guard under it must not count.
+    assert!(never_runs(&task("name: t\nwhen: [flag, false]\n")));
 }
 
 #[test]
@@ -1594,6 +1748,43 @@ fn bao_merge_keys_creates_a_path_only_under_cas() {
     );
 }
 
+/// The task with this exact name in a task tree, preceded by every block that encloses it,
+/// outermost first; only `block` is walked, never `rescue` or `always`.
+fn task_with_ancestors<'a>(tasks: &'a [Node], name: &str) -> Option<Vec<&'a Node>> {
+    for task in tasks {
+        if task.get("name").and_then(Node::as_str) == Some(name) {
+            return Some(vec![task]);
+        }
+        // Only `block`: `rescue` runs only after a failure, and `always` runs after the block, so
+        // a merge in that block would run before an end_play there, whatever the key order.
+        let children = task.get("block").and_then(Node::as_seq).unwrap_or(&[]);
+        if let Some(mut chain) = task_with_ancestors(children, name) {
+            chain.insert(0, task);
+            return Some(chain);
+        }
+    }
+    None
+}
+
+#[test]
+fn task_with_ancestors_follows_only_block() {
+    let tasks = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    let in_block =
+        tasks("- name: outer\n  block:\n    - name: end\n      ansible.builtin.meta: end_play\n");
+    let chain = task_with_ancestors(in_block.as_seq().expect("a list"), "end").expect("found");
+    assert_eq!(chain.len(), 2);
+    for hidden in [
+        "- block:\n    - ansible.builtin.debug: {msg: hi}\n  rescue:\n    - name: end\n      ansible.builtin.meta: end_play\n",
+        "- always:\n    - name: end\n      ansible.builtin.meta: end_play\n  block:\n    - ansible.builtin.debug: {msg: hi}\n",
+    ] {
+        let doc = tasks(hidden);
+        assert!(
+            task_with_ancestors(doc.as_seq().expect("a list"), "end").is_none(),
+            "{hidden}"
+        );
+    }
+}
+
 #[test]
 fn seed_access_check_ends_the_play_before_any_write() {
     // Arrange
@@ -1607,8 +1798,12 @@ fn seed_access_check_ends_the_play_before_any_write() {
     let merge = position(&seed_maps, |m| {
         include_target(m, &INCLUDE_SHORTS) == Some("tasks/bao-merge-keys.yml")
     });
+    // The named end_play, not the first: an inert end_play placed early would pass an order check
+    // while the real one sat after the merge.
     let end = position(&seed_maps, |m| {
-        module(m, "meta").and_then(Node::as_str) == Some("end_play")
+        m.get("name").and_then(Node::as_str)
+            == Some("End read-only verification before every secret-store write")
+            && module(m, "meta").and_then(Node::as_str) == Some("end_play")
     });
 
     // Assert: the access check and the end of play both come before the merge.
@@ -1620,10 +1815,25 @@ fn seed_access_check_ends_the_play_before_any_write() {
     assert!(access < merge, "the access check runs after the merge");
     assert!(end < merge, "the play can write before it ends");
 
-    let seed_tasks = play_tasks(SEED_KEY);
-    let end_block = task_named(
-        &seed_tasks,
-        "End read-only verification before every secret-store write",
+    // The named end_play with every block around it: Ansible applies a block's `when` and `tags`
+    // to every task in it, so none of them may be one that never runs.
+    let chain = seed
+        .as_seq()
+        .unwrap_or(&[])
+        .iter()
+        .find_map(|play| {
+            task_with_ancestors(
+                play.get("tasks").and_then(Node::as_seq).unwrap_or(&[]),
+                "End read-only verification before every secret-store write",
+            )
+        })
+        .expect("the named end_play is in a play's task tree");
+    let end_block = *chain.last().expect("a chain ends at the named task");
+    // The chain must end at the end_play the order check found: a same-named task elsewhere (in a
+    // rescue, which the chain does not walk) must not stand in for it.
+    assert!(
+        std::ptr::eq(end_block, seed_maps[end]),
+        "the named end_play the order check found is not the one in the play's task tree"
     );
     // The named task is the end_play itself, gated on exactly the flag: a substring passed
     // `<flag> and false`, and a separate end_play elsewhere passed the order check (#1148 review).
@@ -1637,6 +1847,26 @@ fn seed_access_check_ends_the_play_before_any_write() {
         Some("bao_verify_access_only | default(false) | bool"),
         "the end_play is not gated on exactly the access-check flag"
     );
+    assert!(
+        !chain.iter().any(|t| never_runs(t)),
+        "the end_play, or a block around it, never runs (a constant-false when or the never \
+         tag), so the play writes"
+    );
+    // The end_play's own `when` is pinned above; any `when` on a block around it could skip it.
+    let gated: Vec<&str> = chain[..chain.len() - 1]
+        .iter()
+        .filter(|b| b.get("when").is_some())
+        .map(|b| {
+            b.get("name")
+                .and_then(Node::as_str)
+                .unwrap_or("(unnamed block)")
+        })
+        .collect();
+    assert!(
+        gated.is_empty(),
+        "a block around the end_play carries a when, which can skip it: {gated:?}"
+    );
+    let seed_tasks = play_tasks(SEED_KEY);
     let value_check = task_named(&seed_tasks, "Validate the secret value is present");
     assert!(
         value_check
