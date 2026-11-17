@@ -47,7 +47,7 @@ fn matching_lines<'a>(text: &'a str, pattern: &str) -> Vec<&'a str> {
 fn sed_range(text: &str, start: impl Fn(&str) -> bool, end: impl Fn(&str) -> bool) -> String {
     let mut printed = Vec::new();
     let mut on = false;
-    for line in text.lines() {
+    for line in text.split_terminator('\n') {
         if on {
             printed.push(line);
             if end(line) {
@@ -69,7 +69,7 @@ fn rule(rel: &str, reference: &str) -> String {
     let text = read(rel);
     let mut printed = Vec::new();
     let mut on = false;
-    for line in text.lines() {
+    for line in text.split_terminator('\n') {
         if line.contains(needle.as_str()) {
             on = true;
         }
