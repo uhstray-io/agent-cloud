@@ -18,11 +18,15 @@
 //!    default only; either takes an optional `| default([])`), piped straight to `length`. It is
 //!    compared ONCE, `> 0`, `!= 0`, or `>=`/`==` a positive integer, and has no
 //!    `and`/`or`/`not`/`if`/`else` and no backslash.
-//!    A templated target (`{{ target_service }}`) is covered by a key that is that variable, and a
-//!    literal target (`app_svc`) by a key that is that quoted name. A default on the key does not
-//!    change which one it is: `groups.get(target_service | default('other_svc'), [])` covers
-//!    `{{ target_service }}` and never `other_svc` (AC-915). Quoted text is blanked, length for
-//!    length, before the shape check (AC-907).
+//!    A literal target (`app_svc`) is covered by a key that is that quoted name, never by a
+//!    variable. A templated target is covered only when it is exactly `{{ <identifier> }}` or
+//!    `{{ <identifier> | default('<name>') }}`, and by a key on that same identifier whose
+//!    `| default('<name>')` is absent or empty, or the target has no default, or the two defaults
+//!    are equal (AC-915): an undefined variable then fails the guard or the play, and a populated
+//!    group never stands in for the group the play runs. So a key default of `other_svc` covers
+//!    `{{ target_service }}` (the play errors on the undefined name) but not
+//!    `{{ target_service | default('app_svc') }}` (the play would run `app_svc`). Quoted text is
+//!    blanked, length for length, before the shape check (AC-907).
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
 //! judged by the plays it runs.
@@ -55,8 +59,10 @@
 //! runs), `the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines`, the
 //! `longer_name` row of `NOT_ACCEPTED` (a key is compared whole, so `target_service_x` is not
 //! `target_service`), and for AC-915 `a_guard_keyed_on_another_group_does_not_cover_the_play`,
-//! `a_guard_keyed_on_the_literal_group_covers_the_play` and
-//! `guard_key_reads_the_key_from_the_original_text`.
+//! `a_guard_keyed_on_the_literal_group_covers_the_play`,
+//! `guard_key_reads_the_key_from_the_original_text`,
+//! `a_templated_target_is_covered_only_by_its_own_variable_and_default` and
+//! `a_templated_target_with_a_matching_or_empty_key_default_is_covered`.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -92,10 +98,17 @@ const LOCAL: [&str; 2] = ["localhost", "127.0.0.1"];
 const PLAYBOOKS: &str = "platform/playbooks";
 const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 
-/// A lookup key: one identifier or quoted name, optionally with `| default('<name>')`. Quoted text
-/// is blanked to `'` + underscores + `'` before the match (`blank_quoted`), so a quoted name here
-/// is `'_*'`. Shared by the subscript and the `get` form, so the two cannot drift.
-const KEY: &str = r"(?:[A-Za-z_]\w*|'_*')(?:\s*\|\s*default\(\s*'_*'\s*\))?";
+/// A lookup key, read as one of two forms and shared by the subscript and the `get` form, so the
+/// two cannot drift: an identifier (the variable the target comes from), or a quoted name (a group
+/// named literally), each optionally followed by `| default('<name>')`. Quoted text is blanked to
+/// `'` + underscores + `'` before the match (`blank_quoted`), so a quoted name is `'_*'` here and
+/// its name is read back from the original text at the offsets of `_lit`; `_def` is the default's
+/// name, read the same way. `tag` names the groups, which Rust requires to be unique in a pattern.
+fn key_pattern(tag: &str) -> String {
+    format!(
+        r"(?:(?P<{tag}_var>[A-Za-z_]\w*)|'(?P<{tag}_lit>_*)')(?:\s*\|\s*default\(\s*'(?P<{tag}_def>_*)'\s*\))?"
+    )
+}
 
 // The condition must BE a `length` of one group lookup, from its start to its end: a prefix such
 // as `1 + (...)`, a list around it, or a subscript inside a string would otherwise pass (AC-907).
@@ -108,15 +121,20 @@ const KEY: &str = r"(?:[A-Za-z_]\w*|'_*')(?:\s*\|\s*default\(\s*'_*'\s*\))?";
 // anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
 static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
     re(&format!(
-        r"^\s*\(*\s*groups(?:\[\s*(?P<sub>{KEY})\s*\]|\.get\(\s*(?P<get>{KEY})\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$"
+        r"^\s*\(*\s*groups(?:\[\s*{sub}\s*\]|\.get\(\s*{get}\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$",
+        sub = key_pattern("sub"),
+        get = key_pattern("get"),
     ))
 });
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| re(r#"'[^']*'|"[^"]*""#));
 static COMPARATOR: LazyLock<Regex> = LazyLock::new(|| re(r"[<>!=]=|[<>]"));
 static NEUTRALISER: LazyLock<Regex> = LazyLock::new(|| re(r"\b(?:and|or|not|if|else)\b"));
-static BRACED_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)"));
-/// The identifier a lookup key starts with, read as `KEY` reads it (`\w` is Unicode there too).
-static LEADING_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^[A-Za-z_]\w*"));
+/// A templated target the inline guard can cover: exactly `{{ <identifier> }}` or
+/// `{{ <identifier> | default('<name>') }}` (double quotes too), with nothing else in the subject
+/// (AC-915). Group 1 is the variable; group 2 or 3 is the target's default.
+static HOSTS_TEMPLATE: LazyLock<Regex> = LazyLock::new(|| {
+    re(r#"^\{\{\s*([A-Za-z_]\w*)\s*(?:\|\s*default\(\s*(?:'([^']*)'|"([^"]*)")\s*\))?\s*\}\}$"#)
+});
 
 fn re(pattern: &str) -> Regex {
     Regex::new(pattern).expect("valid regex")
@@ -304,16 +322,30 @@ fn play_name(play: &Node) -> String {
     format!("{name:?}")
 }
 
-/// Whether an inline guard tests the subject group. A templated subject is covered by a variable
-/// key naming the first identifier inside `{{ }}`; a literal one by a group key of that name. The
-/// two never cover each other: `groups['target_service']` names a group, not the variable (AC-915).
+/// Whether an inline guard covers the subject group. A literal subject needs a group key of that
+/// name, and a variable key never covers it (`groups['target_service']` names a group). A templated
+/// subject is covered only when it is exactly `HOSTS_TEMPLATE`, by a variable key naming that same
+/// variable whose default cannot let the guard test a group the play does not run: the key's
+/// default is absent or empty (an undefined variable then fails the guard), or the target has no
+/// default (an undefined target errors the play), or the two defaults are equal (AC-915). Any
+/// other templated subject is not covered.
 fn covered_inline(subject: &str, keys: &[GuardKey]) -> bool {
-    if subject.contains("{{") {
-        return BRACED_NAME
-            .captures(subject)
-            .is_some_and(|caps| keys.contains(&GuardKey::Var(caps[1].to_owned())));
+    if !subject.contains("{{") {
+        return keys.contains(&GuardKey::Group(subject.to_owned()));
     }
-    keys.contains(&GuardKey::Group(subject.to_owned()))
+    let Some(caps) = HOSTS_TEMPLATE.captures(subject.trim()) else {
+        return false;
+    };
+    let hosts_default = caps.get(2).or(caps.get(3)).map(|m| m.as_str());
+    keys.iter().any(|key| match key {
+        GuardKey::Var { name, default } => {
+            name == &caps[1]
+                && (default.as_deref().is_none_or(str::is_empty)
+                    || hosts_default.is_none()
+                    || default.as_deref() == hosts_default)
+        }
+        GuardKey::Group(_) => false,
+    })
 }
 
 /// The lookup key of each assert condition in a localhost play's tasks (nested blocks included)
@@ -332,23 +364,29 @@ fn inline_guard_items(play: &Node) -> Vec<GuardKey> {
                 Some(single) => vec![single],
                 None => vec![],
             };
-            for text in conditions.into_iter().filter_map(Node::as_str) {
-                if let Some(key) = guard_key(text) {
-                    out.push(key);
-                }
-            }
+            out.extend(
+                conditions
+                    .into_iter()
+                    .filter_map(Node::as_str)
+                    .filter_map(guard_key),
+            );
         }
     }
     out
 }
 
 /// The group a guard tests, as its lookup key names it. A literal name (`groups['app_svc']`,
-/// `groups.get("app_svc", [])`) is a group; a bare identifier (`groups[target_service]`) is the
-/// variable the target comes from. A `| default(...)` on the key is not part of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `groups.get("app_svc", [])`) is a group, and any default on its key is dropped: a literal is
+/// always defined, so the default never applies. A bare identifier (`groups[target_service]`) is
+/// the variable the target comes from, with the key's default: `None` when it has none, `Some("")`
+/// when the default is empty.
+#[derive(Debug, PartialEq, Eq)]
 enum GuardKey {
     Group(String),
-    Var(String),
+    Var {
+        name: String,
+        default: Option<String>,
+    },
 }
 
 /// The lookup key of one condition that a populated group alone satisfies, or `None` for any other.
@@ -363,15 +401,20 @@ fn guard_key(text: &str) -> Option<GuardKey> {
     }
     let blanked = blank_quoted(text);
     let caps = GROUP_LENGTH.captures(&blanked)?;
-    let span = caps.name("sub").or_else(|| caps.name("get"))?;
-    let key = text.get(span.range())?.trim();
-    if let Some(quote @ ('\'' | '"')) = key.chars().next() {
-        let inner = &key[1..];
-        let end = inner.find(quote)?;
-        return Some(GuardKey::Group(inner[..end].to_owned()));
+    // Blanking keeps every offset, so each span is read from the original text: a quoted name
+    // comes back as written, and an identifier as it is.
+    let read = |name: &str| caps.name(name).and_then(|m| text.get(m.range()));
+    if let Some(literal) = read("sub_lit").or_else(|| read("get_lit")) {
+        return Some(GuardKey::Group(literal.to_owned()));
     }
-    let name = LEADING_NAME.find(key)?;
-    Some(GuardKey::Var(name.as_str().to_owned()))
+    let name = read("sub_var").or_else(|| read("get_var"))?;
+    let default = read("sub_def")
+        .or_else(|| read("get_def"))
+        .map(str::to_owned);
+    Some(GuardKey::Var {
+        name: name.to_owned(),
+        default,
+    })
 }
 
 /// The only keys a guard task, or a block around one, may carry. The set is closed, as in
@@ -948,21 +991,38 @@ fn a_condition_with_a_backslash_is_refused() {
     assert!(guard_key(bypass).is_none(), "{bypass}");
     assert_eq!(
         guard_key("(groups.get(target_service, []) | length) > 0"),
-        Some(GuardKey::Var("target_service".to_owned()))
+        Some(GuardKey::Var {
+            name: "target_service".to_owned(),
+            default: None,
+        })
     );
 }
 
 #[test]
 fn guard_key_reads_the_key_from_the_original_text() {
-    // Arrange and act: a quoted name is read as written, a bare name is the variable, and a
-    // default on the key is not part of it (AC-915). The blanked text holds no names at all.
+    // Arrange and act: a quoted name is read as written, a bare name is the variable with its
+    // key's default (AC-915). The blanked text holds no names at all.
     let literal = guard_key("groups.get('opa_svc', []) | length == 1");
     let variable = guard_key("(groups[target_service | default('x')] | length) > 0");
+    let empty_default = guard_key("(groups.get(target_service | default(''), []) | length) > 0");
     let double = guard_key(r#"(groups.get("app_svc", []) | length) > 0"#);
 
     // Assert
     assert_eq!(literal, Some(GuardKey::Group("opa_svc".to_owned())));
-    assert_eq!(variable, Some(GuardKey::Var("target_service".to_owned())));
+    assert_eq!(
+        variable,
+        Some(GuardKey::Var {
+            name: "target_service".to_owned(),
+            default: Some("x".to_owned()),
+        })
+    );
+    assert_eq!(
+        empty_default,
+        Some(GuardKey::Var {
+            name: "target_service".to_owned(),
+            default: Some(String::new()),
+        })
+    );
     assert_eq!(double, Some(GuardKey::Group("app_svc".to_owned())));
 }
 
@@ -1012,6 +1072,77 @@ fn a_guard_keyed_on_the_literal_group_covers_the_play() {
         ("deploy-subscript.yml", subscript.as_str()),
         ("deploy-get.yml", get.as_str()),
         ("deploy-defaulted.yml", defaulted.as_str()),
+    ]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert!(report.offenders.is_empty(), "{:?}", report.offenders);
+    assert_eq!(report.checked, 3);
+}
+
+#[test]
+fn a_templated_target_is_covered_only_by_its_own_variable_and_default() {
+    // Arrange: each guard is an offender (AC-915). (a) the target is `<name>_svc` while the guard
+    // tests `<name>`; (b) a filter changes the target's text; (c) the target defaults to app_svc
+    // and the key to other_svc, so with the variable undefined the guard passes on other_svc and
+    // the play runs app_svc.
+    let suffixed = inline_playbook_for(
+        "{{ target_service }}_svc",
+        "(groups[target_service] | length) > 0",
+    );
+    let filtered = inline_playbook_for(
+        "{{ target_service | lower }}",
+        "(groups[target_service] | length) > 0",
+    );
+    let defaulted = inline_playbook_for(
+        "{{ target_service | default('app_svc') }}",
+        "(groups.get(target_service | default('other_svc'), []) | length) > 0",
+    );
+    let dir = fixture(&[
+        ("deploy-suffixed.yml", suffixed.as_str()),
+        ("deploy-filtered.yml", filtered.as_str()),
+        ("deploy-defaulted.yml", defaulted.as_str()),
+    ]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert_eq!(
+        offender_names(&report),
+        [
+            "deploy-defaulted.yml",
+            "deploy-filtered.yml",
+            "deploy-suffixed.yml"
+        ],
+        "{:?}",
+        report.offenders
+    );
+}
+
+#[test]
+fn a_templated_target_with_a_matching_or_empty_key_default_is_covered() {
+    // Arrange: each guard is covered (AC-915). The key's default is the group the target defaults
+    // to, or empty, so with the variable undefined the guard tests the group the play runs or
+    // fails. (c) the target has no default, so an undefined target errors the play instead.
+    let matching = inline_playbook_for(
+        "{{ target_service | default('app_svc') }}",
+        "(groups.get(target_service | default('app_svc'), []) | length) > 0",
+    );
+    let empty = inline_playbook_for(
+        "{{ target_service | default('app_svc') }}",
+        "(groups.get(target_service | default(''), []) | length) > 0",
+    );
+    let no_target_default = inline_playbook_for(
+        "{{ target_service }}",
+        "(groups.get(target_service | default('other_svc'), []) | length) > 0",
+    );
+    let dir = fixture(&[
+        ("deploy-matching.yml", matching.as_str()),
+        ("deploy-empty.yml", empty.as_str()),
+        ("deploy-no-target-default.yml", no_target_default.as_str()),
     ]);
 
     // Act
