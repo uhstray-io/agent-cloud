@@ -127,10 +127,9 @@
     _keep_previous: "{{ not ((agw_plaintext_keys | default(false) | bool) and (local_mode | default(false) | bool)) }}"
     # Shared-key grace period (gateway tasks 4.7, 5.1). legacy_shared_expires is an ISO date
     # (YYYY-MM-DD) in inventory; absent means no grace period is declared and no `legacy-shared`
-    # identity is rendered. Today is the controller's UTC date; agw_today overrides it for tests
-    # only. ISO dates compare correctly as strings.
+    # identity is rendered. Today (_agw_today) is the controller's UTC date, frozen by this play's
+    # first task; agw_today overrides it for tests only. ISO dates compare correctly as strings.
     _legacy_expires: "{{ legacy_shared_expires | default('', true) | string }}"
-    _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
     _legacy_shared_active: "{{ (_legacy_expires | length > 0) and (_agw_today < _legacy_expires) }}"
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
     # The recorded fingerprint, from the store read manage-secrets already made (`_existing`). It is
@@ -159,6 +158,11 @@
       - { src: config.yaml.j2, dest: config.yaml, mode: "0644" }
 
   tasks:
+    # A play var re-renders at every reference, so a run spanning midnight UTC could read two
+    # dates; set_fact freezes it once (docs/MISTAKES.md 6.7, 2.40).
+    - name: "Freeze today's UTC date for the shared-key grace period"
+      ansible.builtin.set_fact:
+        _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
     - name: "Refuse to render a gateway with no upstream or no served model"
       ansible.builtin.assert:
         that:
@@ -986,16 +990,23 @@
       {{ agw_verify_base_url | default('http://' ~ _agw_probe_ip ~ ':' ~ (agw_port | default('4000'))) }}
     _monorepo_dir: "{{ local_monorepo_dir | default('/home/' ~ (ansible_user | default('deploy')) ~ '/agent-cloud') }}"
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
-    # The shared-key grace period, as Phase 1 reads it (the same four expressions; a play's vars
+    # The shared-key grace period, as Phase 1 reads it (the same three expressions; a play's vars
     # do not cross plays, and test_agw_legacy_retirement.py asserts the copies stay equal).
+    # _agw_today is a host fact frozen by the play's first task, not a play var.
     _legacy_expires: "{{ legacy_shared_expires | default('', true) | string }}"
-    _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
     _legacy_shared_active: "{{ (_legacy_expires | length > 0) and (_agw_today < _legacy_expires) }}"
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"
     # The OpenRouter model names the refusal probe below may ask for (agentgateway-openrouter).
     _or_all: "{{ agw_models | selectattr('provider', 'defined') | selectattr('provider', 'equalto', 'openrouter') | map(attribute='name') | list }}"
 
   tasks:
+    # Reuses Phase 1's host fact so both plays agree on one date; computed here only when this
+    # play runs alone (docs/MISTAKES.md 6.7, 2.40).
+    - name: "Freeze today's UTC date for the shared-key grace period"
+      ansible.builtin.set_fact:
+        _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
+      when: _agw_today is not defined
+
     # The admin list the identities above derive from (a no-op with the gate off).
     - name: "Load the shared platform admin list"
       ansible.builtin.include_tasks: tasks/load-platform-admins.yml

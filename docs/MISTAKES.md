@@ -108,6 +108,7 @@ and why.
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 1 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
+| 2.40 | A lazy-evaluation check matched `now()` with no arguments and passed four `now(utc=true)` vars entries | Wrong-reason pass | 1 | Test (`platform/tests/suite/backup_credentials.rs` `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, ratchet now empty) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -3157,6 +3158,31 @@ held beforehand. Then write the mutant that does the forbidden thing and watch i
 `callback_with_a_token_signed_by_another_key_is_refused` probe with
 `callback.session.unwrap_or(login_session)`; the store-then-refuse mutant turns both
 red. The general rule is `Convention`.
+
+### 2.40 A lazy-evaluation check matched now() with no arguments and passed four now(utc=true) vars entries
+
+**What happened.** The check that refuses a `vars` entry built from a non-deterministic
+lookup (first a BATS test, then `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`
+in `platform/tests/suite/backup_credentials.rs`) matched the bare `now()` call only. The
+review of #1149 found four `vars` entries built from `now(utc=true...)` that it passed:
+`_agw_today` in both the Phase 1 and Phase 3 plays of `deploy-agentgateway.yml`, the
+task-local `_today` in `rollback-inference-route.yml`, and the include var
+`pbs_receipt_observed_end` in `verify-o11y-pbs-artifact.yml` and
+`sync-o11y-protected-pbs-copy.yml`. Each re-renders at every reference, so a run spanning
+midnight UTC could read two dates and a receipt could carry two end times (6.7). The
+widened check held them in a shrink-only ratchet; AC-910 moved each to a `set_fact` that
+computes it once and emptied the ratchet.
+
+**Root cause.** The pattern was written for the call form the author had in front of them,
+`now()`, and was never tried against the argumented form the playbooks actually use.
+
+**The rule.** A check for a call matches every argument form of that call. Mutation-check
+it with an argumented call, not only the bare one. A value built from `now()`, a random
+lookup or a pipe is computed once by `set_fact`, never as a `vars` entry (6.7).
+
+**Enforced by.** Test: `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup` in
+`platform/tests/suite/backup_credentials.rs` matches `now(...)` with arguments, and its
+ratchet is empty, so any new offender fails.
 
 ## 3. Acting on live state
 

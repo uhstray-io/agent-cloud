@@ -539,6 +539,12 @@
               forward with deploy-agentgateway.yml, or roll back in direct mode.
             quiet: true
 
+        - name: "Freeze today's UTC date for the grace-period comparison"
+          # Set once: a task var re-renders at every reference, so a run spanning midnight UTC
+          # could read two dates (docs/MISTAKES.md 6.7, 2.40). agw_today overrides it for tests.
+          ansible.builtin.set_fact:
+            _rb_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
+
         - name: "Name every identity the previous config enrols that the live one does not"
           block:
             - name: "Compare the previous config's enrolments with the live one's (credential-adjacent)"
@@ -559,7 +565,6 @@
                   {{ (_keys_of[0] | selectattr('keyHash', 'defined') | map(attribute='keyHash') | list)
                      + (_keys_of[0] | selectattr('key', 'defined') | map(attribute='key') | list) }}
                 _live_names: "{{ _keys_of[0] | map(attribute='metadata.name', default='') | map('string') | list }}"
-                _today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
                 _expires: "{{ legacy_shared_expires | default('', true) | string }}"
               ansible.builtin.set_fact:
                 _rb_readmitted: >-
@@ -572,7 +577,7 @@
                   {{ ns.out | unique | sort }}
                 _rb_legacy_expired: >-
                   {{ ('legacy-shared' in (_keys_of[1] | map(attribute='metadata.name', default='') | list))
-                     and (_expires | length > 0) and (_today >= _expires) }}
+                     and (_expires | length > 0) and (_rb_today >= _expires) }}
               no_log: true
           rescue:
             - name: "Report which credential task failed (its name and kind of error only)"
