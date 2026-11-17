@@ -329,7 +329,9 @@ def _cephfs(config, ceph_reads):
                 other["storage"] for other in rows
                 if other is not row and other["filesystem"] == row["filesystem"])
     named = {pool for row in rows for pool in row["data_pools"]}
-    usage = [{"pool": p.get("pool_name"), "used_gib": _gib(p.get("bytes_used")),
+    # Proxmox sets bytes_used and percent_used only when ceph df has stats for the pool; without them both are unknown.
+    usage = [{"pool": p.get("pool_name"),
+              "used_gib": None if p.get("bytes_used") is None else _gib(p["bytes_used"]),
               "percent_used": None if p.get("percent_used") is None else round(float(p["percent_used"]), 1),
               "replicas": p.get("size")}
              for p in sorted(pools, key=lambda p: str(p.get("pool_name"))) if p.get("pool_name") in named]
@@ -340,7 +342,7 @@ def _disks(disk_reads):
     """Each online node's disks as Proxmox lists them.
 
     A disk is in use exactly when Proxmox sets `used` on it (pve-storage Diskmanage.pm disk_is_used,
-    owner-verified on master). WWN and SMART health are never printed. A node whose disk list the token
+    master branch). WWN and SMART health are never printed. A node whose disk list the token
     may not read is unavailable.
     """
     nodes = []

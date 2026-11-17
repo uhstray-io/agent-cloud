@@ -413,6 +413,28 @@ fn a_disabled_cephfs_storage_is_left_out_of_every_cephfs_figure() {
 }
 
 #[test]
+fn a_pool_ceph_has_no_stats_for_reports_its_usage_unknown_not_zero() {
+    // Arrange: fsA's data pool a_data is listed without bytes_used or percent_used, as Proxmox lists a
+    // pool `ceph df` has no stats for.
+    let mut payload = cephfs_payload(
+        &[("cephA", 10_737_418_240)],
+        json!([{"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"}]),
+        json!([{"name": "fsA", "data_pools": ["a_data"]}]),
+    );
+    payload["ceph_reads"][1]["json"]["data"] = json!([{"pool_name": "a_data", "size": 3}]);
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert
+    assert_eq!(
+        out["cephfs"]["pools"],
+        json!([{"pool": "a_data", "used_gib": null, "percent_used": null, "replicas": 3}]),
+        "{out}"
+    );
+}
+
+#[test]
 fn the_planner_reads_no_disabled_storage_even_when_its_status_row_says_active() {
     // Arrange: node n1 lists two backup storages as active; the cluster config disables `off`.
     let status = json!({"type": "nfs", "shared": 1, "total": TOTAL, "used": 0, "avail": TOTAL});
