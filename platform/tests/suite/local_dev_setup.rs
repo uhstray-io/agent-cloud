@@ -43,7 +43,7 @@ const COMMITTED_TEMPLATE: &str = "platform/inventory/local-dev.yml.example";
 
 /// The tools the local-dev scripts, the git hooks and the test lanes need; each is one
 /// `brew "<name>"` line.
-const REQUIRED_TOOLS: [&str; 12] = [
+const REQUIRED_TOOLS: [&str; 13] = [
     "ansible",
     "ansible-lint",
     "bats-core",
@@ -51,6 +51,7 @@ const REQUIRED_TOOLS: [&str; 12] = [
     "jq",
     "podman",
     "podman-compose",
+    "rustup",
     "shellcheck",
     "socat",
     "yamllint",
