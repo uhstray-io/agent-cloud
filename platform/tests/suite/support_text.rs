@@ -32,6 +32,20 @@ fn any_line_never_matches_across_a_newline() {
 }
 
 #[test]
+fn any_line_keeps_a_carriage_return_as_part_of_its_line() {
+    // grep splits at `\n` only, so a CRLF file's `\r` is the last character of its line: a
+    // forbidden pattern that must consume it still matches.
+    assert!(any_line("secret=abcd\r\nnext", "secret=.{5}$"));
+}
+
+#[test]
+fn any_line_sees_no_line_after_the_final_newline() {
+    // A trailing `\n` ends the last line; it does not start an empty one.
+    assert!(!any_line("ab\n", "^$"));
+    assert!(any_line("ab\n\n", "^$"));
+}
+
+#[test]
 fn any_line_is_false_when_no_line_matches() {
     assert!(!any_line("ab\ncd", "zz"));
 }
