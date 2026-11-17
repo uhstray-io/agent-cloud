@@ -35,12 +35,12 @@ The service SHALL execute flow code under the code-only sandbox. A container in 
 
 ### Requirement: Account creation is closed after the owner
 
-In production, before the owner exists, the application port published on the host MUST be reachable only from the service host itself, and after the owner exists only from the reverse proxy. On local-dev the containers share the local-dev network, so this rule covers the host-published port only. The service SHALL refuse a sign-up for an address that holds no invitation once the owner exists. The service MUST NOT be configured to allow open sign-up.
+In production, before the owner exists, the application port published on the host MUST be reachable only from the service host itself, and after the owner exists only from the reverse proxy and from the service host itself. On local-dev the containers share the local-dev network, so this rule covers the host-published port only. The service SHALL refuse a sign-up for an address that holds no invitation once the owner exists. The service MUST NOT be configured to allow open sign-up.
 
 #### Scenario: The deploy creates the owner before the port is reachable
 
 - **WHEN** the service is deployed for the first time
-- **THEN** the owner account exists before the reverse proxy is admitted to the application port, and no other host reached the port before then
+- **THEN** the owner account exists before the declared bind is rendered, and until then no host other than the service host reached the port
 
 #### Scenario: An uninvited sign-up is refused
 
@@ -64,7 +64,7 @@ The service SHALL serve its interface only to members of the `platform-admins` g
 
 ### Requirement: The application port is reachable from the Caddy host only
 
-The host firewall SHALL admit the application port from the reverse proxy host and from no other host. The port MUST NOT be reachable from any other address on the local network.
+The host firewall SHALL admit the application port from the reverse proxy host and from no other remote host; the service host itself reaches it locally. The port MUST NOT be reachable from any other address on the local network.
 
 #### Scenario: A direct connection from another LAN host is refused
 
@@ -73,7 +73,7 @@ The host firewall SHALL admit the application port from the reverse proxy host a
 
 ### Requirement: Outbound traffic from the service host follows a declared allowlist
 
-From task 2.6 the host firewall SHALL refuse outbound connections from the service host that its declared egress allowlist does not name. The in-process SSRF guard MUST NOT be the only egress control, because upstream describes it as best-effort.
+When the egress mode is enforce, the host firewall SHALL refuse outbound connections from the service host that its declared egress allowlist does not name. The in-process SSRF guard MUST NOT be the only egress control, because upstream describes it as best-effort.
 
 #### Scenario: An undeclared outbound connection is refused
 

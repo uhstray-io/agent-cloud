@@ -12,7 +12,7 @@ A new platform service `activepieces` on its own VM, deployed, cleaned, backed u
 
 ### New Capabilities
 
-- `platform/activepieces-automation`: the Activepieces service. Its requirements are encryption-key continuity, flows without privileged containers, account creation closed after the owner, access for platform-admins only, the application port reachable from the Caddy host only, exact-path webhook exemptions, and database backup and restore.
+- `platform/activepieces-automation`: the Activepieces service. Its requirements are encryption-key continuity, flows without privileged containers, account creation closed after the owner, access for platform-admins only, the application port reachable from the Caddy host only, exact-path webhook exemptions, outbound traffic limited to a declared allowlist, and database backup and restore.
 
 ### Modified Capabilities
 
