@@ -1398,25 +1398,33 @@ pub(crate) fn never_runs(task: &Node) -> bool {
     when_is_constant_false(task) || when_always_errors(task) || tagged_never(task)
 }
 
-/// Whether a task's `when` (or any item of a `when:` list) is a constant ansible-core raises on
-/// instead of skipping: an integer such as `0`, or a quoted `no`, `No` or `FALSE`, which Jinja reads
-/// as an undefined variable. Bare or wrapped once in `{{ }}`.
-fn when_always_errors(task: &Node) -> bool {
-    let errors = |item: &Node| {
-        item.as_str().is_some_and(|s| {
-            let t = s.trim();
-            let bare = t
-                .strip_prefix("{{")
-                .and_then(|t| t.strip_suffix("}}"))
-                .map_or(t, str::trim);
-            matches!(bare, "0" | "no" | "No" | "FALSE")
-        })
-    };
+/// Whether any item of a task's `when` (one value, or a `when:` list, whose items are ANDed)
+/// satisfies `pred`. A task without `when` has none.
+fn when_any(task: &Node, pred: impl Fn(&Node) -> bool) -> bool {
     match task.get("when") {
-        Some(Node::Seq(items)) => items.iter().any(errors),
-        Some(item) => errors(item),
+        Some(Node::Seq(items)) => items.iter().any(pred),
+        Some(item) => pred(item),
         None => false,
     }
+}
+
+/// A `when` string with surrounding whitespace and one `{{ }}` wrapper removed.
+fn bare_when(text: &str) -> &str {
+    let trimmed = text.trim();
+    trimmed
+        .strip_prefix("{{")
+        .and_then(|t| t.strip_suffix("}}"))
+        .map_or(trimmed, str::trim)
+}
+
+/// Whether a task's `when` (or any item of a `when:` list) is a constant ansible-core raises on
+/// instead of skipping: `0`, a non-boolean result, or a quoted `no`, `No` or `FALSE`, which Jinja
+/// reads as an undefined name. Bare or wrapped once in `{{ }}`.
+fn when_always_errors(task: &Node) -> bool {
+    when_any(task, |item| {
+        item.as_str()
+            .is_some_and(|s| matches!(bare_when(s), "0" | "no" | "No" | "FALSE"))
+    })
 }
 
 /// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
@@ -1425,16 +1433,11 @@ fn when_always_errors(task: &Node) -> bool {
 /// each is a boolean, so Ansible skips the task silently. An integer-valued condition such as `0` is
 /// not one: ansible-core 2.20 raises on it, and the error runs an enclosing block's `rescue:`.
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
-    let is_false = |item: &Node| match item {
+    when_any(task, |item| match item {
         Node::Bool(b) => !b,
         Node::Str(s) => constant_false(s),
         _ => false,
-    };
-    match task.get("when") {
-        Some(Node::Seq(items)) => items.iter().any(is_false),
-        Some(item) => is_false(item),
-        None => false,
-    }
+    })
 }
 
 /// Whether a task carries the `never` tag. Whether it then runs depends on the run's `--tags`, so
@@ -1456,11 +1459,7 @@ static INT_COMPARISON: LazyLock<Regex> =
 
 /// Whether a `when` string is a constant that is always false.
 fn constant_false(text: &str) -> bool {
-    let trimmed = text.trim();
-    let bare = trimmed
-        .strip_prefix("{{")
-        .and_then(|t| t.strip_suffix("}}"))
-        .map_or(trimmed, str::trim);
+    let bare = bare_when(text);
     // A quoted `no` is a Jinja variable name, and unquoted YAML `no` is already a bool, so only
     // Jinja's own false literals count. `0` is an integer, which Ansible refuses rather than skips.
     if matches!(bare, "false" | "False") {
@@ -1493,6 +1492,9 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
         "when: \"{{ 0 }}\"\n",
         "when: \"no\"\n",
         "when: \"{{ No }}\"\n",
+        "when: \"FALSE\"\n",
+        "when: \"No\"\n",
+        "when: [true, \"0\"]\n",
     ] {
         assert!(never_runs(&task(&format!("name: t\n{never}"))), "{never}");
     }
