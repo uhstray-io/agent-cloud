@@ -33,7 +33,7 @@ Non-Goals:
 
 D6 (the Postiz piece) and D12 (order of work) shape the tasks, not a requirement.
 
-Trade-off accepted: the approval rule and brand isolation are enforced in flow logic and a static check, not by the publishing service, because the publishing service's API key does not scope what a caller may do (R5). Plan 28 Open Question 6 records the alternative.
+Trade-off accepted: the approval rule and brand isolation are enforced in flow logic and, for the approval step, a static check, not by the publishing service, because the publishing service's API key does not scope what a caller may do (R5). Plan 28 Open Question 6 records the alternative.
 
 ## Risks / Trade-offs
 

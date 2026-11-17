@@ -49,11 +49,11 @@ No flow SHALL create a post that publishes immediately. Every post a flow create
 #### Scenario: Static check over the committed flow definitions
 
 - **WHEN** the repository's tests run over the committed flow definitions
-- **THEN** a definition that requests immediate publication, or that calls the schedule step without an approval step before it, fails the check
+- **THEN** a definition that requests immediate publication, calls the schedule step without an approval step before it, or calls the publishing service's host from any step other than the handoff, fails the check
 
 ### Requirement: Handoff to the publishing service is exactly once
 
-A handoff SHALL create at most one publishing-service post for a draft, and SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another.
+A handoff SHALL create at most one publishing-service post for a draft, and SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
 
 #### Scenario: Retried handoff creates no second post
 
@@ -66,6 +66,12 @@ A handoff SHALL create at most one publishing-service post for a draft, and SHAL
 - **GIVEN** an approved revision has already been scheduled
 - **WHEN** the schedule step runs again for the same revision
 - **THEN** the publishing service holds exactly one schedule for that revision
+
+#### Scenario: Create past the hourly budget is refused
+
+- **GIVEN** the create-post calls in the current hour have reached the publishing service's ceiling
+- **WHEN** a brief run or a scheduled run reaches the handoff
+- **THEN** the handoff refuses the create-post call and records why, and no call reaches the publishing service
 
 ### Requirement: Guardrail checks run before approval
 
