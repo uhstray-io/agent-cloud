@@ -345,6 +345,10 @@ fn a_store_cli_call_is_detected() {
     assert!(!runs_store_cli(&task(
         "ansible.builtin.command: ls /opt/vault\n"
     )));
+    // Errs toward refusing, as the STORE_CLI doc says.
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.command: ls /opt/vault /tmp\n"
+    )));
     assert!(runs_store_cli(&task(
         "ansible.builtin.command: bao -address=http://x kv put secret/x a=b\n"
     )));
