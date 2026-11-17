@@ -15,6 +15,7 @@ pub mod lanes;
 pub mod text;
 
 pub mod playbook;
+pub mod forgeries;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
