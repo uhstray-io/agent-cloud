@@ -109,7 +109,11 @@ columns = {{ weft_board_columns | default(['Ready', 'In progress', 'In review', 
 # The page is the image's, so the page served is the one the release's digest was signed with.
 page = "/usr/share/weft/board"
 recordings = "{{ ws }}/recordings"
-ingest_from = {{ weft_board_ingest_from | default([]) | to_json }}
+# Loopback is always listed: compose.yml's healthcheck asks /api/workspace from inside the
+# container, so its peer is 127.0.0.1, and weft's gate admits no address its allowlist does not
+# name (an empty list admits nobody). Without it every deploy fails its health wait. Only a
+# process in the board's own network namespace has a loopback address there.
+ingest_from = {{ ((weft_board_ingest_from | default([])) + ['127.0.0.1/32', '::1/128']) | unique | to_json }}
 {% if weft_board_trusted_proxies | default([]) | length > 0 %}
 # From the weft release that carries weft #511 the board refuses trusted_proxies without the
 # header that names the client, and a release before it refuses the header as an unknown key, so
