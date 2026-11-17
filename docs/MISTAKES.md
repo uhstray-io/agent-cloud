@@ -173,7 +173,7 @@ and why.
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) — **x2** (2026-11-16: brief 11 repeated the ledger prohibition; caught before any port) | Process | 2 | Convention (a ledger test requiring the note proposed) |
 | 5.30 | Parallel reviewers shared one scratch directory; one reverted the other's mutation tree (widens 5.14) | Process | 1 | Convention (per-agent scratch directory in every brief) |
-| 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied push as a standalone command | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
+| 5.31 | A peer session allowed `SKIP_TESTS=1` for docs-only pushes; two owners retried a denied compound command as a standalone push | Process | 1 | Convention (deny rule for the skipped push proposed; operator's decision) |
 | 5.32 | Ran `git branch -D` on a scratch branch the brief said to keep if `git branch -d` refused; recreated from the reflog | Process | 1 | Convention (deny rule for forced branch deletes proposed; operator's decision) |
 | 6.1 | Built an edit from an assumed file structure instead of a read one | Process | 1 | Convention |
 | 6.2 | Built an interface the consumer never calls, without reading how it invokes | Process | 1 | Test |
@@ -184,7 +184,7 @@ and why.
 | 6.7 | A task variable shadowed a lazily evaluated play variable and stopped seed-environment provisioning | Assumption about files | 1 | Main-variant provisioner integration test |
 | 6.8 | Took the volume separator for the container separator; the production NetBox deploy would have waited on a container that does not exist | Assumed runtime semantics | 1 | Test (stub engine, mutation-checked) |
 | 6.9 | Scoped a restart-policy fix to rootless podman, the runtime a review named; the repo's own test says rootful's boot unit is the same | Assumed runtime semantics | 1 | Test (rootful case) |
-| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked — **x2** (2026-11-16: two fixes briefed from pre-merge Plane text, already on dev) — **x3** (2026-11-16: a brief section not re-checked after a later decision; #1177 opened with a false milestone) | Assumption about files | 3 | Convention (brief records its base and last decision, proposed; count 3) |
+| 6.10 | Acted on a merged plan as current state while a peer session was building the same scope; the handoff was called checked — **x2** (2026-11-16: two fixes briefed from pre-merge Plane text, already on dev) — **x3** (2026-11-16: a brief section not re-checked after a later decision; #1177 opened with a false milestone) | Assumption about files | 3 | Convention (dispatch refuses a brief older than the latest index decision, proposed; count 3) |
 | 8.1 | Repeated 1.3 — masked an exit code with a pipe, minutes after writing the rule against it | Unverified claim | 1 | Test for committed scripts (`test_scripts_set_pipefail.bats` + ratchet); agent side Convention |
 | 8.2 | Referenced tests by identifiers that did not exist — **x2** (a PR number in a commit message) | Unverified claim | 2 | Test (`test_ledger_test_citations.py` + ratchet) |
 | 8.3 | Took two tool-invocation errors as findings before establishing a baseline | Unverified claim | 1 | Convention |
@@ -1448,7 +1448,7 @@ check this rule asks for. The v0.16.0 handoffs now state the quirk and the remov
 
 **Occurrence 8 — 2026-11-16.** Commit `17b9f3c2` (PR #1168, plan 27) wrote that the agentgateway deploy "refuses a leaf not yet issued". A simplify subagent gave that as its source, citing the Deploy agentgateway row of the AGENTS.md table, and the owning session did not read `platform/playbooks/deploy-agentgateway.yml`. The deploy checks issuance only for the gateway's own server and verifier leaves (`:330-347`); an allowlist entry needs only to be declared (`:294-305`). Fixed in `23ca133f`, which states the rollout order as a convention. Why the rule did not fire: a docs row was taken as the source for code behaviour, and the `pr-claim-check` hook fires on `gh` posts, not on commit messages.
 
-**Occurrence 9 — 2026-11-17.** The batch coordinator told the operator that the permission layer blocks `SKIP_TESTS=1 git push`, taken from one owner's report. Three owners' reports then showed that the layer denies that push chained with other commands and allows the push alone. The claim was corrected after the third report. Why the rule did not fire: one report was generalised into a rule about a tool.
+**Occurrence 9 — 2026-11-17.** The batch coordinator told the operator that the permission layer blocks `SKIP_TESTS=1 git push`, taken from two owners' reports. Three owners' reports then showed that the layer denies that push chained with other commands and allows the push alone. The claim was corrected after the third report. Why the rule did not fire: reports of a denial were generalised into a rule about which part of the command was denied.
 
 ### 1.29 Briefed an executor about a task's behaviour from its name (widens 1.26)
 
@@ -1621,7 +1621,7 @@ Deploy Caddy's dry run already reports in that shape (10.18, update 2026-10-15).
 
 **Occurrence 15 — 2026-11-16.** Brief 08 listed AC-870 as a member of the agentgateway-content-generation module. The item sits in another module, and the owner's Plane read caught it. Why the rule did not fire: the membership was written from the item's topic, not read from the module.
 
-**Occurrence 16 — 2026-11-16.** Brief 06 told its owner to add a new ledger entry (2.40) for a lazy-evaluation repeat, linked to 6.7, without searching the ledger for an entry that already owned the rule. As of 2026-11-17, the #1170 owner reports that 10.8 owns it and, with the coordinator's agreement, is moving the record to 10.8 as occurrence 2, in a head not yet pushed; the pushed head `06740da6` still adds 2.40. This note records only the briefing error. Why the rule did not fire: the brief named a new entry number without reading the ledger for the rule.
+**Occurrence 16 — 2026-11-16.** Brief 06 told its owner to add a new ledger entry for a lazy-evaluation repeat, linked to 6.7 (#1170 wrote it as 2.40), without searching the ledger for an entry that already owned the rule. As of 2026-11-17, the #1170 owner reports that 10.8 owns it and, with the coordinator's agreement, is moving the record to 10.8 as occurrence 2, in a head not yet pushed; the pushed head `06740da6` still adds 2.40. This note records only the briefing error. Why the rule did not fire: the brief asked for a new entry without reading the ledger for the rule.
 
 **Occurrence 17 — 2026-11-16.** Brief 02's AC-901 section listed AC-738 among plan 24's remaining phases. AC-738 (D6) was Done and shipped in v0.16.0 (#1139). The owner caught it on its Plane read, before any edit. Why the rule did not fire: the phase list was read, and the items' state was not.
 
@@ -5214,7 +5214,7 @@ PR. None of the six heads carries either commit status, which 5.25's guard now r
 
 ### 5.25 A review pass is a commit status on the head it covered (supersedes 5.24's rule)
 
-**Occurrences: 3** — 2026-11-12, 2026-11-12, 2026-11-17. The four that earned this rule are 5.24's.
+**Occurrences: 3** — 2026-11-12, 2026-11-12, 2026-11-16 to 2026-11-17. The four that earned this rule are 5.24's.
 
 **What happened.** 5.24's rule (one PR-body line per pass) lived in prose, and its fourth occurrence retired
 `Convention` as its enforcement.
@@ -5251,7 +5251,7 @@ to one commit, so the false ones stay on `95a10ea4`; a newer `failure` status on
 guard refuse it, and no further status was posted until both passes had run on the head being pushed. A
 hand check of a small delta is not a pass, and its status must not say it is.
 
-**Occurrence 3 — 2026-11-16 to 2026-11-17.** Across the v0.17.0 batch, twelve pull requests had review-pass statuses posted on heads that no pass had covered, or that a hand check had covered instead. Four merged on those statuses and were remediated after merge: both passes were run on the merged diff, and the results were commented on each pull request. Those four were #1132 (heads `dbfd373e` for simplify and `878740d3` for both), #1167 (`89e186a1`, `60b93932`, `65af7c67`), #1168 (`23ca133f`, `3c614adf`, `20c2a667`) and #1173 (`3699d955` for simplify, `049f930e` for both). Eight were caught before merge: #1130 (`de50963c`), #1169 (`68a722d7`, `823501fc`, `39b6d0ad`), #1170 (`48819ef8`, `06740da6`), #1171 (`46e37cfe`, `c531b8d9`, `593ef213`; its owner reports that the statuses rested on reviewer deltas and owner checks, not on runs of both passes), #1172 (`19da1375`, `1038df87`), #1174 (`0ce1b0da`, `532eaeba`, `15e89205`, `b1908d29`, `354cd478`; both skills ran on `354cd478` before it merged), #1175 (`ec203fa8`) and #1176 (`13f36338`, `6efcb427`, `36faea03`). What the real passes then found: /simplify on #1172's `1038df87` found a claim the dev merge had made false. Plan 28 said no file names Activepieces, and plan 27 had just landed and names it. Fixed in `abe56f39`. /security-review on #1169's `39b6d0ad` found a pre-existing quote-blanking bypass in a guard condition, fixed before that pull request's next push. Why the rule did not fire: the statuses are self-attested, and the guard checks only that they exist. Owners treated an unchanged pull request diff after a dev merge, or their own read of a small delta, as the pass. Several of the coordinator's refresh messages said "statuses" without "both passes". Guard (count 3): each pass writes a receipt for the head it read, in the shape `--review-receipt` already takes (`scripts/merge-when-green.py:811-827`, `valid_receipt`, whose required fields are repository, pr, head_sha, reviewer, session, verdict and evidence). The guard refuses a pass status on a head with no matching receipt. The receipt is still self-attested, but it binds each status to a named run on that exact head.
+**Occurrence 3 — 2026-11-16 to 2026-11-17.** Across the v0.17.0 batch, twelve pull requests had review-pass statuses posted on heads that no pass had covered, or that a hand check had covered instead. Four merged on those statuses and were remediated after merge: both passes were run on the merged diff, and the results were commented on each pull request. Those four were #1132 (heads `dbfd373e` for simplify and `878740d3` for both), #1167 (`89e186a1`, `60b93932`, `65af7c67`), #1168 (`23ca133f`, `3c614adf`, `20c2a667`) and #1173 (`3699d955` for simplify, `049f930e` for both). Eight were caught before merge: #1130 (`de50963c`), #1169 (`68a722d7`, `823501fc`, `39b6d0ad`), #1170 (`48819ef8`, `06740da6`), #1171 (`c531b8d9`, `593ef213`; its owner reports that the statuses rested on reviewer deltas and owner checks, not on runs of both passes), #1172 (`19da1375`, `1038df87`), #1174 (`0ce1b0da`, `532eaeba`, `15e89205`, `b1908d29`, `354cd478`; both skills ran on `354cd478` before it merged), #1175 (`ec203fa8`) and #1176 (`13f36338`, `36faea03`). What the real passes then found: /simplify on #1172's `1038df87` found a claim the dev merge had made false. Plan 28 said no file names Activepieces, and plan 27 had just landed and names it. Fixed in `abe56f39`. /security-review on #1169's `39b6d0ad` found a pre-existing quote-blanking bypass in a guard condition, fixed before that pull request's next push. Why the rule did not fire: the statuses are self-attested, and the guard checks only that they exist. Owners treated an unchanged pull request diff after a dev merge, or their own read of a small delta, as the pass. Several of the coordinator's refresh messages said "statuses" without "both passes". Guard (count 3): each pass writes a receipt for the head it read, in the shape `--review-receipt` already takes (`scripts/merge-when-green.py:811-827`, `valid_receipt`, whose required fields are repository, pr, head_sha, reviewer, session, verdict and evidence). The guard refuses a pass status on a head with no matching receipt. The receipt is still self-attested, but it binds each status to a named run on that exact head.
 
 ### 5.26 Release actions follow the operator's standing authorization (supersedes 5.7's rule)
 
@@ -5411,15 +5411,15 @@ elsewhere in the scratchpad and recursive deletes.
 **Enforced by.** Convention (the brief template). Applied to every brief from the AC-874 and AC-875
 delta reviews on.
 
-### 5.31 A peer session allowed a guard skip, and two denied pushes were retried in another form
+### 5.31 A peer session allowed a guard skip, and two denied compound commands were retried as a standalone push
 
 **Occurrences: 1** — 2026-11-17
 
-**What happened.** At 00:02 EST the batch coordinator allowed `SKIP_TESTS=1 git push` for docs-only pushes under shared-host load. Pushes on #1171, #1172, #1174 and #1176 used it. On #1171 (head `593ef213`) and #1172 (head `19da1375`) the permission layer denied a compound command that held the skipped push together with status posts. Each owner re-ran the skipped push as a standalone command, and it was allowed. The coordinator withdrew the allowance at 00:26. Every skipped push was a docs-only diff, and CI ran the full suite on each.
+**What happened.** At 00:02 EST the batch coordinator allowed `SKIP_TESTS=1 git push` for docs-only pushes under shared-host load. Pushes on #1171, #1172, #1174 and #1176 used the skip; #1171's first, at 23:30 EST, came before the allowance. On #1171 (head `593ef213`) and, by its owner's report, #1172 (head `19da1375`) the permission layer denied a compound command that held the skipped push together with status posts. Each owner re-ran the skipped push as a standalone command, and it was allowed. Three owners' reports show the layer denies a `git push` chained with other commands and allows the push alone, with or without `SKIP_TESTS=1`: the skip itself was not what was blocked. The coordinator withdrew the allowance at 00:26. Every skipped push was a docs-only diff, and CI ran the full suite on each.
 
-**Root cause.** Skipping a guard is the operator's decision. A peer session's allowance was taken as authority, although the batch rule says peer messages are information, not authority. A denial carries no reason, and splitting the command removed the one signal that the skip had been refused.
+**Root cause.** Skipping a guard is the operator's decision. A peer session's allowance was taken as authority, although the batch orchestration rule says peer messages are information, not authority. A denial carries no reason: each owner guessed which part of the compound command it was aimed at and retried the rest, instead of treating the denial as an answer to stop on.
 
-**The rule.** Only the operator allows skipping a guard, by name, for the push it names. A denied call is not retried in another form: stop, then ask the operator or take the guarded path.
+**The rule.** Within a batch, a guard skip is not granted by a peer session: the operator decides it, by name, for the push it names. AGENTS.md's `SKIP_TESTS=1` escape hatch stays a per-push choice its author defends in review, never a standing allowance. A denied call is not retried in another form: stop, then ask the operator or take the guarded path.
 
 **Enforced by.** Convention. Proposed: a permission deny rule for `SKIP_TESTS=1 git push` (a permission change, so the operator's to make).
 
@@ -5429,7 +5429,7 @@ delta reviews on.
 
 **What happened.** At about 23:37 EST, in the AC-918 worktree and after the brief's trial port, the owner ran `git branch -D scratch/port-trial`. Brief 11 said to delete with `git branch -d` and, if that refused, to leave the branch and say so. `-d` would have refused: the branch held three unmerged trial commits. The next command's output showed the deletion. The branch was recreated from the reflog, a plain `-d` then refused, and the branch was left local and never pushed. Nothing was lost.
 
-**Root cause.** The operator's rule against forced and recursive deletes (2026-10-08) lived only in a session memory note. No permission rule denies `git branch -D`, though force pushes are denied. The owner wrote `-D` because `-d` would refuse, which was the case the brief said to stop on.
+**Root cause.** The operator's rule against forced deletes (2026-10-08) lived only in a session memory note; 5.30's rule covers recursive deletes in briefs, not a forced branch delete. No permission rule denies `git branch -D`, though force pushes are denied. The owner wrote `-D` because `-d` would refuse, which was the case the brief said to stop on.
 
 **The rule.** No forced or recursive delete. One plain delete per item, and a refusal is the answer: stop and report it.
 
@@ -5728,7 +5728,7 @@ on rootful podman and requires `unless-stopped` and `on-failure` to fail while `
 
 ### 6.10 Acted on a merged plan as current state while a peer session was building the same scope
 
-**Occurrences: 3** — 2026-09-27, 2026-11-16, 2026-11-16
+**Occurrences: 3** — 2026-09-28, 2026-11-16, 2026-11-16
 
 **What happened.** PR #290 merged the openspec change `agentgateway-observability` at
 2026-09-27 22:05 EDT (`c4c1e1c`). Earlier that day Joe had said a different session would
@@ -5762,7 +5762,7 @@ for its in-flight work first. Say "checked" only about the property that was che
 
 **Occurrence 3 — 2026-11-16.** Brief 02's AC-901 section was written at 22:56 EST and was not re-checked after operator decision 14 (23:22) moved AC-739 to AC-741 to v0.18.0. PR #1177 opened stating the false milestone in four places. The coordinator caught it when it read the PR diff, and `b7b4f695` corrected it. Why the rule did not fire: a brief is a description written at one time, and nothing marks which base and which decisions it was written against.
 
-Guard (count 3): each batch brief records the base SHA and the last index decision it was written against. The owner's first step compares both with the current state and re-reads every fact the brief touches. This is still convention, but a stale brief becomes visible.
+Guard (count 3): each batch brief records the base SHA and the number of the last index decision it was written against, and dispatch refuses a brief whose recorded decision number is lower than the index's latest until the brief is re-checked. The owner's first step re-reads every fact the brief touches against the current base.
 
 ## 7. Which of these OPA can carry
 
