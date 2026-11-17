@@ -35,7 +35,7 @@ The service SHALL execute flow code under the code-only sandbox. A container in 
 
 ### Requirement: Account creation is closed after the owner
 
-Before the owner exists, the application port MUST be reachable only from the service host itself. After the owner exists, the application port MUST be reachable only from the reverse proxy. The service SHALL refuse a sign-up for an address that holds no invitation once the owner exists. The service MUST NOT be configured to allow open sign-up.
+In production, before the owner exists, the application port published on the host MUST be reachable only from the service host itself, and after the owner exists only from the reverse proxy. On local-dev the containers share the local-dev network, so this rule covers the host-published port only. The service SHALL refuse a sign-up for an address that holds no invitation once the owner exists. The service MUST NOT be configured to allow open sign-up.
 
 #### Scenario: The deploy creates the owner before the port is reachable
 
