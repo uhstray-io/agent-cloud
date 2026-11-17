@@ -31,8 +31,8 @@
 //! - the `Report` block is `task_block`'s: it ends at the next `- name:` at the same or shallower
 //!   indent, where the BATS awk ended only at a four-space one (the Report task is the file's last);
 //! - stricter, where a BATS regex matched lines it was not about: beside each kept BATS line, a
-//!   stricter check on the file that line read, parsed where it is YAML (each is listed in the
-//!   pull request body);
+//!   stricter check on the file that line read: the compose file parsed, a playbook task by its
+//!   own block (each is listed in the pull request body);
 //! - the DNS-instruction refute matches any postiz host, not one instance's;
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
