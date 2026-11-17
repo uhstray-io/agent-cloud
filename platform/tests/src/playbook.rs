@@ -21,12 +21,15 @@
 //!   `platform/playbooks` or `platform/semaphore` has a tag (a compose file has `!reset`), so this
 //!   loader refuses every one rather than copy that split;
 //! - a plain timestamp, `.inf` or `.nan`, or an integer beyond `i64`;
-//! - a plain `=`, or a plain `<<` anywhere but a mapping key: PyYAML refuses both;
+//! - a plain `=` or `<<` as a value: PyYAML refuses both (as a key, `=` is a string and `<<` a
+//!   merge);
 //! - a mapping key that is not a string. PyYAML keeps `200` or `yes` as an int or bool key (and
 //!   refuses a sequence or mapping key as unhashable); a JSON object key is a string.
 //!
 //! `<<` merges follow [`yaml`]'s builder: a mapping, or a list of mappings read last-first, is
-//! merged under the explicit keys, and a later duplicate key wins.
+//! merged under the explicit keys, and a later duplicate key wins. An alias of a `<<` key is read
+//! as a literal `<<` key, as `yaml::parse` reads it, where PyYAML merges or refuses it; no
+//! repository file has one (AC-944 folds the two loaders).
 //!
 //! | `playbook_yaml.py` | Rust |
 //! |---|---|
@@ -147,14 +150,15 @@ fn refuse(origin: &str, key: &str, reason: &str, scalar: Option<&str>) -> ! {
 }
 
 /// A plain untagged scalar's value, as PyYAML's implicit resolvers and constructors read it.
-/// `Err` names why JSON cannot hold the value.
-fn resolve_plain_value(text: &str) -> Result<Value, &'static str> {
+/// `Err` names why JSON cannot hold the value. `key` is true for a mapping key.
+fn resolve_plain_value(text: &str, key: bool) -> Result<Value, &'static str> {
     match yaml::resolve_plain(text) {
         Node::Bool(b) => Ok(Value::Bool(b)),
         Node::Null => Ok(Value::Null),
-        // PyYAML resolves a plain `=` to its value tag and a plain `<<` that is not a merge key to
-        // its merge tag, and has no constructor for either (a `<<` key is a merge: `on_event`).
-        Node::Str(_) if text == "=" => Err("PyYAML has no constructor for a plain `=`"),
+        // PyYAML resolves a plain `=` to its value tag and a plain `<<` to its merge tag. As a key,
+        // `=` reads as a string and `<<` is a merge (`on_event`); as a value, PyYAML has no
+        // constructor for either.
+        Node::Str(_) if text == "=" && !key => Err("PyYAML has no constructor for a plain `=`"),
         Node::Str(_) if text == "<<" => {
             Err("PyYAML has no constructor for a plain `<<` outside a mapping key")
         }
@@ -410,17 +414,11 @@ impl MarkedEventReceiver for Builder<'_> {
             Event::Scalar(text, style, anchor, tag) => {
                 self.refuse_tag(tag.as_ref(), Some(text.as_str()));
                 let plain = style == TScalarStyle::Plain;
-                let is_merge_key = plain
-                    && text == "<<"
-                    && matches!(self.stack.last(), Some(Frame::Map { key: None, .. }));
-                let item = if is_merge_key {
-                    // Read only as a merge key, never as a value (`push`).
-                    Item {
-                        value: Value::String(text.clone()),
-                        text: Some(text),
-                    }
-                } else if plain {
-                    let value = resolve_plain_value(&text).unwrap_or_else(|why| {
+                let key = matches!(self.stack.last(), Some(Frame::Map { key: None, .. }));
+                let is_merge_key = plain && key && text == "<<";
+                // A merge key is never read as a value (`push`), so it is not resolved.
+                let item = if plain && !is_merge_key {
+                    let value = resolve_plain_value(&text, key).unwrap_or_else(|why| {
                         refuse(self.origin, &self.key_label(&text), why, Some(&text))
                     });
                     Item {

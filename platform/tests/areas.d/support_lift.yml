@@ -11,8 +11,8 @@
 # paths: the files support_lift_pyyaml reads, so a playbook-only change runs the PyYAML oracle
 # (a change under platform/tests/** is a full trigger anyway).
 paths:
-  - "platform/playbooks/**"
-  - "platform/semaphore/**"
+  - "platform/playbooks/**/*.yml"
+  - "platform/semaphore/**/*.yml"
 tiers:
   cli: [support_lift_pyyaml]
   playbook: [support_lift_playbook]

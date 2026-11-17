@@ -118,6 +118,12 @@ fn plain_scalars_lift_with_pyyaml_types() {
         let doc = playbook::loads(&format!("v: {text}"));
         assert_eq!(doc["v"], expected, "plain or quoted scalar {text:?}");
     }
+    // As a key, a plain `=` is a string (PyYAML's flatten_mapping); as a value it is refused.
+    assert_eq!(
+        playbook::loads("=: a"),
+        json!({"=": "a"}),
+        "a plain `=` key"
+    );
 }
 
 /// The forms JSON cannot keep, or the loader will not read as PyYAML does, are refused, and the
