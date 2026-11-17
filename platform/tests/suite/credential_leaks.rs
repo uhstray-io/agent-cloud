@@ -1397,7 +1397,7 @@ pub(crate) fn never_runs(task: &Node) -> bool {
 }
 
 /// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
-/// list (the items are ANDed). A constant false is `false`, `False`, `FALSE`, `no`, `No` or `0`,
+/// list (the items are ANDed). A constant false is the YAML bool, the strings `false`, `False` or `0`,
 /// also wrapped once in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
     let is_false = |item: &Node| match item {
@@ -1436,7 +1436,9 @@ fn constant_false(text: &str) -> bool {
         .strip_prefix("{{")
         .and_then(|t| t.strip_suffix("}}"))
         .map_or(trimmed, str::trim);
-    if matches!(bare, "false" | "False" | "FALSE" | "no" | "No" | "0") {
+    // A quoted `no` is a Jinja variable name, and unquoted YAML `no` is already a bool, so only
+    // Jinja's own false literals count.
+    if matches!(bare, "false" | "False" | "0") {
         return true;
     }
     let Some(c) = INT_COMPARISON.captures(bare) else {
@@ -1458,7 +1460,7 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
         "when: \"{{False}}\"\n",
         "when: 1 == 2\n",
         "when: \"{{ 3 != 3 }}\"\n",
-        "when: [true, \"{{ no }}\"]\n",
+        "when: [true, \"{{ 0 }}\"]\n",
         "tags: never\n",
         "tags: [deploy, never]\n",
         "tags: \"never,deploy\"\n",
@@ -1467,6 +1469,8 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
     }
     for runs in [
         "when: true\n",
+        "when: \"no\"\n",
+        "when: \"{{ No }}\"\n",
         "when: 1 == 1\n",
         "when: 1 != 2\n",
         "when: some_flag | bool\n",
@@ -1667,13 +1671,15 @@ fn bao_merge_keys_creates_a_path_only_under_cas() {
 }
 
 /// The task with this exact name in a task tree, preceded by every block that encloses it,
-/// outermost first; `block`, `rescue` and `always` are all walked.
+/// outermost first; `block` and `always` are walked, `rescue` is not.
 fn task_with_ancestors<'a>(tasks: &'a [Node], name: &str) -> Option<Vec<&'a Node>> {
     for task in tasks {
         if task.get("name").and_then(Node::as_str) == Some(name) {
             return Some(vec![task]);
         }
-        for section in ["block", "rescue", "always"] {
+        // Not `rescue`: it runs only after a failure, so an end_play there does not end a run that
+        // succeeds.
+        for section in ["block", "always"] {
             let children = task.get(section).and_then(Node::as_seq).unwrap_or(&[]);
             if let Some(mut chain) = task_with_ancestors(children, name) {
                 chain.insert(0, task);
@@ -1744,6 +1750,20 @@ fn seed_access_check_ends_the_play_before_any_write() {
         !chain.iter().any(|t| never_runs(t)),
         "the end_play, or a block around it, never runs (a constant-false when or the never \
          tag), so the play writes"
+    );
+    // The end_play's own `when` is pinned above; any `when` on a block around it could skip it.
+    let gated: Vec<&str> = chain[..chain.len() - 1]
+        .iter()
+        .filter(|b| b.get("when").is_some())
+        .map(|b| {
+            b.get("name")
+                .and_then(Node::as_str)
+                .unwrap_or("(unnamed block)")
+        })
+        .collect();
+    assert!(
+        gated.is_empty(),
+        "a block around the end_play carries a when, which can skip it: {gated:?}"
     );
     let seed_tasks = play_tasks(SEED_KEY);
     let value_check = task_named(&seed_tasks, "Validate the secret value is present");

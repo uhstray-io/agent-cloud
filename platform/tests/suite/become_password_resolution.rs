@@ -262,12 +262,12 @@ fn first_executed_task(play: &Node) -> Option<&Node> {
             .and_then(Node::as_seq)
             .filter(|s| !s.is_empty())
     };
-    let first = if let Some(pre) = non_empty("pre_tasks") {
-        first_in(pre)
-    } else if non_empty("roles").is_some() {
-        return None;
-    } else {
-        first_in(play.get("tasks").and_then(Node::as_seq)?)
+    // pre_tasks that run nothing hand over to roles, then tasks.
+    let pre = non_empty("pre_tasks").map_or(First::Nothing, first_in);
+    let first = match pre {
+        First::Nothing if non_empty("roles").is_some() => return None,
+        First::Nothing => first_in(play.get("tasks").and_then(Node::as_seq)?),
+        decided => decided,
     };
     match first {
         First::Found(task) => Some(task),
@@ -298,6 +298,11 @@ fn first_in(seq: &[Node]) -> First<'_> {
         if is_controller_only_guard(task) {
             continue;
         }
+        // Any other `when` may be false at run time, so this task (or block) may not run and the
+        // first task cannot be proven: fail closed.
+        if task.get("when").is_some() {
+            return First::Unknown;
+        }
         let Some(block) = task.get("block").and_then(Node::as_seq) else {
             return First::Found(task);
         };
@@ -320,7 +325,7 @@ fn first_in(seq: &[Node]) -> First<'_> {
 /// the store's password. A literal, an extra var, or a default naming the path is not one.
 static STORE_LOOKUP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#"hashi_vault['"]\s*,\s*['"]{}['"]"#,
+        r#"^\s*\{{\{{\s*lookup\(\s*['"](?:community\.hashi_vault\.)?hashi_vault['"]\s*,\s*['"]{}['"][^{{}}]*\)\s*\}}\}}\s*$"#,
         regex::escape(SECRET_PATH)
     ))
     .expect("a valid regex")
@@ -722,6 +727,38 @@ const FIRST_EXECUTED_CASES: &str = r#"
       when: false
       tags: [never]
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad a literal before the store lookup
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "x {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
+- name: bad the store lookup inside a Jinja comment
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "{# {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }} #}"
+- name: ok pre_tasks that run nothing, then the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - ansible.builtin.debug: {msg: hi}
+      when: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad a resolver behind a variable when
+  hosts: h
+  become: true
+  gather_facts: false
+  vars:
+    resolve_password: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      when: resolve_password
 - name: bad guard then debug
   hosts: h
   become: true

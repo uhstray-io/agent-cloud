@@ -195,15 +195,44 @@ fn command_lines(node: &Node, out: &mut Vec<String>) {
 
 /// Whether a task runs the OpenBao (`bao`) or Vault (`vault`) CLI through a command-family module,
 /// which the uri and hashi_vault checks above cannot see.
+///
+/// The module is read under its key (any spelling) and from `action:` / `local_action:` (a string's
+/// first word, or a mapping's `module`); for a command-family call, that value and the task-level
+/// `args` are both scanned, since either can carry the command line.
 fn runs_store_cli(task: &Node) -> bool {
-    COMMAND_MODULES
+    let is_command = |name: &str| {
+        let short = name
+            .strip_prefix("ansible.builtin.")
+            .or_else(|| name.strip_prefix("ansible.legacy."))
+            .unwrap_or(name);
+        COMMAND_MODULES.contains(&short)
+    };
+    let mut scanned: Vec<&Node> = COMMAND_MODULES
         .iter()
         .filter_map(|m| module(task, m))
-        .any(|args| {
-            let mut lines = Vec::new();
-            command_lines(args, &mut lines);
-            lines.iter().any(|l| STORE_CLI.is_match(l))
-        })
+        .collect();
+    for key in ["action", "local_action"] {
+        let Some(action) = task.get(key) else {
+            continue;
+        };
+        let name = match action {
+            Node::Str(s) => s.split_whitespace().next(),
+            Node::Map(_) => action.get("module").and_then(Node::as_str),
+            _ => None,
+        };
+        if name.is_some_and(is_command) {
+            scanned.push(action);
+        }
+    }
+    if scanned.is_empty() {
+        return false;
+    }
+    scanned.extend(task.get("args"));
+    scanned.into_iter().any(|node| {
+        let mut lines = Vec::new();
+        command_lines(node, &mut lines);
+        lines.iter().any(|l| STORE_CLI.is_match(l))
+    })
 }
 
 #[test]
@@ -225,6 +254,19 @@ fn no_task_runs_the_bao_or_vault_cli() {
 #[test]
 fn a_store_cli_call_is_detected() {
     let task = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    for flagged in [
+        "action: command bao kv put x\n",
+        "local_action: {module: ansible.builtin.command, cmd: bao kv put x}\n",
+        "ansible.builtin.command: {}\nargs: {cmd: bao kv put x}\n",
+    ] {
+        assert!(runs_store_cli(&task(flagged)), "{flagged}");
+    }
+    for clean in [
+        "action: debug msg=\"bao kv put\"\n",
+        "ansible.builtin.command: echo hi\nargs: {chdir: /tmp}\n",
+    ] {
+        assert!(!runs_store_cli(&task(clean)), "{clean}");
+    }
     assert!(runs_store_cli(&task(
         "ansible.builtin.command: podman exec openbao bao kv put secret/x a=b\n"
     )));

@@ -68,6 +68,7 @@ static FILE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FILE_RS: LazyLock<Regex> =
     LazyLock::new(|| re(r"^(?P<path>(?:[\w.-]+/)*suite/[\w-]+\.rs)(?:::(?P<name>\w+))?$"));
+static INNER_CFG: LazyLock<Regex> = LazyLock::new(|| re(r"#!\[cfg\([^\]]*\]"));
 static ATTRIBUTE: LazyLock<Regex> = LazyLock::new(|| re(r"#\[[^\]]*\]"));
 static NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^test_\w+$"));
 static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| re(r"^(?:test_\w+\.py|[\w-]+\.bats)$"));
@@ -214,6 +215,14 @@ fn defines(path: &Path, name: &str) -> bool {
 /// exactly `#[cfg(test)]`, which could compile the test out, and no `#[ignore]`, which skips it.
 fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
     let code = blank_comments_and_literals(text);
+    // An inner `#![cfg(..)]` other than `#![cfg(test)]` can compile the whole file out.
+    if require_test
+        && INNER_CFG
+            .find_iter(&code)
+            .any(|m| m.as_str() != "#![cfg(test)]")
+    {
+        return false;
+    }
     let name = regex::escape(fn_name);
     let attribute = ATTRIBUTE.as_str();
     let pattern = re(&format!(
@@ -925,6 +934,8 @@ fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
     assert!(defines_test(cfg_out, "y"));
     assert!(!defines_test("#[test]\n#[ignore]\nfn x() {}\n", "x"));
     assert!(!defines_test("#[ignore]\n\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test("#![cfg(any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(defines_test("#![cfg(test)]\n#[test]\nfn x() {}\n", "x"));
     assert!(!defines_test("#[cfg(any())]\n\n#[test]\nfn x() {}\n", "x"));
     assert!(!defines_test(
         "#[cfg_attr(test, ignore)]\n#[test]\nfn x() {}\n",
