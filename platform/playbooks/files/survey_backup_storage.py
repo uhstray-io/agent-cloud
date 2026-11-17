@@ -252,8 +252,8 @@ def summarize(data):
             marks = _ok(prune, "prune preview", storage, "Datastore.Allocate")
             previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
         # A guest's retentions are those of the vzdump jobs on this storage that back it up. A job backs
-        # up and prunes a guest on the node it lives on, so its node-local copies elsewhere are never
-        # pruned, and a guest that no longer exists is never pruned at all.
+        # up and prunes a guest on the node it lives on, so on a node-local storage only the guests
+        # living on that node take a retention.
         retention_of, protects_every_archive = {}, set()
         for job, _, guests in job_guests:
             if job.get("storage") == storage:

@@ -8,8 +8,8 @@
 #   - archives per guest (count, size, oldest and newest), flagging guests that no longer exist;
 #   - what a prune at each job's own retention would remove (Proxmox's prune preview);
 #   - the space a job's retention needs at the newest archive size, an upper bound, reported
-#     as unknown when the retention keeps everything, a storage default is not set, or the guest
-#     has no archive there yet;
+#     as unknown when the retention keeps everything, a storage default is not set, a job
+#     protects every archive, or the guest has no archive there yet;
 #   - bytes on the storage that no listed volume explains (partial files, foreign data);
 #   - for a PBS storage, sizes_are_logical: its snapshot sizes share chunks, so its unexplained
 #     and prunable bytes are reported as unknown (null);
