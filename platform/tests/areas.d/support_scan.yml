@@ -1,7 +1,7 @@
 # The static-scan helpers' own tests (repo::playbook_files and yaml::strings in src/lib.rs;
 # suite/support_scan.rs, and suite/support_scan_python.rs against playbook_yaml.py). A change
 # under platform/tests/ hits `full`, which is checked before any area, so this area names no
-# paths: it only gives the modules their one listing.
+# paths: it lists each module once, as the lanes listing test requires.
 paths: []
 tiers:
   static: [support_scan]

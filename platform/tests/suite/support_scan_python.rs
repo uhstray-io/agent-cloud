@@ -33,7 +33,7 @@ class Text(str):
 
 class Loader(p.Loader):
     """playbook_yaml's loader (a CSafeLoader or SafeLoader subclass), with the three
-    constructors below replaced: still safe, it builds only dicts, lists, strings, bools and None."""
+    constructors below replaced: still a safe loader, with no python/ constructor."""
 
 for tag in ("int", "float", "timestamp"):
     Loader.add_constructor(

@@ -3,7 +3,7 @@
 //! - [`repo`]: the repository root, `git ls-files`, the playbook task walker and the playbook
 //!   file listing of the static scans;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
-//!   anchors, aliases, `<<` merge keys);
+//!   anchors, aliases, `<<` merge keys), and the string walk of the static scans;
 //! - [`process`]: bounded child processes with a scrubbed environment, and the confined
 //!   `ansible-playbook` runner (03 Part 1, rule 11);
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
@@ -305,30 +305,17 @@ pub mod yaml {
         docs.into_iter().next()
     }
 
-    /// Every string inside `node`, depth first in document order, and every mapping key's
-    /// string too when `keys`: `playbook_yaml.strings(value, keys)` for the static ports
-    /// (AC-958).
+    /// Every string inside `node`, in [`parse`]'s entry order, and every mapping key's string too
+    /// when `keys`: `playbook_yaml.strings(value, keys)` for the static ports (AC-958).
     ///
-    /// Where it differs from the Python, it is because of how [`parse`] reads a node: it keeps
-    /// every scalar as its text except a plain YAML 1.1 bool or null, ignores tags, and treats two
-    /// mapping keys as one only when they are the same node, the later value replacing the earlier.
-    /// PyYAML instead constructs typed values and compares keys as Python values. In practice:
-    /// - a plain `53`, `0644` or `2026-11-17` is an int, float or date to PyYAML, and its walk does
-    ///   not yield it; here it is a `Node::Str` and is yielded. It cannot be told apart from a
-    ///   quoted `"53"`, which PyYAML does yield, so dropping it would lose strings the Python
-    ///   returns. A scan that matches digits sees these extra values;
-    /// - two keys of one mapping can be one key on one side and two on the other: a plain `53:`
-    ///   and a quoted `"53":` are one here and two to PyYAML; `yes:` and `1:` are one to PyYAML
-    ///   and two here;
-    /// - `playbook_yaml.py` reads a node with a local `!tag` as null, and PyYAML reads a scalar
-    ///   with the non-specific `!` tag by its implicit type (`! yes` is a bool); here a tagged
-    ///   scalar is read as its text and a tagged collection as if untagged;
-    /// - PyYAML refuses a plain `=` or `<<` as a value; here each is read as its text.
-    ///
-    /// `support_scan_python` holds this to `playbook_yaml.strings` on every scanned repository
-    /// file, run with PyYAML's numbers and dates read as their text: the two walks yield the same
-    /// strings. No scanned file has a tag, a plain `=` or `<<` value, or two keys of one mapping
-    /// that either reading takes as one (checked 2026-11-17).
+    /// It yields what the Python yields wherever [`parse`] reads a node as PyYAML does. The main
+    /// difference: a plain number or date (`53`, `0644`, `2026-11-17`) is a string here and is
+    /// yielded, where PyYAML constructs a number or date and its walk skips it. It cannot be told
+    /// apart from a quoted `"53"`, which PyYAML does yield, so dropping it would lose strings the
+    /// Python returns; a scan that matches digits sees these extra values. Mapping keys and tags
+    /// are also read differently in rare cases. `support_scan_python` runs `playbook_yaml.strings`
+    /// with PyYAML's numbers and dates read as their text and holds the two walks to the same
+    /// strings on every scanned repository file.
     pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
         fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
             match node {
@@ -388,8 +375,7 @@ pub mod repo {
 
     /// Every `*.yml` file under `platform/playbooks` and `platform/semaphore`, repository-relative,
     /// in `playbook_yaml.files()`'s order: sorted by path component, as Python sorts `Path`s, so
-    /// `a/b.yml` comes before `a-c/x.yml` (AC-958). Semaphore's own playbooks and shared tasks run
-    /// under the same flags as the playbooks, so both roots are scanned.
+    /// `a/b.yml` comes before `a-c/x.yml` (AC-958). The roots are `playbook_yaml.files()`'s.
     ///
     /// Read from the disk, as `Path.rglob` reads it, not from git: an untracked file under the
     /// roots is listed, as the Python checkers list it ([`ls_files`] lists tracked files only).
