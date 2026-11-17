@@ -19,18 +19,20 @@ globs: a changed path selects every area whose globs match it.
 
 ## A test that reads beyond its area
 
-A module outside `always` runs only when a change selects its area, or when a change selects
-every area (a `full` path, or in the push and CI lanes an unclassified one). Any file it reads must
-therefore select it in the push lane: by its area's `paths`, by `full`, or by being unclassified
-(a path no area claims, which runs everything). Otherwise a change that adds an offender to that
-file, where another area claims it, skips the test.
+In the commit, push and CI lanes, a module outside `always` runs only when a change selects its
+area, or when a change selects every area (a `full` path, or in the push and CI lanes an
+unclassified one). Any file it reads must therefore select it in the push lane: by its area's
+`paths`, by `full`, or by being unclassified (a path that no area claims and `ignore` does not
+match, which runs everything). Otherwise a change that adds an offender to that file, where
+another area claims it, skips the test.
 
 - A static module that scans beyond its area's paths (a `repo::grep` or `repo::ls_files` over
   `platform`, say) goes under `always: static:`. Static tests are cheap, and that is what the set
   is for.
 - Any other module gets its area's `paths` widened to what it reads.
-- A file in `ignore` (`**/*.md`, `plan/**`, `docs/**`) selects nothing only when neither `full`
-  nor any area's `paths` match it, so the two rules above apply to it as to any other file.
+- A file in `ignore` (`**/*.md`, `plan/**`, `docs/**`) is never unclassified: it selects nothing
+  unless `full` or an area's `paths` match it. The two rules above apply to it, without the
+  unclassified fallback.
 
 The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks this for every
 `repo::grep` and `repo::ls_files` call outside `always`. It reads the pathspecs from the module's
