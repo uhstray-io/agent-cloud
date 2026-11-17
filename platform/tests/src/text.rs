@@ -10,8 +10,8 @@
 //! would satisfy matches nothing. Patterns are the `regex` crate's syntax, which reads the ERE
 //! constructs the ported BATS patterns use; its escapes such as `\d` and `\t` are its own, not
 //! GNU grep's. A bare `{` is a compile error there (`mv {{`), so a ported pattern writes `\{`.
-//! A line-feed escape outside a class (`\n`, `\x0a`) is refused like a raw newline: no line ever
-//! holds one. The scan reads classes only roughly; `writes_line_feed` lists what it gets wrong.
+//! A pattern that cannot match any text free of a line feed (`\n`, `\x0a`, `[\n]`) is refused like
+//! a raw newline: no line ever holds one. The check parses the pattern as `Regex::new` does.
 //!
 //! An empty pattern or literal is found in every line and every text, so it checks nothing; grep
 //! reads one that holds a newline as several needles. Each assertion refuses both, naming the
@@ -21,6 +21,7 @@
 //! `assert_precedes`) over this text: one Ansible task's body, and the order of two first matches.
 
 use regex::Regex;
+use regex_syntax::hir::{Hir, HirKind};
 
 use crate::repo;
 
@@ -36,95 +37,44 @@ pub fn any_line(text: &str, pattern: &str) -> bool {
     first_line_matching(text, &compile("", pattern)).is_some()
 }
 
-/// The compiled `pattern`, refused where it cannot check what it says (`require_needle`, then a
-/// line-feed escape, which matches no line). Every line pattern compiles here, so the line helpers
-/// refuse the same patterns. `origin` prefixes each panic (`"<file>: "`, or `""` for text).
+/// The compiled `pattern`, refused where it cannot check what it says: `require_needle`, then a
+/// pattern that cannot match any text free of a line feed, which no line holds. Every line pattern
+/// compiles here, so the line helpers refuse the same patterns. `origin` prefixes each panic
+/// (`"<file>: "`, or `""` for text).
 #[track_caller]
 fn compile(origin: &str, pattern: &str) -> Regex {
     require_needle(origin, pattern);
-    assert!(
-        !writes_line_feed(pattern),
-        "{origin}`{pattern}` holds a line feed escape; a line never contains one, so it can only match across lines"
-    );
+    // regex-syntax's default parser is the one `Regex::new` uses (regex-automata's syntax config
+    // states its defaults match it). A pattern it cannot parse is left to `Regex::new` to name.
+    if let Ok(hir) = regex_syntax::parse(pattern) {
+        assert!(
+            matches_without_line_feed(&hir),
+            "{origin}`{pattern}` cannot match any text free of a line feed, so no line can match it"
+        );
+    }
     match Regex::new(pattern) {
         Ok(re) => re,
         Err(e) => panic!("{origin}invalid pattern `{pattern}`: {e}"),
     }
 }
 
-/// Whether an escape outside a character class in `pattern` writes U+000A. A backslash takes the
-/// byte after it with it, so `\\n` (an escaped backslash, then `n`) is not an escape. Escapes inside
-/// a class are not refused: `[^\n]` is any character but a line feed, which a line holds. Every
-/// escape character is ASCII, so the walk goes by byte.
-///
-/// The scan reads the class grammar only roughly (the exact check is AC-963). It lets through, so
-/// a refute on them passes whatever the file holds: a class of the line feed alone (`[\n]`), an
-/// escape spread out under `(?x)` (`\x 0a`), and a line feed after a class whose range ends in `[`
-/// (`[!-[]\n`), whose `[` it counts as a nested class. It refuses, loudly, two valid `(?x)` forms:
-/// blanks before a class's leading `]` (`(?x)[ ]\n]`), and a `\n` inside a `#` comment.
-fn writes_line_feed(pattern: &str) -> bool {
-    let bytes = pattern.as_bytes();
-    let mut class_depth = 0usize;
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'\\' => {
-                if class_depth == 0 && escape_writes_line_feed(&bytes[i + 1..]) {
-                    return true;
-                }
-                i += 2;
-                continue;
-            }
-            b'[' => {
-                // A class opens, nested ones too (`[[:space:]]`). A `]` right after `[` or `[^` is
-                // a member, not the close: the regex crate reads `[]a]` as `]` or `a`.
-                class_depth += 1;
-                i += 1;
-                if bytes.get(i) == Some(&b'^') {
-                    i += 1;
-                }
-                if bytes.get(i) == Some(&b']') {
-                    i += 1;
-                }
-                continue;
-            }
-            b']' if class_depth > 0 => class_depth -= 1,
-            _ => {}
-        }
-        i += 1;
+/// Whether `hir` matches some text that holds no line feed. A line feed written any way (`\n`,
+/// `\x0a`, `[\n]`, a `(?x)` escape spread over blanks) becomes a literal holding U+000A, which this
+/// sees, while `[^\n]` is a class of every other character. A pattern that
+/// can also match without a line feed (`x|\n`, `\n?`) is not refused: it can still match a line.
+fn matches_without_line_feed(hir: &Hir) -> bool {
+    match hir.kind() {
+        HirKind::Empty | HirKind::Look(_) => true,
+        HirKind::Literal(literal) => !literal.0.contains(&b'\n'),
+        // A class of one character, `[\n]` included, is already a literal (regex-syntax
+        // `Hir::class`), so a class left here matches some character other than a line feed
+        // unless it is empty.
+        HirKind::Class(class) => !class.is_empty(),
+        HirKind::Repetition(rep) => rep.min == 0 || matches_without_line_feed(&rep.sub),
+        HirKind::Capture(capture) => matches_without_line_feed(&capture.sub),
+        HirKind::Concat(subs) => subs.iter().all(matches_without_line_feed),
+        HirKind::Alternation(subs) => subs.iter().any(matches_without_line_feed),
     }
-    false
-}
-
-/// Whether the escape whose bytes follow a backslash (`after`) writes U+000A.
-fn escape_writes_line_feed(after: &[u8]) -> bool {
-    match after.first() {
-        Some(b'n') => true,
-        Some(&kind @ (b'x' | b'u' | b'U')) => hex_escape_value(kind, &after[1..]) == Some(0x0A),
-        _ => false,
-    }
-}
-
-/// The code point of the hex escape whose letter is `kind` (`x`, `u` or `U`) and whose digits
-/// follow in `rest`, when the escape is well formed: exactly two, four or eight hex digits, or
-/// any number of them between braces (`\x{a}`). None otherwise: `Regex::new` rejects a malformed
-/// one, so the scan leaves it to it.
-fn hex_escape_value(kind: u8, rest: &[u8]) -> Option<u32> {
-    let digits = if let Some(braced) = rest.strip_prefix(b"{") {
-        &braced[..braced.iter().position(|&b| b == b'}')?]
-    } else {
-        let width = match kind {
-            b'x' => 2,
-            b'u' => 4,
-            _ => 8,
-        };
-        rest.get(..width)?
-    };
-    // `from_str_radix` takes a leading `+`, so the digits are checked first.
-    if !digits.iter().all(u8::is_ascii_hexdigit) {
-        return None;
-    }
-    u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
 }
 
 /// Refuse a pattern or literal grep would read differently: an empty one is found everywhere, and

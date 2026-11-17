@@ -281,7 +281,9 @@ fn assert_precedes_names_a_missing_second_pattern() {
 }
 
 #[test]
-#[should_panic(expected = "platform/tests/Cargo.toml: `\\n` holds a line feed escape")]
+#[should_panic(
+    expected = "platform/tests/Cargo.toml: `\\n` cannot match any text free of a line feed"
+)]
 fn refute_line_refuses_a_line_feed_escape_naming_the_file() {
     // Compiled, `\n` matches no line, so the refute would pass whatever the file held.
     refute_line(CARGO, r"\n");
@@ -301,12 +303,25 @@ fn escapes_that_do_not_write_a_line_feed_are_allowed() {
     assert!(any_line("a b", r"a[[:space:]\n]b"));
     // A bare `{` does not compile; escaped, it matches a literal brace.
     assert!(any_line("mv {{ x }}", r"mv \{\{"));
+    // A pattern that can also match without a line feed can still match a line.
+    assert!(any_line("x", r"x|\n"));
+    assert!(any_line("ab", r"a\n?b"));
 }
 
 #[test]
-fn any_line_refuses_every_line_feed_escape_outside_a_class() {
+fn valid_patterns_the_old_byte_scan_refused_are_allowed() {
+    // AC-963. Under `(?x)` blanks before a class's leading `]` keep it a member, so this class is
+    // `]` or a line feed; and a `#` comment runs to the end of the pattern, so its `\n` is text.
+    assert!(any_line("]", r"(?x)[ ]\n]"));
+    assert!(any_line("a", r"(?x)a # \n"));
+}
+
+#[test]
+fn any_line_refuses_every_pattern_that_needs_a_line_feed() {
     // Compiled, each matches no line of the text, so the refusal is the difference between a check
-    // and a silent pass. The last two follow a class that has closed.
+    // and a silent pass. The last three got past the old byte scan (AC-963): a class of the line
+    // feed alone, an escape spread over blanks under `(?x)`, and a line feed after a class whose
+    // range ends in `[`.
     for pattern in [
         r"b\nc",
         r"\x0a",
@@ -319,12 +334,19 @@ fn any_line_refuses_every_line_feed_escape_outside_a_class() {
         r"\U{a}",
         r"[a]\n",
         r"[]a]\x0a",
+        r"(?i)\n",
+        r"(a\n)+",
+        r"[\n]",
+        r"(?x)\x 0a",
+        r"[!-[]\n",
+        // An empty class matches no character at all.
+        r"a[^\x00-\x{10FFFF}]",
     ] {
         let panic = std::panic::catch_unwind(|| any_line("ab\ncd", pattern))
             .expect_err(&format!("`{pattern}` was not refused"));
         let message = panic.downcast_ref::<String>().map_or("", String::as_str);
         assert!(
-            message.contains("holds a line feed escape"),
+            message.contains("cannot match any text free of a line feed"),
             "`{pattern}`: {message}"
         );
     }
