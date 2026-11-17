@@ -26,10 +26,15 @@ fn any_line_anchors_each_line_on_its_own() {
 
 #[test]
 fn any_line_never_matches_across_a_newline() {
-    // `b.c` is false under whole-text matching too (`.` does not match `\n`), so it proves
-    // nothing alone. `b\nc` is the case that does: whole-text matching would find the newline.
+    // `.` does not match `\n`, so a pattern spanning two lines finds nothing.
     assert!(!any_line("ab\ncd", "b.c"));
-    assert!(!any_line("ab\ncd", r"b\nc"));
+}
+
+#[test]
+#[should_panic(expected = "names a newline")]
+fn any_line_refuses_a_pattern_that_names_a_newline() {
+    // It could never match one line, so `refute_line` with it would pass on any file.
+    any_line("ab\ncd", r"b\nc");
 }
 
 #[test]
@@ -93,9 +98,23 @@ fn assert_text_panics_when_the_literal_is_absent() {
 }
 
 #[test]
-#[should_panic(expected = "platform/tests/Cargo.toml: an empty literal asserts nothing")]
+#[should_panic(expected = "platform/tests/Cargo.toml: an empty pattern or literal checks nothing")]
 fn assert_text_refuses_an_empty_literal() {
     assert_text(CARGO, "");
+}
+
+#[test]
+#[should_panic(expected = "platform/tests/Cargo.toml: an empty pattern or literal checks nothing")]
+fn assert_line_refuses_an_empty_pattern() {
+    // An empty regex matches every line, so it would pass on any non-empty file.
+    assert_line(CARGO, "");
+}
+
+#[test]
+#[should_panic(expected = "platform/tests/Cargo.toml: an empty pattern or literal checks nothing")]
+fn refute_text_refuses_an_empty_literal() {
+    // Without the guard it would fail as "the forbidden `` is present", naming no real finding.
+    refute_text(CARGO, "");
 }
 
 #[test]
