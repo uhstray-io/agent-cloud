@@ -241,6 +241,25 @@ def test_with_no_trusted_proxies_neither_key_is_rendered(host):
     assert not [line for line in board if line.startswith(("trusted_proxies", "client_address_header"))], board
 
 
+def _ingest_from(board: list[str]) -> list[str]:
+    [line] = [line for line in board if line.startswith("ingest_from = ")]
+    return json.loads(line.removeprefix("ingest_from = "))
+
+
+@pytest.mark.parametrize("site, expected", [
+    ({}, ["127.0.0.1/32", "::1/128"]),
+    ({"weft_board_ingest_from": ["127.0.0.1/32", "192.0.2.0/24"]}, ["127.0.0.1/32", "192.0.2.0/24", "::1/128"]),
+], ids=["no-site-list", "site-lists-loopback"])
+def test_the_board_healthcheck_is_always_admitted_from_loopback(host, site, expected):
+    # compose.yml's healthcheck fetches /api/workspace from inside the board's container, so the
+    # board sees 127.0.0.1, and weft's gate admits nobody its ingest_from does not name. Without
+    # loopback every deploy fails wait_for_healthy; listed twice is noise a reader must explain.
+    proc, _ = _deploy(host, _release(NEW, "a"), site)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert _ingest_from(_board_table(host)) == expected, (
+        "loopback must be in ingest_from exactly once, beside site-config's list:\n" + "\n".join(_board_table(host)))
+
+
 @pytest.mark.parametrize("keys", [{"deployment_file_keys": ["board", "board.trusted_proxies"]},
                                   {"deployment_file_keys": None}, {}],
                          ids=["release-before-511", "keys-not-listed", "no-keys-field"])
