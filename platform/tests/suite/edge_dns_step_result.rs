@@ -6,8 +6,10 @@
 //! the tasks through ansible-playbook with a fake tofu and stays in Python.
 //!
 //! The playbook is read the way `playbook_yaml.plays` reads it: the leading extra-var guard import
-//! is skipped, and exactly one play must remain. `all_tasks` is the Python `_all_tasks`, which walks
-//! `block`, `rescue` and `always` below each task. The report and saved-plan tests read top-level
+//! is skipped, and exactly one play must remain. `all_tasks` is the Python `_all_tasks`, read from
+//! `repo::tasks`. That walk also visits each item's `pre_tasks`, `post_tasks` and `handlers`, and it
+//! returns the play and guard nodes too. This playbook has no `pre_tasks`, `post_tasks` or `handlers`,
+//! so the walk reads the same tasks as `_all_tasks`. The report and saved-plan tests read top-level
 //! tasks only, as the Python `_tasks()` did.
 //!
 //! Port map (Python test → Rust fn):
@@ -62,22 +64,14 @@ fn play_tasks() -> Vec<Node> {
         .to_vec()
 }
 
-/// The Python `_all_tasks`: each task, then its `block`, `rescue` and `always` children, in order.
-fn walk<'a>(tasks: &'a [Node], out: &mut Vec<&'a Node>) {
-    for task in tasks {
-        out.push(task);
-        for key in ["block", "rescue", "always"] {
-            if let Some(children) = task.get(key).and_then(Node::as_seq) {
-                walk(children, out);
-            }
-        }
-    }
-}
-
-fn all_tasks(tasks: &[Node]) -> Vec<&Node> {
-    let mut out = Vec::new();
-    walk(tasks, &mut out);
-    out
+/// The Python `_all_tasks`, from `repo::tasks`: every task, each followed by its `block`, `rescue`
+/// and `always` children. `play_tasks` runs first for its one-play check, which the Python walk got
+/// from `_tasks()`. `repo::tasks` also returns the play node and the guard import. No predicate
+/// below matches either: neither node carries a command or a set_fact, and neither name is the
+/// dry-run task's (the play is named "Cloudflare OpenTofu ...", the guard "Refuse extra vars ...").
+fn all_tasks() -> Vec<Node> {
+    play_tasks();
+    repo::tasks(PLAYBOOK)
 }
 
 fn name_of(task: &Node) -> Option<&str> {
@@ -85,8 +79,18 @@ fn name_of(task: &Node) -> Option<&str> {
 }
 
 /// `(task.get("ansible.builtin.command") or {}).get("argv")` as strings; `None` without an argv.
+/// A command that is present but not a mapping panics naming the task: Python's `.get("argv")`
+/// raised on a string command, so the task must not drop out of the tofu filters unseen.
 fn argv_of(task: &Node) -> Option<Vec<String>> {
-    let argv = task.get("ansible.builtin.command")?.get("argv")?.as_seq()?;
+    let command = match task.get("ansible.builtin.command") {
+        None | Some(Node::Null) => return None,
+        Some(command @ Node::Map(_)) => command,
+        Some(_) => panic!(
+            "{:?}: ansible.builtin.command is not a mapping",
+            name_of(task)
+        ),
+    };
+    let argv = command.get("argv")?.as_seq()?;
     Some(
         argv.iter()
             .map(|arg| arg.as_str().unwrap_or("<non-string>").to_owned())
@@ -130,21 +134,19 @@ fn exactly_one<'a>(found: Vec<&'a Node>, what: &str) -> &'a Node {
 }
 
 /// The one task in `all` that `pred` accepts (Python's `(task,) = [t for t in ... if ...]`).
-fn only<'a>(all: &[&'a Node], what: &str, pred: impl Fn(&Node) -> bool) -> &'a Node {
-    exactly_one(all.iter().copied().filter(|t| pred(t)).collect(), what)
+fn only<'a>(all: &'a [Node], what: &str, pred: impl Fn(&Node) -> bool) -> &'a Node {
+    exactly_one(all.iter().filter(|t| pred(t)).collect(), what)
 }
 
-fn dry_run_task<'a>(all: &[&'a Node]) -> &'a Node {
+fn dry_run_task(all: &[Node]) -> &Node {
     only(all, "the dry-run task", |t| name_of(t) == Some(DRY_RUN))
 }
 
 #[test]
 fn both_plans_detect_changes_by_exit_code() {
-    let tasks = play_tasks();
-    let all = all_tasks(&tasks);
+    let all = all_tasks();
     let plans: Vec<&Node> = all
         .iter()
-        .copied()
         .filter(|t| starts_with_argv(t, &["tofu", "plan"]))
         .collect();
     assert_eq!(plans.len(), 2, "the two real plans");
@@ -167,11 +169,9 @@ fn both_plans_detect_changes_by_exit_code() {
 fn every_credential_bearing_tofu_command_is_no_log() {
     // PR 436 Codex review: each tofu command runs with the R2 keys and the Cloudflare token in its
     // environment, so it is its own no_log task; failures surface through the visible report.
-    let tasks = play_tasks();
-    let all = all_tasks(&tasks);
+    let all = all_tasks();
     let mut tofu: Vec<&Node> = all
         .iter()
-        .copied()
         .filter(|t| argv_of(t).is_some_and(|argv| argv.first().map(String::as_str) == Some("tofu")))
         .collect();
     assert_eq!(

@@ -60,17 +60,6 @@ fn argv(task: &Node) -> Vec<String> {
         .collect()
 }
 
-/// Python's truthiness for the parsed values these tests check.
-fn truthy(value: Option<&Node>) -> bool {
-    match value {
-        None | Some(Node::Null | Node::Bool(false)) => false,
-        Some(Node::Str(s)) => !s.is_empty(),
-        Some(Node::Seq(items)) => !items.is_empty(),
-        Some(Node::Map(entries)) => !entries.is_empty(),
-        Some(Node::Bool(true)) => true,
-    }
-}
-
 /// The `localhost` play's tasks (Python's `next(p for p in yaml.safe_load(...) if p.get("hosts")
 /// == "localhost")["tasks"]`).
 fn localhost_tasks() -> Vec<Node> {
@@ -102,22 +91,6 @@ fn template<'a>(templates: &'a [Node], name: &str) -> &'a Node {
         .iter()
         .find(|t| name_of(t) == Some(name))
         .unwrap_or_else(|| panic!("no template named {name:?}"))
-}
-
-/// The names of a template's survey variables, in order.
-fn survey_names(template: &Node) -> Vec<String> {
-    template
-        .get("survey_vars")
-        .and_then(Node::as_seq)
-        .expect("a survey_vars list")
-        .iter()
-        .map(|var| {
-            var.get("name")
-                .and_then(Node::as_str)
-                .expect("a survey variable with a name")
-                .to_owned()
-        })
-        .collect()
 }
 
 /// The first survey variable of `template` named `name`.
@@ -188,8 +161,9 @@ fn apply_is_bound_to_the_saved_plan_and_digest_is_a_survey_input() {
         .get("ansible.builtin.command")
         .expect("the validate task's command");
     assert!(
-        truthy(validate.get("stdin")),
-        "the validate task takes the plan on stdin"
+        matches!(validate.get("stdin"), Some(Node::Str(s)) if !s.is_empty()),
+        "{:?}: the validate task takes the plan on stdin",
+        name_of(&tasks[validate_i])
     );
     assert!(
         argv(&tasks[validate_i])
@@ -238,11 +212,18 @@ fn generic_cloudflare_executor_stays_unrestricted_and_grafana_uses_wrapper() {
     let dedicated = template(&all, "Apply Grafana API Cloudflare Tofu (Dev)");
     let doc = yaml::load_one(&repo::path(WRAPPER)).expect("the wrapper playbook is empty");
     let wrapper = doc.as_seq().expect("the wrapper is a list");
-    assert!(
-        !survey_names(generic)
-            .iter()
-            .any(|n| n == "reviewed_plan_digest")
-    );
+    let generic_names: Vec<&str> = generic
+        .get("survey_vars")
+        .and_then(Node::as_seq)
+        .expect("a survey_vars list")
+        .iter()
+        .map(|var| {
+            var.get("name")
+                .and_then(Node::as_str)
+                .expect("a survey variable with a name")
+        })
+        .collect();
+    assert!(!generic_names.contains(&"reviewed_plan_digest"));
     assert_eq!(
         dedicated.get("repository").and_then(Node::as_str),
         Some("agent-cloud dev")

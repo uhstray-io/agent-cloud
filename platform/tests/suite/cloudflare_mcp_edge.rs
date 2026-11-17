@@ -33,10 +33,13 @@ const WAF: &str = "platform/infra/cloudflare/waf.tf";
 const RATELIMIT: &str = "platform/infra/cloudflare/ratelimit.tf";
 const DNS: &str = "platform/infra/cloudflare/dns.tf";
 
-/// `grep -E pattern`: the matching lines of `text`, in order.
+/// `grep -E pattern`: the matching lines of `text`, in order. Split at each `\n` as grep does, so a
+/// `\r` before it stays part of its line (agent_cloud_tests::text).
 fn matching_lines<'a>(text: &'a str, pattern: &str) -> Vec<&'a str> {
     let re = Regex::new(pattern).expect("a valid pattern");
-    text.lines().filter(|line| re.is_match(line)).collect()
+    text.split_terminator('\n')
+        .filter(|line| re.is_match(line))
+        .collect()
 }
 
 /// `sed -n '/start/,/end/p'`: each range runs from a line `start` accepts through the next line
@@ -249,7 +252,7 @@ fn exactly_one_mcp_rate_limit_rule_log_first_with_its_own_bucket() {
         1
     );
     // The zone is on the Pro tier: two http_ratelimit rules at most. A third would fail at apply.
-    assert_eq!(matching_lines(&ratelimit, r"^      ref +=").len(), 2);
+    assert_eq!(refs(RATELIMIT).len(), 2);
     // A bucket of its own, with the IP characteristic the plan allows and a legal period.
     let bucket = sed_range(
         &ratelimit,
