@@ -158,16 +158,15 @@ fn resolve_plain_value(text: &str, key: bool) -> Result<Value, &'static str> {
         // PyYAML resolves a plain `=` to its value tag and a plain `<<` to its merge tag. As a key,
         // `=` reads as a string and `<<` is a merge (`on_event`); as a value, PyYAML has no
         // constructor for either.
-        Node::Str(_) if text == "=" && !key => Err("PyYAML has no constructor for a plain `=`"),
-        Node::Str(_) if text == "<<" => {
+        _ if text == "=" && !key => Err("PyYAML has no constructor for a plain `=`"),
+        _ if text == "<<" => {
             Err("PyYAML has no constructor for a plain `<<` outside a mapping key")
         }
         // PyYAML tries the float, int and timestamp resolvers in turn; a text matches at most one.
-        Node::Str(_) if FLOAT.is_match(text) => float_value(text),
-        Node::Str(_) if INT.is_match(text) => int_value(text),
-        Node::Str(_) if TIMESTAMP.is_match(text) => Err("a timestamp is not a JSON value"),
-        Node::Str(_) => Ok(Value::String(text.to_owned())),
-        Node::Seq(_) | Node::Map(_) => unreachable!("resolve_plain reads one scalar"),
+        _ if FLOAT.is_match(text) => float_value(text),
+        _ if INT.is_match(text) => int_value(text),
+        _ if TIMESTAMP.is_match(text) => Err("a timestamp is not a JSON value"),
+        _ => Ok(Value::String(text.to_owned())),
     }
 }
 
@@ -388,11 +387,8 @@ fn apply_merges(
         };
         for map in list.into_iter().rev() {
             match map {
-                Value::Object(entries) => {
-                    for (k, v) in entries {
-                        out.insert(k, v);
-                    }
-                }
+                // `extend` inserts each pair: a key already present keeps its place, takes the value.
+                Value::Object(entries) => out.extend(entries),
                 other => refuse(
                     origin,
                     "<<",
@@ -402,9 +398,7 @@ fn apply_merges(
             }
         }
     }
-    for (k, v) in explicit {
-        out.insert(k, v);
-    }
+    out.extend(explicit);
     out
 }
 
