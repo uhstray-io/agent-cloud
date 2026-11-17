@@ -20,12 +20,11 @@
 //!   `!custom` as null and keeps a core tag's value (`!!str x` is `x`). No repository file has a
 //!   tag, so this loader refuses every one rather than copy that split;
 //! - a plain timestamp, `.inf` or `.nan`, or an integer beyond `i64`;
-//! - a mapping key that is not a string. PyYAML keeps `200`, `yes` or `[a]` as a key; a JSON
-//!   object key is a string.
+//! - a mapping key that is not a string. PyYAML keeps `200` or `yes` as an int or bool key (and
+//!   refuses a sequence or mapping key as unhashable); a JSON object key is a string.
 //!
 //! `<<` merges follow [`yaml`]'s builder: a mapping, or a list of mappings read last-first, is
-//! merged under the explicit keys, and a later duplicate key wins. What the tests hold this loader
-//! to is in `suite/support_lift.rs`.
+//! merged under the explicit keys, and a later duplicate key wins.
 //!
 //! | `playbook_yaml.py` | Rust |
 //! |---|---|
