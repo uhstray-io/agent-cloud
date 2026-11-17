@@ -220,7 +220,7 @@ Each task's blockers, inside and outside this change, are the "Blocked by" lines
 6. **A publish gate holding the publishing key (operator decision).** R5 leaves the approval guarantee in flow logic because Activepieces holds a key that can schedule or publish immediately. A small service on the launch gate's pattern (`platform/services/launch-gate/deployment/CLAUDE.md`) could hold the key, the approval records, the brand mapping and the kill switch, and give flows only a caller token. It is a new service and is not designed here.
 7. **Schema validator (task 2.1).** The repository has no JSON Schema validator (`pyproject.toml`, `uv.lock`); adding one is a new dependency and needs the operator's approval.
 8. **A member scheduling a generated draft in the publishing interface (operator decision).** The rule of D2 holds for the handoff, but a signed-in member of the publishing service can still schedule a generated draft by hand, bypassing the approval record. Accept this as a residual risk, or add a control; not decided here.
-9. **No conditional status change (R8, operator decision).** If the R2 spike finds no status change on the pinned version that is conditional on the approved revision, enabling the schedule step needs a later spec change, which is the operator's decision.
+9. **No conditional status change (R8, operator decision).** If the R2 spike finds no status change on the pinned version that is conditional on the approved revision's hash, enabling the schedule step needs a later spec change, which is the operator's decision.
 
 ## Upstream facts used
 
