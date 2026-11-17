@@ -607,18 +607,23 @@ fn a_declared_pair_an_enabled_job_without_a_storage_backs_up_is_refused() {
 #[test]
 fn backup_jobs_the_token_may_not_list_refuse_the_run_naming_sys_audit() {
     // Arrange: no job list (the play refuses a 403 before this; the lister refuses too).
-    let mut payload = base(vec![read(
-        "n1",
-        "backups",
-        vec![archive("backups", 100, 1)],
-    )]);
-    payload["jobs"] = Value::Null;
+    // A job list that is not a list (null, an object, a string) is refused the same way, never read
+    // as no jobs.
+    for jobs in [Value::Null, json!({}), json!("")] {
+        let mut payload = base(vec![read(
+            "n1",
+            "backups",
+            vec![archive("backups", 100, 1)],
+        )]);
+        payload["jobs"] = jobs.clone();
+        payload["pairs"] = json!([{"vmid": 100, "storage": "backups"}]);
 
-    // Act
-    let text = refusal("list", &payload);
+        // Act
+        let text = refusal("list", &payload);
 
-    // Assert
-    assert!(text.contains("Sys.Audit on /"), "{text}");
+        // Assert
+        assert!(text.contains("Sys.Audit on /"), "{jobs}: {text}");
+    }
 }
 
 #[test]

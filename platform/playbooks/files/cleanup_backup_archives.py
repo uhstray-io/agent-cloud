@@ -112,7 +112,7 @@ def _vmid(volume):
 
 
 def list_archives(data):
-    if data.get("jobs") is None:
+    if not isinstance(data.get("jobs"), list):
         raise Refusal("The Proxmox token may not list the backup jobs (needs Sys.Audit on /), so a declared "
                       "pair cannot be checked against them.")
     existing = {int(v["vmid"]): v for v in data["vms"] if survey._is_vmid(v.get("vmid", ""))}
