@@ -1,14 +1,14 @@
 //! Repository playbooks lifted to JSON, so a playbook-tier test can run a play's tasks through
 //! [`process::ansible_playbook`](crate::process::ansible_playbook) (plan 24, AC-943).
 //!
-//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML and writes it back
-//! with `yaml.safe_dump`, so `ansible-playbook` runs the play as the repository wrote it. This
-//! module is the Rust side of that. It cannot reuse [`yaml::parse`](crate::yaml::parse): a
-//! [`yaml::Node`] has no number type, so every plain scalar that is not a bool or null is a string,
-//! and `"53"` and `53` are the same `Node::Str`. A lifted play must carry `port: 53` as a number,
-//! so this loader builds [`serde_json::Value`] from the event stream instead. Bool and null come
-//! from [`yaml::resolve_plain`]. Numbers and timestamps follow PyYAML 6.0.3's resolvers
-//! (`yaml/resolver.py`) and constructors (`yaml/constructor.py`).
+//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML. Each test that
+//! runs a lifted play calls `yaml.safe_dump` itself, so `ansible-playbook` runs the play as the
+//! repository wrote it. This module is the Rust side of the reading. It cannot reuse
+//! [`yaml::parse`](crate::yaml::parse): a [`yaml::Node`] has no number type, so every plain scalar
+//! that is not a bool or null is a string, and `"53"` and `53` are the same `Node::Str`. A lifted
+//! play must carry `port: 53` as a number, so this loader builds [`serde_json::Value`] from the
+//! event stream instead. Bool and null come from [`yaml::resolve_plain`]. Numbers and timestamps
+//! follow PyYAML 6.0.3's resolvers (`yaml/resolver.py`) and constructors (`yaml/constructor.py`).
 //!
 //! Mapping order is kept (serde_json's `preserve_order`): Jinja iterates a dict in insertion
 //! order, so a sorted map would change what a lifted play does.
@@ -25,20 +25,14 @@
 //! merged under the explicit keys, and a later duplicate key wins. The `support_lift` tests pin
 //! the two loaders together over every repository file.
 //!
-//! | `playbook_yaml.py` (Python call sites) | Rust |
+//! | `playbook_yaml.py` | Rust |
 //! |---|---|
-//! | `plays` (106 calls in 47 files) | [`plays`] |
-//! | `loads` (18 calls in 10 files) | [`loads`] |
-//! | `OVERRIDE_GUARD` (used in 5 other files under `platform/tests`) | [`OVERRIDE_GUARD`] |
-//! | `load` (101 calls in 45 files) | not ported: `yaml::load_one` serves it (Node) |
-//! | `tasks` (74 calls in 38 files) | not ported: `repo::tasks` serves it (Node) |
-//! | `strings` (21 calls in 11 files) | not ported |
-//! | `files` (13 calls in 9 files) | not ported |
-//! | `TASK_LISTS` (5 uses in 5 files) | not ported |
-//! | `SET_FACT` (3 uses in 2 files) | not ported |
-//! | `defined_names` (1 use in 1 file) | not ported |
-//! | `SCANNED` (1 use in 1 file) | not ported |
-//! | `Loader` (1 use in 1 file) | not ported: the loader is [`yaml`] and this module |
+//! | `plays` | [`plays`] |
+//! | `loads` | [`loads`] |
+//! | `OVERRIDE_GUARD` | [`OVERRIDE_GUARD`] |
+//!
+//! The rest of `playbook_yaml.py` (`load`, `tasks`, `strings`, `files`, ...) has Node-based or no
+//! equivalents here; `yaml::load_one` and `repo::tasks` cover the first two.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -50,7 +44,7 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 use crate::repo;
-use crate::yaml::{self, Node};
+use crate::yaml::{self, CORE_TAG, Node};
 
 /// The import every workflow executor opens with (`playbook_yaml.OVERRIDE_GUARD`).
 pub const OVERRIDE_GUARD: &str = "refuse-internal-extra-vars.yml";
@@ -79,14 +73,11 @@ static TIMESTAMP: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the timestamp pattern compiles")
 });
 
-/// The handle yaml-rust2 gives a `!!` core tag, joined with its suffix.
-const CORE_TAG: &str = "tag:yaml.org,2002:";
-
 /// Every document in `text`, as JSON values. Panics with `origin` on a parse error or a
 /// refusal (see the module doc). In a test, a file this loader cannot read is a failure.
 pub fn parse(text: &str, origin: &str) -> Vec<Value> {
     let mut builder = Builder {
-        origin: origin.to_owned(),
+        origin,
         ..Builder::default()
     };
     Parser::new_from_str(text)
@@ -152,111 +143,87 @@ fn refuse(origin: &str, key: &str, reason: &str, scalar: Option<&str>) -> ! {
     }
 }
 
-/// A plain untagged scalar's value. `key` names the mapping key the scalar sits under, for a
-/// refusal's message.
-fn plain_value(text: &str, origin: &str, key: &str) -> Value {
+/// A plain untagged scalar's value, as PyYAML's implicit resolvers and constructors read it.
+/// `Err` names why JSON cannot hold the value.
+fn resolve_plain_value(text: &str) -> Result<Value, &'static str> {
     match yaml::resolve_plain(text) {
-        Node::Bool(b) => Value::Bool(b),
-        Node::Null => Value::Null,
-        Node::Str(_) => number_or_text(text, origin, key),
+        Node::Bool(b) => Ok(Value::Bool(b)),
+        Node::Null => Ok(Value::Null),
+        // PyYAML tries the float, int and timestamp resolvers in turn; a text matches at most one.
+        Node::Str(_) if FLOAT.is_match(text) => float_value(text),
+        Node::Str(_) if INT.is_match(text) => int_value(text),
+        Node::Str(_) if TIMESTAMP.is_match(text) => Err("a timestamp is not a JSON value"),
+        Node::Str(_) => Ok(Value::String(text.to_owned())),
         Node::Seq(_) | Node::Map(_) => unreachable!("resolve_plain reads one scalar"),
-    }
-}
-
-/// PyYAML tries the float, int and timestamp resolvers in turn; a text matches at most one.
-fn number_or_text(text: &str, origin: &str, key: &str) -> Value {
-    if FLOAT.is_match(text) {
-        float_value(text, origin, key)
-    } else if INT.is_match(text) {
-        int_value(text, origin, key)
-    } else if TIMESTAMP.is_match(text) {
-        refuse(origin, key, "a timestamp is not a JSON value", Some(text))
-    } else {
-        Value::String(text.to_owned())
     }
 }
 
 /// PyYAML `construct_yaml_float`: underscores dropped, lower-cased, a sign, `.inf`/`.nan`, and
 /// base-60 digits joined by colons.
-fn float_value(text: &str, origin: &str, key: &str) -> Value {
+fn float_value(text: &str) -> Result<Value, &'static str> {
     let cleaned = text.replace('_', "").to_lowercase();
     let (negative, body) = split_sign(&cleaned);
     if body == ".inf" || body == ".nan" {
-        refuse(
-            origin,
-            key,
-            "infinity and NaN are not JSON values",
-            Some(text),
-        );
+        return Err("infinity and NaN are not JSON values");
     }
     let magnitude = if body.contains(':') {
         // PyYAML reverses the digits, then sums each times a base that grows by 60.
         body.split(':')
             .rev()
-            .fold((0.0_f64, 1.0_f64), |(total, base), part| {
-                let digit = part
-                    .parse::<f64>()
-                    .unwrap_or_else(|_| refuse(origin, key, "not a number", Some(text)));
-                (total + digit * base, base * 60.0)
-            })
+            .try_fold((0.0_f64, 1.0_f64), |(total, base), part| {
+                let digit = part.parse::<f64>().map_err(|_| "not a number")?;
+                Ok::<_, &'static str>((total + digit * base, base * 60.0))
+            })?
             .0
     } else {
-        body.parse::<f64>()
-            .unwrap_or_else(|_| refuse(origin, key, "not a number", Some(text)))
+        body.parse::<f64>().map_err(|_| "not a number")?
     };
     let value = if negative { -magnitude } else { magnitude };
     Number::from_f64(value)
         .map(Value::Number)
-        .unwrap_or_else(|| refuse(origin, key, "not a finite JSON number", Some(text)))
+        .ok_or("not a finite JSON number")
 }
 
 /// PyYAML `construct_yaml_int`: underscores dropped, a sign, then binary, hex, octal (a leading
-/// zero), base-60 (colons) or decimal. The result must fit an `i64`.
-fn int_value(text: &str, origin: &str, key: &str) -> Value {
+/// zero, so `0` is octal zero too), base-60 (colons) or decimal. The result must fit an `i64`.
+fn int_value(text: &str) -> Result<Value, &'static str> {
     let cleaned = text.replace('_', "");
     let (negative, body) = split_sign(&cleaned);
-    let magnitude = if body == "0" {
-        0
-    } else if let Some(bits) = body.strip_prefix("0b") {
-        parse_int(bits, 2, origin, key, text)
+    let magnitude = if let Some(bits) = body.strip_prefix("0b") {
+        parse_int(bits, 2)?
     } else if let Some(hex) = body.strip_prefix("0x") {
-        parse_int(hex, 16, origin, key, text)
+        parse_int(hex, 16)?
     } else if body.starts_with('0') {
-        parse_int(body, 8, origin, key, text)
+        parse_int(body, 8)?
     } else if body.contains(':') {
-        base60_int(body, origin, key, text)
+        base60_int(body)?
     } else {
-        parse_int(body, 10, origin, key, text)
+        parse_int(body, 10)?
     };
     let signed = if negative { -magnitude } else { magnitude };
-    i64::try_from(signed).map(Value::from).unwrap_or_else(|_| {
-        refuse(
-            origin,
-            key,
-            "an integer beyond i64 is not a JSON value",
-            Some(text),
-        )
-    })
+    i64::try_from(signed)
+        .map(Value::from)
+        .map_err(|_| "an integer beyond i64 is not a JSON value")
 }
 
-fn parse_int(digits: &str, radix: u32, origin: &str, key: &str, text: &str) -> i128 {
-    i128::from_str_radix(digits, radix)
-        .unwrap_or_else(|_| refuse(origin, key, "not an integer", Some(text)))
+fn parse_int(digits: &str, radix: u32) -> Result<i128, &'static str> {
+    i128::from_str_radix(digits, radix).map_err(|_| "not an integer")
 }
 
 /// Base-60 digits, the last one least significant (PyYAML reverses them).
-fn base60_int(body: &str, origin: &str, key: &str, text: &str) -> i128 {
+fn base60_int(body: &str) -> Result<i128, &'static str> {
+    const REASON: &str = "not a base-60 integer within i128";
     body.split(':')
         .rev()
         .try_fold((0_i128, 1_i128), |(total, base), part| {
-            let digit = part.parse::<i128>().ok()?;
-            Some((
-                total.checked_add(digit.checked_mul(base)?)?,
-                base.checked_mul(60)?,
+            let digit = part.parse::<i128>().map_err(|_| REASON)?;
+            let term = digit.checked_mul(base).ok_or(REASON)?;
+            Ok::<_, &'static str>((
+                total.checked_add(term).ok_or(REASON)?,
+                base.checked_mul(60).ok_or(REASON)?,
             ))
         })
         .map(|(total, _)| total)
-        .unwrap_or_else(|| refuse(origin, key, "not a base-60 integer within i128", Some(text)))
 }
 
 fn split_sign(text: &str) -> (bool, &str) {
@@ -267,29 +234,12 @@ fn split_sign(text: &str) -> (bool, &str) {
     }
 }
 
-/// What a finished node is, for a refusal that cannot quote its text.
-#[derive(Clone)]
-enum Shape {
-    Scalar(String),
-    Sequence,
-    Mapping,
-}
-
-impl Shape {
-    fn kind(&self) -> &'static str {
-        match self {
-            Shape::Scalar(_) => "a scalar",
-            Shape::Sequence => "a sequence",
-            Shape::Mapping => "a mapping",
-        }
-    }
-}
-
-/// A finished node and what a refusal can name about it.
+/// A finished node. `text` is a plain scalar's source text, kept for a key refusal. A quoted
+/// scalar is always a string, so it carries none, and a collection has none in the event stream.
 #[derive(Clone)]
 struct Item {
     value: Value,
-    shape: Shape,
+    text: Option<String>,
 }
 
 /// The key a mapping is waiting for a value under.
@@ -313,18 +263,14 @@ enum Frame {
 }
 
 #[derive(Default)]
-struct Builder {
-    origin: String,
+struct Builder<'a> {
+    origin: &'a str,
     docs: Vec<Value>,
     stack: Vec<Frame>,
     anchors: HashMap<usize, Item>,
 }
 
-impl Builder {
-    fn key_position(&self) -> bool {
-        matches!(self.stack.last(), Some(Frame::Map { key: None, .. }))
-    }
-
+impl Builder<'_> {
     /// The mapping key a node under this position belongs to: the innermost mapping's pending
     /// key. `own` names the node itself when it is a key, and `<root>` sits outside any mapping.
     fn key_label(&self, own: &str) -> String {
@@ -340,20 +286,23 @@ impl Builder {
         "<root>".to_owned()
     }
 
-    fn refuse_tag(&self, tag: Option<&Tag>, own: &str, scalar: Option<&str>) {
+    /// A tag on a node is refused, naming the tag. `scalar` is the node's text; a collection has
+    /// none.
+    fn refuse_tag(&self, tag: Option<&Tag>, scalar: Option<&str>) {
         let Some(tag) = tag else { return };
+        let own = scalar.unwrap_or("<collection>");
         let full = format!("{}{}", tag.handle, tag.suffix);
         let reason = match full.strip_prefix(CORE_TAG) {
             Some(name) => format!("core tag `!!{name}` is not supported by the playbook loader"),
             None => format!("application tag `{full}` is not supported by the playbook loader"),
         };
-        refuse(&self.origin, &self.key_label(own), &reason, scalar);
+        refuse(self.origin, &self.key_label(own), &reason, scalar);
     }
 
     /// Places a finished node in its parent: a document, a sequence item, a merge value or a
     /// mapping entry. A mapping key must be a string.
     fn push(&mut self, item: Item, is_merge_key: bool) {
-        let origin = self.origin.clone();
+        let origin = self.origin;
         match self.stack.last_mut() {
             None => self.docs.push(item.value),
             Some(Frame::Seq { items, .. }) => items.push(item.value),
@@ -364,20 +313,9 @@ impl Builder {
                 ..
             }) => match key.take() {
                 None if is_merge_key => *key = Some(Pending::Merge),
-                None => match (item.value, &item.shape) {
-                    (Value::String(k), _) => *key = Some(Pending::Named(k)),
-                    (_, Shape::Scalar(text)) => refuse(
-                        &origin,
-                        text,
-                        "a mapping key must be a string",
-                        Some(text.as_str()),
-                    ),
-                    (_, shape) => refuse(
-                        &origin,
-                        "<non-scalar key>",
-                        &format!("a mapping key must be a string, found {}", shape.kind()),
-                        None,
-                    ),
+                None => match item.value {
+                    Value::String(k) => *key = Some(Pending::Named(k)),
+                    value => refuse_key(origin, &value, item.text),
                 },
                 Some(Pending::Merge) => merges.push(item.value),
                 Some(Pending::Named(k)) => entries.push((k, item.value)),
@@ -385,11 +323,33 @@ impl Builder {
         }
     }
 
-    fn finish(&mut self, item: Item, anchor: usize) {
+    /// The one place a finished node is recorded as an anchor and placed in its parent.
+    fn finish(&mut self, item: Item, anchor: usize, is_merge_key: bool) {
         if anchor > 0 {
             self.anchors.insert(anchor, item.clone());
         }
-        self.push(item, false);
+        self.push(item, is_merge_key);
+    }
+}
+
+/// A mapping key that is not a string: named by its scalar text, or, for a collection, by its
+/// kind.
+fn refuse_key(origin: &str, value: &Value, text: Option<String>) -> ! {
+    match text {
+        Some(text) => refuse(origin, &text, "a mapping key must be a string", Some(&text)),
+        None => {
+            let kind = if value.is_array() {
+                "a sequence"
+            } else {
+                "a mapping"
+            };
+            refuse(
+                origin,
+                "<non-scalar key>",
+                &format!("a mapping key must be a string, found {kind}"),
+                None,
+            )
+        }
     }
 }
 
@@ -401,11 +361,14 @@ fn apply_merges(
     merges: Vec<Value>,
     origin: &str,
 ) -> Map<String, Value> {
+    if merges.is_empty() {
+        return explicit.into_iter().collect();
+    }
     let mut out = Map::new();
     for merge in merges {
-        let maps: Vec<Value> = match merge {
-            Value::Object(_) => vec![merge],
-            Value::Array(items) => items.into_iter().rev().collect(),
+        let list = match merge {
+            Value::Array(items) => items,
+            map @ Value::Object(_) => vec![map],
             other => refuse(
                 origin,
                 "<<",
@@ -413,7 +376,7 @@ fn apply_merges(
                 Some(other.to_string().as_str()),
             ),
         };
-        for map in maps {
+        for map in list.into_iter().rev() {
             match map {
                 Value::Object(entries) => {
                     for (k, v) in entries {
@@ -435,27 +398,30 @@ fn apply_merges(
     out
 }
 
-impl MarkedEventReceiver for Builder {
+impl MarkedEventReceiver for Builder<'_> {
     fn on_event(&mut self, ev: Event, _mark: Marker) {
         match ev {
             Event::Scalar(text, style, anchor, tag) => {
-                self.refuse_tag(tag.as_ref(), &text, Some(text.as_str()));
+                self.refuse_tag(tag.as_ref(), Some(text.as_str()));
                 let plain = style == TScalarStyle::Plain;
-                let is_merge_key = plain && self.key_position() && text == "<<";
-                let value = if plain {
-                    let label = self.key_label(&text);
-                    plain_value(&text, &self.origin, &label)
+                let is_merge_key = plain
+                    && text == "<<"
+                    && matches!(self.stack.last(), Some(Frame::Map { key: None, .. }));
+                let item = if plain {
+                    let value = resolve_plain_value(&text).unwrap_or_else(|why| {
+                        refuse(self.origin, &self.key_label(&text), why, Some(&text))
+                    });
+                    Item {
+                        value,
+                        text: Some(text),
+                    }
                 } else {
-                    Value::String(text.clone())
+                    Item {
+                        value: Value::String(text),
+                        text: None,
+                    }
                 };
-                let item = Item {
-                    value,
-                    shape: Shape::Scalar(text),
-                };
-                if anchor > 0 {
-                    self.anchors.insert(anchor, item.clone());
-                }
-                self.push(item, is_merge_key);
+                self.finish(item, anchor, is_merge_key);
             }
             Event::Alias(id) => {
                 let item = self
@@ -463,17 +429,17 @@ impl MarkedEventReceiver for Builder {
                     .get(&id)
                     .cloned()
                     .expect("alias to a known anchor");
-                self.push(item, false);
+                self.finish(item, 0, false);
             }
             Event::SequenceStart(anchor, tag) => {
-                self.refuse_tag(tag.as_ref(), "<collection>", None);
+                self.refuse_tag(tag.as_ref(), None);
                 self.stack.push(Frame::Seq {
                     items: vec![],
                     anchor,
                 });
             }
             Event::MappingStart(anchor, tag) => {
-                self.refuse_tag(tag.as_ref(), "<collection>", None);
+                self.refuse_tag(tag.as_ref(), None);
                 self.stack.push(Frame::Map {
                     entries: vec![],
                     merges: vec![],
@@ -483,13 +449,11 @@ impl MarkedEventReceiver for Builder {
             }
             Event::SequenceEnd => {
                 if let Some(Frame::Seq { items, anchor }) = self.stack.pop() {
-                    self.finish(
-                        Item {
-                            value: Value::Array(items),
-                            shape: Shape::Sequence,
-                        },
-                        anchor,
-                    );
+                    let item = Item {
+                        value: Value::Array(items),
+                        text: None,
+                    };
+                    self.finish(item, anchor, false);
                 }
             }
             Event::MappingEnd => {
@@ -500,14 +464,12 @@ impl MarkedEventReceiver for Builder {
                     ..
                 }) = self.stack.pop()
                 {
-                    let merged = apply_merges(entries, merges, &self.origin);
-                    self.finish(
-                        Item {
-                            value: Value::Object(merged),
-                            shape: Shape::Mapping,
-                        },
-                        anchor,
-                    );
+                    let merged = apply_merges(entries, merges, self.origin);
+                    let item = Item {
+                        value: Value::Object(merged),
+                        text: None,
+                    };
+                    self.finish(item, anchor, false);
                 }
             }
             _ => {}

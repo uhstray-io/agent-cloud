@@ -188,7 +188,7 @@ pub mod yaml {
 
     /// The handle yaml-rust2 gives a `!!` core tag. No repository file uses one, so the
     /// loader refuses them all rather than construct some and misread others.
-    const CORE_TAG: &str = "tag:yaml.org,2002:";
+    pub(crate) const CORE_TAG: &str = "tag:yaml.org,2002:";
 
     // `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the verbatim
     // `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Join them so both match.

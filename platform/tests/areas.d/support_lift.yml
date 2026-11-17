@@ -3,12 +3,14 @@
 #
 # `support_lift` is in the security set (`always`), not only in this area: its agreement test
 # pins the lifting loader to yaml::parse over every repository playbook, so a change that drops
-# or retypes one value fails every commit. `support_lift_playbook` runs lifted plays through
-# ansible-playbook in the playbook tier.
+# or retypes one value fails every commit. `support_lift_pyyaml` reads the same files through
+# PyYAML (one python3 process), the oracle for number typing that the agreement test cannot see.
+# `support_lift_playbook` runs lifted plays through ansible-playbook in the playbook tier.
 #
 # paths: [] because platform/tests/** is a full trigger (as in areas.yml's test_platform area).
 paths: []
 tiers:
+  cli: [support_lift_pyyaml]
   playbook: [support_lift_playbook]
 always:
   static: [support_lift]

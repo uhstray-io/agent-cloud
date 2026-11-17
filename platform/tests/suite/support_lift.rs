@@ -22,40 +22,42 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 
 /// Whether a lifted value stands for the same YAML as a `yaml::parse` node: the same keys in the
 /// same order, the same sequence items, and equal bools, nulls and strings. A JSON number stands
-/// for any `Node::Str`, because the Node loader keeps every plain number as its text.
-fn agrees(at: &str, value: &Value, node: &Node) -> Result<(), String> {
+/// for any `Node::Str`, because the Node loader keeps every plain number as its text. An error
+/// is the mismatch; each enclosing key or index is prepended as it returns, so the path is built
+/// only when something differs.
+fn agrees(value: &Value, node: &Node) -> Result<(), String> {
     match (value, node) {
         (Value::Object(map), Node::Map(entries)) => {
             if map.len() != entries.len() {
                 return Err(format!(
-                    "{at}: {} keys, yaml::parse gives {}",
+                    ": {} keys, yaml::parse gives {}",
                     map.len(),
                     entries.len()
                 ));
             }
             for ((lifted_key, lifted), (key, child)) in map.iter().zip(entries) {
                 let Some(name) = key.as_str() else {
-                    return Err(format!("{at}: a mapping key that is not a string"));
+                    return Err(": a mapping key that is not a string".to_owned());
                 };
                 if lifted_key != name {
                     return Err(format!(
-                        "{at}: key {lifted_key:?} where yaml::parse gives {name:?}"
+                        ": key {lifted_key:?} where yaml::parse gives {name:?}"
                     ));
                 }
-                agrees(&format!("{at}.{name}"), lifted, child)?;
+                agrees(lifted, child).map_err(|why| format!(".{name}{why}"))?;
             }
             Ok(())
         }
         (Value::Array(items), Node::Seq(nodes)) => {
             if items.len() != nodes.len() {
                 return Err(format!(
-                    "{at}: {} items, yaml::parse gives {}",
+                    ": {} items, yaml::parse gives {}",
                     items.len(),
                     nodes.len()
                 ));
             }
             for (index, (item, child)) in items.iter().zip(nodes).enumerate() {
-                agrees(&format!("{at}[{index}]"), item, child)?;
+                agrees(item, child).map_err(|why| format!("[{index}]{why}"))?;
             }
             Ok(())
         }
@@ -63,7 +65,7 @@ fn agrees(at: &str, value: &Value, node: &Node) -> Result<(), String> {
         (Value::Null, Node::Null) => Ok(()),
         (Value::String(a), Node::Str(b)) if a == b => Ok(()),
         (Value::Number(_), Node::Str(_)) => Ok(()),
-        _ => Err(format!("{at}: {value} where yaml::parse gives {node:?}")),
+        _ => Err(format!(": {value} where yaml::parse gives {node:?}")),
     }
 }
 
@@ -72,7 +74,7 @@ fn agrees(at: &str, value: &Value, node: &Node) -> Result<(), String> {
 /// looping over the texts: `.venv/bin/python -c 'import yaml; print(repr(yaml.safe_load("v: 0600")["v"]))'`.
 /// A text PyYAML reads as a string stays a string here: `08`, `1e3`, `1.0e3`, `-.5`, `1:60`.
 #[test]
-fn plain_scalars_resolve_as_pyyaml_does() {
+fn plain_scalars_lift_with_pyyaml_types() {
     let cases = [
         ("53", json!(53)),
         ("0600", json!(384)),
@@ -148,10 +150,11 @@ fn forms_json_cannot_hold_are_refused_by_name() {
 #[test]
 fn every_repository_yaml_file_has_the_structure_yaml_parse_gives() {
     let mut refused = BTreeSet::new();
-    for file in repo::ls_files(&["platform/playbooks", "platform/semaphore"]) {
-        if !file.ends_with(".yml") {
-            continue;
-        }
+    let files = repo::ls_files(&[
+        ":(glob)platform/playbooks/**/*.yml",
+        ":(glob)platform/semaphore/**/*.yml",
+    ]);
+    for file in files {
         let text =
             std::fs::read_to_string(repo::path(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
         let Ok(lifted) = std::panic::catch_unwind(|| playbook::parse(&text, &file)) else {
@@ -161,8 +164,8 @@ fn every_repository_yaml_file_has_the_structure_yaml_parse_gives() {
         let nodes = yaml::parse(&text, &file);
         assert_eq!(lifted.len(), nodes.len(), "{file}: document count");
         for (index, (value, node)) in lifted.iter().zip(&nodes).enumerate() {
-            if let Err(why) = agrees(&format!("{file}[{index}]"), value, node) {
-                panic!("{why}");
+            if let Err(why) = agrees(value, node) {
+                panic!("{file}[{index}]{why}");
             }
         }
     }
@@ -179,8 +182,6 @@ fn every_repository_yaml_file_has_the_structure_yaml_parse_gives() {
     );
 }
 
-/// `plays` drops the leading guard import and nothing else. A playbook without the guard keeps
-/// every play.
 #[test]
 fn duplicate_keys_and_merges_resolve_as_pyyaml_does() {
     // No repository file holds a duplicate key or a `<<` merge (2026-11-17), so the agreement
@@ -209,9 +210,11 @@ listed:
         assert_eq!(got, expected, "key {key}: value and key order");
     }
     let node = yaml::parse(text, "<fixture>").pop().expect("one document");
-    agrees("<fixture>", &lifted, &node).unwrap_or_else(|why| panic!("{why}"));
+    agrees(&lifted, &node).unwrap_or_else(|why| panic!("<fixture>{why}"));
 }
 
+/// `plays` drops the leading guard import and nothing else. A playbook without the guard keeps
+/// every play.
 #[test]
 fn plays_drops_only_the_leading_extra_var_guard() {
     let rel = "platform/playbooks/apply-firewall.yml";
