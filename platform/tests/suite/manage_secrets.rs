@@ -161,11 +161,12 @@ fn no_task_writes_to_the_service_secret_path_directly() {
 /// The modules that run a program, under which a `bao` or `vault` CLI call could write the store.
 const COMMAND_MODULES: &[&str] = &["command", "shell", "raw", "script", "expect"];
 
-/// A `bao` or `vault` CLI call: the program name as a word of the command line (at the start, or
-/// after whitespace, a path separator, a quote or `=`), so options before the subcommand
-/// (`bao -address=x kv put`) do not hide it.
+/// A `bao` or `vault` CLI call: the program name followed by an argument (at the start, or after
+/// whitespace, a path separator, a quote, `=`, or a shell separator `; & | ( `` ` ``), so options
+/// before the subcommand (`bao -address=x kv put`) and `x;bao kv put` do not hide it, while a path
+/// that only ends in `vault` is not a call.
 static STORE_CLI: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(?:^|[\s/"'=])(?:bao|vault)(?:\s|$)"#).expect("a valid regex"));
+    LazyLock::new(|| Regex::new(r#"(?:^|[\s/"'=;&|(`])(?:bao|vault)\s"#).expect("a valid regex"));
 
 /// Every string under a node; a list of strings (an argv) also yields its items joined by spaces,
 /// so `[bao, kv, put]` reads as the command line it runs.
@@ -243,5 +244,14 @@ fn a_store_cli_call_is_detected() {
     )));
     assert!(!runs_store_cli(&task(
         "ansible.builtin.debug:\n  msg: bao kv put\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: set -e;bao kv put secret/x a=b\n"
+    )));
+    assert!(runs_store_cli(&task(
+        "ansible.builtin.shell: echo $(vault kv put secret/x a=b)\n"
+    )));
+    assert!(!runs_store_cli(&task(
+        "ansible.builtin.command: ls /opt/vault\n"
     )));
 }

@@ -31,9 +31,11 @@
 //! | become: no dynamic include anywhere carries a become keyword | `no_dynamic_include_task_carries_become` |
 
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{self, Node};
+use regex::Regex;
 
 const RESOLVER_TASK: &str = "platform/playbooks/tasks/resolve-become-password.yml";
 const GUARD_TASK: &str = "platform/playbooks/tasks/assert-bao-transport.yml";
@@ -244,12 +246,6 @@ fn included_file(task: &Node) -> Option<&str> {
         })
 }
 
-/// Whether a task includes or imports a file whose path ends with these whole components:
-/// `resolve-become-password.yml` matches by file name, `tasks/<file>` by directory too.
-fn includes_path(task: &Node, suffix: &str) -> bool {
-    included_file(task).is_some_and(|f| std::path::Path::new(f).ends_with(suffix))
-}
-
 /// Exactly `tasks/<guard>`, as every playbook includes it: a templated path (`{{ dir }}/tasks/...`)
 /// could render to another file, so it is not the guard.
 fn is_controller_only_guard(task: &Node) -> bool {
@@ -292,16 +288,26 @@ fn first_in(seq: &[Node]) -> Option<&Node> {
     None
 }
 
-/// Whether a task makes escalation possible: an include or import of the resolver task file, or a
-/// set_fact of `ansible_become_password`.
+/// A hashi_vault lookup whose path argument is [`SECRET_PATH`]: the one set_fact value that reads
+/// the store's password. A literal, an extra var, or a default naming the path is not one.
+static STORE_LOOKUP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"hashi_vault['"]\s*,\s*['"]{}['"]"#,
+        regex::escape(SECRET_PATH)
+    ))
+    .expect("a valid regex")
+});
+
+/// Whether a task makes escalation possible: an include or import of exactly
+/// `tasks/resolve-become-password.yml` (a templated path could render to another file), or a
+/// set_fact of `ansible_become_password` from the store lookup ([`STORE_LOOKUP`]).
 fn resolves(task: &Node) -> bool {
-    // The value must read the store's password: a literal (or an extra var) is not resolution.
     let sets = module(task, "set_fact").is_some_and(|f| {
         f.get("ansible_become_password")
             .and_then(Node::as_str)
-            .is_some_and(|v| v.contains(SECRET_PATH))
+            .is_some_and(|v| STORE_LOOKUP.is_match(v))
     });
-    includes_path(task, RESOLVER_FILE) || sets
+    included_file(task) == Some(format!("tasks/{RESOLVER_FILE}").as_str()) || sets
 }
 
 #[test]
@@ -574,6 +580,19 @@ const FIRST_EXECUTED_CASES: &str = r#"
   gather_facts: false
   tasks:
     - ansible.builtin.set_fact: {ansible_become_password: x}
+- name: bad set_fact of a default naming the store path
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "{{ lookup('env', 'X') | default('secret/data/services/ssh:become_password') }}"
+- name: bad templated resolver path
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: "{{ _d }}/resolve-become-password.yml"
 - name: bad templated guard path, then the resolver
   hosts: h
   become: true
