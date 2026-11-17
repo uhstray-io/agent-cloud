@@ -132,6 +132,7 @@ and why.
 | 3.22 | A manual launch in a minute 3.20 allows ran into the next schedule slot; the scheduled liveness check that started there failed on an empty shared inventory (link inferred from timing, not proven); widens 3.20 | Live state | 1 | Convention (finish before the next slot, or accept and check); launcher duration check proposed |
 | 3.23 | Ran an 18-minute production drill whose second deploy clones the moving `dev` head against a SHA pinned at launch; three merges landed mid-drill and the restore refused, leaving the drilled projection live | Live state | 1 | Convention |
 | 3.24 | A deploy placed files OPA reads only at startup and never restarted it; production OPA served its 2026-11-01 policies until 2026-11-12, twelve policy commits not live (widens 3.11) | Live state | 1 | Test for OPA (`opa:` cases in `test_compose_up_if_changed.bats`); general form Convention; verify gap AC-845 |
+| 3.25 | A read-only survey reported the latest node-wide Proxmox backup task failing for lack of space on 2026-10-14; it was filed as evidence for an o11y gate, not raised as an incident, and the nightly backups kept failing almost every night for four more weeks | Live state | 1 | Convention; backup-failure and backup-storage alert proposed |
 | 4.1 | `while read` silently dropped an unterminated final line | Data handling | 1 | Convention |
 | 4.2 | Stored `.env` values without stripping surrounding quotes | Data handling | 1 | Convention |
 | 4.3 | Used a real internal IP address as a test vector | Data leak | 1 | Pre-commit (existing) |
@@ -3978,6 +3979,16 @@ recreates, an unchanged re-run does not) and pin `write_env` to the compose subs
 general form, a service that reads a bind-mounted file once at start without that file among its
 `compose_up_if_changed` inputs, is Convention. The verify-side gap (proving what the running
 server loaded) is Plane AC-845.
+
+### 3.25 A survey found the cluster's backups failing for lack of space, and the finding was filed as gate evidence instead of raised
+
+**What happened.** On 2026-10-14 the Dev-bound inspect-only o11y backup survey, Semaphore task 5584, reported that the latest node-wide `vzdump` task within 26 hours had failed, with sanitized failure hint `no_space`. The receipt was recorded in `plan/development/openspec/changes/estate-wide-observability-instrumentation/tasks.md` (the "Read-only backup failure and freshness receipt" bullet) as evidence that the o11y backup gate stays open. On 2026-10-17 inspect-only task 6603 reported the same `no_space` hint with the selected destination below 10% free, recorded the same way in the same file. Neither was raised. On 2026-11-12 the operator's read-only scan of 879 vzdump notification emails showed that the nightly jobs on all six Proxmox nodes, which write to one shared backup storage, had failed almost every night since 2026-10-04: `No space left on device` on the first night, then `vma_queue_write: write error - Broken pipe` with 0 B written. About 40 nights passed with no usable backup of most guests.
+
+**Root cause.** The survey was scoped to one VM's backup gate, and its own rule kept job attribution "unavailable", so a `no_space` failure on the shared backup destination was read only as "this gate is not met". No owner, alert or tracked item covered the estate's backups, and nothing in the platform watches backup job results or backup storage capacity. vzdump prunes a guest only after that guest's archive step succeeds (pve-manager `VZDump.pm`, `exec_backup_task`), so the failing backups freed nothing and the storage stayed full on its own.
+
+**The rule.** A diagnostic that finds a live failure outside its own scope (here: backups failing for space across the cluster) opens an urgent tracked item that day, naming the task that found it, and tells the operator. Recording it as gate evidence is not enough.
+
+**Enforced by.** Convention. Proposed guard: an o11y alert on backup storage use and on each backup job's last successful run, so the next full backup storage pages instead of waiting to be read. The storage survey is `Survey Proxmox Backup Storage (Dev)` (Plane AC-844).
 
 ## 4. Data handling
 
