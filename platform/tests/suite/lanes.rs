@@ -328,21 +328,28 @@ fn a_missing_areas_d_adds_nothing() {
     );
 }
 
+/// A refusal case: why, the area files (name, text), and a phrase the error must hold.
+type Refusal<'a> = (&'a str, Vec<(&'a str, String)>, &'a str);
+
 #[test]
 fn an_area_file_that_collides_or_is_malformed_is_refused() {
     let area = |module: &str| format!("paths: []\ntiers: {{static: [{module}]}}\n");
-    let cases: Vec<(&str, Vec<(&str, String)>)> = vec![
+    // Each row names its phrase, so it fails for its own reason, not a neighbour's.
+    let cases: Vec<Refusal> = vec![
         (
             "an area of areas.yml defined again",
             vec![("multi.yml", area("other"))],
+            "is already defined",
         ),
         (
             "a module of areas.yml listed again",
             vec![("other.yml", area("restart_policy"))],
+            "is listed twice",
         ),
         (
             "a module listed in two files",
             vec![("one.yml", area("shared")), ("two.yml", area("shared"))],
+            "is listed twice",
         ),
         (
             "a module in a file's area and its always",
@@ -350,24 +357,37 @@ fn an_area_file_that_collides_or_is_malformed_is_refused() {
                 "one.yml",
                 "paths: []\ntiers: {static: [x]}\nalways: {unit: [x]}\n".to_owned(),
             )],
+            "is listed twice",
         ),
         (
             "an unknown key",
             vec![("one.yml", "paths: []\ntiers: {}\npath: []\n".to_owned())],
+            "unknown key",
         ),
-        ("a missing key", vec![("one.yml", "paths: []\n".to_owned())]),
+        (
+            "a missing key",
+            vec![("one.yml", "paths: []\n".to_owned())],
+            "is missing `tiers`",
+        ),
         (
             "a stem that is not a module name",
             vec![("bad-name.yml", area("x"))],
+            "is not a module name",
         ),
     ];
-    for (why, files) in cases {
+    for (why, files, phrase) in cases {
         let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (*n, t.as_str())).collect();
         let dir = layout(&files);
 
         let result = load(&dir);
 
-        assert!(result.is_err(), "{why}: loaded");
+        match result {
+            Ok(_) => panic!("{why}: loaded"),
+            Err(error) => assert!(
+                error.contains(phrase),
+                "{why}: refused for another reason: {error}"
+            ),
+        }
     }
 }
 
