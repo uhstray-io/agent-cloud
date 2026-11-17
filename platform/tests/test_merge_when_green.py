@@ -1970,7 +1970,7 @@ class ReleaseBudgetTests(unittest.TestCase):
         api = FakeGitHub()
         result, out, _err = run_guard(api)
         self.assertEqual(result, 0)
-        self.assertIn("BUDGET: after this merge 6/100 pull requests and 21/120 files since v0.14.0", out)
+        self.assertIn("BUDGET: after this merge 6/100 pull requests and 21/150 files since v0.14.0", out)
         self.assertEqual(api.merge_calls, [])
 
     def test_pull_request_limit_refuses_the_hundred_and_first(self):
@@ -1983,22 +1983,22 @@ class ReleaseBudgetTests(unittest.TestCase):
         set_budget(api, before=(99, 21), after=(100, 21))
         self.assertEqual(run_guard(api)[0], 0)
 
-    def test_new_path_over_the_file_limit_refuses_and_one_hundred_twenty_passes(self):
+    def test_new_path_over_the_file_limit_refuses_and_one_hundred_fifty_passes(self):
         api = FakeGitHub()
-        set_budget(api, before=(5, 120), after=(6, 121))
+        set_budget(api, before=(5, 150), after=(6, 151))
         result, _out, err = run_guard(api)
         self.assertEqual(result, 1)
-        self.assertIn("121 changed files (limit 120)", err)
+        self.assertIn("151 changed files (limit 150)", err)
         self.assertIn("may still merge", err)
-        set_budget(api, before=(5, 119), after=(6, 120))
+        set_budget(api, before=(5, 149), after=(6, 150))
         self.assertEqual(run_guard(api)[0], 0)
 
     def test_a_pull_request_adding_no_new_path_passes_over_the_file_limit(self):
-        # R5: a pull request whose files the release already holds may merge past 120 files, up to the PR limit.
+        # R5: a pull request whose files the release already holds may merge past 150 files, up to the PR limit.
         api = FakeGitHub()
-        set_budget(api, before=(99, 125), after=(100, 125))
+        set_budget(api, before=(99, 155), after=(100, 155))
         self.assertEqual(run_guard(api)[0], 0)
-        set_budget(api, before=(100, 125), after=(101, 125))
+        set_budget(api, before=(100, 155), after=(101, 155))
         result, _out, err = run_guard(api)
         self.assertEqual(result, 1)
         self.assertIn("101 pull requests (limit 100)", err)
@@ -2008,7 +2008,7 @@ class ReleaseBudgetTests(unittest.TestCase):
         set_budget(api, before=(299, 899), after=(300, 900), transition=True)
         result, out, _err = run_guard(api)
         self.assertEqual(result, 0)
-        self.assertIn("BUDGET: after this merge 300/100 pull requests and 900/120 files", out)
+        self.assertIn("BUDGET: after this merge 300/100 pull requests and 900/150 files", out)
         self.assertIn("transition: policy 10 R12", out)
 
     def test_stale_local_dev_refuses(self):
@@ -2088,7 +2088,7 @@ class BudgetAcknowledgedTests(unittest.TestCase):
     # Policy 10 R10: an operator-approved release may go over a limit at dev intake. The flag passes the budget only;
     # every later gate still runs, and the stale-count refusals stay unconditional.
     SUFFIX = " (over the limit: acknowledged by the operator, policy 10 R10)"
-    OVER = {"files": ((5, 120), (6, 121)), "pull requests": ((100, 21), (101, 21))}
+    OVER = {"files": ((5, 150), (6, 151)), "pull requests": ((100, 21), (101, 21))}
 
     def test_over_a_limit_without_the_flag_refuses(self):
         for limit, (before, after) in self.OVER.items():
@@ -2110,13 +2110,13 @@ class BudgetAcknowledgedTests(unittest.TestCase):
                 self.assertEqual(result, 1)
                 self.assertNotIn("Release full", err)
                 self.assertIn("Review-pass commit status missing on this head: simplify", err)
-                self.assertIn(f"{after[0]}/100 pull requests and {after[1]}/120 files since v0.14.0", out)
+                self.assertIn(f"{after[0]}/100 pull requests and {after[1]}/150 files since v0.14.0", out)
                 self.assertIn(self.SUFFIX, out)
 
     def test_with_the_flag_an_over_budget_head_merges_once(self):
         # Both validations in main carry the flag, or the re-read before the merge call would refuse.
         api = FakeGitHub()
-        set_budget(api, before=(5, 120), after=(6, 121))
+        set_budget(api, before=(5, 150), after=(6, 151))
         result, out, _err = run_guard(api, "--merge", "--feedback-addressed", "--budget-acknowledged")
         self.assertEqual(result, 0)
         self.assertEqual(out.count(self.SUFFIX), 2)
@@ -2124,7 +2124,7 @@ class BudgetAcknowledgedTests(unittest.TestCase):
 
     def test_with_the_flag_a_stale_local_dev_still_refuses(self):
         api = FakeGitHub()
-        set_budget(api, before=(5, 120), after=(6, 121))
+        set_budget(api, before=(5, 150), after=(6, 151))
         api.budget_dev_sha = "f" * 40
         result, out, err = run_guard(api, "--budget-acknowledged")
         self.assertEqual(result, 1)
@@ -2135,14 +2135,14 @@ class BudgetAcknowledgedTests(unittest.TestCase):
     def test_with_the_flag_dev_moving_after_the_count_still_refuses_the_merge(self):
         # The waiver covers the limits only; a merge into dev after the count would leave it, and drift, stale.
         api = FakeGitHub()
-        set_budget(api, before=(5, 120), after=(6, 121))
+        set_budget(api, before=(5, 150), after=(6, 151))
         reads = api.move_dev_after_two_reads()
         run_refusal(self, api, "dev moved after the release budget was counted", "--budget-acknowledged")
         self.assertEqual(len(reads), 3)
 
     def test_under_the_limit_or_in_the_transition_the_flag_changes_nothing(self):
         # Under R12's transition no limit applies yet, so there is nothing for the operator to acknowledge.
-        for case, (before, after, transition) in {"under": ((5, 119), (6, 120), False),
+        for case, (before, after, transition) in {"under": ((5, 149), (6, 150), False),
                                                   "transition": ((299, 899), (300, 900), True)}.items():
             with self.subTest(case=case):
                 api = FakeGitHub()
