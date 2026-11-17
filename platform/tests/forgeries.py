@@ -54,7 +54,7 @@ def _render_counter(name: str, tmp_path: Path) -> tuple[Path, str]:
     the number of renderings BEFORE this one and leaves the file one higher. Renders from parallel
     hosts are serialized by the lock directory beside the counter (AC-902): the truncating write let
     a concurrent read see an empty file, count 0, and render the honest value again. mkdir is the lock
-    because macOS has no flock."""
+    because macOS ships no flock command."""
     counter = tmp_path / f"forgery-renders-{name}"
     lock = counter.with_name(counter.name + ".lock")
     assert " " not in str(counter), counter
