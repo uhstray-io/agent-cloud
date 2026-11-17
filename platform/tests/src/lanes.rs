@@ -1,12 +1,17 @@
 //! Lane selection (plan 24, D3): the nextest filterset a lane runs, from the paths a change touches.
 //!
-//! The rules are in `platform/tests/areas.yml`, read with this crate's YAML loader. Each changed
+//! The rules are in `platform/tests/areas.yml` and in one file per area under
+//! `platform/tests/areas.d/`, read with this crate's YAML loader. Each changed
 //! path is classified in this order: it matches `full` (the change selects everything); else it
 //! matches the paths of one or more areas (those areas are selected); else it matches `ignore`
 //! (nothing is selected); else it is unclassified (the push and CI lanes run everything).
 //!
 //! Selection is by module name: nextest's `test(/^<module>::/)` matches the tests of each
-//! selected module, and `suite/main.rs` declares the modules.
+//! selected module, and the files in `suite/` are the modules (`build.rs` declares one per file).
+//!
+//! An area file `areas.d/<area>.yml` holds `paths` and `tiers`, as an area of `areas.yml` does,
+//! and an optional `always` tier map added to the global `always`. The file stem is the area
+//! name. A port pull request adds its own file and so edits no file another port edits.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -55,24 +60,64 @@ pub struct Config {
 }
 
 impl Config {
-    /// The configuration in the file at `path`. A file that cannot be read, or that is not
-    /// one YAML document of the expected shape, is an error.
+    /// The configuration in the file at `path` (`areas.yml`), merged with every `*.yml` area
+    /// file in the `areas.d` directory beside it, in name order. A missing `areas.d` adds
+    /// nothing. A file that cannot be read or is not of the expected shape, an area defined
+    /// twice, and a module listed in more than one place are errors.
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Config::parse(&text, &path.display().to_string())
+        let origin = path.display().to_string();
+        let mut config = Config::parse(&text, &origin)?;
+        let mut listings = Listings::default();
+        listings.add(&config.always, &format!("{origin} `always`"))?;
+        for (name, area) in &config.areas {
+            listings.add(&area.tiers, &format!("{origin} area `{name}`"))?;
+        }
+
+        let dir = path.with_file_name("areas.d");
+        let mut files = Vec::new();
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let file = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+                    if file.is_file() && file.extension().is_some_and(|ext| ext == "yml") {
+                        files.push(file);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        }
+        files.sort();
+
+        for file in files {
+            let origin = file.display().to_string();
+            let stem = file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| format!("{origin}: the file name is not UTF-8"))?;
+            let name = module_name(stem, "area file name", &origin)?;
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{origin}: {e}"))?;
+            let (area, always) = parse_area_file(&text, &name, &origin)?;
+            if config.areas.contains_key(&name) {
+                return Err(format!(
+                    "{origin}: area `{name}` is already defined (in areas.yml or an earlier areas.d file)"
+                ));
+            }
+            listings.add(&area.tiers, &format!("{origin} area `{name}`"))?;
+            listings.add(&always, &format!("{origin} `always`"))?;
+            for (tier, names) in always {
+                config.always.entry(tier).or_default().extend(names);
+            }
+            config.areas.insert(name, area);
+        }
+        Ok(config)
     }
 
     /// The configuration in `text`, named `origin` in errors. A YAML syntax error panics, as
     /// every test helper's parser does.
     pub fn parse(text: &str, origin: &str) -> Result<Config, String> {
-        let docs = yaml::parse(text, origin);
-        let [doc] = docs.as_slice() else {
-            return Err(format!(
-                "{origin}: expected one YAML document, found {}",
-                docs.len()
-            ));
-        };
-        from_node(doc, origin)
+        from_node(&one_document(text, origin)?, origin)
     }
 
     /// Every module named in a tier list, once for each list that names it. The repository
@@ -193,11 +238,65 @@ fn add_tiers(modules: &mut BTreeSet<String>, tiers: &Tiers, static_only: bool) {
     }
 }
 
+/// Where each module is listed, so a second listing can name the first.
+#[derive(Default)]
+struct Listings(BTreeMap<String, String>);
+
+impl Listings {
+    fn add(&mut self, tiers: &Tiers, origin: &str) -> Result<(), String> {
+        for names in tiers.values() {
+            for name in names {
+                if let Some(first) = self.0.insert(name.clone(), origin.to_owned()) {
+                    return Err(format!(
+                        "module `{name}` is listed twice: in {first} and in {origin}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One area file: `paths` and `tiers` (both required) and an optional `always` tier map.
+fn parse_area_file(text: &str, name: &str, origin: &str) -> Result<(Area, Tiers), String> {
+    let doc = one_document(text, origin)?;
+    let area = area_body(&doc, name, &["always"], origin)?;
+    let always = match doc.get("always") {
+        Some(node) => tier_map(node, "always", origin)?,
+        None => Tiers::new(),
+    };
+    Ok((area, always))
+}
+
+/// The one YAML document in `text`. A YAML syntax error panics, as every test helper's parser does.
+fn one_document(text: &str, origin: &str) -> Result<Node, String> {
+    let mut docs = yaml::parse(text, origin);
+    if docs.len() != 1 {
+        return Err(format!(
+            "{origin}: expected one YAML document, found {}",
+            docs.len()
+        ));
+    }
+    Ok(docs.remove(0))
+}
+
+/// An area's `paths` and `tiers`, in `areas.yml` or an area file. `optional` names the other
+/// keys the caller reads itself.
+fn area_body(body: &Node, name: &str, optional: &[&str], origin: &str) -> Result<Area, String> {
+    let what = format!("area `{name}`");
+    let [paths, tiers] = section(body, &what, ["paths", "tiers"], optional, origin)?;
+    Ok(Area {
+        paths: glob_set(&string_list(paths, name, origin)?, name, origin)?,
+        tiers: tier_map(tiers, name, origin)?,
+    })
+}
+
 fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
     let [full, ignore, always, areas] = section(
         doc,
         "the file",
         ["full", "ignore", "always", "areas"],
+        &[],
         origin,
     )?;
 
@@ -210,14 +309,8 @@ fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
             .as_str()
             .ok_or_else(|| format!("{origin}: area name {key:?} is not a string"))?;
         let name = module_name(name, "area name", origin)?;
-        let [paths, tiers] = section(body, &format!("area `{name}`"), ["paths", "tiers"], origin)?;
-        parsed.insert(
-            name.clone(),
-            Area {
-                paths: glob_set(&string_list(paths, &name, origin)?, &name, origin)?,
-                tiers: tier_map(tiers, &name, origin)?,
-            },
-        );
+        let area = area_body(body, &name, &[], origin)?;
+        parsed.insert(name, area);
     }
 
     Ok(Config {
@@ -228,21 +321,31 @@ fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
     })
 }
 
-/// The value of each key of `node`, in the order of `keys`. Every key is required and no
-/// other is allowed: a misspelt key would otherwise select nothing, without a word.
+/// The value of each key of `node`, in the order of `keys`. Every key is required, and no other
+/// is allowed but those in `optional`, which the caller reads itself: a misspelt key would
+/// otherwise select nothing, without a word.
 fn section<'a, const N: usize>(
     node: &'a Node,
     what: &str,
     keys: [&str; N],
+    optional: &[&str],
     origin: &str,
 ) -> Result<[&'a Node; N], String> {
     let entries = node
         .as_map()
         .ok_or_else(|| format!("{origin}: {what} must be a mapping"))?;
     for (key, _) in entries {
-        if !key.as_str().is_some_and(|k| keys.contains(&k)) {
+        if !key
+            .as_str()
+            .is_some_and(|k| keys.contains(&k) || optional.contains(&k))
+        {
+            let optionally = if optional.is_empty() {
+                String::new()
+            } else {
+                format!(", optionally {optional:?}")
+            };
             return Err(format!(
-                "{origin}: {what} has the unknown key {key:?} (expected {keys:?})"
+                "{origin}: {what} has the unknown key {key:?} (expected {keys:?}{optionally})"
             ));
         }
     }

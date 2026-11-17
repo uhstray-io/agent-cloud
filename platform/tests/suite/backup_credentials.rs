@@ -233,15 +233,10 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
     }
 
     // A ratchet: the vars entries built from now(...) before the check read now() with
-    // arguments (#1149 review). Each is a real lazy-evaluation case (a run that spans midnight
-    // UTC can read two dates); moving them to set_fact is AC-910. The list only shrinks: a new
-    // offender fails, and so does an entry that is fixed but still listed.
-    const KNOWN: [&str; 4] = [
-        "platform/playbooks/deploy-agentgateway.yml:_agw_today",
-        "platform/playbooks/rollback-inference-route.yml:_today",
-        "platform/playbooks/sync-o11y-protected-pbs-copy.yml:pbs_receipt_observed_end",
-        "platform/playbooks/verify-o11y-pbs-artifact.yml:pbs_receipt_observed_end",
-    ];
+    // arguments (#1149 review, docs/MISTAKES.md 10.8). AC-910 moved every one to set_fact, so
+    // the list is empty and stays empty: a new offender fails, and so does an entry that is
+    // fixed but still listed.
+    const KNOWN: &[&str] = &[];
     let known: std::collections::BTreeSet<String> = KNOWN.iter().map(|k| (*k).to_owned()).collect();
     let new: Vec<&String> = offenders.difference(&known).collect();
     let fixed: Vec<&String> = known.difference(&offenders).collect();
