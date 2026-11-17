@@ -53,7 +53,7 @@ and why.
 | 1.21 | **x5** — Said the live alert readback proved the inference alert groups; it filtered rule uids to `o11y_` and never read them, and no dashboard check covered the inference boards (x3: called the console live from an origin-pinned probe; x4: said production skynet launches through the launch gate from probes that only reached and authenticated to it) | Unverified claim | 5 | Test (`test_service_o11y.bats` readback mirror); selector choice Convention; public-path probe (WAF-skipped `/healthz`) proposed; skynet-client launch probe proposed; OPA loaded-policy verify proposed (AC-845) |
 | 1.22 | Stated the runner's ansible-core version twice (2.16 from a relayed comment, then 2.20.8 from a compose default); the live server runs v2.17.31, whose image ships 2.18.15 | Unverified claim | 1 | CI pin (requirements-test.txt) + Convention |
 | 1.23 | Named an incident's cause (a config the pinned image would reject) without reading the failing task's own stderr, which printed the real one: the rollback recreated the gateway without the TLS compose overlay | Unverified claim | 1 | Convention |
-| 1.24 | Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB | Unverified claim | 1 | Convention |
+| 1.24 | **x2** — Projected 90-day Prometheus disk from a net 24 h block delta that retention was already offsetting; 2.4 GB stated where the at-rest size gives about 6 GB (x2: told the operator a backup retention fits a CephFS storage's total, which is used space plus what Ceph can still place) | Unverified claim | 2 | Convention |
 | 1.25 | Put three line references from a scout's report into an approved plan; the scout had read a checkout 1,703 commits behind `dev`, and all three were wrong there (widened by 1.28) | Unverified claim | 1 | Convention |
 | 1.26 | Briefed an executor that Proxmox returns certificate `filename` as a full path, from one source line; the line above strips the directory | Unverified claim | 1 | Convention |
 | 1.27 | Attributed a regression to the wrong PR and date from recent merges, without reading the file's history | Unverified claim | 1 | Convention |
@@ -1259,6 +1259,8 @@ from the shared mapping, or inlining the environment on a rollback task, fails t
 
 ### 1.24 A growth projection extrapolated from a net change that retention was already offsetting
 
+**Occurrences: 2** — 2026-10-13, 2026-11-17
+
 **What happened.** The first daily o11y baseline (production receipt task 5329, 2026-10-13) reported
 Prometheus block bytes of 992,962,502 and a 24 h change of +26,487,309, read with
 `delta(prometheus_tsdb_storage_blocks_bytes[24h])`. The operator was told, and a records PR stated,
@@ -1280,6 +1282,18 @@ reading. When they disagree, report the bound each one gives, not the product of
 1.21 (cite only what the check measures); this is the arithmetic form.
 
 **Enforced by.** Convention.
+
+**Occurrence 2 — 2026-11-17.** After the production backup-storage survey (Semaphore task 17695), the
+operator was told, on Plane AC-856 and in chat, that the planned retention (6 archives per guest, 3 for
+honcho) needs about 628.5 of the CephFS storage `vm_backups`' 752.8 GiB, and that the chosen cleanup frees
+only 78.5 GiB on that storage. Both read the storage's `total` by its label as a fixed capacity. For a
+CephFS storage it is used space plus what Ceph can still place in the pool, so it moves with the free
+space of every pool on the same OSDs. The same receipt contradicted the reading: both CephFS storages
+showed exactly 0.1 GiB free, and each pool's raw usage was its storage's usage times its 3 replicas. An
+advisor review caught it the same hour; a correction went on AC-856 and the question moved to AC-975
+(an OSD fill read). The rule above names deletion and compaction as what a figure is net of; it did not
+fire because a capacity is not a rate, though the error is the same: a figure used by its label without
+asking what it measures, with a contradicting figure in the same reading left unchecked.
 
 ### 1.25 Line references relayed from a scout that read a stale checkout
 
