@@ -47,13 +47,14 @@ fn every_exported_filter_is_called_by_a_playbook() {
         !names.iter().any(|n| n == "ufw_tag"),
         "ufw_tag must stay a module function, not an exported filter"
     );
-    // Every exported filter has cases in the playbook module, so a new one without any fails.
-    let mut cased: Vec<&str> = crate::ufw_rules_filter_playbook::FILTERS.to_vec();
+    // The exported names equal the playbook module's FILTERS here, and that module requires a
+    // case for each FILTERS name; together a new exported filter without a case fails.
+    let mut listed: Vec<&str> = crate::ufw_rules_filter_playbook::FILTERS.to_vec();
     let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
-    cased.sort_unstable();
+    listed.sort_unstable();
     sorted.sort_unstable();
     assert_eq!(
-        sorted, cased,
+        sorted, listed,
         "the exported filters and the filters ufw_rules_filter_playbook.rs calls differ"
     );
     let playbooks: String = repo::ls_files(&["platform/playbooks/*.yml"])

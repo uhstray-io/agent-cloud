@@ -93,10 +93,9 @@ fn mgmt() -> Value {
 enum Want {
     /// Exactly this value.
     Exact(Value),
-    /// A non-empty list of problems, one containing this text (pytest `any(why in p ...)`).
-    Refused(&'static str),
-    /// Exactly `[]`.
-    Admitted,
+    /// A non-empty list of problems; with `Some(why)`, one of them contains `why` (pytest
+    /// `any(why in p for p in problems)`), with `None`, any problem (pytest `assert problems`).
+    Refused(Option<&'static str>),
 }
 
 #[derive(Default)]
@@ -202,14 +201,11 @@ impl Check {
         self.that(item, got == want, || format!("got {got}, want {want}"));
     }
 
-    /// Some problem in `problems` contains `why` (the pytest `any(why in p for p in problems)`).
-    fn names(&mut self, item: &str, problems: &Value, why: &str) {
-        let hit = problems.as_array().is_some_and(|ps| {
-            ps.iter()
-                .any(|p| p.as_str().is_some_and(|p| p.contains(why)))
-        });
-        self.that(item, hit, || {
-            format!("no problem contains {why:?}: {problems}")
+    /// `problems` is a refusal (see [`refuses`]).
+    fn refused(&mut self, item: &str, problems: &Value, why: Option<&str>) {
+        self.that(item, refuses(problems, why), || match why {
+            Some(why) => format!("no problem contains {why:?}: {problems}"),
+            None => format!("not refused (no problem): {problems}"),
         });
     }
 }
@@ -254,9 +250,16 @@ fn held(spec: &str, tag: &str) -> Value {
     json!({"spec": spec, "tag": tag, "family": "", "peer": ""})
 }
 
-/// A refusal: a NON-EMPTY list (null or a non-list is not one, as pytest's `assert problems`).
-fn refused(v: &Value) -> bool {
-    v.as_array().is_some_and(|a| !a.is_empty())
+/// A refusal: a NON-EMPTY list (null or a non-list is not one, as pytest's `assert problems`),
+/// and with `Some(why)` one of its problems contains `why`.
+fn refuses(problems: &Value, why: Option<&str>) -> bool {
+    problems.as_array().is_some_and(|ps| {
+        !ps.is_empty()
+            && why.is_none_or(|why| {
+                ps.iter()
+                    .any(|p| p.as_str().is_some_and(|p| p.contains(why)))
+            })
+    })
 }
 
 #[test]
@@ -616,7 +619,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             item,
             "ufw_egress_problems",
             json!([[entry], mgmt()]),
-            Want::Admitted,
+            Want::Exact(json!([])),
         );
     }
     for (entry, why) in egress_bad {
@@ -625,7 +628,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             item,
             "ufw_egress_problems",
             json!([[entry], mgmt()]),
-            Want::Refused(why),
+            Want::Refused(Some(why)),
         );
     }
     let egress = |c: &mut Calls, entries: Value, cidrs: Value| {
@@ -700,7 +703,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             item,
             "ufw_allow_egress_problems",
             json!([entries, "audit"]),
-            Want::Admitted,
+            Want::Exact(json!([])),
         );
     }
     let allow_bad = [
@@ -727,7 +730,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             item,
             "ufw_allow_egress_problems",
             json!([[entry], "audit"]),
-            Want::Refused(why),
+            Want::Refused(Some(why)),
         );
     }
     let mode_block = allow(&mut c, json!([[], "block"]));
@@ -759,15 +762,20 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     ];
     for (timeout, ok) in timeouts {
         let item = format!("test_a_probe_timeout_is_a_whole_number_of_seconds[{timeout}]");
-        let probe = json!([{"host": "prime.plane.so", "port": 443, "timeout": timeout}]);
-        let args = json!([[{"port": 53, "proto": "udp"}], "enforce", probe]);
+        let probe_args = json!([{"host": "prime.plane.so", "port": 443, "timeout": timeout}]);
+        let args = json!([[{"port": 53, "proto": "udp"}], "enforce", probe_args]);
         // accepted is exactly []; refused is a non-empty list
         let want = if ok {
-            Want::Admitted
+            Want::Exact(json!([]))
         } else {
-            Want::Refused("")
+            Want::Refused(None)
         };
         c.case(item, "ufw_allow_egress_problems", args, want);
+    }
+
+    // Every filter has at least one case (the static test pins FILTERS to the exported ones).
+    for f in FILTERS {
+        assert!(c.calls.iter().any(|call| call["f"] == f), "{f} has no case");
     }
 
     let r = run(&c);
@@ -776,8 +784,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         let got = &r[*id];
         match want {
             Want::Exact(v) => k.eq(item, got, v),
-            Want::Admitted => k.eq(item, got, &json!([])),
-            Want::Refused(why) => k.names(item, got, why),
+            Want::Refused(why) => k.refused(item, got, *why),
         }
     }
 
@@ -1103,9 +1110,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // source contains it; IPv6: a supernet is refused, and families never contain each other.
     let item = "test_egress_containment_is_compared_in_the_spelling_ufw_stores";
     for id in spelling {
-        k.that(item, refused(&r[id]), || {
-            format!("call {id}: refused, got {}", r[id])
-        });
+        k.refused(item, &r[id], None);
     }
     k.eq(item, &r[families], &json!([]));
 
@@ -1121,9 +1126,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     );
     // `any` is the whole address space: a host inside it is fine, the whole space is not
     k.eq(item, &r[any_host], &json!([]));
-    k.that(item, refused(&r[any_all]), || {
-        format!("refused, got {}", r[any_all])
-    });
+    k.refused(item, &r[any_all], None);
 
     // not broad, contains the SSH CIDR, port, proto
     k.that(
@@ -1135,14 +1138,18 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // Stored forms measured on ufw 0.36.2 (Ubuntu 24.04, 2026-11-09): `allow out to any port 443
     // proto tcp` is stored as `allow out 443/tcp`, a scoped one keeps `to ... port ... proto`, and
     // the audit rule is `allow out log to any`.
-    let got = fields(&r[allowed_order], &cts);
+    let Value::Array(got) = fields(&r[allowed_order], &cts) else {
+        unreachable!("fields() returns an array")
+    };
+    // the SSH allow comes first; empty output is a failure, never a panic
+    let after_ssh = if got.is_empty() {
+        Vec::new()
+    } else {
+        got[1..].to_vec()
+    };
     k.eq(
         "test_allowed_egress_comes_after_the_denials_and_the_audit_rule_last",
-        &Value::Array(
-            got.as_array()
-                .map(|a| a.iter().skip(1).cloned().collect())
-                .unwrap_or_default(),
-        ),
+        &Value::Array(after_ssh),
         &json!([
             [
                 "deny out to 198.51.100.1",
