@@ -25,7 +25,7 @@ Two upstream properties drive the design. Stored connections are encrypted with 
 The platform rules in `AGENTS.md` (Critical Deployment Rules, Engineering Principles) and `PRINCIPLES.md` apply unchanged. Service-specific constraints:
 
 - The encryption key is generated once and never regenerated (D8, F5).
-- The worker starts only after the app has finished migrating, not merely after it answers (O1, R11). Until O1 finds a signal that proves it, the start order in `deploy.sh` is a labelled stopgap.
+- The worker is to start only after the app has finished migrating (O1, R11). The available fallback waits on the health route, which does not check migrations (F18), so until O1 finds a migration signal this rule is not met. The gap is carried as a risk, and the fallback start order in `deploy.sh` is a labelled stopgap.
 - The first-account window is closed by the publish bind and the firewall, not by captcha (D10).
 - No container is privileged (D3).
 
@@ -105,7 +105,7 @@ Repository facts, read on the base commit `1ae46279` of this branch. Each row is
 | R14 | The honcho docs forward-auth blueprint reads its external host with `!Env`, and the NetBox blueprint hard-codes its host. | `platform/services/authentik/deployment/blueprints/honcho-docs-forward-auth.yaml` line 24 |
 | R15 | `deploy-authentik.yml` collects the `prod_required` values only from apps whose type is `oidc`, so a forward_auth app is not in that check. | `platform/playbooks/deploy-authentik.yml` lines 239 to 243 |
 | R16 | The shared pattern files exist: `backup-plane-db.yml`, `restore-plane-db.yml`, `reconcile-plane-members.yml`, `probe-reachability.yml` and `tasks/clean-service.yml`. | `platform/playbooks/` |
-| R17 | Plane's first-run script signs up the instance admin only while `is_setup_done` is false, then signs in on every run. | `platform/services/plane/deployment/configure_instance.py:14-16` and `:26-31` |
+| R17 | Plane's first-run script signs up the instance admin only when `is_setup_done` is false, and signs in instead when the instance is already set up, so a re-run creates nothing. | `platform/services/plane/deployment/configure_instance.py:26-33` |
 
 ## Architecture
 
