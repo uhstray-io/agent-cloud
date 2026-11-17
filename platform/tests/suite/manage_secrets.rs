@@ -34,13 +34,16 @@ const LOGIN_URL: &str = "{{ _bao_url }}/v1/auth/approle/login";
 /// that reads one spelling alone is blind to a task written under another, so every module read
 /// goes through here.
 fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
+    spellings(short).iter().find_map(|key| task.get(key))
+}
+
+/// The three spellings of a module key: `short`, `ansible.builtin.<short>`, `ansible.legacy.<short>`.
+fn spellings(short: &str) -> [String; 3] {
     [
         short.to_owned(),
         format!("ansible.builtin.{short}"),
         format!("ansible.legacy.{short}"),
     ]
-    .iter()
-    .find_map(|key| task.get(key))
 }
 
 /// A string at any depth, in a key or a value: a task names a path wherever it does so.
@@ -171,6 +174,10 @@ const PATH_OR_FLAG_ARGS: &[&str] = &[
 /// The modules that run a program, under which a `bao` or `vault` CLI call could write the store.
 const COMMAND_MODULES: &[&str] = &["command", "shell", "raw", "script", "expect"];
 
+/// A value that is the `bao` or `vault` program alone, bare or as a path.
+static STORE_CLI_NAME: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\s*(?:\S*/)?(?:bao|vault)\s*$").expect("a valid regex"));
+
 /// A `bao` or `vault` CLI call: the program name followed by an argument (at the start, or after
 /// whitespace, a path separator, a quote, `=`, or a shell separator `; & | ( `` ` ``), so options
 /// before the subcommand (`bao -address=x kv put`) and `x;bao kv put` do not hide it, while a path
@@ -212,11 +219,9 @@ fn command_lines(node: &Node, out: &mut Vec<String>) {
 /// values are scanned.
 fn runs_store_cli(task: &Node) -> bool {
     let is_command = |name: &str| {
-        let short = name
-            .strip_prefix("ansible.builtin.")
-            .or_else(|| name.strip_prefix("ansible.legacy."))
-            .unwrap_or(name);
-        COMMAND_MODULES.contains(&short)
+        COMMAND_MODULES
+            .iter()
+            .any(|m| spellings(m).iter().any(|s| s == name))
     };
     let mut scanned: Vec<&Node> = COMMAND_MODULES
         .iter()
@@ -255,6 +260,13 @@ fn runs_store_cli(task: &Node) -> bool {
     // `vars: {c: bao kv put ...}`) runs as if written in place.
     // ponytail: task-level vars only; block, play and inventory vars are not read here.
     if let Some(vars) = task.get("vars") {
+        // A var that holds the program alone (`cli: bao`, templated in as `{{ cli }} kv put`)
+        // names the CLI with no argument after it, which [`STORE_CLI`] needs.
+        let names_cli =
+            |(_, v): &(Node, Node)| v.as_str().is_some_and(|s| STORE_CLI_NAME.is_match(s));
+        if vars.as_map().is_some_and(|e| e.iter().any(names_cli)) {
+            return true;
+        }
         scanned.push(vars);
     }
     scanned.into_iter().any(|node| {
@@ -292,6 +304,8 @@ fn a_store_cli_call_is_detected() {
         "ansible.builtin.expect:\n  command: bash\nargs:\n  responses: {'\\$ ': 'bao kv put secret/x a=b'}\n",
         "ansible.builtin.command: \"{{ c }}\"\nvars: {c: bao kv put secret/x a=b}\n",
         "ansible.builtin.command:\n  argv: \"{{ v }}\"\nvars:\n  v: [bao, kv, put, secret/x, a=b]\n",
+        "ansible.builtin.command: \"{{ cli }} kv put secret/x a=b\"\nvars: {cli: bao}\n",
+        "ansible.builtin.shell: \"{{ cli }} kv put secret/x a=b\"\nvars: {cli: /usr/local/bin/vault}\n",
     ] {
         assert!(runs_store_cli(&task(flagged)), "{flagged}");
     }
@@ -299,6 +313,8 @@ fn a_store_cli_call_is_detected() {
         "action: debug msg=\"bao kv put\"\n",
         "ansible.builtin.command: echo hi\nargs: {chdir: /tmp}\n",
         "ansible.builtin.command: \"echo {{ m }}\"\nvars: {m: hi}\n",
+        "ansible.builtin.command: \"ls {{ d }}\"\nvars: {d: /opt/vault/data}\n",
+        "ansible.builtin.debug: {msg: \"{{ cli }}\"}\nvars: {cli: bao}\n",
     ] {
         assert!(!runs_store_cli(&task(clean)), "{clean}");
     }
@@ -340,8 +356,5 @@ fn a_store_cli_call_is_detected() {
     )));
     assert!(runs_store_cli(&task(
         "ansible.builtin.shell: echo $(vault kv put secret/x a=b)\n"
-    )));
-    assert!(!runs_store_cli(&task(
-        "ansible.builtin.command: ls /opt/vault\n"
     )));
 }

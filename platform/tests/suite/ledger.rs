@@ -238,8 +238,7 @@ fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
         // A counted test is a top-level item: its `fn` line starts at column 0. Inside a `mod`
         // (rustfmt indents its items, which the rust_format test enforces) an outer attribute on
         // the module could compile it out.
-        let whole = c.get(0).map_or("", |m| m.as_str());
-        let fn_line = whole.rsplit('\n').next().unwrap_or(whole);
+        let fn_line = c[0].rsplit('\n').next().unwrap_or_default();
         if fn_line.starts_with([' ', '\t']) {
             return false;
         }
