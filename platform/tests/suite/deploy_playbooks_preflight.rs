@@ -21,11 +21,18 @@
 //!    A literal target (`app_svc`) is covered by a key that is that quoted name, never by a
 //!    variable. A templated target is covered only when it is exactly `{{ <identifier> }}` or
 //!    `{{ <identifier> | default('<name>') }}`, and by a key on that same identifier whose
-//!    `| default('<name>')` is absent or empty, or the target has no default, or the two defaults
-//!    are equal (AC-915): an undefined variable then fails the guard or the play, and a populated
-//!    group never stands in for the group the play runs. So a key default of `other_svc` covers
-//!    `{{ target_service }}` (the play errors on the undefined name) but not
-//!    `{{ target_service | default('app_svc') }}` (the play would run `app_svc`). Quoted text is
+//!    `| default('<name>')` is absent or empty, or equals the target's default (AC-915). An absent
+//!    or empty key default leaves an undefined variable failing the guard or the play, so a
+//!    populated group never stands in for the group the play runs. A non-empty key default the
+//!    target does not share covers nothing: the variable can be set where the guard does not see
+//!    it (an inventory value, say), and the play would then run unguarded. Ansible templates a
+//!    play's `hosts:` with that play's own `vars:`
+//!    (`ansible/executor/playbook_executor.py:151-153`). So when the target play sets the
+//!    identifier, or has `vars_files` or `vars_prompt`, only an absent or empty key default covers
+//!    it. A localhost guard play's own `vars:`, `vars_files` or
+//!    `vars_prompt` do not reach the target play, so a guard that sets the identifier does not
+//!    count. So a key default of `other_svc` covers neither `{{ target_service }}` nor
+//!    `{{ target_service | default('app_svc') }}`, and an empty one covers both. Quoted text is
 //!    blanked, length for length, before the shape check (AC-907).
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
@@ -61,8 +68,10 @@
 //! `target_service`), and for AC-915 `a_guard_keyed_on_another_group_does_not_cover_the_play`,
 //! `a_guard_keyed_on_the_literal_group_covers_the_play`,
 //! `guard_key_reads_the_key_from_the_original_text`,
-//! `a_templated_target_is_covered_only_by_its_own_variable_and_default` and
-//! `a_templated_target_with_a_matching_or_empty_key_default_is_covered`.
+//! `a_templated_target_is_covered_only_by_its_own_variable_and_default`,
+//! `a_templated_target_with_a_matching_or_empty_key_default_is_covered`, the `getdefaultexpr` row
+//! of `NOT_ACCEPTED`, `a_variable_the_play_defines_cannot_bind_a_defaulted_guard` and
+//! `a_variable_the_play_defines_is_still_covered_by_an_empty_default`.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -213,12 +222,21 @@ fn check_playbook(path: &Path) -> (Option<String>, bool) {
             continue;
         };
         if LOCAL.contains(&hosts.trim()) {
-            inline.extend(inline_guard_items(&play));
+            // A variable this guard play sets is not the one the target reads: play vars do not
+            // reach another play, so the guard would test a value the target never runs (AC-915).
+            inline.extend(
+                inline_guard_items(&play)
+                    .into_iter()
+                    .filter(|key| match key {
+                        GuardKey::Var { name, .. } => !play_defines(&play, name),
+                        GuardKey::Group(_) => true,
+                    }),
+            );
             continue;
         }
         targets = true;
         for subject in target_parts(&hosts) {
-            if !groups.contains(&subject) && !covered_inline(&subject, &inline) {
+            if !groups.contains(&subject) && !covered_inline(&subject, &inline, &play) {
                 reasons.push(format!(
                     "play {} targets {subject:?} before any pre-flight covers it",
                     play_name(&play)
@@ -325,11 +343,13 @@ fn play_name(play: &Node) -> String {
 /// Whether an inline guard covers the subject group. A literal subject needs a group key of that
 /// name, and a variable key never covers it (`groups['target_service']` names a group). A templated
 /// subject is covered only when it is exactly `HOSTS_TEMPLATE`, by a variable key naming that same
-/// variable whose default cannot let the guard test a group the play does not run: the key's
-/// default is absent or empty (an undefined variable then fails the guard), or the target has no
-/// default (an undefined target errors the play), or the two defaults are equal (AC-915). Any
-/// other templated subject is not covered.
-fn covered_inline(subject: &str, keys: &[GuardKey]) -> bool {
+/// variable. Its default is absent or empty (an undefined variable then fails the guard), or equals
+/// the target's default and the target's play does not set the variable itself (`play_defines`):
+/// a play's own value is one the guard cannot see, so only an empty or absent key default covers
+/// it (AC-915). A target with no default is covered by an empty or absent key default only, since
+/// a variable the target sees and the guard does not (an inventory value) would run unguarded.
+/// Any other templated subject is not covered.
+fn covered_inline(subject: &str, keys: &[GuardKey], play: &Node) -> bool {
     if !subject.contains("{{") {
         return keys.contains(&GuardKey::Group(subject.to_owned()));
     }
@@ -341,11 +361,25 @@ fn covered_inline(subject: &str, keys: &[GuardKey]) -> bool {
         GuardKey::Var { name, default } => {
             name == &caps[1]
                 && (default.as_deref().is_none_or(str::is_empty)
-                    || hosts_default.is_none()
-                    || default.as_deref() == hosts_default)
+                    || (default.as_deref() == hosts_default && !play_defines(play, &caps[1])))
         }
         GuardKey::Group(_) => false,
     })
+}
+
+/// Whether `play` sets `name` itself, so the value its `hosts:` template runs is one another play
+/// cannot see. A `vars:` map that names it does, and so does any `vars_files` or `vars_prompt`,
+/// which can set any name. A `vars:` that is neither a map nor null cannot be read, so it counts
+/// as setting every name (AC-915).
+fn play_defines(play: &Node, name: &str) -> bool {
+    if play.get("vars_files").is_some() || play.get("vars_prompt").is_some() {
+        return true;
+    }
+    match play.get("vars") {
+        None | Some(Node::Null) => false,
+        Some(Node::Map(entries)) => entries.iter().any(|(key, _)| key.as_str() == Some(name)),
+        Some(_) => true,
+    }
 }
 
 /// The lookup key of each assert condition in a localhost play's tasks (nested blocks included)
@@ -638,6 +672,13 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
     ("gettuple", "(groups.get(a) | default(b), []) | length > 0"),
     // AC-915: a quoted name is a group named literally, never the variable `target_service`.
     ("quotedvarname", "(groups['target_service'] | length) > 0"),
+    // AC-915: a non-empty key default must equal the target's default, and this target has none.
+    // The guard would test `x_svc`, which the play runs only if the variable is unset there, so
+    // a value the play sees and the guard does not (an inventory var) runs unguarded.
+    (
+        "getdefaultexpr",
+        "(groups.get(target_service | default('x_svc'), []) | length) > 0",
+    ),
 ];
 
 /// Inline asserts with one accepted positive comparison of `length`. Each guards its target.
@@ -646,10 +687,6 @@ const ACCEPTED: &[(&str, &str)] = &[
     ("ge1", "groups[target_service] | length >= 1"),
     ("eq1", "groups[target_service] | length == 1"),
     ("ne0", "(groups.get(target_service, []) | length) != 0"),
-    (
-        "getdefaultexpr",
-        "(groups.get(target_service | default('x_svc'), []) | length) > 0",
-    ),
     (
         "subdefault",
         "(groups[target_service] | default([]) | length) > 0",
@@ -1087,7 +1124,9 @@ fn a_templated_target_is_covered_only_by_its_own_variable_and_default() {
     // Arrange: each guard is an offender (AC-915). (a) the target is `<name>_svc` while the guard
     // tests `<name>`; (b) a filter changes the target's text; (c) the target defaults to app_svc
     // and the key to other_svc, so with the variable undefined the guard passes on other_svc and
-    // the play runs app_svc.
+    // the play runs app_svc; (d) the target has no default and the key names other_svc. A
+    // variable set elsewhere (an inventory value the guard does not see) then passes the guard on
+    // other_svc while the play runs its own value unguarded.
     let suffixed = inline_playbook_for(
         "{{ target_service }}_svc",
         "(groups[target_service] | length) > 0",
@@ -1100,10 +1139,15 @@ fn a_templated_target_is_covered_only_by_its_own_variable_and_default() {
         "{{ target_service | default('app_svc') }}",
         "(groups.get(target_service | default('other_svc'), []) | length) > 0",
     );
+    let no_target_default = inline_playbook_for(
+        "{{ target_service }}",
+        "(groups.get(target_service | default('other_svc'), []) | length) > 0",
+    );
     let dir = fixture(&[
         ("deploy-suffixed.yml", suffixed.as_str()),
         ("deploy-filtered.yml", filtered.as_str()),
         ("deploy-defaulted.yml", defaulted.as_str()),
+        ("deploy-no-target-default.yml", no_target_default.as_str()),
     ]);
 
     // Act
@@ -1115,6 +1159,7 @@ fn a_templated_target_is_covered_only_by_its_own_variable_and_default() {
         [
             "deploy-defaulted.yml",
             "deploy-filtered.yml",
+            "deploy-no-target-default.yml",
             "deploy-suffixed.yml"
         ],
         "{:?}",
@@ -1125,8 +1170,8 @@ fn a_templated_target_is_covered_only_by_its_own_variable_and_default() {
 #[test]
 fn a_templated_target_with_a_matching_or_empty_key_default_is_covered() {
     // Arrange: each guard is covered (AC-915). The key's default is the group the target defaults
-    // to, or empty, so with the variable undefined the guard tests the group the play runs or
-    // fails. (c) the target has no default, so an undefined target errors the play instead.
+    // to, or empty, and the play sets no variable of its own. With the variable undefined the guard
+    // tests the group the play runs, or fails on an empty name.
     let matching = inline_playbook_for(
         "{{ target_service | default('app_svc') }}",
         "(groups.get(target_service | default('app_svc'), []) | length) > 0",
@@ -1135,14 +1180,9 @@ fn a_templated_target_with_a_matching_or_empty_key_default_is_covered() {
         "{{ target_service | default('app_svc') }}",
         "(groups.get(target_service | default(''), []) | length) > 0",
     );
-    let no_target_default = inline_playbook_for(
-        "{{ target_service }}",
-        "(groups.get(target_service | default('other_svc'), []) | length) > 0",
-    );
     let dir = fixture(&[
         ("deploy-matching.yml", matching.as_str()),
         ("deploy-empty.yml", empty.as_str()),
-        ("deploy-no-target-default.yml", no_target_default.as_str()),
     ]);
 
     // Act
@@ -1150,7 +1190,116 @@ fn a_templated_target_with_a_matching_or_empty_key_default_is_covered() {
 
     // Assert
     assert!(report.offenders.is_empty(), "{:?}", report.offenders);
-    assert_eq!(report.checked, 3);
+    assert_eq!(report.checked, 2);
+}
+
+#[test]
+fn a_variable_the_play_defines_cannot_bind_a_defaulted_guard() {
+    // Arrange: each guard is an offender (AC-915). (a) the target play sets target_service, so the
+    // group it runs is app_svc whatever the guard reads, and the guard's other_svc default cannot
+    // stand for it. (b) the target play has vars_files, which can set the variable too, so even a
+    // default equal to the target's (app_svc) does not cover it. (c) the localhost guard play sets
+    // target_service: play vars do not reach the target, so the guard tests other_svc while the
+    // target reads its own value, and with no default that value is unset and the play errors
+    // (the rule is what is refused here, not a silent run). (c2) the same guard, with the target
+    // defaulting to app_svc: the play then runs app_svc with the guard passed on other_svc.
+    let target_vars = r#"- name: "Inline guard"
+  hosts: localhost
+  tasks:
+    - name: "Require a populated group"
+      ansible.builtin.assert:
+        that: "(groups.get(target_service | default('other_svc'), []) | length) > 0"
+- name: "Work"
+  hosts: "{{ target_service }}"
+  vars:
+    target_service: app_svc
+  tasks: []
+"#;
+    let vars_files = r#"- name: "Inline guard"
+  hosts: localhost
+  tasks:
+    - name: "Require a populated group"
+      ansible.builtin.assert:
+        that: "(groups.get(target_service | default('app_svc'), []) | length) > 0"
+- name: "Work"
+  hosts: "{{ target_service | default('app_svc') }}"
+  vars_files:
+    - x.yml
+  tasks: []
+"#;
+    let guard_vars = r#"- name: "Inline guard"
+  hosts: localhost
+  vars:
+    target_service: other_svc
+  tasks:
+    - name: "Require a populated group"
+      ansible.builtin.assert:
+        that: "(groups.get(target_service, []) | length) > 0"
+- name: "Work"
+  hosts: "{{ target_service }}"
+  tasks: []
+"#;
+    let guard_vars_default = r#"- name: "Inline guard"
+  hosts: localhost
+  vars:
+    target_service: other_svc
+  tasks:
+    - name: "Require a populated group"
+      ansible.builtin.assert:
+        that: "(groups.get(target_service, []) | length) > 0"
+- name: "Work"
+  hosts: "{{ target_service | default('app_svc') }}"
+  tasks: []
+"#;
+    let dir = fixture(&[
+        ("deploy-target-vars.yml", target_vars),
+        ("deploy-vars-files.yml", vars_files),
+        ("deploy-guard-vars.yml", guard_vars),
+        ("deploy-guard-vars-default.yml", guard_vars_default),
+    ]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert_eq!(
+        offender_names(&report),
+        [
+            "deploy-guard-vars-default.yml",
+            "deploy-guard-vars.yml",
+            "deploy-target-vars.yml",
+            "deploy-vars-files.yml"
+        ],
+        "{:?}",
+        report.offenders
+    );
+}
+
+#[test]
+fn a_variable_the_play_defines_is_still_covered_by_an_empty_default() {
+    // Arrange: the target play sets target_service to ungrouped and its guard defaults to '', the
+    // shape deploy-service.yml uses. The guard then fails on an empty name, so the play's own
+    // value is never run unguarded: covered.
+    let text = r#"- name: "Inline guard"
+  hosts: localhost
+  tasks:
+    - name: "Require a populated group"
+      ansible.builtin.assert:
+        that: "(groups.get(target_service | default(''), []) | length) > 0"
+- name: "Work"
+  hosts: "{{ target_service }}"
+  vars:
+    target_service: ungrouped
+  tasks: []
+"#;
+    let dir = fixture(&[("deploy-empty-default.yml", text)]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert!(report.offenders.is_empty(), "{:?}", report.offenders);
+    assert_eq!(report.checked, 1);
 }
 
 #[test]
