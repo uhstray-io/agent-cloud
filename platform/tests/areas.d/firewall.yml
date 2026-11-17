@@ -1,13 +1,14 @@
 # Firewall port group (plan 24, AC-941). apply_firewall is in the security set because
-# docs/MISTAKES.md 2.5 cites its test; ufw_rules_filter_playbook is there too because the 2.5
-# ratchet line (ledger_citation_ratchet.d/firewall.txt) cites its test as where the predicate runs.
+# docs/MISTAKES.md 2.5 cites its test. The 2.5 ratchet line also cites ufw_rules_filter_playbook;
+# `always` takes static modules only, so the cited rule keeps its static guard (apply_firewall)
+# there, and its playbook-tier tests run when this area's paths change, in the full lane, and on
+# every promotion into main.
 paths:
   - "platform/playbooks/apply-firewall.yml"
   - "platform/playbooks/filter_plugins/ufw_rules.py"
 tiers:
   cli: [apply_firewall_convergence]
-  playbook: [apply_firewall_playbook, firewall_allow_groups_playbook, apply_firewall_convergence_playbook]
+  playbook: [apply_firewall_playbook, firewall_allow_groups_playbook, apply_firewall_convergence_playbook, ufw_rules_filter_playbook]
   static: [ufw_rules_filter]
 always:
   static: [apply_firewall]
-  playbook: [ufw_rules_filter_playbook]
