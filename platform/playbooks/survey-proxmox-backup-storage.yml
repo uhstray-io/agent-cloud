@@ -20,8 +20,9 @@
 #
 # It writes nothing to Proxmox: every Proxmox request is a GET, and it runs identically under
 # --check. The token-bearing requests are no_log. On success only the summarizer's receipt is
-# printed, which names storages and guests but never a server, export, path, volume ID or note;
-# a refusal prints its one-line reason.
+# printed, which names storages and guests but never a server, export, path, volume ID or note.
+# A storage the token may not read (403) is refused by the planner or summarizer with a one-line
+# reason; any other failed read fails its no_log task without detail.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
@@ -113,7 +114,6 @@
     - name: Read each online node's storage status
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/nodes/{{ item }}/storage"
-        status_code: 200
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       loop: "{{ _online_nodes }}"

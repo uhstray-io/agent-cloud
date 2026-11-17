@@ -151,7 +151,7 @@ def plan(data):
     reads, seen = [], set()
     for listing in data["storage_listings"]:  # raw uri results, one per online node
         node = _name(listing.get("item"), "node name")
-        if listing.get("status") != 200:  # a 403 would otherwise drop the node's storages unseen
+        if listing.get("status") != 200:  # the read accepts 403 so this refusal can name the node
             raise Refusal(f"Proxmox answered {listing.get('status')} listing the storages of node {node}.")
         for row in (listing.get("json") or {}).get("data") or []:
             storage = _name(row.get("storage"), "storage ID")
