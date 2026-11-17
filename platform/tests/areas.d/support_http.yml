@@ -1,0 +1,5 @@
+# Support library: the fake HTTP server (src/http.rs), the port of fake_http.py (AC-952).
+paths:
+  - "platform/tests/src/http.rs"
+tiers:
+  http: [support_http]

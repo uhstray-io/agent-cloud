@@ -29,6 +29,8 @@ globset = "0.4.21"
 predicates = "3.1"
 regex = "1.13"
 tempfile = "3.27"
+tokio = { version = "1.54", default-features = false, features = ["rt", "time"] }
+wiremock = "0.6.5"
 yaml-rust2 = "0.13"
 
 [dev-dependencies]

@@ -8,6 +8,7 @@
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
 //!   `testsel` binary and `lane.sh` use it).
 
+pub mod http;
 pub mod lanes;
 
 pub mod yaml {
