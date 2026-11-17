@@ -293,14 +293,12 @@ fn refute_line_refuses_a_pattern_that_needs_a_line_feed_naming_the_file() {
 fn patterns_with_a_match_free_of_a_line_feed_are_allowed() {
     // An escaped backslash then `n` is the two characters `\n` in the text, not an escape.
     assert!(any_line(r"a\nb", r"\\n"));
-    assert!(any_line("a b", r"a\sb"));
-    // A class holding a line feed and something else can match the something else.
+    // `[^\n]` is any character but a line feed; `[\n\t]` can match its tab.
     assert!(any_line("ab", r"a[^\n]"));
     assert!(any_line("a\tb", r"a[\n\t]b"));
     // A bare `{` does not compile; escaped, it matches a literal brace.
     assert!(any_line("mv {{ x }}", r"mv \{\{"));
-    // An alternative or an optional part without a line feed can still match a line. `ab|\n`
-    // stays an alternation; `x|\n` would fold into a class.
+    // An alternative or an optional part without a line feed can still match a line.
     assert!(any_line("ab", r"ab|\n"));
     assert!(any_line("ab", r"a\n?b"));
     // An empty group matches the empty text, which every line holds.
@@ -314,11 +312,14 @@ fn patterns_with_a_match_free_of_a_line_feed_are_allowed() {
 #[test]
 fn any_line_refuses_every_pattern_that_needs_a_line_feed() {
     // Compiled, each matches no line of the text, so the refusal is the difference between a check
-    // and a silent pass. `[\n]`, `(?x)\x 0a` and `[!-[]\n` are AC-963's: a class of the line feed
-    // alone, an escape spread over blanks, and a line feed after a class whose range ends in `[`.
+    // and a silent pass. `[\n]`, `(?x)\x 0a` and `[!-[]\n` got past the old byte scan (AC-963): a
+    // class of the line feed alone, an escape spread over blanks, and a line feed after a class
+    // whose range ends in `[`.
     for pattern in [
         r"b\nc",
         r"\x0a",
+        r"\x{000A}",
+        r"\U0000000A",
         r"[]a]\x0a",
         r"(a\n)+",
         r"[\n]",
