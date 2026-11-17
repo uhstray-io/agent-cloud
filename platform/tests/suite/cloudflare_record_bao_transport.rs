@@ -8,7 +8,8 @@
 //! sits in the shared task file, so every caller is covered.
 //!
 //! A request to OpenBao is selected by its shape, not by a variable name: a `uri` task whose URL
-//! holds `/v1/auth/` (a login) or whose headers carry `X-Vault-Token`.
+//! holds `/v1/` (every OpenBao API path; the Cloudflare API is `.../client/v4`) or whose headers
+//! carry `X-Vault-Token`.
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::Node;
@@ -21,7 +22,8 @@ fn uri(task: &Node) -> Option<&Node> {
     task.get("ansible.builtin.uri").or_else(|| task.get("uri"))
 }
 
-/// A task that sends a request to OpenBao: a login, or any request carrying a client token.
+/// A task that sends a request to OpenBao: any request to an OpenBao API path, or carrying a
+/// client token.
 fn sends_to_openbao(task: &Node) -> bool {
     let Some(args) = uri(task) else {
         return false;
@@ -35,7 +37,7 @@ fn sends_to_openbao(task: &Node) -> bool {
                 .iter()
                 .any(|(k, _)| k.as_str() == Some("X-Vault-Token"))
         });
-    url.contains("/v1/auth/") || token_header
+    url.contains("/v1/") || token_header
 }
 
 /// A task that includes the transport guard, as `include_tasks: x` or `include_tasks: {file: x}`.
@@ -49,13 +51,18 @@ fn is_guard(task: &Node) -> bool {
     .iter()
     .filter_map(|key| task.get(key))
     .filter_map(|value| value.get("file").unwrap_or(value).as_str())
-    .any(|file| file.trim_end().ends_with(GUARD))
+    .map(str::trim_end)
+    .any(|file| file == GUARD || file.ends_with(&format!("/{GUARD}")))
 }
 
-/// The variable a URL starts with, when it starts with a whole `{{ name }}` expression.
+/// The variable a URL starts with, when it starts with a whole `{{ name }}` expression followed by
+/// a path. Anything else after it (`@host`, `:port`) would send the request somewhere other than
+/// the address the guard checked.
 fn leading_variable(url: &str) -> Option<&str> {
     let end = url.find("}}")? + 2;
-    bare_variable(&url[..end])
+    url[end..]
+        .starts_with('/')
+        .then(|| bare_variable(&url[..end]))?
 }
 
 /// The variable name inside a whole-value `{{ name }}` expression.
@@ -172,15 +179,20 @@ fn a_bare_variable_is_read_and_an_expression_is_not() {
         leading_variable("{{ openbao_addr | default('') }}/v1/"),
         None
     );
+    assert_eq!(leading_variable("{{ _cf_bao_url }}@evil.example/v1/"), None);
+    assert_eq!(leading_variable("{{ _cf_bao_url }}:9999/v1/"), None);
+    assert_eq!(leading_variable("{{ _cf_bao_url }}"), None);
 }
 
 #[test]
 fn the_mapping_form_of_an_include_is_a_guard() {
     let doc = &agent_cloud_tests::yaml::parse(
-        "- include_tasks: {file: assert-bao-transport.yml}\n- include_tasks: other.yml\n",
+        "- include_tasks: {file: assert-bao-transport.yml}\n- include_tasks: other.yml\n\
+         - include_tasks: old-assert-bao-transport.yml\n",
         "inline",
     )[0];
     let tasks = doc.as_seq().expect("a task list");
     assert!(is_guard(&tasks[0]));
     assert!(!is_guard(&tasks[1]));
+    assert!(!is_guard(&tasks[2]));
 }

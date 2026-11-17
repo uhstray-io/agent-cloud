@@ -2542,7 +2542,7 @@ Semaphore reported changed=0, with templates and schedules byte-identical before
 **Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/credential_leaks.rs::every_openbao_play_includes_the_transport_guard` is its replacement.
 
 **Occurrence 3 — 2026-11-17.** `platform/playbooks/tasks/manage-cloudflare-record.yml` sent
-the AppRole `role_id` and `secret_id` to `<openbao_addr>/v1/auth/approle/login`, then sent the
+the AppRole `role_id` and `secret_id` to `<openbao_addr, else $OPENBAO_ADDR>/v1/auth/approle/login`, then sent the
 client token as `X-Vault-Token` to `secret/services/caddy`. Neither it nor its one caller,
 `manage-cloudflare-records.yml` (the `Manage Cloudflare Records` template), included the
 transport guard, so nothing refused a public `http://` OpenBao address before the credentials
