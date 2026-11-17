@@ -107,9 +107,13 @@ def _flag(value):
     return value in (1, "1")
 
 
+def _is_vmid(text):
+    return re.fullmatch(r"[0-9]+", str(text)) is not None
+
+
 def _vmids(text):
     """A vmid list as Proxmox splits it (pve-common split_list): commas, semicolons or whitespace."""
-    return {int(v) for v in re.split(r"[,;\s]+", str(text or "")) if re.fullmatch(r"[0-9]+", v)}
+    return {int(v) for v in re.split(r"[,;\s]+", str(text or "")) if _is_vmid(v)}
 
 
 def _job_guests(job, vms):
@@ -118,7 +122,7 @@ def _job_guests(job, vms):
     A pool comes first, then the vmid list, then all guests minus `exclude`. A job that names a
     node drops the existing guests living elsewhere. A listed vmid that no longer exists stays.
     """
-    existing = {int(v["vmid"]): v for v in vms if str(v.get("vmid", "")).isdigit()}
+    existing = {int(v["vmid"]): v for v in vms if _is_vmid(v.get("vmid", ""))}
     listed = _vmids(job.get("vmid"))
     if job.get("pool"):
         selects = "pool"
@@ -149,9 +153,9 @@ def plan(data):
         node = _name(listing.get("item"), "node name")
         for row in (listing.get("json") or {}).get("data") or []:
             storage = _name(row.get("storage"), "storage ID")
-            if not (_has_backup(row.get("content")) and row.get("active") == 1):
+            if not (_has_backup(row.get("content")) and _flag(row.get("active"))):
                 continue
-            key = storage if row.get("shared") == 1 else f"{node}/{storage}"
+            key = storage if _flag(row.get("shared")) else f"{node}/{storage}"
             if key in seen:
                 continue
             seen.add(key)
@@ -215,7 +219,7 @@ def _same_backend(a, b):
 
 def summarize(data):
     vms = data["vms"]
-    names = {int(v["vmid"]): v.get("name") for v in vms if str(v.get("vmid", "")).isdigit()}
+    names = {int(v["vmid"]): v.get("name") for v in vms if _is_vmid(v.get("vmid", ""))}
     config = {c.get("storage"): c for c in data["storage_config"]}
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
     job_guests = [(job, *_job_guests(job, vms)) for job in jobs]  # (job, selects, guests)
@@ -264,7 +268,7 @@ def summarize(data):
             size, ctime, volid = int(v.get("size") or 0), int(v.get("ctime") or 0), v.get("volid")
             g["archives"] += 1
             g["bytes"] += size
-            if v.get("protected") == 1:
+            if _flag(v.get("protected")):
                 g["protected"] += 1
                 g["protected_bytes"] += size
             g["oldest"] = ctime if g["oldest"] is None else min(g["oldest"], ctime)
@@ -295,7 +299,7 @@ def summarize(data):
         total, used = int(status.get("total") or 0), int(status.get("used") or 0)
         storages.append({
             "storage": storage, "read_on_node": node, "type": status.get("type"),
-            "shared": status.get("shared") == 1,
+            "shared": _flag(status.get("shared")),
             "total_gib": _gib(total), "used_gib": _gib(used), "avail_gib": _gib(status.get("avail")),
             "used_percent": round(100 * used / total, 1) if total else None,
             "backup_archives": len(backups), "backup_gib": _gib(backup_bytes),

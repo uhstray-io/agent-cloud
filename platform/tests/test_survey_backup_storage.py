@@ -204,9 +204,22 @@ def test_guest_lists_split_on_every_delimiter_proxmox_accepts(separator):
     assert rows["all"]["guests"] == 1  # only 202 is left once both excluded guests are read
 
 
-@pytest.mark.parametrize("value", [1, "1", True])
-def test_a_proxmox_flag_reads_as_set_however_the_api_spells_it(value):
-    assert survey._flag(value) and not survey._flag(0) and not survey._flag("0") and not survey._flag(None)
+@pytest.mark.parametrize(("value", "expected"), [
+    (1, True), ("1", True), (True, True), (0, False), ("0", False), (False, False), (None, False), ("", False),
+])
+def test_a_proxmox_flag_reads_as_set_however_the_api_spells_it(value, expected):
+    assert survey._flag(value) is expected
+
+
+def test_flags_spelled_as_strings_or_booleans_are_read_everywhere():
+    vms = [{"vmid": 801, "node": "n1"}]
+    jobs = [{"id": "off", "type": "vzdump", "storage": "backups", "vmid": "801", "prune-backups": "keep-last=1",
+             "enabled": False}]
+    archives = [{**_archive("backups", 801, 0, GIB), "protected": "1"}, _archive("backups", 801, 1, GIB)]
+    _, result = _one_store(jobs, vms, archives, previews={"keep-last=1": []})
+    assert result["jobs"][0]["enabled"] is False
+    assert result["storages"][0]["by_guest"][0]["protected"] == 1
+    assert result["storages"][0]["shared"] is True
 
 
 def test_protected_archives_add_to_the_need_and_a_protecting_job_has_no_bound():
