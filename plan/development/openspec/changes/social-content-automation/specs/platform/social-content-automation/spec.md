@@ -1,6 +1,6 @@
 ## Purpose
 
-Provides AI-assisted drafting of social posts for the instance's brands, with a person's approval in front of every generated post that is scheduled or published. Activepieces flows generate and check drafts through the inference gateway, hand them to the publishing service as drafts, and schedule a draft only after a person has approved that exact revision. The publishing service keeps scheduling and publishing, as the `platform/postiz-publishing` capability describes.
+Provides AI-assisted drafting of social posts for the instance's brands, with a person's approval in front of every generated post the pipeline schedules or publishes (scheduling by hand is Open Question 8). Activepieces flows generate and check drafts through the inference gateway, hand them to the publishing service as drafts, and schedule a draft only after a person has approved that exact revision. The publishing service keeps scheduling and publishing, as the `platform/postiz-publishing` capability describes.
 
 ## ADDED Requirements
 
@@ -52,7 +52,7 @@ An approval SHALL apply only to the revision it names. A revision covers the pos
 
 ### Requirement: Flows never publish immediately
 
-No flow SHALL create a post of any type other than draft, so none publishes immediately or at a scheduled time on creation. Every post a flow creates is a draft, and a post becomes scheduled only through the status change that follows a recorded approval.
+No flow SHALL create a post of any type other than draft, so none publishes immediately or at a scheduled time on creation. Every post a flow creates is a draft, and a flow gets a post scheduled only through the status change that follows a recorded approval.
 
 #### Scenario: Flow definition requests immediate publication
 

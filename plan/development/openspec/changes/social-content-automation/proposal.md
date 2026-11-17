@@ -1,6 +1,6 @@
 ## Why
 
-Social posts for the instance's brands are written and scheduled by hand. This change drafts them with a text model through the inference gateway, checks them, and hands them to the publishing service as drafts, with a person's recorded approval in front of every generated post that is scheduled or published.
+Social posts for the instance's brands are written and scheduled by hand. This change drafts them with a text model through the inference gateway, checks them, and hands them to the publishing service as drafts, with a person's recorded approval in front of every generated post the pipeline schedules or publishes (scheduling by hand is Open Question 8).
 
 ## What Changes
 
