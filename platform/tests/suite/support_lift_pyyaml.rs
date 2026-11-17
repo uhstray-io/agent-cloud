@@ -36,11 +36,13 @@ decimal: 53
 string_08: 08
 ";
 
-/// For each path in `argv`, one line: the file's documents as PyYAML's `safe_load_all` reads them.
+/// For each path in `argv`, one line: the file's documents as PyYAML's safe loader reads them
+/// (libyaml's `CSafeLoader` when PyYAML has it, as `playbook_yaml.Loader` does; the same values).
 const PYTHON: &str = r#"import json, sys, yaml
 assert yaml.__version__ == "6.0.3", f"PyYAML {yaml.__version__}, the loader follows 6.0.3"
+loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 for f in sys.argv[1:]:
-    print(json.dumps({"file": f, "docs": list(yaml.safe_load_all(open(f, encoding="utf-8")))}, ensure_ascii=False))
+    print(json.dumps({"file": f, "docs": list(yaml.load_all(open(f, encoding="utf-8"), Loader=loader))}, ensure_ascii=False))
 "#;
 
 /// The index of the first byte at which `a` and `b` differ (the shorter length when one is a
