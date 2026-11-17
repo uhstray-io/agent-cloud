@@ -86,6 +86,10 @@ const LOCAL: [&str; 2] = ["localhost", "127.0.0.1"];
 const PLAYBOOKS: &str = "platform/playbooks";
 const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 
+/// A lookup key: one identifier or quoted name (quotes are blanked first), optionally with
+/// `| default('<name>')`. Shared by the subscript and the `get` form, so the two cannot drift.
+const KEY: &str = r"(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?";
+
 // The condition must BE a `length` of one group lookup, from its start to its end: a prefix such
 // as `1 + (...)`, a list around it, or a subscript inside a string would otherwise pass (AC-907).
 // Quoted text is blanked first, so a group name or a `groups` word in a string cannot stand in for
@@ -95,9 +99,6 @@ const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 // another group (#1169 reviews).
 // The comparison value must end the condition, closing parentheses and blanks aside:
 // anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
-/// A lookup key: one identifier or quoted name (quotes are blanked first), optionally with
-/// `| default('<name>')`. Shared by the subscript and the `get` form, so the two cannot drift.
-const KEY: &str = r"(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?";
 static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
     re(&format!(
         r"^\s*\(*\s*groups(?:\[\s*{KEY}\s*\]|\.get\(\s*{KEY}\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$"
