@@ -89,6 +89,7 @@ fn plain_scalars_resolve_as_pyyaml_does() {
         ("0x", json!("0x")),
         ("1e3", json!("1e3")),
         ("1.5", json!(1.5)),
+        ("1.", json!(1.0)),
         ("1.0e+3", json!(1000.0)),
         ("1.0e3", json!("1.0e3")),
         (".5", json!(0.5)),
@@ -180,6 +181,37 @@ fn every_repository_yaml_file_has_the_structure_yaml_parse_gives() {
 
 /// `plays` drops the leading guard import and nothing else. A playbook without the guard keeps
 /// every play.
+#[test]
+fn duplicate_keys_and_merges_resolve_as_pyyaml_does() {
+    // No repository file holds a duplicate key or a `<<` merge (2026-11-17), so the agreement
+    // test above never reaches either path. Expected text from PyYAML 6.0.3:
+    // `json.dumps(yaml.safe_load(text)[k], separators=(",", ":"))`. A later duplicate wins in
+    // the first key's place, explicit keys beat merged ones, and a merge list is read
+    // last-first, so its first mapping wins.
+    let text = "\
+base: &base {a: 1, b: 2}
+other: &other {b: 20, c: 30}
+dup: {x: 1, y: 2, x: 3}
+merged:
+  <<: *base
+  b: 9
+listed:
+  <<: [*base, *other]
+  d: 4
+";
+    let lifted = playbook::loads(text);
+    for (key, expected) in [
+        ("dup", r#"{"x":3,"y":2}"#),
+        ("merged", r#"{"a":1,"b":9}"#),
+        ("listed", r#"{"b":2,"c":30,"a":1,"d":4}"#),
+    ] {
+        let got = serde_json::to_string(&lifted[key]).expect("a JSON value serializes");
+        assert_eq!(got, expected, "key {key}: value and key order");
+    }
+    let node = yaml::parse(text, "<fixture>").pop().expect("one document");
+    agrees("<fixture>", &lifted, &node).unwrap_or_else(|why| panic!("{why}"));
+}
+
 #[test]
 fn plays_drops_only_the_leading_extra_var_guard() {
     let rel = "platform/playbooks/apply-firewall.yml";
