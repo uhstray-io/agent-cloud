@@ -606,14 +606,13 @@ fn a_declared_pair_an_enabled_job_without_a_storage_backs_up_is_refused() {
 
 #[test]
 fn backup_jobs_the_token_may_not_list_refuse_the_run_naming_sys_audit() {
-    // Arrange: the job list answered 403, which the play passes on as null.
+    // Arrange: no job list (the play refuses a 403 before this; the lister refuses too).
     let mut payload = base(vec![read(
         "n1",
         "backups",
         vec![archive("backups", 100, 1)],
     )]);
     payload["jobs"] = Value::Null;
-    payload["pairs"] = json!([{"vmid": 100, "storage": "backups"}]);
 
     // Act
     let text = refusal("list", &payload);
@@ -658,7 +657,7 @@ fn an_enabled_pool_job_that_could_cover_a_declared_archive_names_its_pool() {
 }
 
 #[test]
-fn authorize_requires_pool_audit_on_each_named_pool() {
+fn authorize_requires_pool_audit_on_a_named_pool() {
     // Arrange: the token holds every per-archive privilege; the pool is readable in one case only.
     let mut without = auth_payload(
         json!({"Datastore.AllocateSpace": 1}),

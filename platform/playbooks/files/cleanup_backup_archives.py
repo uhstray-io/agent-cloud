@@ -96,6 +96,12 @@ def _sha(volumes):
     return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode()).hexdigest()
 
 
+def _covers(job, storage):
+    # A job with no storage writes to vzdump's default (pve-manager VZDump.pm get_storage_param:
+    # `storage || 'local'`, or vzdump.conf's), so it counts as covering every storage.
+    return job.get("storage") in (None, "", storage)
+
+
 def _vmid(volume):
     value = volume.get("vmid")
     if isinstance(value, bool):
@@ -116,10 +122,8 @@ def list_archives(data):
         if job.get("type", "vzdump") != "vzdump" or not survey._enabled(job):
             continue
         _, guests = survey._job_guests(job, existing)
-        # A job with no storage writes to vzdump's default (pve-manager VZDump.pm get_storage_param:
-        # `storage || 'local'`, or vzdump.conf's), so it counts as covering every declared storage.
         for vmid, storage in sorted(pairs):
-            if job.get("storage") in (None, "", storage) and vmid in guests:
+            if _covers(job, storage) and vmid in guests:
                 raise Refusal(f"Enabled backup job {job.get('id')} still backs up guest {vmid} "
                               f"to storage {storage}; disable it or drop the declared pair.")
     offline = [f"{n.get('node')} is {n.get('status')}" for n in data["nodes"] if n.get("status") != "online"]
@@ -179,7 +183,7 @@ def list_archives(data):
     declared = {e["storage"] for e in listed if e["source"] == "declared"}
     pools = sorted({job["pool"] for job in data["jobs"]
                     if job.get("type", "vzdump") == "vzdump" and survey._enabled(job) and job.get("pool")
-                    and (job.get("storage") in (None, "") or job.get("storage") in declared)}) if declared else []
+                    and any(_covers(job, s) for s in declared)})
     acl_paths = sorted({f"/storage/{e['storage']}" for e in listed} | {f"/vms/{e['vmid']}" for e in listed}
                        | {f"/pool/{p}" for p in pools})
     return {"pools": pools, "volumes": volumes, "count": len(volumes),

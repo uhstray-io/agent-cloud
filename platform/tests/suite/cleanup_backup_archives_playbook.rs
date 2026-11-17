@@ -160,3 +160,43 @@ fn the_delete_block_runs_only_for_a_confirmed_real_run() {
         );
     }
 }
+
+#[test]
+fn a_backup_job_list_answered_403_refuses_the_run_before_any_storage_is_read() {
+    // Arrange: the play's own refusal, after a job read that answered 403 and one that answered 200.
+    let play = cleanup_play();
+    let refusal = task(&play, "Require the backup job list");
+    let with = |status: u16| {
+        vec![
+            json!({"name": "Read", "ansible.builtin.set_fact": {"_jobs_read": {"status": status}}}),
+            refusal.clone(),
+        ]
+    };
+    let names: Vec<&str> = play["tasks"]
+        .as_array()
+        .expect("tasks")
+        .iter()
+        .map(|t| t["name"].as_str().unwrap_or(""))
+        .collect();
+    let at = |name: &str| {
+        names
+            .iter()
+            .position(|n| *n == name)
+            .unwrap_or_else(|| panic!("no task {name:?}"))
+    };
+
+    // Act
+    let refused = run(with(403), json!({}), None, false);
+    let allowed = run(with(200), json!({}), None, false);
+
+    // Assert: a 403 is refused naming the privilege; a 200 passes; the refusal comes before the
+    // storage reads, so a token without the privilege reads nothing more.
+    assert!(!refused.ok, "{}", refused.out);
+    assert!(
+        refused.out.contains("needs Sys.Audit on /"),
+        "{}",
+        refused.out
+    );
+    assert!(allowed.ok, "{}", allowed.out);
+    assert!(at("Require the backup job list") < at("Read each online node's storage status"));
+}

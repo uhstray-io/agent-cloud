@@ -111,18 +111,34 @@
           secret/services/proxmox has no token_id. Store the Proxmox API token id
           (<user>@<realm>!<token-name>) beside api_token; there is no built-in default.
 
-    - name: Read the cluster's nodes, storage configuration, backup jobs and guests
+    # These three answer every token (pve-manager Nodes.pm and Cluster.pm, pve-storage Config.pm), so any
+    # other answer fails here.
+    - name: Read the cluster's nodes, storage configuration and guests
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/{{ item }}"
-        # The backup job list answers 403 without Sys.Audit on /; the lister refuses that by name.
-        # The other three answer every token (pve-manager Nodes.pm, Cluster.pm; pve-storage Config.pm).
-        status_code: [200, 403]
+        status_code: 200
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-      loop: [nodes, storage, cluster/backup, "cluster/resources?type=vm"]
+      loop: [nodes, storage, "cluster/resources?type=vm"]
       register: _cluster_reads
       no_log: true
       check_mode: false
+
+    # The backup job list answers 403 without Sys.Audit on / (pve-manager PVE/API2/Backup.pm index), and the
+    # declared-pair refusal needs every job, so the run stops here, by name, before any storage is read.
+    - name: Read the backup jobs
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/cluster/backup"
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      register: _jobs_read
+      no_log: true
+      check_mode: false
+
+    - name: Require the backup job list
+      ansible.builtin.assert:
+        that: _jobs_read.status == 200
+        fail_msg: "Cleanup refused: the Proxmox token may not list the backup jobs (needs Sys.Audit on /)."
 
     - name: Select the online nodes
       ansible.builtin.set_fact:
@@ -153,7 +169,7 @@
         stdin: >-
           {{ {'nodes': _cluster_reads.results[0].json.data,
               'storage_config': _cluster_reads.results[1].json.data,
-              'jobs': _cluster_reads.results[2].json.data if _cluster_reads.results[2].status == 200 else [],
+              'jobs': _jobs_read.json.data,
               'storage_listings': _node_storage_reads.results} | to_json }}
       register: _plan_run
       failed_when: false
@@ -187,8 +203,8 @@
         argv: [python3, "{{ _cleanup }}", list]
         stdin: >-
           {{ {'nodes': _cluster_reads.results[0].json.data,
-              'vms': _cluster_reads.results[3].json.data,
-              'jobs': _cluster_reads.results[2].json.data if _cluster_reads.results[2].status == 200 else none,
+              'vms': _cluster_reads.results[2].json.data,
+              'jobs': _jobs_read.json.data,
               'storage_config': _cluster_reads.results[1].json.data,
               'plan': _plan,
               'content_reads': _content_reads.results,
@@ -220,7 +236,7 @@
           not_listed: "{{ _list.not_listed }}"
           delete: "{{ _list.delete }}"
 
-    - name: Read the token's privileges on each storage and guest in the list
+    - name: Read the token's privileges on each storage, guest and pool in the list
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/access/permissions?path={{ item | urlencode }}"
         headers:
