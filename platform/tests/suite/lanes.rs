@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 use agent_cloud_tests::lanes::{Config, Lane, Selection, select};
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use agent_cloud_tests::yaml::{self, Node};
 use proptest::prelude::*;
 use tempfile::TempDir;
@@ -36,6 +37,11 @@ areas:
 
 fn config(text: &str) -> Config {
     Config::parse(text, "inline").expect("the inline configuration parses")
+}
+
+/// The repository's own configuration: areas.yml and areas.d/.
+fn repo_config() -> Config {
+    Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load")
 }
 
 fn secured() -> Config {
@@ -247,8 +253,7 @@ fn a_selection_renders_as_all_none_or_a_sorted_alternation() {
 
 #[test]
 fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
-    let config =
-        Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load");
+    let config = repo_config();
     // build.rs declares one module per suite/<name>.rs and records the names it compiled.
     let declared = crate::SUITE_MODULES;
 
@@ -1015,8 +1020,7 @@ fn a_scan_beyond_its_area_is_reported_and_one_within_it_is_not() {
 #[test]
 fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
     // Arrange
-    let config =
-        Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load");
+    let config = repo_config();
     let Selection::Modules(always) = select(&config, Lane::Push, &[]) else {
         panic!("an empty change selects the security set, not everything");
     };
@@ -1029,7 +1033,7 @@ fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
             continue;
         }
         let rel = format!("platform/tests/suite/{module}.rs");
-        let src = std::fs::read_to_string(repo::path(&rel)).expect("the module reads");
+        let src = text::read(&rel);
         let (read, found) = unselected_scans(&config, module, &rel, &src);
         scans += read;
         problems.extend(found);

@@ -9,13 +9,12 @@
 # `support_lift_playbook` runs lifted plays through ansible-playbook in the playbook tier.
 #
 # paths: playbook YAML, so a playbook-only change runs the PyYAML oracle. Semaphore YAML, which
-# the oracle also reads, is left out on purpose while no area claims it: a change there stays
-# unclassified and push and CI run every test, the oracle included. A Semaphore file another
-# area claims is no longer unclassified, so it is listed here (templates.yml, claimed by
-# cloudflare_edge); the lanes guard every_repo_wide_scan_runs_when_a_file_it_reads_changes
-# fails when a new claim needs the same. A change under platform/tests/** is a full trigger
-# anyway. The filter plugins: support_lift_playbook runs ansible-playbook from the repository
-# root, whose ansible.cfg loads them.
+# the oracle also reads, is left out on purpose while no area claims it: a change there is
+# unclassified, so push and CI run every test, the oracle included. templates.yml is listed
+# because cloudflare_edge claims it (areas.d/README.md, "A test that reads beyond its area").
+# A change under platform/tests/** is a full trigger anyway. The filter plugins:
+# support_lift_playbook runs ansible-playbook from the repository root, whose ansible.cfg
+# loads them.
 paths:
   - "platform/playbooks/**/*.yml"
   - "platform/playbooks/filter_plugins/**"
