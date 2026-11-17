@@ -13,8 +13,9 @@
 //!    `preflight_group_expected` both set, non-empty and equal. It covers that exact group; a
 //!    `hosts: a:b` union needs both covered.
 //! 2. An inline localhost play whose assert takes the `length` of a group lookup, and names the
-//!    target: `groups[<name>]`, or `groups.get(<name>, [])` (an empty-list default only, with an
-//!    optional `| default([])`), piped straight to `length`. It is compared ONCE, `> 0`, `!= 0`, or
+//!    target: `groups[<name>]`, or `groups.get(<key>, [])` where `<key>` is one identifier or quoted
+//!    name, optionally `| default('<name>')` (an empty-list default only, with an optional
+//!    `| default([])`), piped straight to `length`. It is compared ONCE, `> 0`, `!= 0`, or
 //!    `>=`/`==` a positive integer, and has no `and`/`or`/`not`/`if`/`else`. Quoted text is ignored
 //!    by that shape check (AC-907); the target name is read from the whole condition.
 //!
@@ -86,7 +87,8 @@ const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 // The condition must BE a `length` of one group lookup, from its start to its end: a prefix such
 // as `1 + (...)`, a list around it, or a subscript inside a string would otherwise pass (AC-907).
 // Quoted text is blanked first, so a group name or a `groups` word in a string cannot stand in for
-// the lookup. The comparison value must end the condition, closing parentheses and blanks aside:
+// the lookup. A `get` key is one name, so its `, [])` cannot close another filter (#1169 review).
+// The comparison value must end the condition, closing parentheses and blanks aside:
 // anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
 static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
     re(

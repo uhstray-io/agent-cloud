@@ -137,8 +137,7 @@ fn run_for_refuses_a_playbook_run_with_another_bound() {
     // checked on every host: the builder's own command (the program on Linux, a `sandbox-exec`
     // argument on macOS) and the bwrap form, `-- ansible-playbook` (#1169 review).
     let dir = TempDir::new().unwrap();
-    let home = TempDir::new().unwrap();
-    let mut bwrap = process::scrubbed("bwrap", home.path());
+    let mut bwrap = process::scrubbed("bwrap", dir.path());
     bwrap.args(["--", "ansible-playbook"]);
     let cases = [
         (
