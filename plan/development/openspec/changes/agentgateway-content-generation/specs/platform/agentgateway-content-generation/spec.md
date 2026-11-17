@@ -1,7 +1,7 @@
 # platform/agentgateway-content-generation
 
 The agentgateway's content-generation caller: its own identity, token budget and model allow-list,
-the internal-listener client-leaf path, a renewal proof for each allowlisted leaf, and a per-identity
+the internal-listener client-leaf path, a renewal proof for its leaf, and a per-identity
 request limit before any image model is served. These requirements describe planned behaviour. Plan
 27 (`plan/development/27-agentgateway-content-generation.md`) gives the decisions and their sources.
 
@@ -33,7 +33,7 @@ with its own client leaf named on `agw_client_cert_allowlist`.
 - WHEN the content caller's allowlisted leaf sends a request without an API key
 - THEN the gateway answers HTTP 401, so the request reached the key check
 
-### Requirement: Every client leaf on the allowlist has a renewal proof path
+### Requirement: The content caller's client leaf is proven in use at renewal
 Certificate renewal SHALL prove the content caller's client leaf in use, as the production-internal-ca
 requirement "Leaves are renewed on a schedule and the new certificate is in use" requires
 (`plan/development/openspec/changes/production-internal-ca/specs/platform/internal-ca/spec.md:91`).
