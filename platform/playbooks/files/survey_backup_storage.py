@@ -314,10 +314,12 @@ def _cephfs(config, ceph_reads):
         else:
             filesystem, source = None, "unresolved"
         entry = next((f for f in filesystems if f.get("name") == filesystem), {}) if filesystem else {}
-        # data_pools arrived in pve-manager 2026-05 (FS.pm, fbb0eb7657); before it, data_pool held the one name.
+        # data_pools arrived in pve-manager 2026-05 (FS.pm, fbb0eb7657); before it, data_pool held only the first
+        # data pool, so a filesystem read that way may have more pools than the receipt names.
+        complete = "data_pools" in entry if entry else None
         data_pools = entry.get("data_pools") or ([entry["data_pool"]] if entry.get("data_pool") else [])
         rows.append({"storage": cfg.get("storage"), "external": external, "filesystem": filesystem,
-                     "filesystem_source": source, "data_pools": list(data_pools)})
+                     "filesystem_source": source, "data_pools": list(data_pools), "data_pools_complete": complete})
     # An unresolved storage could sit on any filesystem, so what it shares is unknown (null), and it is
     # never listed as another storage's sharer. An external storage names another cluster's filesystem,
     # so it shares none here. Resolved storages list the resolved storages on their filesystem.

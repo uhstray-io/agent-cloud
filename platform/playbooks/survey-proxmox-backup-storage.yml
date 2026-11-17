@@ -27,6 +27,8 @@
 #     Proxmox does not say which, so neither compares with a storage's used bytes), type and size
 #     (replicas, or data plus coding chunks when erasure-coded) (a CephFS with a monitor list names an
 #     external cluster and is not read);
+#   - a Proxmox release from before pve-manager's 2026-05 change lists only a filesystem's first data
+#     pool; its rows then say data_pools_complete false, since more pools may exist than are named;
 #   - a disabled storage of any type is left out of every storage and CephFS figure, whatever its
 #     status row says; a backup job that names it still lists it as that job's storage;
 #   - per online node, the installed disks: device path, size, model, vendor, serial, Proxmox's `used`

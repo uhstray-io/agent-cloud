@@ -128,7 +128,7 @@ fn cephfs_storages_on_one_filesystem_list_each_other_and_an_external_one_names_n
 
     // Assert: the whole cephfs section, the pool's usage rounded as given, and no sentinel printed.
     assert!(
-        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "filesystem_source": "external", "data_pools": [], "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "ceph_used_gib": 1.0, "ceph_percent_used": 37.4, "type": "replicated", "size": 3}]}"#),
+        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "data_pools_complete": true, "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "data_pools_complete": true, "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "filesystem_source": "external", "data_pools": [], "data_pools_complete": null, "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "ceph_used_gib": 1.0, "ceph_percent_used": 37.4, "type": "replicated", "size": 3}]}"#),
         "{out}"
     );
     for sentinel in ["MONHOST-SENTINEL", "PATH-SENTINEL", "SUBDIR-SENTINEL"] {
@@ -153,7 +153,7 @@ fn a_ceph_listing_the_token_may_not_read_makes_cephfs_unavailable_and_names_sys_
 
     // Assert: the section is unavailable with the privilege it needs; the storage is still listed, with no filesystem.
     assert!(
-        out.contains(r#""cephfs": {"status": "unavailable", "reason": "HTTP 403: needs Sys.Audit or Datastore.Audit on /", "storages": [{"storage": "cephA", "external": false, "filesystem": null, "filesystem_source": "unresolved", "data_pools": [], "shares_filesystem_with": null}], "pools": []}"#),
+        out.contains(r#""cephfs": {"status": "unavailable", "reason": "HTTP 403: needs Sys.Audit or Datastore.Audit on /", "storages": [{"storage": "cephA", "external": false, "filesystem": null, "filesystem_source": "unresolved", "data_pools": [], "data_pools_complete": null, "shares_filesystem_with": null}], "pools": []}"#),
         "{out}"
     );
 }
@@ -435,9 +435,10 @@ fn a_pool_ceph_has_no_stats_for_reports_its_usage_unknown_not_zero() {
 }
 
 #[test]
-fn a_filesystem_listed_with_only_the_older_data_pool_field_still_names_its_pool() {
-    // Arrange: Proxmox before pve-manager's 2026-05 change lists a filesystem with `data_pool`, one name,
-    // and no `data_pools`.
+fn a_filesystem_listed_with_only_the_older_data_pool_field_names_that_pool_and_says_the_list_may_be_partial()
+ {
+    // Arrange: Proxmox before pve-manager's 2026-05 change lists a filesystem with `data_pool`, its first data
+    // pool only, and no `data_pools`.
     let mut payload = cephfs_payload(
         &[("cephA", 10_737_418_240)],
         json!([{"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"}]),
@@ -449,11 +450,9 @@ fn a_filesystem_listed_with_only_the_older_data_pool_field_still_names_its_pool(
     let out = receipt(&payload);
 
     // Assert
-    assert_eq!(
-        cephfs_rows(&out)[0]["data_pools"],
-        json!(["a_data"]),
-        "{out}"
-    );
+    let row = &cephfs_rows(&out)[0];
+    assert_eq!(row["data_pools"], json!(["a_data"]), "{out}");
+    assert_eq!(row["data_pools_complete"], json!(false), "{out}");
     assert_eq!(
         out["cephfs"]["pools"],
         json!([{"pool": "a_data", "ceph_used_gib": 1.0, "ceph_percent_used": 50.0, "type": "replicated", "size": 3}]),
