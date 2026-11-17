@@ -150,6 +150,13 @@ fn resolve_plain_value(text: &str) -> Result<Value, &'static str> {
     match yaml::resolve_plain(text) {
         Node::Bool(b) => Ok(Value::Bool(b)),
         Node::Null => Ok(Value::Null),
+        // Each of the three resolvers below needs a first character of `[-+.0-9]`; most plain
+        // scalars are names and templates, so they skip the regexes.
+        Node::Str(_)
+            if !text.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '+' | '-' | '.')) =>
+        {
+            Ok(Value::String(text.to_owned()))
+        }
         // PyYAML tries the float, int and timestamp resolvers in turn; a text matches at most one.
         Node::Str(_) if FLOAT.is_match(text) => float_value(text),
         Node::Str(_) if INT.is_match(text) => int_value(text),

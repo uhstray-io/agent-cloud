@@ -70,6 +70,8 @@ fn pyyaml_types_every_repository_file_as_the_lifting_loader_does() {
     // One process for every file, bounded by run_for's 30 s.
     let mut cmd = process::scrubbed("python3", dir.path());
     cmd.current_dir(repo::root())
+        // -P: the current directory (the repository root) is not put on sys.path.
+        .arg("-P")
         .arg("-c")
         .arg(PYTHON)
         .args(&files);
