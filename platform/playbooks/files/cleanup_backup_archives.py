@@ -11,14 +11,16 @@ Three modes, JSON on stdin, JSON on stdout:
                declared  an archive matching a declared (vmid, storage) pair, refused when an enabled
                          vzdump job on that storage still backs up that guest.
              A protected archive, an archive with no vmid, and every other archive are never listed,
-             only counted. `delete` is true only for a real run (not check mode) whose list is
-             non-empty and whose confirm_delete equals the list's sha256; a real run with any other
-             confirm_delete is refused.
-  authorize  {volumes, permission_reads} -> refused unless the token holds Datastore.AllocateSpace
+             only counted. Refused when the backup jobs could not be read (403: needs Sys.Audit on /).
+             `pools` names each enabled pool job's pool that could cover a listed declared archive.
+             `delete` is true only for a real run (not check mode) whose list is non-empty and whose
+             confirm_delete equals the list's sha256; a real run with any other confirm_delete is refused.
+  authorize  {volumes, pools, permission_reads} -> refused unless the token holds Datastore.AllocateSpace
              on /storage/<storage> and VM.Backup on /vms/<vmid> for every listed archive (the
              privileges Proxmox checks to delete a backup volume that has an owner vmid), and VM.Audit
              on /vms/<vmid> (without it the guest listing hides a live guest, so it would look gone and
-             no enabled job would be seen backing it up).
+             no enabled job would be seen backing it up), and Pool.Audit on /pool/<pool> for each of
+             `pools` (without it the guest listing drops a guest's pool, so a pool job's guests look empty).
   verify     {volumes, before, after} -> refused if a listed archive is still present, or an archive
              not listed disappeared between the two content reads.
 
@@ -104,6 +106,9 @@ def _vmid(volume):
 
 
 def list_archives(data):
+    if data.get("jobs") is None:
+        raise Refusal("The Proxmox token may not list the backup jobs (needs Sys.Audit on /), so a declared "
+                      "pair cannot be checked against them.")
     existing = {int(v["vmid"]): v for v in data["vms"] if survey._is_vmid(v.get("vmid", ""))}
     storages = {r["storage"] for r in data["plan"]["reads"]}
     pairs = _pairs(data.get("pairs"), storages)
@@ -167,8 +172,17 @@ def list_archives(data):
                       "Dry-run first and confirm that value.")
     volumes = [{k: e[k] for k in ("volid", "storage", "node", "vmid", "guest", "source", "size_gib", "date")}
                for e in listed]
-    acl_paths = sorted({f"/storage/{e['storage']}" for e in listed} | {f"/vms/{e['vmid']}" for e in listed})
-    return {"volumes": volumes, "count": len(volumes),
+    # A pool job's guests are the listed guests whose `pool` field names the pool, and Proxmox drops that
+    # field from a guest when the token lacks Pool.Audit on the pool (pve-manager PVE/API2/Cluster.pm
+    # resources). Each enabled pool job that could write a listed declared archive's storage is named here,
+    # so authorize can require Pool.Audit on it.
+    declared = {e["storage"] for e in listed if e["source"] == "declared"}
+    pools = sorted({job["pool"] for job in data["jobs"]
+                    if job.get("type", "vzdump") == "vzdump" and survey._enabled(job) and job.get("pool")
+                    and (job.get("storage") in (None, "") or job.get("storage") in declared)}) if declared else []
+    acl_paths = sorted({f"/storage/{e['storage']}" for e in listed} | {f"/vms/{e['vmid']}" for e in listed}
+                       | {f"/pool/{p}" for p in pools})
+    return {"pools": pools, "volumes": volumes, "count": len(volumes),
             "total_gib": survey._gib(sum(e["size"] for e in listed)), "sha256": sha,
             "not_listed": {s: {k: {"count": c, "gib": survey._gib(b)} for k, (c, b) in t.items()}
                            for s, t in sorted(kept.items())},
@@ -183,23 +197,24 @@ def authorize(data):
         if read.get("status") != 200:
             raise Refusal(f"Proxmox answered {read.get('status')} reading the token's permissions on {path}.")
         privileges[path] = ((read.get("json") or {}).get("data") or {}).get(path) or {}
-    missing = []
+    needed = [("Pool.Audit", f"/pool/{pool}") for pool in data.get("pools") or []]
     for v in data["volumes"]:
         # cluster/resources leaves out every guest the token lacks VM.Audit on (pve-manager
         # PVE/API2/Cluster.pm resources). Both sources trust that listing: a gone guest is one it did not
         # list, and an all or pool job's guests are taken from it for the enabled-job refusal of a
         # declared pair. Without VM.Audit, either may be a live guest the token cannot see.
-        needed = [("Datastore.AllocateSpace", f"/storage/{v['storage']}"), ("VM.Backup", f"/vms/{v['vmid']}"),
-                  ("VM.Audit", f"/vms/{v['vmid']}")]
-        for priv, path in needed:
-            if path not in privileges:
-                raise Refusal(f"The token's permissions on {path} were not read.")
-            # A privilege is held when its key is present: the value is only its propagate flag
-            # (pve-access-control RPCEnvironment.pm `check`: `defined($perm->{$priv})`).
-            if privileges[path].get(priv) is None:
-                text = f"{priv} on {path}"
-                if text not in missing:
-                    missing.append(text)
+        needed += [("Datastore.AllocateSpace", f"/storage/{v['storage']}"), ("VM.Backup", f"/vms/{v['vmid']}"),
+                   ("VM.Audit", f"/vms/{v['vmid']}")]
+    missing = []
+    for priv, path in needed:
+        if path not in privileges:
+            raise Refusal(f"The token's permissions on {path} were not read.")
+        # A privilege is held when its key is present: the value is only its propagate flag
+        # (pve-access-control RPCEnvironment.pm `check`: `defined($perm->{$priv})`).
+        if privileges[path].get(priv) is None:
+            text = f"{priv} on {path}"
+            if text not in missing:
+                missing.append(text)
     if missing:
         raise Refusal(f"The Proxmox token cannot delete these archives: missing {'; '.join(missing)}.")
     return {"authorized": len(data["volumes"])}

@@ -603,3 +603,79 @@ fn a_declared_pair_an_enabled_job_without_a_storage_backs_up_is_refused() {
     // Assert
     assert!(text.contains("job-default"), "{text}");
 }
+
+#[test]
+fn backup_jobs_the_token_may_not_list_refuse_the_run_naming_sys_audit() {
+    // Arrange: the job list answered 403, which the play passes on as null.
+    let mut payload = base(vec![read(
+        "n1",
+        "backups",
+        vec![archive("backups", 100, 1)],
+    )]);
+    payload["jobs"] = Value::Null;
+    payload["pairs"] = json!([{"vmid": 100, "storage": "backups"}]);
+
+    // Act
+    let text = refusal("list", &payload);
+
+    // Assert
+    assert!(text.contains("Sys.Audit on /"), "{text}");
+}
+
+#[test]
+fn an_enabled_pool_job_that_could_cover_a_declared_archive_names_its_pool() {
+    // Arrange: guest 100 shows no pool, as Proxmox shows it to a token without Pool.Audit on the pool,
+    // so the pool job's guests look empty and the declared pair is listed. One job writes the declared
+    // storage, one names no storage (vzdump's default), one writes elsewhere, one is disabled.
+    let mut payload = base(vec![read(
+        "n1",
+        "backups",
+        vec![archive("backups", 100, 1)],
+    )]);
+    payload["jobs"] = json!([
+        {"id": "on-backups", "type": "vzdump", "enabled": 1, "pool": "prod", "storage": "backups"},
+        {"id": "default", "type": "vzdump", "enabled": 1, "pool": "lab"},
+        {"id": "elsewhere", "type": "vzdump", "enabled": 1, "pool": "other", "storage": "nfs"},
+        {"id": "off", "type": "vzdump", "enabled": 0, "pool": "old", "storage": "backups"}
+    ]);
+    payload["pairs"] = json!([{"vmid": 100, "storage": "backups"}]);
+    let mut gone_only = base(vec![read("n1", "local", vec![archive("local", 900, 1)])]);
+    gone_only["jobs"] = payload["jobs"].clone();
+
+    // Act
+    let out = ok("list", &payload);
+    let gone = ok("list", &gone_only);
+
+    // Assert: the two pools that could hold the declared guest are named and their ACL paths read;
+    // with no declared archive listed, no pool is needed.
+    assert_eq!(out["pools"], json!(["lab", "prod"]), "{out}");
+    let paths = out["acl_paths"].as_array().unwrap();
+    assert!(
+        paths.contains(&json!("/pool/lab")) && paths.contains(&json!("/pool/prod")),
+        "{out}"
+    );
+    assert_eq!(gone["pools"], json!([]), "{gone}");
+}
+
+#[test]
+fn authorize_requires_pool_audit_on_each_named_pool() {
+    // Arrange: the token holds every per-archive privilege; the pool is readable in one case only.
+    let mut without = auth_payload(
+        json!({"Datastore.AllocateSpace": 1}),
+        json!({"VM.Backup": 1, "VM.Audit": 1}),
+    );
+    without["pools"] = json!(["prod"]);
+    without["permission_reads"]
+        .as_array_mut()
+        .unwrap()
+        .push(perm("/pool/prod", json!({})));
+    let mut with = without.clone();
+    with["permission_reads"][2] = perm("/pool/prod", json!({"Pool.Audit": 0}));
+
+    // Act
+    let text = refusal("authorize", &without);
+
+    // Assert
+    assert!(text.contains("Pool.Audit on /pool/prod"), "{text}");
+    assert_eq!(ok("authorize", &with)["authorized"], 1);
+}

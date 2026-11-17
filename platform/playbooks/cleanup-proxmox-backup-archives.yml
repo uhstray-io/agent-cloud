@@ -24,7 +24,10 @@
 # Permission: Proxmox deletes a backup volume with an owner vmid only for a token holding
 # Datastore.AllocateSpace on /storage/<storage> and VM.Backup on /vms/<vmid>. Every listed archive
 # also needs VM.Audit on /vms/<vmid>: the guest listing hides every guest the token lacks it on, so
-# without it a live guest would look gone, or an enabled job backing it up would not be seen. A vzdump job with no storage writes to vzdump's default
+# without it a live guest would look gone, or an enabled job backing it up would not be seen. For the
+# same reason, each enabled pool job that could write a declared archive's storage needs Pool.Audit on
+# /pool/<pool>: without it the listing drops the guest's pool. A backup job list the token may not
+# read (403: Sys.Audit on /) refuses the run by name. A vzdump job with no storage writes to vzdump's default
 # storage, so it counts as covering every declared pair's storage. The run reads the
 # token's own effective privileges (GET /access/permissions) and refuses before any delete when one
 # is missing, naming each one with its path. After the deletes it re-reads the storages and refuses
@@ -111,7 +114,9 @@
     - name: Read the cluster's nodes, storage configuration, backup jobs and guests
       ansible.builtin.uri:
         url: "{{ _pve_host }}/api2/json/{{ item }}"
-        status_code: 200
+        # The backup job list answers 403 without Sys.Audit on /; the lister refuses that by name.
+        # The other three answer every token (pve-manager Nodes.pm, Cluster.pm; pve-storage Config.pm).
+        status_code: [200, 403]
         headers:
           Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
       loop: [nodes, storage, cluster/backup, "cluster/resources?type=vm"]
@@ -148,7 +153,7 @@
         stdin: >-
           {{ {'nodes': _cluster_reads.results[0].json.data,
               'storage_config': _cluster_reads.results[1].json.data,
-              'jobs': _cluster_reads.results[2].json.data,
+              'jobs': _cluster_reads.results[2].json.data if _cluster_reads.results[2].status == 200 else [],
               'storage_listings': _node_storage_reads.results} | to_json }}
       register: _plan_run
       failed_when: false
@@ -183,7 +188,7 @@
         stdin: >-
           {{ {'nodes': _cluster_reads.results[0].json.data,
               'vms': _cluster_reads.results[3].json.data,
-              'jobs': _cluster_reads.results[2].json.data,
+              'jobs': _cluster_reads.results[2].json.data if _cluster_reads.results[2].status == 200 else none,
               'storage_config': _cluster_reads.results[1].json.data,
               'plan': _plan,
               'content_reads': _content_reads.results,
@@ -228,7 +233,9 @@
     - name: Check the token may delete every listed archive
       ansible.builtin.command:
         argv: [python3, "{{ _cleanup }}", authorize]
-        stdin: "{{ {'volumes': _list.volumes, 'permission_reads': _permission_reads.results | default([])} | to_json }}"
+        stdin: >-
+          {{ {'volumes': _list.volumes, 'pools': _list.pools,
+              'permission_reads': _permission_reads.results | default([])} | to_json }}
       register: _authorize_run
       failed_when: false
       changed_when: false
