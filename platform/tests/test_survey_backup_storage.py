@@ -287,6 +287,27 @@ def test_pbs_sizes_are_logical_so_unexplained_and_reclaimable_bytes_are_unknown(
     assert store["by_guest"][0]["prunable_gib"] is None
 
 
+@pytest.mark.parametrize(("paths", "reason", "unexplained"), [
+    (("/srv/dump", "/srv/dump/"), "same path", 70.0),                  # one directory: one 30 GiB file
+    (("/srv", "/srv/inner"), "one path inside the other", 40.0),       # two directories: two files
+    (("/srv/a", "/srv/b"), "identical total and used bytes (inferred, not proven)", None),
+])
+def test_combined_unexplained_bytes_count_a_shared_listing_once_and_unknown_overlap_as_unknown(
+        paths, reason, unexplained):
+    config = [{"storage": s, "type": "dir", "path": path} for s, path in zip(("a", "b"), paths, strict=True)]
+    listing = {"item": "n1", "status": 200, "json": {"data": [
+        {"storage": s, "content": "backup", "active": 1, **_status(200 * GIB, 100 * GIB)} for s in ("a", "b")]}}
+    plan = survey.plan({"nodes": NODES, "jobs": [], "storage_listings": [listing], "storage_config": config})
+    one = [{"volid": f"{s}:backup/vzdump-qemu-1-0.vma.zst", "vmid": 1, "size": 30 * GIB, "ctime": T0}
+           for s in ("a", "b")]
+    summary = {"plan": plan, "vms": [], "storage_config": config, "jobs": [],
+               "content_reads": [{"item": r, "status": 200, "json": {"data": [v]}}
+                                 for r, v in zip(plan["reads"], one, strict=True)],
+               "prune_reads": []}
+    assert survey.summarize(summary)["shared_backends"] == [
+        {"storages": ["a", "b"], "reason": reason, "combined_unaccounted_gib": unexplained}]
+
+
 def test_two_pbs_ids_on_one_datastore_report_no_combined_unexplained_bytes():
     config = [{"storage": s, "type": "pbs", "server": "192.0.2.20", "datastore": "main"} for s in ("p1", "p2")]
     listing = {"item": "n1", "status": 200, "json": {"data": [

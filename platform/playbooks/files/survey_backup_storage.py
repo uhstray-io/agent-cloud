@@ -212,7 +212,9 @@ def _same_backend(a, b):
     if _backend(a) and _backend(a) == _backend(b):
         return "same server and export"
     pa, pb = _path_of(a), _path_of(b)
-    if pa and pb and (pa == pb or pa.startswith(pb + "/") or pb.startswith(pa + "/")):
+    if pa and pb and pa == pb:
+        return "same path"
+    if pa and pb and (pa.startswith(pb + "/") or pb.startswith(pa + "/")):
         return "one path inside the other"
     return None
 
@@ -336,10 +338,15 @@ def summarize(data):
         if not reason and a_total and a_total == b_total and a_used == b_used:
             reason = "identical total and used bytes (inferred, not proven)"
         if reason:
-            # Aliases of one filesystem list the same files: count each relative path once.
-            listed = sum(max(a_files.get(f, 0), b_files.get(f, 0)) for f in a_files.keys() | b_files.keys())
+            if reason in ("same server and export", "same path"):
+                # One directory under two IDs lists the same files: count each relative path once.
+                listed = sum(max(a_files.get(f, 0), b_files.get(f, 0)) for f in a_files.keys() | b_files.keys())
+            elif reason == "one path inside the other":
+                listed = sum(a_files.values()) + sum(b_files.values())  # different directories, different files
+            else:
+                listed = None  # inferred from byte counts alone: whether the listings overlap is unknown
             logical = a["sizes_are_logical"] or b["sizes_are_logical"]
-            unaccounted = None if logical else _gib(max(a_used, b_used) - listed)
+            unaccounted = None if logical or listed is None else _gib(max(a_used, b_used) - listed)
             shared_backends.append({"storages": [a["storage"], b["storage"]], "reason": reason,
                                     "combined_unaccounted_gib": unaccounted})
 
