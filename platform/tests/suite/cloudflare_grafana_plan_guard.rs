@@ -18,6 +18,7 @@
 use std::collections::HashMap;
 
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text::read;
 use agent_cloud_tests::yaml::{self, Node};
 
 const PLAYBOOK: &str = "platform/playbooks/apply-cloudflare-tofu.yml";
@@ -25,11 +26,6 @@ const WRAPPER: &str = "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml"
 const TEMPLATES: &str = "platform/semaphore/templates.yml";
 const TASKS: &str =
     "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md";
-
-/// The file at `rel`, read as text. A missing file panics with its path.
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
-}
 
 /// Python's `" ".join(condition.split())`: whitespace runs become one space, ends trimmed.
 fn normalise(text: &str) -> String {

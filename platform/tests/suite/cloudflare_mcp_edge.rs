@@ -27,23 +27,11 @@
 
 use regex::Regex;
 
-use agent_cloud_tests::repo;
+use agent_cloud_tests::text::{any_line, read};
 
 const WAF: &str = "platform/infra/cloudflare/waf.tf";
 const RATELIMIT: &str = "platform/infra/cloudflare/ratelimit.tf";
 const DNS: &str = "platform/infra/cloudflare/dns.tf";
-
-/// The file at `rel`, read as text. A missing file panics with its path.
-fn read(rel: &str) -> String {
-    std::fs::read_to_string(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
-}
-
-/// `grep -E`: true when some line of `text` matches the ERE `pattern`. The regex crate reads the
-/// constructs these patterns use as grep does, and `^` and `$` anchor each line.
-fn any_line(text: &str, pattern: &str) -> bool {
-    let re = Regex::new(pattern).expect("a valid pattern");
-    text.lines().any(|line| re.is_match(line))
-}
 
 /// `grep -E pattern`: the matching lines of `text`, in order.
 fn matching_lines<'a>(text: &'a str, pattern: &str) -> Vec<&'a str> {
