@@ -33,7 +33,8 @@ fn exported() -> Vec<String> {
         .and_then(|(_, rest)| rest.split_once('}'))
         .unwrap_or_else(|| panic!("{PLUGIN}: filters() does not return a dict literal"))
         .0;
-    let key = Regex::new(r#""([A-Za-z_][A-Za-z0-9_]*)"\s*:"#).unwrap();
+    // Either quote: Python accepts both, and a single-quoted key must not slip past.
+    let key = Regex::new(r#"["']([A-Za-z_][A-Za-z0-9_]*)["']\s*:"#).unwrap();
     key.captures_iter(literal)
         .map(|c| c[1].to_string())
         .collect()

@@ -488,10 +488,13 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         ]),
     );
     let bridge_desired = "(['192.0.2.0/24'] | ufw_desired_rules(bridges=['podman1']))";
-    // Each declared rule held as stored: its own tag and spec, family and peer blank (the Python
-    // `_held`). The rule's other keys ride along; ufw_absent reads only the tag and the spec.
-    let bridge_held =
-        format!("{{{{ {bridge_desired} | map('combine', {{'family': '', 'peer': ''}}) | list }}}}");
+    // Each declared rule held as `ufw show added` reads it back (the Python `_held`): only its spec
+    // and tag, family and peer blank. A copy of the whole declared rule would carry keys the
+    // read-back never has (dual_family, cmd, is_ssh), and ufw_absent could then rely on them.
+    let bridge_held = format!(
+        "{{{{ {bridge_desired} | map('dict2items') | map('selectattr', 'key', 'in', ['spec', 'tag']) \
+         | map('items2dict') | map('combine', {{'family': '', 'peer': ''}}) | list }}}}"
+    );
     let bridge_expr = format!("{{{{ {bridge_desired} }}}}");
     let reassert_off = c.call("ufw_absent", json!([bridge_expr, bridge_held]));
     let reassert_on = c.add(
