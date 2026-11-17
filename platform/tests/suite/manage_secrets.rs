@@ -16,6 +16,8 @@
 //! |---|---|
 //! | manage-secrets: the store-back is a sibling-preserving merge, never a whole-document write | `the_store_back_goes_through_the_shared_merge_task`, with `no_task_writes_to_the_service_secret_path_directly`, with `no_task_runs_the_bao_or_vault_cli` and its self-check `a_store_cli_call_is_detected` |
 
+use std::sync::LazyLock;
+
 use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{self, Node};
 use regex::Regex;
@@ -159,6 +161,10 @@ fn no_task_writes_to_the_service_secret_path_directly() {
 /// The modules that run a program, under which a `bao` or `vault` CLI call could write the store.
 const COMMAND_MODULES: &[&str] = &["command", "shell", "raw", "script", "expect"];
 
+/// A `bao` or `vault` CLI call: the program name followed by a subcommand.
+static STORE_CLI: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:bao|vault)\s+\w").expect("a valid regex"));
+
 /// Every string under a node; a list of strings (an argv) also yields its items joined by spaces,
 /// so `[bao, kv, put]` reads as the command line it runs.
 fn command_lines(node: &Node, out: &mut Vec<String>) {
@@ -186,46 +192,25 @@ fn command_lines(node: &Node, out: &mut Vec<String>) {
 /// Whether a task runs the OpenBao (`bao`) or Vault (`vault`) CLI through a command-family module,
 /// which the uri and hashi_vault checks above cannot see.
 fn runs_store_cli(task: &Node) -> bool {
-    let cli = Regex::new(r"\b(?:bao|vault)\s+\w").expect("a valid regex");
     COMMAND_MODULES
         .iter()
         .filter_map(|m| module(task, m))
         .any(|args| {
             let mut lines = Vec::new();
             command_lines(args, &mut lines);
-            lines.iter().any(|l| cli.is_match(l))
+            lines.iter().any(|l| STORE_CLI.is_match(l))
         })
-}
-
-/// Every mapping at any depth: a task inside a block is a task too.
-fn all_maps<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
-    match node {
-        Node::Map(entries) => {
-            out.push(node);
-            for (_, v) in entries {
-                all_maps(v, out);
-            }
-        }
-        Node::Seq(items) => {
-            for item in items {
-                all_maps(item, out);
-            }
-        }
-        _ => {}
-    }
 }
 
 #[test]
 fn no_task_runs_the_bao_or_vault_cli() {
     // Part 3: a `command: podman exec openbao bao kv put ...` writes the whole document exactly as
     // a KV-v2 POST does, and neither check above reads a command line.
-    let doc = yaml::load_one(&repo::path(MANAGE)).expect("a document");
-    let mut maps = Vec::new();
-    all_maps(&doc, &mut maps);
-    let offenders: Vec<&str> = maps
-        .into_iter()
-        .filter(|m| runs_store_cli(m))
-        .map(|m| m.get("name").and_then(Node::as_str).unwrap_or("(unnamed)"))
+    let tasks = repo::tasks(MANAGE);
+    let offenders: Vec<&str> = tasks
+        .iter()
+        .filter(|t| runs_store_cli(t))
+        .map(|t| t.get("name").and_then(Node::as_str).unwrap_or("(unnamed)"))
         .collect();
     assert!(
         offenders.is_empty(),

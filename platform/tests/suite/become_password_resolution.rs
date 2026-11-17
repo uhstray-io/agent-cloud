@@ -23,7 +23,7 @@
 //! | become: the resolver reads the same secret path harden-ssh does | `harden_ssh_reads_the_secret_path_the_resolver_reads` |
 //! | become: every play-level-become playbook resolves a sudo password | `every_playbook_that_escalates_at_play_level_resolves_a_sudo_password` |
 //! | become: automatic fact gathering is OFF wherever the resolver is used | `fact_gathering_is_off_in_every_play_that_uses_the_resolver` |
-//! | become: the first task is what makes escalation possible | `the_first_task_of_every_escalating_play_resolves_the_password`, with the two self-checks `the_first_task_check_rejects_a_later_play_without_the_resolver` and `the_first_task_check_rejects_gathering_before_the_resolver`, and the self-check `the_first_task_check_follows_pre_tasks_roles_blocks_and_the_guard` |
+//! | become: the first task is what makes escalation possible | `the_first_task_of_every_escalating_play_resolves_the_password`, with the two self-checks `the_first_task_check_rejects_a_later_play_without_the_resolver` and `the_first_task_check_rejects_gathering_before_the_resolver`, and the self-check `the_first_task_check_follows_pre_tasks_roles_blocks_and_the_guard`, and `the_controller_only_guard_runs_only_assert_and_set_fact` |
 //! | become: gathering, where it happens at all, happens after escalation is possible | `explicit_gathering_comes_straight_after_the_resolver` |
 //! | become: the resolver guards the transport it sends the credential over | `the_resolver_guards_the_transport_before_it_fetches` |
 //! | become: the known gap is still the only one, and is named | `the_known_gap_still_resolves_no_password` |
@@ -226,10 +226,10 @@ fn escalating_plays_not_resolving_first(plays: &[Node]) -> Vec<String> {
         .collect()
 }
 
-/// The one include allowed to run before the resolver. Verified 2026-11-17: it runs only
-/// ansible.builtin.assert and set_fact (platform/playbooks/tasks/refuse-var-overrides.yml:28,37,41),
-/// which run on the controller, so nothing escalates before the resolver. harden-ssh.yml:55-80 is
-/// the case: its block refuses overrides first, then sets the password.
+/// The one include allowed to run before the resolver. platform/playbooks/tasks/refuse-var-overrides.yml
+/// runs only assert and set_fact, which run on the controller, so nothing escalates before the
+/// resolver; `the_controller_only_guard_runs_only_assert_and_set_fact` holds it to that. harden-ssh.yml
+/// is the case: its block refuses overrides first, then sets the password.
 const CONTROLLER_ONLY_GUARD: &str = "refuse-var-overrides.yml";
 
 /// The file an include_tasks or import_tasks names, under any spelling, as a string or a `file:`.
@@ -244,16 +244,21 @@ fn included_file(task: &Node) -> Option<&str> {
         })
 }
 
+/// Whether a task includes or imports a file with this file name.
+fn includes_file(task: &Node, name: &str) -> bool {
+    included_file(task)
+        .is_some_and(|f| std::path::Path::new(f).file_name().and_then(|n| n.to_str()) == Some(name))
+}
+
 fn is_controller_only_guard(task: &Node) -> bool {
-    included_file(task).is_some_and(|f| {
-        let path = std::path::Path::new(f);
-        path.file_name().and_then(|n| n.to_str()) == Some(CONTROLLER_ONLY_GUARD)
-            && path
+    includes_file(task, CONTROLLER_ONLY_GUARD)
+        && included_file(task).is_some_and(|f| {
+            std::path::Path::new(f)
                 .parent()
                 .and_then(|d| d.file_name())
                 .and_then(|n| n.to_str())
                 == Some("tasks")
-    })
+        })
 }
 
 /// The first task a play actually runs. `pre_tasks` run before `tasks`, and so do `roles`, which
@@ -290,11 +295,48 @@ fn first_in(seq: &[Node]) -> Option<&Node> {
 /// Whether a task makes escalation possible: an include or import of the resolver task file, or a
 /// set_fact of `ansible_become_password`.
 fn resolves(task: &Node) -> bool {
-    let includes = included_file(task).is_some_and(|f| {
-        std::path::Path::new(f).file_name().and_then(|n| n.to_str()) == Some(RESOLVER_FILE)
-    });
+    // A resolver that never runs (a constant-false `when`, the `never` tag) resolves nothing.
+    if crate::credential_leaks::never_runs(task) {
+        return false;
+    }
     let sets = module(task, "set_fact").is_some_and(|f| f.get("ansible_become_password").is_some());
-    includes || sets
+    includes_file(task, RESOLVER_FILE) || sets
+}
+
+#[test]
+fn the_controller_only_guard_runs_only_assert_and_set_fact() {
+    // The exemption above holds only while the guard escalates nothing: any module but assert and
+    // set_fact (under any spelling) could need the privilege the resolver has not provided yet.
+    let file = format!("platform/playbooks/tasks/{CONTROLLER_ONLY_GUARD}");
+    let tasks = repo::tasks(&file);
+    assert!(!tasks.is_empty(), "{file} has no tasks");
+    let allowed = |key: &str| {
+        ["assert", "set_fact"].iter().any(|m| {
+            key == *m
+                || key == format!("ansible.builtin.{m}")
+                || key == format!("ansible.legacy.{m}")
+        })
+    };
+    let mut other = Vec::new();
+    for task in &tasks {
+        let calls: Vec<&str> = task
+            .as_map()
+            .into_iter()
+            .flatten()
+            .filter_map(|(k, _)| k.as_str())
+            .filter(|k| !TASK_KEYWORDS.contains(k) && !k.starts_with("with_"))
+            .collect();
+        if calls.is_empty() {
+            other.push(format!("{:?} calls no module", task_name(task)));
+        }
+        for call in calls.into_iter().filter(|k| !allowed(k)) {
+            other.push(format!("{:?} calls {call}", task_name(task)));
+        }
+    }
+    assert!(
+        other.is_empty(),
+        "{file} must run only assert and set_fact to stay exempt before the resolver: {other:?}"
+    );
 }
 
 /// The plays of an in-memory playbook, for the self-checks.
@@ -542,6 +584,20 @@ const FIRST_EXECUTED_CASES: &str = r#"
     - block:
         - ansible.builtin.debug: {msg: hi}
         - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad resolver that never runs
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      when: false
+- name: bad resolver tagged never
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      tags: [never]
 - name: bad guard then debug
   hosts: h
   become: true

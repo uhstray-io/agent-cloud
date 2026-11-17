@@ -70,6 +70,7 @@ use std::net::Ipv4Addr;
 use std::os::unix::fs::symlink;
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
@@ -1394,7 +1395,7 @@ impl Guard {
 /// a `when:` list (the items are ANDed), or it is tagged `never`, which skips it unless a run asks
 /// for that tag. A constant false is `false`, `False`, `FALSE`, `no`, `No` or `0`, also wrapped once
 /// in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
-fn never_runs(task: &Node) -> bool {
+pub(crate) fn never_runs(task: &Node) -> bool {
     let is_false = |item: &Node| match item {
         Node::Bool(b) => !b,
         Node::Str(s) => constant_false(s),
@@ -1415,6 +1416,10 @@ fn never_runs(task: &Node) -> bool {
         }
 }
 
+/// An integer comparison with a constant result, `a == b` or `a != b`.
+static INT_COMPARISON: LazyLock<Regex> =
+    LazyLock::new(|| re(r"^\s*(-?\d+)\s*(==|!=)\s*(-?\d+)\s*$"));
+
 /// Whether a `when` string is a constant that is always false.
 fn constant_false(text: &str) -> bool {
     let trimmed = text.trim();
@@ -1425,15 +1430,14 @@ fn constant_false(text: &str) -> bool {
     if matches!(bare, "false" | "False" | "FALSE" | "no" | "No" | "0") {
         return true;
     }
-    let cmp = Regex::new(r"^\s*(-?\d+)\s*(==|!=)\s*(-?\d+)\s*$").expect("a valid regex");
-    cmp.captures(bare).is_some_and(|c| {
-        let (a, b) = (c[1].parse::<i128>().ok(), c[3].parse::<i128>().ok());
-        match (a, b, &c[2]) {
-            (Some(a), Some(b), "==") => a != b,
-            (Some(a), Some(b), "!=") => a == b,
-            _ => false,
-        }
-    })
+    let Some(c) = INT_COMPARISON.captures(bare) else {
+        return false;
+    };
+    let (Ok(a), Ok(b)) = (c[1].parse::<i128>(), c[3].parse::<i128>()) else {
+        return false;
+    };
+    // The pattern admits only `==` and `!=`.
+    if &c[2] == "==" { a != b } else { a == b }
 }
 
 #[test]
@@ -1698,6 +1702,10 @@ fn seed_access_check_ends_the_play_before_any_write() {
         end_block.get("when").and_then(Node::as_str).map(str::trim),
         Some("bao_verify_access_only | default(false) | bool"),
         "the end_play is not gated on exactly the access-check flag"
+    );
+    assert!(
+        !never_runs(end_block),
+        "the end_play never runs (a constant-false when or the never tag), so the play writes"
     );
     let value_check = task_named(&seed_tasks, "Validate the secret value is present");
     assert!(

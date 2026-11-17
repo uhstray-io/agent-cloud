@@ -31,6 +31,7 @@
 //! | cred backup: the key is never taken from a task parameter, and the seed path says why | `the_deploy_key_is_never_a_task_parameter`, with candidate: pins text `every_key_missing_message_says_how_to_seed_the_key` |
 
 use std::fs;
+use std::sync::LazyLock;
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{self, Node};
@@ -43,6 +44,16 @@ const PUSH: &str = "platform/playbooks/tasks/site-config-push.yml";
 const GUARD_INCLUDE: &str = "tasks/assert-bao-transport.yml";
 const CLONE_INCLUDE: &str = "tasks/site-config-clone.yml";
 const KEY_PATH: &str = "secret/data/services/ssh/site-config";
+/// The known-hosts file GIT_SSH_COMMAND must name: the pinned file the clone task writes.
+const KNOWN_HOSTS: &str = "{{ _sc_kh }}";
+
+/// The non-deterministic lookups a vars entry may not hold (see the test that uses it).
+static NONDETERMINISTIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\b(?:lookup|query|q)\s*\(\s*['"](?:ansible\.(?:builtin|legacy)\.)?(?:pipe|url|random_choice)['"]|\bnow\s*\(|\|\s*random\b"#,
+    )
+    .expect("a valid regex")
+});
 /// A task's module under any of the three spellings Ansible accepts for a module key: the short
 /// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
 /// that reads one spelling alone is blind to a task written under another, so every module read
@@ -185,10 +196,11 @@ fn the_playbook_guards_every_openbao_endpoint_it_builds() {
         .iter()
         .filter(|m| m.get("_bao_url").is_some())
         .count();
-    let guards = maps(&doc)
-        .iter()
+    let guard_maps: Vec<&Node> = maps(&doc)
+        .into_iter()
         .filter(|m| include_target(m) == Some(GUARD_INCLUDE))
-        .count();
+        .collect();
+    let guards = guard_maps.len();
 
     // Assert: every endpoint is checked by the transport guard before use.
     assert!(endpoints > 0, "{PB} builds no _bao_url");
@@ -198,9 +210,8 @@ fn the_playbook_guards_every_openbao_endpoint_it_builds() {
     );
     // And each guard checks THAT url: a guard bound to another value passes the count and checks
     // nothing the play sends to.
-    let misbound: Vec<String> = maps(&doc)
+    let misbound: Vec<String> = guard_maps
         .into_iter()
-        .filter(|m| include_target(m) == Some(GUARD_INCLUDE))
         .filter(|m| !guard_checks_bao_url(m))
         .map(|m| task_name(m).to_owned())
         .collect();
@@ -280,10 +291,6 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
 /// of every document in the file. The index keeps two same-named entries in one file apart, so each
 /// counts.
 fn vars_offenders(file: &str, text: &str) -> std::collections::BTreeSet<String> {
-    let bad = Regex::new(
-        r#"\b(?:lookup|query|q)\s*\(\s*['"](?:ansible\.(?:builtin|legacy)\.)?(?:pipe|url|random_choice)['"]|\bnow\s*\(|\|\s*random\b"#,
-    )
-    .expect("a valid regex");
     let mut offenders = std::collections::BTreeSet::new();
     let docs = yaml::parse(text, file);
     for (n, map) in docs.iter().flat_map(maps).enumerate() {
@@ -291,7 +298,7 @@ fn vars_offenders(file: &str, text: &str) -> std::collections::BTreeSet<String> 
             continue;
         };
         for (key, value) in vars {
-            if any_string(value, &|s: &str| bad.is_match(s)) {
+            if any_string(value, &|s: &str| NONDETERMINISTIC.is_match(s)) {
                 let key = key.as_str().unwrap_or("(non-string key)");
                 offenders.insert(format!("{file}#{n}:{key}"));
             }
@@ -347,21 +354,16 @@ fn every_git_call_carrying_a_space_uses_argv_not_cmd() {
     let push = repo::tasks(PUSH);
 
     let identify = named(&clone, "Identify the commit");
-    let commit = named(&push, "Commit");
-    let stage = named(&push, "Stage only the path this run wrote");
-
-    assert!(
-        passes_argv(identify),
-        "the identity task must pass argv, not cmd: or a free-form string"
-    );
-    assert!(
-        passes_argv(commit),
-        "the commit task must pass argv, not cmd: or a free-form string"
-    );
-    assert!(
-        passes_argv(stage),
-        "the stage task must pass argv, not cmd: or a free-form string"
-    );
+    for (label, task) in [
+        ("identity", identify),
+        ("commit", named(&push, "Commit")),
+        ("stage", named(&push, "Stage only the path this run wrote")),
+    ] {
+        assert!(
+            passes_argv(task),
+            "the {label} task must pass argv, not cmd: or a free-form string"
+        );
+    }
 
     let argv: Option<Vec<&str>> = args(identify, "command")
         .and_then(|c| c.get("argv"))
@@ -377,9 +379,8 @@ fn every_git_call_carrying_a_space_uses_argv_not_cmd() {
 /// Whether a task's `command` is a mapping holding `argv` as a list and no `cmd`. A free-form string
 /// word-splits exactly like `cmd:`.
 fn passes_argv(task: &Node) -> bool {
-    args(task, "command").is_some_and(|c| {
-        c.as_map().is_some() && c.get("argv").and_then(Node::as_seq).is_some() && !has_key(c, "cmd")
-    })
+    args(task, "command")
+        .is_some_and(|c| c.get("argv").and_then(Node::as_seq).is_some() && !has_key(c, "cmd"))
 }
 
 #[test]
@@ -645,8 +646,11 @@ fn git_ssh_names_only_the_deploy_key_with_strict_host_keys() {
 }
 
 /// The `-o` options of an ssh command line, as (key, value), from `-o K=V` and `-oK=V`.
+/// An option with no `=` (`-o "StrictHostKeyChecking no"` splits into two tokens) is returned with
+/// an empty key and the raw token as its value, so the caller can refuse what it cannot read.
 fn ssh_options(cmd: &str) -> Vec<(String, String)> {
-    let tokens: Vec<&str> = cmd.split_whitespace().collect();
+    let tokens = ssh_tokens(cmd);
+    let tokens: Vec<&str> = tokens.iter().map(String::as_str).collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -657,12 +661,45 @@ fn ssh_options(cmd: &str) -> Vec<(String, String)> {
             }
             t => t.strip_prefix("-o"),
         };
-        if let Some((k, v)) = opt.and_then(|o| o.split_once('=')) {
-            out.push((k.to_owned(), v.to_owned()));
+        match opt.map(|o| (o, o.split_once('='))) {
+            Some((_, Some((k, v)))) if !k.is_empty() => out.push((k.to_owned(), v.to_owned())),
+            Some((raw, _)) => out.push((String::new(), raw.to_owned())),
+            None => {}
         }
         i += 1;
     }
     out
+}
+
+/// An ssh command line split on whitespace, except inside a Jinja `{{ ... }}` expression, which
+/// renders to one word: `UserKnownHostsFile={{ _sc_kh }}` stays one token.
+fn ssh_tokens(cmd: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut in_expr = false;
+    let mut rest = cmd;
+    while let Some(c) = rest.chars().next() {
+        if rest.starts_with("{{") {
+            in_expr = true;
+        } else if rest.starts_with("}}") {
+            in_expr = false;
+            current.push_str("}}");
+            rest = &rest[2..];
+            continue;
+        }
+        if c.is_whitespace() && !in_expr {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(c);
+        }
+        rest = &rest[c.len_utf8()..];
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 /// What is wrong with an ssh command's options: ssh takes the FIRST value of a repeated option, so
@@ -671,8 +708,10 @@ fn ssh_options_problems(cmd: &str) -> Vec<String> {
     let opts = ssh_options(cmd);
     let mut problems = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
-    for (k, _) in &opts {
-        if !seen.insert(k.to_ascii_lowercase()) {
+    for (k, v) in &opts {
+        if k.is_empty() {
+            problems.push(format!("unparsed -o option {v:?}"));
+        } else if !seen.insert(k.to_ascii_lowercase()) {
             problems.push(format!("option {k} appears twice; ssh takes the first"));
         }
     }
@@ -686,22 +725,36 @@ fn ssh_options_problems(cmd: &str) -> Vec<String> {
             problems.push(format!("{key} must be yes, got {:?}", value(key)));
         }
     }
-    if value("UserKnownHostsFile").is_none() {
-        problems.push("UserKnownHostsFile is missing".to_owned());
+    if value("UserKnownHostsFile") != Some(KNOWN_HOSTS) {
+        problems.push(format!(
+            "UserKnownHostsFile must be {KNOWN_HOSTS}, got {:?}",
+            value("UserKnownHostsFile")
+        ));
     }
     problems
 }
 
 #[test]
 fn a_repeated_ssh_option_is_refused() {
-    let good = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -oUserKnownHostsFile=f";
-    assert!(ssh_options_problems(good).is_empty());
+    let good = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+                -oUserKnownHostsFile={{ _sc_kh }}";
+    assert_eq!(ssh_options_problems(good), Vec::<String>::new());
     let shadowed = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-                    -o StrictHostKeyChecking=yes -o UserKnownHostsFile=f";
+                    -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
     assert!(!ssh_options_problems(shadowed).is_empty());
     let lower = "ssh -i k -o IdentitiesOnly=yes -ostricthostkeychecking=no \
-                 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=f";
+                 -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
     assert!(!ssh_options_problems(lower).is_empty());
+    let spaced = "ssh -i k -o IdentitiesOnly=yes -o \"StrictHostKeyChecking no\" \
+                  -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
+    assert!(
+        ssh_options_problems(spaced)
+            .iter()
+            .any(|p| p.starts_with("unparsed -o option"))
+    );
+    let other_hosts = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+                       -o UserKnownHostsFile=/dev/null";
+    assert!(!ssh_options_problems(other_hosts).is_empty());
 }
 
 #[test]
