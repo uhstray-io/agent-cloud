@@ -26,11 +26,21 @@
 //!   and that anchor line must exist. The BATS sed range printed nothing when its anchor was
 //!   missing, and the absence check then passed for nothing;
 //! - the loopback scan reads the tracked files (`repo::ls_files`, git pathspecs) where BATS ran
-//!   `find` over the working tree;
+//!   `find` over the working tree, and requires the scanned set to hold the compose file and the
+//!   deploy playbook, so a pathspec that matches nothing fails;
+//! - the `Report` block is `task_block`'s: it ends at the next `- name:` at the same or shallower
+//!   indent, where the BATS awk ended only at a four-space one (the Report task is the file's last);
+//! - stricter, where the BATS regex passed for the wrong reason (simplify review of this port):
+//!   the compose checks also read the parsed file (the five services, the app's healthy
+//!   dependencies, the app command's read source, the healthcheck's `/api/` path and its `<500`
+//!   threshold); the psql check reads its own task (a `command` with `argv`, no `shell`); the seed
+//!   playbook's transport guard precedes its first request; the OIDC chain refutes a second
+//!   declaration of the secret in the deploy playbook; every app-template secret slot is declared
+//!   or shared-read; and deploy.sh runs no plain `up -d` in a non-comment line;
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
 //!
-//! Helpers this file keeps privately until the shared support lands (plan 24 S7): `task_block`,
+//! Helpers this file keeps privately until the batch's shared-support PR S7 lands: `task_block`,
 //! `assert_precedes` and `assert_contains`/`refute_contains`. The `text` helpers come from
 //! `agent_cloud_tests::text`.
 //!
@@ -121,22 +131,28 @@ fn assert_file(rel: &str) {
     assert!(repo::path(rel).is_file(), "{rel}: not a file");
 }
 
-/// `[ -x <rel> ]`, checked as any execute bit. The test runs as the owner, for whom `[ -x ]` reads
-/// the owner bit; the stricter of the two is not what the BATS check asked.
+/// The parsed compose file's `services` mapping.
+fn compose_services() -> Node {
+    yaml::load_one(&repo::path(COMPOSE))
+        .and_then(|doc| doc.get("services").cloned())
+        .unwrap_or_else(|| panic!("{COMPOSE}: no services mapping"))
+}
+
+/// One service of the compose file, panicking when it is missing.
+fn service<'a>(services: &'a Node, name: &str) -> &'a Node {
+    services
+        .get(name)
+        .unwrap_or_else(|| panic!("{COMPOSE}: no service {name}"))
+}
+
+/// `[ -x <rel> ]`, checked as any execute bit. Git stores a file as 644 or 755, so any bit and the
+/// owner bit agree on a checkout.
 fn assert_executable(rel: &str) {
     let mode = std::fs::metadata(repo::path(rel))
         .unwrap_or_else(|e| panic!("{rel}: {e}"))
         .permissions()
         .mode();
     assert!((mode & 0o111) != 0, "{rel}: not executable (mode {mode:o})");
-}
-
-/// `grep -c <literal>`: lines of `rel` containing the literal.
-fn count_contains(rel: &str, literal: &str) -> usize {
-    text::read(rel)
-        .split_terminator('\n')
-        .filter(|line| line.contains(literal))
-        .count()
 }
 
 /// `grep -cE <pattern>`: lines of `rel` the ERE `pattern` matches.
@@ -163,13 +179,6 @@ fn first_match(text: &str, pattern: &str) -> Option<usize> {
     let re = Regex::new(pattern).unwrap_or_else(|e| panic!("bad pattern {pattern:?}: {e}"));
     text.split_terminator('\n')
         .position(|line| re.is_match(line))
-        .map(|i| i + 1)
-}
-
-/// `grep -n <literal> <rel> | head -1`: the 1-based line of the first line holding the literal.
-fn first_line_containing(text: &str, literal: &str) -> Option<usize> {
-    text.split_terminator('\n')
-        .position(|line| line.contains(literal))
         .map(|i| i + 1)
 }
 
@@ -245,48 +254,6 @@ fn refute_contains(haystack: &str, needle: &str, what: &str) {
     );
 }
 
-/// The value of the app's `command:` block: the awk of the mounted-config test. The lines after
-/// the `      - >-` line that are indented two or more spaces, up to the next six-space key, each
-/// followed by a space (`tr '\n' ' '`).
-fn command_value(rel: &str) -> String {
-    let start = Regex::new(r"^      - >-$").expect("start pattern");
-    let stop = Regex::new(r"^      [^ ]").expect("stop pattern");
-    let body = Regex::new(r"^  ").expect("body pattern");
-    let mut inside = false;
-    let mut out = String::new();
-    for line in text::read(rel).split_terminator('\n') {
-        if start.is_match(line) {
-            inside = true;
-        } else if inside && stop.is_match(line) {
-            break;
-        } else if inside && body.is_match(line) {
-            out.push_str(line);
-            out.push(' ');
-        }
-    }
-    out
-}
-
-/// The `Report (names and lengths only` task's body (the awk of the API-key test): the lines
-/// after its `- name:` line, up to the next four-space `- name:`.
-fn report_block(rel: &str) -> String {
-    let start = Regex::new(r#"- name: "Report \(names and lengths only"#).expect("start pattern");
-    let stop = Regex::new(r"^    - name:").expect("stop pattern");
-    let text = text::read(rel);
-    let mut inside = false;
-    let mut out = Vec::new();
-    for line in text.split_terminator('\n') {
-        if start.is_match(line) {
-            inside = true;
-        } else if inside && stop.is_match(line) {
-            break;
-        } else if inside {
-            out.push(line);
-        }
-    }
-    out.join("\n")
-}
-
 /// The sed range `/<anchor>/,$p`: from the first line holding the anchor to the end of the file.
 /// Empty when the anchor is missing; the caller asserts the anchor exists first.
 fn from_anchor_to_end(rel: &str, anchor: &str) -> String {
@@ -340,6 +307,25 @@ fn five_container_stack() {
     text::assert_line(COMPOSE, r"^\s+postiz-redis:");
     text::assert_line(COMPOSE, r"^\s+temporal:");
     text::assert_line(COMPOSE, r"^\s+temporal-postgresql:");
+    // The lines above also match `depends_on` keys; the parsed services are the five, no more.
+    let services = compose_services();
+    let names: Vec<&str> = services
+        .as_map()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|(k, _)| k.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "postiz",
+            "postiz-postgres",
+            "postiz-redis",
+            "temporal",
+            "temporal-postgresql"
+        ],
+        "{COMPOSE}: the services"
+    );
 }
 
 #[test]
@@ -423,17 +409,30 @@ fn mounted_app_config_is_actually_loaded() {
     // Mounting the config file is not sufficient on its own: the image entrypoint is a generic node
     // wrapper that never reads it, so the app starts with no DATABASE_URL. The command below reads
     // the file into the environment; it never sources it.
-    let cmd = command_value(COMPOSE);
-    assert!(!cmd.is_empty(), "{COMPOSE}: no `- >-` command block");
+    let services = compose_services();
+    let command = service(&services, "postiz")
+        .get("command")
+        .and_then(Node::as_seq)
+        .unwrap_or_else(|| panic!("{COMPOSE}: the app has no command list"));
+    let argv: Vec<&str> = command.iter().filter_map(Node::as_str).collect();
+    assert_eq!(
+        argv.len(),
+        3,
+        "{COMPOSE}: the app command is `sh -c <script>`"
+    );
+    assert_eq!(argv[..2], ["sh", "-c"], "{COMPOSE}: the app command");
+    let cmd = argv[2];
+    // The loop reads the mounted file itself: without this the read source is unchecked.
+    assert_contains(cmd, "done < /config/postiz.env;", "the command value");
 
     // READ into the environment, never SOURCED. `.` subjects every line to shell parsing and the
     // template renders values unquoted, so a value containing `$(...)` executes.
-    refute_contains(&cmd, ". /config/postiz.env", "the command value");
-    assert_contains(&cmd, r#"export "$$l""#, "the command value");
+    refute_contains(cmd, ". /config/postiz.env", "the command value");
+    assert_contains(cmd, r#"export "$$l""#, "the command value");
     // Retain the declared startup sequence; explicit export assigns child-process env.
-    assert_contains(&cmd, "set -a", "the command value");
+    assert_contains(cmd, "set -a", "the command value");
     // `read` returns false on a final line with no trailing newline and would drop it silently.
-    assert_contains(&cmd, r#"|| [ -n "$$l" ]"#, "the command value");
+    assert_contains(cmd, r#"|| [ -n "$$l" ]"#, "the command value");
 
     // NOT via env_file, which compose interpolates.
     text::refute_line(COMPOSE, r"^\s+env_file:");
@@ -453,16 +452,26 @@ fn nothing_probes_the_workflow_engine_on_loopback() {
     // git's `*` crosses `/`, as find's recursion did). A comment line is excluded where the BATS
     // filter excluded a `:` followed by optional whitespace and `#`, as in `grep -Hn` output.
     let comment = Regex::new(r":[[:space:]]*#").expect("comment pattern");
+    let scanned = repo::ls_files(&["platform/*.yml", "platform/*.sh", "platform/*.j2"]);
+    for rel in [COMPOSE, DEPLOY_PB] {
+        assert!(
+            scanned.iter().any(|f| f == rel),
+            "the scan does not read {rel}: the pathspecs match the wrong files"
+        );
+    }
     let mut hits = Vec::new();
-    for rel in repo::ls_files(&["platform/*.yml", "platform/*.sh", "platform/*.j2"]) {
-        for (i, line) in text::read(&rel).split_terminator('\n').enumerate() {
-            if line.contains("127.0.0.1:7233") {
-                let shown = format!("{rel}:{}:{line}", i + 1);
-                if !comment.is_match(&shown) {
-                    hits.push(shown);
-                }
-            }
+    for rel in &scanned {
+        let body = text::read(rel);
+        if !body.contains("127.0.0.1:7233") {
+            continue;
         }
+        hits.extend(
+            body.split_terminator('\n')
+                .enumerate()
+                .filter(|(_, line)| line.contains("127.0.0.1:7233"))
+                .map(|(i, line)| format!("{rel}:{}:{line}", i + 1))
+                .filter(|shown| !comment.is_match(shown)),
+        );
     }
     assert!(
         hits.is_empty(),
@@ -480,7 +489,7 @@ fn nothing_probes_the_workflow_engine_on_loopback() {
 #[test]
 fn healthchecks_on_all_five_containers_app_dependencies_gated() {
     assert_eq!(
-        count_contains(COMPOSE, "healthcheck:"),
+        count_lines(COMPOSE, "healthcheck:"),
         5,
         "{COMPOSE}: the healthcheck count"
     );
@@ -490,6 +499,27 @@ fn healthchecks_on_all_five_containers_app_dependencies_gated() {
     // The app waits on its datastores AND the workflow engine.
     text::assert_line(COMPOSE, r"temporal:\s*$");
     text::assert_line(COMPOSE, "condition: service_healthy");
+    // The lines above match anywhere; the parsed file pins each service's healthcheck and the
+    // app's three healthy dependencies.
+    let services = compose_services();
+    for (name, svc) in services.as_map().unwrap_or_default() {
+        let name = name.as_str().unwrap_or("?");
+        assert!(
+            svc.get("healthcheck").is_some(),
+            "{COMPOSE}: {name} has no healthcheck"
+        );
+    }
+    let depends = service(&services, "postiz").get("depends_on");
+    for dep in ["postiz-postgres", "postiz-redis", "temporal"] {
+        assert_eq!(
+            depends
+                .and_then(|d| d.get(dep))
+                .and_then(|d| d.get("condition"))
+                .and_then(Node::as_str),
+            Some("service_healthy"),
+            "{COMPOSE}: the app does not wait for {dep} to be healthy"
+        );
+    }
 }
 
 #[test]
@@ -548,6 +578,8 @@ fn deploy_sh_recreates_on_a_changed_config() {
     // leave the old container running with stale config. compose_up_if_changed hashes the file.
     text::assert_line(DEPLOY_SH, r"^ *compose_up_if_changed .*config/postiz\.env");
     text::refute_text(DEPLOY_SH, "compose up -d");
+    // Any spelling of a plain `up -d` (`$COMPOSE up -d`) in a line that runs.
+    refute_in(&non_comment_lines(DEPLOY_SH), r"\bup -d\b", DEPLOY_SH);
 }
 
 #[test]
@@ -692,6 +724,12 @@ fn oidc_client_secret_chain_has_no_copy() {
         AUTHENTIK_ENV,
         r"^POSTIZ_OIDC_CLIENT_SECRET=\{\{ secrets\.postiz_oidc_client_secret \}\}",
     );
+    // postiz shared-reads authentik's value and declares no secret of its own under that name.
+    text::assert_line(
+        DEPLOY_PB,
+        r"from_service: authentik, read_keys: \[postiz_oidc_client_secret\]",
+    );
+    text::refute_line(DEPLOY_PB, r"name: postiz_oidc_client_secret");
 }
 
 #[test]
@@ -774,6 +812,11 @@ fn psql_check_preserves_its_exit_status() {
     assert!(!task.is_empty(), "{VALIDATE_PB}: the psql task has no body");
     refute_contains(&task, "head -3", "the psql task");
     text::assert_line(VALIDATE_PB, r"ansible\.builtin\.command:");
+    // The file-wide line above holds for any task; this task itself runs a command with argv and
+    // no shell.
+    assert_in(&task, r"^\s+ansible\.builtin\.command:$", "the psql task");
+    assert_in(&task, r"^\s+argv:$", "the psql task");
+    refute_in(&task, r"^\s+(ansible\.builtin\.)?shell:", "the psql task");
 }
 
 #[test]
@@ -799,18 +842,18 @@ fn first_path_secret_creation_is_atomic() {
 
 #[test]
 fn seed_playbook_uses_the_shared_cleartext_guard() {
-    // The rule lives in exactly one file, and its behaviour (18 URL cases, including four
-    // userinfo bypasses) is asserted in platform/tests/suite/credential_leaks.rs. This playbook only
-    // delegates to the shared guard.
+    // The rule lives in exactly one file, and its behaviour (the URL cases, including the userinfo
+    // bypasses) is asserted in platform/tests/suite/credential_leaks.rs. This playbook only
+    // delegates to the shared guard, before its first request.
     text::assert_line(SEED_PB, r"include_tasks: tasks/assert-bao-transport\.yml");
     text::refute_text(SEED_PB, "Refusing to send secret material");
+    assert_guard_precedes_first_uri(SEED_PB);
 }
 
 #[test]
 fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
-    // The BATS script opens the app env template too; a missing one fails here as it did there.
-    let _ = text::read(APP_ENV_J2);
     let seed = captured(&text::read(SEED_PB), r"(?m)^      - ([a-z0-9_]+)$");
+    assert!(!seed.is_empty(), "{SEED_PB}: no seedable keys");
     let declared = captured(
         &text::read(DEPLOY_PB),
         r"name: postiz_([a-z0-9_]+), type: existing",
@@ -820,6 +863,21 @@ fn every_provider_slot_has_a_seedable_key_and_a_declaration() {
         "DRIFT seed-only={:?} declared-only={:?}",
         seed.difference(&declared).collect::<Vec<_>>(),
         declared.difference(&seed).collect::<Vec<_>>()
+    );
+    // Every secret slot of the app template reaches it: declared by the deploy (existing or
+    // random) or shared-read from authentik. A template-only slot would render empty.
+    let deploy = text::read(DEPLOY_PB);
+    let mut reachable = captured(
+        &deploy,
+        r"name: postiz_([a-z0-9_]+), type: (?:existing|random)",
+    );
+    reachable.extend(captured(&deploy, r"read_keys: \[postiz_([a-z0-9_]+)\]"));
+    let slots = captured(&text::read(APP_ENV_J2), r"secrets\.postiz_([a-z0-9_]+)");
+    assert!(!slots.is_empty(), "{APP_ENV_J2}: no secret slots");
+    let unreached: Vec<_> = slots.difference(&reachable).collect();
+    assert!(
+        unreached.is_empty(),
+        "{APP_ENV_J2}: slots nothing provides: {unreached:?}"
     );
 }
 
@@ -885,6 +943,20 @@ fn app_healthcheck_probes_the_backend_path() {
     // /api/ is proxied to the backend, so its answer, even a 404, proves the process bound.
     text::assert_line(COMPOSE, "http://127.0.0.1:5000/api/");
     text::refute_line(COMPOSE, r"get\('http://127\.0\.0\.1:5000/',");
+    // The probe itself, parsed: it asks /api/ and counts only an answer under 500 as healthy, so
+    // a 502 from nginx (the backend down) fails it.
+    let services = compose_services();
+    let probe: Vec<&str> = service(&services, "postiz")
+        .get("healthcheck")
+        .and_then(|h| h.get("test"))
+        .and_then(Node::as_seq)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Node::as_str)
+        .collect();
+    let probe = probe.join(" ");
+    assert_contains(&probe, "http://127.0.0.1:5000/api/'", "the app healthcheck");
+    assert_contains(&probe, "s.statusCode<500?0:1", "the app healthcheck");
 }
 
 #[test]
@@ -928,7 +1000,7 @@ fn api_key_capture_is_read_only_with_fixed_path_and_no_log() {
     );
     // The one debug prints a LENGTH, never the value: every `_api_key` in the Report block is
     // followed by ` | length`. Strict: each occurrence, not each match of the BRE filter.
-    let report = report_block(STORE_KEY_PB);
+    let report = task_block(STORE_KEY_PB, "Report (names and lengths only");
     assert!(
         !report.is_empty(),
         "{STORE_KEY_PB}: the Report task has no body"
@@ -951,19 +1023,15 @@ fn teardown_resolves_the_compose_file_superset() {
     // A service or volume that exists only in an overlay is invisible to a base-only `down -v`.
     // Both teardown branches must glob the overlays in.
     assert!(
-        count_contains(CLEAN_SERVICE, "compose.*.yml") >= 2,
+        count_lines(CLEAN_SERVICE, r"compose\.\*\.yml") >= 2,
         "{CLEAN_SERVICE}: fewer than two overlay globs"
     );
     // The PROD branch skips compose.local.yml, which references local-only externals.
     text::assert_line(CLEAN_SERVICE, r"compose\.local\.yml\) continue");
     // The base still comes first: overlays reference its services.
-    let text = text::read(CLEAN_SERVICE);
-    let first_base = first_match(&text, r"for f in docker-compose\.yml compose\.yml")
-        .unwrap_or_else(|| panic!("{CLEAN_SERVICE}: no base-file loop"));
-    let first_glob = first_line_containing(&text, "compose.*.yml")
-        .unwrap_or_else(|| panic!("{CLEAN_SERVICE}: no overlay glob"));
-    assert!(
-        first_base < first_glob,
-        "{CLEAN_SERVICE}: the base loop (line {first_base}) comes after the overlay glob (line {first_glob})"
+    assert_precedes(
+        CLEAN_SERVICE,
+        r"for f in docker-compose\.yml compose\.yml",
+        r"compose\.\*\.yml",
     );
 }
