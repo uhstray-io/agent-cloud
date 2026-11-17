@@ -1395,8 +1395,8 @@ impl Guard {
 
 /// Whether a task never runs: a `when` with any constant-false item (the items are ANDed, so one
 /// false item means it skips or an earlier item raises: either way it does not run), a `when` that
-/// always errors, or the `never` tag. A guard counted under any of them would not run, so the
-/// transport-guard count and the seed chain refuse all three. The first-executed search needs the
+/// always errors, or the `never` tag (see [`tagged_never`]). A guard counted under any of them may
+/// not run, so the transport-guard count and the seed chain refuse all three. The first-executed search needs the
 /// stricter, order-aware [`when_is_constant_false`], since an error there runs a `rescue:` first.
 fn never_runs(task: &Node) -> bool {
     when_any(task, item_constant_false) || when_always_errors(task) || tagged_never(task)
@@ -1431,12 +1431,13 @@ fn bare_when(text: &str) -> &str {
 }
 
 /// Whether a task's `when` (or any item of a `when:` list) is a constant ansible-core raises on
-/// instead of skipping: `0`, a non-boolean result, or a quoted `no`, `No` or `FALSE`, which Jinja
-/// reads as an undefined name. Bare or wrapped once in `{{ }}`.
+/// instead of skipping, because its result is not a boolean: the integer `0`, Jinja's `None` or
+/// `none`, or a quoted `no`, `No` or `FALSE`, which Jinja reads as an undefined name. Bare or
+/// wrapped once in `{{ }}`. Only these forms are recognised; another non-boolean constant is not.
 fn when_always_errors(task: &Node) -> bool {
     when_any(task, |item| {
         item.as_str()
-            .is_some_and(|s| matches!(bare_when(s), "0" | "no" | "No" | "FALSE"))
+            .is_some_and(|s| matches!(bare_when(s), "0" | "None" | "none" | "no" | "No" | "FALSE"))
     })
 }
 
@@ -1465,8 +1466,9 @@ pub(crate) fn when_is_constant_false(task: &Node) -> bool {
     }
 }
 
-/// Whether a task carries the `never` tag. Whether it then runs depends on the run's `--tags`, so
-/// a caller decides what that means for it.
+/// Whether a task carries the `never` tag. Whether it then runs depends on the run's `--tags` (and
+/// a task tagged `always` as well runs by default), so a caller decides what that means for it:
+/// every caller here treats it as not running, which can only refuse a task that would run.
 pub(crate) fn tagged_never(task: &Node) -> bool {
     match task.get("tags") {
         // Ansible splits a comma-separated tags string into tags.
@@ -1520,6 +1522,8 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
         "when: \"FALSE\"\n",
         "when: \"No\"\n",
         "when: [true, \"0\"]\n",
+        "when: \"None\"\n",
+        "when: \"{{ none }}\"\n",
     ] {
         assert!(never_runs(&task(&format!("name: t\n{never}"))), "{never}");
     }
@@ -1779,13 +1783,12 @@ fn task_with_ancestors_follows_only_block() {
     }
 }
 
-#[test]
-fn seed_access_check_ends_the_play_before_any_write() {
-    // Arrange
-    let seed = load(SEED_KEY);
-    let seed_maps = maps_in_order(&seed);
-
-    // Act
+/// What lets the seed playbook write in a read-only run, or `None`: the access check and the named
+/// end_play must come before the merge; the end_play must sit in a play's task tree under `block`
+/// only, end the play, and be gated on exactly the access-check flag; and neither it nor a block
+/// around it may be one that never runs or carries a `when`.
+fn seed_chain_problem(seed: &Node) -> Option<String> {
+    let seed_maps = maps_in_order(seed);
     let access = position(&seed_maps, |m| {
         include_target(m, &INCLUDE_SHORTS) == Some("tasks/assert-bao-seed-access.yml")
     });
@@ -1798,53 +1801,50 @@ fn seed_access_check_ends_the_play_before_any_write() {
         m.get("name").and_then(Node::as_str) == Some(SEED_END_PLAY)
             && module(m, "meta").and_then(Node::as_str) == Some("end_play")
     });
-
-    // Assert: the access check and the end of play both come before the merge.
-    let (access, merge, end) = (
-        access.expect("the access check is not included"),
-        merge.expect("the merge is not included"),
-        end.expect("no end_play"),
-    );
-    assert!(access < merge, "the access check runs after the merge");
-    assert!(end < merge, "the play can write before it ends");
-
+    let (Some(access), Some(merge), Some(end)) = (access, merge, end) else {
+        return Some(format!(
+            "missing: access check at {access:?}, merge at {merge:?}, named end_play at {end:?}"
+        ));
+    };
+    if access > merge {
+        return Some("the access check runs after the merge".into());
+    }
+    if end > merge {
+        return Some("the play can write before it ends".into());
+    }
     // The named end_play with every block around it: Ansible applies a block's `when` and `tags`
     // to every task in it, so none of them may be one that never runs.
-    let chain = seed
-        .as_seq()
-        .unwrap_or(&[])
-        .iter()
-        .find_map(|play| {
-            task_with_ancestors(
-                play.get("tasks").and_then(Node::as_seq).unwrap_or(&[]),
-                SEED_END_PLAY,
-            )
-        })
-        .expect("the named end_play is in a play's task tree");
+    let Some(chain) = seed.as_seq().unwrap_or(&[]).iter().find_map(|play| {
+        task_with_ancestors(
+            play.get("tasks").and_then(Node::as_seq).unwrap_or(&[]),
+            SEED_END_PLAY,
+        )
+    }) else {
+        return Some("the named end_play is not in a play's task tree under block".into());
+    };
     let end_block = *chain.last().expect("a chain ends at the named task");
     // The chain must end at the end_play the order check found: a same-named task elsewhere (in a
     // rescue, which the chain does not walk) must not stand in for it.
-    assert!(
-        std::ptr::eq(end_block, seed_maps[end]),
-        "the named end_play the order check found is not the one in the play's task tree"
-    );
-    // The named task is the end_play itself, gated on exactly the flag: a substring passed
-    // `<flag> and false`, and a separate end_play elsewhere passed the order check (#1148 review).
-    assert_eq!(
-        module(end_block, "meta").and_then(Node::as_str),
-        Some("end_play"),
-        "the named task does not end the play"
-    );
-    assert_eq!(
-        end_block.get("when").and_then(Node::as_str).map(str::trim),
-        Some("bao_verify_access_only | default(false) | bool"),
-        "the end_play is not gated on exactly the access-check flag"
-    );
-    assert!(
-        !chain.iter().any(|t| never_runs(t)),
-        "the end_play, or a block around it, never runs (a constant-false when or the never \
-         tag), so the play writes"
-    );
+    if !std::ptr::eq(end_block, seed_maps[end]) {
+        return Some(
+            "the named end_play the order check found is not the one in the play's task tree"
+                .into(),
+        );
+    }
+    // The end_play gated on exactly the flag: a substring passed `<flag> and false`, and a
+    // separate end_play elsewhere passed the order check (#1148 review).
+    if end_block.get("when").and_then(Node::as_str).map(str::trim)
+        != Some("bao_verify_access_only | default(false) | bool")
+    {
+        return Some("the end_play is not gated on exactly the access-check flag".into());
+    }
+    if chain.iter().any(|t| never_runs(t)) {
+        return Some(
+            "the end_play, or a block around it, never runs (a constant-false when or the never \
+             tag), so the play writes"
+                .into(),
+        );
+    }
     // The end_play's own `when` is pinned above; any `when` on a block around it could skip it.
     let gated: Vec<&str> = chain[..chain.len() - 1]
         .iter()
@@ -1855,10 +1855,70 @@ fn seed_access_check_ends_the_play_before_any_write() {
                 .unwrap_or("(unnamed block)")
         })
         .collect();
-    assert!(
-        gated.is_empty(),
-        "a block around the end_play carries a when, which can skip it: {gated:?}"
+    if !gated.is_empty() {
+        return Some(format!(
+            "a block around the end_play carries a when, which can skip it: {gated:?}"
+        ));
+    }
+    None
+}
+
+#[test]
+fn the_seed_chain_check_refuses_an_end_play_that_may_not_run() {
+    let gate = "bao_verify_access_only | default(false) | bool";
+    let doc = |middle: &str| {
+        yaml::parse(
+            &format!(
+                "- hosts: h\n  tasks:\n    - ansible.builtin.include_tasks: tasks/assert-bao-seed-access.yml\n{middle}    - ansible.builtin.include_tasks: tasks/bao-merge-keys.yml\n"
+            ),
+            "synthetic",
+        )
+        .remove(0)
+    };
+    let end = format!(
+        "    - name: {SEED_END_PLAY}\n      ansible.builtin.meta: end_play\n      when: {gate}\n"
     );
+    let in_block = |extra: &str| {
+        format!(
+            "    - name: outer\n{extra}      block:\n        - name: {SEED_END_PLAY}\n          ansible.builtin.meta: end_play\n          when: {gate}\n"
+        )
+    };
+    for ok in [end.clone(), in_block("")] {
+        assert_eq!(seed_chain_problem(&doc(&ok)), None, "{ok}");
+    }
+    for bad in [
+        format!("{end}      tags: [never]\n"),
+        end.replace(gate, &format!("{gate} and false")),
+        in_block("      when: x\n"),
+        in_block("      tags: [never]\n"),
+        format!(
+            "    - name: outer\n      block:\n        - ansible.builtin.debug: {{msg: hi}}\n      rescue:\n        - name: {SEED_END_PLAY}\n          ansible.builtin.meta: end_play\n          when: {gate}\n"
+        ),
+        // A same-named, same-gated task in the tree stands in for the end_play in a rescue.
+        format!(
+            "    - name: {SEED_END_PLAY}\n      ansible.builtin.debug: {{msg: hi}}\n      when: {gate}\n    - name: outer\n      block:\n        - ansible.builtin.debug: {{msg: hi}}\n      rescue:\n        - name: {SEED_END_PLAY}\n          ansible.builtin.meta: end_play\n          when: {gate}\n"
+        ),
+    ] {
+        assert!(seed_chain_problem(&doc(&bad)).is_some(), "{bad}");
+    }
+    // Out of order: the access check, or the end_play, after the merge.
+    let access = "    - ansible.builtin.include_tasks: tasks/assert-bao-seed-access.yml\n";
+    let merge = "    - ansible.builtin.include_tasks: tasks/bao-merge-keys.yml\n";
+    for tasks in [
+        format!("{end}{merge}{access}"),
+        format!("{access}{merge}{end}"),
+    ] {
+        let seed = yaml::parse(&format!("- hosts: h\n  tasks:\n{tasks}"), "synthetic").remove(0);
+        assert!(seed_chain_problem(&seed).is_some(), "{tasks}");
+    }
+}
+
+#[test]
+fn seed_access_check_ends_the_play_before_any_write() {
+    let seed = load(SEED_KEY);
+    if let Some(problem) = seed_chain_problem(&seed) {
+        panic!("{SEED_KEY}: {problem}");
+    }
     let seed_tasks = play_tasks(SEED_KEY);
     let value_check = task_named(&seed_tasks, "Validate the secret value is present");
     assert!(

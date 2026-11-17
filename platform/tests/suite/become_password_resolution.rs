@@ -23,7 +23,7 @@
 //! | become: the resolver reads the same secret path harden-ssh does | `harden_ssh_reads_the_secret_path_the_resolver_reads` |
 //! | become: every play-level-become playbook resolves a sudo password | `every_playbook_that_escalates_at_play_level_resolves_a_sudo_password` |
 //! | become: automatic fact gathering is OFF wherever the resolver is used | `fact_gathering_is_off_in_every_play_that_uses_the_resolver` |
-//! | become: the first task is what makes escalation possible | `the_first_task_of_every_escalating_play_resolves_the_password`, with the two self-checks `the_first_task_check_rejects_a_later_play_without_the_resolver` and `the_first_task_check_rejects_gathering_before_the_resolver`, and the self-check `the_first_task_check_follows_pre_tasks_roles_blocks_and_the_guard`, and `the_controller_only_guard_runs_only_assert_and_set_fact` |
+//! | become: the first task is what makes escalation possible | `the_first_task_of_every_escalating_play_resolves_the_password` (self-checks: `the_first_task_check_rejects_a_later_play_without_the_resolver`, `the_first_task_check_rejects_gathering_before_the_resolver`, `the_first_task_check_follows_pre_tasks_roles_blocks_and_the_guard`, `the_controller_only_guard_runs_only_assert_and_set_fact`) |
 //! | become: gathering, where it happens at all, happens after escalation is possible | `explicit_gathering_comes_straight_after_the_resolver` |
 //! | become: the resolver guards the transport it sends the credential over | `the_resolver_guards_the_transport_before_it_fetches` |
 //! | become: the known gap is still the only one, and is named | `the_known_gap_still_resolves_no_password` |
@@ -296,6 +296,18 @@ fn first_in(seq: &[Node]) -> First<'_> {
         if task.get("when").is_some() {
             return First::Unknown;
         }
+        // A loop over an empty list runs nothing (`loop: []`, `with_items: []`), and its list is
+        // decided at run time: fail closed.
+        let loops = match task {
+            Node::Map(entries) => entries.iter().any(|(k, _)| {
+                k.as_str()
+                    .is_some_and(|k| k == "loop" || k.starts_with("with_"))
+            }),
+            _ => false,
+        };
+        if loops {
+            return First::Unknown;
+        }
         let Some(block) = task.get("block").and_then(Node::as_seq) else {
             return First::Found(task);
         };
@@ -561,6 +573,20 @@ fn the_first_task_check_rejects_gathering_before_the_resolver() {
 
 /// Each play names its expected verdict: `ok ...` must pass, `bad ...` must be flagged.
 const FIRST_EXECUTED_CASES: &str = r#"
+- name: bad resolver include under an empty loop
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      loop: []
+- name: bad resolver include under an empty with_items
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      with_items: []
 - name: bad pre_tasks before the resolver
   hosts: h
   become: true
