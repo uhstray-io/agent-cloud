@@ -29,9 +29,12 @@
 //! only on Rust citations, which the Python checker does not read.
 //!
 //! A citation that cannot resolve because its test was deleted or renamed after the entry was
-//! written stays in the append-only ledger. `platform/tests/ledger_citation_ratchet.txt` lists
-//! it as `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers
-//! one occurrence. The list may only shrink. A Rust citation cannot be ratcheted while the Python
+//! written stays in the append-only ledger. `platform/tests/ledger_citation_ratchet.txt`, and one
+//! file per port group in `platform/tests/ledger_citation_ratchet.d/`, list it as
+//! `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers one
+//! occurrence. The old file may only shrink; a port adds its lines in its own `ratchet.d` file,
+//! each naming the replacing test as `suite/<module>.rs::<fn>`, and edits no ledger file (plan 24,
+//! D10). A Rust citation cannot be ratcheted while the Python
 //! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
 //! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
 //! ledger entry naming its new name, as 10.15's "Enforcement moved" note does.
@@ -46,6 +49,7 @@ use regex::Regex;
 
 const LEDGER: &str = "docs/MISTAKES.md";
 const RATCHET: &str = "platform/tests/ledger_citation_ratchet.txt";
+const RATCHET_DIR: &str = "platform/tests/ledger_citation_ratchet.d";
 const SKIP_DIRS: [&str; 4] = [".git", "node_modules", ".venv", "__pycache__"];
 const CODE_CHARS: &str = "|$=(){}[]<>";
 
@@ -120,6 +124,22 @@ fn file_span(span: &str) -> Option<FileSpan> {
             name: caps.name("name").map(|m| m.as_str().to_owned()),
         })
     })
+}
+
+/// The file a Rust citation names: a path starting `suite/` is relative to `platform/tests/`,
+/// any other to the repository root.
+fn rust_citation_path(root: &Path, path: &str) -> PathBuf {
+    if path.starts_with("suite/") {
+        root.join("platform/tests").join(path)
+    } else {
+        root.join(path)
+    }
+}
+
+/// A Rust citation resolves: its file exists and, when it names one, defines the fn.
+fn rust_citation_resolves(root: &Path, path: &str, name: Option<&str>) -> bool {
+    let file = rust_citation_path(root, path);
+    file.is_file() && name.is_none_or(|name| defines(&file, name))
 }
 
 fn looks_like_bats_name(span: &str) -> bool {
@@ -304,15 +324,13 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
             let Some(file) = file_span(s) else {
                 continue;
             };
-            let is_rs = file.path.ends_with(".rs");
-            let found: Vec<PathBuf> = if is_rs {
-                let base = if file.path.starts_with("suite/") {
-                    root.join("platform/tests")
-                } else {
-                    root.to_path_buf()
-                };
-                vec![base.join(&file.path)]
-            } else if file.path.contains('/') {
+            if file.path.ends_with(".rs") {
+                if !rust_citation_resolves(root, &file.path, file.name.as_deref()) {
+                    claim_bad.push(s.clone());
+                }
+                continue;
+            }
+            let found: Vec<PathBuf> = if file.path.contains('/') {
                 vec![root.join(&file.path)]
             } else {
                 by_name.get(&file.path).cloned().unwrap_or_default()
@@ -322,9 +340,7 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
                 claim_bad.push(s.clone());
                 continue;
             }
-            if !is_rs {
-                cited.extend(found.iter().cloned());
-            }
+            cited.extend(found.iter().cloned());
             if let Some(name) = &file.name
                 && !found.iter().any(|p| defines(p, name))
             {
@@ -380,6 +396,67 @@ fn parse_ratchet(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Ratchet entries under `root`: the old file, then every `*.txt` in the ratchet directory by
+/// name. A missing file or directory adds nothing.
+fn load_ratchet(root: &Path) -> Vec<(String, String)> {
+    let mut text = fs::read_to_string(root.join(RATCHET)).unwrap_or_default();
+    for file in ratchet_dir_files(root) {
+        text.push('\n');
+        text.push_str(&fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}")));
+    }
+    parse_ratchet(&text)
+}
+
+/// Every `*.txt` in the ratchet directory under `root`, by name; none when it is missing.
+fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = fs::read_dir(root.join(RATCHET_DIR))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| Some(e.ok()?.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    files
+}
+
+/// A replacing test named in a ratchet reason: `[platform/tests/]suite/<module>.rs::<fn>`, the
+/// form a ledger citation of a Rust test takes.
+static REPLACING_TEST: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?P<path>(?:platform/tests/)?suite/[\w-]+\.rs)::(?P<name>\w+)"));
+
+/// Each line of a ratchet directory file under `root` whose reason names no replacing Rust test,
+/// or names one that does not resolve. A port deletes a cited test only with its replacement
+/// named, so the later change that writes each entry's "Enforcement moved" note
+/// (docs/MISTAKES.md 5.29) can take the names from these lines.
+fn ratchet_dir_problems(root: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    for file in ratchet_dir_files(root) {
+        let name = file
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}"));
+        for (key, reason) in parse_ratchet(&text) {
+            let named: Vec<_> = REPLACING_TEST.captures_iter(&reason).collect();
+            if named.is_empty() {
+                problems.push(format!(
+                    "{name}: `{key}` names no replacing test (suite/<module>.rs::<fn>)"
+                ));
+            }
+            for caps in named {
+                // Resolved as a Rust ledger citation is, without the repository walk the
+                // other citation forms need.
+                if !rust_citation_resolves(root, &caps["path"], Some(&caps["name"])) {
+                    problems.push(format!(
+                        "{name}: `{key}` names `{}`, which does not exist",
+                        &caps[0]
+                    ));
+                }
+            }
+        }
+    }
+    problems
+}
+
 fn counts<'a>(items: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> {
     let mut map = BTreeMap::new();
     for item in items {
@@ -419,7 +496,7 @@ fn fixture() -> tempfile::TempDir {
 fn every_cited_test_exists() {
     // Arrange
     let ledger = read_repo(LEDGER);
-    let ratchet = parse_ratchet(&read_repo(RATCHET));
+    let ratchet = load_ratchet(repo::root());
 
     // Act
     let (new, _) = ratchet_diff(&unresolved(&ledger, repo::root()), &ratchet);
@@ -428,14 +505,15 @@ fn every_cited_test_exists() {
     assert!(
         new.is_empty(),
         "docs/MISTAKES.md cites tests that do not exist (8.2). Fix the citation, or, for a \
-         test deleted or renamed since the entry was written, ratchet it with a reason: {new:?}"
+         test deleted or renamed since the entry was written, ratchet it with a reason in \
+         platform/tests/ledger_citation_ratchet.d/<group>.txt: {new:?}"
     );
 }
 
 #[test]
 fn ratchet_entries_carry_a_reason_and_still_fail() {
     // Arrange
-    let ratchet = parse_ratchet(&read_repo(RATCHET));
+    let ratchet = load_ratchet(repo::root());
     let ledger = read_repo(LEDGER);
 
     // Act
@@ -455,6 +533,66 @@ fn ratchet_entries_carry_a_reason_and_still_fail() {
         stale.is_empty(),
         "ratchet entries that now resolve or are no longer cited; delete them: {stale:?}"
     );
+}
+
+#[test]
+fn every_ratchet_directory_line_names_an_existing_replacing_test() {
+    // Arrange / Act
+    let problems = ratchet_dir_problems(repo::root());
+
+    // Assert
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn a_ratchet_directory_line_without_a_real_replacing_test_is_refused() {
+    // Arrange
+    let root = fixture();
+    let suite = root.path().join("platform/tests/suite");
+    fs::create_dir_all(&suite).expect("suite fixture");
+    fs::write(suite.join("ported.rs"), "#[test]\nfn real_fn() {}\n").expect("rs fixture");
+    let dir = root.path().join(RATCHET_DIR);
+    fs::create_dir_all(&dir).expect("ratchet dir");
+    fs::write(
+        dir.join("port.txt"),
+        "1.1 test_a # replaced by suite/ported.rs::real_fn\n\
+         1.2 test_b # ported, no name\n\
+         1.3 test_c # replaced by platform/tests/suite/ported.rs::missing_fn\n",
+    )
+    .expect("ratchet file");
+
+    // Act
+    let problems = ratchet_dir_problems(root.path());
+
+    // Assert
+    assert_eq!(
+        problems,
+        strings(&[
+            "port.txt: `1.2 test_b` names no replacing test (suite/<module>.rs::<fn>)",
+            "port.txt: `1.3 test_c` names `platform/tests/suite/ported.rs::missing_fn`, which does not exist",
+        ])
+    );
+}
+
+#[test]
+fn a_ratchet_line_in_a_ratchet_directory_file_covers_a_citation() {
+    // Arrange
+    let root = fixture();
+    let dir = root.path().join(RATCHET_DIR);
+    fs::create_dir_all(&dir).expect("ratchet dir");
+    fs::write(
+        dir.join("port.txt"),
+        "1.1 test_ported_away # replaced by suite/x.rs::y\n",
+    )
+    .expect("ratchet file");
+    fs::write(dir.join("notes.md"), "1.1 test_ignored # not a .txt\n").expect("other file");
+    let ledger = "### 1.1 Old entry\n\n**Enforced by.** `test_ported_away`.\n";
+
+    // Act
+    let diff = ratchet_diff(&unresolved(ledger, root.path()), &load_ratchet(root.path()));
+
+    // Assert
+    assert_eq!(diff, (vec![], vec![]));
 }
 
 #[test]
