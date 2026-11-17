@@ -1390,14 +1390,11 @@ def test_native_promql_runner_fails_closed_on_nonsemantic_mutant_errors():
     assert not any(argument in forbidden_args for argument in command)
 
 
-# The runner keeps a quarter of the time left (up to PROCESS_CLEANUP_RESERVE_SECONDS) for cleanup
-# and PROCESS_REAP_FRACTION of that for reaping a killed child. A 0.2 s deadline left 30 ms, which
-# a loaded scheduler overran on pre-push (AC-968); 2 s leaves 0.3 s. A real run has TOTAL_SECONDS
-# 300, so its reserve is the full 5 s. The refusal itself is proven without timing, below.
+# The runner keeps min(PROCESS_CLEANUP_RESERVE_SECONDS, a quarter of the time left) for cleanup and
+# PROCESS_REAP_FRACTION of that to reap a killed child. A 0.2 s deadline left 30 ms, which a late
+# wake-up under pre-push load used up (AC-968); 2 s leaves 0.3 s, near what the runner's own 3-4 s
+# engine calls get. The refusal is proven by a stub, below.
 DEADLINE_TEST_SECONDS = 2.0
-# Past the deadline the runner only closes a pipe and returns. A loaded scheduler can still delay
-# that; the bound stays under the child's 5 s sleep, so a runner that waited for the child fails.
-DEADLINE_TEST_RETURN_MARGIN = 1.0
 
 
 def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monkeypatch):
@@ -1424,6 +1421,11 @@ def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monk
                 self.reaped_after_kill = True
             return result
 
+    reap_window = (
+        min(NATIVE_PROMQL.PROCESS_CLEANUP_RESERVE_SECONDS, DEADLINE_TEST_SECONDS * 0.25)
+        * NATIVE_PROMQL.PROCESS_REAP_FRACTION
+    )
+    assert reap_window >= 0.25, "the runner's reap window shrank: raise DEADLINE_TEST_SECONDS"
     monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", TrackingPopen)
     cases = (
         ("import time; time.sleep(5)", b"x" * (2 * 1024 * 1024)),
@@ -1438,7 +1440,9 @@ def test_native_promql_runner_process_io_and_post_eof_wait_respect_deadline(monk
         )
         elapsed = NATIVE_PROMQL.time.monotonic() - started
         assert result[2] is True
-        assert elapsed < DEADLINE_TEST_SECONDS + DEADLINE_TEST_RETURN_MARGIN
+        # Past the deadline the runner only closes a pipe and returns; 1 s absorbs a late wake-up and
+        # stays under the child's 5 s sleep, so a runner that waited for the child still fails.
+        assert elapsed < DEADLINE_TEST_SECONDS + 1.0
         process = processes[-1]
         assert process.was_killed
         assert process.post_kill_wait_timeouts
@@ -1462,26 +1466,25 @@ def test_native_promql_runner_refuses_a_child_not_reaped_in_its_window(monkeypat
             return super().kill()
 
         def wait(self, timeout=None):
-            if self.was_killed:
-                raise NATIVE_PROMQL.subprocess.TimeoutExpired(self.args, timeout)
-            return super().wait(timeout=timeout)
+            raise NATIVE_PROMQL.subprocess.TimeoutExpired(self.args, timeout)
 
     monkeypatch.setattr(NATIVE_PROMQL.subprocess, "Popen", UnreapedPopen)
+    threads_before = set(threading.enumerate())
     try:
         with pytest.raises(NATIVE_PROMQL.RunnerError, match="not reaped within its reserved cleanup window"):
             NATIVE_PROMQL._bounded_process(
                 [NATIVE_PROMQL.sys.executable, "-c", "import time; time.sleep(5)"],
-                deadline=NATIVE_PROMQL.time.monotonic() + 0.2,
+                deadline=NATIVE_PROMQL.time.monotonic() + DEADLINE_TEST_SECONDS,
             )
         assert processes[-1].was_killed
     finally:
         for process in processes:
             process.kill()
-            real_popen.wait(process)
+            real_popen.wait(process, timeout=5)
         # The runner raised before joining its output reader; it ends at the dead child's EOF.
-        for thread in threading.enumerate():
-            if thread.name == "native-promql-output":
-                thread.join(timeout=5)
+        for thread in set(threading.enumerate()) - threads_before:
+            thread.join(timeout=5)
+            assert not thread.is_alive()
         for process in processes:
             process.stdout.close()
 
