@@ -335,6 +335,21 @@ def test_two_ids_for_one_export_listing_the_same_archives_count_them_once():
     assert survey.summarize(summary)["shared_backends"][0]["combined_unaccounted_gib"] == 40.0
 
 
+def test_protected_archives_count_toward_the_need_even_when_no_job_keeps_any():
+    vms = [{"vmid": 901, "node": "n1"}]
+    archives = [{**_archive("backups", 901, day, 10 * GIB), "protected": 1} for day in range(3)]
+    _, result = _one_store([], vms, archives)
+    storage = result["storages"][0]
+    assert storage["by_guest"][0]["gib_at_full_retention"] == 30.0
+    assert storage["gib_needed_at_job_retention"] == 30.0
+
+
+def test_a_storage_no_job_uses_previews_nothing_even_when_it_sets_a_retention():
+    config = [{"storage": "backups", "type": "nfs", "prune-backups": "keep-last=3"}]
+    plan, _ = _one_store([], [], [], config)
+    assert plan["reads"][0]["retentions"] == []
+
+
 def test_calendar_retention_is_bounded_by_its_buckets_and_keep_all_is_not():
     vms = [{"vmid": 401, "node": "n1"}, {"vmid": 402, "node": "n1"}]
     jobs = [{"id": "cal", "type": "vzdump", "storage": "backups", "vmid": "401",

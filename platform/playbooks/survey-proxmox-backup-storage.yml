@@ -7,14 +7,15 @@
 #   - capacity (total, used, available);
 #   - archives per guest (count, size, oldest and newest), flagging guests that no longer exist;
 #   - what a prune at each job's own retention would remove (Proxmox's prune preview);
-#   - the space a job's retention needs at the newest archive size, an upper bound, reported
-#     as unknown when the retention keeps everything, a storage default is not set, a job
-#     protects every archive, or the guest has no archive there yet;
+#   - the space a job's retention needs, estimated at the newest archive size plus protected
+#     archives, reported as unknown when the retention keeps everything, a storage default is
+#     not set, a job protects every archive, or the guest has no archive there yet; the
+#     storage total sums only the guests whose need is known;
 #   - bytes on the storage that no listed volume explains (partial files, foreign data);
 #   - for a PBS storage, sizes_are_logical: its snapshot sizes share chunks, so its unexplained
 #     and prunable bytes are reported as unknown (null);
-#   - storage IDs that look like the same filesystem (same server and export, nested paths,
-#     or identical byte counts), whose usage must be read together;
+#   - storage IDs that look like the same filesystem (same server and export, same path, one
+#     path inside the other, or identical total and used bytes), whose usage must be read together;
 #   - every backup job's schedule, node, storage, retention and guests it names that no longer exist.
 #
 # It writes nothing to Proxmox: every request is a GET, and it runs identically under --check.

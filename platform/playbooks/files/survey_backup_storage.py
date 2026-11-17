@@ -51,7 +51,7 @@ def _canonical(value, owner):
 
 
 def _retention(job):
-    """A job's prune-backups as one canonical string, or the storage's own setting."""
+    """A job's prune-backups as one canonical string, or DEFAULT_RETENTION when it defers to the storage."""
     value = job.get("prune-backups")
     if value in (None, "", {}):
         return DEFAULT_RETENTION
@@ -159,8 +159,9 @@ def plan(data):
             if key in seen:
                 continue
             seen.add(key)
-            # Proxmox errors on a preview with no retention when the storage sets none, so it is never asked.
-            wanted = retentions.get(storage, {DEFAULT_RETENTION})
+            # Only the retentions of jobs on this storage are previewed; Proxmox errors on a preview with
+            # no retention when the storage sets none, so the storage default is then never asked.
+            wanted = retentions.get(storage, set())
             if not _storage_prunes(configs.get(storage)):
                 wanted = wanted - {DEFAULT_RETENTION}
             reads.append({"node": node, "storage": storage,
@@ -250,7 +251,7 @@ def summarize(data):
         # Each previewed retention maps to the volumes its prune would remove on this storage.
         previewed = {}
         for prune in r["prunes"]:
-            # Proxmox checks Datastore.Allocate for the preview (pve-storage PruneBackups.pm, dryrun).
+            # With no vmid given, Proxmox checks Datastore.Allocate for the preview (pve-storage PruneBackups.pm).
             marks = _ok(prune, "prune preview", storage, "Datastore.Allocate")
             previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
         # A guest's retentions are those of the vzdump jobs on this storage that back it up. A job backs
@@ -293,7 +294,7 @@ def summarize(data):
         needs = {vmid: None if vmid in protects_every_archive else _archives_kept(retention_of.get(vmid, set()), cfg)
                  for vmid in by_vmid}
         need_bytes = {vmid: g["newest_bytes"] * needs[vmid] + g["protected_bytes"]
-                      for vmid, g in by_vmid.items() if needs[vmid]}
+                      for vmid, g in by_vmid.items() if needs[vmid] is not None}
         rows = []
         for g in sorted(by_vmid.values(), key=lambda g: -g["bytes"]):
             kept = needs[g["vmid"]]
@@ -373,7 +374,7 @@ def main(argv=None, stdin=sys.stdin, stdout=sys.stdout):
     except Refusal as exc:
         json.dump({"refusal": str(exc)}, stdout)
         return 1
-    except (KeyError, TypeError, ValueError, AttributeError):
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
         json.dump({"refusal": "Proxmox returned data this survey does not recognise."}, stdout)
         return 1
     json.dump(result, stdout)
