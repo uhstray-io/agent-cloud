@@ -33,3 +33,9 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **ACCEPTED:** #1195 (AC-951).
 - **DERIVED:** The Rust test crate's library target sets `test = false` (`platform/tests/Cargo.toml`), so a `#[cfg(test)]` test inside `platform/tests/src/` never runs. Test every branch of a shared helper from a `suite/support_*.rs` module through its public API; a branch that real repository input cannot reach needs a public entry that takes made-up input, or it stays untested.
 - **APPLIES TO:** shared support code in `platform/tests/src/` and the support PRs that add or change it.
+
+### L-006 · 2026-11-17 · tests
+
+- **ACCEPTED:** #1196 (AC-961, AC-963).
+- **DERIVED:** A Rust test helper that replaces a Python or BATS one names in its doc every way its output differs from the original, found by running both on the same input; "same as the Python tests" is never written without that run. Python's `text=True` (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n` and raises on bytes that are not UTF-8, so a port that assumes the two agree passes or fails on line endings alone.
+- **APPLIES TO:** helpers in `platform/tests/src/` that stand in for a Python fixture or a BATS helper, and the port briefs that cite them.
