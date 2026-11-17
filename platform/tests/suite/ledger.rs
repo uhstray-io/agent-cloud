@@ -38,6 +38,12 @@
 //! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
 //! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
 //! ledger entry naming its new name, as 10.15's "Enforcement moved" note does.
+//!
+//! ## Port map
+//!
+//! | BATS @test | Rust fn |
+//! |---|---|
+//! | mistakes doc: the four tests named below exist | `the_tests_the_mistakes_doc_names_exist`, with the self-check `a_test_fn_inside_a_literal_or_comment_is_not_a_test` |
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -796,4 +802,104 @@ fn a_rust_citation_resolves_in_this_repository() {
 
     // Assert
     assert_eq!(found, Vec::<String>::new());
+}
+
+/// `fn <name>` defined as a test: `#[test]` (other attributes may follow it), then the fn, in code.
+/// Comments and literals are blanked first, so a `#[test] fn` inside one does not count.
+fn defines_test(text: &str, name: &str) -> bool {
+    if !text.contains(name) {
+        return false;
+    }
+    let code = blank_comments_and_literals(text);
+    let name = regex::escape(name);
+    re(&format!(
+        r"(?m)^[ \t]*#\[test\][ \t\n]*(?:#\[[^\]]*\][ \t\n]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
+    ))
+    .is_match(&code)
+}
+
+/// The fns a module's `//!` port map names for a BATS test: rows `| <name> | <fn>... |`, the
+/// first cell compared without backticks, the first backticked name of the second cell taken.
+fn port_map_fns(text: &str, name: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.strip_prefix("//!"))
+        .filter_map(|row| {
+            let cells: Vec<&str> = row.split('|').collect();
+            (cells.len() >= 3 && cells[1].trim().trim_matches('`').trim() == name)
+                .then(|| SPAN.captures(cells[2]).map(|c| c[1].to_owned()))
+                .flatten()
+        })
+        .collect()
+}
+
+/// Whether a test name exists: a BATS `@test` in `platform/tests/*.bats`, or a port-map row in a
+/// suite module whose fn that module defines as a test.
+fn test_name_exists(root: &Path, name: &str) -> bool {
+    let tests = root.join("platform/tests");
+    let files = |dir: &Path, ext: &str| -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(ext))
+            .collect()
+    };
+    files(&tests, "bats")
+        .iter()
+        .any(|bats| bats_names(bats).contains(name))
+        || files(&tests.join("suite"), "rs").iter().any(|rs| {
+            let text = read_lossy(rs);
+            port_map_fns(&text, name)
+                .iter()
+                .any(|f| defines_test(&text, f))
+        })
+}
+
+#[test]
+fn the_tests_the_mistakes_doc_names_exist() {
+    // Entry 8.2 is an invented cross-reference. The names are listed, not discovered: a
+    // discovering version needed enough pattern matching to mistake code for prose (entry 2.2).
+    // Deliberately not exhaustive over every name the ledger mentions.
+    let root = repo::root();
+    let doc = read_repo(LEDGER)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for name in [
+        "every play that resolves an OpenBao URL includes the transport guard",
+        "the transport pattern accepts internal endpoints and refuses public ones",
+        "postiz: the seed playbook uses the shared cleartext OpenBao guard",
+    ] {
+        assert!(doc.contains(name), "{LEDGER} no longer names {name:?}");
+        assert!(
+            test_name_exists(root, name),
+            "no BATS @test and no Rust port-map #[test] fn for: {name}"
+        );
+    }
+    let ported = "install-podman: configures no podman API socket";
+    assert!(doc.contains(ported), "{LEDGER} no longer names {ported:?}");
+    let install = read_lossy(&root.join("platform/tests/suite/install_podman.rs"));
+    assert!(
+        defines_test(&install, "configures_no_podman_api_socket"),
+        "suite/install_podman.rs defines no #[test] fn configures_no_podman_api_socket"
+    );
+}
+
+#[test]
+fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
+    let text = "#[test]\nfn real() {}\n\
+        const R: &str = r\"\n#[test]\nfn in_raw() {}\n\";\n\
+        const S: &str = \"\n#[test]\nfn in_plain() {}\n\";\n\
+        let x = 1; /*\n#[test]\nfn after_mid_line_comment() {}\n*/\n\
+        fn untested() {}\n";
+    assert!(defines_test(text, "real"));
+    for name in ["in_raw", "in_plain", "after_mid_line_comment", "untested"] {
+        assert!(!defines_test(text, name), "{name}");
+    }
+    let rows = "//! | a bats name | `real_fn`, with `other` |\n//! | other | `x` |\n";
+    assert_eq!(
+        port_map_fns(rows, "a bats name"),
+        vec!["real_fn".to_owned()]
+    );
 }
