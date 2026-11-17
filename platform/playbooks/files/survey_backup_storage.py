@@ -3,7 +3,7 @@
 
 Two modes, JSON on stdin, JSON on stdout:
 
-  plan       {nodes, storage_listings, jobs, storage_config} -> which (node, storage) pairs to
+  plan       {storage_listings, jobs, storage_config} -> which (node, storage) pairs to
              read and which prune retentions to dry-run on each. A shared storage is read once.
   summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads} -> the receipt the playbook prints.
 
@@ -116,13 +116,13 @@ def _vmids(text):
     return {int(v) for v in re.split(r"[,;\s]+", str(text or "")) if _is_vmid(v)}
 
 
-def _job_guests(job, vms):
+def _job_guests(job, existing):
     """The guests a vzdump job backs up, chosen as Proxmox's VZDump.pm chooses them: (selects, vmid set).
 
-    A pool comes first, then the vmid list, then all guests minus `exclude`. A job that names a
-    node drops the existing guests living elsewhere. A listed vmid that no longer exists stays.
+    `existing` maps each vmid to its cluster resource. A pool comes first, then the vmid list,
+    then all guests minus `exclude`. A job that names a node drops the existing guests living
+    elsewhere. A listed vmid that no longer exists stays.
     """
-    existing = {int(v["vmid"]): v for v in vms if _is_vmid(v.get("vmid", ""))}
     listed = _vmids(job.get("vmid"))
     if job.get("pool"):
         selects = "pool"
@@ -140,9 +140,7 @@ def _job_guests(job, vms):
 
 
 def plan(data):
-    online = [_name(n.get("node"), "node name") for n in data["nodes"] if n.get("status") == "online"]
-    if not online:
-        raise Refusal("No Proxmox node is online.")
+    # The playbook has already refused an empty or malformed set of online nodes.
     configs = {c.get("storage"): c for c in data.get("storage_config") or []}
     retentions = {}
     for job in data["jobs"]:
@@ -168,7 +166,7 @@ def plan(data):
                           "retentions": sorted(wanted)})
     if not reads:
         raise Refusal("No active backup-capable storage is visible to the Proxmox token.")
-    return {"online_nodes": online, "reads": reads}
+    return {"reads": reads}
 
 
 def _gib(n):
@@ -218,11 +216,11 @@ def _same_backend(a, b):
 
 
 def summarize(data):
-    vms = data["vms"]
-    names = {int(v["vmid"]): v.get("name") for v in vms if _is_vmid(v.get("vmid", ""))}
+    existing = {int(v["vmid"]): v for v in data["vms"] if _is_vmid(v.get("vmid", ""))}
+    names = {vmid: v.get("name") for vmid, v in existing.items()}
     config = {c.get("storage"): c for c in data["storage_config"]}
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
-    job_guests = [(job, *_job_guests(job, vms)) for job in jobs]  # (job, selects, guests)
+    job_guests = [(job, *_job_guests(job, existing)) for job in jobs]  # (job, selects, guests)
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
     reads = {}
     for r in data["content_reads"]:

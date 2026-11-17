@@ -120,8 +120,7 @@
       ansible.builtin.command:
         argv: [python3, "{{ _survey }}", plan]
         stdin: >-
-          {{ {'nodes': _cluster_reads.results[0].json.data,
-              'storage_config': _cluster_reads.results[1].json.data,
+          {{ {'storage_config': _cluster_reads.results[1].json.data,
               'jobs': _cluster_reads.results[2].json.data,
               'storage_listings': _node_storage_reads.results} | to_json }}
       register: _plan_run
