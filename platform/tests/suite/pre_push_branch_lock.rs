@@ -145,8 +145,9 @@ impl Ctx {
             release,
             thread: Some(thread),
         };
-        // 20 s, not 10: under heavy machine load (load average above 30) the hook took more than
-        // 10 s to reach BATS. The scrubbed runner's 30 s bound still caps the held hook.
+        // The bound is 20 s, as in pre_push_uv.rs's held_push, where a 10 s bound timed out in four
+        // of six full-module runs on this machine (cause not identified). The scrubbed runner's
+        // 30 s bound still caps the held hook.
         let deadline = Instant::now() + Duration::from_secs(20);
         while !started.exists() {
             assert!(

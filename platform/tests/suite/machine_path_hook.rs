@@ -28,6 +28,7 @@ use std::process::Output;
 
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use regex::Regex;
 use tempfile::TempDir;
 
@@ -218,8 +219,8 @@ fn every_staged_diff_filter_includes_renamed_files() {
     let filter = Regex::new(r"--diff-filter[= ][A-Za-z]+").expect("a valid pattern");
     let mut found = Vec::new();
     for rel in [".pre-commit-config.yaml", HOOK] {
-        let text = std::fs::read_to_string(repo::path(rel)).expect("the file reads");
-        found.extend(filter.find_iter(&text).map(|m| m.as_str().to_owned()));
+        let body = text::read(rel);
+        found.extend(filter.find_iter(&body).map(|m| m.as_str().to_owned()));
     }
 
     assert!(found.len() >= 4, "found only {found:?}");

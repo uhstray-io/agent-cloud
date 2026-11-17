@@ -26,6 +26,7 @@ use std::path::Path;
 
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use regex::Regex;
 use tempfile::TempDir;
 
@@ -36,11 +37,13 @@ const HELPER: &str = "platform/tests/assert_helpers.bash";
 const REFLINE: &str = "refs/heads/x 1111111111111111111111111111111111111111 refs/heads/x 0000000000000000000000000000000000000000\n";
 
 /// What the 2026-09-23 test setup did, from a scratch directory: a fake `bats` on PATH. It first
-/// writes FAKE_BATS_MARKER, so the test can tell the hook reached its BATS step.
+/// writes FAKE_BATS_MARKER, so the test can tell the hook reached its BATS step. The scratch
+/// repository goes under TMPDIR, the test's own TempDir: macOS `mktemp -d` ignores TMPDIR, so a
+/// `mktemp -d` here left a repository in the system temp directory after every run.
 const FAKE_BATS: &str = "#!/usr/bin/env sh
 # What the 2026-09-23 test setup did, from a scratch directory.
 : > \"$FAKE_BATS_MARKER\"
-cd \"$(mktemp -d)\" && git init -q scratch && cd scratch \\
+cd \"$TMPDIR\" && git init -q scratch && cd scratch \\
   && git config user.email hacked@example.invalid && git config user.name hacked
 exit 0
 ";
@@ -117,13 +120,14 @@ fn a_suites_git_commands_cannot_reach_the_pushing_repository() {
 #[test]
 fn the_git_environment_is_cleared_before_any_suite_runs() {
     // Arrange
-    let text = std::fs::read_to_string(repo::path(HOOK)).expect("the hook reads");
+    let hook = text::read(HOOK);
     let clear = Regex::new(r"^unset GIT_DIR GIT_WORK_TREE").expect("a valid pattern");
     let suite = Regex::new(r"^[ \t]*bats ").expect("a valid pattern");
 
-    // Act
-    let cleared_at = text.lines().position(|line| clear.is_match(line));
-    let first_bats_at = text.lines().position(|line| suite.is_match(line));
+    // Act: positions, not presence, because the order is the point; text::any_line only says
+    // whether a line matches.
+    let cleared_at = hook.lines().position(|line| clear.is_match(line));
+    let first_bats_at = hook.lines().position(|line| suite.is_match(line));
 
     // Assert
     let cleared_at = cleared_at.expect("the hook clears the git environment");
@@ -165,8 +169,8 @@ fn unset_git_vars(text: &str) -> Vec<String> {
 #[test]
 fn assert_helpers_clears_exactly_the_git_variables_the_hook_clears() {
     // Arrange
-    let hook = std::fs::read_to_string(repo::path(HOOK)).expect("the hook reads");
-    let helper = std::fs::read_to_string(repo::path(HELPER)).expect("the helper reads");
+    let hook = text::read(HOOK);
+    let helper = text::read(HELPER);
 
     // Act
     let hook_vars = unset_git_vars(&hook);

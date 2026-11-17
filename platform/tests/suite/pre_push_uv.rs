@@ -64,7 +64,7 @@ use std::time::{Duration, Instant};
 
 use agent_cloud_tests::process;
 use agent_cloud_tests::repo;
-use regex::Regex;
+use agent_cloud_tests::text::any_line;
 use tempfile::TempDir;
 
 const HOOK: &str = ".githooks/pre-push";
@@ -357,13 +357,6 @@ fn read_or_empty(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_default()
 }
 
-/// Whether some line of `text` matches the regular expression `pattern` (a line-anchored match).
-fn has_line(text: &str, pattern: &str) -> bool {
-    Regex::new(&format!("(?m){pattern}"))
-        .expect("a valid pattern")
-        .is_match(text)
-}
-
 /// `lines` as printf '%s\n' prints them: each line terminated.
 fn lines(items: &[&str]) -> String {
     let mut text = items.join("\n");
@@ -462,11 +455,11 @@ fn successful_locked_sync_puts_venv_first_on_path_for_both_suites() {
     // Assert
     assert!(run.passed(), "{}", run.text);
     assert!(
-        has_line(&read(&ctx.uv_log), "^sync --locked"),
+        any_line(&read(&ctx.uv_log), "^sync --locked"),
         "uv was not synced locked"
     );
     assert!(
-        has_line(
+        any_line(
             &read(&ctx.py_log),
             r"\.venv/bin/python3 first-path=.*/\.venv/bin$"
         ),
@@ -479,7 +472,7 @@ fn successful_locked_sync_puts_venv_first_on_path_for_both_suites() {
         read(&ctx.py_log)
     );
     assert!(
-        has_line(&read(&ctx.bats_log), r"/\.venv/bin$"),
+        any_line(&read(&ctx.bats_log), r"/\.venv/bin$"),
         "bats did not run under .venv/bin"
     );
     assert!(!run.text.contains("WARNING"), "{}", run.text);
@@ -1016,7 +1009,7 @@ fn a_finished_run_leaves_no_temporary_file_behind() {
     assert!(run.passed(), "{}", run.text);
     let during = read(&seen);
     assert!(
-        has_line(&during, r"^tmp\."),
+        any_line(&during, r"^tmp\."),
         "the scratch directory did not exist while BATS ran: {during:?}"
     );
     let left: Vec<_> = std::fs::read_dir(&ctx.tmp)
@@ -1076,8 +1069,9 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
         release,
         handle: Some(handle),
     };
-    // 20 s, not 10: under heavy machine load (load average above 30) the hook took more than
-    // 10 s to reach BATS. The scrubbed runner's 30 s bound still caps the held hook.
+    // The bound is 20 s: a 10 s bound timed out in four of six full-module runs on this machine
+    // before the change, and the cause is not identified. The scrubbed runner's 30 s bound still
+    // caps the held hook.
     let deadline = Instant::now() + Duration::from_secs(20);
     let (hook, bats) = loop {
         let text = std::fs::read_to_string(&pids).unwrap_or_default();
@@ -1108,17 +1102,21 @@ fn send_signal(home: &Path, signal: &str, pid: &str) -> Output {
         .expect("sh starts")
 }
 
-/// The pid a fake writes to `file` (bounded wait).
+/// The pid the fake bats writes to `file`, once it is there (bounded wait).
 fn wait_for_pid(file: &Path) -> String {
-    // 20 s, not 10: under heavy machine load (load average above 30) the hook took more than
-    // 10 s to reach BATS. The scrubbed runner's 30 s bound still caps the held hook.
+    // The fake writes this pid after the pids line that held_push already waited for, so the
+    // bound covers only the gap between two writes by one shell. 20 s matches held_push's bound;
+    // a file still missing after it means the fake never reached that line.
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let text = std::fs::read_to_string(file).unwrap_or_default();
         if let Some(pid) = text.split_whitespace().next() {
             return pid.to_owned();
         }
-        assert!(Instant::now() < deadline, "BATS never started its child");
+        assert!(
+            Instant::now() < deadline,
+            "BATS never wrote its child's pid"
+        );
         thread::sleep(Duration::from_millis(100));
     }
 }
@@ -1157,7 +1155,7 @@ fn term_stops_the_bats_job_removes_temporary_files_and_frees_the_lock() {
     );
     let during = read(&seen);
     assert!(
-        has_line(&during, r"^tmp\."),
+        any_line(&during, r"^tmp\."),
         "the scratch directory did not exist while BATS ran: {during:?}"
     );
 
