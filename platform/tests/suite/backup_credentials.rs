@@ -47,6 +47,14 @@ const KEY_PATH: &str = "secret/data/services/ssh/site-config";
 /// The known-hosts file GIT_SSH_COMMAND must name: the pinned file the clone task writes.
 const KNOWN_HOSTS: &str = "{{ _sc_kh }}";
 
+/// A word of an ssh command line: whitespace splits it except inside a Jinja `{{ ... }}`, which
+/// renders to one word, so `UserKnownHostsFile={{ _sc_kh }}` stays one token.
+static TOKEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)(?:\{\{.*?\}\}|\S)+").expect("a valid regex"));
+/// An ssh option key as ssh spells one: letters only.
+static OPTION_KEY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z]+$").expect("a valid regex"));
+
 /// The non-deterministic lookups a vars entry may not hold (see the test that uses it).
 static NONDETERMINISTIC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -649,8 +657,7 @@ fn git_ssh_names_only_the_deploy_key_with_strict_host_keys() {
 /// An option with no `=` (`-o "StrictHostKeyChecking no"` splits into two tokens) is returned with
 /// an empty key and the raw token as its value, so the caller can refuse what it cannot read.
 fn ssh_options(cmd: &str) -> Vec<(String, String)> {
-    let tokens = ssh_tokens(cmd);
-    let tokens: Vec<&str> = tokens.iter().map(String::as_str).collect();
+    let tokens: Vec<&str> = TOKEN.find_iter(cmd).map(|m| m.as_str()).collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < tokens.len() {
@@ -661,45 +668,15 @@ fn ssh_options(cmd: &str) -> Vec<(String, String)> {
             }
             t => t.strip_prefix("-o"),
         };
-        match opt.map(|o| (o, o.split_once('='))) {
-            Some((_, Some((k, v)))) if !k.is_empty() => out.push((k.to_owned(), v.to_owned())),
-            Some((raw, _)) => out.push((String::new(), raw.to_owned())),
-            None => {}
+        if let Some(o) = opt {
+            match o.split_once('=') {
+                Some((k, v)) => out.push((k.to_owned(), v.to_owned())),
+                None => out.push((String::new(), o.to_owned())),
+            }
         }
         i += 1;
     }
     out
-}
-
-/// An ssh command line split on whitespace, except inside a Jinja `{{ ... }}` expression, which
-/// renders to one word: `UserKnownHostsFile={{ _sc_kh }}` stays one token.
-fn ssh_tokens(cmd: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
-    let mut current = String::new();
-    let mut in_expr = false;
-    let mut rest = cmd;
-    while let Some(c) = rest.chars().next() {
-        if rest.starts_with("{{") {
-            in_expr = true;
-        } else if rest.starts_with("}}") {
-            in_expr = false;
-            current.push_str("}}");
-            rest = &rest[2..];
-            continue;
-        }
-        if c.is_whitespace() && !in_expr {
-            if !current.is_empty() {
-                tokens.push(std::mem::take(&mut current));
-            }
-        } else {
-            current.push(c);
-        }
-        rest = &rest[c.len_utf8()..];
-    }
-    if !current.is_empty() {
-        tokens.push(current);
-    }
-    tokens
 }
 
 /// What is wrong with an ssh command's options: ssh takes the FIRST value of a repeated option, so
@@ -709,8 +686,20 @@ fn ssh_options_problems(cmd: &str) -> Vec<String> {
     let mut problems = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
     for (k, v) in &opts {
+        // A key or value ssh would read differently from this parser (quoted, escaped, or a
+        // template that renders to anything) is refused; the pinned known-hosts template is the
+        // one exception.
+        let pinned = k == "UserKnownHostsFile" && v == KNOWN_HOSTS;
         if k.is_empty() {
             problems.push(format!("unparsed -o option {v:?}"));
+        } else if !OPTION_KEY.is_match(k) {
+            problems.push(format!("unreadable -o option key {k:?}"));
+        } else if !pinned
+            && ["\"", "'", "\\", "$", "`", "{{"]
+                .iter()
+                .any(|c| v.contains(c))
+        {
+            problems.push(format!("unreadable -o option value {k}={v:?}"));
         } else if !seen.insert(k.to_ascii_lowercase()) {
             problems.push(format!("option {k} appears twice; ssh takes the first"));
         }
@@ -752,6 +741,18 @@ fn a_repeated_ssh_option_is_refused() {
             .iter()
             .any(|p| p.starts_with("unparsed -o option"))
     );
+    for smuggled in [
+        r#"-o"StrictHostKeyChecking=no""#,
+        r#"-o "StrictHostKeyChecking=no""#,
+        r"-o\StrictHostKeyChecking=no",
+        "-o {{ 'StrictHostKeyChecking=no' }}",
+    ] {
+        let cmd = format!(
+            "ssh -i k -o IdentitiesOnly=yes {smuggled} -o StrictHostKeyChecking=yes \
+             -o UserKnownHostsFile={{{{ _sc_kh }}}}"
+        );
+        assert!(!ssh_options_problems(&cmd).is_empty(), "{smuggled}");
+    }
     let other_hosts = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
                        -o UserKnownHostsFile=/dev/null";
     assert!(!ssh_options_problems(other_hosts).is_empty());

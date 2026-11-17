@@ -68,6 +68,7 @@ static FILE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FILE_RS: LazyLock<Regex> =
     LazyLock::new(|| re(r"^(?P<path>(?:[\w.-]+/)*suite/[\w-]+\.rs)(?:::(?P<name>\w+))?$"));
+static ATTRIBUTE: LazyLock<Regex> = LazyLock::new(|| re(r"#\[[^\]]*\]"));
 static NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^test_\w+$"));
 static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| re(r"^(?:test_\w+\.py|[\w-]+\.bats)$"));
 static BATS_TEST: LazyLock<Regex> =
@@ -198,18 +199,38 @@ fn defines(path: &Path, name: &str) -> bool {
     if !text.contains(name) {
         return false;
     }
-    let name = regex::escape(name);
     if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-        // Line-anchored like the Python rule; attributes and `pub`/`async` may precede it.
-        // Comments and literals are blanked first, so a fn inside one does not count.
-        let code = blank_comments_and_literals(&text);
-        let pattern = format!(
-            r"(?m)^[ \t]*(?:#\[[^\]]*\][ \t]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
-        );
-        re(&pattern).is_match(&code)
+        defines_fn(&text, name, false)
     } else {
+        let name = regex::escape(name);
         re(&format!(r"(?m)^\s*(?:async\s+)?(?:def|class)\s+{name}\b")).is_match(&text)
     }
+}
+
+/// Whether Rust source defines `fn <fn_name>` in code: line-anchored like the Python rule, with
+/// attributes (on its line or the lines above, blank lines between), `pub`/`pub(..)` and `async`
+/// allowed before it. Comments and literals are blanked first, so a fn inside one does not count.
+/// With `require_test`, its attributes must include `#[test]` and no `#[cfg(...)]` other than
+/// exactly `#[cfg(test)]`, which could compile the test out.
+fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
+    if !text.contains(fn_name) {
+        return false;
+    }
+    let code = blank_comments_and_literals(text);
+    let name = regex::escape(fn_name);
+    let pattern = re(&format!(
+        r"(?m)^[ \t]*((?:#\[[^\]]*\][ \t\n]*)*)(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
+    ));
+    pattern.captures_iter(&code).any(|c| {
+        if !require_test {
+            return true;
+        }
+        let attrs: Vec<&str> = ATTRIBUTE.find_iter(&c[1]).map(|m| m.as_str()).collect();
+        attrs.contains(&"#[test]")
+            && !attrs
+                .iter()
+                .any(|a| a.starts_with("#[cfg(") && *a != "#[cfg(test)]")
+    })
 }
 
 /// `src` with every comment (nested `/* */` included), string literal (plain, byte, C, raw) and char
@@ -807,27 +828,24 @@ fn a_rust_citation_resolves_in_this_repository() {
 /// `fn <name>` defined as a test: `#[test]` (other attributes may follow it), then the fn, in code.
 /// Comments and literals are blanked first, so a `#[test] fn` inside one does not count.
 fn defines_test(text: &str, name: &str) -> bool {
-    if !text.contains(name) {
-        return false;
-    }
-    let code = blank_comments_and_literals(text);
-    let name = regex::escape(name);
-    re(&format!(
-        r"(?m)^[ \t]*#\[test\][ \t\n]*(?:#\[[^\]]*\][ \t\n]*)*(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
-    ))
-    .is_match(&code)
+    defines_fn(text, name, true)
 }
 
 /// The fns a module's `//!` port map names for a BATS test: rows `| <name> | <fn>... |`, the
-/// first cell compared without backticks, the first backticked name of the second cell taken.
+/// first cell compared without backticks; from the second cell, its first backticked name, or
+/// its first word when nothing is backticked. Only the file's leading `//!` header is read, so a
+/// row-shaped line elsewhere (in a string, say) is not a port map.
 fn port_map_fns(text: &str, name: &str) -> Vec<String> {
     text.lines()
-        .filter_map(|line| line.strip_prefix("//!"))
+        .map_while(|line| line.strip_prefix("//!"))
         .filter_map(|row| {
             let cells: Vec<&str> = row.split('|').collect();
-            (cells.len() >= 3 && cells[1].trim().trim_matches('`').trim() == name)
-                .then(|| SPAN.captures(cells[2]).map(|c| c[1].to_owned()))
-                .flatten()
+            if cells.len() < 3 || cells[1].trim().trim_matches('`').trim() != name {
+                return None;
+            }
+            SPAN.captures(cells[2])
+                .map(|c| c[1].to_owned())
+                .or_else(|| cells[2].split_whitespace().next().map(str::to_owned))
         })
         .collect()
 }
@@ -870,6 +888,7 @@ fn the_tests_the_mistakes_doc_names_exist() {
         "every play that resolves an OpenBao URL includes the transport guard",
         "the transport pattern accepts internal endpoints and refuses public ones",
         "postiz: the seed playbook uses the shared cleartext OpenBao guard",
+        "install-podman: configures no podman API socket",
     ] {
         assert!(doc.contains(name), "{LEDGER} no longer names {name:?}");
         assert!(
@@ -877,13 +896,6 @@ fn the_tests_the_mistakes_doc_names_exist() {
             "no BATS @test and no Rust port-map #[test] fn for: {name}"
         );
     }
-    let ported = "install-podman: configures no podman API socket";
-    assert!(doc.contains(ported), "{LEDGER} no longer names {ported:?}");
-    let install = read_lossy(&root.join("platform/tests/suite/install_podman.rs"));
-    assert!(
-        defines_test(&install, "configures_no_podman_api_socket"),
-        "suite/install_podman.rs defines no #[test] fn configures_no_podman_api_socket"
-    );
 }
 
 #[test]
@@ -897,9 +909,15 @@ fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
     for name in ["in_raw", "in_plain", "after_mid_line_comment", "untested"] {
         assert!(!defines_test(text, name), "{name}");
     }
-    let rows = "//! | a bats name | `real_fn`, with `other` |\n//! | other | `x` |\n";
+    let rows = "//! | a bats name | `real_fn`, with `other` |\n//! | bare name | bare_fn |\n\n\
+        const S: &str = \"\n//! | late name | `late_fn` |\n\";\n";
     assert_eq!(
         port_map_fns(rows, "a bats name"),
         vec!["real_fn".to_owned()]
     );
+    assert_eq!(port_map_fns(rows, "bare name"), vec!["bare_fn".to_owned()]);
+    assert!(port_map_fns(rows, "late name").is_empty());
+    let cfg_out = "#[cfg(any())]\n#[test]\nfn x() {}\n#[cfg(test)]\n\n#[test]\nfn y() {}\n";
+    assert!(!defines_test(cfg_out, "x"));
+    assert!(defines_test(cfg_out, "y"));
 }

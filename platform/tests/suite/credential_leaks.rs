@@ -1656,6 +1656,24 @@ fn bao_merge_keys_creates_a_path_only_under_cas() {
     );
 }
 
+/// The task with this exact name in a task tree, preceded by every block that encloses it,
+/// outermost first; `block`, `rescue` and `always` are all walked.
+fn task_with_ancestors<'a>(tasks: &'a [Node], name: &str) -> Option<Vec<&'a Node>> {
+    for task in tasks {
+        if task.get("name").and_then(Node::as_str) == Some(name) {
+            return Some(vec![task]);
+        }
+        for section in ["block", "rescue", "always"] {
+            let children = task.get(section).and_then(Node::as_seq).unwrap_or(&[]);
+            if let Some(mut chain) = task_with_ancestors(children, name) {
+                chain.insert(0, task);
+                return Some(chain);
+            }
+        }
+    }
+    None
+}
+
 #[test]
 fn seed_access_check_ends_the_play_before_any_write() {
     // Arrange
@@ -1703,9 +1721,24 @@ fn seed_access_check_ends_the_play_before_any_write() {
         Some("bao_verify_access_only | default(false) | bool"),
         "the end_play is not gated on exactly the access-check flag"
     );
+    // Ansible applies a block's `when` and `tags` to every task in it, so the end_play and every
+    // block around it must be able to run.
+    let seed = load(SEED_KEY);
+    let chain = seed
+        .as_seq()
+        .unwrap_or(&[])
+        .iter()
+        .find_map(|play| {
+            task_with_ancestors(
+                play.get("tasks").and_then(Node::as_seq).unwrap_or(&[]),
+                "End read-only verification before every secret-store write",
+            )
+        })
+        .expect("the named end_play is in a play's task tree");
     assert!(
-        !never_runs(end_block),
-        "the end_play never runs (a constant-false when or the never tag), so the play writes"
+        !chain.iter().any(|t| never_runs(t)),
+        "the end_play, or a block around it, never runs (a constant-false when or the never \
+         tag), so the play writes"
     );
     let value_check = task_named(&seed_tasks, "Validate the secret value is present");
     assert!(

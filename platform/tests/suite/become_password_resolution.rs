@@ -251,19 +251,15 @@ fn includes_file(task: &Node, name: &str) -> bool {
 }
 
 fn is_controller_only_guard(task: &Node) -> bool {
-    includes_file(task, CONTROLLER_ONLY_GUARD)
-        && included_file(task).is_some_and(|f| {
-            std::path::Path::new(f)
-                .parent()
-                .and_then(|d| d.file_name())
-                .and_then(|n| n.to_str())
-                == Some("tasks")
-        })
+    included_file(task).is_some_and(|f| {
+        std::path::Path::new(f).ends_with(std::path::Path::new("tasks").join(CONTROLLER_ONLY_GUARD))
+    })
 }
 
 /// The first task a play actually runs. `pre_tasks` run before `tasks`, and so do `roles`, which
 /// this check cannot see into, so a play with roles has none. A block is entered at its first
-/// item, and a leading controller-only guard include is skipped.
+/// item, and a leading controller-only guard include is skipped. A task or block that never runs
+/// (Ansible applies a block's `when` and `tags` to everything in it) is skipped too.
 fn first_executed_task(play: &Node) -> Option<&Node> {
     let non_empty = |key: &str| {
         play.get(key)
@@ -281,7 +277,7 @@ fn first_executed_task(play: &Node) -> Option<&Node> {
 
 fn first_in(seq: &[Node]) -> Option<&Node> {
     for task in seq {
-        if is_controller_only_guard(task) {
+        if is_controller_only_guard(task) || crate::credential_leaks::never_runs(task) {
             continue;
         }
         if let Some(block) = task.get("block").and_then(Node::as_seq) {
@@ -308,28 +304,18 @@ fn the_controller_only_guard_runs_only_assert_and_set_fact() {
     // The exemption above holds only while the guard escalates nothing: any module but assert and
     // set_fact (under any spelling) could need the privilege the resolver has not provided yet.
     let file = format!("platform/playbooks/tasks/{CONTROLLER_ONLY_GUARD}");
-    let tasks = repo::tasks(&file);
+    let tasks = leaf_tasks(&file);
     assert!(!tasks.is_empty(), "{file} has no tasks");
-    let allowed = |key: &str| {
-        ["assert", "set_fact"].iter().any(|m| {
-            key == *m
-                || key == format!("ansible.builtin.{m}")
-                || key == format!("ansible.legacy.{m}")
-        })
-    };
     let mut other = Vec::new();
     for task in &tasks {
-        let calls: Vec<&str> = task
-            .as_map()
-            .into_iter()
-            .flatten()
-            .filter_map(|(k, _)| k.as_str())
-            .filter(|k| !TASK_KEYWORDS.contains(k) && !k.starts_with("with_"))
-            .collect();
+        let calls = called_modules(task);
         if calls.is_empty() {
             other.push(format!("{:?} calls no module", task_name(task)));
         }
-        for call in calls.into_iter().filter(|k| !allowed(k)) {
+        for call in calls
+            .into_iter()
+            .filter(|m| m != "assert" && m != "set_fact")
+        {
             other.push(format!("{:?} calls {call}", task_name(task)));
         }
     }
@@ -597,6 +583,22 @@ const FIRST_EXECUTED_CASES: &str = r#"
   gather_facts: false
   tasks:
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      tags: [never]
+- name: bad resolver in a block that never runs
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+      when: false
+- name: bad resolver in a block tagged never
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       tags: [never]
 - name: bad guard then debug
   hosts: h
