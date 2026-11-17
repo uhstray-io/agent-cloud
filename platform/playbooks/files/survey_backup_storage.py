@@ -5,10 +5,13 @@ Two modes, JSON on stdin, JSON on stdout:
 
   plan       {nodes, storage_listings, jobs, storage_config} -> which (node, storage) pairs to
              read and which prune retentions to dry-run on each. A shared storage is read once.
-  summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads} -> the receipt the playbook prints.
+  summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads, disk_reads, ceph_reads}
+             -> the receipt the playbook prints. disk_reads and ceph_reads are optional, so a payload
+             without them still summarizes (their sections then read "not read" or are empty).
 
-The receipt carries storage IDs, guest IDs and names, sizes, dates and job settings. It
-never carries a server address, export, mount path, volume ID, note text or token.
+The receipt carries storage IDs, guest IDs and names, sizes, dates and job settings, the CephFS
+filesystems and pools, and each node's disk device paths, models, serials and in-use flag. It
+never carries a server address, export, mount path, volume ID, note text, WWN or token.
 A refusal exits 1 with {"refusal": "..."} so the play can print why without the input.
 """
 
@@ -227,6 +230,104 @@ def _same_backend(a, b):
     return None
 
 
+def _guests(storages):
+    """Each guest's newest archive day on every storage it has one on.
+
+    A shared storage is keyed by its ID; a node-local one by node and ID, since each node holds its own.
+    """
+    merged = {}
+    for s in storages:
+        key = s["storage"] if s["shared"] else f"{s['read_on_node']}/{s['storage']}"
+        for row in s["by_guest"]:
+            if row["newest"] is None:
+                continue
+            guest = merged.setdefault(row["vmid"], {"vmid": row["vmid"], "name": row["name"],
+                                                    "guest_exists": row["guest_exists"], "newest": {}})
+            guest["newest"][key] = row["newest"]
+    return [merged[vmid] for vmid in sorted(merged)]
+
+
+def _ceph_problem(reads):
+    """Why a Ceph listing the survey read cannot be used, or None when every read answered 200."""
+    for read in reads.values():
+        if read.get("status") == 403:
+            return "HTTP 403: needs Sys.Audit or Datastore.Audit on /"
+        if read.get("status") != 200:
+            return f"HTTP {read.get('status')}"
+    return None
+
+
+def _cephfs(config, ceph_reads):
+    """Each CephFS storage's filesystem, its data pools and the storages that share it, and those pools' usage.
+
+    A storage with a monitor list (`monhost`) names another cluster: it is listed as external with no
+    filesystem, and its monitors, subdir and path never print.
+    """
+    # The planner skips the Ceph reads when no CephFS storage uses this cluster's Ceph: those items carry "skipped".
+    reads = {r.get("item"): r for r in ceph_reads if not r.get("skipped")}
+    if not reads:
+        status, reason = "not read", "no CephFS storage on this cluster's own Ceph"
+    else:
+        reason = _ceph_problem(reads)
+        status = "unavailable" if reason else "read"
+    listed = {item: (r.get("json") or {}).get("data") or [] for item, r in reads.items() if r.get("status") == 200}
+    filesystems, pools = listed.get("fs", []), listed.get("pool", [])
+    rows = []
+    for cfg in sorted((c for c in config.values() if c.get("type") == "cephfs"), key=lambda c: str(c.get("storage"))):
+        external = "monhost" in cfg
+        if external:
+            filesystem = None
+        elif cfg.get("fs-name"):
+            filesystem = cfg["fs-name"]
+        elif len(filesystems) == 1:
+            filesystem = filesystems[0].get("name")
+        else:
+            filesystem = None
+        entry = next((f for f in filesystems if f.get("name") == filesystem), {}) if filesystem else {}
+        rows.append({"storage": cfg.get("storage"), "external": external, "filesystem": filesystem,
+                     "data_pools": list(entry.get("data_pools") or [])})
+    for row in rows:
+        row["shares_filesystem_with"] = sorted(
+            other["storage"] for other in rows
+            if other is not row and row["filesystem"] is not None and not row["external"]
+            and not other["external"] and other["filesystem"] == row["filesystem"])
+    named = {pool for row in rows for pool in row["data_pools"]}
+    usage = [{"pool": p.get("pool_name"), "used_gib": _gib(p.get("bytes_used")),
+              "percent_used": None if p.get("percent_used") is None else round(float(p["percent_used"]), 1),
+              "replicas": p.get("size")}
+             for p in sorted(pools, key=lambda p: str(p.get("pool_name"))) if p.get("pool_name") in named]
+    return {"status": status, "reason": reason, "storages": rows, "pools": usage}
+
+
+def _disks(disk_reads):
+    """Each online node's disks as Proxmox lists them.
+
+    A disk is in use exactly when Proxmox sets `used` on it (pve-storage Diskmanage.pm disk_is_used).
+    WWN and SMART health are never printed. A node whose disk list the token may not read is unavailable.
+    """
+    nodes = []
+    for read in disk_reads:
+        node = _name(read.get("item"), "node name")
+        if read.get("status") == 403:
+            nodes.append({"node": node, "status": "unavailable",
+                          "reason": f"HTTP 403: needs Sys.Audit on /nodes/{node}",
+                          "disks": [], "unused_count": None, "unused_gib": None})
+            continue
+        if read.get("status") != 200:
+            raise Refusal(f"Proxmox answered {read.get('status')} listing the disks of node {node}.")
+        raw = (read.get("json") or {}).get("data") or []
+        unused = [d for d in raw if not d.get("used")]
+        nodes.append({
+            "node": node, "status": "read", "reason": None,
+            "disks": [{"devpath": d.get("devpath"), "size_gib": _gib(d.get("size")), "model": d.get("model"),
+                       "vendor": d.get("vendor"), "serial": d.get("serial"), "used": d.get("used") or None,
+                       "in_use": bool(d.get("used")), "osdid": d.get("osdid")}
+                      for d in sorted(raw, key=lambda d: str(d.get("devpath")))],
+            "unused_count": len(unused), "unused_gib": _gib(sum(int(d.get("size") or 0) for d in unused)),
+        })
+    return sorted(nodes, key=lambda n: n["node"])
+
+
 def summarize(data):
     existing = {int(v["vmid"]): v for v in data["vms"] if _is_vmid(v.get("vmid", ""))}
     names = {vmid: v.get("name") for vmid, v in existing.items()}
@@ -373,7 +474,10 @@ def summarize(data):
                          "selects": selects, "guests": len(guests),
                          # only a vmid list can name a guest that is gone
                          "missing_guests": sorted(v for v in guests if v not in names)})
-    return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows}
+    return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows,
+            "guests": _guests(storages),
+            "cephfs": _cephfs(config, data.get("ceph_reads", [])),
+            "disks": _disks(data.get("disk_reads", []))}
 
 
 def main(argv=None, stdin=sys.stdin, stdout=sys.stdout):
