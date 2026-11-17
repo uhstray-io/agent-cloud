@@ -11,7 +11,7 @@ Every task is safe to rerun. Nothing here runs against production until the oper
 - [ ] 2.1 Spike: can an Activepieces piece present a client certificate; if not, add an mTLS egress sidecar (AC-826)
       Acceptance: a recorded yes or no for the piece tested. On no, add the sidecar to the Activepieces compose project, on an internal network only.
 - [ ] 2.2 Issue the Activepieces host a client leaf, add its leaf name to agw_client_cert_allowlist, give it a Renew Internal Certs proof path (AC-825)
-      Acceptance: Renew Internal Certs proves the leaf (scenarios "Allowlisted leaf proven at renewal" or "Long-running holder proven at renewal"), and the running piece or sidecar presents the renewed leaf (plan 27, D8). The allowlist takes leaf names, not SANs (the `_allowlist` check in deploy-agentgateway.yml). Follows the rollout order in plan 27, Phase 1.
+      Acceptance: Renew Internal Certs proves the leaf (scenarios "Allowlisted leaf proven at renewal" or "Long-running holder proven at renewal"), and the running piece or sidecar presents the renewed leaf (plan 27, D8). The allowlist takes leaf names, not SANs (the `_allowlist` check in deploy-agentgateway.yml). If the holder is long-running, this task adds its renewal proof class to `renew-internal-certs.yml` (none exists for it today). Follows the rollout order in plan 27, Phase 1.
 - [ ] 2.3 Enroll the activepieces identity with its budget and model allow-list (AC-785)
       Acceptance: the rendered configuration gives it the tokens_per_hour value from site-config and a text-only allowed_models (scenario "Content identity budget and allow-list"). `agw_verify_client` names another identity, so the deploy's keyed verify does not run as it (scenario "Content identity is not the verify identity").
 - [ ] 2.4 Validation gate (text): chat and json_schema completions through the gateway from the Activepieces host; keyless call refused (AC-791)
@@ -19,7 +19,7 @@ Every task is safe to rerun. Nothing here runs against production until the oper
 
 ## 3. Image path (blocked: the dgx-spark image model fit test and serving handoff)
 - [ ] 3.1 Verify the pinned gateway proxies the OpenAI images API; upgrade if not; check per-key request limits in the same release (AC-786)
-      Acceptance: a recorded result for the release tested, from exercising the route. Records whether image responses carry usage. Any pin change goes through `AGW_IMAGE` in compose.yml and a deploy.
+      Acceptance: a recorded result for the release tested, from exercising the route. Records whether image responses carry usage. Any pin change goes through the `AGW_IMAGE` default in the gateway's `templates/env.j2`, the deploy's reviewed-pin checks, and a deploy.
 - [ ] 3.2 Add the image upstream and route by model name (AC-787)
       Acceptance: a template branch, a validator change, a new existing secret seeded with Seed OpenBao Key and never generated, and tests in the pattern of the agentgateway-openrouter change. The image model joins the activepieces allow-list only once task 3.3's limit is in force.
 - [ ] 3.3 Choose and encode a per-identity request limit, images first (AC-788)

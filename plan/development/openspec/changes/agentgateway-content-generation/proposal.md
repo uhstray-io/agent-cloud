@@ -45,9 +45,9 @@ should not sit behind.
   list (the AGENTS.md row says revoke requires that). The budget value in site-config goes with
   the identity.
 - **Image path, after tasks 3.1 and 3.2 are deployed.** Remove the image entries from `agw_models`
-  in site-config and redeploy. If the pin moved in task 3.1, restore the previous tag in
-  the `AGW_IMAGE` default in `platform/services/agentgateway/deployment/compose.yml` and redeploy through the
-  Semaphore template. Task 3.3 adds the request limit; its removal is written with that task.
+  in site-config and redeploy. If the pin moved in task 3.1, restore the previous pin (the
+  `AGW_IMAGE` default in the gateway's `templates/env.j2`, which every deploy checks against
+  the reviewed pin) and redeploy through the Semaphore template. Task 3.3 adds the request limit; its removal is written with that task.
 - Each rollback step is a Semaphore template run or a site-config change. None is a manual edit on
   a host.
 
