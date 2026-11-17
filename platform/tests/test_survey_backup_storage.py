@@ -204,6 +204,11 @@ def test_guest_lists_split_on_every_delimiter_proxmox_accepts(separator):
     assert rows["all"]["guests"] == 1  # only 202 is left once both excluded guests are read
 
 
+@pytest.mark.parametrize("value", [1, "1", True])
+def test_a_proxmox_flag_reads_as_set_however_the_api_spells_it(value):
+    assert survey._flag(value) and not survey._flag(0) and not survey._flag("0") and not survey._flag(None)
+
+
 def test_protected_archives_add_to_the_need_and_a_protecting_job_has_no_bound():
     vms = [{"vmid": 701, "node": "n1"}, {"vmid": 702, "node": "n1"}]
     jobs = [{"id": "keep2", "type": "vzdump", "storage": "backups", "vmid": "701", "prune-backups": "keep-last=2"},

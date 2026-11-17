@@ -102,6 +102,11 @@ def _archives_kept(retentions, storage_cfg):
     return max(kept, default=0)
 
 
+def _flag(value):
+    """A Proxmox boolean as the API may return it: 1, "1" or true (True == 1 in Python)."""
+    return value in (1, "1")
+
+
 def _vmids(text):
     """A vmid list as Proxmox splits it (pve-common split_list): commas, semicolons or whitespace."""
     return {int(v) for v in re.split(r"[,;\s]+", str(text or "")) if v.isdigit()}
@@ -120,7 +125,7 @@ def _job_guests(job, vms):
         guests = {vmid for vmid, v in existing.items() if v.get("pool") == job["pool"]}
     elif listed:
         selects, guests = "list", listed
-    elif str(job.get("all", 0)) == "1":
+    elif _flag(job.get("all")):
         selects = "all"
         guests = set(existing) - _vmids(job.get("exclude"))
     else:
@@ -245,7 +250,7 @@ def summarize(data):
             if job.get("storage") == storage:
                 for vmid in guests:
                     retention_of.setdefault(vmid, set()).add(_retention(job))
-                if str(job.get("protected", 0)) == "1":  # vzdump --protected: pruning never removes these
+                if _flag(job.get("protected")):  # vzdump --protected: pruning never removes these
                     protects_every_archive |= guests
         cfg = config.get(storage)
 
@@ -321,7 +326,7 @@ def summarize(data):
 
     job_rows = []
     for job, selects, guests in job_guests:
-        job_rows.append({"id": job.get("id"), "enabled": str(job.get("enabled", 1)) != "0",
+        job_rows.append({"id": job.get("id"), "enabled": job.get("enabled", 1) not in (0, "0"),
                          "schedule": job.get("schedule") or job.get("starttime"),
                          "node": job.get("node") or "all", "storage": job.get("storage"),
                          "retention": _retention(job), "mode": job.get("mode"),
