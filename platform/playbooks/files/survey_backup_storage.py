@@ -151,6 +151,8 @@ def plan(data):
     reads, seen = [], set()
     for listing in data["storage_listings"]:  # raw uri results, one per online node
         node = _name(listing.get("item"), "node name")
+        if listing.get("status") != 200:  # a 403 would otherwise drop the node's storages unseen
+            raise Refusal(f"Proxmox answered {listing.get('status')} listing the storages of node {node}.")
         for row in (listing.get("json") or {}).get("data") or []:
             storage = _name(row.get("storage"), "storage ID")
             if not (_has_backup(row.get("content")) and _flag(row.get("active"))):
@@ -289,7 +291,8 @@ def summarize(data):
             if wanted and all(volid in previewed.get(x, set()) for x in wanted):
                 g["prunable"] += 1
                 g["prunable_bytes"] += size
-        # A protected archive is kept on top of what keep-* keeps (Proxmox marks it before counting),
+        # A protected archive is kept on top of what keep-* keeps (pve-storage marks it protected,
+        # and prune_mark_backup_group counts only unmarked archives),
         # so the need adds its bytes; a guest whose job protects every archive has no bound.
         needs = {vmid: None if vmid in protects_every_archive else _archives_kept(retention_of.get(vmid, set()), cfg)
                  for vmid in by_vmid}
@@ -305,7 +308,8 @@ def summarize(data):
                          "prunable_gib": None if logical else _gib(g["prunable_bytes"]),
                          "job_retention": sorted(retention_of.get(g["vmid"], set())),
                          "retained_at_job_retention": kept,
-                         "gib_at_full_retention": _gib(need_bytes[g["vmid"]]) if g["vmid"] in need_bytes else None})
+                         "gib_needed_at_job_retention":
+                             _gib(need_bytes[g["vmid"]]) if g["vmid"] in need_bytes else None})
         total, used = int(status.get("total") or 0), int(status.get("used") or 0)
         storages.append({
             "storage": storage, "read_on_node": node, "type": status.get("type"),
@@ -374,7 +378,7 @@ def main(argv=None, stdin=sys.stdin, stdout=sys.stdout):
     except Refusal as exc:
         json.dump({"refusal": str(exc)}, stdout)
         return 1
-    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError, OSError):
         json.dump({"refusal": "Proxmox returned data this survey does not recognise."}, stdout)
         return 1
     json.dump(result, stdout)

@@ -167,6 +167,14 @@ def test_the_planner_refuses_no_online_node_or_a_malformed_online_node_name(node
     assert "node" in json.loads(out.getvalue())["refusal"]
 
 
+def test_a_node_whose_storage_listing_is_refused_stops_the_plan():
+    listing = {**_listing("n1"), "status": 403, "json": None}
+    out = io.StringIO()
+    data = {"nodes": NODES, "jobs": JOBS, "storage_listings": [listing, _listing("n2")]}
+    assert survey.main(["plan"], stdin=io.StringIO(json.dumps(data)), stdout=out) == 1
+    assert "node n1" in json.loads(out.getvalue())["refusal"]
+
+
 def test_a_malformed_node_name_is_refused_before_any_url_is_built():
     listing = _listing("n1/../x")
     out = io.StringIO()
@@ -245,8 +253,8 @@ def test_protected_archives_add_to_the_need_and_a_protecting_job_has_no_bound():
     storage = result["storages"][0]
     guest = {g["vmid"]: g for g in storage["by_guest"]}
     assert guest[701]["protected"] == 5
-    assert guest[701]["gib_at_full_retention"] == 70.0  # two kept at the newest size, plus 50 GiB protected
-    assert guest[702]["retained_at_job_retention"] is None and guest[702]["gib_at_full_retention"] is None
+    assert guest[701]["gib_needed_at_job_retention"] == 70.0  # two kept at the newest size, plus 50 GiB protected
+    assert guest[702]["retained_at_job_retention"] is None and guest[702]["gib_needed_at_job_retention"] is None
     assert storage["retention_need_unknown_guests"] == [702]
     assert storage["gib_needed_at_job_retention"] == 70.0
 
@@ -340,7 +348,7 @@ def test_protected_archives_count_toward_the_need_even_when_no_job_keeps_any():
     archives = [{**_archive("backups", 901, day, 10 * GIB), "protected": 1} for day in range(3)]
     _, result = _one_store([], vms, archives)
     storage = result["storages"][0]
-    assert storage["by_guest"][0]["gib_at_full_retention"] == 30.0
+    assert storage["by_guest"][0]["gib_needed_at_job_retention"] == 30.0
     assert storage["gib_needed_at_job_retention"] == 30.0
 
 
@@ -360,8 +368,8 @@ def test_calendar_retention_is_bounded_by_its_buckets_and_keep_all_is_not():
     _, result = _one_store(jobs, vms, archives, previews=previews)
     storage = result["storages"][0]
     guest = {g["vmid"]: g for g in storage["by_guest"]}
-    assert guest[401]["retained_at_job_retention"] == 11 and guest[401]["gib_at_full_retention"] == 11.0
-    assert guest[402]["retained_at_job_retention"] is None and guest[402]["gib_at_full_retention"] is None
+    assert guest[401]["retained_at_job_retention"] == 11 and guest[401]["gib_needed_at_job_retention"] == 11.0
+    assert guest[402]["retained_at_job_retention"] is None and guest[402]["gib_needed_at_job_retention"] is None
     assert storage["retention_need_unknown_guests"] == [402]
     assert storage["gib_needed_at_job_retention"] == 11.0
 

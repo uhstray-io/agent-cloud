@@ -2,7 +2,7 @@
 # survey-proxmox-backup-storage.yml — read-only survey of every backup-capable Proxmox storage.
 #
 # Why: the nightly vzdump jobs fail with "No space left on device" and "Broken pipe" once
-# their shared backup storage is full, and a failed job never prunes. Before any space is
+# their shared backup storage is full, and a guest whose backup fails is never pruned. Before any space is
 # freed, this answers where the space went, per storage:
 #   - capacity (total, used, available);
 #   - archives per guest (count, size, oldest and newest), flagging guests that no longer exist;
@@ -18,9 +18,10 @@
 #     path inside the other, or identical total and used bytes), whose usage must be read together;
 #   - every backup job's schedule, node, storage, retention and guests it names that no longer exist.
 #
-# It writes nothing to Proxmox: every request is a GET, and it runs identically under --check.
-# The token-bearing requests are no_log; only the summarizer's receipt is printed, which
-# names storages and guests but never a server, export, path, volume ID or note.
+# It writes nothing to Proxmox: every Proxmox request is a GET, and it runs identically under
+# --check. The token-bearing requests are no_log. On success only the summarizer's receipt is
+# printed, which names storages and guests but never a server, export, path, volume ID or note;
+# a refusal prints its one-line reason.
 
 # An extra var outranks every value this playbook computes, so refuse any that sets an
 # internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
