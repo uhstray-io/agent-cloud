@@ -19,8 +19,8 @@ globs: a changed path selects every area whose globs match it.
 
 ## A test that reads beyond its area
 
-A module outside `always` runs only when a change selects its area, or when a change runs
-everything (a `full` path, or in the push and CI lanes an unclassified one). Any file it reads must
+A module outside `always` runs only when a change selects its area, or when a change selects
+every area (a `full` path, or in the push and CI lanes an unclassified one). Any file it reads must
 therefore select it in the push lane: by its area's `paths`, by `full`, or by being unclassified
 (a path no area claims, which runs everything). Otherwise a change that adds an offender to that
 file, where another area claims it, skips the test.
@@ -30,8 +30,7 @@ file, where another area claims it, skips the test.
   is for.
 - Any other module gets its area's `paths` widened to what it reads.
 - A file in `ignore` (`**/*.md`, `plan/**`, `docs/**`) selects nothing only when neither `full`
-  nor any area's `paths` match it (both are matched first), so the two rules above apply to it
-  as to any other file.
+  nor any area's `paths` match it, so the two rules above apply to it as to any other file.
 
 The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks this for every
 `repo::grep` and `repo::ls_files` call outside `always`. It reads the pathspecs from the module's
