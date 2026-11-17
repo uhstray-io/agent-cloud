@@ -1,0 +1,11 @@
+# The seed harness (`src/seed.rs`, the port of `platform/tests/seed_harness.py`, AC-950) and its
+# tests. `support_seed` starts a fake server and no ansible run, so it is in the http tier, as
+# `support_http` is; `support_seed_playbook` runs seed playbooks against that fake in the playbook
+# tier.
+#
+# paths: []. A change under platform/tests/** is a full trigger, which is checked before any area,
+# so this area names no paths: it only lists the modules, once.
+paths: []
+tiers:
+  http: [support_seed]
+  playbook: [support_seed_playbook]
