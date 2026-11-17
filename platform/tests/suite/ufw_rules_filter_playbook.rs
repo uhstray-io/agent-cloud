@@ -201,11 +201,11 @@ impl Check {
         self.that(item, got == want, || format!("got {got}, want {want}"));
     }
 
-    /// `problems` is a refusal (see [`refuses`]).
-    fn refused(&mut self, item: &str, problems: &Value, why: Option<&str>) {
+    /// `problems`, the result of the call labelled `call`, is a refusal (see [`refuses`]).
+    fn refused(&mut self, item: &str, call: &Value, problems: &Value, why: Option<&str>) {
         self.that(item, refuses(problems, why), || match why {
-            Some(why) => format!("no problem contains {why:?}: {problems}"),
-            None => format!("not refused (no problem): {problems}"),
+            Some(why) => format!("call {call}: no problem contains {why:?}: {problems}"),
+            None => format!("call {call}: not refused (no problem): {problems}"),
         });
     }
 }
@@ -773,9 +773,9 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         c.case(item, "ufw_allow_egress_problems", args, want);
     }
 
-    // Every filter has at least one case (the static test pins FILTERS to the exported ones).
+    // Every filter is called at least once (the static test pins FILTERS to the exported ones).
     for f in FILTERS {
-        assert!(c.calls.iter().any(|call| call["f"] == f), "{f} has no case");
+        assert!(c.calls.iter().any(|call| call["f"] == f), "{f} has no call");
     }
 
     let r = run(&c);
@@ -784,7 +784,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         let got = &r[*id];
         match want {
             Want::Exact(v) => k.eq(item, got, v),
-            Want::Refused(why) => k.refused(item, got, *why),
+            Want::Refused(why) => k.refused(item, &c.calls[*id]["label"], got, *why),
         }
     }
 
@@ -1110,7 +1110,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // source contains it; IPv6: a supernet is refused, and families never contain each other.
     let item = "test_egress_containment_is_compared_in_the_spelling_ufw_stores";
     for id in spelling {
-        k.refused(item, &r[id], None);
+        k.refused(item, &c.calls[id]["label"], &r[id], None);
     }
     k.eq(item, &r[families], &json!([]));
 
@@ -1126,7 +1126,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     );
     // `any` is the whole address space: a host inside it is fine, the whole space is not
     k.eq(item, &r[any_host], &json!([]));
-    k.refused(item, &r[any_all], None);
+    k.refused(item, &c.calls[any_all]["label"], &r[any_all], None);
 
     // not broad, contains the SSH CIDR, port, proto
     k.that(
@@ -1138,15 +1138,11 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // Stored forms measured on ufw 0.36.2 (Ubuntu 24.04, 2026-11-09): `allow out to any port 443
     // proto tcp` is stored as `allow out 443/tcp`, a scoped one keeps `to ... port ... proto`, and
     // the audit rule is `allow out log to any`.
-    let Value::Array(got) = fields(&r[allowed_order], &cts) else {
-        unreachable!("fields() returns an array")
-    };
     // the SSH allow comes first; empty output is a failure, never a panic
-    let after_ssh = if got.is_empty() {
-        Vec::new()
-    } else {
-        got[1..].to_vec()
-    };
+    let after_ssh: Vec<Value> = fields(&r[allowed_order], &cts)
+        .as_array()
+        .map(|a| a.iter().skip(1).cloned().collect())
+        .unwrap_or_default();
     k.eq(
         "test_allowed_egress_comes_after_the_denials_and_the_audit_rule_last",
         &Value::Array(after_ssh),

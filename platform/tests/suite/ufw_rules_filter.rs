@@ -48,7 +48,7 @@ fn every_exported_filter_is_called_by_a_playbook() {
         "ufw_tag must stay a module function, not an exported filter"
     );
     // The exported names equal the playbook module's FILTERS here, and that module requires a
-    // case for each FILTERS name; together a new exported filter without a case fails.
+    // call for each FILTERS name; together a new exported filter without a call fails.
     let mut listed: Vec<&str> = crate::ufw_rules_filter_playbook::FILTERS.to_vec();
     let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
     listed.sort_unstable();
