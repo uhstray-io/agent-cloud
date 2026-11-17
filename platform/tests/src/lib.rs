@@ -10,6 +10,7 @@
 
 pub mod http;
 pub mod lanes;
+pub mod text;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
