@@ -231,7 +231,7 @@ fn no_suite_test_starts_ansible_playbook_itself() {
     );
 
     // `run_for` is the bound under `process::run`, and a child started through it skips the
-    // route CONTRIBUTING.md (playbook tier, line 269) names. Only the harness's own timeout tests
+    // route CONTRIBUTING.md's playbook-tier rule names. Only the harness's own timeout tests
     // call it, on `sh`, from `support_playbook`; every other suite file must not name it. The
     // needle is built with concat! so this file's own text does not match.
     let direct = concat!("run_for", "(");
