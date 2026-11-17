@@ -158,6 +158,16 @@ fn no_task_writes_to_the_service_secret_path_directly() {
     );
 }
 
+/// Task-level `args` keys that name a path or a flag, never a command line to run.
+const PATH_OR_FLAG_ARGS: &[&str] = &[
+    "chdir",
+    "creates",
+    "removes",
+    "warn",
+    "stdin_add_newline",
+    "strip_empty_ends",
+];
+
 /// The modules that run a program, under which a `bao` or `vault` CLI call could write the store.
 const COMMAND_MODULES: &[&str] = &["command", "shell", "raw", "script", "expect"];
 
@@ -198,8 +208,7 @@ fn command_lines(node: &Node, out: &mut Vec<String>) {
 ///
 /// The module is read under its key (any spelling) and from `action:` / `local_action:` (a string's
 /// first word, or a mapping's `module`); for a command-family call, that value and the task-level
-/// `args` keys that can carry a program (`cmd`, `argv`, `_raw_params`, `stdin`, `command`) are
-/// scanned.
+/// `args` (all of it, except the [`PATH_OR_FLAG_ARGS`] keys of a mapping) are scanned.
 fn runs_store_cli(task: &Node) -> bool {
     let is_command = |name: &str| {
         let short = name
@@ -228,15 +237,18 @@ fn runs_store_cli(task: &Node) -> bool {
     if scanned.is_empty() {
         return false;
     }
-    // Of the task-level args, the keys that can carry a program: the command line itself, and
-    // `stdin`, which is the program for `sh`, `bash -s` or `python3 -`. `chdir`, `creates` and the
-    // like are paths, not the program run.
-    if let Some(args) = task.get("args") {
-        scanned.extend(
-            ["cmd", "argv", "_raw_params", "stdin", "command"]
+    // The task-level args, closed: every key but the known path and flag options, since a command
+    // line can arrive under `cmd`, `argv`, `stdin` (the program for `bash -s`), or `expect`'s
+    // `responses` (lines typed into the spawned shell). A templated string `args:` is read whole.
+    match task.get("args") {
+        Some(Node::Map(entries)) => scanned.extend(
+            entries
                 .iter()
-                .filter_map(|k| args.get(k)),
-        );
+                .filter(|(key, _)| !key.as_str().is_some_and(|k| PATH_OR_FLAG_ARGS.contains(&k)))
+                .map(|(_, value)| value),
+        ),
+        Some(other) => scanned.push(other),
+        None => {}
     }
     scanned.into_iter().any(|node| {
         let mut lines = Vec::new();
@@ -269,6 +281,8 @@ fn a_store_cli_call_is_detected() {
         "local_action: {module: ansible.builtin.command, cmd: bao kv put x}\n",
         "ansible.builtin.command: {}\nargs: {cmd: bao kv put x}\n",
         "ansible.builtin.command: bash -s\nargs: {stdin: \"bao kv put x\"}\n",
+        "action: command\nargs: \"{{ {'cmd': 'bao kv put secret/x a=b'} }}\"\n",
+        "ansible.builtin.expect:\n  command: bash\nargs:\n  responses: {'\\$ ': 'bao kv put secret/x a=b'}\n",
     ] {
         assert!(runs_store_cli(&task(flagged)), "{flagged}");
     }
