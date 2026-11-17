@@ -316,7 +316,7 @@ def _cephfs(config, ceph_reads):
         entry = next((f for f in filesystems if f.get("name") == filesystem), {}) if filesystem else {}
         # data_pools arrived in pve-manager 2026-05 (FS.pm, fbb0eb7657); before it, data_pool held only the first
         # data pool, so a filesystem read that way may have more pools than the receipt names.
-        complete = "data_pools" in entry if entry else None
+        complete = entry.get("data_pools") is not None if entry else None
         data_pools = entry.get("data_pools") or ([entry["data_pool"]] if entry.get("data_pool") else [])
         rows.append({"storage": cfg.get("storage"), "external": external, "filesystem": filesystem,
                      "filesystem_source": source, "data_pools": list(data_pools), "data_pools_complete": complete})
