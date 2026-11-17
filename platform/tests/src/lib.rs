@@ -469,7 +469,7 @@ pub mod process {
     //! [`scrubbed`] and [`bash_with`] start a program with a scrubbed environment and a 30 s
     //! bound. [`ansible_playbook`] starts `ansible-playbook` confined to one directory, and
     //! [`run`] and [`run_for`] run any of these to completion, bounded and with no stdin.
-    //! [`output_text`] joins a child's stdout and stderr (Python's join, `\r` kept), and [`fake_bin`]
+    //! [`output_text`] joins a child's stdout and stderr, and [`fake_bin`]
     //! builds the PATH of test doubles (`harness_sandbox.py`'s `fake_bin`).
 
     use std::ffi::OsString;
