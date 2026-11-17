@@ -372,8 +372,11 @@ protects 1.7, which is the only irreversible step in the change.
 - [x] 6.4 Operator prerequisite: create the public DNS record for the service hostname
       — ALREADY DONE: `postiz` is declared in the Cloudflare OpenTofu root's platform
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
-- [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at all four social
-      platforms to the new public host — account connection fails until this is done
+- [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at the first-rollout
+      platforms, X and LinkedIn (member and company page), to the new public host.
+      Scope 2026-11-12 (AC-762): YouTube and Discord are deferred; register their redirects
+      when they are connected.
+      — account connection fails until this is done
       EXACT PATHS (read from upstream v2.23.0 providers, hit live 2026-08-30 —
       LinkedIn refused the unregistered local URL with "redirect_uri does not
       match the registered value"): each console must register
@@ -390,8 +393,8 @@ protects 1.7, which is the only irreversible step in the change.
       No promotion PR was opened during this Apply pass.
 - [ ] 6.7 Validation gate: scenario "Interface and automation share one hostname" is
       satisfiable in production — the DNS record resolves and the redirect destinations
-      registered at the identity provider and the four social platforms all name that same
-      hostname
+      registered at the identity provider and the first-rollout social platforms
+      (X and LinkedIn) all name that same hostname
 
 ## 7. Production deployment and lockdown
 
@@ -423,11 +426,12 @@ protects 1.7, which is the only irreversible step in the change.
       access
 - [ ] 7.6 Complete the first production sign-in through the identity provider, then flip
       registration to closed and redeploy
-- [ ] 7.7 Connect the social accounts and confirm a scheduled post publishes in production
+- [ ] 7.7 Connect the first-rollout social accounts (X, LinkedIn member and company page)
+      and confirm a scheduled post publishes in production
       Now ALSO carries the workflow-engine gate moved from 5.7/5.8 (operator
       decision 2026-08-30): first observed scheduled publish happens here.
-      Console prerequisites are in 6.5; X needs re-seeded Consumer Keys first
-      (deferred).
+      Console prerequisites are in 6.5; X needs re-seeded Consumer Keys first.
+      YouTube and Discord are deferred (2026-11-12, AC-762).
 - [ ] 7.8 Validation gate: scenario "Only the two intended paths are reachable" holds —
       administrative access from the designated ranges and the service port from the
       reverse proxy succeed, everything else inbound is refused; and scenario "Closed
