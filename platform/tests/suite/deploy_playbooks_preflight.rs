@@ -35,9 +35,10 @@
 //!    - Known limits, accepted: the check reads `vars:`, not every way a value is set. A value the
 //!      guard play sees but `hosts:` does not (an inventory variable, a `set_fact` or `register`
 //!      in the guard play, a role default on either play) can still let the guard test one group
-//!      while the play runs another; so can play-level `tags` or `ignore_errors` on the guard
-//!      play. No deploy playbook does any of these (the variable arrives as a Semaphore survey
-//!      extra var, which both plays see). Tracked as follow-ups.
+//!      while the play runs another; so can play-level `tags` (other than `always`) or
+//!      `ignore_errors` on the guard play. The templated deploys do none of these: their guard
+//!      plays carry only `tags: [always]`, and the variable arrives as a Semaphore survey extra
+//!      var, which both plays see. Tracked as follow-ups.
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
 //! judged by the plays it runs.
@@ -662,8 +663,8 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
     // AC-915: a quoted name is a group named literally, never the variable `target_service`.
     ("quotedvarname", "(groups['target_service'] | length) > 0"),
     // AC-915: a non-empty key default must equal the target's default, and this target has none.
-    // The guard would test `x_svc`, which the play runs only if the variable is unset there, so
-    // a value the play sees and the guard does not (an inventory var) runs unguarded.
+    // Refused to keep the rule one comparison, not for a known bypass: with the variable unset the
+    // guard tests `x_svc`, but `{{ target_service }}` then fails the play outright.
     (
         "getdefaultexpr",
         "(groups.get(target_service | default('x_svc'), []) | length) > 0",
@@ -1113,9 +1114,9 @@ fn a_templated_target_is_covered_only_by_its_own_variable_and_default() {
     // Arrange: each guard is an offender (AC-915). (a) the target is `<name>_svc` while the guard
     // tests `<name>`; (b) a filter changes the target's text; (c) the target defaults to app_svc
     // and the key to other_svc, so with the variable undefined the guard passes on other_svc and
-    // the play runs app_svc; (d) the target has no default and the key names other_svc. A
-    // variable set elsewhere (an inventory value the guard does not see) then passes the guard on
-    // other_svc while the play runs its own value unguarded.
+    // the play runs app_svc; (d) the target has no default and the key names other_svc, refused to
+    // keep the rule one comparison (an unset variable fails that play, so it is not a known
+    // bypass).
     let suffixed = inline_playbook_for(
         "{{ target_service }}_svc",
         "(groups[target_service] | length) > 0",
