@@ -35,17 +35,13 @@
 //! | apply-firewall: blank upstream sources stop before either detected-port rule | `apply_firewall_playbook::blank_upstream_sources_stop_before_any_detected_port_rule` |
 //! | firewall: the orchestrator's SSH source must be one of the SSH CIDRs, checked BEFORE enable | `controller_cidr_is_checked_before_enable_and_the_ssh_allows` |
 
-use agent_cloud_tests::repo;
+use agent_cloud_tests::text;
 use regex::Regex;
 
 const PLAYBOOK: &str = "platform/playbooks/apply-firewall.yml";
 const COMPUTE: &str = "Compute the declared rules";
 const SSH_ALLOW: &str = "Allow SSH (22/tcp) from each admin CIDR";
 const OTHER_ADD: &str = "Add each other declared rule";
-
-fn playbook() -> String {
-    std::fs::read_to_string(repo::path(PLAYBOOK)).unwrap_or_else(|e| panic!("{PLAYBOOK}: {e}"))
-}
 
 /// 1-based position of the first `-` in a line, 0 when none (awk `index($0, "-")`).
 fn dash_at(line: &str) -> usize {
@@ -87,10 +83,6 @@ fn assert_precedes(text: &str, a: &str, b: &str) {
     );
 }
 
-fn has_line(text: &str, pattern: &str) -> bool {
-    first_line(text, pattern).is_some()
-}
-
 fn assert_contains(haystack: &str, needle: &str, what: &str) {
     assert!(haystack.contains(needle), "{what}: missing {needle:?}");
 }
@@ -99,26 +91,22 @@ fn assert_contains(haystack: &str, needle: &str, what: &str) {
 fn rootful_defaults_to_docker_and_is_overridable() {
     // Docker is always rootful; rootful podman hosts can't be told apart by engine name, so
     // they opt in with firewall_rootful: true.
-    let pb = playbook();
-    assert_contains(
-        &pb,
+    text::assert_text(
+        PLAYBOOK,
         "_rootful: \"{{ firewall_rootful | default(_engine == 'docker') | bool }}\"",
-        PLAYBOOK,
     );
-    assert_contains(
-        &pb,
-        "_engine: \"{{ container_engine | default('podman') }}\"",
+    text::assert_text(
         PLAYBOOK,
+        "_engine: \"{{ container_engine | default('podman') }}\"",
     );
 }
 
 #[test]
 fn route_rules_feed_the_declared_rule_set() {
-    let pb = playbook();
-    assert_contains(
-        &pb,
-        "_route_rules: \"{{ firewall_route_rules | default([]) }}\"",
+    let pb = text::read(PLAYBOOK);
+    text::assert_text(
         PLAYBOOK,
+        "_route_rules: \"{{ firewall_route_rules | default([]) }}\"",
     );
     assert_contains(
         &task_block(&pb, COMPUTE),
@@ -132,7 +120,7 @@ fn no_ufw_rule_command_or_tag_is_hand_built() {
     // The command forms and the `agent-cloud:` tag are built in ONE place, ufw_rules.py
     // ufw_desired_rules (exact text: test_ufw_rules_filter.py). A copy here could disagree
     // with the declared set the prune step compares against.
-    let pb = playbook();
+    let pb = text::read(PLAYBOOK);
     let comment = Regex::new(r"^\s*#").unwrap();
     let code: Vec<&str> = pb.lines().filter(|l| !comment.is_match(l)).collect();
     let rule = Regex::new(r"ufw (route )?(allow|deny|limit) ").unwrap();
@@ -154,7 +142,7 @@ fn no_ufw_rule_command_or_tag_is_hand_built() {
 fn detected_ports_reach_the_declared_set_with_rootful() {
     // Each detected published port gets a FORWARD mirror on rootful hosts only; the mirror is
     // ufw_desired_rules'. Here: the declared set is fed _rootful and the detected ports.
-    let blk = task_block(&playbook(), COMPUTE);
+    let blk = task_block(&text::read(PLAYBOOK), COMPUTE);
     assert_contains(&blk, "rootful=_rootful | bool", COMPUTE);
     assert_contains(
         &blk,
@@ -167,19 +155,15 @@ fn detected_ports_reach_the_declared_set_with_rootful() {
 fn detection_become_follows_rootful() {
     // A hardcoded become: false silently found NO containers on rootful/Docker hosts (their
     // containers belong to root). It must track _rootful.
-    let pb = playbook();
-    assert_contains(&pb, "become: \"{{ _rootful }}\"", PLAYBOOK);
-    assert!(
-        !has_line(&pb, r"^\s*become:\s*false\s*$"),
-        "{PLAYBOOK}: a hardcoded `become: false` is back"
-    );
+    text::assert_text(PLAYBOOK, "become: \"{{ _rootful }}\"");
+    text::refute_line(PLAYBOOK, r"^\s*become:\s*false\s*$");
 }
 
 #[test]
 fn ssh_allows_come_first_and_every_add_precedes_enable() {
     // The SSH allows are their own task, added before any other rule; every other add precedes
     // enabling UFW.
-    let pb = playbook();
+    let pb = text::read(PLAYBOOK);
     assert_precedes(
         &pb,
         r#"name: "Allow SSH \(22/tcp\) from each admin CIDR"#,
@@ -201,7 +185,7 @@ fn ssh_allows_come_first_and_every_add_precedes_enable() {
         OTHER_ADD,
     );
     // The fresh-handshake check that proves SSH survives the firewall must remain.
-    assert_contains(&pb, "ansible.builtin.meta: reset_connection", PLAYBOOK);
+    text::assert_text(PLAYBOOK, "ansible.builtin.meta: reset_connection");
 }
 
 #[test]
@@ -209,26 +193,25 @@ fn bridge_dns_detection_is_gated_on_rootful_podman() {
     // Podman's aardvark-dns listens on the bridge gateway (a host IP), so a rootful podman
     // container's DNS query is INPUT to the host and default-deny drops it. Docker and rootless
     // podman never cross host UFW, so detection is gated on _rootful AND podman.
-    let pb = playbook();
-    assert_contains(
-        &pb,
-        "_allow_bridge_dns: \"{{ firewall_allow_bridge_dns | default(true) | bool }}\"",
+    let pb = text::read(PLAYBOOK);
+    text::assert_text(
         PLAYBOOK,
+        "_allow_bridge_dns: \"{{ firewall_allow_bridge_dns | default(true) | bool }}\"",
     );
     let detect = "Detect podman bridge interfaces";
     let blk = task_block(&pb, detect);
     assert_contains(&blk, "podman network inspect", detect);
     assert!(
-        has_line(&blk, r"^\s*- _allow_bridge_dns\s*$"),
+        text::any_line(&blk, r"^\s*- _allow_bridge_dns\s*$"),
         "{detect}: no _allow_bridge_dns gate"
     );
     // Removing _rootful must fail this test: the gate must also exclude rootless podman.
     assert!(
-        has_line(&blk, r"^\s*- _rootful\s*$"),
+        text::any_line(&blk, r"^\s*- _rootful\s*$"),
         "{detect}: no _rootful gate"
     );
     assert!(
-        has_line(&blk, r"^\s*- _engine == 'podman'\s*$"),
+        text::any_line(&blk, r"^\s*- _engine == 'podman'\s*$"),
         "{detect}: no podman gate"
     );
     // The bridges found feed the declared set, which is added before enable.
@@ -252,17 +235,16 @@ fn bridge_dns_detection_is_gated_on_rootful_podman() {
 #[test]
 fn deny_egress_defaults_to_empty() {
     // Default-empty keeps every existing host's rule set byte-identical.
-    assert_contains(
-        &playbook(),
-        "_deny_egress: \"{{ firewall_deny_egress | default([]) }}\"",
+    text::assert_text(
         PLAYBOOK,
+        "_deny_egress: \"{{ firewall_deny_egress | default([]) }}\"",
     );
 }
 
 #[test]
 fn egress_denials_feed_the_declared_rule_set() {
     assert_contains(
-        &task_block(&playbook(), COMPUTE),
+        &task_block(&text::read(PLAYBOOK), COMPUTE),
         "deny_egress=_deny_egress",
         COMPUTE,
     );
@@ -274,7 +256,7 @@ fn every_egress_denial_is_judged_by_ufw_egress_problems() {
     // test_ufw_rules_filter.py (docs/MISTAKES.md 2.5). Here: the playbook asserts on it, fed
     // the declared denials and SSH CIDRs, and the refusal names the recorded why.
     let task = "Validate each egress denial";
-    let blk = task_block(&playbook(), task);
+    let blk = task_block(&text::read(PLAYBOOK), task);
     assert_contains(
         &blk,
         "_fw_egress_problems: \"{{ _deny_egress | ufw_egress_problems(_ssh_cidrs) }}\"",
@@ -287,7 +269,7 @@ fn every_egress_denial_is_judged_by_ufw_egress_problems() {
 #[test]
 fn egress_denials_are_added_before_enable() {
     // Validation precedes building the rules, and the rules precede enabling.
-    let pb = playbook();
+    let pb = text::read(PLAYBOOK);
     assert_precedes(
         &pb,
         r#"name: "Validate each egress denial"#,
@@ -310,8 +292,8 @@ fn outbound_stays_allowed_unless_an_enforced_allowlist_proves_itself() {
     // Egress containment is specific denials, not default-deny outbound, which would break
     // package fetches, DNS and NTP. The one exception, an enforced firewall_allow_egress, is
     // applied only inside the probe block, after enable and the SSH verify.
-    let pb = playbook();
-    assert_contains(&pb, "ufw default allow outgoing", PLAYBOOK);
+    let pb = text::read(PLAYBOOK);
+    text::assert_text(PLAYBOOK, "ufw default allow outgoing");
     let deny_lines = pb
         .lines()
         .filter(|l| l.contains("ufw default deny outgoing"))
@@ -333,7 +315,7 @@ fn outbound_stays_allowed_unless_an_enforced_allowlist_proves_itself() {
 fn package_index_is_refreshed_only_when_ufw_is_missing() {
     // Under an enforced outbound allowlist a refresh on every run would stop each later run at
     // the install, before any rule or mode change.
-    let pb = playbook();
+    let pb = text::read(PLAYBOOK);
     assert_contains(
         &task_block(&pb, "Install ufw"),
         "update_cache: \"{{ 'install ok installed' not in _ufw_installed.stdout }}\"",
@@ -350,8 +332,8 @@ fn package_index_is_refreshed_only_when_ufw_is_missing() {
 fn upstream_source_may_be_a_list_or_a_string() {
     // A service can have more than one upstream (a reverse proxy AND its automation host);
     // widening one value to a CIDR would grant the whole subnet, so it takes a list.
-    let pb = playbook();
-    assert_contains(&pb, "_upstream_sources", PLAYBOOK);
+    let pb = text::read(PLAYBOOK);
+    text::assert_text(PLAYBOOK, "_upstream_sources");
     // A string is normalised to a one-element list, so single-address hosts are untouched.
     let norm = "Normalise the upstream source(s) to a list";
     let blk = task_block(&pb, norm);
@@ -378,7 +360,7 @@ fn upstream_source_may_be_a_list_or_a_string() {
 fn controller_cidr_is_checked_before_enable_and_the_ssh_allows() {
     // Semaphore reaches every host over SSH; a firewall without its source orphans the host.
     // Compared in the spelling ufw stores (behaviour: apply_firewall_convergence_playbook.rs).
-    let pb = playbook();
+    let pb = text::read(PLAYBOOK);
     let line_of = |needle: &str| {
         pb.lines()
             .position(|l| l.contains(needle))
