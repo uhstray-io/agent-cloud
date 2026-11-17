@@ -19,7 +19,7 @@
 #     ansible.builtin.include_tasks: tasks/require-parsed-inventory.yml
 #
 # Optional: require_parsed_inventory_group names the group the caller needs.
-# The caller owns the condition (e.g. `when: not (local_mode | default(false) | bool)`).
+# The caller owns the condition (e.g. `when: not (groups['all'] | local_dev_inventory)`, plan 24).
 
 - name: "Require the inventory to have parsed and hold hosts"
   ansible.builtin.assert:

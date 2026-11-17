@@ -44,7 +44,7 @@ def test_collector_includes_the_shared_push_task():
     }
     assert task["when"] == [
         "not ansible_check_mode",
-        "local_mode | default(false) | bool",
+        "(groups['all'] | local_dev_inventory)",
         "collector_loki_url is defined",
         "_agg.loki_streams | length > 0",
     ]
@@ -125,7 +125,8 @@ def _run(tmp_path: Path, tasks: list, vars_: dict, *args: str) -> subprocess.Com
     env = {k: v for k, v in os.environ.items() if k != "ANSIBLE_CONFIG"}
     env.update(ANSIBLE_NOCOLOR="1", ANSIBLE_STDOUT_CALLBACK="default",
                ANSIBLE_LOCAL_TEMP=str(tmp_path), ANSIBLE_REMOTE_TEMP=str(tmp_path))
-    return subprocess.run(["ansible-playbook", "-i", "localhost,", str(path), *args],
+    # A local-dev inventory: the collector takes its branch from the inventory (plan 24), not local_mode.
+    return subprocess.run(["ansible-playbook", "-i", "localhost,collector-local,", str(path), *args],
                           cwd=REPO, env=env, text=True, capture_output=True, timeout=60, check=False)
 
 
@@ -210,7 +211,6 @@ def test_collector_publishes_receipt_separately_after_data_ack(
         {"name": "Report", **by_name["Report"]},
     ]
     vars_ = {
-        "local_mode": True,
         "collector_loki_url": loki.url,
         "ansible_check_mode": False,
         "_completion_ready": True,
@@ -257,7 +257,7 @@ def test_unknown_otlp_data_ack_suppresses_the_separate_receipt_post(tmp_path):
             "name": "unknown OTLP acknowledgement suppresses the receipt",
             "hosts": "localhost", "connection": "local", "gather_facts": False,
             "vars": {
-                "local_mode": False, "ansible_check_mode": False,
+                "ansible_check_mode": False,
                 "_collector_otlp_url": url, "_completion_ready": True,
                 "_agg": {"loki_streams": STREAMS, "otlp_payload": payload, "report": {}},
                 "_parser": str(REPO / "platform/workflows/service-onboarding/lib/step_results.py"),
@@ -286,7 +286,6 @@ def test_collector_reports_skipped_when_it_has_no_loki(tmp_path, loki):
     show = {"name": "loki report", "ansible.builtin.debug": {
         "msg": "LOKI=" + report["ansible.builtin.debug"]["msg"]["loki"]}}
     result = _run(tmp_path, [include, show], {
-        "local_mode": False,
         "_conformance_loki_status": 0,
         "_conformance_loki_skipped": True,
     })
