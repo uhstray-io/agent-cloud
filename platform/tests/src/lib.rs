@@ -300,28 +300,26 @@ pub mod yaml {
     /// string too when `keys`: `playbook_yaml.strings(value, keys)` for the static ports
     /// (AC-958).
     ///
-    /// Where it differs from the Python, all from how [`parse`] reads a node:
-    /// - a [`Node`] has no number type, so a plain `53`, `0644` or `2026-11-17`, which PyYAML reads
-    ///   as an int, float or date and does not yield, is a `Node::Str` here and is yielded. It
-    ///   cannot be told apart from a quoted `"53"`, which PyYAML does yield, so dropping it would
-    ///   lose strings the Python returns. A scan that matches digits sees these extra values;
-    /// - for the same reason a plain `53:` and a quoted `"53":` key in one mapping are one key
-    ///   here, the later value replacing the earlier, where PyYAML keeps both: such a mapping
-    ///   yields one value fewer;
-    /// - `playbook_yaml.py` reads a node with a local `!tag` as null, a tagged collection's
-    ///   children included, and a plain scalar with the non-specific `!` tag by its implicit type
-    ///   (`! yes` is a bool); here a tagged scalar is read as its text, a tagged collection as if
-    ///   untagged;
-    /// - PyYAML merges mapping keys equal as Python values (`yes` and `1`, `10` and `1_0`, `1.0`
-    ///   and `1.00`), the later value replacing the earlier; here they stay separate keys, and
-    ///   the mapping yields each value;
-    /// - PyYAML refuses a plain `=` or `<<` as a value (it accepts `=` as a key, and `<<` as a key
-    ///   whose value is a mapping); here each is read as its text.
+    /// Where it differs from the Python, it is because of how [`parse`] reads a node: it keeps
+    /// every scalar as its text except a plain YAML 1.1 bool or null, ignores tags, and treats two
+    /// mapping keys as one only when they are the same node, the later value replacing the earlier.
+    /// PyYAML instead constructs typed values and compares keys as Python values. In practice:
+    /// - a plain `53`, `0644` or `2026-11-17` is an int, float or date to PyYAML, and its walk does
+    ///   not yield it; here it is a `Node::Str` and is yielded. It cannot be told apart from a
+    ///   quoted `"53"`, which PyYAML does yield, so dropping it would lose strings the Python
+    ///   returns. A scan that matches digits sees these extra values;
+    /// - two keys of one mapping can be one key on one side and two on the other: a plain `53:`
+    ///   and a quoted `"53":` are one here and two to PyYAML; `yes:` and `1:` are one to PyYAML
+    ///   and two here;
+    /// - `playbook_yaml.py` reads a node with a local `!tag` as null, and PyYAML reads a scalar
+    ///   with the non-specific `!` tag by its implicit type (`! yes` is a bool); here a tagged
+    ///   scalar is read as its text and a tagged collection as if untagged;
+    /// - PyYAML refuses a plain `=` or `<<` as a value; here each is read as its text.
     ///
     /// `support_scan_python` holds this to `playbook_yaml.strings` on every scanned repository
     /// file, run with PyYAML's numbers and dates read as their text: the two walks yield the same
-    /// strings. No scanned file has a tag, a plain `=` or `<<` value or a mapping with both key
-    /// forms (checked 2026-11-17).
+    /// strings. No scanned file has a tag, a plain `=` or `<<` value, or two keys of one mapping
+    /// that either reading takes as one (checked 2026-11-17).
     pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
         fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
             match node {
