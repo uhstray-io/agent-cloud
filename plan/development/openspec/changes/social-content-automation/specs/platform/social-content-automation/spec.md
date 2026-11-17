@@ -32,6 +32,12 @@ An approval SHALL apply only to the revision it names. A revision covers the pos
 - **WHEN** the image is replaced and a handoff attempts to schedule the post
 - **THEN** the post is not scheduled until the new revision has its own recorded approval
 
+#### Scenario: Post edited in the publishing service after approval is not scheduled
+
+- **GIVEN** a revision was approved
+- **WHEN** the post as the publishing service holds it no longer matches that revision, read back just before the schedule
+- **THEN** the post is not scheduled, and the mismatch is recorded
+
 #### Scenario: Publish time changed after approval is not scheduled
 
 - **GIVEN** a post was approved for one publish time
@@ -59,7 +65,7 @@ No flow SHALL create a post that publishes immediately. Every post a flow create
 
 ### Requirement: Handoff to the publishing service is exactly once
 
-A handoff SHALL create at most one publishing-service post for a draft, and SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
+A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes. It SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
 
 #### Scenario: Retried handoff creates no second post
 
