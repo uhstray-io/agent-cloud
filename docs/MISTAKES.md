@@ -3168,10 +3168,12 @@ review of #1149 found four `vars` entries built from `now(utc=true...)` that it 
 `_agw_today` in both the Phase 1 and Phase 3 plays of `deploy-agentgateway.yml`, the
 task-local `_today` in `rollback-inference-route.yml`, and the include var
 `pbs_receipt_observed_end` in `verify-o11y-pbs-artifact.yml` and
-`sync-o11y-protected-pbs-copy.yml`. Each re-renders at every reference, so a run spanning
-midnight UTC could read two dates and a receipt could carry two end times (6.7). The
-widened check held them in a shrink-only ratchet; AC-910 moved each to a `set_fact` that
-computes it once and emptied the ratchet.
+`sync-o11y-protected-pbs-copy.yml`. Each re-renders at every reference (6.7). `_agw_today`
+feeds play vars read at several tasks in each play, and the two plays computed it apart, so
+a deploy spanning midnight UTC could read two dates; the receipt task reads its end time
+twice, so a receipt could validate one end time and record another. The rollback `_today`
+was read once, so it was harmless there. The widened check held all four in a shrink-only
+ratchet; AC-910 computed each once in a `set_fact` and emptied the ratchet.
 
 **Root cause.** The pattern was written for the call form the author had in front of them,
 `now()`, and was never tried against the argumented form the playbooks actually use.

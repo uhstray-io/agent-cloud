@@ -992,7 +992,8 @@
     _deploy_dir: "{{ _monorepo_dir }}/{{ monorepo_deploy_path }}"
     # The shared-key grace period, as Phase 1 reads it (the same three expressions; a play's vars
     # do not cross plays, and test_agw_legacy_retirement.py asserts the copies stay equal).
-    # _agw_today is a host fact frozen by the play's first task, not a play var.
+    # _agw_today is a host fact: Phase 1 freezes it, and this play's first task sets it only when
+    # this play runs without Phase 1.
     _legacy_expires: "{{ legacy_shared_expires | default('', true) | string }}"
     _legacy_shared_active: "{{ (_legacy_expires | length > 0) and (_agw_today < _legacy_expires) }}"
     _legacy_shared_retired: "{{ (_legacy_expires | length > 0) and (_agw_today >= _legacy_expires) }}"

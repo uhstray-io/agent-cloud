@@ -236,7 +236,7 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
     // arguments (#1149 review, docs/MISTAKES.md 2.40). AC-910 moved all four to set_fact, so
     // the list is empty and stays empty: a new offender fails, and so does an entry that is
     // fixed but still listed.
-    const KNOWN: [&str; 0] = [];
+    const KNOWN: &[&str] = &[];
     let known: std::collections::BTreeSet<String> = KNOWN.iter().map(|k| (*k).to_owned()).collect();
     let new: Vec<&String> = offenders.difference(&known).collect();
     let fixed: Vec<&String> = known.difference(&offenders).collect();
