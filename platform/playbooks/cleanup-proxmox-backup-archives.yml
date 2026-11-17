@@ -71,7 +71,7 @@
 
     - name: Require confirm_delete to be empty or a sha256
       ansible.builtin.assert:
-        that: (confirm_delete | default('') | string) == '' or (confirm_delete | string) is match('^[0-9a-f]{64}$')
+        that: (confirm_delete | default('') | string) is match('^([0-9a-f]{64})?$')
         fail_msg: "confirm_delete must be empty (dry run) or the 64-character sha256 a dry run printed."
 
     - name: Refuse public cleartext OpenBao transport
@@ -255,25 +255,15 @@
           register: _delete_runs
           no_log: true
 
-        # A delete still running after `delay` answers with its task id (UPID); one that finished answers null.
-        - name: Collect the delete tasks still running
-          ansible.builtin.set_fact:
-            _delete_tasks: >-
-              {{ _delete_tasks | default([]) + [{'node': _list.volumes[_i].node,
-                 'upid': _delete_runs.results[_i].json.data}] }}
-          loop: "{{ range(_list.volumes | length) | list }}"
-          loop_control:
-            loop_var: _i
-          when: _delete_runs.results[_i].json.data is not none
-          no_log: true
-
+        # A delete still running after `delay` answers with its task id (UPID); one that finished answers
+        # null. Only the running ones are polled, on the node each delete went to (item.item, its volume).
         - name: Wait for each running delete task
           ansible.builtin.uri:
-            url: "{{ _pve_host }}/api2/json/nodes/{{ item.node }}/tasks/{{ item.upid | urlencode }}/status"
+            url: "{{ _pve_host }}/api2/json/nodes/{{ item.item.node }}/tasks/{{ item.json.data | urlencode }}/status"
             status_code: 200
             headers:
               Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-          loop: "{{ _delete_tasks | default([]) }}"
+          loop: "{{ _delete_runs.results | selectattr('json.data') | list }}"
           register: _task_polls
           until: _task_polls.json.data.status == 'stopped'
           retries: 60

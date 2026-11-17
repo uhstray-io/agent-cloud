@@ -40,7 +40,6 @@ survey = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(survey)
 
 Refusal = survey.Refusal
-GIB = survey.GIB
 
 
 def _is_backup(volume):
@@ -48,6 +47,8 @@ def _is_backup(volume):
 
 
 def _read_data(read, storage):
+    if read.get("status") == 403:
+        raise Refusal(f"The Proxmox token may not list the content of storage {storage} (needs Datastore.Audit there).")
     if read.get("status") != 200:
         raise Refusal(f"Proxmox answered {read.get('status')} listing the content of storage {storage}.")
     return (read.get("json") or {}).get("data") or []
