@@ -10,6 +10,7 @@
 //! - [`playbook`]: repository playbooks lifted to JSON with YAML 1.1 types, for running a play's
 //!   tasks through [`process::ansible_playbook`] (AC-943).
 
+pub mod http;
 pub mod lanes;
 pub mod text;
 
