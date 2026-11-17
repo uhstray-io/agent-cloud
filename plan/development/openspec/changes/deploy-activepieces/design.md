@@ -19,10 +19,7 @@ The decisions are D1 to D13 in plan 26, Decisions. Each is recorded there with i
 
 ## Risks and Trade-offs
 
-- **Object storage (D4).** Upstream calls S3 a hard requirement for its throughput figures (plan 26, F13). Database storage is accepted for this single-tenant, low-volume instance, and revisited when an object store exists or flow volume grows.
-- **Two sign-ins (D2).** Each administrator signs in through Authentik and also holds a local login. That is the accepted cost of avoiding a paid SSO tier.
-
-Every other risk is an open item in plan 26, and is tracked there.
+The accepted trade-offs are plan 26 D2 (two sign-ins) and D4 (database file storage). Every other risk is an open item in plan 26, and is tracked there.
 
 ## Migration Plan
 

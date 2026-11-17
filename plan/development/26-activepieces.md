@@ -12,7 +12,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 **Plane:** module `deploy-activepieces`. AC-767 and AC-768 record the decisions. AC-769 is this plan. AC-770 to AC-781 are the tasks of the OpenSpec change `deploy-activepieces` in `plan/development/openspec/changes/deploy-activepieces/`.
 
-**Context:** Activepieces is the platform's workflow-automation service. It replaces n8n, which was retired on 2026-11-12. Temporal was considered for the same role and dropped that day as the wrong tool for low-code flows. Plans 27 and 28 build on this service. Neither is in this repository yet.
+**Context:** Activepieces is the platform's workflow-automation service. It replaces n8n, whose retirement was decided on 2026-11-10. Activepieces was chosen on 2026-11-12; Temporal was considered for the same role and dropped that day as the wrong tool for low-code flows. Plans 27 and 28 build on this service: plan 27 is in this repository, plan 28 is not yet.
 
 ## Problem
 
@@ -119,6 +119,12 @@ Repository facts, read on the base commit `1ae46279` of this branch. Each row is
 | R17 | Plane's first-run script signs up the instance admin only when `is_setup_done` is false, and signs in instead when the instance is already set up, so a re-run creates nothing. | `platform/services/plane/deployment/configure_instance.py:26-33` |
 | R18 | `scripts/local-dev.sh` dispatches a repo-bound template, which runs that record's branch and not the working tree, when a playbook has no `(Local)` template in `platform/semaphore/templates-local.yml`. | `scripts/local-dev.sh:154` |
 | R19 | `apply-firewall.yml` reads its rules from host variables, including the outbound allowlist and denials and the audit or enforce mode. A variable passed only at launch is gone on the next plain run. | `platform/playbooks/apply-firewall.yml:118-121`, `:136-139`, `:160-175` |
+| R20 | `compose_inputs_digest` hashes the compose files, `.env` and `env/*.env`, so a changed `.env` makes `compose_up_if_changed` recreate. | `platform/lib/common.sh:190-198` |
+| R21 | `assert-containers-stable.yml` fails a deploy when a container of the project is not running or is crash-looping (MISTAKES 2.34). | `platform/playbooks/tasks/assert-containers-stable.yml:1-12` |
+| R22 | The roster default is built from per-user variables that exist only on the Authentik host, and `load-platform-admins.yml` loads it only when `agw_admin_identities_enabled` is set. | `platform/playbooks/vars/platform-admins.yml:38`, `:56`; `platform/playbooks/tasks/load-platform-admins.yml:16-41` |
+| R23 | The Postiz key capture reads its database with `exec <container> psql -tAc`, `changed_when: false`, `check_mode: false`. | `platform/playbooks/store-postiz-api-key.yml:70-87` |
+| R24 | The repository Caddyfile imports `sites/*.caddy` fragments for new services. | `platform/services/caddy/deployment/Caddyfile:5-9` |
+| R25 | `deploy-authentik.yml` enables only the apps listed in `authentik_apps`; an app missing from it gets no blueprint and no binding, and the deploy still passes. | `platform/playbooks/deploy-authentik.yml:225-234` |
 
 ## Architecture
 
@@ -174,7 +180,7 @@ sequenceDiagram
 |------|------|
 | `compose.yml` | Four services: `app`, `worker`, `postgres` and `redis`. Each has `restart: always`, the rule for repo compose services (AGENTS.md, Starting at boot). Only `app` publishes a port, on the bind the deploy renders. `app` has a healthcheck on `/api/v1/health` (F17, F28), and `worker` has `depends_on: app` with `condition: service_healthy`. The worker reaches the app at `http://app` (F15). One named `cache` volume is mounted at `/usr/src/app/cache` in `app` and `worker`, the path upstream uses (F38). The image digest is pinned (D6). |
 | `compose.local.yml` | The local-dev overlay. It attaches the services to the `local-dev` network, so the publish bind does not gate container peers there (D10). Its contents are set in task 1.2. |
-| `deploy.sh` | Container lifecycle only. It calls `compose_up_if_changed` and `wait_for_healthy` from `platform/lib/common.sh` (R9). The worker's order comes from the app healthcheck, so no staged start is needed. Plane's staged start (R10) is not used. It holds no secret handling. |
+| `deploy.sh` | Container lifecycle only. It calls `compose_up_if_changed` and `wait_for_healthy` from `platform/lib/common.sh` (R9). The worker's start order comes from the app healthcheck. The first-account hold is the publish bind, which is rendered into `.env`; `compose_up_if_changed` hashes `.env` (R20), so the second compose up in a first run recreates the app on the declared bind. Plane's staged start (R10) is not needed. After compose up, the deploy verify runs `tasks/assert-containers-stable.yml` (R21), so a crash-looping worker fails the run instead of passing behind a healthy app. It holds no secret handling. |
 | `templates/env.j2` | The env file, rendered from OpenBao values and inventory. It sets the variables in the table below. |
 | `CLAUDE.md`, `README.md`, `AGENTS.md` | Operator and agent notes. `AGENTS.md` is a symlink to `CLAUDE.md`, as in the other service directories. |
 | `.gitignore` | Keeps rendered env files out of git. |
@@ -186,7 +192,7 @@ Pipeline. Each playbook has one `templates.yml` entry with `dev_variant: true` (
 | Key | Type | Behaviour |
 |---|---|---|
 | `encryption_key` | `type: random`, length 32 | 32 alphanumeric characters, which the startup validator requires (F29, F30), although the upstream docs describe it as hexadecimal (F4). Generated once and reused. Never regenerated (D8, F5). |
-| `jwt_secret` | `type: random`, length 64 | Accepted by the startup validator (F31). Generated once and reused. |
+| `jwt_secret` | `type: random`, length 64 | The startup validator only requires it to be present (F31). Generated once and reused. |
 | `db_password` | `type: random`, length 32 | Generated once and reused. The upstream docs suggest `openssl rand -hex 32` for this variable (F25); no upstream validator for it was read (UNVERIFIED). |
 | `owner_password` | Generated once | Used once to create the owner (D10b), then kept for the owner's local sign-in. Handed to the owner through `Back Up Credentials to site-config` with `credential_fields=owner_password` (task 1.4), never printed. |
 | `worker_token` | Generated once, only if O2 finds it needed | Minted by a playbook task, not by a manual `npx` step (F16). |
@@ -225,13 +231,13 @@ Open item O9: `deploy-authentik.yml` collects `prod_required` only from `oidc` a
 
 ### Owner identity
 
-The owner is a key in the platform-admins roster (R8). Inventory variable `activepieces_owner` names that key. The deploy takes the owner's email from the roster entry and the password from `owner_password`. The repository copy of the roster holds placeholder defaults, and the real values belong in site-config.
+The owner is a key in the platform-admins roster (R8). Inventory variable `activepieces_owner` names that key. The deploy takes the owner's email from the roster entry and the password from `owner_password`. The roster file's own default is built from per-user variables that exist only on the Authentik host and resolves to placeholder addresses elsewhere (R22), so the deploy refuses to run unless `platform_admins` is declared for the Activepieces host and `activepieces_owner` names exactly one user entry in it with an email. The shared loader `tasks/load-platform-admins.yml` loads the list only behind the agentgateway flag (R22); task 1.4 makes that gate a parameter rather than copying the loader.
 
-A re-run creates nothing: the read-back finds the owner and no second sign-up is made, as Plane's first-run script signs in instead when the instance is already set up (R17). Removing someone from the roster blocks them at the gate (D2). Their local Activepieces account remains until it is reconciled (O6).
+The read-back checks for the roster owner's email, not for any account, so changing `activepieces_owner` is noticed. It uses the shape of the Postiz key capture: one `psql -tAc` inside the Postgres container with `changed_when: false` and `check_mode: false`, so a dry run still reads it (R23). A re-run creates nothing: the read-back finds the owner and no second sign-up is made, as Plane's first-run script signs in instead when the instance is already set up (R17). Removing someone from the roster blocks them at the gate (D2). Their local Activepieces account remains until it is reconciled (O6).
 
 ### Edge
 
-The production route is a Caddy block in site-config `caddy_managed_sites`, with `forward_auth` pointed at the Authentik outpost. `Manage Caddy Sites` places it (AGENTS.md). The DNS record lives in `platform/infra/cloudflare/dns.tf`, and `Apply Cloudflare Tofu` applies it. The route opens last (D10d). Webhook exemptions, where approved, are exact paths declared per flow (D12).
+The production route is a Caddy block in site-config `caddy_managed_sites`, with `forward_auth` pointed at the Authentik outpost. `Manage Caddy Sites` places it. This follows the production Caddy, which is a flat-Caddyfile site (AGENTS.md, Deployment Status), as Plane's routes do. The repository's `sites/<name>.caddy` fragment path (R24) is not used, because production does not run it today; moving every route to fragments is a platform change, not this plan's. The DNS record lives in `platform/infra/cloudflare/dns.tf`, and `Apply Cloudflare Tofu` applies it. The route opens last (D10d). Webhook exemptions, where approved, are exact paths declared per flow (D12).
 
 ### Publish bind and firewall
 
@@ -239,7 +245,7 @@ The publish bind is the gate. While no owner exists, the deploy publishes the ap
 
 The firewall is the backstop. Its host variables are declared in site-config inventory (task 2.1), not passed as launch variables, so a later plain `Apply Firewall` run keeps them (R19). They are `firewall_detect_ports: false`, which stops detection from admitting the published port from `firewall_upstream_source` before the owner exists (R7), and `firewall_allow_groups`, which admits the app port from the Caddy group (R7). SSH is admitted from the controller only (task 2.2). Task 2.3 runs `Probe Reachability (Dev)` twice, once expecting the app port open from the Caddy group and once expecting it closed from another LAN group (R13).
 
-Egress is enforced as code, because the in-process guard is best-effort (F34). `firewall_allow_egress` and `firewall_deny_egress` are declared through `apply-firewall` (R7). The egress mode is `audit` from task 2.2, which keeps outgoing traffic allowed by default. It becomes `enforce`, with `firewall_egress_probes`, in task 2.6, before the 2.8 gate.
+Egress is enforced as code, because the in-process guard is best-effort (F34). `firewall_allow_egress` and `firewall_deny_egress` are declared through `apply-firewall` (R7). The egress mode is `audit` from task 2.2, which keeps outgoing traffic allowed by default. It becomes `enforce`, with `firewall_egress_probes`, in task 2.6, before the 2.8 gate. Enforce restricts traffic the host itself sends (OUTPUT); the firewall's own documentation does not say whether a rootless container's outbound traffic crosses it (R19). Open item O11 proves it from inside the worker before the gate relies on it.
 
 ### Backup and restore
 
@@ -265,16 +271,16 @@ Production follows the order in the sequence diagram. The owner exists before th
 
 | Check | Spec requirement | Pass condition |
 |---|---|---|
-| A redeploy keeps the encryption key | Encryption key and idempotent re-runs | After a redeploy, the `encryption_key` KV version is unchanged, and a connection stored before the redeploy still decrypts. |
+| A redeploy keeps the encryption key | Encryption key and idempotent re-runs | After a redeploy, the encryption key in the secret store is unchanged, and a connection stored before the redeploy still decrypts. |
 | A re-run reports no change | Encryption key and idempotent re-runs | A second run with unchanged inputs reports no changed task. |
 | A scheduled flow runs on the local stack | Flows run without privileged containers | A scheduled flow runs on local-dev under `SANDBOX_CODE_ONLY`, and no container in the project is privileged. |
 | A scheduled flow runs in production | Flows run without privileged containers | The same check passes on the production instance. |
-| The deploy creates the owner before the port is reachable | Account creation is closed after the owner | The owner exists before the declared bind is rendered, and until then the app answers only on `127.0.0.1`. |
+| The deploy creates the owner before the port is reachable | Account creation is closed after the owner | The owner exists before the declared bind is rendered, and until then no host other than the service host reached the port. |
 | An uninvited sign-up is refused | Account creation is closed after the owner | After the owner exists, a sign-up for an address with no invitation is refused, and no account is created. |
 | A platform-admin passes the gate | Only platform-admins reach the application | A member of `platform-admins` signs in through Authentik and reaches the application. |
 | A non-admin is refused at the edge | Only platform-admins reach the application | A signed-in user outside `platform-admins` is refused at Caddy, before the application. |
 | A direct connection from another LAN host is refused | The application port is reachable from the Caddy host only | A connection from another LAN host to the app port fails, and one from the Caddy group succeeds. |
-| An undeclared outbound connection is refused | Outbound traffic from the service host follows a declared allowlist | With egress in enforce mode, a connection from the host to an undeclared destination is refused and every declared egress probe succeeds. |
+| An undeclared outbound connection is refused | Outbound traffic from the service host follows a declared allowlist | With egress in enforce mode, a connection from the host and from inside the worker container to an undeclared destination is refused, and every declared egress probe succeeds. |
 | An undeclared webhook path stays gated | Webhook paths are exempted by exact path only | A webhook path that no inventory entry declares stays behind the gate. |
 | A restore swaps in only a fully loaded copy | The database can be backed up and restored | A restore that fails part-way leaves the live database unchanged, and only a fully loaded copy is swapped in. |
 | A dump restores into a running instance | The database can be backed up and restored | A dump taken by the backup playbook restores into a running instance that answers its health route, with its flows and connections present. |
@@ -356,6 +362,7 @@ Each open item is owned by one task. None is stated as fact in this plan.
 | O8 | Does a Community instance at 0.93.0 allow one authenticated API call? F27 says the dashboard that creates keys is available only in the Platform and Enterprise editions. | Spike once, before task 1.2; referenced by task 1.5 | Open. See the risk section. A refuted result goes to the operator. |
 | O9 | The production check at `deploy-authentik.yml:243` takes `prod_required` only from `oidc` apps (R15), so a forward_auth app is not guarded. | Task 2.4 | Open. Widening that filter is a change to the shared Authentik deploy, decided within task 2.4. |
 | O10 | Under `AP_NETWORK_MODE=STRICT`, does the engine call the app at `http://app`? The SSRF guard exempts the sandbox RPC port on loopback and the `AP_SSRF_ALLOW_LIST` entries (F37). | Task 1.2 | Open. If it does, allow-list the app container's address only, never the compose subnet, which would expose Postgres and Redis. |
+| O11 | Does the host firewall's enforce mode refuse a rootless container's outbound traffic? It restricts host-sent traffic (OUTPUT) and documents no rule for rootless containers (R19). | Task 2.6 | Open. Prove it with a connection from inside the worker container to an undeclared address. If it is not refused, the egress control moves to the worker's compose network before the 2.8 gate. |
 
 ## Instance values (in site-config)
 
@@ -366,6 +373,8 @@ This repository holds templates and placeholders. The values below live in the p
 | `activepieces.<zone>` | The public hostname. The public URL built from it is the value of `AP_FRONTEND_URL` on the app. | site-config inventory and `caddy_managed_sites` |
 | `activepieces_svc` | The inventory group for the VM. | site-config inventory |
 | `activepieces_owner` | The roster key of the owner account (D10b). | site-config inventory |
+| `platform_admins` | The declared admin roster for the Activepieces host; the deploy refuses without it (R22). | site-config inventory |
+| `authentik_apps` entry `activepieces` | Enables the gate's blueprint and binding (R25). | site-config inventory |
 | `activepieces_publish_bind` | The declared LAN bind, rendered only after the owner exists (D10c). Before that the deploy uses `127.0.0.1`, which is not configurable. | site-config inventory |
 | Firewall host variables: `firewall_detect_ports`, `firewall_allow_groups` and the egress variables | Host variables in site-config inventory, declared in task 2.1 and not passed at launch (R19). | site-config inventory |
 | VM address and VM id | The VM's declared address and id, with the NetBox reservation for the address. | site-config `vm-specs` and inventory |
@@ -384,7 +393,7 @@ This repository holds templates and placeholders. The values below live in the p
 - `plan/architecture/00-foundation-standards.md`: the required sections for plan documents, which this file follows.
 - `plan/architecture/10-release-policy.md`: the release limits.
 - `AGENTS.md`, section "Adding a New Service": the steps this service follows.
-- Plans 27 (`agentgateway-content-generation`) and 28 (`social-content-automation`) are named for scope only. Neither file exists yet in this repository.
+- Plans 27 (`agentgateway-content-generation`) and 28 (`social-content-automation`) are named for scope only. Plan 27 is in this repository; plan 28 is not yet.
 
 ## Revision history
 
