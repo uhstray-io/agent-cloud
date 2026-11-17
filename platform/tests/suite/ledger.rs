@@ -922,8 +922,8 @@ fn the_tests_the_mistakes_doc_names_exist() {
             "no BATS @test and no Rust port-map #[test] fn for: {name}"
         );
     }
-    // The ported test itself, as the BATS original pinned it: `docs/MISTAKES.md` names this fn as
-    // the enforcement, so a port-map row pointing elsewhere must not stand in for it.
+    // The ported test itself, pinned as the BATS original pinned it: `docs/MISTAKES.md` names this
+    // fn as the enforcement, so it must stay a counted test whichever fn its port-map row names.
     assert!(
         defines_test(
             &read_repo("platform/tests/suite/install_podman.rs"),
