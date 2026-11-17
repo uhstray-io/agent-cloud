@@ -11,9 +11,9 @@
 //! | Python test | Rust fn |
 //! |---|---|
 //! | `test_a_dry_run_init_failure_fails_the_run_and_still_writes_nothing` | `a_dry_run_init_failure_fails_the_run_and_still_writes_nothing` |
-//! | `test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal` (3 cases) | `an_empty_guard_receipt_has_a_fixed_refusal`, `an_invalid_guard_receipt_has_a_fixed_refusal`, `an_incomplete_guard_receipt_has_a_fixed_refusal` |
+//! | `test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal` (3 cases) | `a_missing_or_malformed_guard_receipt_has_a_fixed_refusal` (a named table: empty, invalid, incomplete) |
 //! | `test_a_guard_that_cannot_start_has_a_fixed_refusal` | `a_guard_that_cannot_start_has_a_fixed_refusal` |
-//! | `test_a_failed_tofu_show_fails_the_run_in_either_mode` (2 cases) | `a_failed_tofu_show_fails_a_dry_run`, `a_failed_tofu_show_fails_a_real_plan` |
+//! | `test_a_failed_tofu_show_fails_the_run_in_either_mode` (2 cases) | `a_failed_tofu_show_fails_the_run_in_either_mode` (a named table: dry run, real plan) |
 //!
 //! The Python read stdout only; this reads stdout, then stderr, as the other playbook-tier modules
 //! do. The fake-tofu writer, [`install_fake_tofu`], is private here: a candidate for the shared
@@ -263,51 +263,34 @@ fn a_dry_run_init_failure_fails_the_run_and_still_writes_nothing() {
     assert!(!Path::new(&run.calls[0][1]).parent().unwrap().exists());
 }
 
-/// One guard receipt case: the guard prints `receipt` and exits 1, and the run must refuse it
-/// with the fixed message and never repeat the receipt. Empty, invalid, and incomplete receipts
-/// fail closed.
-fn assert_receipt_refused(receipt: &str) {
-    let tmp = TempDir::new().unwrap();
-    let guard_script = tmp.path().join("bad_guard.py");
-    std::fs::write(
-        &guard_script,
-        format!("import sys\nsys.stdout.write('{receipt}')\nsys.exit(1)\n"),
-    )
-    .unwrap();
-    let run = tofu_run(
-        tmp.path(),
-        &Opts {
-            guard_script: Some(guard_script),
-            grafana_guard: true,
-            ..Opts::default()
-        },
-    );
-    assert!(!run.success, "receipt {receipt:?}: {}", run.out);
-    assert!(
-        run.out.contains(REFUSAL),
-        "receipt {receipt:?}: {}",
-        run.out
-    );
-    assert!(
-        receipt.is_empty() || !run.out.contains(receipt),
-        "receipt {receipt:?} repeated: {}",
-        run.out
-    );
-}
-
 #[test]
-fn an_empty_guard_receipt_has_a_fixed_refusal() {
-    assert_receipt_refused("");
-}
-
-#[test]
-fn an_invalid_guard_receipt_has_a_fixed_refusal() {
-    assert_receipt_refused("not-json");
-}
-
-#[test]
-fn an_incomplete_guard_receipt_has_a_fixed_refusal() {
-    assert_receipt_refused("{}");
+fn a_missing_or_malformed_guard_receipt_has_a_fixed_refusal() {
+    // Empty, invalid, and incomplete receipts fail closed: the guard prints the receipt and exits
+    // 1, and the run refuses with the fixed message and never repeats the receipt.
+    for (case, receipt) in [("empty", ""), ("invalid", "not-json"), ("incomplete", "{}")] {
+        let tmp = TempDir::new().unwrap();
+        let guard_script = tmp.path().join("bad_guard.py");
+        std::fs::write(
+            &guard_script,
+            format!("import sys\nsys.stdout.write('{receipt}')\nsys.exit(1)\n"),
+        )
+        .unwrap();
+        let run = tofu_run(
+            tmp.path(),
+            &Opts {
+                guard_script: Some(guard_script),
+                grafana_guard: true,
+                ..Opts::default()
+            },
+        );
+        assert!(!run.success, "{case} receipt: {}", run.out);
+        assert!(run.out.contains(REFUSAL), "{case} receipt: {}", run.out);
+        assert!(
+            receipt.is_empty() || !run.out.contains(receipt),
+            "{case} receipt repeated: {}",
+            run.out
+        );
+    }
 }
 
 #[test]
@@ -326,35 +309,24 @@ fn a_guard_that_cannot_start_has_a_fixed_refusal() {
     assert!(!run.out.contains("missing_guard.py"), "{}", run.out);
 }
 
-/// A failed `tofu show` fails the run, in a dry run (`check`) and in a real plan alike.
-fn assert_failed_show_fails(check: bool) {
-    let tmp = TempDir::new().unwrap();
-    let run = tofu_run(
-        tmp.path(),
-        &Opts {
-            check,
-            show_rc: 1,
-            ..Opts::default()
-        },
-    );
-    assert_eq!(
-        commands(&run.calls),
-        ["init", "plan", "show"],
-        "check={check}"
-    );
-    assert!(
-        !run.success && run.out.contains("'show_rc': 1,"),
-        "check={check}: {}",
-        run.out
-    );
-}
-
 #[test]
-fn a_failed_tofu_show_fails_a_dry_run() {
-    assert_failed_show_fails(true);
-}
-
-#[test]
-fn a_failed_tofu_show_fails_a_real_plan() {
-    assert_failed_show_fails(false);
+fn a_failed_tofu_show_fails_the_run_in_either_mode() {
+    // A failed `tofu show` fails the run, in a dry run and in a real plan alike.
+    for (case, check) in [("dry run", true), ("real plan", false)] {
+        let tmp = TempDir::new().unwrap();
+        let run = tofu_run(
+            tmp.path(),
+            &Opts {
+                check,
+                show_rc: 1,
+                ..Opts::default()
+            },
+        );
+        assert_eq!(commands(&run.calls), ["init", "plan", "show"], "{case}");
+        assert!(
+            !run.success && run.out.contains("'show_rc': 1,"),
+            "{case}: {}",
+            run.out
+        );
+    }
 }
