@@ -110,11 +110,16 @@ flowchart LR
 platform/tests/
   Cargo.toml            agent-cloud-tests, its own [workspace]; Cargo.lock committed
   .config/nextest.toml  the default and ci profiles, the playbook test-group
+  build.rs              declares one module per suite/<module>.rs (D10)
   areas.yml            area -> path globs (D3)
+  areas.d/<area>.yml    one area per file (D10)
+  ledger_citation_ratchet.txt          ledger ratchet, only shrinks (D9)
+  ledger_citation_ratchet.d/<group>.txt  one ratchet file per port group (D10)
   src/lib.rs            shared support: repo root, YAML 1.1 loader, task walker, process runner
   src/bin/testsel.rs    changed paths -> nextest filterset (Phase 2)
-  suite/main.rs         the one test binary
-  suite/<module>.rs     one area and one tier each (an area may have several modules)
+  suite/main.rs         the one test binary; includes the generated module list
+  suite/<module>.rs     one area and one tier each (an area may have several modules); found by build.rs, no list
+  suite/rust_format.rs  rustfmt --check on every suite file, which cargo fmt does not reach
 ```
 
 The crate sits in `platform/tests/` beside the Python files it replaces. Ledger citations keep their
@@ -128,13 +133,34 @@ unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
 |---|---|---|
 | D1 | **Runner: `cargo-nextest` 0.9.151.** `lane.sh` runs the `ci` lane under the `ci` profile and the other lanes under `default`. A `playbook` test-group caps concurrent `ansible-playbook` runs. `slow-timeout` bounds every test, which is plan 21 F5's missing timeout | `cargo test` runs one binary's tests on threads in one process, so a hung child holds the run and per-test timeouts need custom code. `rustest` 0.3.1 replaces the libtest harness (`harness = false`), was last released 2025-06-04 and has 82 downloads a month (lib.rs, read 2026-11-12) |
 | D2 | **Libraries.** `assert_cmd` + `predicates` (process tests), `insta` with `yaml` and `json` (snapshots of rendered output and refusal messages), `proptest` (properties of parsers and resolvers), `wiremock` + `tokio` (HTTP fakes, replacing the 31 hand-rolled servers of plan 21 F5), `yaml-rust2` (YAML), `tempfile`, `globset`, `serde_json`. Approved by the operator on 2026-11-12 | `quickcheck` duplicates `proptest`, and `proptest` keeps failing cases in `proptest-regressions/`. `trybuild` tests compile errors of macros and types, and the repository has none. `serde_yaml` is deprecated (`0.9.34+deprecated` on crates.io) |
-| D3 | **Lanes from `areas.yml`.** YAML, read with the suite's own loader, so no TOML dependency. Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over the selected modules (`test(/^(?:<module>|...)::/)`). The security set is added in every lane (its static tests in `commit`), with the touched areas' tiers the lane allows. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
+| D3 | **Lanes from `areas.yml` and `areas.d/<area>.yml`.** YAML, read with the suite's own loader, so no TOML dependency. Each area names its path globs; the file also lists the `full` triggers and the ignored paths, which select nothing (documentation). `testsel` maps changed paths to areas and emits `-E` filtersets over the selected modules (`test(/^(?:<module>|...)::/)`). The security set is added in every lane (its static tests in `commit`), with the touched areas' tiers the lane allows. A change to the test crate, `areas.yml` or a shared task selects everything | Hand-listed path filters in the workflow drift from the tests. Running everything is today's problem |
 | D4 | **Port Python where the runtime is ours.** Controller-side helpers (`scripts/*.py`, `platform/lib/*.py`, `platform/playbooks/files/*.py` run on the controller) become subcommands of one Rust CLI. Host-side helpers follow D6. Operator decision, 2026-11-12 | Keeping a thin pytest lane was the recommended option. Shim tests (`python3 -c` per case) are slower than in-process pytest |
 | D5 | **Framework-bound Python stays Python, kept thin.** Filter and callback plugins are loaded by Ansible. Plane, NetBox and Authentik scripts run in their Django shells. NetBox workers and configuration run in NetBox. Each keeps its logic in a pure function, and the function's cases run through the tier that can load it: playbook tier for plugins, a fake-module `python3` run for Django scripts. One test per behaviour, cases looped inside one run | A Rust port of these is impossible: the host only loads Python |
 | D6 | **Host-side binary distribution: DECIDED by the operator on 2026-11-12, as pinned release binaries.** CI builds static musl binaries for `x86_64` and `aarch64` and publishes them on the release. Deploys fetch them by pinned sha256, the pattern Deploy Plane uses for Plane's Compose files, and copy them instead of `script:`. Recorded in `plan/architecture/05-platform-infra.md`, "Host-side Rust binaries" | Building on the controller needs a Rust toolchain in the Semaphore image. A host has no toolchain. Keeping host-side Python keeps a second language and its subprocess Python tests |
 | D7 | **YAML 1.1 booleans.** `.yamllint.yml` allows bare `yes`/`no`, which Ansible (PyYAML, YAML 1.1) reads as booleans and `yaml-rust2` (YAML 1.2) reads as strings. The support library resolves scalars with YAML 1.1 rules wherever a test compares booleans, and a table test in `suite/support.rs` pins the resolver to PyYAML's bool and null sets (`yaml/resolver.py`) | Banning bare `yes`/`no` repository-wide is a separate change |
 | D8 | **CI: one always-running `Rust (tests)` job, selection inside it.** It runs `testsel` against the pull request's base, then nextest with the `ci` profile, and the `Unit Tests` aggregator needs it. A promotion pull request into `main` runs every test: `testsel` selects `all()` for `ci` against `main`. The nightly run on `dev` is to use the `full` lane | A job skipped by a path filter fails the aggregator (Problem, "Lanes do not exist today") |
 | D9 | **The ledger learns Rust.** The citation check (`test_ledger_test_citations.py`) is ported first and resolves `platform/tests/suite/<module>.rs::<fn>`. A ported test's old citation is ratcheted with the replacing test named in the reason. The ledger is append-only, so its old text stays | Deleting a cited file before the checker reads Rust turns the check red (`docs/MISTAKES.md` 8.2) |
+| D10 | **Per-file registration (operator decision 2026-11-16: mechanism before ports).** A port pull request touches only its own module file(s), its own `areas.d/<area>.yml`, its own `ledger_citation_ratchet.d/<group>.txt`, and the old tests it deletes; never `suite/main.rs`, `areas.yml`, the old ratchet file or `docs/MISTAKES.md`. **Provisional, pending the operator's decision on `docs/MISTAKES.md` 5.29**, which asks a port to add each citing entry's "Enforcement moved" note in the same pull request: each `ratchet.d` line names its replacing test(s) as `suite/<module>.rs::<fn>`, `ledger::every_ratchet_directory_line_names_an_existing_replacing_test` fails a line that names none or one that does not exist, and one closing change after the port writes every note from those lines. `build.rs` declares the suite modules from the files. `cargo fmt` does not reach suite modules, so `rust_format` (always set) checks them; format with `rustfmt --edition 2024 platform/tests/suite/*.rs` | Shared lists made every wave 1 port pull request edit the same files (#1143, #1144, #1148), so parallel ports conflicted and each merge forced every other through refresh and re-review. Hand-listed `mod` lines cannot be per-file without generation. No new dependency |
+
+### What a port still has to touch
+
+Found by a trial port on 2026-11-16, on a branch that was never pushed: it deleted two uncited test
+files (`test_netbox_prefix.bats`, `test_rego_ci.py`) and two that `docs/MISTAKES.md` cites
+(`test_commit_msg_hook.bats`, `test_ruleset_protect_dev.py`), then ran the Python partition, shard,
+doc-reference and ledger tests and `lane.sh push`. A new suite file was also dropped in with no
+other edit.
+
+| Coupling | Result | What a port does |
+|---|---|---|
+| A new `suite/<module>.rs` | Compiled with no other edit; the `lanes` listing test fails until an area file lists it | Adds `areas.d/<area>.yml` |
+| A deleted test that the ledger cites | The Python citation check (`test_every_cited_test_exists`) fails, naming each citing entry, the Index row included; it passed again with the port's ratchet file, and so did the Rust `ledger` module in `lane.sh push` | Adds `ledger_citation_ratchet.d/<group>.txt`, one line per occurrence |
+| A deleted Python test still in `test_durations.json` | No failure: the shard split weighs only the files on disk (`shards.py`, `file_weights`); a stale entry only feeds the median used for unrecorded files | Nothing. The file is rebuilt with `scripts/test-durations.py` when the shards drift (plan 21) |
+| A Markdown link to a test file | `test_doc_references.py` fails on the link | The only one, in `O11Y-WORKFLOW-AGE-DIAGNOSTICS.md`, was made plain text in the same change, so no port has to touch it |
+| A test path named in prose or a code span (`AGENTS.md`, plans) | No check reads it; the text goes stale | Nothing in the port. The closing change that writes the ledger's "Enforcement moved" notes updates these too |
+| An allowlist beside its test (`known_*.txt`, `check_mode_allowlist.txt`, `local_mode_reads_allowlist.txt`) | Each names only its own test | Moves with that test's group, never shared |
+
+Shared files a port still touches: none. The `bats` workflow job and the pytest configuration go in
+Phases 4 and 10, which are operator merges.
 
 ### Lanes
 
@@ -239,6 +265,7 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 | Date | Change |
 |---|---|
 | 2026-11-16 | Goal set by the operator (2026-11-14): wave 1 in v0.16.0, the full suite by v0.17.0. Wave 2, the test ports (AC-735 to AC-737), is in milestone v0.17.0, over R7's 90-file plan budget and R3's 120-file limit by operator decision (2026-11-16), chosen over splitting the milestone; R8 still holds per pull request; the product-code ports and the retirement of pytest and BATS (AC-739 to AC-741) moved to v0.18.0 by operator decision (2026-11-16). |
+| 2026-11-16 | Per-file registration (D10): suite modules from files (build.rs), one area file per area (areas.d/), one ledger ratchet file per port group (ledger_citation_ratchet.d/); a port pull request edits no shared file. Operator decision 2026-11-16: mechanism before ports. |
 | 2026-11-12 | D6 decided by the operator: pinned release binaries, recorded in 05. |
 | 2026-11-12 | Review: the security set includes the ledger-enforced tests (03 item 2), as the original principles had it; modules are per area and tier, not one per area; an unclassified path runs everything in `push` and `ci` but adds nothing in `commit`, to keep the commit lane inside its 10 s budget. |
 | 2026-11-12 | Phases 0 to 3 also move to v0.16.0: no merges into `dev` until v0.15.0 is released (operator decision). |

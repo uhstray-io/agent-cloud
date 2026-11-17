@@ -4,8 +4,8 @@
 
 use std::process::Command;
 
-use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{Node, load_one, parse, resolve_plain};
+use agent_cloud_tests::{process, repo};
 
 #[test]
 fn the_repository_root_is_the_checkout_under_test() {
@@ -191,12 +191,19 @@ fn no_suite_test_starts_ansible_playbook_itself() {
         "the walk found no suite/main.rs: the guard would pass for the wrong reason"
     );
 
+    let sources: Vec<(String, String)> = files
+        .iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(path).expect("a suite file reads");
+            (path.display().to_string(), text)
+        })
+        .collect();
+
     let mut found = Vec::new();
-    for path in &files {
-        let text = std::fs::read_to_string(path).expect("a suite file reads");
-        for hit in spawn.find_iter(&text) {
+    for (name, text) in &sources {
+        for hit in spawn.find_iter(text) {
             let line = text[..hit.start()].matches('\n').count() + 1;
-            found.push(format!("{}:{line}", path.display()));
+            found.push(format!("{name}:{line}"));
         }
     }
     assert!(
@@ -208,25 +215,127 @@ fn no_suite_test_starts_ansible_playbook_itself() {
     // A playbook run outside a `*_playbook` module escapes the `playbook` test-group, which caps
     // concurrent runs, and the playbook tier lanes select it by (#1141 review). The needle has no
     // `process::` prefix, so an imported, bare call is caught too. It is built
-    // with concat! so this file's own text does not match.
+    // with concat! so this file's own text does not match. A playbook run's bound is held by
+    // `process::run_for` itself (AC-906), not by this scan.
     let call = concat!("ansible_playbook", "(");
-    let misplaced: Vec<String> = files
+    let misplaced: Vec<&str> = sources
         .iter()
-        .filter(|path| {
-            !path
-                .file_stem()
-                .is_some_and(|stem| stem.to_string_lossy().ends_with("_playbook"))
-        })
-        .filter(|path| {
-            std::fs::read_to_string(path)
-                .expect("a suite file reads")
-                .contains(call)
-        })
-        .map(|path| path.display().to_string())
+        .filter(|(name, text)| !name.ends_with("_playbook.rs") && text.contains(call))
+        .map(|(name, _)| name.as_str())
         .collect();
     assert!(
         misplaced.is_empty(),
         "these run a playbook outside a *_playbook module: {}",
         misplaced.join(", ")
     );
+}
+
+#[test]
+fn ls_files_reads_a_non_ascii_path_as_it_is_on_disk() {
+    // Arrange: a repository whose tracked names are not all ASCII. Git quotes a non-ASCII name
+    // unless asked for `-z`, and a quoted name is not a file on disk.
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("café.yml"), "a: 1\n").unwrap();
+    std::fs::write(dir.path().join("plain.yml"), "b: 2\n").unwrap();
+    // `core.quotePath` is pinned in the repository, so a developer's global `false` cannot make
+    // git print the name unquoted and hide a missing `-z` (#1169 review).
+    for args in [
+        &["init", "-q"][..],
+        &["config", "core.quotePath", "true"][..],
+        &["add", "."][..],
+    ] {
+        process::scrubbed("git", home.path())
+            .current_dir(dir.path())
+            .args(args)
+            .assert()
+            .success();
+    }
+
+    // Act
+    let tracked = repo::ls_files_in(dir.path(), &[]);
+
+    // Assert
+    assert_eq!(tracked, ["café.yml", "plain.yml"]);
+}
+
+#[test]
+fn grep_reads_every_hit_path_and_line_as_they_are_on_disk() {
+    // Arrange: a tracked name that is not ASCII. Without `-z` git prints it quoted
+    // (`"caf\303\251.yml":1:...`), so a caller's path is not a file on disk (AC-916).
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("café.yml"), "hit: 1\nno\nhit: 2\n").unwrap();
+    std::fs::write(dir.path().join("plain.yml"), "hit: x\n").unwrap();
+    // A path holding a newline, a tracked binary file that matches, and a binary file whose path
+    // holds a newline (#1180 review).
+    std::fs::write(dir.path().join("line\nbreak.yml"), "hit: n\n").unwrap();
+    std::fs::write(dir.path().join("blob.bin"), b"hit\0blob\n").unwrap();
+    std::fs::write(dir.path().join("bin\nary.bin"), b"hit\0nl\n").unwrap();
+    // `core.quotePath` is pinned in the repository, as in `ls_files_reads_...` above. Colour and
+    // column output are switched on there, so the flags `grep_in` passes are what hold the format.
+    for args in [
+        &["init", "-q"][..],
+        &["config", "core.quotePath", "true"][..],
+        &["config", "color.grep", "always"][..],
+        &["config", "grep.column", "true"][..],
+        &["add", "."][..],
+    ] {
+        process::scrubbed("git", home.path())
+            .current_dir(dir.path())
+            .args(args)
+            .assert()
+            .success();
+    }
+
+    // Act
+    let hits = repo::grep_in(dir.path(), "hit", &[]);
+
+    // Assert
+    assert_eq!(
+        hits,
+        [
+            "bin\nary.bin:1:hit\0nl",
+            "blob.bin:1:hit\0blob",
+            "café.yml:1:hit: 1",
+            "café.yml:3:hit: 2",
+            "line\nbreak.yml:1:hit: n",
+            "plain.yml:1:hit: x"
+        ]
+    );
+}
+
+#[test]
+fn ls_files_ignores_an_inherited_repository_location() {
+    // Arrange: a hook exports `GIT_DIR` and `GIT_INDEX_FILE`, and they override `-C`. A direct
+    // `cargo nextest run` does not pass through `lane.sh`, which unsets them, so `git_in` removes
+    // them itself (#1169 review). They point at a second repository, never the checkout.
+    let home = tempfile::TempDir::new().unwrap();
+    let repository = |file: &str| {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(file), "a: 1\n").unwrap();
+        for args in [&["init", "-q"][..], &["add", "."][..]] {
+            process::scrubbed("git", home.path())
+                .current_dir(dir.path())
+                .args(args)
+                .assert()
+                .success();
+        }
+        dir
+    };
+    let target = repository("only.yml");
+    let other_repository = repository("other.yml");
+    let other = other_repository.path().join(".git");
+    // SAFETY: nextest runs each test in its own process, so no other thread reads the environment
+    // while this one sets it (edition 2024 makes set_var unsafe).
+    unsafe {
+        std::env::set_var("GIT_DIR", &other);
+        std::env::set_var("GIT_INDEX_FILE", other.join("index"));
+    }
+
+    // Act
+    let tracked = repo::ls_files_in(target.path(), &[]);
+
+    // Assert
+    assert_eq!(tracked, ["only.yml"]);
 }
