@@ -23,10 +23,14 @@ ignore:
   - "plan/**"
   - "docs/**"
 
-# The security set: selected in every lane (static modules only in the commit lane). `ledger`
+# The security set: selected in every lane (static modules only in the commit lane). `credential_leaks`
+# scans the committed files for secrets and private addresses; `ledger`
 # checks that every test docs/MISTAKES.md cites exists, and docs/** selects nothing on its own.
+# `local_dev_inventory` holds the local-dev inventory template to localhost-only and no credentials.
+# `yaml_load` checks that every tracked YAML file loads, and plan/** and docs/** hold YAML too.
+# The four modules ported from BATS (plan 24, Phase 4) guard MISTAKES-cited rules, so they are here too.
 always:
-  static: [ledger]
+  static: [approle_ttl, backup_credentials, become_password_resolution, configure_host_network, credential_leaks, deploy_playbooks_preflight, destroy_vm, host_access_gate, install_podman, ledger, ledger_citation_hook, local_dev_inventory, local_netbox, manage_github_runner_group, manage_secrets, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
@@ -41,11 +45,40 @@ areas:
     tiers:
       static: [restart_policy]
 
+  bootstrap_12a:
+    paths:
+      - "platform/playbooks/**"
+      - "platform/services/authentik/deployment/**"
+      - "scripts/local-dev.sh"
+      - "Makefile"
+    tiers:
+      static: [bootstrap_12a]
+
+  local_dev_setup:
+    paths:
+      - ".gitignore"
+      - "Brewfile"
+    tiers:
+      static: [local_dev_setup]
+
   common_sh:
     paths:
       - "platform/lib/common.sh"
     tiers:
       cli: [common_sh]
+
+  install_qemu_guest_agent:
+    paths:
+      - "platform/playbooks/install-qemu-guest-agent.yml"
+    tiers:
+      static: [install_qemu_guest_agent]
+      playbook: [install_qemu_guest_agent_playbook]
+
+  makefile:
+    paths:
+      - "Makefile"
+    tiers:
+      static: [makefile]
 
   # The suite's own tests. A change under platform/tests/ hits `full`, which is checked before
   # any area, so this area names no paths: it only gives these modules their one listing.
@@ -53,3 +86,4 @@ areas:
     paths: []
     tiers:
       static: [lanes, support]
+      playbook: [support_playbook]
