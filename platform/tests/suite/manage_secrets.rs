@@ -207,8 +207,9 @@ fn command_lines(node: &Node, out: &mut Vec<String>) {
 /// which the uri and hashi_vault checks above cannot see.
 ///
 /// The module is read under its key (any spelling) and from `action:` / `local_action:` (a string's
-/// first word, or a mapping's `module`); for a command-family call, that value and the task-level
-/// `args` (all of it, except the [`PATH_OR_FLAG_ARGS`] keys of a mapping) are scanned.
+/// first word, or a mapping's `module`); for a command-family call, that value, the task-level
+/// `args` (all of it, except the [`PATH_OR_FLAG_ARGS`] keys of a mapping) and the task's `vars`
+/// values are scanned.
 fn runs_store_cli(task: &Node) -> bool {
     let is_command = |name: &str| {
         let short = name
@@ -250,6 +251,12 @@ fn runs_store_cli(task: &Node) -> bool {
         Some(other) => scanned.push(other),
         None => {}
     }
+    // The task's own `vars`: a command line templated in from one (`command: "{{ c }}"` with
+    // `vars: {c: bao kv put ...}`) runs as if written in place.
+    // ponytail: task-level vars only; block, play and inventory vars are not read here.
+    if let Some(vars) = task.get("vars") {
+        scanned.push(vars);
+    }
     scanned.into_iter().any(|node| {
         let mut lines = Vec::new();
         command_lines(node, &mut lines);
@@ -283,12 +290,15 @@ fn a_store_cli_call_is_detected() {
         "ansible.builtin.command: bash -s\nargs: {stdin: \"bao kv put x\"}\n",
         "action: command\nargs: \"{{ {'cmd': 'bao kv put secret/x a=b'} }}\"\n",
         "ansible.builtin.expect:\n  command: bash\nargs:\n  responses: {'\\$ ': 'bao kv put secret/x a=b'}\n",
+        "ansible.builtin.command: \"{{ c }}\"\nvars: {c: bao kv put secret/x a=b}\n",
+        "ansible.builtin.command:\n  argv: \"{{ v }}\"\nvars:\n  v: [bao, kv, put, secret/x, a=b]\n",
     ] {
         assert!(runs_store_cli(&task(flagged)), "{flagged}");
     }
     for clean in [
         "action: debug msg=\"bao kv put\"\n",
         "ansible.builtin.command: echo hi\nargs: {chdir: /tmp}\n",
+        "ansible.builtin.command: \"echo {{ m }}\"\nvars: {m: hi}\n",
     ] {
         assert!(!runs_store_cli(&task(clean)), "{clean}");
     }
