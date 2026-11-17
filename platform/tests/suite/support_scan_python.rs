@@ -4,8 +4,11 @@
 //! `python3` must import PyYAML: CI's Rust job puts the locked `.venv/bin` first on PATH, and a
 //! workstation runs `uv sync --locked` and does the same. The Python prints its file list; per
 //! file and per `keys`, every string it yields; and per file, every plain scalar PyYAML resolves
-//! to an int, float or timestamp (read from the composed node graph, so PyYAML itself decides).
-//! Values are hex-encoded so a newline in a string is safe. This module tests the Rust helpers
+//! to an int, float or timestamp (read from the composed node graph, so PyYAML itself decides),
+//! and every explicitly tagged node, of which there must be none: with no tag, every value
+//! `yaml::strings` yields that the Python does not is a plain number or date, which the allowance
+//! check below then holds to its count in the file. Values are hex-encoded so a newline in a
+//! string is safe. This module tests the Rust helpers
 //! against `playbook_yaml.py` and goes when that file is deleted.
 
 use std::collections::BTreeMap;
@@ -20,8 +23,9 @@ import playbook_yaml as p
 NOT_STR = {"tag:yaml.org,2002:int", "tag:yaml.org,2002:float", "tag:yaml.org,2002:timestamp"}
 def plain(node, out):
     if isinstance(node, yaml.ScalarNode):
-        # Only a plain scalar resolves to these tags (no scanned file has an explicit tag), and
-        # libyaml's loader reports a plain style as "" where the pure-Python one says None.
+        # With no explicit tag in the file (the T lines below must be empty), only a plain
+        # scalar resolves to these tags. libyaml's loader reports a plain style as "" where the
+        # pure-Python one says None, so the style is not read.
         if node.tag in NOT_STR:
             out.append(node.value)
     elif isinstance(node, yaml.SequenceNode):
@@ -39,8 +43,12 @@ for i, f in enumerate(files):
     for keys in (0, 1):
         for s in p.strings(doc, bool(keys)):
             print("S", i, keys, s.encode().hex())
+    text = f.read_text()
+    for event in yaml.parse(text, Loader=p.Loader):
+        if getattr(event, "tag", None) is not None:
+            print("T", i, event.tag.encode().hex())
     found = []
-    plain(yaml.compose(f.read_text(), Loader=p.Loader), found)
+    plain(yaml.compose(text, Loader=p.Loader), found)
     for s in found:
         print("N", i, s.encode().hex())
 "#;
@@ -80,6 +88,7 @@ fn both_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     let mut python_files = vec![];
     let mut python_strings: BTreeMap<(usize, bool), Vec<String>> = BTreeMap::new();
     let mut not_strings: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    let mut tagged = vec![];
     for line in stdout.lines() {
         let fields: Vec<&str> = line.split(' ').collect();
         match fields.as_slice() {
@@ -88,6 +97,7 @@ fn both_helpers_agree_with_playbook_yaml_on_every_repository_file() {
                 .entry((index.parse().expect("an index"), *keys == "1"))
                 .or_default()
                 .push(unhex(hex)),
+            ["T", index, hex] => tagged.push(format!("file {index}: {}", unhex(hex))),
             ["N", index, hex] => not_strings
                 .entry(index.parse().expect("an index"))
                 .or_default()
@@ -97,8 +107,10 @@ fn both_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     }
     let files = repo::playbook_files();
 
-    // Assert: the same files, in the same order.
+    // Assert: the same files, in the same order, and no explicit tag in any of them (with one,
+    // a Rust-only string need not be a plain number, and the allowance below would not hold).
     assert_eq!(files, python_files);
+    assert!(tagged.is_empty(), "explicitly tagged nodes: {tagged:?}");
 
     // Assert: per file and per `keys`, every Python string is a Rust string, and every Rust-only
     // string is one of the file's plain scalars PyYAML resolves to an int, float or timestamp,
