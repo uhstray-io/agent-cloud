@@ -4,8 +4,8 @@ The board and the front door run on pasta, which keeps a connection's source add
 so who they believe is decided by addresses, and those are compared here as addresses, by stdlib
 ipaddress, never as text: `::0`, `0::1` and `::ffff:7f00:1` are the wildcard and loopback too.
 
-- weft_bind_problems: a published address that is a wildcard or loopback, under any spelling, or
-  anything that is not an IP address at all. The bind is the host IP of a published port
+- weft_bind_problems: a published address that is a wildcard or loopback, under any spelling, an
+  IPv6 address with a zone, or anything that is not an IP address at all. The bind is the host IP of a published port
   (compose.yml), and podman takes only an IP literal there: a host name is refused at `compose up`,
   after the stop, and one that resolves to loopback would never have been judged.
 - weft_host_for_port: the bind as it is written before `:port` (the compose port lines, deploy.sh's
@@ -61,6 +61,10 @@ def weft_bind_problems(bind, name="bind"):
         return [f"{name} {text!r} is a wildcard ({ip})"]
     if ip.is_loopback:
         return [f"{name} {text!r} is loopback ({ip})"]
+    if ip.version == 6 and ip.scope_id:
+        # ipaddress reads a zone (`fe80::1%eth0`), but podman refuses one as a published port's host
+        # IP, and only at `compose up`, after the stop. The edge never reaches a VM by link-local.
+        return [f"{name} {text!r} names a zone ({ip.scope_id}); publish on an address without one"]
     return []
 
 

@@ -47,6 +47,13 @@ def test_a_bind_that_is_not_an_ip_address_is_refused(bind):
     assert problems and all(p.startswith("weft_door_bind ") and "not an IP address" in p for p in problems), problems
 
 
+@pytest.mark.parametrize("bind", ["fe80::1%eth0", "[fe80::1%eth0]", "2001:db8::10%2"])
+def test_a_zone_scoped_ipv6_bind_is_refused(bind):
+    # ipaddress reads a zone, but podman refuses one as a published port's host IP, after the stop.
+    problems = weft.weft_bind_problems(bind, "weft_board_bind")
+    assert any("names a zone" in p for p in problems), problems
+
+
 @pytest.mark.parametrize("bind, host", [
     ("2001:db8::10", "[2001:db8::10]"), ("[2001:db8::10]", "[2001:db8::10]"), (" 2001:db8::10 ", "[2001:db8::10]"),
     ("::ffff:192.0.2.10", "[::ffff:192.0.2.10]"), ("192.0.2.10", "192.0.2.10"), ("[192.0.2.10]", "192.0.2.10"),
