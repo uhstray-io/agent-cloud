@@ -112,14 +112,18 @@ fn refute_text_refuses_an_empty_literal() {
 }
 
 #[test]
-#[should_panic(expected = "holds a newline; check each of its lines on its own")]
+#[should_panic(
+    expected = "platform/tests/Cargo.toml: `[package]\nname = \"not-a-crate\"` holds a newline; check each of its lines on its own"
+)]
 fn refute_text_refuses_a_literal_that_spans_lines() {
     // As one string it is absent, so the refute would pass even when each line is present.
     refute_text(CARGO, "[package]\nname = \"not-a-crate\"");
 }
 
 #[test]
-#[should_panic(expected = "holds a newline; check each of its lines on its own")]
+#[should_panic(
+    expected = "platform/tests/Cargo.toml: `zzz\nname = \"agent-cloud-tests\"` holds a newline; check each of its lines on its own"
+)]
 fn refute_line_refuses_a_pattern_that_holds_a_newline() {
     // grep reads it as two patterns and would match the `name` line; one regex never matches a
     // line, so the refute would pass.
@@ -137,6 +141,14 @@ fn refute_text_passes_when_the_literal_is_absent() {
 )]
 fn refute_text_panics_when_the_literal_is_present() {
     refute_text(CARGO, r#"name = "agent-cloud-tests""#);
+}
+
+#[test]
+#[should_panic(expected = r#"platform/tests/Cargo.toml: `name = "agent-cloud-test."` is missing"#)]
+fn assert_text_matches_the_literal_not_a_pattern() {
+    // As a pattern, `test.` would match `tests`; as a literal the dot must be a dot, so it is
+    // missing.
+    assert_text(CARGO, r#"name = "agent-cloud-test.""#);
 }
 
 #[test]
