@@ -22,7 +22,7 @@
 #   - whether each CephFS storage shares a filesystem on this cluster's Ceph with another (an external
 #     one shares none here), decided by filesystem name (its
 #     fs-name, or the cluster's only filesystem; unknown, and listed as no one's sharer, when neither
-#     resolves), and that filesystem's pools: Ceph's used bytes and percent used, under Ceph's
+#     resolves), and that filesystem's data pools: Ceph's used bytes and percent used, under Ceph's
 #     names (all copies on disk when every OSD reports per-pool stats, logical bytes otherwise;
 #     Proxmox does not say which, so neither compares with a storage's used bytes), type and size
 #     (replicas, or data plus coding chunks when erasure-coded) (a CephFS with a monitor list names an
