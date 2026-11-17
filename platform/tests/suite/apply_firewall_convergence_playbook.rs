@@ -59,9 +59,10 @@
 //! | `test_a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_new_ones` | `a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_new_ones` |
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 
+use agent_cloud_tests::http::refused_port;
 use agent_cloud_tests::{playbook, process, repo, text};
 use regex::Regex;
 use serde_json::{Map, Value, json};
@@ -84,10 +85,6 @@ const CONVERGED_READS: [&str; 2] = [
     r#"["ufw", "show", "added"]"#,
     r#"["ufw", "status", "verbose"]"#,
 ];
-/// fake_http.py's REFUSED_PORT: below every ephemeral range, so a bind to port 0 never returns
-/// it, and nothing listens on it.
-const REFUSED_PORT: u16 = 1;
-
 fn controller() -> Value {
     json!({"firewall_controller_cidr": SSH})
 }
@@ -104,15 +101,6 @@ fn mutating(line: &str) -> bool {
 
 fn tag(family: &str, port_proto: &str, peer: &str) -> String {
     format!("agent-cloud:{family}:{port_proto}:{peer}")
-}
-
-/// A loopback port that refuses connections at once (fake_http.refused_port's guarantee),
-/// checked on 127.0.0.1 only: fake_http.py also checks ::1, which no probe here uses.
-fn refused_port() -> u16 {
-    let err = TcpStream::connect(("127.0.0.1", REFUSED_PORT))
-        .expect_err("nothing may listen on the refused port");
-    assert_eq!(err.kind(), std::io::ErrorKind::ConnectionRefused, "{err}");
-    REFUSED_PORT
 }
 
 /// A TCP port on 127.0.0.1 that accepts connections while the listener is held.
