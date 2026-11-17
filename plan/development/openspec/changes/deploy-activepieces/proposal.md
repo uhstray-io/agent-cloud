@@ -2,7 +2,7 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 ## Why
 
-The platform has no workflow-automation service, and n8n was retired on 2026-11-12. Activepieces is the chosen replacement, and this change deploys it as a composable service behind the platform's identity provider, with the reasoning in `plan/development/26-activepieces.md`.
+The platform has no workflow-automation service, and n8n's retirement was decided on 2026-11-10. Activepieces is the chosen replacement, and this change deploys it as a composable service behind the platform's identity provider, with the reasoning in `plan/development/26-activepieces.md`.
 
 ## What Changes
 
