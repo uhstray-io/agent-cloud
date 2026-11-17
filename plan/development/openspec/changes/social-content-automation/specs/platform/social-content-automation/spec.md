@@ -50,7 +50,7 @@ No flow SHALL create a post of any type other than draft, so none publishes imme
 
 #### Scenario: Flow definition requests immediate publication
 
-- **WHEN** a flow definition is checked before it is applied and the definition creates a post of any type other than draft, scheduled or immediate
+- **WHEN** a flow definition is checked before it is applied and the definition creates a post of type schedule or now (any type other than draft)
 - **THEN** the check fails and the flow is not applied
 
 #### Scenario: Generated draft is not published at creation
@@ -65,7 +65,7 @@ No flow SHALL create a post of any type other than draft, so none publishes imme
 
 ### Requirement: Handoff to the publishing service is exactly once
 
-A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes. It SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
+A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes while that post is still a draft, and a scheduled post is never replaced. It SHALL schedule each approved revision at most once. A retried handoff MUST find the post it already created and MUST NOT create another. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
 
 #### Scenario: Retried handoff creates no second post
 
