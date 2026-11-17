@@ -23,8 +23,9 @@
 //!   object key is a string.
 //!
 //! `<<` merges follow [`yaml`]'s builder: a mapping, or a list of mappings read last-first, is
-//! merged under the explicit keys, and a later duplicate key wins. The `support_lift` tests pin
-//! the two loaders together over every repository file.
+//! merged under the explicit keys, and a later duplicate key wins. Over every repository file,
+//! `support_lift` holds the two loaders to the same structure and strings, and
+//! `support_lift_pyyaml` holds this one to PyYAML's values, numbers included.
 //!
 //! | `playbook_yaml.py` | Rust |
 //! |---|---|
@@ -150,13 +151,6 @@ fn resolve_plain_value(text: &str) -> Result<Value, &'static str> {
     match yaml::resolve_plain(text) {
         Node::Bool(b) => Ok(Value::Bool(b)),
         Node::Null => Ok(Value::Null),
-        // Each of the three resolvers below needs a first character of `[-+.0-9]`; most plain
-        // scalars are names and templates, so they skip the regexes.
-        Node::Str(_)
-            if !text.starts_with(|c: char| c.is_ascii_digit() || matches!(c, '+' | '-' | '.')) =>
-        {
-            Ok(Value::String(text.to_owned()))
-        }
         // PyYAML tries the float, int and timestamp resolvers in turn; a text matches at most one.
         Node::Str(_) if FLOAT.is_match(text) => float_value(text),
         Node::Str(_) if INT.is_match(text) => int_value(text),

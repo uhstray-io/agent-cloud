@@ -2,9 +2,9 @@
 //!
 //! The 6c agreement is the reason this module is in the security set (`areas.d/support_lift.yml`,
 //! `always`): it pins the lifting loader to `yaml::parse` over every repository playbook, so a
-//! change that drops, reorders or changes the text of a value in one file fails every commit.
-//! It accepts any number where `yaml::parse` has a string, so number typing is pinned elsewhere:
-//! by `plain_scalars_lift_with_pyyaml_types` here, and over the repository files by
+//! change that drops or reorders a value, or changes a string's text, in one file fails every
+//! commit. It accepts any number where `yaml::parse` has a string, so numbers are checked
+//! elsewhere: by `plain_scalars_lift_with_pyyaml_types` here, and over the repository files by
 //! `support_lift_pyyaml` (cli tier).
 
 use std::collections::BTreeSet;
