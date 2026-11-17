@@ -220,13 +220,13 @@ The change `deploy-activepieces` has two phases. Each phase ends with a validati
 
 Tasks 1.2 to 1.4 close open items O1 to O6 before any value is generated. Task 1.3 adds the hexadecimal secret type (O3), so the format is settled before the first generated key.
 
-**Acceptance:** the local-dev gate in task 1.5 holds. The scenarios "A scheduled flow runs on the local stack", "An uninvited sign-up is refused" and "A re-run reports no change" are shown on local-dev.
+**Acceptance:** the local-dev gate in task 1.5 holds. The scenarios "A scheduled flow runs on the local stack", "The deploy creates the owner before the port is reachable", "An uninvited sign-up is refused" and "A re-run reports no change" are shown on local-dev.
 
 ### Phase 2: production (tasks 2.1 to 2.8)
 
 Production follows the order in the sequence diagram above. The firewall is default-deny before the deploy. The owner is created before the port is admitted. The route opens last.
 
-**Acceptance:** the production gate in task 2.8 holds. The eight scenarios named there are shown on the production instance.
+**Acceptance:** the production gate in task 2.8 holds. The ten scenarios named there are shown on the production instance.
 
 ## Validation criteria
 
@@ -236,8 +236,8 @@ Production follows the order in the sequence diagram above. The firewall is defa
 | A re-run reports no change | Deployed through Semaphore with secrets from OpenBao | A second run with unchanged inputs reports no changed task. | 1.5, 2.8 |
 | A scheduled flow runs on the local stack | Flows run without privileged containers | A scheduled flow runs on local-dev under `SANDBOX_CODE_ONLY`, and no container in the project is privileged. | 1.5 |
 | A scheduled flow runs in production | Flows run without privileged containers | The same check passes on the production instance. | 2.8 |
-| The deploy creates the owner before the port is reachable | Account creation is closed after the owner | The owner account exists before the Caddy host is admitted, and no other host reached the port before then. | 1.4, 2.3 |
-| An uninvited sign-up is refused | Account creation is closed after the owner | After the owner exists, a sign-up for an address with no invitation is refused, and no account is created. | 1.4, 1.5 |
+| The deploy creates the owner before the port is reachable | Account creation is closed after the owner | The owner account exists before the Caddy host is admitted, and no other host reached the port before then. | 1.4, 1.5, 2.3, 2.8 |
+| An uninvited sign-up is refused | Account creation is closed after the owner | After the owner exists, a sign-up for an address with no invitation is refused, and no account is created. | 1.4, 1.5, 2.8 |
 | A platform-admin passes the gate | Only platform-admins reach the application | A member of `platform-admins` signs in through Authentik and reaches the application. | 2.8 |
 | A non-admin is refused at the edge | Only platform-admins reach the application | A signed-in user outside `platform-admins` is refused at Caddy, before the application. | 2.8 |
 | A direct connection from another LAN host is refused | The application port is reachable from the Caddy host only | A connection to the app port from another LAN host fails, and a connection from the Caddy host succeeds. | 2.8 |
@@ -247,7 +247,7 @@ Production follows the order in the sequence diagram above. The firewall is defa
 ## Security considerations
 
 - **Access.** The gate at Caddy admits only members of `platform-admins` (D2). A local Activepieces login is a second credential that each administrator also holds. Sign-up is closed once the owner exists, because `AP_ALLOW_OPEN_SIGN_UP` is never set (D10, F19).
-- **First-account window.** The owner is created before the app port is admitted from any host. Until then the host firewall holds the port closed (D10, F20). Open item O1 covers the first-account reasoning, which task 1.4 checks against a live instance.
+- **First-account window.** The owner is created before the app port is admitted from any host. Until then the host firewall holds the port closed (D10, F20). Task 1.4 checks this ordering against a live instance (O5 covers the captcha part).
 - **Captcha.** The sign-up captcha is off unless both Turnstile keys are set (F26). This plan sets neither, so closure rests on the invitation check, not on captcha. Whether to configure Turnstile is not decided here.
 - **Encryption key.** `AP_ENCRYPTION_KEY` is generated once and never rotated by a deploy. Losing it loses every stored connection, even with a database backup (F5). The key is backed up with `Back Up Credentials to site-config`.
 - **Execution.** `SANDBOX_CODE_ONLY` removes the need for privileged containers (D3, F12). User code still runs inside the worker container, so the worker is the boundary that matters.

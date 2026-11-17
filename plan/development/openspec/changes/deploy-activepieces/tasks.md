@@ -13,7 +13,7 @@ Task ids are permanent Plane keys (R3). To supersede a task, strike its id throu
       Deploy creates the owner (D10a); AP_ALLOW_OPEN_SIGN_UP refused by the template; verify that an uninvited sign-up is refused; spikes O5, O6.
 - [ ] 1.5 Local-dev bring-up. (AC-772)
       Early spike O8: prove or refute one authenticated API call on Community at 0.93.0 (F27); a refuted result goes to Joseph, no workaround. Plan 28 orders the same spike first under AC-796; this task references it, it does not duplicate it.
-      make local-deploy-activepieces; owner exists; health 200; one scheduled flow runs. Validation gate: scenarios "A scheduled flow runs on the local stack", "An uninvited sign-up is refused" and "A re-run reports no change" hold locally.
+      make local-deploy-activepieces; owner exists; health 200; one scheduled flow runs. Validation gate: scenarios "A scheduled flow runs on the local stack", "The deploy creates the owner before the port is reachable", "An uninvited sign-up is refused" and "A re-run reports no change" hold locally.
 
 ## 2. Production
 
@@ -32,4 +32,4 @@ Task ids are permanent Plane keys (R3). To supersede a task, strike its id throu
 - [ ] 2.7 Back Up and Restore Activepieces DB playbooks. (AC-780)
       Plane pattern: pg_dump into a 0700 directory; staging restore with swap; encryption key backed up with Back Up Credentials to site-config.
 - [ ] 2.8 Validation gate. (AC-781)
-      Scenarios "A platform-admin passes the gate", "A non-admin is refused at the edge", "A scheduled flow runs in production", "A direct connection from another LAN host is refused", "An undeclared webhook path stays gated", "A restore swaps in only a fully loaded copy", "A redeploy keeps the encryption key" and "A re-run reports no change" hold in production.
+      Scenarios "A platform-admin passes the gate", "A non-admin is refused at the edge", "A scheduled flow runs in production", "The deploy creates the owner before the port is reachable", "An uninvited sign-up is refused", "A direct connection from another LAN host is refused", "An undeclared webhook path stays gated", "A restore swaps in only a fully loaded copy", "A redeploy keeps the encryption key" and "A re-run reports no change" hold in production.
