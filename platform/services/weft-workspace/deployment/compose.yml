@@ -36,8 +36,28 @@
 # Ports: the board's HTTP port to the Caddy host only (bind from inventory), and the workspace's
 # one UDP port for calls, the same number inside and out, because the board tells browsers that
 # number in every SDP answer.
+#
+# THE BOARD IS ON PASTA, NOT THE `weft` BRIDGE, so it sees the real peer (weft #580). Rootless
+# podman forwards a port published from a bridge through rootlessport, which connects onward from
+# the container's own bridge address: every request reached the board from 10.89.x.y, so
+# trusted_proxies naming the Caddy host never matched and CF-Connecting-IP was never believed.
+# pasta forwards with the source address kept. The board needs no bridge: it wakes the
+# orchestrator through tend.sock in the workspace directory, and nothing reaches it but through its
+# published port. A pasta container cannot join a bridge as well (podman refuses the pair), and
+# reaches nothing on the VM's loopback (podman runs pasta with --no-map-gw and -T none).
+# The accepted cost: anything on this VM that connects to the published address, a container on
+# a bridge included, arrives as the VM's default gateway (Ubuntu 24.04's podman 4.9.3), or as
+# 169.254.1.2 from podman 5.3 on. So trusted_proxies names the Caddy host alone, as a /32, never a
+# range that could hold the gateway, and ingest_from never names the gateway. The published
+# address is never a wildcard or loopback (tasks/weft-bind.yml): through those, every local
+# process arrives as 127.0.0.1, which ingest_from always admits for the healthcheck.
+# podman-compose 1.6.0 (vars/weft.yml), because 1.0.6 refuses `network_mode: pasta`; told not to
+# make a pod, which refuses userns keep-id.
 
 name: weft-workspace
+
+x-podman:
+  in_pod: false
 
 services:
   board:
@@ -63,7 +83,7 @@ services:
       timeout: 10s
       retries: 8
       start_period: 60s
-    networks: [weft]
+    network_mode: pasta
 
   orchestrator:
     image: ${WEFT_WORKSPACE_IMAGE:?the digest release.json names, rendered into .env}

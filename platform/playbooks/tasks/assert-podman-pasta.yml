@@ -1,0 +1,36 @@
+---
+# assert-podman-pasta.yml — refuse a host whose podman cannot run pasta, before anything stops.
+#
+# A service on `network_mode: pasta` sees the real peer of a connection to its published port.
+# Published from a rootless bridge, it sees its own bridge address instead (weft #580), so a
+# service that decides anything from the client's address runs on pasta. podman only RECOMMENDS
+# passt, the package that ships pasta, so a host can lack it, and then the container fails at
+# creation, after the deploy has stopped the one it replaces.
+#
+# Asks podman rather than PATH: `podman info` names the pasta podman itself would run, and names
+# none when it would fail (read the same way on podman 4.9.3, Ubuntu 24.04's, and on 6.2).
+#
+# Include AFTER tasks/place-monorepo.yml, which installs podman. Input: _app_for, what needs pasta,
+# named in the refusal.
+
+- name: "Read the pasta podman would run"
+  ansible.builtin.command:
+    argv: ["{{ container_engine | default('podman') }}", info, --format, "{{ '{{.Host.Pasta.Executable}}' }}"]
+  register: _app_pasta
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "Refuse a podman without pasta"
+  ansible.builtin.assert:
+    that:
+      - _app_pasta.rc | default(1) == 0
+      # pasta is a podman network mode: another engine has no such field to read.
+      - (container_engine | default('podman')) == 'podman'
+      - _app_pasta.stdout | default('') | trim | length > 0
+    fail_msg: >-
+      {{ _app_for | default('this deploy') }} runs on podman's pasta network mode, so it sees the address a
+      connection came from, and this host's podman has no pasta (read rc {{ _app_pasta.rc | default('unset') }},
+      {{ _app_pasta.stderr | default('') | trim | default('no error', true) }}). Run Install Podman on this host,
+      which installs passt, then re-run this deploy.
+    quiet: true
