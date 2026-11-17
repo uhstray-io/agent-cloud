@@ -1,12 +1,17 @@
 //! Lane selection (plan 24, D3): the nextest filterset a lane runs, from the paths a change touches.
 //!
-//! The rules are in `platform/tests/areas.yml`, read with this crate's YAML loader. Each changed
+//! The rules are in `platform/tests/areas.yml` and in one file per area under
+//! `platform/tests/areas.d/`, read with this crate's YAML loader. Each changed
 //! path is classified in this order: it matches `full` (the change selects everything); else it
 //! matches the paths of one or more areas (those areas are selected); else it matches `ignore`
 //! (nothing is selected); else it is unclassified (the push and CI lanes run everything).
 //!
 //! Selection is by module name: nextest's `test(/^<module>::/)` matches the tests of each
-//! selected module, and `suite/main.rs` declares the modules.
+//! selected module, and the files in `suite/` are the modules (`build.rs` declares one per file).
+//!
+//! An area file `areas.d/<area>.yml` holds `paths` and `tiers`, as an area of `areas.yml` does,
+//! and an optional `always` tier map added to the global `always`. The file stem is the area
+//! name. A port pull request adds its own file and so edits no file another port edits.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -55,11 +60,58 @@ pub struct Config {
 }
 
 impl Config {
-    /// The configuration in the file at `path`. A file that cannot be read, or that is not
-    /// one YAML document of the expected shape, is an error.
+    /// The configuration in the file at `path` (`areas.yml`), merged with every `*.yml` area
+    /// file in the `areas.d` directory beside it, in name order. A missing `areas.d` adds
+    /// nothing. A file that cannot be read or is not of the expected shape, an area defined
+    /// twice, and a module listed in more than one place are errors.
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        Config::parse(&text, &path.display().to_string())
+        let origin = path.display().to_string();
+        let mut config = Config::parse(&text, &origin)?;
+        let mut listings = Listings::default();
+        listings.add(&config.always, &format!("{origin} `always`"))?;
+        for (name, area) in &config.areas {
+            listings.add(&area.tiers, &format!("{origin} area `{name}`"))?;
+        }
+
+        let dir = path.with_file_name("areas.d");
+        let mut files = Vec::new();
+        match std::fs::read_dir(&dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    let file = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+                    if file.is_file() && file.extension().is_some_and(|ext| ext == "yml") {
+                        files.push(file);
+                    }
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{}: {e}", dir.display())),
+        }
+        files.sort();
+
+        for file in files {
+            let origin = file.display().to_string();
+            let stem = file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| format!("{origin}: the file name is not UTF-8"))?;
+            let name = module_name(stem, "area file name", &origin)?;
+            let text = std::fs::read_to_string(&file).map_err(|e| format!("{origin}: {e}"))?;
+            let (area, always) = parse_area_file(&text, &name, &origin)?;
+            if config.areas.contains_key(&name) {
+                return Err(format!(
+                    "{origin}: area `{name}` is already defined (in areas.yml or an earlier areas.d file)"
+                ));
+            }
+            listings.add(&area.tiers, &format!("{origin} area `{name}`"))?;
+            listings.add(&always, &format!("{origin} `always`"))?;
+            for (tier, names) in always {
+                config.always.entry(tier).or_default().extend(names);
+            }
+            config.areas.insert(name, area);
+        }
+        Ok(config)
     }
 
     /// The configuration in `text`, named `origin` in errors. A YAML syntax error panics, as
@@ -191,6 +243,64 @@ fn add_tiers(modules: &mut BTreeSet<String>, tiers: &Tiers, static_only: bool) {
             modules.extend(names.iter().cloned());
         }
     }
+}
+
+/// Where each module is listed, so a second listing can name the first.
+#[derive(Default)]
+struct Listings(BTreeMap<String, String>);
+
+impl Listings {
+    fn add(&mut self, tiers: &Tiers, origin: &str) -> Result<(), String> {
+        for names in tiers.values() {
+            for name in names {
+                if let Some(first) = self.0.insert(name.clone(), origin.to_owned()) {
+                    return Err(format!(
+                        "module `{name}` is listed twice: in {first} and in {origin}"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One area file: `paths` and `tiers` (both required) and an optional `always` tier map.
+fn parse_area_file(text: &str, name: &str, origin: &str) -> Result<(Area, Tiers), String> {
+    let docs = yaml::parse(text, origin);
+    let [doc] = docs.as_slice() else {
+        return Err(format!(
+            "{origin}: expected one YAML document, found {}",
+            docs.len()
+        ));
+    };
+    let entries = doc
+        .as_map()
+        .ok_or_else(|| format!("{origin}: area `{name}` must be a mapping"))?;
+    let keys = ["paths", "tiers", "always"];
+    for (key, _) in entries {
+        if !key.as_str().is_some_and(|k| keys.contains(&k)) {
+            return Err(format!(
+                "{origin}: area `{name}` has the unknown key {key:?} (expected {keys:?})"
+            ));
+        }
+    }
+    let required = |key: &str| {
+        doc.get(key)
+            .ok_or_else(|| format!("{origin}: area `{name}` is missing `{key}`"))
+    };
+    let area = Area {
+        paths: glob_set(
+            &string_list(required("paths")?, name, origin)?,
+            name,
+            origin,
+        )?,
+        tiers: tier_map(required("tiers")?, name, origin)?,
+    };
+    let always = match doc.get("always") {
+        Some(node) => tier_map(node, "always", origin)?,
+        None => Tiers::new(),
+    };
+    Ok((area, always))
 }
 
 fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {

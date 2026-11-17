@@ -243,42 +243,143 @@ fn a_selection_renders_as_all_none_or_a_sorted_alternation() {
     );
 }
 
+/// The suite's modules: every `suite/<name>.rs` but `main.rs`, the rule `build.rs` declares
+/// them by.
+fn suite_modules() -> Vec<String> {
+    let mut stems: Vec<String> = std::fs::read_dir(repo::path("platform/tests/suite"))
+        .expect("suite/ reads")
+        .map(|entry| entry.expect("a suite/ entry").path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
+        .filter_map(|path| path.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
+        .filter(|stem| stem != "main")
+        .collect();
+    stems.sort();
+    stems
+}
+
 #[test]
 fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
-    let config = Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml loads");
-    let main_rs = std::fs::read_to_string(repo::path("platform/tests/suite/main.rs"))
-        .expect("suite/main.rs reads");
-    // `mod x;`, `pub mod x;` and `pub(crate) mod x;`, indented or not: any form declares a module.
-    let declaration = regex::Regex::new(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;")
-        .expect("valid pattern");
-    let declared: Vec<&str> = declaration
-        .captures_iter(&main_rs)
-        .map(|c| c.get(1).expect("a module name").as_str())
-        .collect();
-    assert!(!declared.is_empty(), "suite/main.rs declares no module");
+    let config =
+        Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load");
+    let declared = suite_modules();
+    assert!(!declared.is_empty(), "suite/ holds no module file");
 
     let listed = config.listed_modules();
     let mut problems = Vec::new();
     for module in &declared {
-        let count = listed
-            .iter()
-            .filter(|name| name.as_str() == *module)
-            .count();
+        let count = listed.iter().filter(|name| *name == module).count();
         if count != 1 {
             problems.push(format!(
-                "`mod {module};` is listed {count} times in areas.yml, expected once"
+                "suite/{module}.rs is listed {count} times in areas.yml and areas.d/, expected once"
             ));
         }
     }
-    let declared: BTreeSet<&str> = declared.into_iter().collect();
+    let declared: BTreeSet<&str> = declared.iter().map(String::as_str).collect();
     for name in listed.iter().collect::<BTreeSet<_>>() {
         if !declared.contains(name.as_str()) {
             problems.push(format!(
-                "areas.yml lists `{name}`, which suite/main.rs does not declare"
+                "areas.yml or areas.d/ lists `{name}`, which has no suite/{name}.rs"
             ));
         }
     }
     assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+/// `areas.yml` holding [`BASE`] in a fresh directory, with each `(name, text)` written under
+/// `areas.d/` (none, and the directory is not created).
+fn layout(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().expect("a temporary directory");
+    std::fs::write(dir.path().join("areas.yml"), BASE).expect("areas.yml writes");
+    if !files.is_empty() {
+        let areas_d = dir.path().join("areas.d");
+        std::fs::create_dir(&areas_d).expect("areas.d creates");
+        for (name, text) in files {
+            std::fs::write(areas_d.join(name), text).expect("an area file writes");
+        }
+    }
+    dir
+}
+
+fn load(dir: &TempDir) -> Result<Config, String> {
+    Config::load(&dir.path().join("areas.yml"))
+}
+
+#[test]
+fn an_area_file_adds_its_area_and_its_always_modules() {
+    let dir = layout(&[
+        (
+            "ported.yml",
+            "paths: [\"platform/ported/**\"]\ntiers: {unit: [ported]}\nalways: {static: [ported_guard]}\n",
+        ),
+        ("README.md", "not an area: ignored\n"),
+    ]);
+
+    let config = load(&dir).expect("the layout loads");
+
+    assert_eq!(
+        run(&config, Lane::Push, "platform/ported/x.sh"),
+        mods(&["ported", "ported_guard"])
+    );
+    assert_eq!(
+        run(&config, Lane::Commit, "docs/guide.md"),
+        mods(&["ported_guard"]),
+        "a file's `always` joins the security set"
+    );
+}
+
+#[test]
+fn a_missing_areas_d_adds_nothing() {
+    let dir = layout(&[]);
+
+    let loaded = load(&dir).expect("areas.yml alone loads");
+
+    assert_eq!(
+        loaded.listed_modules().len(),
+        config(BASE).listed_modules().len()
+    );
+}
+
+#[test]
+fn an_area_file_that_collides_or_is_malformed_is_refused() {
+    let area = |module: &str| format!("paths: []\ntiers: {{static: [{module}]}}\n");
+    let cases: Vec<(&str, Vec<(&str, String)>)> = vec![
+        (
+            "an area of areas.yml defined again",
+            vec![("multi.yml", area("other"))],
+        ),
+        (
+            "a module of areas.yml listed again",
+            vec![("other.yml", area("restart_policy"))],
+        ),
+        (
+            "a module listed in two files",
+            vec![("one.yml", area("shared")), ("two.yml", area("shared"))],
+        ),
+        (
+            "a module in a file's area and its always",
+            vec![(
+                "one.yml",
+                "paths: []\ntiers: {static: [x]}\nalways: {unit: [x]}\n".to_owned(),
+            )],
+        ),
+        (
+            "an unknown key",
+            vec![("one.yml", "paths: []\ntiers: {}\npath: []\n".to_owned())],
+        ),
+        ("a missing key", vec![("one.yml", "paths: []\n".to_owned())]),
+        (
+            "a stem that is not a module name",
+            vec![("bad-name.yml", area("x"))],
+        ),
+    ];
+    for (why, files) in cases {
+        let files: Vec<(&str, &str)> = files.iter().map(|(n, t)| (*n, t.as_str())).collect();
+        let dir = layout(&files);
+
+        let result = load(&dir);
+
+        assert!(result.is_err(), "{why}: loaded");
+    }
 }
 
 /// Every path the property draws from: each area's, each one none matches, and a full hit.

@@ -7,9 +7,10 @@
 #   3. it matches `ignore`: it selects nothing;
 #   4. otherwise it is unclassified: the push and CI lanes run everything.
 #
-# Every test module in suite/main.rs must appear in exactly one list below, under an area's tiers
-# or under `always`. The repository test every_suite_module_is_in_exactly_one_list_of_areas_yml
-# enforces it.
+# The test modules are the files suite/<name>.rs (build.rs declares one per file). Every module
+# must appear in exactly one list: under an area's tiers or `always`, here or in an area file
+# areas.d/<area>.yml (see areas.d/README.md). The repository test
+# every_suite_module_is_listed_exactly_once_in_areas_yml enforces it.
 
 # Paths whose change runs every test.
 full:
@@ -30,7 +31,7 @@ ignore:
 # `yaml_load` checks that every tracked YAML file loads, and plan/** and docs/** hold YAML too.
 # The four modules ported from BATS (plan 24, Phase 4) guard MISTAKES-cited rules, so they are here too.
 always:
-  static: [approle_ttl, backup_credentials, become_password_resolution, configure_host_network, credential_leaks, deploy_playbooks_preflight, destroy_vm, host_access_gate, install_podman, ledger, ledger_citation_hook, local_dev_inventory, local_netbox, manage_github_runner_group, manage_secrets, yaml_load]
+  static: [approle_ttl, backup_credentials, become_password_resolution, configure_host_network, credential_leaks, deploy_playbooks_preflight, destroy_vm, host_access_gate, install_podman, ledger, ledger_citation_hook, local_dev_inventory, local_netbox, manage_github_runner_group, manage_secrets, rust_format, yaml_load]
 
 # Tiers: static, unit, cli, http, playbook. Each lists suite module names.
 areas:
