@@ -243,38 +243,28 @@ fn a_selection_renders_as_all_none_or_a_sorted_alternation() {
     );
 }
 
-/// The suite's modules: every `suite/<name>.rs` but `main.rs`, the rule `build.rs` declares
-/// them by.
-fn suite_modules() -> Vec<String> {
-    let mut stems: Vec<String> = std::fs::read_dir(repo::path("platform/tests/suite"))
-        .expect("suite/ reads")
-        .map(|entry| entry.expect("a suite/ entry").path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
-        .filter_map(|path| path.file_stem().and_then(|s| s.to_str()).map(str::to_owned))
-        .filter(|stem| stem != "main")
-        .collect();
-    stems.sort();
-    stems
-}
-
 #[test]
 fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
     let config =
         Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load");
-    let declared = suite_modules();
+    // build.rs declares one module per suite/<name>.rs and records the names it compiled.
+    let declared = crate::SUITE_MODULES;
     assert!(!declared.is_empty(), "suite/ holds no module file");
 
     let listed = config.listed_modules();
     let mut problems = Vec::new();
-    for module in &declared {
-        let count = listed.iter().filter(|name| *name == module).count();
+    for module in declared {
+        let count = listed
+            .iter()
+            .filter(|name| name.as_str() == *module)
+            .count();
         if count != 1 {
             problems.push(format!(
                 "suite/{module}.rs is listed {count} times in areas.yml and areas.d/, expected once"
             ));
         }
     }
-    let declared: BTreeSet<&str> = declared.iter().map(String::as_str).collect();
+    let declared: BTreeSet<&str> = declared.iter().copied().collect();
     for name in listed.iter().collect::<BTreeSet<_>>() {
         if !declared.contains(name.as_str()) {
             problems.push(format!(

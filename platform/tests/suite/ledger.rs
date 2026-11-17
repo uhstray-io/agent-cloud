@@ -407,7 +407,7 @@ fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
 /// A replacing test named in a ratchet reason: `[platform/tests/]suite/<module>.rs::<fn>`, the
 /// form a ledger citation of a Rust test takes.
 static REPLACING_TEST: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?:platform/tests/)?suite/[\w-]+\.rs::\w+"));
+    LazyLock::new(|| re(r"(?:platform/tests/)?suite/(?P<module>[\w-]+)\.rs::(?P<name>\w+)"));
 
 /// Each line of a ratchet directory file under `root` whose reason names no replacing Rust test,
 /// or names one that does not resolve. A port deletes a cited test only with its replacement
@@ -421,20 +421,20 @@ fn ratchet_dir_problems(root: &Path) -> Vec<String> {
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}"));
         for (key, reason) in parse_ratchet(&text) {
-            let named: Vec<&str> = REPLACING_TEST
-                .find_iter(&reason)
-                .map(|m| m.as_str())
-                .collect();
+            let named: Vec<_> = REPLACING_TEST.captures_iter(&reason).collect();
             if named.is_empty() {
                 problems.push(format!(
                     "{name}: `{key}` names no replacing test (suite/<module>.rs::<fn>)"
                 ));
             }
-            for test in named {
-                let claim = format!("### 0\n\n`{test}`\n");
-                if !unresolved(&claim, root).is_empty() {
+            for caps in named {
+                // Resolved as a Rust ledger citation is, without the repository walk the
+                // other citation forms need.
+                let module = root.join(format!("platform/tests/suite/{}.rs", &caps["module"]));
+                if !(module.is_file() && defines(&module, &caps["name"])) {
                     problems.push(format!(
-                        "{name}: `{key}` names `{test}`, which does not exist"
+                        "{name}: `{key}` names `{}`, which does not exist",
+                        &caps[0]
                     ));
                 }
             }

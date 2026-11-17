@@ -1,4 +1,4 @@
-//! The suite's modules are formatted (plan 24, decision 3).
+//! The suite's modules are formatted (plan 24, D10).
 //!
 //! `build.rs` declares the modules through an `include!`, and `cargo fmt` does not follow an
 //! `include!`d module, so `cargo fmt --check` passes a misformatted one. This runs `rustfmt
@@ -22,13 +22,11 @@ fn edition() -> String {
 #[test]
 fn every_suite_module_is_rustfmt_clean() {
     let edition = edition();
-    let mut files: Vec<_> = std::fs::read_dir(repo::path("platform/tests/suite"))
-        .expect("suite/ reads")
-        .map(|entry| entry.expect("a suite/ entry").path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "rs"))
+    // main.rs and every module build.rs compiled.
+    let files: Vec<_> = std::iter::once("main")
+        .chain(crate::SUITE_MODULES.iter().copied())
+        .map(|name| repo::path(&format!("platform/tests/suite/{name}.rs")))
         .collect();
-    files.sort();
-    assert!(!files.is_empty(), "suite/ holds no file");
     let home = TempDir::new().expect("a temporary directory");
 
     let mut cmd = process::scrubbed("rustfmt", home.path());

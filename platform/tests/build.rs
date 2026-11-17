@@ -1,4 +1,4 @@
-//! Declares the suite's modules from the files in `suite/` (plan 24, decision 13).
+//! Declares the suite's modules from the files in `suite/` (plan 24, D10).
 //!
 //! Every `suite/<name>.rs` except `main.rs` becomes `mod <name>;` of the `suite` test binary,
 //! through `$OUT_DIR/suite_modules.rs`, which `suite/main.rs` includes. A port pull request then
@@ -14,7 +14,7 @@ use std::path::PathBuf;
 fn main() {
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let suite = root.join("suite");
-    // A directory: cargo rescans it, so an added or removed module file reruns this script.
+    // A directory: cargo scans all of it, so any change to a suite file reruns this script.
     println!("cargo::rerun-if-changed={}", suite.display());
 
     let mut stems = Vec::new();
@@ -45,9 +45,16 @@ fn main() {
         let literal = path.to_str().expect("a UTF-8 suite path");
         writeln!(out, "#[path = {literal:?}]\nmod {stem};").expect("write to a String");
     }
+    // The same list as data, so the tests check the modules rustc compiled, not a re-scan.
+    let names: Vec<&str> = stems.iter().map(|(stem, _)| stem.as_str()).collect();
+    writeln!(out, "pub(crate) const SUITE_MODULES: &[&str] = &{names:?};")
+        .expect("write to a String");
     let dest =
         PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR")).join("suite_modules.rs");
-    std::fs::write(&dest, out).unwrap_or_else(|e| panic!("{}: {e}", dest.display()));
+    // Rewritten only on a change: a new mtime alone would relink the suite binary.
+    if std::fs::read_to_string(&dest).ok().as_deref() != Some(out.as_str()) {
+        std::fs::write(&dest, out).unwrap_or_else(|e| panic!("{}: {e}", dest.display()));
+    }
 }
 
 fn is_module_name(name: &str) -> bool {

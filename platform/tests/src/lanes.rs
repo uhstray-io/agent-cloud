@@ -117,14 +117,7 @@ impl Config {
     /// The configuration in `text`, named `origin` in errors. A YAML syntax error panics, as
     /// every test helper's parser does.
     pub fn parse(text: &str, origin: &str) -> Result<Config, String> {
-        let docs = yaml::parse(text, origin);
-        let [doc] = docs.as_slice() else {
-            return Err(format!(
-                "{origin}: expected one YAML document, found {}",
-                docs.len()
-            ));
-        };
-        from_node(doc, origin)
+        from_node(&one_document(text, origin)?, origin)
     }
 
     /// Every module named in a tier list, once for each list that names it. The repository
@@ -266,36 +259,8 @@ impl Listings {
 
 /// One area file: `paths` and `tiers` (both required) and an optional `always` tier map.
 fn parse_area_file(text: &str, name: &str, origin: &str) -> Result<(Area, Tiers), String> {
-    let docs = yaml::parse(text, origin);
-    let [doc] = docs.as_slice() else {
-        return Err(format!(
-            "{origin}: expected one YAML document, found {}",
-            docs.len()
-        ));
-    };
-    let entries = doc
-        .as_map()
-        .ok_or_else(|| format!("{origin}: area `{name}` must be a mapping"))?;
-    let keys = ["paths", "tiers", "always"];
-    for (key, _) in entries {
-        if !key.as_str().is_some_and(|k| keys.contains(&k)) {
-            return Err(format!(
-                "{origin}: area `{name}` has the unknown key {key:?} (expected {keys:?})"
-            ));
-        }
-    }
-    let required = |key: &str| {
-        doc.get(key)
-            .ok_or_else(|| format!("{origin}: area `{name}` is missing `{key}`"))
-    };
-    let area = Area {
-        paths: glob_set(
-            &string_list(required("paths")?, name, origin)?,
-            name,
-            origin,
-        )?,
-        tiers: tier_map(required("tiers")?, name, origin)?,
-    };
+    let doc = one_document(text, origin)?;
+    let area = area_body(&doc, name, &["always"], origin)?;
     let always = match doc.get("always") {
         Some(node) => tier_map(node, "always", origin)?,
         None => Tiers::new(),
@@ -303,11 +268,35 @@ fn parse_area_file(text: &str, name: &str, origin: &str) -> Result<(Area, Tiers)
     Ok((area, always))
 }
 
+/// The one YAML document in `text`. A YAML syntax error panics, as every test helper's parser does.
+fn one_document(text: &str, origin: &str) -> Result<Node, String> {
+    let mut docs = yaml::parse(text, origin);
+    if docs.len() != 1 {
+        return Err(format!(
+            "{origin}: expected one YAML document, found {}",
+            docs.len()
+        ));
+    }
+    Ok(docs.remove(0))
+}
+
+/// An area's `paths` and `tiers`, in `areas.yml` or an area file. `optional` names the other
+/// keys the caller reads itself.
+fn area_body(body: &Node, name: &str, optional: &[&str], origin: &str) -> Result<Area, String> {
+    let what = format!("area `{name}`");
+    let [paths, tiers] = section(body, &what, ["paths", "tiers"], optional, origin)?;
+    Ok(Area {
+        paths: glob_set(&string_list(paths, name, origin)?, name, origin)?,
+        tiers: tier_map(tiers, name, origin)?,
+    })
+}
+
 fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
     let [full, ignore, always, areas] = section(
         doc,
         "the file",
         ["full", "ignore", "always", "areas"],
+        &[],
         origin,
     )?;
 
@@ -320,14 +309,8 @@ fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
             .as_str()
             .ok_or_else(|| format!("{origin}: area name {key:?} is not a string"))?;
         let name = module_name(name, "area name", origin)?;
-        let [paths, tiers] = section(body, &format!("area `{name}`"), ["paths", "tiers"], origin)?;
-        parsed.insert(
-            name.clone(),
-            Area {
-                paths: glob_set(&string_list(paths, &name, origin)?, &name, origin)?,
-                tiers: tier_map(tiers, &name, origin)?,
-            },
-        );
+        let area = area_body(body, &name, &[], origin)?;
+        parsed.insert(name, area);
     }
 
     Ok(Config {
@@ -338,21 +321,26 @@ fn from_node(doc: &Node, origin: &str) -> Result<Config, String> {
     })
 }
 
-/// The value of each key of `node`, in the order of `keys`. Every key is required and no
-/// other is allowed: a misspelt key would otherwise select nothing, without a word.
+/// The value of each key of `node`, in the order of `keys`. Every key is required, and no other
+/// is allowed but those in `optional`, which the caller reads itself: a misspelt key would
+/// otherwise select nothing, without a word.
 fn section<'a, const N: usize>(
     node: &'a Node,
     what: &str,
     keys: [&str; N],
+    optional: &[&str],
     origin: &str,
 ) -> Result<[&'a Node; N], String> {
     let entries = node
         .as_map()
         .ok_or_else(|| format!("{origin}: {what} must be a mapping"))?;
     for (key, _) in entries {
-        if !key.as_str().is_some_and(|k| keys.contains(&k)) {
+        if !key
+            .as_str()
+            .is_some_and(|k| keys.contains(&k) || optional.contains(&k))
+        {
             return Err(format!(
-                "{origin}: {what} has the unknown key {key:?} (expected {keys:?})"
+                "{origin}: {what} has the unknown key {key:?} (expected {keys:?}, optionally {optional:?})"
             ));
         }
     }
