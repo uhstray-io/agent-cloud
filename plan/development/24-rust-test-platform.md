@@ -182,7 +182,7 @@ it reports the overrun in the job summary, as the shards do today.
 
 ## Implementation Phases
 
-One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` (see "Release fit" below the phase table). A
+One Plane work item per phase, in module `rust-test-platform`, milestone `v0.16.0` for the foundation (Phases 0 to 3), wave 1 and D6 (Phase 7, AC-738); the test ports (Phases 4 to 6: AC-735, AC-736, AC-737) by group across releases from `v0.17.0`, as R7 requires; and `v0.18.0` for the product-code ports and retirement (Phases 8 to 10: AC-739, AC-740, AC-741) (see "Release fit" below the phase table). A
 port phase is split into one sub-item per area when it starts.
 
 | Phase | Work | Blocked by | Done when |
@@ -202,11 +202,16 @@ port phase is split into one sub-item per area when it starts.
 The workflow changes in Phases 1, 2, 4 and 10 touch `.github/workflows/`, so they are operator merges
 (plan 23, Part A). The main-to-dev sync cannot carry them.
 
-**Release fit.** The whole module ships from v0.16.0. Phases 0 to 3 were built during the v0.15.0
-carry-over promotion and are held until v0.15.0 is released, since nothing merges into `dev` before then
-(operator decision, 2026-11-12). Phases 4 to 10 port about 140,000 lines of tests and 42,000 lines of
-product code. The release limits apply from v0.16.0, so each port phase is cut into area pull requests that
-fit the 100-PR and 120-file budget, and phases may spread over later releases.
+**Release fit.** The goal set on 2026-11-14 was wave 1 in v0.16.0 and the full suite by v0.17.0; it has since been revised.
+Wave 1 (AC-872 to AC-879, AC-881) and Phases 0 to 3 shipped in v0.16.0. The operator then put the
+mechanism first (2026-11-16): the release after v0.16.0 carries the port mechanism (AC-918, #1175), the first port group
+(AC-940, #1181) and the support helpers merged in its cut (plan 23's row for that release lists them). On
+2026-11-17 the operator chose to promote that release inside the release limits, so R7 is followed: the
+remaining test ports (AC-735 to AC-737) continue by group in the following releases, each release
+planned to R7's file budget and each port a pull request of one group, within R8's per-pull-request limit. The
+product-code ports and the retirement of pytest and BATS (AC-739 to AC-741) come after them, from Plane milestone v0.18.0
+(operator decision, 2026-11-16), so pytest and BATS stay in CI until then. Phases 4 to 10 port about
+140,000 lines of tests and 42,000 lines of product code.
 
 ---
 
@@ -257,6 +262,7 @@ fit the 100-PR and 120-file budget, and phases may spread over later releases.
 
 | Date | Change |
 |---|---|
+| 2026-11-17 | Release fit and the phase-table milestone line follow the operator's decisions: the goal (2026-11-14), mechanism first and the product-code port from v0.18.0 (2026-11-16), and the release after v0.16.0 promoted inside the release limits (2026-11-17), so R7 is followed and the test ports continue by group across releases. Phase 7 (D6) is named as shipped in v0.16.0. |
 | 2026-11-16 | Per-file registration (D10): suite modules from files (build.rs), one area file per area (areas.d/), one ledger ratchet file per port group (ledger_citation_ratchet.d/); a port pull request edits no shared file. Operator decision 2026-11-16: mechanism before ports. |
 | 2026-11-12 | D6 decided by the operator: pinned release binaries, recorded in 05. |
 | 2026-11-12 | Review: the security set includes the ledger-enforced tests (03 item 2), as the original principles had it; modules are per area and tier, not one per area; an unclassified path runs everything in `push` and `ci` but adds nothing in `commit`, to keep the commit lane inside its 10 s budget. |
