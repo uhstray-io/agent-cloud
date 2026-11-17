@@ -269,10 +269,10 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
         offenders.extend(vars_offenders(file, &text));
     }
 
-    // A ratchet, keyed `<file>:<vars key>`, one entry per offender: the vars entries built from now(...) before the check read now() with
-    // arguments (#1149 review, docs/MISTAKES.md 10.8). AC-910 moved every one to set_fact, so
-    // the list is empty and stays empty: a new offender fails, and so does an entry that is
-    // fixed but still listed.
+    // A ratchet, keyed `<file>:<vars key>`: the vars entries built from now(...) before the check
+    // read now() with arguments (#1149 review, docs/MISTAKES.md 10.8). AC-910 moved every one to
+    // set_fact, so the list is empty and stays empty: a new offender fails, and so does an entry
+    // that is fixed but still listed.
     const KNOWN: &[&str] = &[];
     // Compared as multisets: each listed entry covers one offender with that key, so a second
     // same-named offender in one file is new.
