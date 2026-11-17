@@ -11,8 +11,7 @@
 //! constructs the ported BATS patterns use; its escapes such as `\d` and `\t` are its own, not
 //! GNU grep's. A bare `{` is a compile error there (`mv {{`), so a ported pattern writes `\{`.
 //! A line-feed escape outside a class (`\n`, `\x0a`) is refused like a raw newline: no line ever
-//! holds one. The scan reads classes only roughly: `writes_line_feed` lists the three shapes it
-//! lets through and the two valid ones it refuses (AC-963).
+//! holds one. The scan reads classes only roughly; `writes_line_feed` lists what it gets wrong.
 //!
 //! An empty pattern or literal is found in every line and every text, so it checks nothing; grep
 //! reads one that holds a newline as several needles. Each assertion refuses both, naming the
