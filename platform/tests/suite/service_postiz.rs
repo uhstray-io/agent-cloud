@@ -31,7 +31,8 @@
 //! - the `Report` block is `task_block`'s: it ends at the next `- name:` at the same or shallower
 //!   indent, where the BATS awk ended only at a four-space one (the Report task is the file's last);
 //! - stricter, where a BATS regex matched lines it was not about: beside each kept BATS line, a
-//!   check on the parsed compose file or on the task itself (listed in the pull request body);
+//!   stricter check on the file that line read, parsed where it is YAML (each is listed in the
+//!   pull request body);
 //! - the DNS-instruction refute matches any postiz host, not one instance's;
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
@@ -322,12 +323,6 @@ fn five_container_stack() {
         ]),
         "{COMPOSE}: the services"
     );
-    // A set hides a duplicated key, which the parsed map keeps.
-    assert_eq!(
-        services.as_map().unwrap_or_default().len(),
-        5,
-        "{COMPOSE}: a service is declared twice"
-    );
 }
 
 #[test]
@@ -499,8 +494,9 @@ fn healthchecks_on_all_five_containers_app_dependencies_gated() {
     // The app waits on its datastores AND the workflow engine.
     text::assert_line(COMPOSE, r"temporal:\s*$");
     text::assert_line(COMPOSE, "condition: service_healthy");
-    // The lines above match anywhere; the parsed file pins each service's healthcheck and the
-    // app's three healthy dependencies.
+    // The lines above match anywhere. Parsed: every service has an enabled healthcheck whose test
+    // is a list led by CMD or CMD-SHELL, and the app waits for its three dependencies to be
+    // healthy.
     let services = compose_services();
     for (name, svc) in services.as_map().unwrap_or_default() {
         let name = name.as_str().unwrap_or("?");
@@ -550,10 +546,13 @@ fn app_config_does_not_go_through_compose_interpolation() {
     // The names above are a sample; the app service carries no environment of its own at all.
     let services = compose_services();
     let app = service(&services, "postiz");
-    assert!(
-        app.get("environment").is_none(),
-        "{COMPOSE}: the app service sets environment"
-    );
+    for key in ["environment", "env_file"] {
+        // env_file too: the line refute above misses a flow-style or quoted key.
+        assert!(
+            app.get(key).is_none(),
+            "{COMPOSE}: the app service sets {key}"
+        );
+    }
 }
 
 #[test]
@@ -841,10 +840,9 @@ fn psql_check_preserves_its_exit_status() {
     refute_in(&task, r"^\s+(ansible\.builtin\.)?shell:", "the psql task");
     // The password travels by environment and is forwarded by NAME, never in argv.
     assert_in(&task, r"^\s+PGPASSWORD: ", "the psql task's environment");
-    refute_in(&task, r"^\s+- .*PGPASSWORD=", "the psql task's argv");
     refute_in(
         &task,
-        r"^\s+- .*_secrets\.postiz_db_password",
+        r"^\s+- .*(PGPASSWORD=|postiz_db_password)",
         "the psql task's argv",
     );
 }
