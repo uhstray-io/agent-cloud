@@ -376,7 +376,7 @@ protects 1.7, which is the only irreversible step in the change.
       platforms, X and LinkedIn (member and company page), to the new public host.
       Scope 2026-11-12 (AC-762): YouTube and Discord are deferred; register their redirects
       when they are connected.
-      — account connection fails until this is done
+      Account connection fails until this is done.
       EXACT PATHS (read from upstream v2.23.0 providers, hit live 2026-08-30 —
       LinkedIn refused the unregistered local URL with "redirect_uri does not
       match the registered value"): each console must register
