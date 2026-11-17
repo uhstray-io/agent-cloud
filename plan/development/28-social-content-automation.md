@@ -138,7 +138,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 
 **Goal:** Gate A. Publish one AI-drafted, human-approved text post per account to the first brand's X and LinkedIn accounts through the publishing service in production. It needs the schedule step enabled (D2: a conditional status change, or the window accepted under Open Question 9).
 
-**Tasks:** 5.1 Gate A (AC-805). Its blockers are in `tasks.md`; the operator steps among them are the decisions on Open Questions 8 and 9 and the publishing-service change tasks 6.5 (the OAuth redirect destinations at X and LinkedIn), 7.1 (seeding the platform credentials into the production secret store) and 7.7 (connecting the accounts).
+**Tasks:** 5.1 Gate A (AC-805). Its blockers are in `tasks.md`; the operator steps among them are the decision on Open Question 8, the decision on Open Question 9 unless task 3.3 shows a conditional status change, and the publishing-service change tasks 6.5 (the OAuth redirect destinations at X and LinkedIn), 7.1 (seeding the platform credentials into the production secret store) and 7.7 (connecting the accounts).
 
 **Acceptance criteria:**
 - One approved draft per target account is published on X and on LinkedIn, each target account named in site-config.
