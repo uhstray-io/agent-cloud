@@ -37,6 +37,9 @@ with its own client leaf named on `agw_client_cert_allowlist`.
 Certificate renewal SHALL prove the content caller's client leaf in use, as the production-internal-ca
 requirement "Leaves are renewed on a schedule and the new certificate is in use" requires
 (`plan/development/openspec/changes/production-internal-ca/specs/platform/internal-ca/spec.md:91`).
+A declared client leaf with no proof path MUST be reported as an error, and renewal MUST issue no
+certificate while any such error stands; renewal enforces this today
+(`platform/playbooks/renew-internal-certs.yml`, task "Refuse a declared leaf with no proof path").
 
 #### Scenario: Allowlisted leaf proven at renewal
 - WHEN renewal renews the content caller's leaf and its user opens the files on each call (host sets `agw_verify_base_url` to an `https://` URL)
@@ -44,7 +47,11 @@ requirement "Leaves are renewed on a schedule and the new certificate is in use"
 
 #### Scenario: Long-running holder proven at renewal
 - WHEN renewal renews the content caller's leaf and the leaf is held by a long-running process (an Activepieces piece or the egress sidecar)
-- THEN renewal runs the declared reload, the serial in the mounted directory matches the one issued, and a request along that process's path completes before the leaf is recorded as proven
+- THEN renewal runs the declared reload, the serial in the mounted directory matches the one issued, and a request along that process's path, sent without an API key, answers 401 (the key check was reached) before the leaf is recorded as proven
+
+#### Scenario: Client leaf without a proof path
+- WHEN a client leaf is declared with no proof path
+- THEN renewal reports an error naming the leaf and issues no certificate
 
 ### Requirement: An image model is served only with a per-identity request limit in force
 The gateway SHALL serve an image model only after a per-identity request limit for that model is in
