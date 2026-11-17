@@ -213,13 +213,11 @@ fn defines(path: &Path, name: &str) -> bool {
 /// With `require_test`, its attributes must include `#[test]` and no `#[cfg(...)]` other than
 /// exactly `#[cfg(test)]`, which could compile the test out.
 fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
-    if !text.contains(fn_name) {
-        return false;
-    }
     let code = blank_comments_and_literals(text);
     let name = regex::escape(fn_name);
+    let attribute = ATTRIBUTE.as_str();
     let pattern = re(&format!(
-        r"(?m)^[ \t]*((?:#\[[^\]]*\][ \t\n]*)*)(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
+        r"(?m)^[ \t]*((?:{attribute}[ \t\n]*)*)(?:pub(?:\([^)]*\))?[ \t]+)?(?:async[ \t]+)?fn[ \t]+{name}[ \t]*[<(]"
     ));
     pattern.captures_iter(&code).any(|c| {
         if !require_test {
@@ -825,8 +823,8 @@ fn a_rust_citation_resolves_in_this_repository() {
     assert_eq!(found, Vec::<String>::new());
 }
 
-/// `fn <name>` defined as a test: `#[test]` (other attributes may follow it), then the fn, in code.
-/// Comments and literals are blanked first, so a `#[test] fn` inside one does not count.
+/// `fn <name>` defined as a test in code: `#[test]` among its attributes, in any order, and no
+/// `#[cfg(...)]` but `#[cfg(test)]` ([`defines_fn`] with `require_test`).
 fn defines_test(text: &str, name: &str) -> bool {
     defines_fn(text, name, true)
 }

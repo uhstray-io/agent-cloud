@@ -244,16 +244,14 @@ fn included_file(task: &Node) -> Option<&str> {
         })
 }
 
-/// Whether a task includes or imports a file with this file name.
-fn includes_file(task: &Node, name: &str) -> bool {
-    included_file(task)
-        .is_some_and(|f| std::path::Path::new(f).file_name().and_then(|n| n.to_str()) == Some(name))
+/// Whether a task includes or imports a file whose path ends with these whole components:
+/// `resolve-become-password.yml` matches by file name, `tasks/<file>` by directory too.
+fn includes_path(task: &Node, suffix: &str) -> bool {
+    included_file(task).is_some_and(|f| std::path::Path::new(f).ends_with(suffix))
 }
 
 fn is_controller_only_guard(task: &Node) -> bool {
-    included_file(task).is_some_and(|f| {
-        std::path::Path::new(f).ends_with(std::path::Path::new("tasks").join(CONTROLLER_ONLY_GUARD))
-    })
+    includes_path(task, &format!("tasks/{CONTROLLER_ONLY_GUARD}"))
 }
 
 /// The first task a play actually runs. `pre_tasks` run before `tasks`, and so do `roles`, which
@@ -280,10 +278,14 @@ fn first_in(seq: &[Node]) -> Option<&Node> {
         if is_controller_only_guard(task) || crate::credential_leaks::never_runs(task) {
             continue;
         }
-        if let Some(block) = task.get("block").and_then(Node::as_seq) {
-            return first_in(block);
+        // A block whose every task is skipped runs nothing: the next sibling runs first.
+        match task.get("block").and_then(Node::as_seq) {
+            Some(block) => match first_in(block) {
+                Some(first) => return Some(first),
+                None => continue,
+            },
+            None => return Some(task),
         }
-        return Some(task);
     }
     None
 }
@@ -291,12 +293,8 @@ fn first_in(seq: &[Node]) -> Option<&Node> {
 /// Whether a task makes escalation possible: an include or import of the resolver task file, or a
 /// set_fact of `ansible_become_password`.
 fn resolves(task: &Node) -> bool {
-    // A resolver that never runs (a constant-false `when`, the `never` tag) resolves nothing.
-    if crate::credential_leaks::never_runs(task) {
-        return false;
-    }
     let sets = module(task, "set_fact").is_some_and(|f| f.get("ansible_become_password").is_some());
-    includes_file(task, RESOLVER_FILE) || sets
+    includes_path(task, RESOLVER_FILE) || sets
 }
 
 #[test]
@@ -600,6 +598,15 @@ const FIRST_EXECUTED_CASES: &str = r#"
     - block:
         - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
       tags: [never]
+- name: ok a block of only a skipped task, then the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.debug: {msg: hi}
+          when: false
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad guard then debug
   hosts: h
   become: true

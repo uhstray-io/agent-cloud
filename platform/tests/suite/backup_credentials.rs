@@ -27,7 +27,7 @@
 //! | cred backup: the scratch dir is wiped even when the run fails | `the_scratch_dir_is_wiped_even_when_the_run_fails` |
 //! | cred backup: nothing it prints can carry a credential value | `no_debug_task_prints_a_secret_field_value`, with `the_secret_value_write_is_no_log` and the self-check `a_set_fact_alias_of_the_payload_is_flagged` |
 //! | cred backup: the store path is built from a validated name, not taken whole | `the_store_path_is_built_from_a_validated_name_not_taken_whole` |
-//! | cred backup: the deploy key exists on the runner only inside the dir that is always wiped | `the_deploy_key_is_read_from_one_fixed_store_path`, `the_materialised_key_is_0600_no_log_under_the_scratch_dir`, `git_ssh_names_only_the_deploy_key_with_strict_host_keys` (with the self-check `a_repeated_ssh_option_is_refused`), `the_key_is_written_only_after_the_scratch_dir_exists` |
+//! | cred backup: the deploy key exists on the runner only inside the dir that is always wiped | `the_deploy_key_is_read_from_one_fixed_store_path`, `the_materialised_key_is_0600_no_log_under_the_scratch_dir`, `git_ssh_names_only_the_deploy_key_with_strict_host_keys` (with the self-check `a_changed_ssh_command_is_refused`), `the_key_is_written_only_after_the_scratch_dir_exists` |
 //! | cred backup: the key is never taken from a task parameter, and the seed path says why | `the_deploy_key_is_never_a_task_parameter`, with candidate: pins text `every_key_missing_message_says_how_to_seed_the_key` |
 
 use std::fs;
@@ -44,17 +44,10 @@ const PUSH: &str = "platform/playbooks/tasks/site-config-push.yml";
 const GUARD_INCLUDE: &str = "tasks/assert-bao-transport.yml";
 const CLONE_INCLUDE: &str = "tasks/site-config-clone.yml";
 const KEY_PATH: &str = "secret/data/services/ssh/site-config";
-/// The known-hosts file GIT_SSH_COMMAND must name: the pinned file the clone task writes.
-const KNOWN_HOSTS: &str = "{{ _sc_kh }}";
-
-/// A word of an ssh command line: whitespace splits it except inside a Jinja `{{ ... }}`, which
-/// renders to one word, so `UserKnownHostsFile={{ _sc_kh }}` stays one token.
-static TOKEN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?s)(?:\{\{.*?\}\}|\S)+").expect("a valid regex"));
-/// An ssh option key as ssh spells one: letters only.
-static OPTION_KEY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Za-z]+$").expect("a valid regex"));
-
+/// The clone's GIT_SSH_COMMAND, whole (platform/playbooks/tasks/site-config-clone.yml): the deploy
+/// key only (IdentitiesOnly), strict host keys against the pinned known-hosts file.
+const EXPECTED_GIT_SSH: &str = "ssh -i {{ _sc_wd_result.path }}/deploy_key -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
 /// The non-deterministic lookups a vars entry may not hold (see the test that uses it).
 static NONDETERMINISTIC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -638,13 +631,11 @@ fn git_ssh_names_only_the_deploy_key_with_strict_host_keys() {
     assert_eq!(defs.len(), 1, "exactly one GIT_SSH_COMMAND definition");
     let ssh = defs[0].as_str().expect("GIT_SSH_COMMAND is a string");
     assert!(
-        ssh.contains("ssh -i {{ _sc_wd_result.path }}/deploy_key "),
-        "GIT_SSH_COMMAND must name the deploy key: {ssh}"
-    );
-    assert_eq!(
-        ssh_options_problems(ssh),
-        Vec::<String>::new(),
-        "GIT_SSH_COMMAND: {ssh}"
+        pins_git_ssh(ssh),
+        "GIT_SSH_COMMAND differs from EXPECTED_GIT_SSH. Parsing a shell command line for its \
+         options is bypassable by quoting or templating, so the command is pinned whole: any \
+         change to it must be reviewed and the const updated with it.\n  found:    {ssh}\n  \
+         expected: {EXPECTED_GIT_SSH}"
     );
 
     assert!(
@@ -653,109 +644,17 @@ fn git_ssh_names_only_the_deploy_key_with_strict_host_keys() {
     );
 }
 
-/// The `-o` options of an ssh command line, as (key, value), from `-o K=V` and `-oK=V`.
-/// An option with no `=` (`-o "StrictHostKeyChecking no"` splits into two tokens) is returned with
-/// an empty key and the raw token as its value, so the caller can refuse what it cannot read.
-fn ssh_options(cmd: &str) -> Vec<(String, String)> {
-    let tokens: Vec<&str> = TOKEN.find_iter(cmd).map(|m| m.as_str()).collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < tokens.len() {
-        let opt = match tokens[i] {
-            "-o" => {
-                i += 1;
-                tokens.get(i).copied()
-            }
-            t => t.strip_prefix("-o"),
-        };
-        if let Some(o) = opt {
-            match o.split_once('=') {
-                Some((k, v)) => out.push((k.to_owned(), v.to_owned())),
-                None => out.push((String::new(), o.to_owned())),
-            }
-        }
-        i += 1;
-    }
-    out
-}
-
-/// What is wrong with an ssh command's options: ssh takes the FIRST value of a repeated option, so
-/// a repeat is refused outright; then strict host keys, IdentitiesOnly and a known-hosts file.
-fn ssh_options_problems(cmd: &str) -> Vec<String> {
-    let opts = ssh_options(cmd);
-    let mut problems = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for (k, v) in &opts {
-        // A key or value ssh would read differently from this parser (quoted, escaped, or a
-        // template that renders to anything) is refused; the pinned known-hosts template is the
-        // one exception.
-        let pinned = k == "UserKnownHostsFile" && v == KNOWN_HOSTS;
-        if k.is_empty() {
-            problems.push(format!("unparsed -o option {v:?}"));
-        } else if !OPTION_KEY.is_match(k) {
-            problems.push(format!("unreadable -o option key {k:?}"));
-        } else if !pinned
-            && ["\"", "'", "\\", "$", "`", "{{"]
-                .iter()
-                .any(|c| v.contains(c))
-        {
-            problems.push(format!("unreadable -o option value {k}={v:?}"));
-        } else if !seen.insert(k.to_ascii_lowercase()) {
-            problems.push(format!("option {k} appears twice; ssh takes the first"));
-        }
-    }
-    let value = |key: &str| {
-        opts.iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(key))
-            .map(|(_, v)| v.as_str())
-    };
-    for key in ["StrictHostKeyChecking", "IdentitiesOnly"] {
-        if value(key) != Some("yes") {
-            problems.push(format!("{key} must be yes, got {:?}", value(key)));
-        }
-    }
-    if value("UserKnownHostsFile") != Some(KNOWN_HOSTS) {
-        problems.push(format!(
-            "UserKnownHostsFile must be {KNOWN_HOSTS}, got {:?}",
-            value("UserKnownHostsFile")
-        ));
-    }
-    problems
+/// Whether an ssh command is exactly [`EXPECTED_GIT_SSH`], runs of whitespace collapsed to one
+/// space and the ends trimmed (the folded scalar's line breaks are spaces).
+fn pins_git_ssh(cmd: &str) -> bool {
+    cmd.split_whitespace().collect::<Vec<_>>().join(" ") == EXPECTED_GIT_SSH
 }
 
 #[test]
-fn a_repeated_ssh_option_is_refused() {
-    let good = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-                -oUserKnownHostsFile={{ _sc_kh }}";
-    assert_eq!(ssh_options_problems(good), Vec::<String>::new());
-    let shadowed = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
-                    -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
-    assert!(!ssh_options_problems(shadowed).is_empty());
-    let lower = "ssh -i k -o IdentitiesOnly=yes -ostricthostkeychecking=no \
-                 -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
-    assert!(!ssh_options_problems(lower).is_empty());
-    let spaced = "ssh -i k -o IdentitiesOnly=yes -o \"StrictHostKeyChecking no\" \
-                  -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
-    assert!(
-        ssh_options_problems(spaced)
-            .iter()
-            .any(|p| p.starts_with("unparsed -o option"))
-    );
-    for smuggled in [
-        r#"-o"StrictHostKeyChecking=no""#,
-        r#"-o "StrictHostKeyChecking=no""#,
-        r"-o\StrictHostKeyChecking=no",
-        "-o {{ 'StrictHostKeyChecking=no' }}",
-    ] {
-        let cmd = format!(
-            "ssh -i k -o IdentitiesOnly=yes {smuggled} -o StrictHostKeyChecking=yes \
-             -o UserKnownHostsFile={{{{ _sc_kh }}}}"
-        );
-        assert!(!ssh_options_problems(&cmd).is_empty(), "{smuggled}");
-    }
-    let other_hosts = "ssh -i k -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-                       -o UserKnownHostsFile=/dev/null";
-    assert!(!ssh_options_problems(other_hosts).is_empty());
+fn a_changed_ssh_command_is_refused() {
+    assert!(pins_git_ssh(&format!("  {EXPECTED_GIT_SSH}\n")));
+    let shadowed = EXPECTED_GIT_SSH.replacen("ssh ", "ssh -o StrictHostKeyChecking=no ", 1);
+    assert!(!pins_git_ssh(&shadowed));
 }
 
 #[test]

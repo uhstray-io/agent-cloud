@@ -1402,7 +1402,8 @@ pub(crate) fn never_runs(task: &Node) -> bool {
         _ => false,
     };
     let tagged_never = match task.get("tags") {
-        Some(Node::Str(s)) => s.trim() == "never",
+        // Ansible splits a comma-separated tags string into tags.
+        Some(Node::Str(s)) => s.split(',').any(|t| t.trim() == "never"),
         Some(Node::Seq(items)) => items
             .iter()
             .any(|t| t.as_str().map(str::trim) == Some("never")),
@@ -1452,6 +1453,7 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
         "when: [true, \"{{ no }}\"]\n",
         "tags: never\n",
         "tags: [deploy, never]\n",
+        "tags: \"never,deploy\"\n",
     ] {
         assert!(never_runs(&task(&format!("name: t\n{never}"))), "{never}");
     }
@@ -1704,11 +1706,20 @@ fn seed_access_check_ends_the_play_before_any_write() {
     assert!(access < merge, "the access check runs after the merge");
     assert!(end < merge, "the play can write before it ends");
 
-    let seed_tasks = play_tasks(SEED_KEY);
-    let end_block = task_named(
-        &seed_tasks,
-        "End read-only verification before every secret-store write",
-    );
+    // The named end_play with every block around it: Ansible applies a block's `when` and `tags`
+    // to every task in it, so none of them may be one that never runs.
+    let chain = seed
+        .as_seq()
+        .unwrap_or(&[])
+        .iter()
+        .find_map(|play| {
+            task_with_ancestors(
+                play.get("tasks").and_then(Node::as_seq).unwrap_or(&[]),
+                "End read-only verification before every secret-store write",
+            )
+        })
+        .expect("the named end_play is in a play's task tree");
+    let end_block = *chain.last().expect("a chain ends at the named task");
     // The named task is the end_play itself, gated on exactly the flag: a substring passed
     // `<flag> and false`, and a separate end_play elsewhere passed the order check (#1148 review).
     assert_eq!(
@@ -1721,25 +1732,12 @@ fn seed_access_check_ends_the_play_before_any_write() {
         Some("bao_verify_access_only | default(false) | bool"),
         "the end_play is not gated on exactly the access-check flag"
     );
-    // Ansible applies a block's `when` and `tags` to every task in it, so the end_play and every
-    // block around it must be able to run.
-    let seed = load(SEED_KEY);
-    let chain = seed
-        .as_seq()
-        .unwrap_or(&[])
-        .iter()
-        .find_map(|play| {
-            task_with_ancestors(
-                play.get("tasks").and_then(Node::as_seq).unwrap_or(&[]),
-                "End read-only verification before every secret-store write",
-            )
-        })
-        .expect("the named end_play is in a play's task tree");
     assert!(
         !chain.iter().any(|t| never_runs(t)),
         "the end_play, or a block around it, never runs (a constant-false when or the never \
          tag), so the play writes"
     );
+    let seed_tasks = play_tasks(SEED_KEY);
     let value_check = task_named(&seed_tasks, "Validate the secret value is present");
     assert!(
         value_check
