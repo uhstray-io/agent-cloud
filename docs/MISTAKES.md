@@ -2556,11 +2556,12 @@ naming habit is a snapshot of how plays were written on the day, the same failur
 hand-typed list. Fixed in the shared task file, so every caller is covered: the address is
 resolved once, the guard checks that value before the login, and both requests use it. Enforced
 for this file by
-`platform/tests/suite/cloudflare_record_bao_transport.rs::the_transport_guard_runs_before_every_openbao_request`
+`platform/tests/suite/cloudflare_record_bao_transport.rs::the_transport_guard_runs_before_every_openbao_request`,
+`platform/tests/suite/cloudflare_record_bao_transport.rs::every_openbao_request_uses_the_url_the_guard_checked`
 and
-`platform/tests/suite/cloudflare_record_bao_transport.rs::every_openbao_request_uses_the_url_the_guard_checked`,
+`platform/tests/suite/cloudflare_record_bao_transport.rs::the_guard_runs_whenever_an_openbao_request_runs`,
 which select a request by its shape (a `/v1/auth/` URL or an `X-Vault-Token` header). Removing
-the include, and moving it after the login, each turn them red. The count is now 3. Widening the
+the include turns all three red; moving it after the login turns the first red. Widening the
 repository-wide check to select by the request shape in every playbook and task file is Plane
 AC-937; that is this entry's guard proposal.
 

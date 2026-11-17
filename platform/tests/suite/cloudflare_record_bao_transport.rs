@@ -38,7 +38,7 @@ fn sends_to_openbao(task: &Node) -> bool {
     url.contains("/v1/auth/") || token_header
 }
 
-/// A task that includes the transport guard.
+/// A task that includes the transport guard, as `include_tasks: x` or `include_tasks: {file: x}`.
 fn is_guard(task: &Node) -> bool {
     [
         "ansible.builtin.include_tasks",
@@ -47,8 +47,15 @@ fn is_guard(task: &Node) -> bool {
         "import_tasks",
     ]
     .iter()
-    .filter_map(|key| task.get(key).and_then(Node::as_str))
+    .filter_map(|key| task.get(key))
+    .filter_map(|value| value.get("file").unwrap_or(value).as_str())
     .any(|file| file.trim_end().ends_with(GUARD))
+}
+
+/// The variable a URL starts with, when it starts with a whole `{{ name }}` expression.
+fn leading_variable(url: &str) -> Option<&str> {
+    let end = url.find("}}")? + 2;
+    bare_variable(&url[..end])
 }
 
 /// The variable name inside a whole-value `{{ name }}` expression.
@@ -107,15 +114,15 @@ fn every_openbao_request_uses_the_url_the_guard_checked() {
         .and_then(Node::as_str)
         .and_then(bare_variable)
         .unwrap_or_else(|| panic!("the guard's _assert_bao_url is not one `{{{{ variable }}}}`"));
-    let prefix = format!("{{{{ {checked} }}}}/");
     let elsewhere: Vec<&str> = tasks
         .iter()
         .filter(|task| sends_to_openbao(task))
         .filter(|task| {
-            !uri(task)
+            uri(task)
                 .and_then(|args| args.get("url"))
                 .and_then(Node::as_str)
-                .is_some_and(|url| url.starts_with(&prefix))
+                .and_then(leading_variable)
+                .is_none_or(|var| var != checked)
         })
         .map(name)
         .collect();
@@ -123,7 +130,7 @@ fn every_openbao_request_uses_the_url_the_guard_checked() {
     // Assert
     assert!(
         elsewhere.is_empty(),
-        "these OpenBao requests do not use the URL the guard checked ({prefix}...): {elsewhere:?}"
+        "these OpenBao requests do not start with the URL the guard checked ({checked}): {elsewhere:?}"
     );
 }
 
@@ -157,4 +164,23 @@ fn a_bare_variable_is_read_and_an_expression_is_not() {
     assert_eq!(bare_variable("{{_cf_bao_url}}"), Some("_cf_bao_url"));
     assert_eq!(bare_variable("{{ openbao_addr | default('') }}"), None);
     assert_eq!(bare_variable("_cf_bao_url"), None);
+    assert_eq!(
+        leading_variable("{{_cf_bao_url}}/v1/auth/approle/login"),
+        Some("_cf_bao_url")
+    );
+    assert_eq!(
+        leading_variable("{{ openbao_addr | default('') }}/v1/"),
+        None
+    );
+}
+
+#[test]
+fn the_mapping_form_of_an_include_is_a_guard() {
+    let doc = &agent_cloud_tests::yaml::parse(
+        "- include_tasks: {file: assert-bao-transport.yml}\n- include_tasks: other.yml\n",
+        "inline",
+    )[0];
+    let tasks = doc.as_seq().expect("a task list");
+    assert!(is_guard(&tasks[0]));
+    assert!(!is_guard(&tasks[1]));
 }
