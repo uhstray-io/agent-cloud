@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 import forgeries
 import harness_sandbox
+import local_mode_inventories
 import playbook_yaml
 import pytest
 import yaml
@@ -592,12 +593,11 @@ def test_an_unreadable_current_scrape_file_stops_the_run_untouched(estate):
 PRIVATE_UNROUTED = ".".join(["10", "255", "255", "1"])
 
 
-def _spec_hash(bind: str, port: int, local_mode: bool) -> str:
-    # The playbook's _ih_spec, hashed as `_ih_spec | to_json | hash('sha256')`.
+def _spec_hash(bind: str, port: int) -> str:
+    # The playbook's production _ih_spec (no SELinux label option), hashed as `_ih_spec | to_json | hash('sha256')`.
     host = _play_vars("Run the host exporter")
     image = re.search(r"default\('([^']+)'\)", host["_ih_image"]).group(1)
     spec = ["--restart", "always", "--network", "host", "--volume", "/:/host:ro,rslave"]
-    spec += ["--security-opt", "label=disable"] if local_mode else []
     spec += [image, *host["_ih_collector_args"], f"--web.listen-address={bind}:{port}"]
     return hashlib.sha256(json.dumps(spec).encode()).hexdigest()[:16]
 
@@ -675,10 +675,10 @@ def test_check_mode_counts_a_pending_boot_persistence_change(estate, persisted):
         wants.mkdir(parents=True)
         (wants / "podman-restart.service").write_text("")
     (bindir / "podman.state").write_text(
-        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, PRODUCTION_PORTS["alpha"], False)})
+        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, PRODUCTION_PORTS["alpha"])})
     )
     (tmp / "engine-beta.state").write_text(
-        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, PRODUCTION_PORTS["beta"], False)})
+        json.dumps({"agent-cloud-node-exporter": _spec_hash(PRIVATE_UNROUTED, PRODUCTION_PORTS["beta"])})
     )
     inventory = _production_inventory(estate)
     # The scrape file already declares both hosts, so the scrape file changes nothing either.
@@ -739,6 +739,31 @@ def test_a_loopback_bind_is_refused_on_production_whatever_local_mode_says(estat
     assert result["status"] == "fail"
     assert result["error"].startswith("alpha: o11y_host_exporter_bind must declare"), result["error"]
     assert not estate["fragment"].exists()
+
+
+@needs_ansible
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("_ih_rootless", honest=True, forged=False)[:2])
+def test_a_forged_ih_rootless_under_limit_still_reads_back_production_persistence(estate, forge):
+    # The removed mode variable stays removed (AC-726, plan 24). An underscore extra var is refused by the run-start
+    # guard, but a --limit that excludes localhost skips that play, so a forged name reaches the gates. The rootless
+    # gate reads the inventory inline, so a forged _ih_rootless is read by nothing: alpha's linger is still read back.
+    bindir, home = estate["tmp"] / "bin", estate["tmp"] / "home"
+    bindir.mkdir()
+    (bindir / "podman").write_text(FAKE_ENGINE)
+    (bindir / "loginctl").write_text("#!/bin/sh\necho Linger=no\n")
+    (bindir / "getent").write_text(f'#!/bin/sh\necho "$2:x:501:20::{home}:/bin/sh"\n')
+    for tool in bindir.iterdir():
+        tool.chmod(0o755)
+    proc = _run_inventory(
+        _production_inventory(estate),
+        "--check", "--limit", "alpha,receiver",
+        "-e", forge(estate["tmp"]),
+        "-e", json.dumps(PRODUCTION_BUDGETS),
+        path_prefix=bindir,
+    )
+    statuses = local_mode_inventories.task_statuses(proc.stdout)
+    assert statuses.get("Rootless podman: read back the account's linger") == "ok", proc.stdout[-4000:]
+    assert "Refusing to run" not in proc.stdout, proc.stdout[-4000:]
 
 
 @needs_ansible
