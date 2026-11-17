@@ -21,7 +21,7 @@ The service MUST keep its encryption key across redeploys. A deploy MUST NOT reg
 
 ### Requirement: Flows run without privileged containers
 
-The service SHALL execute flow code under the sandbox mode that runs without privileged containers. No container in the service's compose project MUST be granted privileged execution.
+The service SHALL execute flow code under the code-only sandbox. A container in the service's compose project MUST NOT be granted privileged mode.
 
 #### Scenario: A scheduled flow runs on the local stack
 
@@ -35,12 +35,12 @@ The service SHALL execute flow code under the sandbox mode that runs without pri
 
 ### Requirement: Account creation is closed after the owner
 
-The service MUST create its owner account before the application port is reachable from any host other than the reverse proxy. The service SHALL refuse a sign-up for an address that holds no invitation once the owner exists. The service MUST NOT be configured to allow open sign-up.
+Before the owner exists, the application port MUST be reachable only from the service host itself. After the owner exists, the application port MUST be reachable only from the reverse proxy. The service SHALL refuse a sign-up for an address that holds no invitation once the owner exists. The service MUST NOT be configured to allow open sign-up.
 
 #### Scenario: The deploy creates the owner before the port is reachable
 
 - **WHEN** the service is deployed for the first time
-- **THEN** the owner account exists before the reverse proxy host is admitted to the application port, and no other host reached the port before then
+- **THEN** the owner account exists before the reverse proxy is admitted to the application port, and no other host reached the port before then
 
 #### Scenario: An uninvited sign-up is refused
 
@@ -73,7 +73,7 @@ The host firewall SHALL admit the application port from the reverse proxy host a
 
 ### Requirement: Webhook paths are exempted by exact path only
 
-The service's inbound webhook paths SHALL be behind the identity gate unless a flow is approved for one. A webhook exemption MUST name one exact path declared in inventory. An exemption MUST NOT cover a path prefix or a group of paths.
+The service's inbound webhook paths SHALL be behind the identity gate unless a flow is approved for one. A webhook exemption MUST name one exact path declared in inventory, which is the `/api/v1/webhooks/<flowId>` path of one flow. The `/sync`, `/draft/sync`, `/draft` and `/test` variants MUST NOT be exempt. An exemption MUST NOT cover a path prefix or a group of paths.
 
 #### Scenario: An undeclared webhook path stays gated
 
@@ -82,10 +82,15 @@ The service's inbound webhook paths SHALL be behind the identity gate unless a f
 
 ### Requirement: The database can be backed up and restored
 
-The service SHALL provide a database dump that is written into an owner-only directory. A restore MUST load the dump into a staging database and MUST swap that copy in only after it has loaded completely. A restore that fails part-way MUST leave the live database unchanged.
+The service SHALL provide a database dump written into a directory with mode 0700. A restore MUST load the dump into a staging database and MUST swap that copy in only after it has loaded completely. A restore that fails part-way MUST leave the live database unchanged.
 
 #### Scenario: A restore swaps in only a fully loaded copy
 
 - **GIVEN** a valid database dump exists
 - **WHEN** a restore is started and fails before the staging copy has loaded completely
 - **THEN** the live database is unchanged, and no partial copy replaces it
+
+#### Scenario: A dump restores into a running instance
+
+- **WHEN** a dump taken by the backup playbook is restored
+- **THEN** the instance answers its health route, and its flows and connections are present

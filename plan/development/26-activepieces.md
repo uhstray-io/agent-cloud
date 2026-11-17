@@ -8,11 +8,11 @@ Author: Joseph A. Wisneski IV <stray@uhstray.io>
 
 **Date:** 2026-11-16
 
-**Status:** PROPOSED. D1 and D3 to D6 come from Plane work item AC-768, and D2 comes from AC-767. Joseph accepted both on 2026-11-12. D7 to D13 are the owner's design for this plan.
+**Status:** PROPOSED. D1 and D3 to D6 come from Plane work item AC-768, and D2 comes from AC-767. Both were decided on 2026-11-12. D7 to D13 are the design of this plan.
 
 **Plane:** module `deploy-activepieces`. AC-767 and AC-768 record the decisions. AC-769 is this plan. AC-770 to AC-781 are the tasks of the OpenSpec change `deploy-activepieces` in `plan/development/openspec/changes/deploy-activepieces/`.
 
-**Context:** Activepieces is the platform's workflow-automation service. It replaces n8n, which Joseph retired on 2026-11-12. Temporal was considered for the same role and dropped that day as the wrong tool for low-code flows. Plans 27 and 28 build on this service. Neither is in this repository yet.
+**Context:** Activepieces is the platform's workflow-automation service. It replaces n8n, which was retired on 2026-11-12. Temporal was considered for the same role and dropped that day as the wrong tool for low-code flows. Plans 27 and 28 build on this service. Neither is in this repository yet.
 
 ## Problem
 
@@ -25,7 +25,7 @@ Two upstream properties drive the design. Stored connections are encrypted with 
 The platform rules in `AGENTS.md` (Critical Deployment Rules, Engineering Principles) and `PRINCIPLES.md` apply unchanged. Service-specific constraints:
 
 - The encryption key is generated once and never regenerated (D8, F5).
-- The worker is to start only after the app has finished migrating (O1, R11). The available fallback waits on the health route, which does not check migrations (F18), so until O1 finds a migration signal this rule is not met. The gap is carried as a risk, and the fallback start order in `deploy.sh` is a labelled stopgap.
+- The worker starts only after the app has finished migrating, because the app awaits its migrations before it starts serving (F28, R11).
 - The first-account window is closed by the publish bind and the firewall, not by captcha (D10).
 - No container is privileged (D3).
 
@@ -43,12 +43,12 @@ Each rationale cites the fact or repository fact it rests on. The alternatives t
 | D4 | **`AP_FILE_STORAGE_LOCATION=DB`.** S3 is deferred. | Upstream calls S3 a hard requirement for its throughput figures (F13). The setting is an option of F11. Accepted for a single-tenant, low-volume instance, and revisited when an object store exists. AC-768. |
 | D5 | **One app (`AP_CONTAINER_TYPE=APP`) and one worker (`WORKER`), with Postgres and Redis, in one compose project under rootless podman.** The worker sets `AP_FRONTEND_URL=http://app`. | Upstream runs five worker replicas (F14). This instance is single-tenant and low-volume. The worker reaches the app by service name (F15). AC-768. |
 | D6 | **Image `ghcr.io/activepieces/activepieces:0.93.0`, pinned by digest.** Task 1.2 records the digest. | Upstream compose names this tag (F14), and the release date is in F24. AC-768. |
-| D7 | **Greenfield.** Nothing is migrated from n8n. | Joseph, 2026-11-12. |
-| D8 | **Secrets at `secret/services/activepieces`, generated once and reused, never rotated by a deploy:** `encryption_key`, `jwt_secret`, `db_password`, `owner_password`. `worker_token` only if O2 finds it needed. The hex type is added to `manage-secrets` only if O3 needs it. | A new encryption key makes every stored connection unreadable (F4, F5). `manage-secrets` cannot emit hex (R1), and spike O3 decides whether that matters. The worker gets no secret beyond what spike 1.2 proves it needs. |
+| D7 | **Greenfield.** Nothing is migrated from n8n. | Decided 2026-11-12. |
+| D8 | **Secrets at `secret/services/activepieces`, generated once and reused, never rotated by a deploy:** `encryption_key`, `jwt_secret`, `db_password`, `owner_password` and `redis_password`. `worker_token` only if O2 finds it needed. | `encryption_key` is 32 alphanumeric characters, which the startup validator requires (F29, F30), and `manage-secrets` with `type: random` and length 32 produces that (R1). A new encryption key makes every stored connection unreadable (F5). `jwt_secret` is `type: random` with length 64 (F31). `redis_password` is required in production (F35). The worker gets no secret beyond what task 1.2 proves it needs. |
 | D9 | **`AP_TELEMETRY_ENABLED=false` and `AP_QUEUE_UI_ENABLED=false`.** | The upstream default for both is `true` (F7, F9). The queue UI would add a web surface and a credential that the platform does not need. |
-| D10 | **The first-account window is closed in one run, by four means.** (a) While no owner exists, the deploy publishes the app on `127.0.0.1`, a fixed value that inventory cannot override. (b) The deploy creates the owner over loopback from the VM, with the email taken from the platform-admins roster entry named by `activepieces_owner` and the password from `owner_password`. (c) The declared `activepieces_publish_bind` (site-config) is rendered only after the deploy has read back that the owner exists, in the same run or a later one. The firewall admits the Caddy group to the app port, with detected-port admission off. (d) The Caddy route opens only after the owner exists and the gate is live. `AP_ALLOW_OPEN_SIGN_UP` is never set, the template refuses it, and the deploy verify proves that an uninvited sign-up is refused (F19). | The bind is the gate. The firewall is the backstop (R6, R7). The check-then-create shape follows Plane's first-run script, which signs up the admin only while the instance is not set up, so a re-run changes nothing (R17). Captcha does not gate this: `assertSolved` returns unless both Turnstile keys are set (F26). Owner creation is F20, and the sign-up call is F21. AC-776, AC-771. |
-| D11 | **`AP_NETWORK_MODE=STRICT`.** `AP_SSRF_ALLOW_LIST` is declared in inventory and is empty by default. The inference-gateway entry is added by plan 27, not here. | The default is `UNRESTRICTED` (F23). Exemptions are comma-separated IPs and CIDRs (F23). |
-| D12 | **No inbound webhook is exempt by default.** A flow that needs one gets an exact-path exemption declared in inventory: a Caddy forward-auth skip, and a Cloudflare WAF skip only if the path is challenged. Joseph approves each flow. Scheduled flows need no inbound path. | Webhook routes are `/v1/webhooks/:flowId`, served under `/api` as the health route is (F22, F17). The per-flow decision is open item O7. |
+| D10 | **The first-account window is closed in one run, by four means.** (a) While no owner exists, the deploy publishes the app on `127.0.0.1`, a fixed value that inventory cannot override. (b) The deploy creates the owner over loopback from the VM, with the email taken from the platform-admins roster entry named by `activepieces_owner` and the password from `owner_password`. (c) The declared `activepieces_publish_bind` (site-config) is rendered only after the deploy has read back, from inside the Postgres container, that the owner exists. That read never goes over the published port, and a failed read fails the run and leaves the bind as rendered. The firewall admits the Caddy group to the app port, with detected-port admission off. (d) The Caddy route opens only after the owner exists and the gate is live. `AP_ALLOW_OPEN_SIGN_UP` is never set, the template refuses it, and the deploy verify proves that an uninvited sign-up is refused, against the bind currently rendered (F19). Steps (a) to (c) run in one deploy. The firewall (task 2.3, Apply Firewall) and the route (task 2.5, Manage Caddy Sites and Apply Cloudflare Tofu) are separate playbooks. On local-dev, `compose.local.yml` joins the `local-dev` network, so the bind does not gate container peers there. | The bind is the gate. The firewall is the backstop (R6, R7). Captcha does not gate this: `assertSolved` returns unless both Turnstile keys are set (F26). Owner creation is F20, the oldest-platform rule that picks a sign-up's platform is F32, and the sign-up call is F21. AC-776, AC-771. |
+| D11 | **`AP_NETWORK_MODE=STRICT`, best-effort only.** `AP_SSRF_ALLOW_LIST` is declared in inventory and is empty by default. Host egress is enforced as code by `apply-firewall` (see the publish bind and firewall section). The inference-gateway entry is added by plan 27, not here. | The guard runs in-process and is best-effort, so it is not a boundary (F34). The default is `UNRESTRICTED` (F23). Whether the engine reaches `http://app` under `STRICT` is open item O10 (F37). |
+| D12 | **No inbound webhook is exempt by default.** A flow that needs one gets an exact-path exemption declared in inventory: a Caddy forward-auth skip, and a Cloudflare WAF skip only if the path is challenged. The operator approves each flow. Scheduled flows need no inbound path. | Webhook routes are `/v1/webhooks/:flowId`, served under `/api` as the health route is (F22, F17). The exemption covers `/api/v1/webhooks/<flowId>` only. The `/sync`, `/draft/sync`, `/draft` and `/test` variants are never exempt (F33). The per-flow decision is open item O7. |
 | D13 | **Out of scope:** the inference-gateway client certificate and identity (plan 27, `agentgateway-content-generation`, AC-785, AC-825, AC-826). The content flows (plan 28, `social-content-automation`). S3. SAML and paid SSO. Any data migration. | Each item belongs to a later plan or to a decision not yet taken. |
 
 ## Upstream facts
@@ -76,14 +76,25 @@ Each fact is read from the Activepieces source or docs at tag `0.93.0`. The base
 | F17 | The health route `GET /v1/health` is public. It returns 200 with `Healthy`, or 503 with `Unhealthy`. The served path is `/api/v1/health`. | [health.module.ts#L9-L27](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/health/health.module.ts#L9-L27) and [docker-compose.mdx#L115](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/options/docker-compose.mdx#L115) |
 | F18 | `isHealthy()` checks worker status on a worker and database health on the app. It does not check whether migrations have finished. | [health.service.ts#L33-L44](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/health/health.service.ts#L33-L44) |
 | F19 | Sign-up after a platform exists requires an invitation, unless `AP_ALLOW_OPEN_SIGN_UP=true`. | [authentication.service.ts#L46-L51](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/authentication.service.ts#L46-L51) |
-| F20 | The invitation and domain checks run only inside a guard that tests whether the sign-up carries a platform id. The guard starts at line 37, and the invitation check is at lines 46 to 51. The docs state that "the first account you create becomes the platform administrator." Whether a fresh instance sends no platform id was not read (UNVERIFIED, task 1.4). | [authentication.service.ts#L37](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/authentication.service.ts#L37) and [#L46-L51](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/authentication.service.ts#L46-L51); [docker-compose.mdx#L103](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/options/docker-compose.mdx#L103) |
+| F20 | The invitation and domain checks run only inside a guard that tests whether the sign-up carries a platform id. The guard starts at line 37, and the invitation check is at lines 46 to 51. The docs state that "the first account you create becomes the platform administrator." Which platform id a sign-up carries is F32. | [authentication.service.ts#L37](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/authentication.service.ts#L37) and [#L46-L51](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/authentication.service.ts#L46-L51); [docker-compose.mdx#L103](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/options/docker-compose.mdx#L103) |
 | F21 | The sign-up API is `POST /v1/authentication/sign-up`, served under `/api`. The handler calls a Turnstile assertion before it creates the account. | [authentication.module.ts#L6](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/authentication.module.ts#L6) and [authentication.controller.ts#L22-L35](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/authentication.controller.ts#L22-L35) |
-| F22 | Webhook routes use the prefix `/v1/webhooks` and the path `/:flowId`. The variants `/sync`, `/draft` and `/test` were not read (UNVERIFIED). | [webhook-module.ts#L75](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-module.ts#L75) and [webhook-controller.ts#L49](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-controller.ts#L49) |
+| F22 | Webhook routes use the prefix `/v1/webhooks` and the path `/:flowId`. The variants are listed in F33. | [webhook-module.ts#L75](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-module.ts#L75) and [webhook-controller.ts#L49](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-controller.ts#L49) |
 | F23 | `AP_NETWORK_MODE` defaults to `UNRESTRICTED`. `STRICT` installs the SSRF guard, which blocks user code from reaching private, loopback, link-local and cloud-metadata addresses. `AP_SSRF_ALLOW_LIST` is a comma-separated list of IPs and CIDRs that bypass the block. | [network-security.mdx#L21-L31](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/architecture/network-security.mdx#L21-L31) |
 | F24 | The latest release is 0.93.0, published 2026-11-08T14:30:22Z, as the GitHub release API reports it. | [release 0.93.0](https://github.com/activepieces/activepieces/releases/tag/0.93.0) |
 | F25 | The database connection settings are `AP_POSTGRES_HOST`, `AP_POSTGRES_PORT`, `AP_POSTGRES_DATABASE`, `AP_POSTGRES_USERNAME` and `AP_POSTGRES_PASSWORD`. The docs suggest `openssl rand -hex 32` for the password. The upstream compose file passes the last three from `.env` to its Postgres service. The Redis settings are `AP_REDIS_HOST`, `AP_REDIS_PORT` and `AP_REDIS_PASSWORD`. | [environment-variables.mdx#L163-L167](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/reference/environment-variables.mdx#L163-L167) and [#L186-L189](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/reference/environment-variables.mdx#L186-L189); [docker-compose.yml#L1-L50](https://github.com/activepieces/activepieces/blob/0.93.0/docker-compose.yml#L1-L50) |
 | F26 | The Turnstile settings are `AP_TURNSTILE_SITE_KEY` and `AP_TURNSTILE_SECRET_KEY`, both unset by default. `assertSolved` returns without checking anything unless both keys are configured. | [environment-variables.mdx#L289-L290](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/reference/environment-variables.mdx#L289-L290); [turnstile.ts#L20-L22](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/lib/turnstile.ts#L20-L22) and [#L39](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/authentication/lib/turnstile.ts#L39) |
 | F27 | API keys are generated under the platform dashboard. The docs say that dashboard is "only available in the Platform and Enterprise editions". The API takes the key as a Bearer token. The flow update endpoint is `POST /v1/flows/{id}`. | [overview.mdx#L7](https://github.com/activepieces/activepieces/blob/0.93.0/docs/endpoints/overview.mdx#L7); [overview.mdx#L13-L15](https://github.com/activepieces/activepieces/blob/0.93.0/docs/endpoints/overview.mdx#L13-L15); [flows/update.mdx#L3](https://github.com/activepieces/activepieces/blob/0.93.0/docs/endpoints/flows/update.mdx#L3) |
+| F28 | The app runs database migrations under a distributed lock, awaited, before `setupServer()` and `start(app)`. A healthy `/api/v1/health` therefore means the migrations have finished. | [main.ts#L58-L76](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/main.ts#L58-L76) |
+| F29 | The startup validator requires the encryption key to match `^[A-Za-z0-9]{32}$`. | [system-validator.ts#L329-L331](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/helper/system-validator.ts#L329-L331) |
+| F30 | The cipher is `aes-256-cbc`, and the key is `Buffer.from(secret, 'binary')`, so a 32-character secret gives a 32-byte key. | [encryption.ts#L14](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/helper/encryption.ts#L14) and [#L29-L31](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/helper/encryption.ts#L29-L31) |
+| F31 | The JWT secret is checked by `stringValidator`, and it must not be nil. | [system-validator.ts#L159](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/helper/system-validator.ts#L159) and [#L347-L348](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/helper/system-validator.ts#L347-L348) |
+| F32 | On a non-cloud edition, sign-up uses the oldest platform id, and the id is null when no platform exists. This settles the question F20 left open. | [platform.utils.ts#L10-L24](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/platform/platform.utils.ts#L10-L24) |
+| F33 | Webhook routes in the controller are `/:flowId/sync` (line 19), `/:flowId` (line 49), `/:flowId/draft/sync` (line 78), `/:flowId/draft` (line 95) and `/:flowId/test` (line 109). | [#L19](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-controller.ts#L19), [#L49](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-controller.ts#L49), [#L78](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-controller.ts#L78), [#L95](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-controller.ts#L95) and [#L109](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/api/src/app/webhooks/webhook-controller.ts#L109) |
+| F34 | The engine SSRF guard is best-effort, in-process protection. The docs say a multi-tenant deployment must enforce the real egress boundary in infrastructure. | [network-security.mdx#L42-L46](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/architecture/network-security.mdx#L42-L46) |
+| F35 | Settings marked ❗ are required for a self-hosted production deployment. The Redis settings marked this way are `AP_REDIS_HOST`, `AP_REDIS_PORT`, `AP_REDIS_USER` and `AP_REDIS_PASSWORD`. | [environment-variables.mdx#L18](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/reference/environment-variables.mdx#L18) and [#L186-L189](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/reference/environment-variables.mdx#L186-L189) |
+| F36 | Workers lack direct access to Redis and the database, according to the separate-worker page. | [separate-workers.mdx#L10](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/configure-operate/separate-workers.mdx#L10) |
+| F37 | The guard's policy takes its allow list from `AP_SSRF_ALLOW_LIST` and exempts the sandbox RPC port on loopback. | [ssrf-guard.ts#L46-L56](https://github.com/activepieces/activepieces/blob/0.93.0/packages/server/engine/src/lib/network/ssrf-guard.ts#L46-L56) |
+| F38 | Upstream mounts `./cache` at `/usr/src/app/cache` in both `app` and `worker`. | [docker-compose.yml#L15](https://github.com/activepieces/activepieces/blob/0.93.0/docker-compose.yml#L15) and [#L29](https://github.com/activepieces/activepieces/blob/0.93.0/docker-compose.yml#L29) |
 
 Repository facts, read on the base commit `1ae46279` of this branch. Each row is a location this plan relies on, and every component section below cites these rows by number.
 
@@ -95,14 +106,14 @@ Repository facts, read on the base commit `1ae46279` of this branch. Each row is
 | R4 | The app catalog's `tier` field: `member` admits platform-admins and developers, and `admin` admits platform-admins only. The NetBox entry is `tier: member`, so it is not copied for this service. | `platform/services/authentik/deployment/app-catalog.yml` line 40 and lines 63 to 65 |
 | R5 | The rendered policy follows the tier. `admin` binds `policy-platform-admin`, and every other tier binds `policy-platform-member`. | `platform/services/authentik/deployment/templates/zz-sso-bindings.yaml.j2` line 69 |
 | R6 | skynet publishes on `skynet_publish_bind`, which defaults to `127.0.0.1`, and refuses a wildcard bind. | `platform/playbooks/deploy-skynet.yml` line 29 and lines 188 to 191 |
-| R7 | `firewall_detect_ports` defaults to true and admits detected published ports from `firewall_upstream_source`. `firewall_allow_groups` admits a port from each member of an inventory group. | `platform/playbooks/apply-firewall.yml` lines 118 to 122, lines 136 to 139 and lines 464 to 467 |
+| R7 | `firewall_detect_ports` defaults to true and admits detected published ports from `firewall_upstream_source`. `firewall_allow_groups` admits a port from each member of an inventory group. The egress variables are `firewall_allow_egress`, `firewall_deny_egress`, `firewall_egress_mode` (`audit` keeps outgoing traffic allowed by default, `enforce` restricts it) and `firewall_egress_probes`. | `platform/playbooks/apply-firewall.yml` lines 118 to 122, lines 136 to 139, lines 160 to 175, line 190 and lines 464 to 467 |
 | R8 | The platform-admins roster is one list. Its schema is at lines 7 to 14, and the entries start at line 35. Each entry carries `key`, `username`, `name` and `email`. | `platform/playbooks/vars/platform-admins.yml` |
 | R9 | `compose_up_if_changed` is at line 262. It calls a caller's `compose_staged_up` when one is defined, as line 290 shows. The staged-start convention is described at lines 125 to 126. `wait_for_healthy` is at line 344. | `platform/lib/common.sh` |
 | R10 | Plane's `compose_staged_up` removes its proxy, starts the other services, waits for the API, and starts the proxy only once the instance is closed. | `platform/services/plane/deployment/deploy.sh` lines 79 to 100 |
-| R11 | Postiz's worker waits on its dependencies with `condition: service_healthy`. | `platform/services/postiz/deployment/compose.yml` lines 116 to 122 |
+| R11 | Postiz's `postiz` app service waits on its dependencies with `condition: service_healthy`. | `platform/services/postiz/deployment/compose.yml` lines 116 to 122 |
 | R12 | `dev_variant: true` makes setup-templates also emit a `(Dev)` copy of a template bound to the `agent-cloud dev` record. | `platform/semaphore/templates.yml` lines 16 to 19 |
 | R13 | `probe-reachability.yml` takes `probe_from` (a group), `probe_to` (a host) and `probe_ports_json` (a list of port and `expect`, which is `open` or `closed`). | `platform/playbooks/probe-reachability.yml` lines 6 to 7 and lines 33 to 38 |
-| R14 | The honcho docs forward-auth blueprint reads its external host with `!Env`, and the NetBox blueprint hard-codes its host. | `platform/services/authentik/deployment/blueprints/honcho-docs-forward-auth.yaml` line 24 |
+| R14 | The honcho docs forward-auth blueprint reads its external host with `!Env`. The NetBox blueprint uses `!Context` with a local default, so this plan follows honcho. | `platform/services/authentik/deployment/blueprints/honcho-docs-forward-auth.yaml` line 24; `netbox-forward-auth.yaml` lines 25 and 33 |
 | R15 | `deploy-authentik.yml` collects the `prod_required` values only from apps whose type is `oidc`, so a forward_auth app is not in that check. | `platform/playbooks/deploy-authentik.yml` lines 239 to 243 |
 | R16 | The shared pattern files exist: `backup-plane-db.yml`, `restore-plane-db.yml`, `reconcile-plane-members.yml`, `probe-reachability.yml` and `tasks/clean-service.yml`. | `platform/playbooks/` |
 | R17 | Plane's first-run script signs up the instance admin only when `is_setup_done` is false, and signs in instead when the instance is already set up, so a re-run creates nothing. | `platform/services/plane/deployment/configure_instance.py:26-33` |
@@ -126,8 +137,6 @@ flowchart TD
         RD[("redis")]
         APP --> PG
         APP --> RD
-        WRK --> PG
-        WRK --> RD
         WRK -->|"http://app"| APP
     end
 
@@ -139,17 +148,19 @@ The first run follows one fixed order, so that no route or remote host reaches t
 
 ```mermaid
 sequenceDiagram
-    participant S as Semaphore deploy
-    participant F as Host firewall
+    participant S as Deploy Activepieces
+    participant D as Postgres (inside container)
     participant A as App
-    participant C as Caddy
+    participant F as Apply Firewall
+    participant C as Route playbooks
     S->>F: default-deny inbound (task 2.2)
-    S->>A: compose up, publish on the loopback bind
+    S->>A: compose up, publish on 127.0.0.1
     S->>A: create the owner over loopback, email from the roster
-    S->>A: sign-up for an uninvited address (must be refused)
+    S->>D: read back that the owner exists (never over the published port)
     S->>A: render the declared bind, compose up again
-    S->>F: admit the Caddy group to the app port, detected ports off
-    S->>C: open the route after the gate is live (tasks 2.4 and 2.5)
+    S->>A: uninvited sign-up against the bind as rendered (must be refused)
+    S->>F: admit the Caddy group to the app port (task 2.3)
+    S->>C: open the route once the gate is live (tasks 2.4 and 2.5)
 ```
 
 ## Component design
@@ -158,24 +169,25 @@ sequenceDiagram
 
 | File | Role |
 |------|------|
-| `compose.yml` | Four services: `app`, `worker`, `postgres` and `redis`. Each has `restart: always`, the rule for repo compose services (AGENTS.md, Starting at boot). Only `app` publishes a port, on the bind the deploy renders. The worker reaches the app at `http://app` (F15). The image digest is pinned (D6). |
-| `compose.local.yml` | The local-dev overlay, which attaches the services to the `local-dev` network. Its contents are set in task 1.2. |
-| `deploy.sh` | Container lifecycle only. It calls `compose_up_if_changed` and `wait_for_healthy` from `platform/lib/common.sh` (R9). It defines `compose_staged_up`, the staged-start hook, in the way Plane does (R10). It holds no secret handling. |
+| `compose.yml` | Four services: `app`, `worker`, `postgres` and `redis`. Each has `restart: always`, the rule for repo compose services (AGENTS.md, Starting at boot). Only `app` publishes a port, on the bind the deploy renders. `app` has a healthcheck on `/api/v1/health` (F17, F28), and `worker` has `depends_on: app` with `condition: service_healthy`. The worker reaches the app at `http://app` (F15). One named `cache` volume is mounted at `/usr/src/app/cache` in `app` and `worker`, the path upstream uses (F38). The image digest is pinned (D6). |
+| `compose.local.yml` | The local-dev overlay. It attaches the services to the `local-dev` network, so the publish bind does not gate container peers there (D10). Its contents are set in task 1.2. |
+| `deploy.sh` | Container lifecycle only. It calls `compose_up_if_changed` and `wait_for_healthy` from `platform/lib/common.sh` (R9). The worker's order comes from the app healthcheck, so no staged start is needed. Plane's staged start (R10) is not used. It holds no secret handling. |
 | `templates/env.j2` | The env file, rendered from OpenBao values and inventory. It sets the variables in the table below. |
 | `CLAUDE.md`, `README.md`, `AGENTS.md` | Operator and agent notes. `AGENTS.md` is a symlink to `CLAUDE.md`, as in the other service directories. |
 | `.gitignore` | Keeps rendered env files out of git. |
 
-Pipeline. Each playbook has one `templates.yml` entry with `dev_variant: true` (R12), and no hand-written `(Dev)` copy. Clean Deploy imports `tasks/clean-service.yml` (AGENTS.md, Adding a New Service, step 6; R16).
+Pipeline. Each playbook has one `templates.yml` entry with `dev_variant: true` (R12), and no hand-written `(Dev)` copy. Clean Deploy imports `tasks/clean-service.yml` (AGENTS.md, Adding a New Service, step 6; R16). Local runs use `(Local)` entries in `platform/semaphore/templates-local.yml` for deploy, clean deploy, backup and restore. Without them, `scripts/local-dev.sh` (line 154) dispatches a repo-bound template, and the run executes that branch rather than the working tree (X4).
 
 ### Secrets: `secret/services/activepieces`
 
 | Key | Type | Behaviour |
 |---|---|---|
-| `encryption_key` | 32 alphanumeric characters from `manage-secrets`, or 32 hexadecimal characters if spike O3 shows Activepieces refuses alphanumeric | Generated once and reused. Never regenerated (D8, F4, F5). |
-| `jwt_secret` | Generated once | Reused. Its length is open item O3, because the upstream docs disagree (F4). |
-| `db_password` | Generated once | Reused. Its type follows O3. The upstream docs suggest `openssl rand -hex 32` for this variable (F25). |
+| `encryption_key` | 32 alphanumeric characters, `type: random`, length 32, which the startup validator requires (F29, F30). Generated once and reused. Never regenerated (D8, F5). |
+| `jwt_secret` | `type: random`, length 64 (F31). Generated once and reused. |
+| `db_password` | `type: random`, length 32. Generated once and reused. The upstream docs suggest `openssl rand -hex 32` for this variable (F25), and no upstream validator for it was read (UNVERIFIED). |
 | `owner_password` | Generated once | Used once to create the owner (D10b), then kept for the owner's local sign-in. Handed to the owner through `Back Up Credentials to site-config` with `credential_fields=owner_password` (task 1.4), never printed. |
 | `worker_token` | Generated once, only if O2 finds it needed | Minted by a playbook task, not by a manual `npx` step (F16). |
+| `redis_password` | `type: random`, length 32. Generated once and reused. Redis starts with it, and it is required in production (F35). Whether `AP_REDIS_USER` is also needed with password-only auth is checked in task 1.2. |
 
 ### Environment settings
 
@@ -190,6 +202,7 @@ Variables the template sets. Any variable not listed keeps its upstream default.
 | `AP_POSTGRES_HOST`, `AP_POSTGRES_PORT`, `AP_POSTGRES_DATABASE`, `AP_POSTGRES_USERNAME`, `AP_POSTGRES_PASSWORD` | the `postgres` service name, the port, and the values from `db_password` | F25. The database name, user name and port are set in task 1.2. |
 | `AP_REDIS_TYPE` | `STANDALONE` | F8, set explicitly |
 | `AP_REDIS_HOST`, `AP_REDIS_PORT` | the `redis` service name and its port | F25. The port is set in task 1.2. |
+| `AP_REDIS_PASSWORD` | from `redis_password` | F35. `AP_REDIS_USER` is decided in task 1.2. |
 | `AP_CONTAINER_TYPE` | `APP` on `app`, `WORKER` on `worker` | D5, F10 |
 | `AP_FRONTEND_URL` | the public URL on `app`, `http://app` on `worker` | D5, F6, F15 |
 | `AP_EXECUTION_MODE` | `SANDBOX_CODE_ONLY` | D3 |
@@ -203,7 +216,7 @@ Variables the template sets. Any variable not listed keeps its upstream default.
 
 ### Admin gate
 
-The blueprint `activepieces-forward-auth.yaml` is a proxy provider in `forward_single` mode. It reads its external host with `!Env` (R14). The app-catalog entry is `file: activepieces-forward-auth.yaml`, `type: forward_auth`, `tier: admin`. The `admin` tier admits platform-admins only (R4), and `zz-sso-bindings.yaml.j2` renders the policy from that tier (R5). The NetBox entry's `tier: member` is not copied (R4).
+The blueprint `activepieces-forward-auth.yaml` is a proxy provider in `forward_single` mode. It follows the honcho blueprint and reads its external host with `!Env` (R14). The app-catalog entry is `file: activepieces-forward-auth.yaml`, `type: forward_auth`, `tier: admin`. The `admin` tier admits platform-admins only (R4), and `zz-sso-bindings.yaml.j2` renders the policy from that tier (R5). The NetBox entry's `tier: member` is not copied (R4). The rendered environment gets `ACTIVEPIECES_EXTERNAL_HOST`, beside `HONCHO_EXTERNAL_HOST` in `platform/services/authentik/deployment/templates/env.j2` at line 45 (X8).
 
 Open item O9: `deploy-authentik.yml` collects `prod_required` only from `oidc` apps (R15). A forward_auth app is therefore not part of that production check. Widening the filter is owned by task 2.4.
 
@@ -211,7 +224,7 @@ Open item O9: `deploy-authentik.yml` collects `prod_required` only from `oidc` a
 
 The owner is a key in the platform-admins roster (R8). Inventory variable `activepieces_owner` names that key. The deploy takes the owner's email from the roster entry and the password from `owner_password`. The repository copy of the roster holds placeholder defaults, and the real values belong in site-config.
 
-Removing someone from the roster blocks them at the gate (D2). Their local Activepieces account remains until it is reconciled (O6).
+A re-run creates nothing: the read-back finds the owner and no second sign-up is made, as Plane's first-run script signs in instead when the instance is already set up (R17). Removing someone from the roster blocks them at the gate (D2). Their local Activepieces account remains until it is reconciled (O6).
 
 ### Edge
 
@@ -219,13 +232,15 @@ The production route is a Caddy block in site-config `caddy_managed_sites`, with
 
 ### Publish bind and firewall
 
-The publish bind is the gate. While no owner exists, the deploy publishes the app on `127.0.0.1`, a fixed value. Once the deploy reads back that the owner exists, it renders the declared `activepieces_publish_bind` from site-config. The precedent for a declared publish bind is skynet's `skynet_publish_bind` (R6).
+The publish bind is the gate. While no owner exists, the deploy publishes the app on `127.0.0.1`, a fixed value. The read-back that the owner exists runs inside the Postgres container and never goes over the published port. A failed read fails the run and leaves the bind as rendered. Once the read succeeds, the deploy renders the declared `activepieces_publish_bind` from site-config. The precedent for a declared publish bind is skynet's `skynet_publish_bind` (R6).
 
-The firewall is the backstop. Detected-port admission is off, through `firewall_detect_ports: false`. With it on, the firewall would admit the published port from `firewall_upstream_source` before the owner exists (R7). The app port is admitted from the Caddy group through `firewall_allow_groups` (R7). SSH is admitted from the controller only (task 2.2).
+The firewall is the backstop. Its host variables are declared in site-config inventory (task 2.1), not passed as launch variables, so a later plain `Apply Firewall` run keeps them (X9). They are `firewall_detect_ports: false`, which stops detection from admitting the published port from `firewall_upstream_source` before the owner exists (R7), and `firewall_allow_groups`, which admits the app port from the Caddy group (R7). SSH is admitted from the controller only (task 2.2). Task 2.3 runs `Probe Reachability (Dev)` twice, once expecting the app port open from the Caddy group and once expecting it closed from another LAN group (R13).
+
+Egress is enforced as code, because the in-process guard is best-effort (F34). `firewall_allow_egress` and `firewall_deny_egress` are declared through `apply-firewall` (R7). The egress mode is `audit` in task 2.3, which keeps outgoing traffic allowed by default. It becomes `enforce`, with `firewall_egress_probes`, in task 2.6, before the 2.8 gate.
 
 ### Backup and restore
 
-The dump and staged-swap steps of `backup-plane-db.yml` and `restore-plane-db.yml` are extracted into shared tasks. The shared tasks are parameterised by group, container, database, user, data services and a post-restore hook (R16). The Activepieces playbooks are built on them. Converting the Plane playbooks is a follow-up, not part of this change, because it touches the live Plane restore path. It is tracked as AC-917, blocked by AC-780. The backup needs task 2.3, which provides a running database, and does not need the edge. The encryption key is backed up with `Back Up Credentials to site-config`, because a dump without it cannot decrypt stored connections (F5).
+The dump and staged-swap steps of `backup-plane-db.yml` and `restore-plane-db.yml` are extracted into shared tasks, parameterised by group, container, database, user, data services and a post-restore hook (R16). The Activepieces playbooks are built on them. Converting the Plane playbooks is a follow-up, not part of this change, because it touches the live Plane restore path. It is tracked as AC-917, blocked by AC-780. The backup needs task 2.3, which provides a running database, and does not need the edge. The local-dev proof of "A restore swaps in only a fully loaded copy" is task 2.7's, and production runs one real dump-and-restore in task 2.8. The encryption key is backed up with `Back Up Credentials to site-config`, because a dump without it cannot decrypt stored connections (F5).
 
 ## Implementation phases
 
@@ -233,7 +248,7 @@ The change `deploy-activepieces` has two phases. Each phase ends with a validati
 
 ### Phase 1: plan, service and local-dev (tasks 1.1 to 1.5)
 
-The O8 spike runs once, before task 1.2 starts, or cites the result AC-796 has already recorded. Task 1.2 closes O1 and O2. Task 1.3 settles the secret format (O3) before the first key is generated.
+The O8 spike runs once, before task 1.2 starts, or cites the result AC-796 has already recorded. Task 1.2 settles O2, O4 and O10. O1 and O3 are closed (F28 to F31), so the first key is generated as `type: random` with length 32.
 
 **Acceptance:** the gate in task 1.5 holds.
 
@@ -258,13 +273,15 @@ Production follows the order in the sequence diagram. The owner exists before th
 | A direct connection from another LAN host is refused | The application port is reachable from the Caddy host only | A connection from another LAN host to the app port fails, and one from the Caddy group succeeds. |
 | An undeclared webhook path stays gated | Webhook paths are exempted by exact path only | A webhook path that no inventory entry declares stays behind the gate. |
 | A restore swaps in only a fully loaded copy | The database can be backed up and restored | A restore that fails part-way leaves the live database unchanged, and only a fully loaded copy is swapped in. |
+| A dump restores into a running instance | The database can be backed up and restored | A dump taken by the backup playbook restores into a running instance that answers its health route, with its flows and connections present. |
 
 ## Security considerations
 
 - **Access.** Only members of `platform-admins` reach the application (D2). Sign-up closes once the owner exists (D10). Each administrator also holds a local login (D2).
 - **Credentials.** Secrets are generated once and never rotated by a deploy (D8). The encryption key is backed up (F5). Credential tasks run under `no_log`, as `manage-secrets` does. Captcha is not a control here; see D10.
-- **Network exposure.** The app publishes on the loopback bind until the owner exists, and the firewall is the backstop (D10). No webhook is exempt unless a flow is approved for one (D12). Outbound connections from user code are restricted by `STRICT` (D11).
+- **Network exposure.** The app publishes on `127.0.0.1` until the owner exists, and the firewall is the backstop (D10). No webhook is exempt unless a flow is approved for one (D12). Egress is enforced by the host firewall (D11, F34).
 - **Blast radius.** No container is privileged (D3). User code runs inside the worker container, so the worker is the boundary that matters.
+- **Accepted residual risk.** The worker shares the compose network with Postgres and Redis, which no host firewall separates. The mitigations are that only platform-admins author flows (D2) and that Redis requires a password (`redis_password`, D8, F35). Under `STRICT`, whether the engine reaches `http://app` is O10 (F37). If it does, the allow list names the app container's address only, never the compose subnet, which would expose Postgres and Redis.
 
 ## Release budget
 
@@ -295,12 +312,13 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `plan/development/openspec/changes/deploy-activepieces/tasks.md` | new (this pull request) |
 | `plan/development/openspec/changes/deploy-activepieces/specs/platform/activepieces-automation/spec.md` | new (this pull request) |
 | `platform/semaphore/templates.yml` | changed |
+| `platform/semaphore/templates-local.yml` | changed |
 | `platform/services/opa/deployment/policies/agentcloud/data.json` | changed (`service_deploy_templates` entry) |
 | `platform/playbooks/validate-all.yml` | changed |
 | `platform/inventory/local-dev.yml.example` | changed |
 | `platform/playbooks/bootstrap-local-dev.yml` | changed |
 | `platform/services/authentik/deployment/app-catalog.yml` | changed |
-| `platform/playbooks/tasks/manage-secrets.yml` | changed, only if O3 needs the hex type |
+| `platform/services/authentik/deployment/templates/env.j2` | changed |
 | `platform/infra/cloudflare/dns.tf` | changed |
 | `AGENTS.md` | changed |
 | `README.md` | changed |
@@ -308,7 +326,7 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `plan/architecture/network-architecture.md` | changed |
 | `platform/playbooks/README.md` | changed |
 
-The list has about 23 new files and about 13 changed files, so about 36 in total. Without the hex type, `manage-secrets.yml` is not changed, and the total is about 35. Site-config changes do not count against this repository's budget.
+The list has about 23 new files and about 14 changed files, so about 37 in total. The hex type is no longer needed, so `manage-secrets.yml` is not changed. Site-config changes do not count against this repository's budget.
 
 ## Risk: no API key on Community edition
 
@@ -316,7 +334,7 @@ D1 chooses the Community edition. The 0.93.0 docs say API keys come from a dashb
 
 If a Community instance has no supported way to create an API key, the planned uses in plan 28 (`social-content-automation`, items AC-796 to AC-798), flows managed as code and connections set by playbook, have no authenticated path. The docs do not name Community as an edition with keys, so the implication that Community has none is UNVERIFIED at runtime.
 
-This plan designs no workaround. A workaround would change the edition decision, and that decision belongs to Joseph (AC-768). Spike O8 proves or refutes one authenticated API call on Community at 0.93.0. It runs once, before task 1.2 starts. If AC-796 has already recorded a result, that result is cited instead of re-running the spike. A refuted result returns the edition decision to Joseph, and no alternative is built without his decision.
+This plan designs no workaround. A workaround would change the edition decision, and that decision belongs to the operator (decided 2026-11-12, AC-767 and AC-768). Spike O8, in task 1.5, proves or refutes one authenticated API call on Community at 0.93.0. It runs once, before task 1.2 starts. If AC-796 has already recorded a result, that result is cited instead of re-running the spike. A refuted result returns the edition decision to the operator, and no alternative is built without that decision.
 
 ## Open items
 
@@ -324,15 +342,16 @@ Each open item is owned by one task. None is stated as fact in this plan.
 
 | # | Question | Owner | Status |
 |---|---|---|---|
-| O1 | Readiness. Is there an app healthcheck that proves migrations have run, so the worker can wait on `service_healthy` (R11)? F18 shows the health route does not check migrations. | Task 1.2 | Open. Preferred: such a healthcheck. Fallback: `deploy.sh` starts the app, waits for its health, then starts the worker. The fallback is labelled a stopgap in `deploy.sh`, and its follow-up is filed as a Plane sub-item of AC-770 when the stopgap is used. |
-| O2 | Does a co-located compose worker need `AP_WORKER_TOKEN`? F16 describes a separate worker, and the upstream compose worker sets none (F14). | Tasks 1.2 and 1.3 | Open. If yes, a playbook task mints it and stores it as `worker_token`. |
-| O3 | Secret format. Spike first: does Activepieces accept a 32-character alphanumeric `encryption_key`, which is what `manage-secrets` generates (R1)? Only if it refuses one, add `type: hex` with a length to `manage-secrets`. The JWT length conflict (F4) and uppercase hex are also open. | Task 1.3 | Open. The format is checked before the first generate, because a generated key is never regenerated. |
+| O1 | Readiness: is there an app healthcheck that proves migrations have run? | Task 1.2 | Closed. App migrations run under a distributed lock, awaited, before the server starts (F28), so `/api/v1/health` answering means migrations have finished. Design: an app healthcheck on `/api/v1/health`; the worker has `depends_on: app` with `condition: service_healthy`; `deploy.sh` uses `wait_for_healthy`. |
+| O2 | Does a co-located compose worker need `AP_WORKER_TOKEN`, and which database and Redis credentials does it hold? F16 describes a separate worker, and workers lack direct access to Redis and the database (F36). The upstream compose worker sets no token (F14). | Tasks 1.2 and 1.3 | Open. Task 1.2 decides the credentials. If a token is needed, a playbook task mints it and stores it as `worker_token`. |
+| O3 | Secret format: what does Activepieces accept for `encryption_key` and `jwt_secret`? | Task 1.3 | Closed (F29 to F31). `encryption_key` is `type: random` with length 32, and `jwt_secret` is `type: random` with length 64. No hex type is added. |
 | O4 | Does the image need pgvector, as upstream's `pgvector/pgvector:0.8.0-pg14` suggests (F14), or does plain Postgres suffice? | Task 1.2 | Open. The chosen image is pinned by digest. |
 | O5 | With no Turnstile key configured, does the deploy create the owner without a captcha token? The code returns from `assertSolved` when either key is unset (F26), but live behaviour is not yet observed. | Task 1.4 | Open. The code reading suggests yes. The deploy must prove it. |
-| O6 | Local accounts for administrators without SMTP. Invitation links take the form `/sign-up?email=…`, and the classic password path applies when SMTP is absent (`breaking-changes.mdx#L465`). Other administrators' local accounts follow the roster through a reconcile step modelled on `reconcile-plane-members.yml`, but only if O8 proves an API. | Task 1.4 decides the stopgap | Open. Until a reconcile exists, invitations by hand are the stopgap. |
-| O7 | Which flows, if any, need an exact-path webhook exemption? | Task 2.5 | Open. Each exemption needs Joseph's approval (D12). |
-| O8 | Does a Community instance at 0.93.0 allow one authenticated API call? F27 says the dashboard that creates keys is available only in the Platform and Enterprise editions. | Spike once, before task 1.2; referenced by task 1.5 | Open. See the risk section. A refuted result goes to Joseph. |
+| O6 | Local accounts for administrators without SMTP. Invitation links take the form `/sign-up?email=…`, and the classic password path applies when SMTP is absent ([breaking-changes.mdx#L463-L465](https://github.com/activepieces/activepieces/blob/0.93.0/docs/install/reference/breaking-changes.mdx#L463-L465)). Other administrators' local accounts follow the roster through a reconcile step modelled on `reconcile-plane-members.yml`, but only if O8 proves an API. | Task 1.4 decides the interim measure | Open. Until a reconcile exists, invitations by hand are the interim measure. |
+| O7 | Which flows, if any, need an exact-path webhook exemption? | Task 2.5 | Open. Each exemption needs the operator's approval (D12). |
+| O8 | Does a Community instance at 0.93.0 allow one authenticated API call? F27 says the dashboard that creates keys is available only in the Platform and Enterprise editions. | Spike once, before task 1.2; referenced by task 1.5 | Open. See the risk section. A refuted result goes to the operator. |
 | O9 | The production check at `deploy-authentik.yml:243` takes `prod_required` only from `oidc` apps (R15), so a forward_auth app is not guarded. | Task 2.4 | Open. Widening that filter is a change to the shared Authentik deploy, decided within task 2.4. |
+| O10 | Under `AP_NETWORK_MODE=STRICT`, does the engine call the app at `http://app`? The SSRF guard exempts the sandbox RPC port on loopback and the `AP_SSRF_ALLOW_LIST` entries (F37). | Task 1.2 | Open. If it does, allow-list the app container's address only, never the compose subnet, which would expose Postgres and Redis. |
 
 ## Instance values (in site-config)
 
@@ -344,6 +363,7 @@ This repository holds templates and placeholders. The values below live in the p
 | `activepieces_svc` | The inventory group for the VM. | site-config inventory |
 | `activepieces_owner` | The roster key of the owner account (D10b). | site-config inventory |
 | `activepieces_publish_bind` | The declared LAN bind, rendered only after the owner exists (D10c). Before that the deploy uses `127.0.0.1`, which is not configurable. | site-config inventory |
+| Firewall host variables: `firewall_detect_ports`, `firewall_allow_groups` and the egress variables | Host variables in site-config inventory, declared in task 2.1 and not passed at launch (X9). | site-config inventory |
 | VM address and VM id | The VM's declared address and id, with the NetBox reservation for the address. | site-config `vm-specs` and inventory |
 | Caddy group | The inventory group admitted to the app port (D10c). | site-config inventory |
 | `AP_SSRF_ALLOW_LIST` entries | Reviewed exemptions from the SSRF guard (D11). | site-config inventory |
@@ -366,3 +386,4 @@ This repository holds templates and placeholders. The values below live in the p
 
 - **2026-11-16:** initial draft. Status PROPOSED. Facts F1 to F27 checked against tag 0.93.0.
 - **2026-11-16, revision 1 (after /simplify):** the admin gate is the app-catalog `tier: admin`. The owner is taken from the platform-admins roster. The loopback publish bind is the gate, with the firewall as backstop. `common.sh` and `dev_variant` are reused. Secrets and backup steps are reduced to the shared mechanisms. Duplication between the plan, design, proposal and tasks is removed.
+- **2026-11-16, revision 2 (review of PR #1171):** the migration order (F28), the encryption and JWT key formats (F29 to F31), the oldest-platform sign-up rule (F32), the webhook variants (F33), best-effort egress and its enforcement (F34, D11), the Redis password (F35), the local-dev templates are in the component design, and the rollback is in the change's proposal. O1 and O3 are closed, and O10 is added. Owner read-back moves inside the Postgres container.
