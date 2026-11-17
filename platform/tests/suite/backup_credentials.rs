@@ -55,6 +55,11 @@ static NONDETERMINISTIC: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("a valid regex")
 });
+/// A read of `_secret` with its attribute, index and call chain (see [`undeclared_secret_reads`]).
+static SECRET_READ: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b_secret\b(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*\]|\([^)]*\))*")
+        .expect("a valid regex")
+});
 /// A task's module under any of the three spellings Ansible accepts for a module key: the short
 /// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
 /// that reads one spelling alone is blind to a task written under another, so every module read
@@ -258,20 +263,29 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
     let files = repo::ls_files(&[":(glob)platform/playbooks/**/*.yml"]);
     assert!(!files.is_empty(), "no playbook YAML files found");
 
-    let mut offenders = std::collections::BTreeSet::new();
+    let mut offenders = Vec::new();
     for file in &files {
         let text = fs::read_to_string(repo::path(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
         offenders.extend(vars_offenders(file, &text));
     }
 
-    // A ratchet, keyed `<file>#<n>:<vars key>`: the vars entries built from now(...) before the check read now() with
+    // A ratchet, keyed `<file>:<vars key>`, one entry per offender: the vars entries built from now(...) before the check read now() with
     // arguments (#1149 review, docs/MISTAKES.md 10.8). AC-910 moved every one to set_fact, so
     // the list is empty and stays empty: a new offender fails, and so does an entry that is
     // fixed but still listed.
     const KNOWN: &[&str] = &[];
-    let known: std::collections::BTreeSet<String> = KNOWN.iter().map(|k| (*k).to_owned()).collect();
-    let new: Vec<&String> = offenders.difference(&known).collect();
-    let fixed: Vec<&String> = known.difference(&offenders).collect();
+    // Compared as multisets: each listed entry covers one offender with that key, so a second
+    // same-named offender in one file is new.
+    let mut new = offenders;
+    let mut fixed = Vec::new();
+    for known in KNOWN {
+        match new.iter().position(|o| o == known) {
+            Some(i) => {
+                new.remove(i);
+            }
+            None => fixed.push(*known),
+        }
+    }
     assert!(
         new.is_empty(),
         "non-deterministic lookup inside a vars entry; move it to set_fact, because a vars \
@@ -287,21 +301,20 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
     );
 }
 
-/// The vars entries in one file built from a non-deterministic lookup, each named
-/// `<file>#<n>:<key>`, where n is the 0-based index of the containing mapping among every mapping
-/// of every document in the file. The index keeps two same-named entries in one file apart, so each
-/// counts.
-fn vars_offenders(file: &str, text: &str) -> std::collections::BTreeSet<String> {
-    let mut offenders = std::collections::BTreeSet::new();
+/// The vars entries in one file built from a non-deterministic lookup, each named `<file>:<key>`,
+/// one entry per offender: two same-named entries in one file are two entries, so each counts.
+/// No position goes into the name, so an edit elsewhere in the file renames nothing.
+fn vars_offenders(file: &str, text: &str) -> Vec<String> {
+    let mut offenders = Vec::new();
     let docs = yaml::parse(text, file);
-    for (n, map) in docs.iter().flat_map(maps).enumerate() {
+    for map in docs.iter().flat_map(maps) {
         let Some(vars) = map.get("vars").and_then(Node::as_map) else {
             continue;
         };
         for (key, value) in vars {
             if any_string(value, &|s: &str| NONDETERMINISTIC.is_match(s)) {
                 let key = key.as_str().unwrap_or("(non-string key)");
-                offenders.insert(format!("{file}#{n}:{key}"));
+                offenders.push(format!("{file}:{key}"));
             }
         }
     }
@@ -447,13 +460,11 @@ fn strings_of<'a>(node: &'a Node, out: &mut Vec<&'a str>) {
 /// judged by its base, `_secret.json.data.data`, which is not allowed. The word boundaries keep
 /// `_bao_secret_id` and `_secret_id` out of it.
 fn undeclared_secret_reads(task: &Node) -> Vec<String> {
-    let secret = Regex::new(r"\b_secret\b(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]]*\]|\([^)]*\))*")
-        .expect("a valid regex");
     let mut strings = Vec::new();
     strings_of(task, &mut strings);
     strings
         .into_iter()
-        .flat_map(|text| secret.find_iter(text).map(|found| found.as_str()))
+        .flat_map(|text| SECRET_READ.find_iter(text).map(|found| found.as_str()))
         .filter(|expr| !DEBUG_SECRET_READS.contains(expr))
         .map(str::to_owned)
         .collect()
