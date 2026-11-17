@@ -55,7 +55,7 @@ should not sit behind.
 
 - Files in this repository: the six OpenSpec change files, plan 27
   (`plan/development/27-agentgateway-content-generation.md`), and one line in `AGENTS.md`. Later
-  tasks add files on the text and image paths; plan 27, "Release-Budget Cost", has the counts.
+  tasks add files on the text and image paths; plan 27, "Release-Budget Cost (estimate)", has the counts.
 - No new container. No new listener. No change to the public edge. The text path uses the gateway's
   internal listener, which already requires client certificates when `agw_listener_tls` is on
   (AGENTS.md, `Deploy agentgateway` row).

@@ -149,7 +149,7 @@ Not blocked by the image model. It depends on `deploy-activepieces` delivering t
   4. `Apply Firewall (Dev)` on the gateway host;
   5. `Issue Internal Leaf (Dev)` on the Activepieces host;
   6. the Activepieces deploy places the CA bundle at `<leaf dir>/../step-ca-bundle.crt` and maps the gateway's server name on its host, as the o11y deploy does for its probe (README `:826-834`). The renewal proof reads that bundle (`renew-internal-certs.yml:826-827`) and does not resolve the name itself when `agw_verify_base_url` is set (`:847-850`). Both belong to `deploy-activepieces`;
-  7. `Renew Internal Certs (Dev)`. A per-call holder is proven by the probe; a long-running holder is not, today (Verified facts, the `probe-client` row). Task 2.2 closes that gap.
+  7. `Renew Internal Certs (Dev)` with `--tags verify`, which must classify the leaf as a probe client and proves it in use as it stands; a plain run proves a leaf only when it renews it (`renew-internal-certs.yml:706`). For a long-running holder that proof passes without exercising the holder (Verified facts, the `probe-client` row). Task 2.2 closes that gap.
 - The gateway deploy checks that its own server and verifier leaves are issued (`deploy-agentgateway.yml:330-347`), not an allowlisted client leaf on another host: the order above is a convention, not enforced.
 - If task 3.1 later moves the pin, gate 2.4 runs again on the new pin.
 
@@ -168,7 +168,7 @@ Phase 2 acceptance: gate 3.6 passes.
 
 | Check | Pass condition |
 |---|---|
-| Leaf admitted | `Renew Internal Certs (Dev)` proves the leaf in use, as its consumer holds it: for a per-call leaf, a keyless 401 through the probe path and a refusal without a certificate; for a holder that reads its files once, a reload, a matching serial and a request along the process's path (a holder that re-reads per connection is the per-call case, plan 27 D8) (scenarios "Allowlisted leaf proven at renewal" and "Once-reading holder proven at renewal"). |
+| Leaf admitted | `Renew Internal Certs (Dev)` proves the leaf in use when it renews it, or as it stands under `--tags verify`, as its consumer holds it: for a per-call leaf, a keyless 401 through the probe path and a refusal without a certificate; for a holder that reads its files once, a reload, a matching serial and a request along the process's path (a holder that re-reads per connection is the per-call case, plan 27 D8) (scenarios "Allowlisted leaf proven at renewal" and "Once-reading holder proven at renewal"). |
 | Off-allowlist leaf refused | A leaf the SAN rule does not admit is refused (inference-gateway-agentgateway scenario "Another client leaf is refused at the gateway"), with HTTP 403 before the key check (this change's scenario "Off-allowlist certificate"). `Probe agentgateway Client TLS (Dev)` is the drill, because it uses a leaf on no allowlist; the pass condition is its printed reading that both leaf probes were 403, not the run passing, which also accepts 401 (AGENTS.md, that probe's row). |
 | No certificate refused | The no-certificate probe stops in the TLS handshake (inference-gateway-agentgateway scenario "A request without a client certificate is refused"). |
 | Keyless request refused | An admitted leaf with no API key gets HTTP 401 (scenario "Keyless request with an admitted certificate"). |
