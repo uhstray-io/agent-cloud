@@ -177,10 +177,10 @@ The workflow changes in Phases 1, 2, 4 and 10 touch `.github/workflows/`, so the
 (plan 23, Part A). The main-to-dev sync cannot carry them.
 
 **Release fit.** Goal: wave 1 in v0.16.0, the full suite by v0.17.0 (operator decision, 2026-11-14).
-Wave 1 (AC-872 to AC-879, AC-881) shipped in v0.16.0. Wave 2 is the test ports, AC-735 to AC-737, planned for v0.17.0. Its planned scope is over R7's 90-file
-plan budget and over R3's 120-file limit by operator decision (2026-11-16): one over-limit release,
-chosen over splitting the milestone across releases. R8 still holds: each port is a pull request of one
-group, none over 120 files. The
+Wave 1 (AC-872 to AC-879, AC-881) shipped in v0.16.0. Wave 2 is the test ports, AC-735 to AC-737,
+planned for v0.17.0. Its planned scope is over R7's 90-file plan budget and over R3's 120-file limit
+by operator decision (2026-11-16): one over-limit release, chosen over splitting the milestone across
+releases. R8 still holds: each port is a pull request of one group, none over 120 files. The
 product-code ports and the retirement of pytest and BATS (AC-739 to AC-741) moved to v0.18.0 by
 operator decision (2026-11-16), so pytest and BATS stay in CI until then.
 Phases 0 to 3 were built during the v0.15.0
