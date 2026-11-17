@@ -330,15 +330,24 @@ pub mod repo {
         root().join(rel)
     }
 
-    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. A hook's
-    /// `GIT_DIR` and kin would override `-C`; `lane.sh` unsets them before any test runs.
+    /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. The variables
+    /// that locate a repository are removed: a hook exports them and they override `-C`. `lane.sh`
+    /// unsets them too, but a direct `cargo nextest run` does not pass through it (#1169 review).
     fn git_in(dir: &Path, args: &[&str], max_status: i32) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .expect("git");
+        let mut cmd = Command::new("git");
+        for name in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_PREFIX",
+            "GIT_NAMESPACE",
+        ] {
+            cmd.env_remove(name);
+        }
+        let out = cmd.arg("-C").arg(dir).args(args).output().expect("git");
         assert!(
             out.status.code().is_some_and(|c| c <= max_status),
             "git {args:?} failed: {}",
