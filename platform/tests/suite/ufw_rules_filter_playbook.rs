@@ -8,7 +8,8 @@
 //! file in the test's directory, and the Rust side asserts each case, naming the pytest item it
 //! came from. A call that needs another filter's output (`ufw_absent` over the declared rules)
 //! takes it as a Jinja expression, so the chain runs in the plugin as the Python test chained it.
-//! Every failure is collected and reported together.
+//! A wrong result is collected with every other and reported together; a filter that raises
+//! stops the run, and the play's output names the call (filter, arguments) as the loop label.
 //!
 //! `apply_firewall_convergence_playbook.rs` proves `apply-firewall.yml` wires these filters into
 //! the adds and the prune guard; the command forms, tags and spellings live here. Specs are in
@@ -66,7 +67,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// The filters the play can call, one looped task each.
-const FILTERS: [&str; 10] = [
+pub(super) const FILTERS: [&str; 10] = [
     "ufw_address",
     "ufw_rule_admits_port",
     "ufw_is_ipv4",
@@ -79,26 +80,47 @@ const FILTERS: [&str; 10] = [
     "ufw_delete_args",
 ];
 
-/// The pytest items `test_ufw_rules_filter.py` collected (140 passed, 2026-11-17), less the one
-/// ported to the static tier. A case dropped from this port makes the count disagree.
-const PYTEST_ITEMS: usize = 139;
+/// The cases asserted: the 140 pytest items of `test_ufw_rules_filter.py` (2026-11-17), less the
+/// one ported to the static tier. A case dropped from this port makes the count disagree.
+const CASES: usize = 139;
 
 /// The management prefixes the egress cases are judged against (RFC 5737 documentation ranges).
 fn mgmt() -> Value {
     json!(["192.0.2.0/24", "198.51.100.0/24"])
 }
 
+/// What a parametrized case's result must be.
+enum Want {
+    /// Exactly this value.
+    Exact(Value),
+    /// A non-empty list of problems, one containing this text (pytest `any(why in p ...)`).
+    Refused(&'static str),
+    /// Exactly `[]`.
+    Admitted,
+}
+
 #[derive(Default)]
-struct Calls(Vec<Value>);
+struct Calls {
+    calls: Vec<Value>,
+    /// Parametrized cases: (pytest item, call index, expected result).
+    cases: Vec<(String, usize, Want)>,
+}
 
 impl Calls {
     /// Queues `filter(*args, **kw)`; returns the index of its result.
     fn add(&mut self, filter: &str, args: Value, kw: Value) -> usize {
         assert!(FILTERS.contains(&filter), "no task calls {filter}");
-        let id = self.0.len();
-        self.0
-            .push(json!({"id": id, "f": filter, "args": args, "kw": kw}));
+        let id = self.calls.len();
+        let label = format!("{filter}({args}, {kw})");
+        self.calls
+            .push(json!({"id": id, "f": filter, "args": args, "kw": kw, "label": label}));
         id
+    }
+
+    /// Queues one parametrized case of pytest item `item`: `filter(*args)` must give `want`.
+    fn case(&mut self, item: String, filter: &str, args: Value, want: Want) {
+        let id = self.add(filter, args, json!({}));
+        self.cases.push((item, id, want));
     }
 
     /// `ufw_desired_rules(["192.0.2.0/24"], **kw)`, the Python `_desired` helper's call.
@@ -117,9 +139,9 @@ fn run(calls: &Calls) -> Vec<Value> {
             json!({
                 "name": format!("Call {f}"),
                 "ansible.builtin.debug": {"msg": format!(
-                    "{{{{ {{'id': item.id, 'r': item.args[0] | {f}(*item.args[1:], **item.kw)}} | to_json }}}}")},
+                    "{{{{ {{'id': item.id, 'r': item.args[0] | {f}(*item.args[1:], **item.kw)}} }}}}")},
                 "loop": format!("{{{{ calls | selectattr('f', 'equalto', '{f}') | list }}}}"),
-                "loop_control": {"label": "{{ item.id }}"},
+                "loop_control": {"label": "{{ item.label }}"},
                 "register": format!("r_{f}"),
             })
         })
@@ -134,7 +156,7 @@ fn run(calls: &Calls) -> Vec<Value> {
         },
     }));
     let play = json!([{"hosts": "localhost", "connection": "local", "gather_facts": false,
-        "vars": {"calls": calls.0}, "tasks": tasks}]);
+        "vars": {"calls": calls.calls}, "tasks": tasks}]);
     let path = playbook::write(dir.path(), "ufw_filters.json", &play);
     let mut cmd = process::ansible_playbook(dir.path(), "localhost,", &path.display().to_string());
     let output = process::run(&mut cmd);
@@ -146,19 +168,18 @@ fn run(calls: &Calls) -> Vec<Value> {
     );
     let text = std::fs::read_to_string(&out).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
     let rows: Vec<Value> = serde_json::from_str(&text).expect("the results file is JSON");
-    let mut results = vec![Value::Null; calls.0.len()];
+    let mut results = vec![Value::Null; calls.calls.len()];
     let mut seen = BTreeSet::new();
     for row in rows {
-        // A JSON-shaped msg may come back as the string or as the structure it spells.
-        let row = match row {
-            Value::String(s) => serde_json::from_str(&s).expect("each result is JSON"),
-            other => other,
-        };
         let id = row["id"].as_u64().expect("a result carries its id") as usize;
         assert!(seen.insert(id), "result {id} written twice");
         results[id] = row["r"].clone();
     }
-    assert_eq!(seen.len(), calls.0.len(), "every call returns one result");
+    assert_eq!(
+        seen.len(),
+        calls.calls.len(),
+        "every call returns one result"
+    );
     results
 }
 
@@ -233,8 +254,9 @@ fn held(spec: &str, tag: &str) -> Value {
     json!({"spec": spec, "tag": tag, "family": "", "peer": ""})
 }
 
-fn empty(v: &Value) -> bool {
-    v.as_array().is_some_and(Vec::is_empty)
+/// A refusal: a NON-EMPTY list (null or a non-list is not one, as pytest's `assert problems`).
+fn refused(v: &Value) -> bool {
+    v.as_array().is_some_and(|a| !a.is_empty())
 }
 
 #[test]
@@ -262,10 +284,15 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         ("0.0.0.5/0", "any"),
         ("::1/0", "::1/0"),
     ];
-    let address_ids: Vec<usize> = address
-        .iter()
-        .map(|(given, _)| c.add("ufw_address", json!([given]), none.clone()))
-        .collect();
+    for (given, stored) in address {
+        let item = format!("test_an_address_is_spelled_as_ufw_stores_it[{given:?}]");
+        c.case(
+            item,
+            "ufw_address",
+            json!([given]),
+            Want::Exact(json!(stored)),
+        );
+    }
 
     // ── ufw_rule_admits_port
     let admits = [
@@ -306,14 +333,24 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         "allow out to 192.0.2.164 port 22 proto tcp",
         "route deny from 192.0.2.0/24 to any port 22 proto tcp",
     ];
-    let admits_ids: Vec<usize> = admits
-        .iter()
-        .map(|s| c.add("ufw_rule_admits_port", json!([s, 22]), none.clone()))
-        .collect();
-    let admits_not_ids: Vec<usize> = admits_not
-        .iter()
-        .map(|s| c.add("ufw_rule_admits_port", json!([s, 22]), none.clone()))
-        .collect();
+    for spec in admits {
+        let item = format!("test_a_rule_that_admits_ssh_is_recognised[{spec:?}]");
+        c.case(
+            item,
+            "ufw_rule_admits_port",
+            json!([spec, 22]),
+            Want::Exact(json!(true)),
+        );
+    }
+    for spec in admits_not {
+        let item = format!("test_a_rule_that_does_not_admit_ssh_is_not[{spec:?}]");
+        c.case(
+            item,
+            "ufw_rule_admits_port",
+            json!([spec, 22]),
+            Want::Exact(json!(false)),
+        );
+    }
 
     // ── ufw_is_ipv4
     let ipv4 = [
@@ -329,10 +366,10 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         (json!(""), false),
         (json!(null), false),
     ];
-    let ipv4_ids: Vec<usize> = ipv4
-        .iter()
-        .map(|(v, _)| c.add("ufw_is_ipv4", json!([v]), none.clone()))
-        .collect();
+    for (value, ok) in ipv4 {
+        let item = format!("test_only_a_single_ipv4_address_is_one[{value}]");
+        c.case(item, "ufw_is_ipv4", json!([value]), Want::Exact(json!(ok)));
+    }
 
     // ── ufw_parse_added
     let show_added = c.add(
@@ -370,15 +407,11 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     let rootless = c.desired(json!({"detected": ["443 tcp"], "upstreams": ["192.0.2.7"]}));
     let nothing = c.desired(none.clone());
     let nothing_detected = c.desired(json!({"detected": ["443 tcp"]}));
-    let twice = c.add(
-        "ufw_desired_rules",
-        json!([["192.0.2.0/24"]]),
+    let twice = c.desired(
         json!({"allow_rules": [{"port": 22, "from": "192.0.2.0/24"}], "detected": ["8080 tcp"],
                "upstreams": ["192.0.2.5"], "route_rules": []}),
     );
-    let twice_again = c.add(
-        "ufw_desired_rules",
-        json!([["192.0.2.0/24"]]),
+    let twice_again = c.desired(
         json!({"allow_rules": [{"port": 8080, "from": "192.0.2.5"}], "detected": ["8080 tcp"],
                "upstreams": ["192.0.2.5"]}),
     );
@@ -416,11 +449,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     let ssh_tag = format!("{{{{ {held_desired}[0].tag }}}}");
     let web_spec = format!("{{{{ {held_desired}[1].spec }}}}");
     let web_tag = format!("{{{{ {held_desired}[1].tag }}}}");
-    let held_rules = c.add(
-        "ufw_desired_rules",
-        json!([["192.0.2.0/24"]]),
-        json!({"allow_rules": [{"port": 8080, "from": "192.0.2.5"}]}),
-    );
+    let held_rules = c.desired(json!({"allow_rules": [{"port": 8080, "from": "192.0.2.5"}]}));
     let masked = held(
         "allow from 203.0.113.9 to any port 5432 proto tcp",
         &ssh_tag,
@@ -578,14 +607,27 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         ),
         (json!("192.0.2.164"), "an entry is a mapping"),
     ];
-    let egress_ok_ids: Vec<usize> = egress_ok
-        .iter()
-        .map(|e| c.add("ufw_egress_problems", json!([[e], mgmt()]), none.clone()))
-        .collect();
-    let egress_bad_ids: Vec<usize> = egress_bad
-        .iter()
-        .map(|(e, _)| c.add("ufw_egress_problems", json!([[e], mgmt()]), none.clone()))
-        .collect();
+    // The shape the runner hosts declare: every target INSIDE the management prefix, which is
+    // why the guard must never be phrased as "reject anything within an SSH CIDR" (MISTAKES 2.5).
+    for entry in egress_ok {
+        let item =
+            format!("test_an_egress_denial_the_platform_really_declares_is_accepted[{entry}]");
+        c.case(
+            item,
+            "ufw_egress_problems",
+            json!([[entry], mgmt()]),
+            Want::Admitted,
+        );
+    }
+    for (entry, why) in egress_bad {
+        let item = format!("test_an_egress_denial_that_is_not_scoped_is_refused[{entry}]");
+        c.case(
+            item,
+            "ufw_egress_problems",
+            json!([[entry], mgmt()]),
+            Want::Refused(why),
+        );
+    }
     let egress = |c: &mut Calls, entries: Value, cidrs: Value| {
         c.add("ufw_egress_problems", json!([entries, cidrs]), json!({}))
     };
@@ -651,10 +693,16 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         json!([{"port": 3100, "to": "192.0.2.0/24"}]),
         json!([{"port": 443, "to": "any"}]),
     ];
-    let allow_ok_ids: Vec<usize> = allow_ok
-        .iter()
-        .map(|e| allow(&mut c, json!([e, "audit"])))
-        .collect();
+    for entries in allow_ok {
+        let item =
+            format!("test_an_allowlist_the_platform_would_declare_is_accepted_in_audit[{entries}]");
+        c.case(
+            item,
+            "ufw_allow_egress_problems",
+            json!([entries, "audit"]),
+            Want::Admitted,
+        );
+    }
     let allow_bad = [
         (json!({"proto": "tcp"}), "`port` must be one port"),
         (json!({"port": 0}), "`port` must be one port"),
@@ -673,10 +721,15 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         ),
         (json!("443/tcp"), "an entry is a mapping"),
     ];
-    let allow_bad_ids: Vec<usize> = allow_bad
-        .iter()
-        .map(|(e, _)| allow(&mut c, json!([[e], "audit"])))
-        .collect();
+    for (entry, why) in allow_bad {
+        let item = format!("test_a_malformed_allowlist_entry_is_refused_by_name[{entry}]");
+        c.case(
+            item,
+            "ufw_allow_egress_problems",
+            json!([[entry], "audit"]),
+            Want::Refused(why),
+        );
+    }
     let mode_block = allow(&mut c, json!([[], "block"]));
     let mode_audit = allow(&mut c, json!([[], "audit"]));
     let dns = json!({"port": 53, "proto": "udp"});
@@ -704,54 +757,30 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         (json!(-1), false),
         (json!(true), false),
     ];
-    let timeout_ids: Vec<usize> = timeouts
-        .iter()
-        .map(|(t, _)| {
-            allow(
-                &mut c,
-                json!([[{"port": 53, "proto": "udp"}], "enforce",
-                       [{"host": "prime.plane.so", "port": 443, "timeout": t}]]),
-            )
-        })
-        .collect();
+    for (timeout, ok) in timeouts {
+        let item = format!("test_a_probe_timeout_is_a_whole_number_of_seconds[{timeout}]");
+        let probe = json!([{"host": "prime.plane.so", "port": 443, "timeout": timeout}]);
+        let args = json!([[{"port": 53, "proto": "udp"}], "enforce", probe]);
+        // accepted is exactly []; refused is a non-empty list
+        let want = if ok {
+            Want::Admitted
+        } else {
+            Want::Refused("")
+        };
+        c.case(item, "ufw_allow_egress_problems", args, want);
+    }
 
-    let started = std::time::Instant::now();
     let r = run(&c);
-    eprintln!(
-        "the filter play ran {} calls in {:?}",
-        c.0.len(),
-        started.elapsed()
-    );
     let mut k = Check::default();
+    for (item, id, want) in &c.cases {
+        let got = &r[*id];
+        match want {
+            Want::Exact(v) => k.eq(item, got, v),
+            Want::Admitted => k.eq(item, got, &json!([])),
+            Want::Refused(why) => k.names(item, got, why),
+        }
+    }
 
-    for ((given, stored), id) in address.iter().zip(&address_ids) {
-        k.eq(
-            &format!("test_an_address_is_spelled_as_ufw_stores_it[{given:?}]"),
-            &r[*id],
-            &json!(stored),
-        );
-    }
-    for (spec, id) in admits.iter().zip(&admits_ids) {
-        k.eq(
-            &format!("test_a_rule_that_admits_ssh_is_recognised[{spec:?}]"),
-            &r[*id],
-            &json!(true),
-        );
-    }
-    for (spec, id) in admits_not.iter().zip(&admits_not_ids) {
-        k.eq(
-            &format!("test_a_rule_that_does_not_admit_ssh_is_not[{spec:?}]"),
-            &r[*id],
-            &json!(false),
-        );
-    }
-    for ((value, ok), id) in ipv4.iter().zip(&ipv4_ids) {
-        k.eq(
-            &format!("test_only_a_single_ipv4_address_is_one[{value}]"),
-            &r[*id],
-            &json!(ok),
-        );
-    }
     k.eq(
         "test_show_added_is_read_into_spec_and_tag",
         &r[show_added],
@@ -1070,28 +1099,11 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         &json!("allow from 192.0.2.5 to any port 80 proto None"),
     );
 
-    // The shape the runner hosts declare: every target INSIDE the management prefix, which is
-    // why the guard must never be phrased as "reject anything within an SSH CIDR" (MISTAKES 2.5).
-    for (entry, id) in egress_ok.iter().zip(&egress_ok_ids) {
-        k.eq(
-            &format!("test_an_egress_denial_the_platform_really_declares_is_accepted[{entry}]"),
-            &r[*id],
-            &json!([]),
-        );
-    }
-    for ((entry, why), id) in egress_bad.iter().zip(&egress_bad_ids) {
-        k.names(
-            &format!("test_an_egress_denial_that_is_not_scoped_is_refused[{entry}]"),
-            &r[*id],
-            why,
-        );
-    }
-
     // A /32 SSH CIDR and the bare address are one host; a broad range over a single-host SSH
     // source contains it; IPv6: a supernet is refused, and families never contain each other.
     let item = "test_egress_containment_is_compared_in_the_spelling_ufw_stores";
     for id in spelling {
-        k.that(item, !empty(&r[id]), || {
+        k.that(item, refused(&r[id]), || {
             format!("call {id}: refused, got {}", r[id])
         });
     }
@@ -1109,7 +1121,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     );
     // `any` is the whole address space: a host inside it is fine, the whole space is not
     k.eq(item, &r[any_host], &json!([]));
-    k.that(item, !empty(&r[any_all]), || {
+    k.that(item, refused(&r[any_all]), || {
         format!("refused, got {}", r[any_all])
     });
 
@@ -1126,7 +1138,11 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     let got = fields(&r[allowed_order], &cts);
     k.eq(
         "test_allowed_egress_comes_after_the_denials_and_the_audit_rule_last",
-        &Value::Array(got.as_array().map(|a| a[1..].to_vec()).unwrap_or_default()),
+        &Value::Array(
+            got.as_array()
+                .map(|a| a.iter().skip(1).cloned().collect())
+                .unwrap_or_default(),
+        ),
         &json!([
             [
                 "deny out to 198.51.100.1",
@@ -1173,23 +1189,6 @@ fn ufw_filters_give_the_results_their_tests_expect() {
                 "allow out log to any": true}),
     );
 
-    for (entries, id) in allow_ok.iter().zip(&allow_ok_ids) {
-        k.eq(
-            &format!(
-                "test_an_allowlist_the_platform_would_declare_is_accepted_in_audit[{entries}]"
-            ),
-            &r[*id],
-            &json!([]),
-        );
-    }
-    for ((entry, why), id) in allow_bad.iter().zip(&allow_bad_ids) {
-        k.names(
-            &format!("test_a_malformed_allowlist_entry_is_refused_by_name[{entry}]"),
-            &r[*id],
-            why,
-        );
-    }
-
     let item = "test_an_unknown_mode_is_refused_even_without_entries";
     k.eq(
         item,
@@ -1230,14 +1229,6 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         &json!(["firewall_egress_mode enforce needs a non-empty firewall_allow_egress"]),
     );
 
-    for ((timeout, ok), id) in timeouts.iter().zip(&timeout_ids) {
-        k.that(
-            &format!("test_a_probe_timeout_is_a_whole_number_of_seconds[{timeout}]"),
-            empty(&r[*id]) == *ok,
-            || format!("accepted must be {ok}: {}", r[*id]),
-        );
-    }
-
     assert!(
         k.failures.is_empty(),
         "{} case(s) failed:\n{}",
@@ -1246,7 +1237,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     );
     assert_eq!(
         k.items.len(),
-        PYTEST_ITEMS,
-        "pytest items asserted (one per parametrized case, one per plain test)"
+        CASES,
+        "cases asserted (one per parametrized case, one per plain test)"
     );
 }

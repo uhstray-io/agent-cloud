@@ -3,7 +3,8 @@
 //!
 //! The tag has one definition, reached through `ufw_desired_rules`; a filter no playbook calls
 //! is a second, untested way in. `ufw_tag` stays a module function for the builders. The
-//! filters' cases run through Ansible in `ufw_rules_filter_playbook.rs`.
+//! filters' cases run through Ansible in `ufw_rules_filter_playbook.rs`, whose `FILTERS` must
+//! name exactly the exported filters.
 //!
 //! ## Port map (pytest -> Rust fn)
 //!
@@ -45,6 +46,15 @@ fn every_exported_filter_is_called_by_a_playbook() {
     assert!(
         !names.iter().any(|n| n == "ufw_tag"),
         "ufw_tag must stay a module function, not an exported filter"
+    );
+    // Every exported filter has cases in the playbook module, so a new one without any fails.
+    let mut cased: Vec<&str> = crate::ufw_rules_filter_playbook::FILTERS.to_vec();
+    let mut sorted: Vec<&str> = names.iter().map(String::as_str).collect();
+    cased.sort_unstable();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted, cased,
+        "the exported filters and the filters ufw_rules_filter_playbook.rs calls differ"
     );
     let playbooks: String = repo::ls_files(&["platform/playbooks/*.yml"])
         .iter()
