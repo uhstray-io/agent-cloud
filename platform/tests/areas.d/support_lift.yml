@@ -1,0 +1,21 @@
+# The lifting loader (src/playbook.rs, AC-943): the suite's own helper for running playbook
+# tasks through ansible-playbook with YAML 1.1 types.
+#
+# `support_lift` is in the security set (`always`), not only in this area: its agreement test
+# pins the lifting loader to yaml::parse over every repository playbook, so a change that drops
+# or reorders a value, or changes a string's text, fails every commit. Numbers it cannot see:
+# `support_lift_pyyaml` reads the same files through PyYAML (one python3 process) and checks
+# every value, numbers included.
+# `support_lift_playbook` runs lifted plays through ansible-playbook in the playbook tier.
+#
+# paths: playbook YAML, so a playbook-only change runs the PyYAML oracle. Semaphore YAML, which
+# the oracle also reads, is left out on purpose: no area claims it, so a change there stays
+# unclassified and push and CI run every test, the oracle included. A change under
+# platform/tests/** is a full trigger anyway.
+paths:
+  - "platform/playbooks/**/*.yml"
+tiers:
+  cli: [support_lift_pyyaml]
+  playbook: [support_lift_playbook]
+always:
+  static: [support_lift]
