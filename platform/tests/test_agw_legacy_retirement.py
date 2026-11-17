@@ -114,7 +114,8 @@ def _run(tmp: Path, url: str, vllm: str, *args: str, fp: str = "", live_fp: str 
     render = {"name": "render", "ansible.builtin.template": {"src": str(CONFIG), "dest": str(tmp / "config.yaml")}}
     deploy = {"name": "deploy.sh stand-in", "ansible.builtin.copy": {
         "src": str(tmp / "config.yaml"), "dest": str(tmp / "deployed")}, "when": "not ansible_check_mode"}
-    plays = [{"hosts": "all", "gather_facts": False, "vars": play_vars, "tasks": [TASKS[FREEZE], TASKS[GUARD], render, include]},
+    plays = [{"hosts": "all", "gather_facts": False, "vars": play_vars,
+              "tasks": [TASKS[FREEZE], TASKS[GUARD], render, include]},
              {"hosts": "all", "gather_facts": False, "tasks": [deploy]},
              dict(PHASE4, hosts="all")]
     if show:
