@@ -389,13 +389,16 @@ def _osd_row(leaf, host):
             "device_class": leaf.get("device_class"), "status": leaf.get("status"), "in": leaf.get("in"),
             "total_gib": None if total is None else _gib(total),
             "used_gib": None if used is None else _gib(used),
-            # Proxmox computes bytes_used * 100 / total_space itself, so it is already a percent (not a fraction).
+            # Proxmox sets this with the byte fields, as bytes_used * 100 / total_space, so it is a percent, not
+            # Ceph's own fraction (pve-manager PVE/API2/Ceph/OSD.pm index, default branch, read 2026-11-17).
             "percent_used": None if percent is None else round(float(percent), 1),
             "version": leaf.get("ceph_version_short")}
 
 
 def _flags(text):
-    """The cluster's OSD flags as a list; the OSD tree carries them as one comma-separated string, when set."""
+    """The cluster's OSD flags as a list: the OSD tree carries them as one comma-joined string, absent when
+    none is set (pve-manager PVE/API2/Ceph/OSD.pm index).
+    """
     if not isinstance(text, str):
         return []
     return [flag.strip() for flag in text.split(",") if flag.strip()]
