@@ -14,11 +14,13 @@ A read is found by parsing, not by grep, so prose that names the variable is not
 - .j2 templates: only their {{ }} and {% %} blocks.
 - Jinja comments ({# #}) never count.
 
-Known limits, for review rather than this test: a name built by concatenation or held in another
-variable (`lookup('vars', 'local_' ~ 'mode')`, `vars[_name]`), and a controller environment read
-(`lookup('env', 'LOCAL_MODE')`), are not detected. Python and shell are not scanned: they read the
-LOCAL_MODE variable a playbook exports, and that export is an expression in the YAML scanned here
-(plan 24).
+Known limits, for review rather than this test: a name built by concatenation or held in another variable
+(`lookup('vars', 'local_' ~ 'mode')`, `vars[_name]`), and a controller environment read (`lookup('env',
+'LOCAL_MODE')`), are not detected. Two Jinja string tricks hide a read from the blocks searched here. They are
+deliberate obfuscation, and a reviewer must catch them: `{{ '}}' ~ local_mode }}` (the block ends at the first
+`}}`, inside the string, so the name sits outside any block) and `{{ '{#' }}{{ local_mode }}{{ '#}' }}` (the
+comment stripper removes the read along with the comment). Python and shell are not scanned: they read the
+LOCAL_MODE variable a playbook exports, and that export is an expression in the YAML scanned here (plan 24).
 
 pytest puts this directory on sys.path, so playbook_yaml is imported by name.
 """

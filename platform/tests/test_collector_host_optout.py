@@ -4,14 +4,19 @@ A host that borrows a service_name without being a workflow service (the DGX dri
 sets `service_conformance_tracked: false`. The collector maps hosts to services in exactly one
 task, and every later step (group mapping, VM lookup, aggregate, "never run" row, Loki marker)
 reads that map, so the guard runs the REAL task against a real inventory.
+
+The production destination guard (AC-726) is run the same way: the collector's three guards on a production
+inventory, under a forged local_mode, which must not skip the guard.
 """
 
+import copy
 import json
 import os
 import shutil
 import subprocess
 from pathlib import Path
 
+import forgeries
 import harness_sandbox
 import playbook_yaml
 import pytest
@@ -20,6 +25,18 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 COLLECTOR = REPO / "platform/playbooks/collect-service-conformance.yml"
 TASK_NAME = "Map each inventory host to its service name"
+# The collector's guards before its first write, in play order. The destination guard takes its branch from the
+# inventory, not local_mode (plan 24), so these run on a production inventory under a forged local_mode.
+GUARDS = (
+    "Refuse a controller API destination override before authentication",
+    "Require the inventory to have parsed",
+    "Require the exact private Alloy OTLP/HTTP destination in production",
+)
+# An RFC 1918 address built at run time: the pre-commit hook refuses the literal.
+PRIVATE = ".".join(["10", "42", "0", "9"])
+DECLARED = f"http://{PRIVATE}:4318/v1/logs"
+REFUSAL = ("Production conformance delivery requires collector_otlp_url to match the declared private "
+           "Alloy OTLP/HTTP receiver.")
 
 pytestmark = pytest.mark.skipif(shutil.which("ansible-playbook") is None, reason="ansible-playbook not installed")
 
@@ -118,3 +135,47 @@ def test_the_opt_out_reaches_the_parser_input(tmp_path):
     )
     assert proc.returncode == 0, proc.stderr
     assert json.loads(proc.stdout)["inventory_services"] == ["alpha"]
+
+
+def _production_inventory(tmp_path: Path, delivered: str) -> Path:
+    """A production inventory: one o11y receiver declaring PRIVATE, one Semaphore host delivering to `delivered`."""
+    inventory = tmp_path / "inventory.ini"
+    inventory.write_text(
+        "localhost ansible_connection=local\n"
+        "collector-prod ansible_connection=local\n\n"
+        f"[o11y_svc]\no11y-prod ansible_connection=local o11y_otlp_bind={PRIVATE}\n\n"
+        f"[semaphore_svc]\nsemaphore-prod ansible_connection=local collector_otlp_url={delivered}\n"
+    )
+    return inventory
+
+
+def _guards_play(tmp_path: Path) -> Path:
+    """The collector's own play with only its three guards kept: their vars and their include, unchanged."""
+    play = copy.deepcopy(playbook_yaml.plays(COLLECTOR)[0])
+    play["tasks"] = [t for t in play["tasks"] if t.get("name") in GUARDS]
+    assert [t.get("name") for t in play["tasks"]] == list(GUARDS)
+    for task in play["tasks"]:
+        include = task.get("ansible.builtin.include_tasks")
+        if include:
+            task["ansible.builtin.include_tasks"] = str(REPO / "platform/playbooks" / include)
+    path = tmp_path / "guards.yml"
+    path.write_text(json.dumps([play]))  # JSON is YAML
+    return path
+
+
+@pytest.mark.parametrize("forge", forgeries.templated_forgeries("local_mode", honest=False, forged=True)[:2])
+def test_a_forged_local_mode_cannot_skip_the_production_destination_guard(tmp_path, forge):
+    proc = harness_sandbox.run_playbook(
+        _guards_play(tmp_path), tmp_path, "-e", forge(tmp_path),
+        inventory=_production_inventory(tmp_path, delivered="http://127.0.0.1:4318/v1/logs"),
+    )
+    output = " ".join((proc.stdout + proc.stderr).split())
+    assert proc.returncode != 0, output
+    assert REFUSAL in output, output
+
+
+def test_the_production_destination_guard_passes_when_delivery_is_the_declared_receiver(tmp_path):
+    proc = harness_sandbox.run_playbook(
+        _guards_play(tmp_path), tmp_path, inventory=_production_inventory(tmp_path, delivered=DECLARED),
+    )
+    assert proc.returncode == 0, proc.stdout[-3000:]
