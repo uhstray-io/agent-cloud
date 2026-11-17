@@ -26,7 +26,7 @@ The platform rules in `AGENTS.md` (Critical Deployment Rules, Engineering Princi
 
 - The encryption key is generated once and never regenerated (D8, F5).
 - The worker starts only after the app has finished migrating, because the app awaits its migrations before it starts serving (F28, R11).
-- The first-account window is closed by the publish bind and the firewall, not by captcha (D10).
+- The first-account window is closed by the publish bind, with the firewall as backstop, not by captcha (D10).
 - No container is privileged (D3).
 
 Three further lessons from the n8n retirement (idempotent writes keyed by a stored external id, no correlation of fan-in items by position, a kill switch per flow) bind the flows of plan 28, not this service.
@@ -369,7 +369,7 @@ This repository holds templates and placeholders. The values below live in the p
 | `activepieces_publish_bind` | The declared LAN bind, rendered only after the owner exists (D10c). Before that the deploy uses `127.0.0.1`, which is not configurable. | site-config inventory |
 | Firewall host variables: `firewall_detect_ports`, `firewall_allow_groups` and the egress variables | Host variables in site-config inventory, declared in task 2.1 and not passed at launch (R19). | site-config inventory |
 | VM address and VM id | The VM's declared address and id, with the NetBox reservation for the address. | site-config `vm-specs` and inventory |
-| Caddy group | The inventory group admitted to the app port (D10c). | site-config inventory |
+| Caddy group | The inventory group admitted to the app port (D10, R7). | site-config inventory |
 | `AP_SSRF_ALLOW_LIST` entries | Reviewed exemptions from the SSRF guard (D11). | site-config inventory |
 | Exempt webhook paths | One exact path per approved flow (D12). | site-config inventory |
 
