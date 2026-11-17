@@ -1,5 +1,5 @@
 //! The ledger-citations pre-commit hook runs the citation test, and only on the ledger and its
-//! ratchet (static tier, security set).
+//! ratchets (static tier, security set).
 //!
 //! Origin: 2026-11-04, a ledger edit with a dead citation was pushed under SKIP_TESTS=1
 //! (docs/MISTAKES.md 5.2). The hook is read from `.pre-commit-config.yaml` as parsed YAML, by its
@@ -13,7 +13,7 @@
 //! | BATS @test | Rust fn |
 //! | --- | --- |
 //! | ledger citations hook: entry runs the citation test | `the_hook_entry_runs_the_citation_test` (candidate: pins text) |
-//! | ledger citations hook: files regex covers the ledger and its citation ratchet | `the_files_pattern_is_exactly_the_ledger_and_its_citation_ratchet` (candidate: pins text) |
+//! | ledger citations hook: files regex covers the ledger and its citation ratchet | `the_files_pattern_is_exactly_the_ledger_and_its_citation_ratchets` (candidate: pins text) |
 //! | ledger citations hook: passes no filenames and prints its output when it passes | `the_hook_passes_no_filenames_and_prints_its_output_when_it_passes` |
 //! | ledger citations hook: a missing pytest skips with a message, a real failure still fails | `without_pytest_the_entry_skips_with_a_message_and_otherwise_execs_pytest` (candidate: pins text) |
 
@@ -22,7 +22,7 @@ use agent_cloud_tests::yaml::{self, Node};
 
 const HOOK_ID: &str = "ledger-citations";
 const CITATION_TEST: &str = "platform/tests/test_ledger_test_citations.py";
-const LEDGER_FILES: &str = r"^(docs/MISTAKES\.md|platform/tests/ledger_citation_ratchet\.txt)$";
+const LEDGER_FILES: &str = r"^(docs/MISTAKES\.md|platform/tests/ledger_citation_ratchet\.txt|platform/tests/ledger_citation_ratchet\.d/[^/]+\.txt)$";
 
 /// The `ledger-citations` hook, found by its id across every repo block.
 fn ledger_hook() -> Node {
@@ -63,7 +63,7 @@ fn the_hook_entry_runs_the_citation_test() {
 }
 
 #[test]
-fn the_files_pattern_is_exactly_the_ledger_and_its_citation_ratchet() {
+fn the_files_pattern_is_exactly_the_ledger_and_its_citation_ratchets() {
     // Arrange
     let hook = ledger_hook();
 

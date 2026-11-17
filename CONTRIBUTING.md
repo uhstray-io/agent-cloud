@@ -256,10 +256,16 @@ The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
 ([plan 24](plan/development/24-rust-test-platform.md)). The rules are
 `plan/architecture/03-testing-ci-quality.md` Part 1. In short:
 
-- One module per area in `platform/tests/suite/`, declared in `suite/main.rs`.
-- List each new module once in `platform/tests/areas.yml`: under an area's tier, or under `always`
-  for the security set. The tier decides which lanes run it (plan 24, D3). The repository test
-  `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
+- One module per area: the modules are the files in `platform/tests/suite/`. `build.rs` declares
+  them, so there is no list to edit.
+- List each new module once, in `platform/tests/areas.yml` or in its own
+  `platform/tests/areas.d/<area>.yml` (see that directory's README): under an area's tier, or under
+  `always` for the security set. The tier decides which lanes run it (plan 24, D3). The repository
+  test `every_suite_module_is_listed_exactly_once_in_areas_yml` fails a module listed nowhere or twice.
+- Format suite files with `rustfmt --edition 2024 platform/tests/suite/*.rs`: `cargo fmt` does not
+  reach them, and the `rust_format` test checks them.
+- A port adds its ledger ratchet lines in `platform/tests/ledger_citation_ratchet.d/<group>.txt` and
+  does not edit `docs/MISTAKES.md` (plan 24, D10).
 - Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
   bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
   anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.

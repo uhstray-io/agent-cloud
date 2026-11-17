@@ -46,6 +46,7 @@ use regex::Regex;
 
 const LEDGER: &str = "docs/MISTAKES.md";
 const RATCHET: &str = "platform/tests/ledger_citation_ratchet.txt";
+const RATCHET_DIR: &str = "platform/tests/ledger_citation_ratchet.d";
 const SKIP_DIRS: [&str; 4] = [".git", "node_modules", ".venv", "__pycache__"];
 const CODE_CHARS: &str = "|$=(){}[]<>";
 
@@ -380,6 +381,24 @@ fn parse_ratchet(text: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// Ratchet entries under `root`: the old file, then every `*.txt` in the ratchet directory by
+/// name. A missing file or directory adds nothing.
+fn load_ratchet(root: &Path) -> Vec<(String, String)> {
+    let mut text = fs::read_to_string(root.join(RATCHET)).unwrap_or_default();
+    let mut files: Vec<PathBuf> = fs::read_dir(root.join(RATCHET_DIR))
+        .into_iter()
+        .flatten()
+        .filter_map(|e| Some(e.ok()?.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "txt"))
+        .collect();
+    files.sort();
+    for file in files {
+        text.push('\n');
+        text.push_str(&fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}")));
+    }
+    parse_ratchet(&text)
+}
+
 fn counts<'a>(items: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> {
     let mut map = BTreeMap::new();
     for item in items {
@@ -419,7 +438,7 @@ fn fixture() -> tempfile::TempDir {
 fn every_cited_test_exists() {
     // Arrange
     let ledger = read_repo(LEDGER);
-    let ratchet = parse_ratchet(&read_repo(RATCHET));
+    let ratchet = load_ratchet(repo::root());
 
     // Act
     let (new, _) = ratchet_diff(&unresolved(&ledger, repo::root()), &ratchet);
@@ -428,14 +447,15 @@ fn every_cited_test_exists() {
     assert!(
         new.is_empty(),
         "docs/MISTAKES.md cites tests that do not exist (8.2). Fix the citation, or, for a \
-         test deleted or renamed since the entry was written, ratchet it with a reason: {new:?}"
+         test deleted or renamed since the entry was written, ratchet it with a reason in \
+         platform/tests/ledger_citation_ratchet.d/<group>.txt: {new:?}"
     );
 }
 
 #[test]
 fn ratchet_entries_carry_a_reason_and_still_fail() {
     // Arrange
-    let ratchet = parse_ratchet(&read_repo(RATCHET));
+    let ratchet = load_ratchet(repo::root());
     let ledger = read_repo(LEDGER);
 
     // Act
@@ -455,6 +475,27 @@ fn ratchet_entries_carry_a_reason_and_still_fail() {
         stale.is_empty(),
         "ratchet entries that now resolve or are no longer cited; delete them: {stale:?}"
     );
+}
+
+#[test]
+fn a_ratchet_line_in_a_ratchet_directory_file_covers_a_citation() {
+    // Arrange
+    let root = fixture();
+    let dir = root.path().join(RATCHET_DIR);
+    fs::create_dir_all(&dir).expect("ratchet dir");
+    fs::write(
+        dir.join("port.txt"),
+        "1.1 test_ported_away # replaced by suite/x.rs::y\n",
+    )
+    .expect("ratchet file");
+    fs::write(dir.join("notes.md"), "1.1 test_ignored # not a .txt\n").expect("other file");
+    let ledger = "### 1.1 Old entry\n\n**Enforced by.** `test_ported_away`.\n";
+
+    // Act
+    let diff = ratchet_diff(&unresolved(ledger, root.path()), &load_ratchet(root.path()));
+
+    // Assert
+    assert_eq!(diff, (vec![], vec![]));
 }
 
 #[test]
