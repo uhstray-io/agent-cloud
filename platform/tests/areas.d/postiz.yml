@@ -1,0 +1,17 @@
+# Postiz (plan 24, AC-967): the static tests of the postiz service, ported from BATS.
+#
+# The module sits under `always`: docs/MISTAKES.md cites three of its tests (2.2, 2.19, 10.1), so the
+# static guard runs in every lane. The paths name only postiz-owned files. The shared files the tests
+# read (the Semaphore templates, the inventories, the Authentik declarations, validate-secrets.yml,
+# tasks/clean-service.yml, tasks/bao-merge-keys.yml) are deliberately not listed: naming them would
+# classify their changes away from the run-everything fallback, and the module runs in every lane.
+paths:
+  - "platform/services/postiz/**"
+  - "platform/playbooks/deploy-postiz.yml"
+  - "platform/playbooks/clean-deploy-postiz.yml"
+  - "platform/playbooks/seed-postiz-secrets.yml"
+  - "platform/playbooks/store-postiz-api-key.yml"
+  - "platform/services/authentik/deployment/blueprints/postiz-oidc.yaml"
+tiers: {}
+always:
+  static: [service_postiz]
