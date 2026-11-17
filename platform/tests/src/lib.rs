@@ -9,6 +9,7 @@
 //!   `testsel` binary and `lane.sh` use it).
 
 pub mod lanes;
+pub mod text;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
