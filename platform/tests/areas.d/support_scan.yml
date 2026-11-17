@@ -1,16 +1,18 @@
 # The static-scan helpers (repo::playbook_files, yaml::strings and yaml::tasks in src/lib.rs,
-# AC-958): suite/support_scan.rs pins them on fixtures, suite/support_scan_fixture.rs runs
-# playbook_files over a temporary tree (its order and refusals), and suite/support_scan_python.rs
-# holds all three to playbook_yaml.py on every scanned repository file.
+# AC-958): suite/support_scan.rs pins them on fixtures and on the repository,
+# suite/support_scan_fixture.rs runs playbook_files over a temporary tree (its order and refusals),
+# and suite/support_scan_python.rs holds all three to playbook_yaml.py on every scanned repository
+# file.
 #
 # support_scan is in the security set (`always`): repo::playbook_files walks every entry under
-# platform/playbooks and platform/semaphore, refusing any symlink and any directory named *.yml,
-# so its static tests run whatever path a change touches (areas.d/README.md, "A test that reads
-# beyond its area"). The walk only lists and stats entries.
+# platform/playbooks and platform/semaphore, refusing any symlink and any directory named *.yml, so
+# its static tests run whatever path a change touches (areas.d/README.md, "A test that reads beyond
+# its area"). The walk only lists and stats entries.
 #
 # paths: what support_scan_python reads (every *.yml under both roots) that another area claims, so
 # a change there would not otherwise select it: playbook YAML, and templates.yml, which
-# cloudflare_edge claims. The other Semaphore YAML is left out for the reason in support_lift.yml.
+# cloudflare_edge claims. The other Semaphore YAML is left out while no area claims it, for the
+# reason in support_lift.yml.
 paths:
   - "platform/playbooks/**/*.yml"
   - "platform/semaphore/templates.yml"
