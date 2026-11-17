@@ -6,7 +6,8 @@
 //! a kept Python fixture) must accept it, but only as the whole rule. The pytest original called
 //! the stub's private parser in process; a Rust test cannot import it, so this test is black-box
 //! through the stub's command line: an accepted form shows by its effect on the stub's state
-//! file, a refused one exits non-zero and leaves the state file as it was.
+//! file, a refused one exits non-zero with the stub's own refusal on stderr and leaves the state
+//! file as it was.
 //!
 //! ## Port map (pytest -> Rust fn)
 //!
@@ -24,8 +25,8 @@ use tempfile::TempDir;
 const STUB: &str = "platform/tests/ufw_stub.py";
 
 /// Runs the stub as `ufw` with `words`, the state file holding `before`; returns whether it
-/// succeeded, the state file's text before and after.
-fn ufw(dir: &Path, words: &str, before: &Value) -> (bool, String, String) {
+/// succeeded, the state file's text before and after, and its stderr.
+fn ufw(dir: &Path, words: &str, before: &Value) -> (bool, String, String, String) {
     let state = dir.join("ufw.json");
     let text = before.to_string();
     std::fs::write(&state, &text).unwrap();
@@ -40,6 +41,7 @@ fn ufw(dir: &Path, words: &str, before: &Value) -> (bool, String, String) {
         out.status.success(),
         text,
         std::fs::read_to_string(&state).unwrap(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
     )
 }
 
@@ -70,7 +72,7 @@ fn the_stub_takes_the_short_rule_form_only_as_a_whole_rule() {
     ];
     for (words, before, after) in accepted {
         let dir = TempDir::new().unwrap();
-        let (ok, _, state) = ufw(dir.path(), words, &json!({"active": true, "rules": before}));
+        let (ok, _, state, _) = ufw(dir.path(), words, &json!({"active": true, "rules": before}));
         assert!(ok, "{words}: must be accepted");
         assert_eq!(rules(&state), after, "{words}");
     }
@@ -83,8 +85,13 @@ fn the_stub_takes_the_short_rule_form_only_as_a_whole_rule() {
         "allow 80/icmp",
     ] {
         let dir = TempDir::new().unwrap();
-        let (ok, before, after) = ufw(dir.path(), words, &held);
+        let (ok, before, after, stderr) = ufw(dir.path(), words, &held);
         assert!(!ok, "{words}: must be refused");
         assert_eq!(after, before, "{words}: a refused form changes nothing");
+        // A traceback also exits non-zero; the refusal must be the stub's own.
+        assert!(
+            stderr.contains("stub ufw: unsupported"),
+            "{words}: {stderr}"
+        );
     }
 }

@@ -6,8 +6,9 @@
 //! fixture), which keep the firewall in a JSON file and reproduce the ufw 0.36.2 behaviour the
 //! playbook relies on. Left out: the sudo resolver, fact gathering, the non-Linux skip, the apt
 //! install and its dry-run stop, and each task's own `become`; none of them decides which rule
-//! is added or deleted. Runs go through `process::ansible_playbook`, so they are confined to the
-//! test's directory and bounded. Cases that differ only in their inputs share one run over
+//! is added or deleted. Runs go through `process::ansible_playbook`, so they are bounded, and
+//! confined to the test's directory where a kernel sandbox (sandbox-exec, bwrap) is present
+//! (`process::sandbox`). Cases that differ only in their inputs share one run over
 //! several hosts (`run_many`), each host with its own stub state, since every ansible-playbook
 //! spawn costs seconds.
 //!
@@ -54,13 +55,14 @@
 //! | `test_a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would` | `a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would` |
 //! | `test_a_dry_run_reports_outgoing_denied_on_a_host_that_declares_no_allowlist` | `a_dry_run_reports_outgoing_denied_on_a_host_that_declares_no_allowlist` |
 //! | `test_a_host_without_an_allowlist_keeps_outgoing_allowed_and_no_outbound_allow` | `a_host_without_an_allowlist_keeps_outgoing_allowed_and_no_outbound_allow` |
+//! | (new: the guard had no behavioural test) | `controller_cidr_outside_the_ssh_cidrs_is_refused_before_any_rule_is_added` |
 //! | `test_a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_new_ones` | `a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_new_ones` |
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
-use agent_cloud_tests::{playbook, process, repo};
+use agent_cloud_tests::{playbook, process, repo, text};
 use regex::Regex;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -77,6 +79,11 @@ const SKIPPED: [&str; 5] = [
 ];
 const SSH: &str = "192.0.2.0/24";
 const AUDIT: &str = "allow out log to any";
+/// The whole ufw traffic of a converged host: the two reads taken before adding.
+const CONVERGED_READS: [&str; 2] = [
+    r#"["ufw", "show", "added"]"#,
+    r#"["ufw", "status", "verbose"]"#,
+];
 /// fake_http.py's REFUSED_PORT: below every ephemeral range, so a bind to port 0 never returns
 /// it, and nothing listens on it.
 const REFUSED_PORT: u16 = 1;
@@ -99,7 +106,8 @@ fn tag(family: &str, port_proto: &str, peer: &str) -> String {
     format!("agent-cloud:{family}:{port_proto}:{peer}")
 }
 
-/// A loopback port that refuses connections at once (fake_http.refused_port's guarantee).
+/// A loopback port that refuses connections at once (fake_http.refused_port's guarantee),
+/// checked on 127.0.0.1 only: fake_http.py also checks ::1, which no probe here uses.
 fn refused_port() -> u16 {
     let err = TcpStream::connect(("127.0.0.1", REFUSED_PORT))
         .expect_err("nothing may listen on the refused port");
@@ -141,6 +149,16 @@ struct Opts<'a> {
     collateral: Option<&'a str>,
 }
 
+impl Opts<'_> {
+    /// A dry run (`--check`).
+    fn check() -> Self {
+        Self {
+            check: true,
+            ..Self::default()
+        }
+    }
+}
+
 /// One ansible-playbook run.
 struct Run {
     stdout: String,
@@ -163,13 +181,9 @@ impl Run {
     }
 }
 
-/// A single host keeps its files at the top of `dir` (a second run reuses them).
-fn files(dir: &Path, host: &str, single: bool) -> (PathBuf, PathBuf, PathBuf) {
-    let base = if single {
-        dir.to_path_buf()
-    } else {
-        dir.join(host)
-    };
+/// A host's stub state, log and podman fixture, under `dir/<host>`.
+fn files(dir: &Path, host: &str) -> (PathBuf, PathBuf, PathBuf) {
+    let base = dir.join(host);
     (
         base.join("ufw.json"),
         base.join("ufw.log"),
@@ -213,10 +227,9 @@ fn run_many(
         "tasks": tasks}]);
     let play_path = playbook::write(dir, "play.json", &lifted);
 
-    let single = hosts.len() == 1;
     let mut targets = Map::new();
     for (name, spec) in hosts {
-        let (state, log, podman) = files(dir, name, single);
+        let (state, log, podman) = files(dir, name);
         std::fs::create_dir_all(state.parent().unwrap()).unwrap();
         if let Some(s) = &spec.state {
             std::fs::write(&state, s.to_string()).unwrap();
@@ -256,8 +269,8 @@ fn run_many(
         std::fs::write(
             &path,
             format!(
-                "#!/bin/sh\nSTUB_AS={name} exec python3 \"{}\" \"$@\"\n",
-                stub.display()
+                "#!/bin/sh\nSTUB_AS={name} exec python3 {} \"$@\"\n",
+                sh_quote(&stub.display().to_string())
             ),
         )
         .unwrap();
@@ -291,13 +304,18 @@ fn run_many(
     };
     let mut after = HashMap::new();
     for (name, _) in hosts {
-        let (state, _, _) = files(dir, name, single);
+        let (state, _, _) = files(dir, name);
         let value = std::fs::read_to_string(&state)
             .ok()
             .map(|text| serde_json::from_str(&text).unwrap());
         after.insert((*name).to_string(), value);
     }
     (run, after)
+}
+
+/// `text` as one single-quoted sh word: each `'` becomes `'\''`.
+fn sh_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
 }
 
 /// Runs the lifted play once against the one host `target`; returns the run and its state after.
@@ -364,11 +382,8 @@ fn changed(run: &Run) -> u32 {
         .unwrap()
 }
 
-fn log(dir: &Path, host: Option<&str>) -> Vec<String> {
-    let path = host
-        .map_or_else(|| dir.to_path_buf(), |h| dir.join(h))
-        .join("ufw.log");
-    std::fs::read_to_string(path)
+fn log(dir: &Path, host: &str) -> Vec<String> {
+    std::fs::read_to_string(files(dir, host).1)
         .map(|t| t.lines().map(String::from).collect())
         .unwrap_or_default()
 }
@@ -397,10 +412,6 @@ fn verdict(run: &Run) -> Value {
         .unwrap_or_else(|| panic!("no verdict:\n{}", run.stdout));
     let msg: String = serde_json::from_str(&caps[1]).unwrap();
     serde_json::from_str(&msg["VERDICT ".len()..]).unwrap()
-}
-
-fn host_matches(stdout: &str, pattern: &str) -> bool {
-    Regex::new(pattern).unwrap().is_match(stdout)
 }
 
 fn active(rules: Value) -> Option<Value> {
@@ -487,20 +498,14 @@ fn a_second_run_changes_nothing() {
     let (first, state) = run(dir.path(), host.clone(), None, None, Opts::default());
     assert!(first.ok, "{}", first.all());
     assert!(changed(&first) > 0);
-    std::fs::remove_file(dir.path().join("ufw.log")).unwrap();
+    std::fs::remove_file(files(dir.path(), "target").1).unwrap();
     let (second, again) = run(dir.path(), host, None, None, Opts::default());
     assert!(second.ok, "{}", second.all());
     assert_eq!(changed(&second), 0, "{}", second.stdout);
     assert_eq!(again, state);
     // Converged: the two reads taken before adding are the whole run. No add, no re-read,
     // no final status capture (the report reuses the first read).
-    assert_eq!(
-        ufw_calls(&log(dir.path(), None)),
-        [
-            r#"["ufw", "show", "added"]"#,
-            r#"["ufw", "status", "verbose"]"#
-        ]
-    );
+    assert_eq!(ufw_calls(&log(dir.path(), "target")), CONVERGED_READS);
     assert!(second.from("TASK [Report]").contains("Status: active"));
 }
 
@@ -539,7 +544,7 @@ fn a_rule_retagged_by_the_add_is_not_then_pruned_as_stale() {
     );
     assert!(r.ok, "{}", r.all());
     assert_eq!(rules(&state)[spec], tag("in", "8080/tcp", "192.0.2.5"));
-    assert!(deletes(&log(dir.path(), None)).is_empty());
+    assert!(deletes(&log(dir.path(), "target")).is_empty());
 }
 
 #[test]
@@ -567,7 +572,7 @@ fn a_stale_tagged_rule_of_every_kind_is_pruned() {
     assert!(r.ok, "{}", r.all());
     let ssh = ssh_rule();
     assert_eq!(rules(&state), map(&[(&ssh.0, &ssh.1)]));
-    let lines = log(dir.path(), None);
+    let lines = log(dir.path(), "target");
     let deletes = deletes(&lines);
     // By spec, never by number: every delete names the rule, and the route one is `route delete`.
     let by_number = Regex::new(r#""delete", "\d+""#).unwrap();
@@ -672,7 +677,7 @@ fn a_declared_rule_that_did_not_land_stops_the_run_before_any_delete() {
         r.stdout
     );
     assert_eq!(state["rules"], before.unwrap()["rules"]);
-    assert!(deletes(&log(dir.path(), None)).is_empty());
+    assert!(deletes(&log(dir.path(), "target")).is_empty());
 }
 
 #[test]
@@ -681,21 +686,18 @@ fn check_mode_reports_the_plan_and_changes_nothing() {
     let before = json!({"active": false, "rules": [
         ["allow from 198.51.100.7 to any port 9000 proto tcp", tag("in", "9000/tcp", "198.51.100.7")],
         ["allow 22/tcp", ""],
-        [format!("allow from {SSH} to any port 22 proto tcp"), "agent-cloud:ssh:legacy"],
+        [ssh_rule().0, "agent-cloud:ssh:legacy"],
     ]});
     let (r, state) = run(
         dir.path(),
         json!({"firewall_allow_rules": [{"port": 8080, "from": "192.0.2.5"}]}),
         Some(before.clone()),
         None,
-        Opts {
-            check: true,
-            ..Opts::default()
-        },
+        Opts::check(),
     );
     assert!(r.ok, "{}", r.all());
     assert_eq!(state, before);
-    let lines = log(dir.path(), None);
+    let lines = log(dir.path(), "target");
     assert!(mutations(&lines).is_empty(), "{lines:?}");
     let plan = r.from("TASK [Report the convergence plan]");
     assert!(
@@ -787,7 +789,10 @@ fn narrowing_ssh_without_the_controller_cidr_is_refused_before_any_delete() {
             r.stdout
         );
         assert!(rules(&state).contains_key(&spec), "check={check}");
-        assert!(deletes(&log(dir.path(), None)).is_empty(), "check={check}");
+        assert!(
+            deletes(&log(dir.path(), "target")).is_empty(),
+            "check={check}"
+        );
     }
 }
 
@@ -872,10 +877,7 @@ fn ssh_cidrs_spelled_non_canonically_are_matched_as_ufw_stores_them() {
         json!({"firewall_ssh_cidrs": ["192.0.2.5/32", "198.51.100.77/24"]}),
         before.clone(),
         None,
-        Opts {
-            check: true,
-            ..Opts::default()
-        },
+        Opts::check(),
     );
     assert!(r.ok, "{}", r.all());
     assert_eq!(Some(state), before);
@@ -991,7 +993,7 @@ fn a_stale_rule_that_admits_ssh_in_any_spelling_is_refused() {
             rules(states[host].as_ref().unwrap()).contains_key(spec),
             "{spec}"
         );
-        assert!(deletes(&log(dir.path(), Some(host))).is_empty(), "{spec}");
+        assert!(deletes(&log(dir.path(), host)).is_empty(), "{spec}");
     }
 }
 
@@ -1090,20 +1092,14 @@ fn rules_tagged_in_a_declared_spelling_are_retagged_then_converge() {
         .map(|(spec, (f, pp, peer), _)| ((*spec).into(), tag(f, pp, peer)))
         .collect();
     assert_eq!(rules(&state), expected);
-    let lines = log(dir.path(), None);
+    let lines = log(dir.path(), "target");
     assert!(deletes(&lines).is_empty(), "{lines:?}");
-    std::fs::remove_file(dir.path().join("ufw.log")).unwrap();
+    std::fs::remove_file(files(dir.path(), "target").1).unwrap();
     let (second, again) = run(dir.path(), host, Some(state.clone()), None, Opts::default());
     assert!(second.ok, "{}", second.all());
     assert_eq!(changed(&second), 0, "{}", second.stdout);
     assert_eq!(again, state);
-    assert_eq!(
-        ufw_calls(&log(dir.path(), None)),
-        [
-            r#"["ufw", "show", "added"]"#,
-            r#"["ufw", "status", "verbose"]"#
-        ]
-    );
+    assert_eq!(ufw_calls(&log(dir.path(), "target")), CONVERGED_READS);
 }
 
 #[test]
@@ -1129,16 +1125,7 @@ fn a_dry_run_over_older_tags_plans_no_delete_of_a_declared_rule() {
             tag("in", "22/tcp", "203.0.113.9/32")
         ],
     ]));
-    let (r, state) = run(
-        dir.path(),
-        host,
-        before.clone(),
-        None,
-        Opts {
-            check: true,
-            ..Opts::default()
-        },
-    );
+    let (r, state) = run(dir.path(), host, before.clone(), None, Opts::check());
     assert!(r.ok, "{}", r.all());
     assert_eq!(Some(state), before);
     let plan = r.from("TASK [Report the convergence plan]");
@@ -1221,16 +1208,16 @@ fn a_lost_ip_family_of_a_bridge_rule_is_restored_and_a_whole_one_is_unchanged() 
     assert_eq!(states["lost"].as_ref().unwrap()["rules"], whole);
     assert_eq!(states["whole"].as_ref().unwrap()["rules"], whole);
     assert!(
-        host_matches(&r.stdout, r"\blost\s*:.*changed=[1-9]"),
+        text::any_line(&r.stdout, r"\blost\s*:.*changed=[1-9]"),
         "{}",
         r.stdout
     );
     assert!(
-        host_matches(&r.stdout, r"\bwhole\s*:.*changed=0"),
+        text::any_line(&r.stdout, r"\bwhole\s*:.*changed=0"),
         "{}",
         r.stdout
     );
-    let lines = log(dir.path(), Some("whole"));
+    let lines = log(dir.path(), "whole");
     let adds = mutations(&lines);
     assert!(
         adds.len() == 2 && adds.iter().all(|l| l.contains(r#""in", "on", "podman1""#)),
@@ -1239,10 +1226,7 @@ fn a_lost_ip_family_of_a_bridge_rule_is_restored_and_a_whole_one_is_unchanged() 
     // The whole cost of a converged rootful-podman host (apply-firewall.yml header, the
     // playbook README): the two reads plus two skipped adds per bridge; no re-read, no final
     // status capture.
-    let mut expected = vec![
-        r#"["ufw", "show", "added"]"#,
-        r#"["ufw", "status", "verbose"]"#,
-    ];
+    let mut expected = CONVERGED_READS.to_vec();
     expected.extend(adds.iter().map(|s| s.as_str()));
     assert_eq!(ufw_calls(&lines), expected);
 }
@@ -1270,7 +1254,7 @@ fn a_declared_tag_over_another_rule_does_not_stand_in_for_the_declared_rule() {
         "{}",
         r.stdout
     );
-    assert!(deletes(&log(dir.path(), None)).is_empty());
+    assert!(deletes(&log(dir.path(), "target")).is_empty());
 }
 
 #[test]
@@ -1279,12 +1263,18 @@ fn an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added() {
     // playbook refuses on it before a single rule is added, one host per shape.
     let dir = TempDir::new().unwrap();
     let bad = [
-        ("null_port", json!({"port": null})),
-        ("empty_port", json!({"port": ""})),
-        ("port_zero", json!({"port": 0})),
-        ("port_high", json!({"port": 70000})),
-        ("null_proto", json!({"port": 8200, "proto": null})),
-        ("icmp", json!({"port": 8200, "proto": "icmp"})),
+        ("null_port", json!({"to": "198.51.100.1", "port": null})),
+        ("empty_port", json!({"to": "198.51.100.1", "port": ""})),
+        ("port_zero", json!({"to": "198.51.100.1", "port": 0})),
+        ("port_high", json!({"to": "198.51.100.1", "port": 70000})),
+        (
+            "null_proto",
+            json!({"to": "198.51.100.1", "port": 8200, "proto": null}),
+        ),
+        (
+            "icmp",
+            json!({"to": "198.51.100.1", "port": 8200, "proto": "icmp"}),
+        ),
         // a supernet of the SSH CIDR: refused even flagged broad and justified
         (
             "supernet",
@@ -1293,15 +1283,12 @@ fn an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added() {
     ];
     let mut hosts: Vec<(&str, Host)> = bad
         .iter()
-        .map(|(name, entry)| {
-            let mut deny = json!({"to": "198.51.100.1"});
-            deny.as_object_mut()
-                .unwrap()
-                .extend(entry.as_object().unwrap().clone());
+        .map(|(name, deny)| {
+            let vars = Some(json!({"firewall_deny_egress": [deny]}));
             (
                 *name,
                 Host {
-                    vars: Some(json!({"firewall_deny_egress": [deny]})),
+                    vars,
                     ..Host::default()
                 },
             )
@@ -1320,17 +1307,17 @@ fn an_egress_denial_that_is_not_scoped_is_refused_before_any_rule_is_added() {
     assert!(!r.ok, "{}", r.all());
     for (name, _) in &bad {
         assert!(
-            host_matches(
+            text::any_line(
                 &r.stdout,
                 &format!(r"\b{}\s*:.*failed=1", regex::escape(name))
             ),
             "{name}"
         );
-        assert!(mutations(&log(dir.path(), Some(name))).is_empty(), "{name}");
+        assert!(mutations(&log(dir.path(), name)).is_empty(), "{name}");
         assert!(states[*name].is_none(), "{name}"); // the stub never ran a write: no state file
     }
     assert!(
-        host_matches(&r.stdout, r"\bgood\s*:.*failed=0"),
+        text::any_line(&r.stdout, r"\bgood\s*:.*failed=0"),
         "{}",
         r.stdout
     );
@@ -1358,20 +1345,11 @@ fn a_dry_run_over_untagged_equivalent_rules_lists_the_adds_and_does_not_fail() {
     // it WOULD change, not a failure (a dry run against a host whose rules were added by hand).
     let dir = TempDir::new().unwrap();
     let before = active(json!([
-        [format!("allow from {SSH} to any port 22 proto tcp"), ""],
+        [ssh_rule().0, ""],
         ["allow from 192.0.2.5 to any port 8080 proto tcp", ""]
     ]));
     let host = json!({"firewall_detect_ports": false, "firewall_allow_rules": [{"port": 8080, "from": "192.0.2.5"}]});
-    let (r, state) = run(
-        dir.path(),
-        host,
-        before.clone(),
-        None,
-        Opts {
-            check: true,
-            ..Opts::default()
-        },
-    );
+    let (r, state) = run(dir.path(), host, before.clone(), None, Opts::check());
     assert!(r.ok, "{}", r.all());
     assert_eq!(Some(state), before);
     let v = verdict(&r);
@@ -1390,10 +1368,7 @@ fn a_dry_run_over_untagged_equivalent_rules_lists_the_adds_and_does_not_fail() {
 #[test]
 fn a_real_run_over_untagged_equivalent_rules_adds_the_tagged_ones_and_passes() {
     let dir = TempDir::new().unwrap();
-    let before = active(json!([[
-        format!("allow from {SSH} to any port 22 proto tcp"),
-        ""
-    ]]));
+    let before = active(json!([[ssh_rule().0, ""]]));
     let (r, state) = run(
         dir.path(),
         json!({"firewall_detect_ports": false}),
@@ -1469,9 +1444,8 @@ fn enforce_denies_outgoing_drops_the_audit_rule_and_passes_its_probe() {
         None,
         Opts::default(),
     );
-    let (listener, port) = listening();
+    let (_listener, port) = listening();
     let (r, state) = run(dir.path(), enforce(port, None), None, None, Opts::default());
-    drop(listener);
     assert!(r.ok, "{}", r.all());
     assert_eq!(state["outgoing"], json!("deny"));
     let held = rules(&state);
@@ -1489,10 +1463,10 @@ fn enforce_denies_outgoing_only_after_enabling_and_converges() {
     // enable` and the SSH verify, so a run that stops before the probes never leaves outgoing
     // denied and unproven. A second run changes nothing.
     let dir = TempDir::new().unwrap();
-    let (listener, port) = listening();
+    let (_listener, port) = listening();
     let (r, state) = run(dir.path(), enforce(port, None), None, None, Opts::default());
     assert!(r.ok, "{}", r.all());
-    let lines = log(dir.path(), None);
+    let lines = log(dir.path(), "target");
     let at = |line: &str| {
         lines
             .iter()
@@ -1510,7 +1484,6 @@ fn enforce_denies_outgoing_only_after_enabling_and_converges() {
     );
     assert_eq!(state["outgoing"], json!("deny"));
     let (r2, state2) = run(dir.path(), enforce(port, None), None, None, Opts::default());
-    drop(listener);
     assert!(r2.ok, "{}", r2.all());
     assert_eq!(changed(&r2), 0, "{}", r2.stdout);
     assert_eq!(state2["outgoing"], json!("deny"));
@@ -1555,7 +1528,7 @@ fn a_narrowed_allowlist_on_an_enforcing_host_is_proven_again_or_outgoing_is_allo
         ]));
     }
     let enforcing = json!({"active": true, "outgoing": "deny", "rules": held});
-    let (listener, port) = listening();
+    let (_listener, port) = listening();
     let (r, states) = run_many(
         dir.path(),
         &[
@@ -1578,14 +1551,13 @@ fn a_narrowed_allowlist_on_an_enforcing_host_is_proven_again_or_outgoing_is_allo
         ],
         Opts::default(),
     );
-    drop(listener);
     assert!(
-        host_matches(&r.stdout, r"\bproven\s*:.*failed=0"),
+        text::any_line(&r.stdout, r"\bproven\s*:.*failed=0"),
         "{}",
         r.stdout
     );
     assert!(
-        host_matches(&r.stdout, r"\bunproven\s*:.*failed=1"),
+        text::any_line(&r.stdout, r"\bunproven\s*:.*failed=1"),
         "{}",
         r.stdout
     );
@@ -1595,7 +1567,7 @@ fn a_narrowed_allowlist_on_an_enforcing_host_is_proven_again_or_outgoing_is_allo
             "{name}"
         ); // pruned while outgoing is denied
         assert!(
-            !log(dir.path(), Some(name))
+            !log(dir.path(), name)
                 .iter()
                 .any(|l| l == r#"["ufw", "default", "deny", "outgoing"]"#),
             "{name}"
@@ -1643,13 +1615,13 @@ fn an_enforced_allowlist_without_dns_or_a_probe_is_refused_before_any_rule_is_ad
     assert!(!r.ok, "{}", r.all());
     for (name, _) in &hosts {
         assert!(
-            host_matches(
+            text::any_line(
                 &r.stdout,
                 &format!(r"\b{}\s*:.*failed=1", regex::escape(name))
             ),
             "{name}"
         );
-        assert!(mutations(&log(dir.path(), Some(name))).is_empty(), "{name}");
+        assert!(mutations(&log(dir.path(), name)).is_empty(), "{name}");
         assert!(states[*name].is_none(), "{name}");
     }
     assert!(
@@ -1680,14 +1652,11 @@ fn a_dry_run_of_an_enforced_allowlist_changes_nothing_and_says_it_would() {
         enforce(9, None),
         Some(json!({"active": true, "outgoing": "allow", "rules": [[ssh.0, ssh.1]]})),
         None,
-        Opts {
-            check: true,
-            ..Opts::default()
-        },
+        Opts::check(),
     );
     assert!(r.ok, "{}", r.all());
     assert_eq!(state["outgoing"], json!("allow"));
-    let lines = log(dir.path(), None);
+    let lines = log(dir.path(), "target");
     assert!(mutations(&lines).is_empty(), "{lines:?}");
     assert!(
         r.stdout.contains(r#""would_set_defaults_or_enable": true"#),
@@ -1715,10 +1684,7 @@ fn a_dry_run_reports_outgoing_denied_on_a_host_that_declares_no_allowlist() {
         json!({}),
         Some(json!({"active": true, "outgoing": "deny", "rules": [[ssh.0, ssh.1]]})),
         None,
-        Opts {
-            check: true,
-            ..Opts::default()
-        },
+        Opts::check(),
     );
     assert!(r.ok, "{}", r.all());
     assert_eq!(state["outgoing"], json!("deny"));
@@ -1822,10 +1788,10 @@ fn a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_ne
     let (r, states) = run_many(dir.path(), &hosts, Opts::default());
     for (name, spec) in &refused {
         assert!(
-            host_matches(&r.stdout, &format!(r"\b{name}\s*:.*failed=1")),
+            text::any_line(&r.stdout, &format!(r"\b{name}\s*:.*failed=1")),
             "{name}"
         );
-        let lines = log(dir.path(), Some(name));
+        let lines = log(dir.path(), name);
         assert!(mutations(&lines).is_empty(), "{lines:?}");
         assert_eq!(states[*name], spec.state, "{name}");
     }
@@ -1841,7 +1807,7 @@ fn a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_ne
         r.stdout
     );
     assert!(
-        host_matches(&r.stdout, r"\bfresh\s*:.*failed=0"),
+        text::any_line(&r.stdout, r"\bfresh\s*:.*failed=0"),
         "{}",
         r.stdout
     );
@@ -1857,7 +1823,7 @@ fn a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_ne
         "{fresh:?}"
     );
     assert!(
-        host_matches(&r.stdout, r"\bahead\s*:.*failed=0"),
+        text::any_line(&r.stdout, r"\bahead\s*:.*failed=0"),
         "{}",
         r.stdout
     );
@@ -1869,4 +1835,39 @@ fn a_new_denial_is_refused_behind_held_outbound_allows_and_lands_first_beside_ne
         "{kept:?}"
     );
     assert_eq!(rules(ahead)[denied], tag("out-deny", "any", "198.51.100.1"));
+}
+
+#[test]
+fn controller_cidr_outside_the_ssh_cidrs_is_refused_before_any_rule_is_added() {
+    // A firewall without the orchestrator's SSH source would orphan the host: refused before
+    // any rule is added or the firewall is enabled.
+    let dir = TempDir::new().unwrap();
+    let (r, states) = run_many(
+        dir.path(),
+        &[(
+            "target",
+            Host {
+                vars: Some(json!({"firewall_controller_cidr": "198.51.100.0/24"})),
+                ..Host::default()
+            },
+        )],
+        Opts::default(),
+    );
+    assert!(!r.ok, "{}", r.all());
+    assert!(
+        text::any_line(&r.stdout, r"\btarget\s*:.*failed=1"),
+        "{}",
+        r.stdout
+    );
+    assert!(
+        r.stdout.contains("is not in firewall_ssh_cidrs"),
+        "{}",
+        r.stdout
+    );
+    let lines = log(dir.path(), "target");
+    assert!(mutations(&lines).is_empty(), "{lines:?}");
+    assert!(
+        states["target"].is_none(),
+        "the stub never ran a write: no state file"
+    );
 }

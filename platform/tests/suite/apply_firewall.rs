@@ -361,18 +361,17 @@ fn controller_cidr_is_checked_before_enable_and_the_ssh_allows() {
     // Semaphore reaches every host over SSH; a firewall without its source orphans the host.
     // Compared in the spelling ufw stores (behaviour: apply_firewall_convergence_playbook.rs).
     let pb = text::read(PLAYBOOK);
-    let line_of = |needle: &str| {
-        pb.lines()
-            .position(|l| l.contains(needle))
-            .unwrap_or_else(|| panic!("{PLAYBOOK}: no line containing {needle:?}"))
-    };
-    let check = line_of("(firewall_controller_cidr | ufw_address) in _fw_ssh_cidrs_stored");
-    assert!(
-        check < line_of("ufw --force enable"),
-        "controller check after enable"
+    let refusal = "Refuse a firewall that would drop the orchestrator's SSH source (anti-orphan)";
+    assert_contains(
+        &task_block(&pb, refusal),
+        "(firewall_controller_cidr | ufw_address) in _fw_ssh_cidrs_stored",
+        "the refusal task",
     );
-    assert!(
-        check < line_of(SSH_ALLOW),
-        "controller check after the SSH allows"
+    let name = regex::escape("Refuse a firewall that would drop the orchestrator's SSH source");
+    assert_precedes(&pb, &name, "ufw --force enable");
+    assert_precedes(
+        &pb,
+        &name,
+        r#"name: "Allow SSH \(22/tcp\) from each admin CIDR"#,
     );
 }
