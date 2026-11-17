@@ -16,16 +16,16 @@
 //!
 //! A refusal panics with the file, the mapping key and the scalar. Each one is a node PyYAML
 //! reads in a way JSON cannot keep, or one this loader will not read the way PyYAML does:
-//! - a tag (`!!str`, `!custom`): PyYAML's loader nulls a tagged value. No repository file has one,
-//!   so the loader refuses rather than read it differently;
+//! - a tag. The Python helper's loader (`playbook_yaml.Loader`) reads a local tag such as
+//!   `!custom` as null and keeps a core tag's value (`!!str x` is `x`). No repository file has a
+//!   tag, so this loader refuses every one rather than copy that split;
 //! - a plain timestamp, `.inf` or `.nan`, or an integer beyond `i64`;
 //! - a mapping key that is not a string. PyYAML keeps `200`, `yes` or `[a]` as a key; a JSON
 //!   object key is a string.
 //!
 //! `<<` merges follow [`yaml`]'s builder: a mapping, or a list of mappings read last-first, is
-//! merged under the explicit keys, and a later duplicate key wins. Over every repository file,
-//! `support_lift` holds the two loaders to the same structure and strings, and
-//! `support_lift_pyyaml` holds this one to PyYAML's values, numbers included.
+//! merged under the explicit keys, and a later duplicate key wins. What the tests hold this loader
+//! to is in `suite/support_lift.rs`.
 //!
 //! | `playbook_yaml.py` | Rust |
 //! |---|---|
