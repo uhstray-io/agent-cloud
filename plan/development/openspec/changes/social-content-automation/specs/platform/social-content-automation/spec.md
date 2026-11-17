@@ -1,6 +1,6 @@
 ## Purpose
 
-Provides AI-assisted drafting of social posts for the instance's brands, with a person's approval in front of every scheduled or published post. Activepieces flows generate and check drafts through the inference gateway, hand them to the publishing service as drafts, and schedule a draft only after a person has approved that exact revision. The publishing service keeps scheduling and publishing, as the `platform/postiz-publishing` capability describes.
+Provides AI-assisted drafting of social posts for the instance's brands, with a person's approval in front of every generated post that is scheduled or published. Activepieces flows generate and check drafts through the inference gateway, hand them to the publishing service as drafts, and schedule a draft only after a person has approved that exact revision. The publishing service keeps scheduling and publishing, as the `platform/postiz-publishing` capability describes.
 
 ## ADDED Requirements
 

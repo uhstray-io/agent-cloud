@@ -4,7 +4,7 @@ Needs nothing outside this change. Both tasks are done.
 
 - [x] 1.1 Write plan 28 and this change (AC-793)
       Plane: AC-793. Blocked by: none.
-- [x] 1.2 Decision: approval policy — drafts without approval, every schedule/publish approved, approval records approver + revision (AC-795, Joseph 2026-11-12)
+- [x] 1.2 Decision: approval policy — drafts without approval, every schedule/publish of a generated post approved, approval records approver + revision (AC-795, Joseph 2026-11-12)
       Plane: AC-795. Blocked by: none. Gate: `openspec validate social-content-automation --strict` passes with Requirement "Drafts need no approval; scheduling and publishing need a recorded approval" in the spec; its scenario "Schedule refused without a recorded approval" is proven at the phase 4 gate (4.6) and at 5.1.
 
 ## 2. Brand profiles (needs the schema-validator decision)
