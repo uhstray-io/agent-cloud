@@ -7,19 +7,19 @@ Every task is safe to rerun. Nothing here runs against production until the oper
 - [x] 1.2 Decide how Activepieces reaches the gateway: internal listener with a step-ca client leaf (AC-783)
       Phase gate: `openspec validate agentgateway-content-generation --strict` passes, and the sync parser lists the ten open tasks of this change. This phase is planning, so no runtime spec scenario applies.
 
-## 2. Text path
+## 2. Text path (blocked: deploy-activepieces delivers the Activepieces host)
 - [ ] 2.1 Spike: can an Activepieces piece present a client certificate; if not, add an mTLS egress sidecar (AC-826)
-      Acceptance: a recorded yes or no for the piece tested. On no, add the sidecar to the Activepieces compose project, on an internal network only.
+      Acceptance: a recorded yes or no for the piece tested; on no, add the sidecar to the Activepieces compose project, on an internal network only. Also a recorded yes or no on whether the piece or sidecar that holds the leaf opens the leaf files on each call (plan 27, D8).
 - [ ] 2.2 Issue the Activepieces host a client leaf, add its leaf name to agw_client_cert_allowlist, give it a Renew Internal Certs proof path (AC-825)
-      Acceptance: Renew Internal Certs proves the leaf (scenario "Allowlisted leaf proven at renewal"), and the running piece or sidecar presents the renewed leaf (plan 27, D8). The allowlist takes leaf names, not SANs (the `_allowlist` check in deploy-agentgateway.yml). Follows the rollout order in plan 27, Phase 1 (the o11y probe leaf's precedent): declarations, Deploy step-ca, one Deploy agentgateway carrying this entry and task 2.3, Apply Firewall on the gateway host, Issue Internal Leaf, the Activepieces deploy placing the CA bundle and the gateway name, then Renew Internal Certs.
+      Acceptance: `Issue Internal Leaf (Dev)` with `leaf_action=inspect` passes for the leaf on the Activepieces host. The first `Renew Internal Certs (Dev)` run that renews the leaf reports a proof for it, not `left alone` (production-internal-ca requirement "Leaves are renewed on a schedule and the new certificate is in use"). The allowlist takes leaf names, not SANs (inference-gateway-agentgateway task 6.1). Blocked by spike 2.1 (AC-826) and AC-928 (plan 27, D8); AC-928 closes without work if AC-826 shows the holder opens the leaf files on each call. Follows the rollout order in plan 27, Phase 1.
 - [ ] 2.3 Enroll the activepieces identity with its budget and model allow-list (AC-785)
       Acceptance: the rendered configuration gives it the tokens_per_hour value from site-config and a text-only allowed_models (scenario "Content identity budget and allow-list"). `agw_verify_client` names another identity, so the deploy's keyed verify does not run as it (scenario "Content identity is not the verify identity").
 - [ ] 2.4 Validation gate (text): chat and json_schema completions through the gateway from the Activepieces host; keyless call refused (AC-791)
-      Proven by the spec scenarios "Content identity budget and allow-list", "Keyless request with an admitted certificate" and "Request without a client certificate". Records the measured token usage per draft against the budget assumptions in plan 27. Run again if task 3.1 moves the pin.
+      Precondition: the gateway's listener TLS is on (inference-gateway-agentgateway requirement "The gateway admits only declared client certificates"), shown by the leaf's own `Renew Internal Certs (Dev)` proof for the Activepieces host: its keyless 401 with the leaf (`renew-internal-certs.yml:854-879`, which needs the TLS handshake) and its no-certificate refusal (`:883-892`). Proven by the spec scenarios "Content identity budget and allow-list" and "Keyless request from the Activepieces host". Records the measured token usage per draft against the budget assumptions in plan 27. Run again if task 3.1 moves the pin.
 
 ## 3. Image path (blocked: the dgx-spark image model fit test and serving handoff)
 - [ ] 3.1 Verify the pinned gateway proxies the OpenAI images API; upgrade if not; check per-key request limits in the same release (AC-786)
-      Acceptance: a recorded result for the release tested, from exercising the route. Records whether image responses carry usage. Any pin change goes through `AGW_IMAGE` in compose.yml and a deploy.
+      Acceptance: a recorded result for the release tested, from exercising the route. Records whether image responses carry usage. Any pin change moves every pin site plan 27 defines in Verified facts, together, then a deploy.
 - [ ] 3.2 Add the image upstream and route by model name (AC-787)
       Acceptance: a template branch, a validator change, a new existing secret seeded with Seed OpenBao Key and never generated, and tests in the pattern of the agentgateway-openrouter change. The image model joins the activepieces allow-list only once task 3.3's limit is in force.
 - [ ] 3.3 Choose and encode a per-identity request limit, images first (AC-788)
