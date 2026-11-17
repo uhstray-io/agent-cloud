@@ -1,6 +1,6 @@
 ## Purpose
 
-Provides AI-assisted drafting of social posts for the instance's brands, with a person's approval in front of every generated post the pipeline schedules or publishes (scheduling by hand is Open Question 8). Activepieces flows generate and check drafts through the inference gateway, hand them to the publishing service as drafts, and schedule a draft only after a person has approved that exact revision. The publishing service keeps scheduling and publishing, as the `platform/postiz-publishing` capability describes.
+Provides AI-assisted drafting of social posts for the instance's brands, with a person's approval in front of every generated post the pipeline schedules or publishes (scheduling by hand is Open Question 8). Activepieces flows generate and check drafts through the inference gateway, hand them to the publishing service as drafts, and schedule a draft only after a person has approved that exact revision. The publishing service keeps scheduling and publishing, as the `platform/postiz-publishing` capability describes. In this capability, "scheduled" and "published" mean scheduled or published by the pipeline (the flows and the handoff); scheduling by hand in the publishing interface is outside it (plan 28 Open Question 8).
 
 ## ADDED Requirements
 
@@ -8,7 +8,7 @@ Provides AI-assisted drafting of social posts for the instance's brands, with a 
 
 Generation MAY create a draft without an approval. No flow and no handoff SHALL schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post. A member scheduling a generated draft by hand in the publishing interface is outside this requirement until plan 28 Open Question 8 is decided.
 
-An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media, its target account and its publish time, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
+An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media, its target account, its publish time and its platform settings, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
 
 #### Scenario: Draft created without approval
 
@@ -124,7 +124,7 @@ The checks cover the length limit of each target platform, a list of banned term
 
 ### Requirement: Each draft targets exactly one mapped account of its brand
 
-A draft MUST name exactly one target account. A handoff MUST refuse a target integration that the declared brand mapping does not assign to the draft's brand, before it creates any post. A generated post to any other account MUST have its own recorded approval.
+A draft MUST name exactly one target account. A handoff MUST refuse a target integration that the declared brand mapping does not assign to the draft's brand, before it creates any post. A handoff MUST NOT schedule a generated post to another account without that post's own recorded approval.
 
 #### Scenario: Target integration not mapped to the brand is refused
 
@@ -139,7 +139,7 @@ A draft MUST name exactly one target account. A handoff MUST refuse a target int
 #### Scenario: Fan-out to another account requires its own approval
 
 - **WHEN** an approved draft is to be posted to a second account
-- **THEN** that second post has its own recorded approval before it is scheduled
+- **THEN** the handoff schedules that second post only with its own recorded approval
 
 ### Requirement: Flows and connections are declared as code and applied by playbook
 
