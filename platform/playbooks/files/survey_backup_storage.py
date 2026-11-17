@@ -4,14 +4,18 @@
 Two modes, JSON on stdin, JSON on stdout:
 
   plan       {nodes, storage_listings, jobs, storage_config} -> which (node, storage) pairs to
-             read and which prune retentions to dry-run on each. A shared storage is read once.
+             read, which prune retentions to dry-run on each, and whether to read the Ceph listing
+             (`ceph`, the one gate for it). A shared storage is read once.
   summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads, disk_reads, ceph_reads}
              -> the receipt the playbook prints. disk_reads and ceph_reads are optional, so a payload
              without them still summarizes (their sections then read "not read" or are empty).
 
 The receipt carries storage IDs, guest IDs and names, sizes, dates and job settings, the CephFS
-filesystems and pools, and each node's disk device paths, models, serials and in-use flag. It
-never carries a server address, export, mount path, volume ID, note text, WWN or token.
+filesystems and pools, and each node's disks: device path, size, model, vendor, serial, Proxmox's
+`used` tag, the in-use flag that tag implies, and OSD id. A CephFS storage shares a filesystem with
+another when their filesystem names agree: the storage's `fs-name`, or the cluster's only filesystem.
+A storage whose filesystem resolves neither way is unknown, and so is what it shares. The receipt
+never carries a server address, export, mount path, volume ID, note text, WWN, SMART health or token.
 A refusal exits 1 with {"refusal": "..."} so the play can print why without the input.
 """
 
@@ -179,7 +183,7 @@ def plan(data):
                           "retentions": sorted(wanted)})
     if not reads:
         raise Refusal("No active backup-capable storage is visible to the Proxmox token.")
-    return {"reads": reads}
+    return {"reads": reads, "ceph": any(_own_cephfs(c) for c in data.get("storage_config") or [])}
 
 
 def _gib(n):
@@ -257,40 +261,71 @@ def _ceph_problem(reads):
     return None
 
 
+CEPH_WHAT = {"fs": "Ceph fs", "pool": "Ceph pool"}
+
+
+def _own_cephfs(cfg):
+    """A CephFS storage on this cluster's own Ceph: enabled, with no monitor list (a list names another cluster)."""
+    return cfg.get("type") == "cephfs" and "monhost" not in cfg and not _flag(cfg.get("disable"))
+
+
+def _cephfs_configs(config):
+    """The enabled CephFS storages in storage-ID order. A disabled one is left out of every CephFS figure."""
+    return sorted((c for c in config.values() if c.get("type") == "cephfs" and not _flag(c.get("disable"))),
+                  key=lambda c: str(c.get("storage")))
+
+
 def _cephfs(config, ceph_reads):
     """Each CephFS storage's filesystem, its data pools and the storages that share it, and those pools' usage.
 
     A storage with a monitor list (`monhost`) names another cluster: it is listed as external with no
-    filesystem, and its monitors, subdir and path never print.
+    filesystem, and its monitors, subdir and path never print. A disabled storage is left out.
     """
-    # The planner skips the Ceph reads when no CephFS storage uses this cluster's Ceph: those items carry "skipped".
+    # The playbook reads the Ceph listing only when the plan's `ceph` flag is set (plan(): the one gate).
+    # A looped read that the flag skipped carries "skipped" and is not a read.
     reads = {r.get("item"): r for r in ceph_reads if not r.get("skipped")}
-    if not reads:
+    if not any(_own_cephfs(c) for c in config.values()):
         status, reason = "not read", "no CephFS storage on this cluster's own Ceph"
+    elif not reads:
+        status, reason = "not read", "the Ceph listing was not read"
     else:
         reason = _ceph_problem(reads)
         status = "unavailable" if reason else "read"
-    listed = {item: (r.get("json") or {}).get("data") or [] for item, r in reads.items() if r.get("status") == 200}
+    listed = {}
+    for item, r in reads.items():
+        if r.get("status") == 200:
+            data = (r.get("json") or {}).get("data")
+            if not isinstance(data, list):
+                raise Refusal(f"Proxmox returned no {CEPH_WHAT.get(item, item)} list; nothing was summarized.")
+            listed[item] = data
     filesystems, pools = listed.get("fs", []), listed.get("pool", [])
     rows = []
-    for cfg in sorted((c for c in config.values() if c.get("type") == "cephfs"), key=lambda c: str(c.get("storage"))):
+    for cfg in _cephfs_configs(config):
         external = "monhost" in cfg
         if external:
-            filesystem = None
+            filesystem, source = None, "external"
         elif cfg.get("fs-name"):
-            filesystem = cfg["fs-name"]
-        elif len(filesystems) == 1:
-            filesystem = filesystems[0].get("name")
+            filesystem, source = cfg["fs-name"], "fs-name"
+        elif len(filesystems) == 1 and filesystems[0].get("name"):
+            filesystem, source = filesystems[0]["name"], "only filesystem"
         else:
-            filesystem = None
+            filesystem, source = None, "unresolved"
         entry = next((f for f in filesystems if f.get("name") == filesystem), {}) if filesystem else {}
         rows.append({"storage": cfg.get("storage"), "external": external, "filesystem": filesystem,
-                     "data_pools": list(entry.get("data_pools") or [])})
+                     "filesystem_source": source, "data_pools": list(entry.get("data_pools") or [])})
+    # An unresolved storage could sit on any filesystem, so while one is unresolved no internal storage can
+    # claim a sharer. An external storage names another cluster's filesystem, so it shares none here.
+    internal = [row for row in rows if not row["external"]]
+    unresolved = any(row["filesystem_source"] == "unresolved" for row in internal)
     for row in rows:
-        row["shares_filesystem_with"] = sorted(
-            other["storage"] for other in rows
-            if other is not row and row["filesystem"] is not None and not row["external"]
-            and not other["external"] and other["filesystem"] == row["filesystem"])
+        if row["external"]:
+            row["shares_filesystem_with"] = []
+        elif unresolved:
+            row["shares_filesystem_with"] = None
+        else:
+            row["shares_filesystem_with"] = sorted(
+                other["storage"] for other in internal
+                if other is not row and other["filesystem"] == row["filesystem"])
     named = {pool for row in rows for pool in row["data_pools"]}
     usage = [{"pool": p.get("pool_name"), "used_gib": _gib(p.get("bytes_used")),
               "percent_used": None if p.get("percent_used") is None else round(float(p["percent_used"]), 1),
@@ -302,8 +337,9 @@ def _cephfs(config, ceph_reads):
 def _disks(disk_reads):
     """Each online node's disks as Proxmox lists them.
 
-    A disk is in use exactly when Proxmox sets `used` on it (pve-storage Diskmanage.pm disk_is_used).
-    WWN and SMART health are never printed. A node whose disk list the token may not read is unavailable.
+    A disk is in use exactly when Proxmox sets `used` on it (pve-storage Diskmanage.pm disk_is_used,
+    owner-verified on master). WWN and SMART health are never printed. A node whose disk list the token
+    may not read is unavailable.
     """
     nodes = []
     for read in disk_reads:
@@ -315,14 +351,18 @@ def _disks(disk_reads):
             continue
         if read.get("status") != 200:
             raise Refusal(f"Proxmox answered {read.get('status')} listing the disks of node {node}.")
-        raw = (read.get("json") or {}).get("data") or []
-        unused = [d for d in raw if not d.get("used")]
+        raw = (read.get("json") or {}).get("data")
+        if not isinstance(raw, list):
+            raise Refusal(f"Proxmox returned no disk list for node {node}; nothing was summarized.")
+        # Each disk's in-use flag is computed once here; the unused totals derive from the same flag.
+        flagged = sorted(((d, bool(d.get("used"))) for d in raw), key=lambda pair: str(pair[0].get("devpath")))
+        unused = [d for d, in_use in flagged if not in_use]
         nodes.append({
             "node": node, "status": "read", "reason": None,
             "disks": [{"devpath": d.get("devpath"), "size_gib": _gib(d.get("size")), "model": d.get("model"),
                        "vendor": d.get("vendor"), "serial": d.get("serial"), "used": d.get("used") or None,
-                       "in_use": bool(d.get("used")), "osdid": d.get("osdid")}
-                      for d in sorted(raw, key=lambda d: str(d.get("devpath")))],
+                       "in_use": in_use, "osdid": d.get("osdid")}
+                      for d, in_use in flagged],
             "unused_count": len(unused), "unused_gib": _gib(sum(int(d.get("size") or 0) for d in unused)),
         })
     return sorted(nodes, key=lambda n: n["node"])
@@ -440,10 +480,20 @@ def summarize(data):
         files = {str(v.get("volid")).split(":", 1)[-1]: int(v.get("size") or 0) for v in volumes}
         measured.append((storages[-1], (total, used, files)))
 
+    cephfs = _cephfs(config, data.get("ceph_reads", []))
+    cephfs_rows = {row["storage"]: row for row in cephfs["storages"]}
     shared_backends = []
     for (a, (a_total, a_used, a_files)), (b, (b_total, b_used, b_files)) in combinations(measured, 2):
         # Node-local storages on different nodes are separate disks, whatever their paths say.
         if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
+            continue
+        row_a, row_b = cephfs_rows.get(a["storage"]), cephfs_rows.get(b["storage"])
+        if row_a and row_b and row_a["filesystem"] is not None and row_b["filesystem"] is not None:
+            # Two CephFS storages with a known filesystem: the name decides. The byte counts are not compared,
+            # since whether two subdirectories of one filesystem overlap is unknown, so no byte inference either.
+            if row_a["filesystem"] == row_b["filesystem"]:
+                shared_backends.append({"storages": [a["storage"], b["storage"]],
+                                        "reason": "same CephFS filesystem", "combined_unaccounted_gib": None})
             continue
         reason = _same_backend(config.get(a["storage"], {}), config.get(b["storage"], {}))
         if not reason and a_total and a_total == b_total and a_used == b_used:
@@ -476,7 +526,7 @@ def summarize(data):
                          "missing_guests": sorted(v for v in guests if v not in names)})
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows,
             "guests": _guests(storages),
-            "cephfs": _cephfs(config, data.get("ceph_reads", [])),
+            "cephfs": cephfs,
             "disks": _disks(data.get("disk_reads", []))}
 
 

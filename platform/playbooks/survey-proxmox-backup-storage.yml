@@ -18,10 +18,12 @@
 #     path inside the other, or identical total and used bytes), whose usage must be read together;
 #   - every backup job's schedule, node, storage, retention and guests it names that no longer exist;
 #   - the newest archive per guest on each storage, so a guest's last backup is visible across storages;
-#   - whether each CephFS storage shares a filesystem with another, and that filesystem's pools (a CephFS
-#     with a monitor list names an external cluster and is not read);
-#   - per online node, the installed disks: device path, model, serial, and whether Proxmox marks each
-#     in use (its own rule: a disk is in use when its `used` field is set).
+#   - whether each CephFS storage shares a filesystem with another, decided by filesystem name (its
+#     fs-name, or the cluster's only filesystem; unknown when neither resolves), and that filesystem's
+#     pools (a CephFS with a monitor list names an external cluster and is not read; a disabled one is
+#     left out);
+#   - per online node, the installed disks: device path, size, model, vendor, serial, Proxmox's `used`
+#     tag and the in-use flag it implies (a disk is in use when its `used` field is set), and OSD id.
 #
 # It writes nothing to Proxmox: every Proxmox request is a GET, and it runs identically under
 # --check. The token-bearing requests are no_log. On success only the summarizer's receipt is
@@ -141,21 +143,6 @@
       no_log: true
       check_mode: false
 
-    # The Ceph listing is read only when a CephFS storage uses this cluster's own Ceph (no monitor list),
-    # through one online node. A 403 or 500 is accepted here and reported by the summarizer as unavailable
-    # with its status, not as a failed survey.
-    - name: Read the Ceph filesystems and pools
-      ansible.builtin.uri:
-        url: "{{ _pve_host }}/api2/json/nodes/{{ _online_nodes[0] }}/ceph/{{ item }}"
-        status_code: [200, 403, 500]
-        headers:
-          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
-      loop: [fs, pool]
-      register: _ceph_reads
-      when: _cluster_reads.results[1].json.data | selectattr('type', 'equalto', 'cephfs') | rejectattr('monhost', 'defined') | list | length > 0
-      no_log: true
-      check_mode: false
-
     - name: Plan which backup storages to read and which retentions to preview
       ansible.builtin.command:
         argv: [python3, "{{ _survey }}", plan]
@@ -178,6 +165,21 @@
     - name: Keep the survey plan
       ansible.builtin.set_fact:
         _plan: "{{ _plan_run.stdout | from_json }}"
+
+    # The Ceph listing is read only when the plan's `ceph` flag is set (plan() in the helper: a CephFS storage
+    # on this cluster's own Ceph, enabled, with no monitor list), through one online node. A 403 or 500 is
+    # accepted here and reported by the summarizer as unavailable with its status, not as a failed survey.
+    - name: Read the Ceph filesystems and pools
+      ansible.builtin.uri:
+        url: "{{ _pve_host }}/api2/json/nodes/{{ _online_nodes[0] }}/ceph/{{ item }}"
+        status_code: [200, 403, 500]
+        headers:
+          Authorization: "PVEAPIToken={{ _pve_token_id }}={{ _pve_secret }}"
+      loop: [fs, pool]
+      register: _ceph_reads
+      when: _plan.ceph
+      no_log: true
+      check_mode: false
 
     - name: Read every volume on each backup storage
       ansible.builtin.uri:

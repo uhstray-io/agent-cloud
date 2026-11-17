@@ -10,6 +10,7 @@
 
 use agent_cloud_tests::process::scrubbed;
 use agent_cloud_tests::repo;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 const HELPER: &str = "platform/playbooks/files/survey_backup_storage.py";
@@ -127,7 +128,7 @@ fn cephfs_storages_on_one_filesystem_list_each_other_and_an_external_one_names_n
 
     // Assert: the whole cephfs section, the pool's usage rounded as given, and no sentinel printed.
     assert!(
-        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "data_pools": [], "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "used_gib": 1.0, "percent_used": 37.4, "replicas": 3}]}"#),
+        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "filesystem_source": "external", "data_pools": [], "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "used_gib": 1.0, "percent_used": 37.4, "replicas": 3}]}"#),
         "{out}"
     );
     for sentinel in ["MONHOST-SENTINEL", "PATH-SENTINEL", "SUBDIR-SENTINEL"] {
@@ -152,7 +153,7 @@ fn a_ceph_listing_the_token_may_not_read_makes_cephfs_unavailable_and_names_sys_
 
     // Assert: the section is unavailable with the privilege it needs; the storage is still listed, with no filesystem.
     assert!(
-        out.contains(r#""cephfs": {"status": "unavailable", "reason": "HTTP 403: needs Sys.Audit or Datastore.Audit on /", "storages": [{"storage": "cephA", "external": false, "filesystem": null, "data_pools": [], "shares_filesystem_with": []}], "pools": []}"#),
+        out.contains(r#""cephfs": {"status": "unavailable", "reason": "HTTP 403: needs Sys.Audit or Datastore.Audit on /", "storages": [{"storage": "cephA", "external": false, "filesystem": null, "filesystem_source": "unresolved", "data_pools": [], "shares_filesystem_with": null}], "pools": []}"#),
         "{out}"
     );
 }
@@ -177,4 +178,195 @@ fn a_disks_serial_prints_and_its_wwn_and_health_never_do() {
     for absent in ["WWN-SENTINEL", "HEALTH-SENTINEL", r#""wwn""#, r#""health""#] {
         assert!(!out.contains(absent), "{absent} printed: {out}");
     }
+}
+
+/// Runs `summarize` on a JSON payload and returns the whole process output, whatever the exit code.
+fn run(payload: &Value) -> std::process::Output {
+    let home = TempDir::new().expect("a temporary home");
+    let script = repo::path(HELPER);
+    scrubbed("python3", home.path())
+        .args(["-I", script.to_str().expect("utf-8 path"), "summarize"])
+        .write_stdin(payload.to_string())
+        .assert()
+        .get_output()
+        .clone()
+}
+
+/// The receipt of a payload the helper must summarize (exit 0), parsed.
+fn receipt(payload: &Value) -> Value {
+    let out = run(payload);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    serde_json::from_slice(&out.stdout).expect("the receipt is JSON")
+}
+
+/// The refusal text of a payload the helper must refuse (exit 1).
+fn refusal(payload: &Value) -> String {
+    let out = run(payload);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let body: Value = serde_json::from_slice(&out.stdout).expect("a refusal is JSON");
+    body["refusal"]
+        .as_str()
+        .expect("a refusal string")
+        .to_owned()
+}
+
+const TOTAL: u64 = 107_374_182_400;
+
+/// One CephFS storage read on node n1 with `used` bytes: its plan entry and its (empty) content read.
+fn cephfs_read(storage: &str, used: u64) -> (Value, Value) {
+    let status =
+        json!({"type": "cephfs", "shared": 1, "total": TOTAL, "used": used, "avail": TOTAL - used});
+    (
+        json!({"node": "n1", "storage": storage, "status": status}),
+        json!({"item": {"node": "n1", "storage": storage}, "status": 200, "json": {"data": []}}),
+    )
+}
+
+/// A payload over CephFS storages, each (storage ID, used bytes), with the cluster's storage config and
+/// the Ceph filesystem listing. The pool listing is empty.
+fn cephfs_payload(storages: &[(&str, u64)], config: Value, filesystems: Value) -> Value {
+    let (plan, content): (Vec<Value>, Vec<Value>) = storages
+        .iter()
+        .map(|&(s, used)| cephfs_read(s, used))
+        .unzip();
+    json!({
+        "plan": {"reads": plan}, "vms": [], "jobs": [], "prune_reads": [],
+        "storage_config": config, "content_reads": content,
+        "ceph_reads": [
+            {"item": "fs", "status": 200, "json": {"data": filesystems}},
+            {"item": "pool", "status": 200, "json": {"data": []}}
+        ]
+    })
+}
+
+/// The `cephfs` rows of a receipt, in storage-ID order.
+fn cephfs_rows(out: &Value) -> Vec<Value> {
+    out["cephfs"]["storages"]
+        .as_array()
+        .expect("cephfs storage rows")
+        .clone()
+}
+
+#[test]
+fn cephfs_storages_on_different_filesystems_share_nothing_even_with_identical_bytes() {
+    // Arrange: cephA and cephB name different filesystems and have identical total and used bytes.
+    // Byte counts alone must not pair them: the name decides, and the names differ.
+    let payload = cephfs_payload(
+        &[("cephA", 10_737_418_240), ("cephB", 10_737_418_240)],
+        json!([
+            {"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"},
+            {"storage": "cephB", "type": "cephfs", "content": "backup", "fs-name": "fsB"}
+        ]),
+        json!([{"name": "fsA", "data_pools": ["a_data"]}, {"name": "fsB", "data_pools": ["b_data"]}]),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: no shared-backend pair, and neither storage shares a filesystem with the other.
+    assert_eq!(out["shared_backends"], json!([]), "{out}");
+    let rows = cephfs_rows(&out);
+    assert_eq!(rows.len(), 2, "{out}");
+    for row in &rows {
+        assert_eq!(row["filesystem_source"], json!("fs-name"), "{out}");
+        assert_eq!(row["shares_filesystem_with"], json!([]), "{out}");
+    }
+}
+
+#[test]
+fn cephfs_storages_on_one_filesystem_by_name_share_it_and_no_byte_count_is_inferred() {
+    // Arrange: cephA and cephB both name fsA, with identical total and used bytes.
+    let payload = cephfs_payload(
+        &[("cephA", 10_737_418_240), ("cephB", 10_737_418_240)],
+        json!([
+            {"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"},
+            {"storage": "cephB", "type": "cephfs", "content": "backup", "fs-name": "fsA"}
+        ]),
+        json!([{"name": "fsA", "data_pools": ["a_data"]}, {"name": "fsB", "data_pools": []}]),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: one pair with the name as its reason and no combined figure (overlap of subdirectories is unknown).
+    assert_eq!(
+        out["shared_backends"],
+        json!([{"storages": ["cephA", "cephB"], "reason": "same CephFS filesystem", "combined_unaccounted_gib": null}]),
+        "{out}"
+    );
+    let rows = cephfs_rows(&out);
+    assert_eq!(rows[0]["shares_filesystem_with"], json!(["cephB"]), "{out}");
+    assert_eq!(rows[1]["shares_filesystem_with"], json!(["cephA"]), "{out}");
+}
+
+#[test]
+fn an_unresolved_cephfs_storage_leaves_every_sharing_claim_on_this_cluster_unknown() {
+    // Arrange: cephA names fsA. cephB names no filesystem and the cluster has two, so cephB is unresolved.
+    // The used bytes differ, so no byte-count pair is in play either.
+    let payload = cephfs_payload(
+        &[("cephA", 10_737_418_240), ("cephB", 21_474_836_480)],
+        json!([
+            {"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"},
+            {"storage": "cephB", "type": "cephfs", "content": "backup"}
+        ]),
+        json!([{"name": "fsA", "data_pools": ["a_data"]}, {"name": "fsB", "data_pools": ["b_data"]}]),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert: both rows say null, not [], so the resolved storage's claim is unknown too.
+    let rows = cephfs_rows(&out);
+    assert_eq!(rows[0]["filesystem_source"], json!("fs-name"), "{out}");
+    assert_eq!(rows[1]["filesystem_source"], json!("unresolved"), "{out}");
+    assert_eq!(rows[0]["shares_filesystem_with"], json!(null), "{out}");
+    assert_eq!(rows[1]["shares_filesystem_with"], json!(null), "{out}");
+}
+
+#[test]
+fn a_disabled_cephfs_storage_is_left_out_of_every_cephfs_figure() {
+    // Arrange: cephOff is disabled (`disable` set), so it is listed nowhere, not even as unavailable.
+    let payload = cephfs_payload(
+        &[("cephA", 10_737_418_240)],
+        json!([
+            {"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"},
+            {"storage": "cephOff", "type": "cephfs", "content": "backup", "fs-name": "fsB", "disable": 1}
+        ]),
+        json!([{"name": "fsA", "data_pools": ["a_data"]}, {"name": "fsB", "data_pools": ["b_data"]}]),
+    );
+
+    // Act
+    let out = receipt(&payload);
+
+    // Assert
+    let rows = cephfs_rows(&out);
+    assert_eq!(rows.len(), 1, "{out}");
+    assert_eq!(rows[0]["storage"], json!("cephA"), "{out}");
+    assert_eq!(out["cephfs"]["status"], json!("read"), "{out}");
+    assert!(!out.to_string().contains("cephOff"), "{out}");
+}
+
+#[test]
+fn a_disk_listing_that_answers_200_without_a_list_refuses_the_survey() {
+    // Arrange: n1 answers 200 with no data list. That is not a disk list, so nothing is summarized.
+    let payload = json!({
+        "plan": {"reads": []}, "vms": [], "storage_config": [], "jobs": [],
+        "content_reads": [], "prune_reads": [],
+        "disk_reads": [{"item": "n1", "status": 200, "json": {"data": null}}]
+    });
+
+    // Act
+    let text = refusal(&payload);
+
+    // Assert
+    assert!(text.contains("no disk list for node n1"), "{text}");
 }
