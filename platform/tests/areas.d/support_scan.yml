@@ -1,8 +1,14 @@
-# The static-scan helpers' own tests (repo::playbook_files and yaml::strings in src/lib.rs;
-# suite/support_scan.rs, and suite/support_scan_python.rs against playbook_yaml.py). A change
-# under platform/tests/ hits `full`, which is checked before any area, so this area names no
-# paths: it lists each module once, as the lanes listing test requires.
-paths: []
+# The static-scan helpers (repo::playbook_files and yaml::strings in src/lib.rs, AC-958):
+# suite/support_scan.rs pins them on fixtures, suite/support_scan_fixture.rs runs playbook_files
+# over a temporary tree (its order and refusals), and suite/support_scan_python.rs holds both to
+# playbook_yaml.py on every repository file.
+#
+# paths: playbook YAML, so a playbook-only change runs the comparison with playbook_yaml.py,
+# which reads repository content. Semaphore YAML, which the comparison also reads, is left out on
+# purpose, as in support_lift.yml: no area claims it, so a change there stays unclassified and
+# push and CI run every test. A change under platform/tests/** is a full trigger anyway.
+paths:
+  - "platform/playbooks/**/*.yml"
 tiers:
   static: [support_scan]
-  cli: [support_scan_python]
+  cli: [support_scan_fixture, support_scan_python]
