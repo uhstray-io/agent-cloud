@@ -22,13 +22,19 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 - **DERIVED:** A playbook that reads Proxmox's Ceph endpoints reports a field an older release lacks as unknown or partial, never as empty, and states the release range a figure's unit holds for. Proxmox passes Ceph's values through unscaled and changes their shape between releases: `percent_used` is a fraction of 1 only from Ceph 13 on, and the filesystem listing names every data pool only from pve-manager `fbb0eb7657`.
 - **APPLIES TO:** playbooks and helpers under `platform/playbooks/` that read `nodes/<node>/ceph/*` or other Proxmox endpoints passing Ceph data through.
 
-### L-004 · 2026-11-17 · playbooks
+### L-004 · 2026-11-17 · tooling
+
+- **ACCEPTED:** #1200 (AC-965).
+- **DERIVED:** rustup gives a directory override precedence over a `rust-toolchain.toml` in the same directory, so CI's `rustup override set` decides CI's compiler and the toolchain file decides only a workstation's. A Rust version change moves the file's `channel`, `Cargo.toml`'s `rust-version` and every `rustup toolchain install` and `rustup override set` in the Rust (tests) job together; `local_dev_setup::the_rust_toolchain_file_matches_cargo_and_ci` refuses a mismatch.
+- **APPLIES TO:** Rust version bumps: `platform/tests/rust-toolchain.toml`, `platform/tests/Cargo.toml` and the Rust (tests) job in `.github/workflows/lint-and-test.yml`.
+
+### L-005 · 2026-11-17 · playbooks
 
 - **ACCEPTED:** #1206 (AC-856).
 - **DERIVED:** Proxmox's `GET /access/permissions` maps each held privilege to its propagate flag, so a privilege is held when its key is present, whatever the value (0 included); Proxmox's own permission check tests only that the key is defined. A check that reads the value as the grant refuses a token Proxmox would allow.
 - **APPLIES TO:** playbooks and helpers under `platform/playbooks/` that read `access/permissions` to decide whether a token may act.
 
-### L-005 · 2026-11-17 · playbooks
+### L-006 · 2026-11-17 · playbooks
 
 - **ACCEPTED:** #1206 (AC-856).
 - **DERIVED:** A vmid that this cluster does not know is "gone" only on a storage no other cluster can write to: node-local storage, or CephFS on this cluster's own Ceph (no monitor list). On shared NFS, CIFS, PBS or an external CephFS the vmid may be another cluster's guest, and a storage whose sharing is unknown counts as shared. Work that deletes by "guest no longer exists" restricts itself the same way, or needs the operator to declare each pair.
