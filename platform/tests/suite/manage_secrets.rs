@@ -180,8 +180,9 @@ static STORE_CLI_NAME: LazyLock<Regex> =
 
 /// A `bao` or `vault` CLI call: the program name followed by an argument (at the start, or after
 /// whitespace, a path separator, a quote, `=`, or a shell separator `; & | ( `` ` ``), so options
-/// before the subcommand (`bao -address=x kv put`) and `x;bao kv put` do not hide it, while a path
-/// that only ends in `vault` is not a call.
+/// before the subcommand (`bao -address=x kv put`) and `x;bao kv put` do not hide it, while
+/// `vault` inside a path (`/opt/vault/data`) is not a call. A path ending in `vault` followed by
+/// another argument (`ls /opt/vault /tmp`) is flagged: the check errs toward refusing.
 static STORE_CLI: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?:^|[\s/"'=;&|(`\\])(?:bao|vault)["']?\s+\S"#).expect("a valid regex")
 });
@@ -306,6 +307,8 @@ fn a_store_cli_call_is_detected() {
         "ansible.builtin.command:\n  argv: \"{{ v }}\"\nvars:\n  v: [bao, kv, put, secret/x, a=b]\n",
         "ansible.builtin.command: \"{{ cli }} kv put secret/x a=b\"\nvars: {cli: bao}\n",
         "ansible.builtin.shell: \"{{ cli }} kv put secret/x a=b\"\nvars: {cli: /usr/local/bin/vault}\n",
+        "ansible.builtin.raw: vault kv put secret/x a=b\n",
+        "script: /usr/local/bin/bao kv put secret/x a=b\n",
     ] {
         assert!(runs_store_cli(&task(flagged)), "{flagged}");
     }
