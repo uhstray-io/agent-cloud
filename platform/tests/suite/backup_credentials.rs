@@ -644,17 +644,24 @@ fn git_ssh_names_only_the_deploy_key_with_strict_host_keys() {
     );
 }
 
-/// Whether an ssh command is exactly [`EXPECTED_GIT_SSH`], runs of whitespace collapsed to one
-/// space and the ends trimmed (the folded scalar's line breaks are spaces).
+/// Whether an ssh command is exactly [`EXPECTED_GIT_SSH`], byte for byte. Whitespace is not
+/// collapsed: a newline is a command separator to the shell git runs the command with, so a line
+/// break where a space belongs changes the command (the folded scalar parses to single spaces).
 fn pins_git_ssh(cmd: &str) -> bool {
-    cmd.split_whitespace().collect::<Vec<_>>().join(" ") == EXPECTED_GIT_SSH
+    cmd == EXPECTED_GIT_SSH
 }
 
 #[test]
 fn a_changed_ssh_command_is_refused() {
-    assert!(pins_git_ssh(&format!("  {EXPECTED_GIT_SSH}\n")));
+    assert!(pins_git_ssh(EXPECTED_GIT_SSH));
     let shadowed = EXPECTED_GIT_SSH.replacen("ssh ", "ssh -o StrictHostKeyChecking=no ", 1);
     assert!(!pins_git_ssh(&shadowed));
+    let split =
+        EXPECTED_GIT_SSH.replacen(" -o StrictHostKeyChecking", "\n-o StrictHostKeyChecking", 1);
+    assert!(
+        !pins_git_ssh(&split),
+        "a newline is a shell command separator"
+    );
 }
 
 #[test]
