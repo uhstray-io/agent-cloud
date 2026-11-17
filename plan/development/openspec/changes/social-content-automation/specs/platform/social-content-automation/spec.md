@@ -6,9 +6,9 @@ Provides AI-assisted drafting of social posts for the instance's brands, with a 
 
 ### Requirement: Drafts need no approval; scheduling and publishing need a recorded approval
 
-Generation MAY create a draft without an approval. No flow and no handoff SHALL schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post. The handoff's schedule step stays disabled in production until a conditional status change is shown on the pinned publishing service or the operator accepts the read-back window (plan 28 Open Question 9). A member scheduling a generated draft by hand in the publishing interface is outside this requirement until plan 28 Open Question 8 is decided.
+Generation MAY create a draft without an approval. No flow and no handoff SHALL schedule or publish a post a flow generated unless a recorded approval names the approver and the revision of that post. The handoff's schedule step SHALL stay disabled in production until a status change conditional on the approved revision is shown on the pinned publishing service, and once enabled it SHALL schedule only through that conditional change. A member scheduling a generated draft by hand in the publishing interface is outside this requirement until plan 28 Open Question 8 is decided.
 
-An approval SHALL apply only to the revision it names. A revision covers the post's text, its attached media, its target account, its publish time and its platform settings, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
+An approval SHALL apply only to the revision it names, identified by its draft and a per-draft revision number, never by content alone. A revision covers the post's text, its attached media, its target account, its publish time and its platform settings, so a change to any of them, a replaced image or a moved publish time included, creates a new revision, and that revision MUST NOT be scheduled or published on the strength of the earlier approval.
 
 #### Scenario: Draft created without approval
 
@@ -71,7 +71,7 @@ No flow SHALL create a post of any type other than draft, so none publishes imme
 
 ### Requirement: Handoff to the publishing service is exactly once
 
-A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes only while that post is still a draft; an edit to a revision whose post is scheduled is refused, so a scheduled post is never replaced. It SHALL schedule each approved revision at most once. A retried handoff MUST NOT create another post: it finds the post it already created when the publishing service lists it, and otherwise keeps the record pending for a person to resolve. A record a person marks abandoned closes its draft for good: the content returns only as a new draft with its own revision and approval. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
+A handoff SHALL keep at most one live publishing-service post per draft: a new revision replaces the post of the revision it supersedes only while that post is still a draft; an edit to a revision whose post is scheduled is refused, so a scheduled post is never replaced. It SHALL schedule each approved revision at most once. Its create and schedule records SHALL be keyed by the draft and the revision number. A retried handoff MUST NOT create another post: it finds the post it already created when the publishing service lists it, and otherwise keeps the record pending for a person to resolve. A record a person marks abandoned closes its draft for good: the content returns only as a new draft with its own revision and approval. Every create-post call SHALL go through the handoff, which MUST refuse a call past the publishing service's hourly create-post ceiling.
 
 #### Scenario: Retried handoff creates no second post
 
@@ -120,7 +120,7 @@ The checks cover the length limit of each target platform, a list of banned term
 
 #### Scenario: Schedule refused without a passing guardrail verdict
 
-- **WHEN** a handoff attempts to schedule a revision that has no passing guardrail verdict for its hash
+- **WHEN** a handoff attempts to schedule a revision that has no passing guardrail verdict
 - **THEN** the revision is not scheduled, and the refusal is recorded
 
 #### Scenario: Applied guardrail differs from the module
