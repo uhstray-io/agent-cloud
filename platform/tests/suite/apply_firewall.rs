@@ -8,9 +8,9 @@
 //! and every other add before enable) and the egress containment wiring that docs/MISTAKES.md
 //! 2.5 is about. The exact ufw command forms are built by filter_plugins/ufw_rules.py and
 //! asserted in test_ufw_rules_filter.py; runs against a stub ufw live in
-//! test_apply_firewall_convergence.py.
+//! apply_firewall_convergence_playbook.rs.
 //!
-//! Ports the static tests of platform/tests/test_apply_firewall.bats (plan 24). The checks read
+//! Ports the static tests of the deleted platform/tests/test_apply_firewall.bats (plan 24). The checks read
 //! the raw file text, as the BATS helpers did. BATS test 5 carried `! grep -qE ...` mid-body,
 //! which `set -e` never fails on; here that absence is a real assertion.
 //!
@@ -32,7 +32,7 @@
 //! | firewall: the default outbound policy is allow unless an enforced allowlist proves itself | `outbound_stays_allowed_unless_an_enforced_allowlist_proves_itself` |
 //! | firewall: the package index is refreshed only when ufw is missing | `package_index_is_refreshed_only_when_ufw_is_missing` |
 //! | apply-firewall: the upstream source may be a LIST, and a bare string still works | `upstream_source_may_be_a_list_or_a_string` |
-//! | apply-firewall: blank upstream sources stop before either detected-port rule | later: `apply_firewall_playbook` |
+//! | apply-firewall: blank upstream sources stop before either detected-port rule | `apply_firewall_playbook::blank_upstream_sources_stop_before_any_detected_port_rule` |
 //! | firewall: the orchestrator's SSH source must be one of the SSH CIDRs, checked BEFORE enable | `controller_cidr_is_checked_before_enable_and_the_ssh_allows` |
 
 use agent_cloud_tests::repo;
@@ -377,7 +377,7 @@ fn upstream_source_may_be_a_list_or_a_string() {
 #[test]
 fn controller_cidr_is_checked_before_enable_and_the_ssh_allows() {
     // Semaphore reaches every host over SSH; a firewall without its source orphans the host.
-    // Compared in the spelling ufw stores (behaviour: test_apply_firewall_convergence.py).
+    // Compared in the spelling ufw stores (behaviour: apply_firewall_convergence_playbook.rs).
     let pb = playbook();
     let line_of = |needle: &str| {
         pb.lines()

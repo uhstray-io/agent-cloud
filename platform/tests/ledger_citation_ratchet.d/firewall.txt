@@ -1,0 +1,1 @@
+2.5 platform/tests/test_apply_firewall.bats # ported (plan 24, AC-941), BATS file deleted; replaced by suite/apply_firewall.rs::every_egress_denial_is_judged_by_ufw_egress_problems and suite/apply_firewall_playbook.rs::blank_upstream_sources_stop_before_any_detected_port_rule

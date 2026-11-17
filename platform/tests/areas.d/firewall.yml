@@ -3,6 +3,8 @@
 paths:
   - "platform/playbooks/apply-firewall.yml"
   - "platform/playbooks/filter_plugins/ufw_rules.py"
-tiers: {}
+tiers:
+  cli: [apply_firewall_convergence]
+  playbook: [apply_firewall_playbook, firewall_allow_groups_playbook, apply_firewall_convergence_playbook]
 always:
   static: [apply_firewall]
