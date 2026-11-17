@@ -100,6 +100,16 @@ The checks cover the length limit of each target platform, a list of banned term
 - **WHEN** a draft passes every guardrail check
 - **THEN** it is offered for approval, and the guardrail step does not schedule it
 
+#### Scenario: Schedule refused without a passing guardrail verdict
+
+- **WHEN** a handoff attempts to schedule a revision that has no passing guardrail verdict for its hash
+- **THEN** the revision is not scheduled, and the refusal is recorded
+
+#### Scenario: Applied guardrail differs from the module
+
+- **WHEN** the apply playbook reads back an applied flow whose inlined guardrail does not match the repository module
+- **THEN** the run fails and names the flow
+
 ### Requirement: Each draft targets exactly one mapped account of its brand
 
 A draft MUST name exactly one target account. A handoff MUST refuse a target integration that the declared brand mapping does not assign to the draft's brand, before it creates any post. A post to any other account MUST have its own recorded approval.
