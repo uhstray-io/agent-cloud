@@ -220,7 +220,7 @@ repos:
         entry: >-
           sh -c 'python3 -c "import pytest" 2>/dev/null || { echo "ledger-citations: pytest is not installed for python3; skipped (CI still runs it)"; exit 0; };
           exec python3 -m pytest -q -p no:cacheprovider platform/tests/test_ledger_test_citations.py'
-        files: ^(docs/MISTAKES\.md|platform/tests/ledger_citation_ratchet\.txt)$
+        files: ^(docs/MISTAKES\.md|platform/tests/ledger_citation_ratchet\.txt|platform/tests/ledger_citation_ratchet\.d/[^/]+\.txt)$
         pass_filenames: false
         verbose: true
         stages: [pre-commit]
