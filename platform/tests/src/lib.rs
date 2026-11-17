@@ -337,9 +337,10 @@ pub mod yaml {
         out
     }
 
-    /// Every play, block and task in a document or task list, in file order:
-    /// `playbook_yaml.tasks(node)` for the static ports (AC-958). Only mappings are yielded and
-    /// descended into, and each one's task lists are read in the Python's key order. Nothing is
+    /// Every play, block and task in a document or task list, depth first, each one before its
+    /// children: `playbook_yaml.tasks(node)` for the static ports (AC-958). Only mappings are
+    /// yielded and descended into. Siblings come in list order, and each mapping's task lists in
+    /// the Python's key order, whatever order the file writes them in. Nothing is
     /// inherited. `support_scan_python` holds it to the Python on every scanned repository file.
     pub fn tasks(node: &Node) -> Vec<&Node> {
         const LISTS: [&str; 7] = [
