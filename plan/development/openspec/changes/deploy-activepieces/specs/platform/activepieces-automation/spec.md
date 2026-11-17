@@ -50,7 +50,7 @@ In production, before the owner exists, the application port published on the ho
 
 ### Requirement: Only platform-admins reach the application
 
-The service SHALL serve its interface only to members of the `platform-admins` group, who authenticate through the platform's identity provider at the reverse proxy. A request from anyone else MUST be refused before it reaches the application.
+The service SHALL serve its interface only to members of the `platform-admins` group (and to identity-provider superusers, as the platform's shared admin policy admits them), who authenticate through the platform's identity provider at the reverse proxy. A request from anyone else MUST be refused before it reaches the application.
 
 #### Scenario: A platform-admin passes the gate
 
