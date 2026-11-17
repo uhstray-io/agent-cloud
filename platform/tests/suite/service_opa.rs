@@ -55,7 +55,6 @@ use std::os::unix::fs::PermissionsExt;
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::text::{any_line, read};
-use agent_cloud_tests::yaml;
 use regex::Regex;
 
 const COMPOSE: &str = "platform/services/opa/deployment/compose.yml";
@@ -288,8 +287,10 @@ fn static_data_lives_under_the_catalog_namespace() {
 
 #[test]
 fn data_json_parses_with_the_agent_catalogs() {
-    // The BATS test read it with json.load. JSON is YAML for this file, so the suite's loader reads it.
-    let doc = yaml::load_one(&repo::path(DATA_JSON)).expect("data.json is empty");
+    // Strict JSON, as the BATS test's json.load read it: OPA loads data.json as JSON, so a comment
+    // or a single-quoted key a YAML reader would accept must fail here.
+    let doc: serde_json::Value = serde_json::from_str(&read(DATA_JSON))
+        .unwrap_or_else(|e| panic!("{DATA_JSON} is not valid JSON: {e}"));
     let catalog = doc
         .get("catalog")
         .unwrap_or_else(|| panic!("{DATA_JSON}: no `catalog` key"));
