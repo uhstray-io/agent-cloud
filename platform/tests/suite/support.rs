@@ -199,15 +199,13 @@ fn no_suite_test_starts_ansible_playbook_itself() {
         })
         .collect();
 
-    let found: Vec<String> = sources
-        .iter()
-        .flat_map(|(name, text)| {
-            spawn.find_iter(text).map(move |hit| {
-                let line = text[..hit.start()].matches('\n').count() + 1;
-                format!("{name}:{line}")
-            })
-        })
-        .collect();
+    let mut found = Vec::new();
+    for (name, text) in &sources {
+        for hit in spawn.find_iter(text) {
+            let line = text[..hit.start()].matches('\n').count() + 1;
+            found.push(format!("{name}:{line}"));
+        }
+    }
     assert!(
         found.is_empty(),
         "these start ansible-playbook without process::ansible_playbook: {}",
