@@ -37,5 +37,5 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 ### L-006 · 2026-11-17 · tests
 
 - **ACCEPTED:** #1196 (AC-961, AC-963).
-- **DERIVED:** A Rust test helper that replaces a Python or BATS one names in its doc every way its output differs from the original, found by running both on the same input; "same as the Python tests" is never written without that run. Python's `text=True` (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n` and raises on bytes that are not UTF-8, so a port that assumes the two agree passes or fails on line endings alone.
+- **DERIVED:** A Rust test helper that replaces a Python or BATS one names in its doc every way its output differs from the original, found by running both on the same input; "same as the Python tests" is never written without that run. Python's `text=True` (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n` and raises on bytes the locale's encoding cannot decode, so a port that assumes the two agree passes or fails on line endings alone.
 - **APPLIES TO:** helpers in `platform/tests/src/` that stand in for a Python fixture or a BATS helper, and the port briefs that cite them.

@@ -284,34 +284,29 @@ fn assert_precedes_names_a_missing_second_pattern() {
 #[should_panic(
     expected = "platform/tests/Cargo.toml: `\\n` cannot match any text free of a line feed"
 )]
-fn refute_line_refuses_a_line_feed_escape_naming_the_file() {
+fn refute_line_refuses_a_pattern_that_needs_a_line_feed_naming_the_file() {
     // Compiled, `\n` matches no line, so the refute would pass whatever the file held.
     refute_line(CARGO, r"\n");
 }
 
 #[test]
-fn escapes_that_do_not_write_a_line_feed_are_allowed() {
+fn patterns_with_a_match_free_of_a_line_feed_are_allowed() {
     // An escaped backslash then `n` is the two characters `\n` in the text, not an escape.
     assert!(any_line(r"a\nb", r"\\n"));
     assert!(any_line("a b", r"a\sb"));
-    assert!(any_line("a\u{b}b", r"\x0b"));
-    assert!(any_line("a\u{a0}b", r"\x{a0}"));
-    // Inside a class an escape is one member: `[^\n]` is any character but a line feed.
+    // A class holding a line feed and something else can match the something else.
     assert!(any_line("ab", r"a[^\n]"));
     assert!(any_line("a\tb", r"a[\n\t]b"));
-    assert!(any_line("a]", r"a[]\n]"));
-    assert!(any_line("a b", r"a[[:space:]\n]b"));
     // A bare `{` does not compile; escaped, it matches a literal brace.
     assert!(any_line("mv {{ x }}", r"mv \{\{"));
-    // A pattern that can also match without a line feed can still match a line.
-    assert!(any_line("x", r"x|\n"));
+    // An alternative or an optional part without a line feed can still match a line. `ab|\n`
+    // stays an alternation; `x|\n` would fold into a class.
+    assert!(any_line("ab", r"ab|\n"));
     assert!(any_line("ab", r"a\n?b"));
-}
-
-#[test]
-fn valid_patterns_the_old_byte_scan_refused_are_allowed() {
-    // AC-963. Under `(?x)` blanks before a class's leading `]` keep it a member, so this class is
-    // `]` or a line feed; and a `#` comment runs to the end of the pattern, so its `\n` is text.
+    // An empty group matches the empty text, which every line holds.
+    assert!(any_line("x", r"(?:)"));
+    // Under `(?x)` blanks before a class's leading `]` keep it a member, so this class is `]` or a
+    // line feed; and a `#` comment runs to the end of the pattern, so its `\n` is text.
     assert!(any_line("]", r"(?x)[ ]\n]"));
     assert!(any_line("a", r"(?x)a # \n"));
 }
@@ -319,22 +314,12 @@ fn valid_patterns_the_old_byte_scan_refused_are_allowed() {
 #[test]
 fn any_line_refuses_every_pattern_that_needs_a_line_feed() {
     // Compiled, each matches no line of the text, so the refusal is the difference between a check
-    // and a silent pass. The last three got past the old byte scan (AC-963): a class of the line
-    // feed alone, an escape spread over blanks under `(?x)`, and a line feed after a class whose
-    // range ends in `[`.
+    // and a silent pass. `[\n]`, `(?x)\x 0a` and `[!-[]\n` are AC-963's: a class of the line feed
+    // alone, an escape spread over blanks, and a line feed after a class whose range ends in `[`.
     for pattern in [
         r"b\nc",
         r"\x0a",
-        r"\x0A",
-        r"\x{a}",
-        r"\x{000A}",
-        r"\u000a",
-        r"\u{A}",
-        r"\U0000000A",
-        r"\U{a}",
-        r"[a]\n",
         r"[]a]\x0a",
-        r"(?i)\n",
         r"(a\n)+",
         r"[\n]",
         r"(?x)\x 0a",

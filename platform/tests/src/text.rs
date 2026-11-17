@@ -10,8 +10,8 @@
 //! would satisfy matches nothing. Patterns are the `regex` crate's syntax, which reads the ERE
 //! constructs the ported BATS patterns use; its escapes such as `\d` and `\t` are its own, not
 //! GNU grep's. A bare `{` is a compile error there (`mv {{`), so a ported pattern writes `\{`.
-//! A pattern that cannot match any text free of a line feed (`\n`, `\x0a`, `[\n]`) is refused like
-//! a raw newline: no line ever holds one. The check parses the pattern as `Regex::new` does.
+//! A pattern every match of which needs a line feed (`\n`, `\x0a`, `[\n]`) is refused like a raw
+//! newline: no line ever holds one. `matches_without_line_feed` says what the check reads.
 //!
 //! An empty pattern or literal is found in every line and every text, so it checks nothing; grep
 //! reads one that holds a newline as several needles. Each assertion refuses both, naming the
@@ -38,7 +38,7 @@ pub fn any_line(text: &str, pattern: &str) -> bool {
 }
 
 /// The compiled `pattern`, refused where it cannot check what it says: `require_needle`, then a
-/// pattern that cannot match any text free of a line feed, which no line holds. Every line pattern
+/// pattern every match of which needs a line feed, which no line holds. Every line pattern
 /// compiles here, so the line helpers refuse the same patterns. `origin` prefixes each panic
 /// (`"<file>: "`, or `""` for text).
 #[track_caller]
@@ -58,10 +58,13 @@ fn compile(origin: &str, pattern: &str) -> Regex {
     }
 }
 
-/// Whether `hir` matches some text that holds no line feed. A line feed written any way (`\n`,
-/// `\x0a`, `[\n]`, a `(?x)` escape spread over blanks) becomes a literal holding U+000A, which this
-/// sees, while `[^\n]` is a class of every other character. A pattern that
-/// can also match without a line feed (`x|\n`, `\n?`) is not refused: it can still match a line.
+/// Whether `hir` has a match that needs no line feed, reading every assertion (`^`, `$`, `\b`) as
+/// satisfied. A line feed written any way (`\n`, `\x0a`, `[\n]`, a `(?x)` escape spread over
+/// blanks) becomes a literal holding U+000A, which this sees, while `[^\n]` is a class of every
+/// other character. A pattern that can also match without a line feed (`x|\n`, `\n?`) is kept: it
+/// can still match a line. So is one that only an assertion makes need a line feed, or match
+/// nothing (`(?m)$\s`, `\b\B`): a refusal here is always right, but not every such pattern is
+/// refused.
 fn matches_without_line_feed(hir: &Hir) -> bool {
     match hir.kind() {
         HirKind::Empty | HirKind::Look(_) => true,
