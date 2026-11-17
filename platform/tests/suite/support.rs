@@ -267,9 +267,11 @@ fn grep_reads_a_non_ascii_path_as_it_is_on_disk() {
     let home = tempfile::TempDir::new().unwrap();
     std::fs::write(dir.path().join("café.yml"), "hit: 1\nno\nhit: 2\n").unwrap();
     std::fs::write(dir.path().join("plain.yml"), "hit: x\n").unwrap();
-    // A path holding a newline, and a tracked binary file that matches (#1180 review).
+    // A path holding a newline, a tracked binary file that matches, and a binary file whose path
+    // holds a newline (#1180 review).
     std::fs::write(dir.path().join("line\nbreak.yml"), "hit: n\n").unwrap();
     std::fs::write(dir.path().join("blob.bin"), b"hit\0blob\n").unwrap();
+    std::fs::write(dir.path().join("bin\nary.bin"), b"hit\0nl\n").unwrap();
     // `core.quotePath` is pinned in the repository, as in `ls_files_reads_...` above. Colour and
     // column output are switched on there, so the flags `grep_in` passes are what hold the format.
     for args in [
@@ -293,7 +295,8 @@ fn grep_reads_a_non_ascii_path_as_it_is_on_disk() {
     assert_eq!(
         hits,
         [
-            "blob.bin:0:Binary file matches",
+            "bin\nary.bin:1:hit\0nl",
+            "blob.bin:1:hit\0blob",
             "café.yml:1:hit: 1",
             "café.yml:3:hit: 2",
             "line\nbreak.yml:1:hit: n",
