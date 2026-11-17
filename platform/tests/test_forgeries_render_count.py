@@ -8,6 +8,10 @@ honest_for(1) byte for byte, with no run.
 
 These tests prove the helpers, not a refusal, and send no refused input, so the templated-forgery rule
 in test_extra_var_refusal_tests.py has nothing to require of them.
+
+The parallel-host tests run the same kind of play on HOSTS local hosts, forked HOSTS at a time, so the
+renderings race. They guard the lock that serializes the counter (AC-902): without it a concurrent read
+of the truncated counter file counted 0 and rendered the honest value again.
 """
 
 import json
@@ -19,6 +23,9 @@ import harness_sandbox
 
 TASKS = 3
 PLAY = [{"hosts": "localhost", "connection": "local", "gather_facts": False, "tasks": [
+    {"ansible.builtin.debug": {"msg": "READ " + str(i) + " {{ probe }}"}} for i in range(TASKS)]}]
+HOSTS = 8
+PARALLEL_PLAY = [{"hosts": "all", "gather_facts": False, "tasks": [
     {"ansible.builtin.debug": {"msg": "READ " + str(i) + " {{ probe }}"}} for i in range(TASKS)]}]
 
 
@@ -49,3 +56,30 @@ def test_the_stateful_spelling_is_honest_for_one_byte_for_byte(tmp_path):
     # No run: both come from the one builder at one rendering, so the two -e strings must be equal.
     spellings = {p.id: p.values[0] for p in forgeries.templated_forgeries("probe", "honest", "other")}
     assert spellings["stateful"](tmp_path) == forgeries.honest_for("probe", "honest", "other", 1, tmp_path)
+
+
+def _run_on_parallel_hosts(directory: Path, extra: str):
+    """One run of PARALLEL_PLAY on HOSTS local hosts, forked HOSTS at a time: every host reads the name
+    TASKS times, from parallel workers. Returns the process."""
+    directory.mkdir(parents=True, exist_ok=True)
+    inventory = directory / "hosts.ini"
+    inventory.write_text("".join(f"h{i} ansible_connection=local\n" for i in range(HOSTS)))
+    playbook = directory / "parallel.yml"
+    playbook.write_text(json.dumps(PARALLEL_PLAY))  # JSON is YAML
+    proc = harness_sandbox.run_playbook(playbook, directory, "-e", extra, "-f", str(HOSTS),
+                                        inventory=inventory)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return proc
+
+
+def test_counting_counts_every_reading_across_parallel_hosts(tmp_path):
+    extra, counter = forgeries.counting("probe", "seen", tmp_path)
+    _run_on_parallel_hosts(tmp_path, extra)
+    assert int(counter.read_text()) == HOSTS * TASKS
+
+
+def test_honest_for_is_honest_once_across_parallel_hosts(tmp_path):
+    extra = forgeries.honest_for("probe", "honest", "other", 1, tmp_path)
+    proc = _run_on_parallel_hosts(tmp_path, extra)
+    assert len(re.findall(r'"msg": "READ \d+ honest"', proc.stdout)) == 1, proc.stdout
+    assert len(re.findall(r'"msg": "READ \d+ other"', proc.stdout)) == HOSTS * TASKS - 1, proc.stdout
