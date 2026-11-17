@@ -1605,7 +1605,8 @@ no-delete header. It did not read the catalog selection, the schedule task or th
 it read as checked. Two true facts were stretched past their scope, 1.37's shape. 54 was the number of missing names,
 not of what the run publishes. The `not ansible_check_mode` gates show that a dry run writes nothing, not that it
 reports anything, which is 3.14's rule. Guard: widen 10.30's proposed check-mode pass to list by name every template
-the run would create or update and every schedule it would create, and make the `Report` say "would" under `--check`.
+the run would create or update and every schedule it would create or update (an existing one is rewritten, `active`
+defaulting to true), and make the `Report` say "would" under `--check`.
 Deploy Caddy's dry run already reports in that shape (10.18, update 2026-10-15).
 
 The rule is widened in 1.36.
