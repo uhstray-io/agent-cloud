@@ -376,10 +376,25 @@ pub mod repo {
     /// `git grep -n -E` over tracked files; the matching lines, empty when none match (git
     /// grep exits 1 for no match).
     pub fn grep(pattern: &str, pathspecs: &[&str]) -> Vec<String> {
-        let args = [&["grep", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
-        git_in(root(), &args, 1)
+        grep_in(root(), pattern, pathspecs)
+    }
+
+    /// `grep` for the repository at `dir`, as `path:line:text` lines. `-z` keeps each path as it
+    /// is on disk, as `ls_files_in` does: without it git quotes a non-ASCII name
+    /// (`"caf\303\251.yml":1:...`), and the caller's path is then not a file (AC-916). Each hit is
+    /// `path NUL line NUL text`, so the joined line reads exactly as the callers expect. A record
+    /// without its three fields panics rather than being read as a hit.
+    pub fn grep_in(dir: &Path, pattern: &str, pathspecs: &[&str]) -> Vec<String> {
+        let args = [&["grep", "-z", "-n", "-E", "-e", pattern, "--"], pathspecs].concat();
+        git_in(dir, &args, 1)
             .lines()
-            .map(str::to_owned)
+            .map(|record| {
+                let fields: Vec<&str> = record.splitn(3, '\0').collect();
+                match fields.as_slice() {
+                    [path, line, text] => format!("{path}:{line}:{text}"),
+                    _ => panic!("a git grep record without path, line and text: {record:?}"),
+                }
+            })
             .collect()
     }
 

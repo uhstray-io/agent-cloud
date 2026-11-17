@@ -260,6 +260,41 @@ fn ls_files_reads_a_non_ascii_path_as_it_is_on_disk() {
 }
 
 #[test]
+fn grep_reads_a_non_ascii_path_as_it_is_on_disk() {
+    // Arrange: a tracked name that is not ASCII. Without `-z` git prints it quoted
+    // (`"caf\303\251.yml":1:...`), so a caller's path is not a file on disk (AC-916).
+    let dir = tempfile::TempDir::new().unwrap();
+    let home = tempfile::TempDir::new().unwrap();
+    std::fs::write(dir.path().join("café.yml"), "hit: 1\nno\nhit: 2\n").unwrap();
+    std::fs::write(dir.path().join("plain.yml"), "hit: x\n").unwrap();
+    // `core.quotePath` is pinned in the repository, as in `ls_files_reads_...` above.
+    for args in [
+        &["init", "-q"][..],
+        &["config", "core.quotePath", "true"][..],
+        &["add", "."][..],
+    ] {
+        process::scrubbed("git", home.path())
+            .current_dir(dir.path())
+            .args(args)
+            .assert()
+            .success();
+    }
+
+    // Act
+    let hits = repo::grep_in(dir.path(), "hit", &[]);
+
+    // Assert
+    assert_eq!(
+        hits,
+        [
+            "café.yml:1:hit: 1",
+            "café.yml:3:hit: 2",
+            "plain.yml:1:hit: x"
+        ]
+    );
+}
+
+#[test]
 fn ls_files_ignores_an_inherited_repository_location() {
     // Arrange: a hook exports `GIT_DIR` and `GIT_INDEX_FILE`, and they override `-C`. A direct
     // `cargo nextest run` does not pass through `lane.sh`, which unsets them, so `git_in` removes
