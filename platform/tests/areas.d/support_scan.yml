@@ -3,15 +3,18 @@
 # playbook_files over a temporary tree (its order and refusals), and suite/support_scan_python.rs
 # holds all three to playbook_yaml.py on every scanned repository file.
 #
-# paths: playbook YAML, so a playbook-only change runs the comparison with playbook_yaml.py,
-# which reads repository content. Semaphore YAML, which the comparison also reads, is left out on
-# purpose while no area claims it, as in support_lift.yml: a change there stays unclassified and
-# push and CI run every test. templates.yml is listed because cloudflare_edge claims it
-# (areas.d/README.md, "A test that reads beyond its area"). A change under platform/tests/** is a
-# full trigger anyway.
+# support_scan is in the security set (`always`): repo::playbook_files walks every entry under
+# platform/playbooks and platform/semaphore, refusing any symlink and any directory named *.yml,
+# so its static tests run whatever path a change touches (areas.d/README.md, "A test that reads
+# beyond its area"). The walk only lists and stats entries.
+#
+# paths: the YAML files support_scan_python reads. Playbook YAML, and templates.yml because
+# cloudflare_edge claims it. The other Semaphore YAML is left out while no area claims it: a change
+# there stays unclassified, so push and CI run every test, as in support_lift.yml.
 paths:
   - "platform/playbooks/**/*.yml"
   - "platform/semaphore/templates.yml"
 tiers:
-  static: [support_scan]
   cli: [support_scan_fixture, support_scan_python]
+always:
+  static: [support_scan]
