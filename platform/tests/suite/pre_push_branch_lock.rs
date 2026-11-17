@@ -145,7 +145,9 @@ impl Ctx {
             release,
             thread: Some(thread),
         };
-        let deadline = Instant::now() + Duration::from_secs(10);
+        // 20 s, not 10: under heavy machine load (load average above 30) the hook took more than
+        // 10 s to reach BATS. The scrubbed runner's 30 s bound still caps the held hook.
+        let deadline = Instant::now() + Duration::from_secs(20);
         while !started.exists() {
             assert!(
                 Instant::now() < deadline,

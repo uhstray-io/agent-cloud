@@ -1076,7 +1076,9 @@ fn held_push(ctx: &Ctx, envs: &[(&str, &str)]) -> (String, String, HeldPush) {
         release,
         handle: Some(handle),
     };
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // 20 s, not 10: under heavy machine load (load average above 30) the hook took more than
+    // 10 s to reach BATS. The scrubbed runner's 30 s bound still caps the held hook.
+    let deadline = Instant::now() + Duration::from_secs(20);
     let (hook, bats) = loop {
         let text = std::fs::read_to_string(&pids).unwrap_or_default();
         let mut parts = text.split_whitespace();
@@ -1108,7 +1110,9 @@ fn send_signal(home: &Path, signal: &str, pid: &str) -> Output {
 
 /// The pid a fake writes to `file` (bounded wait).
 fn wait_for_pid(file: &Path) -> String {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    // 20 s, not 10: under heavy machine load (load average above 30) the hook took more than
+    // 10 s to reach BATS. The scrubbed runner's 30 s bound still caps the held hook.
+    let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let text = std::fs::read_to_string(file).unwrap_or_default();
         if let Some(pid) = text.split_whitespace().next() {
