@@ -48,13 +48,18 @@ fn read(node: &str, storage: &str, volumes: Vec<Value>) -> Value {
     json!({"item": {"node": node, "storage": storage}, "status": 200, "json": {"data": volumes}})
 }
 
-/// A list payload: n1 online, live guest 100, storages `backups` (and `local`) read, dry run.
+/// A list payload: n1 online, live guest 100, dry run. Storages read: `backups` (shared CephFS on this
+/// cluster's own Ceph), `local` (node-local dir) and `nfs` (a shared NFS export another cluster could use).
 fn base(content: Vec<Value>) -> Value {
     json!({
         "nodes": [{"node": "n1", "status": "online"}],
         "vms": [{"vmid": 100, "name": "web", "node": "n1"}],
         "jobs": [],
-        "plan": {"reads": [{"node": "n1", "storage": "backups"}, {"node": "n1", "storage": "local"}]},
+        "storage_config": [{"storage": "backups", "type": "cephfs"}, {"storage": "local", "type": "dir"},
+                           {"storage": "nfs", "type": "nfs"}],
+        "plan": {"reads": [{"node": "n1", "storage": "backups", "status": {"type": "cephfs", "shared": 1}},
+                           {"node": "n1", "storage": "local", "status": {"type": "dir", "shared": 0}},
+                           {"node": "n1", "storage": "nfs", "status": {"type": "nfs", "shared": 1}}]},
         "content_reads": content,
         "pairs": [],
         "confirm_delete": "",
@@ -471,4 +476,67 @@ fn verify_counts_an_archive_that_appeared() {
         &verify_payload(vec![archive("backups", 100, 2), archive("backups", 100, 3)]),
     );
     assert_eq!(out["new_archives"], 1);
+}
+
+#[test]
+fn a_gone_guest_on_a_shared_storage_another_cluster_could_use_is_kept() {
+    // Arrange: guest 900 is not in this cluster. It has an archive on the shared NFS storage, where the
+    // vmid may be another cluster's guest, and one on node-local `local`.
+    let payload = base(vec![
+        read("n1", "nfs", vec![archive("nfs", 900, 1)]),
+        read("n1", "local", vec![archive("local", 900, 2)]),
+    ]);
+
+    // Act
+    let out = ok("list", &payload);
+
+    // Assert: only the node-local archive is listed; the NFS one is counted as gone_on_shared.
+    assert_eq!(
+        volids(&out),
+        vec!["local:backup/vzdump-qemu-900-2.vma.zst"],
+        "{out}"
+    );
+    assert_eq!(
+        out["not_listed"]["nfs"]["gone_on_shared"]["count"], 1,
+        "{out}"
+    );
+}
+
+#[test]
+fn a_gone_guest_on_an_external_cephfs_is_kept() {
+    // Arrange: `backups` is CephFS with a monitor list, so it is another cluster's Ceph.
+    let mut payload = base(vec![read(
+        "n1",
+        "backups",
+        vec![archive("backups", 900, 1)],
+    )]);
+    payload["storage_config"][0]["monhost"] = json!("ceph-mon.example");
+
+    // Act
+    let out = ok("list", &payload);
+
+    // Assert
+    assert_eq!(out["count"], 0, "{out}");
+    assert_eq!(
+        out["not_listed"]["backups"]["gone_on_shared"]["count"], 1,
+        "{out}"
+    );
+}
+
+#[test]
+fn a_declared_pair_on_a_shared_storage_is_listed() {
+    // Arrange: the operator declares guest 900's archives on the NFS storage.
+    let mut payload = base(vec![read("n1", "nfs", vec![archive("nfs", 900, 1)])]);
+    payload["pairs"] = json!([{"vmid": 900, "storage": "nfs"}]);
+
+    // Act
+    let out = ok("list", &payload);
+
+    // Assert
+    assert_eq!(
+        volids(&out),
+        vec!["nfs:backup/vzdump-qemu-900-1.vma.zst"],
+        "{out}"
+    );
+    assert_eq!(out["volumes"][0]["source"], "declared", "{out}");
 }

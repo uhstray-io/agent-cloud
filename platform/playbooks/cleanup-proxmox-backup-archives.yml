@@ -6,7 +6,10 @@
 # space has to be freed by hand-picked deletes. This playbook makes that pick code, reviewed and repeatable.
 #
 # What it deletes: backup archives only, from exactly two sources:
-#   - gone:     an archive whose guest (vmid) no longer exists in the cluster;
+#   - gone:     an archive whose guest (vmid) no longer exists in the cluster, on a storage no other
+#               cluster can write to: a node-local one, or CephFS on this cluster's own Ceph. On any
+#               other shared storage (NFS, CIFS, PBS, an external CephFS) the vmid may belong to another
+#               cluster's guest, so those archives are counted (gone_on_shared) and kept unless declared;
 #   - declared: an archive matching a (vmid, storage) pair in the inventory variable
 #               proxmox_backup_cleanup_pairs (site-config; never an extra var). A pair that an enabled
 #               vzdump job still backs up to that storage is refused, naming the job.
@@ -178,6 +181,7 @@
           {{ {'nodes': _cluster_reads.results[0].json.data,
               'vms': _cluster_reads.results[3].json.data,
               'jobs': _cluster_reads.results[2].json.data,
+              'storage_config': _cluster_reads.results[1].json.data,
               'plan': _plan,
               'content_reads': _content_reads.results,
               'pairs': proxmox_backup_cleanup_pairs | default(none),

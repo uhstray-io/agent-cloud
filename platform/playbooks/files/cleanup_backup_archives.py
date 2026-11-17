@@ -3,10 +3,11 @@
 
 Three modes, JSON on stdin, JSON on stdout:
 
-  list       {nodes, vms, jobs, plan, content_reads, pairs, confirm_delete, check_mode}
+  list       {nodes, vms, jobs, storage_config, plan, content_reads, pairs, confirm_delete, check_mode}
              -> the archives the cleanup deletes, their sha256, what it keeps, and `delete`.
              Refused whole while any node is not online. Two sources only, backup volumes only:
-               gone      an archive whose vmid is not a guest of this cluster;
+               gone      an archive whose vmid is not a guest of this cluster, on a storage no other
+                         cluster can write to (node-local, or CephFS on this cluster's own Ceph);
                declared  an archive matching a declared (vmid, storage) pair, refused when an enabled
                          vzdump job on that storage still backs up that guest.
              A protected archive, an archive with no vmid, and every other archive are never listed,
@@ -116,17 +117,25 @@ def list_archives(data):
         raise Refusal(f"Node {', '.join(offline)}: no archive is listed while a node is not online "
                       "(guest existence is not trusted and its local storages are not read).")
 
+    # A guest missing from this cluster is gone only on a storage no other cluster can write to:
+    # a node-local one, or CephFS on this cluster's own Ceph. On any other shared storage (NFS, CIFS,
+    # PBS, an external CephFS) the vmid may be another cluster's guest, so it is kept unless declared.
+    config = {c.get("storage"): c for c in data.get("storage_config") or []}
+    own = {r["storage"] for r in data["plan"]["reads"]
+           if not survey._flag((r.get("status") or {}).get("shared"))
+           or survey._own_cephfs(config.get(r["storage"], {}))}
     listed, kept = [], {}
     for node, storage, v in _backups(data["content_reads"]):
-        tally = kept.setdefault(storage, {"protected": [0, 0], "no_vmid": [0, 0], "kept": [0, 0]})
+        tally = kept.setdefault(storage, {"protected": [0, 0], "no_vmid": [0, 0], "gone_on_shared": [0, 0],
+                                          "kept": [0, 0]})
         vmid = _vmid(v)
         size = int(v.get("size") or 0)
         source = None
         if vmid is not None:
-            if vmid not in existing:
-                source = "gone"
-            elif (vmid, storage) in pairs:
+            if (vmid, storage) in pairs:
                 source = "declared"
+            elif vmid not in existing and storage in own:
+                source = "gone"
         if vmid is None:
             bucket = "no_vmid"
         elif source and survey._flag(v.get("protected")):
@@ -137,6 +146,8 @@ def list_archives(data):
                            "size_gib": survey._gib(size), "date": survey._day(v.get("ctime")),
                            "size": size, "ctime": int(v.get("ctime") or 0)})
             continue
+        elif vmid not in existing:
+            bucket = "gone_on_shared"
         else:
             bucket = "kept"
         tally[bucket][0] += 1
