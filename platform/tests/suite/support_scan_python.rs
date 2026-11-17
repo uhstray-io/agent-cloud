@@ -12,7 +12,9 @@
 //! on the Python side too, they are yielded by both walks, and their keys compare as Rust's do (a
 //! plain `53` and a quoted `"53"` are one key in both). The two walks then yield the same strings,
 //! compared as multisets per file and per `keys`, with no allowance. The marked count is the
-//! number of values `yaml::strings` yields that the stock Python walk does not.
+//! number of those yields that are numbers or dates. On this repository it is also the surplus of
+//! `yaml::strings` over the stock Python walk; in general that surplus can be larger, because the
+//! stock walk merges keys equal as Python values (`yes` and `1`, `10` and `1_0`).
 //!
 //! This module tests the Rust helpers against `playbook_yaml.py` and goes when that file is deleted.
 
@@ -30,7 +32,8 @@ class Text(str):
     """A scalar PyYAML would construct as an int, float or timestamp, kept as its text."""
 
 class Loader(p.Loader):
-    pass
+    """playbook_yaml's loader (a CSafeLoader or SafeLoader subclass), with the three
+    constructors below replaced: still safe, it builds no Python object."""
 
 for tag in ("int", "float", "timestamp"):
     Loader.add_constructor(
@@ -41,7 +44,7 @@ files = p.files()
 for f in files:
     print("F", f.relative_to(p.REPO).as_posix())
 for i, f in enumerate(files):
-    doc = yaml.load(f.read_text(), Loader=Loader)  # noqa: S506 - a SafeLoader subclass
+    doc = yaml.load(f.read_text(), Loader=Loader)
     for keys in (0, 1):
         for s in p.strings(doc, bool(keys)):
             print("S", i, keys, int(isinstance(s, Text)), s.encode().hex())

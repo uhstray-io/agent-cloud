@@ -309,15 +309,19 @@ pub mod yaml {
     ///   here, the later value replacing the earlier, where PyYAML keeps both: such a mapping
     ///   yields one value fewer;
     /// - `playbook_yaml.py` reads a node with a local `!tag` as null, a tagged collection's
-    ///   children included; here a tagged scalar is read as its text, a tagged collection as if
+    ///   children included, and a plain scalar with the non-specific `!` tag by its implicit type
+    ///   (`! yes` is a bool); here a tagged scalar is read as its text, a tagged collection as if
     ///   untagged;
+    /// - PyYAML merges mapping keys equal as Python values (`yes` and `1`, `10` and `1_0`, `1.0`
+    ///   and `1.00`), the later value replacing the earlier; here they stay separate keys, and
+    ///   the mapping yields each value;
     /// - PyYAML refuses a plain `=` or `<<` as a value (it accepts `=` as a key, and `<<` as a key
     ///   whose value is a mapping); here each is read as its text.
     ///
-    /// `support_scan_python` holds this to the Python on every scanned repository file, with
-    /// PyYAML's numbers and dates read as their text: the two walks yield the same strings. No
-    /// scanned file has a tag, a plain `=` or `<<` value or a mapping with both key forms
-    /// (checked 2026-11-17).
+    /// `support_scan_python` holds this to `playbook_yaml.strings` on every scanned repository
+    /// file, run with PyYAML's numbers and dates read as their text: the two walks yield the same
+    /// strings. No scanned file has a tag, a plain `=` or `<<` value or a mapping with both key
+    /// forms (checked 2026-11-17).
     pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
         fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
             match node {
