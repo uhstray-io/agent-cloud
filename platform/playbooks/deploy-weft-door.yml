@@ -1,0 +1,35 @@
+---
+# deploy-weft-door.yml — deploy the rack's front door to its pin ("Deploy weft Front Door"), the
+# launcher a person runs. Inputs, steps and rules are in weft-door.yml, which it imports after
+# refusing an empty weft_door group: a play with no hosts exits 0, and a deploy that did nothing
+# must not be recorded as a success (MISTAKES 2.21). Staging's front door is deployed by Deploy
+# weft Staging.
+
+# An extra var outranks every value this playbook computes, so refuse any that sets an
+# internal (underscore-prefixed) name before anything runs (refuse-internal-extra-vars.yml).
+- name: "Refuse extra vars that set internal names"
+  ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
+
+# Inline rather than preflight-target-group.yml: the plays below target the templated
+# weft_door_hosts, which is the name the guard must check.
+- name: "Pre-flight: the target group is declared and populated"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  vars:
+    weft_door_hosts: weft_door
+  tasks:
+    - name: "Refuse an empty or undeclared target group"
+      ansible.builtin.assert:
+        that:
+          - groups[weft_door_hosts] | default([]) | length > 0
+        fail_msg: >-
+          {{ weft_door_hosts }} is not a populated inventory group, so this deploy would do nothing
+          and report success. Declare its host in site-config.
+
+- name: "Deploy"
+  ansible.builtin.import_playbook: weft-door.yml
+  vars:
+    weft_door_hosts: weft_door
+    weft_edge_workspace_hosts: weft_workspaces

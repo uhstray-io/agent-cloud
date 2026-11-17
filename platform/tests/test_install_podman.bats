@@ -193,3 +193,10 @@ PYSCRIPT
   refute_grep -qF 'download.docker.com' "$PB"
   refute_grep -qF 'download.docker.com' "$INSTALL_DOCKER"
 }
+
+@test "install-podman: installs passt, the pasta network mode weft's board and front door run on" {
+  # podman only RECOMMENDS passt. A port published from a rootless bridge reaches the container
+  # from the container's own bridge address; pasta keeps the real one (weft #580), and weft's
+  # deploys refuse a host without it (tasks/assert-podman-pasta.yml).
+  assert_grep -qE '^\s+- passt$' "$PB"
+}

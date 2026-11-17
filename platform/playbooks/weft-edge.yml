@@ -1,0 +1,44 @@
+---
+# weft-edge.yml — weft's Caddy fragment for one environment: the front door at <domain>, and every
+# workspace at <name>.<domain>. Imported by weft-door.yml before each front door deploy, and by
+# Stand Up weft Workspace, which needs the new workspace's route and nothing else from the door.
+#
+# Inputs:
+#   weft_door_hosts            the environment's front door group (default weft_door)
+#   weft_edge_workspace_hosts  the same environment's workspaces, ALL of them (default
+#                              weft_workspaces): a fragment rendered from a subset would drop the
+#                              routes of the workspaces left out
+#
+# The fragment goes to central Caddy through tasks/distribute-caddy-site.yml, the flat layout
+# manage-caddy-sites.yml manages (openspec add-weft-service, design.md, C4).
+
+- name: "weft: the edge for this environment"
+  hosts: "{{ weft_door_hosts | default('weft_door') }}"
+  gather_facts: false
+  become: false
+  vars_files:
+    - vars/weft.yml
+  vars:
+    _weft_door_hosts: "{{ groups[weft_door_hosts | default('weft_door')] | default([]) }}"
+    _weft_workspace_hosts: "{{ groups[weft_edge_workspace_hosts | default('weft_workspaces')] | default([]) }}"
+    _fragment_src: "/tmp/weft-{{ weft_environment }}-caddy-site.caddy"
+    _fragment_name: "weft-{{ weft_environment }}.caddy"
+    _has_caddy: "{{ (groups['caddy_svc'] | default([]) | length > 0) and not (_weft_local | bool) and (caddy_composable | default(true) | bool) }}"
+
+  tasks:
+    - name: "Render weft's Caddy fragment for {{ weft_environment }}"
+      # Rendered from the controller's checkout, onto this host, then pushed to central Caddy.
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../services/weft-door/deployment/templates/caddy-site.j2"
+        dest: "{{ _fragment_src }}"
+        mode: "0644"
+      when: _has_caddy | bool
+
+    - name: "Push it to central Caddy, validate, reload"
+      ansible.builtin.include_tasks: tasks/distribute-caddy-site.yml
+      when: _has_caddy | bool
+
+    - name: "Note when Caddy distribution is skipped"
+      ansible.builtin.debug:
+        msg: "No caddy_svc host in inventory (or a local-dev inventory): weft's Caddy fragment was not distributed."
+      when: not (_has_caddy | bool)

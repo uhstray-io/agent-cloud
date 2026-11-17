@@ -1,0 +1,60 @@
+# weft — the front door, on its own VM: identity across companies, workspace membership, and a
+# URL per workspace (weft's docs/deployment.md). It REDIRECTS AND NEVER PROXIES: a browser signs
+# in here, is handed a signed one-minute assertion, and from then on talks to its workspace
+# directly. So this holds the least of anything on the rack, and it holds no workspace's data.
+#
+# The image is pinned by the digest weft-door.yml verified in the signed release.json, and
+# `:?` makes compose refuse an unset one: any default would be a tag.
+#
+# The records (front-door.db) are on the VM's own disk, in the door directory, at the same path
+# inside and out, for the reason the workspace's catalog is: SQLite's WAL needs one kernel.
+#
+# The signing key is a 0600 file rendered from OpenBao next to this file and mounted read-only.
+# A file and not a variable: a variable is inherited by every child, shown by `podman inspect`,
+# and readable in /proc/<pid>/environ. The front door refuses a key file others can read. This
+# key signs for every company's workspace; no backup set holds it.
+#
+# The door is on pasta, not a bridge, so it sees the real peer: rootless podman forwards a port
+# published from a bridge through rootlessport, which connects onward from the container's own
+# bridge address, so the Caddy host the trusted proxies name never matched and every sign-in
+# counted against one address (weft #580). pasta keeps the source address. The door talks to
+# nothing on this VM but the mail catcher, when it runs, which shares its namespace
+# (compose.mailpit.yml).
+# The accepted cost: anything on this VM that connects to the published address arrives as the
+# VM's default gateway (podman 4.9.3), or 169.254.1.2 from podman 5.3 on, so the trusted proxies
+# name the Caddy host alone, as a /32, never a range that could hold the gateway. The published
+# address is never a wildcard or loopback (tasks/weft-bind.yml).
+# podman-compose 1.6.0 (vars/weft.yml), because 1.0.6 refuses `network_mode: pasta`; told not to
+# make a pod, which refuses userns keep-id.
+
+name: weft-door
+
+x-podman:
+  in_pod: false
+
+services:
+  door:
+    image: ${WEFT_DOOR_IMAGE:?the digest release.json names, rendered into .env}
+    container_name: weft-door
+    restart: always
+    userns_mode: "keep-id:uid=10001,gid=10001"
+    environment:
+      WEFT_FRONT_DOOR_LISTEN: "0.0.0.0:8081"
+      WEFT_FRONT_DOOR_KEY_FILE: /run/weft/door.key
+      WEFT_FRONT_DOOR_RECORDS: ${WEFT_DOOR_DIR}/front-door.db
+      # https://{name}.<weft domain>: a workspace's address is the company name its admin chose.
+      WEFT_FRONT_DOOR_WORKSPACE_URL: ${WEFT_DOOR_WORKSPACE_URL}
+      WEFT_FRONT_DOOR_SECURE: "true"
+      # Caddy is in front, so the client is named by a header Cloudflare overwrites, believed only
+      # from Caddy's address. Without them, the per-address sign-in counter is one counter for the
+      # whole world. weft #484 retired WEFT_FRONT_DOOR_BEHIND_A_PROXY: given alone, the door
+      # refuses to start. tasks/weft-door-header.yml requires both before anything stops.
+      WEFT_FRONT_DOOR_CLIENT_ADDRESS_HEADER: ${WEFT_DOOR_CLIENT_ADDRESS_HEADER:?the header the edge overwrites, rendered into .env}
+      WEFT_FRONT_DOOR_TRUSTED_PROXIES: ${WEFT_DOOR_TRUSTED_PROXIES:?the edge Caddy host as CIDR blocks, rendered into .env}
+    volumes:
+      - ${WEFT_DOOR_DIR}:${WEFT_DOOR_DIR}
+      - ./door.key:/run/weft/door.key:ro
+    network_mode: pasta
+    ports:
+      # An IPv6 bind arrives bracketed (door.env.j2): podman refuses it bare before a port.
+      - "${WEFT_DOOR_BIND}:${WEFT_DOOR_PORT}:8081"

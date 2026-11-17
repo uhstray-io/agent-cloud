@@ -1,0 +1,31 @@
+---
+# weft-door-header.yml — the front door's client address: which header names the client, and which
+# proxies it is believed from, required before anything stops.
+#
+# The front door is always behind the edge Caddy, so without a header every sign-in arrives from
+# Caddy's address: the per-address sign-in counter is one counter for the whole world, and ten
+# failures lock everybody out. weft #484 replaced WEFT_FRONT_DOOR_BEHIND_A_PROXY with
+# WEFT_FRONT_DOOR_CLIENT_ADDRESS_HEADER and WEFT_FRONT_DOOR_TRUSTED_PROXIES; a door that is given
+# the old variable alone refuses to start, and one given a header with no proxies, or proxies with
+# no header, refuses too. So both are required here, where a missing one leaves the running door
+# untouched, rather than at `compose up`, after the stop, where it leaves no door at all.
+#
+# The header is one the proxy OVERWRITES: every weft name is proxied by Cloudflare, so the client is
+# in CF-Connecting-IP, as for the board (weft.toml.j2). X-Forwarded-For is appended to and holds
+# the proxy's address too. The proxies are the Caddy host's address(es), site-config's.
+#
+# Caller is tasks/weft-release.yml, for the door role, in a deploy and in a rollback.
+
+- name: "Front door: require the client address header and the proxies it is believed from"
+  ansible.builtin.assert:
+    that:
+      # A list, as the board's weft_board_trusted_proxies is; a bare string would be split into
+      # characters.
+      - weft_door_trusted_proxies | default([]) is not string
+      - weft_door_trusted_proxies | default([]) | select('string') | map('trim') | select | list | length > 0
+      - weft_door_client_address_header | default('CF-Connecting-IP') | trim | length > 0
+    fail_msg: >-
+      {{ inventory_hostname }} has no weft_door_trusted_proxies: list the edge Caddy host's
+      address as CIDR blocks (such as 192.0.2.5/32). The front door is behind Caddy, so without
+      them every sign-in is counted against Caddy's address and ten failures lock everybody out;
+      weft refuses to start on the header without the proxies. Nothing has changed on this host.
