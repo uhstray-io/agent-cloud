@@ -1,8 +1,9 @@
 //! Shared support for the agent-cloud test suite (plan 24).
 //!
-//! - [`repo`]: the repository root, `git ls-files`, and the playbook task walker;
+//! - [`repo`]: the repository root, `git ls-files`, the playbook task walker and the playbook
+//!   file listing of the static scans;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
-//!   anchors, aliases, `<<` merge keys);
+//!   anchors, aliases, `<<` merge keys), and the string and task walks of the static scans;
 //! - [`process`]: bounded child processes with a scrubbed environment, and the confined
 //!   `ansible-playbook` runner (03 Part 1, rule 11);
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
@@ -14,6 +15,7 @@ pub mod http;
 pub mod lanes;
 pub mod text;
 
+pub mod forgeries;
 pub mod playbook;
 
 pub mod yaml {
@@ -304,6 +306,70 @@ pub mod yaml {
         );
         docs.into_iter().next()
     }
+
+    /// Every string inside `node`, in [`parse`]'s entry order, and every mapping key's string too
+    /// when `keys`: `playbook_yaml.strings(value, keys)` for the static ports (AC-958).
+    ///
+    /// It yields what the Python yields wherever [`parse`] reads a node as PyYAML does. The main
+    /// difference: a plain number or date (`53`, `0644`, `2026-11-17`) is a string here and is
+    /// yielded, where PyYAML constructs a number or date and its walk skips it. It cannot be told
+    /// apart from a quoted `"53"`, which PyYAML does yield, so dropping it would lose strings the
+    /// Python returns; a scan that matches digits sees these extra values. Mapping keys and tags
+    /// are also read differently in rare cases. `support_scan_python` runs `playbook_yaml.strings`
+    /// with PyYAML's numbers and dates read as their text and holds the two walks to the same
+    /// strings on every scanned repository file.
+    pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
+        fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
+            match node {
+                Node::Str(s) => out.push(s),
+                Node::Map(entries) => {
+                    for (key, value) in entries {
+                        if keys {
+                            walk(key, keys, out);
+                        }
+                        walk(value, keys, out);
+                    }
+                }
+                Node::Seq(items) => items.iter().for_each(|item| walk(item, keys, out)),
+                Node::Bool(_) | Node::Null => {}
+            }
+        }
+        let mut out = vec![];
+        walk(node, keys, &mut out);
+        out
+    }
+
+    /// Every play, block and task in a document or task list, depth first, each one before its
+    /// children: `playbook_yaml.tasks(node)` for the static ports (AC-958). Only mappings are
+    /// yielded and descended into. Siblings come in list order, and each mapping's task lists in
+    /// the Python's key order, whatever order the file writes them in. Nothing is
+    /// inherited. `support_scan_python` holds it to the Python on every scanned repository file.
+    pub fn tasks(node: &Node) -> Vec<&Node> {
+        const LISTS: [&str; 7] = [
+            "tasks",
+            "pre_tasks",
+            "post_tasks",
+            "handlers",
+            "block",
+            "rescue",
+            "always",
+        ];
+        fn walk<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
+            for item in node.as_seq().unwrap_or_default() {
+                if matches!(item, Node::Map(_)) {
+                    out.push(item);
+                    for key in LISTS {
+                        if let Some(children) = item.get(key) {
+                            walk(children, out);
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = vec![];
+        walk(node, &mut out);
+        out
+    }
 }
 
 pub mod repo {
@@ -339,6 +405,60 @@ pub mod repo {
 
     pub fn path(rel: &str) -> PathBuf {
         root().join(rel)
+    }
+
+    /// Every `*.yml` file under `platform/playbooks` and `platform/semaphore`, repository-relative,
+    /// in `playbook_yaml.files()`'s order: sorted by path component, as Python sorts `Path`s, so
+    /// `a/b.yml` comes before `a-c/x.yml` (AC-958). The roots are `playbook_yaml.files()`'s.
+    ///
+    /// Read from the disk, as `Path.rglob` reads it, not from git: an untracked file under the
+    /// roots is listed, as the Python checkers list it ([`ls_files`] lists tracked files only).
+    /// Only the `.yml` extension counts, as in the Python: a `.yaml` file is not listed.
+    ///
+    /// It refuses, by panicking, four things the Python handles otherwise: a root or directory
+    /// that cannot be read (`rglob` yields nothing for a missing root); a name that is not UTF-8;
+    /// any symlink under the roots (`rglob` lists a symlinked `.yml` file but does not descend a
+    /// symlinked directory, whose playbooks a path through the link still reaches, so every guard
+    /// built on this list would skip them); and a directory named `*.yml` (which `rglob` lists and
+    /// `playbook_yaml` then fails to load). None exists under the roots (checked 2026-11-17).
+    pub fn playbook_files() -> Vec<String> {
+        fn walk(dir: &Path, parts: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+            let entries =
+                std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+                let name = entry.file_name().into_string().unwrap_or_else(|name| {
+                    panic!("{}: a name that is not UTF-8: {name:?}", dir.display())
+                });
+                let kind = entry
+                    .file_type()
+                    .unwrap_or_else(|e| panic!("{}: {e}", entry.path().display()));
+                assert!(
+                    !kind.is_symlink(),
+                    "{}: a symlink under the playbook roots; the scan does not follow one",
+                    entry.path().display()
+                );
+                assert!(
+                    !(kind.is_dir() && name.ends_with(".yml")),
+                    "{}: a directory named like a playbook",
+                    entry.path().display()
+                );
+                parts.push(name);
+                if kind.is_dir() {
+                    walk(&entry.path(), parts, out);
+                } else if parts.last().is_some_and(|n| n.ends_with(".yml")) {
+                    out.push(parts.clone());
+                }
+                parts.pop();
+            }
+        }
+        let mut found = vec![];
+        for base in ["platform/playbooks", "platform/semaphore"] {
+            let mut parts: Vec<String> = base.split('/').map(str::to_owned).collect();
+            walk(&path(base), &mut parts, &mut found);
+        }
+        found.sort();
+        found.into_iter().map(|parts| parts.join("/")).collect()
     }
 
     /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. The variables
@@ -434,33 +554,14 @@ pub mod repo {
         hits
     }
 
-    /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
-    /// children included after their parent. Assertions select a task from here and test
-    /// that task, never the whole file (03 Part 1, rule 8).
+    /// Every play, block and task of a task file or play list, depth first, each one's children
+    /// after it: [`yaml::tasks`] on the file. Assertions select a task from here and test that
+    /// task, never the whole file (03 Part 1, rule 8).
     pub fn tasks(rel: &str) -> Vec<Node> {
-        fn walk(items: &[Node], out: &mut Vec<Node>) {
-            for item in items {
-                out.push(item.clone());
-                for section in [
-                    "block",
-                    "rescue",
-                    "always",
-                    "tasks",
-                    "pre_tasks",
-                    "post_tasks",
-                    "handlers",
-                ] {
-                    if let Some(children) = item.get(section).and_then(Node::as_seq) {
-                        walk(children, out);
-                    }
-                }
-            }
-        }
-        let mut out = vec![];
-        if let Some(items) = yaml::load_one(&path(rel)).as_ref().and_then(Node::as_seq) {
-            walk(items, &mut out);
-        }
-        out
+        yaml::load_one(&path(rel))
+            .as_ref()
+            .map(|node| yaml::tasks(node).into_iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
