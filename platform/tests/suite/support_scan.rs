@@ -1,6 +1,7 @@
 //! The static-scan helpers the ports use (plan 24, AC-958): `repo::playbook_files`, the
-//! playbook listing of `playbook_yaml.files()`, and `yaml::strings`, the string walk of
-//! `playbook_yaml.strings(value, keys)`.
+//! playbook listing of `playbook_yaml.files()`; `yaml::strings`, the string walk of
+//! `playbook_yaml.strings(value, keys)`; and `yaml::tasks`, the task walk of
+//! `playbook_yaml.tasks(node)`.
 //!
 //! These tests pin each helper's own rules on fixtures and on the repository. The comparison with
 //! the Python on every file is `support_scan_python` (cli tier: it starts `python3`).
@@ -93,4 +94,67 @@ fn playbook_files_lists_yml_files_under_both_roots_in_component_order() {
     by_component.sort();
     let resorted: Vec<String> = by_component.iter().map(|p| p.join("/")).collect();
     assert_eq!(files, resorted, "not sorted by path component");
+}
+
+/// The `name` of each node `yaml::tasks` yields.
+fn task_names(text: &str) -> Vec<String> {
+    let node = doc(text);
+    yaml::tasks(&node)
+        .into_iter()
+        .map(|t| {
+            t.get("name")
+                .and_then(Node::as_str)
+                .unwrap_or("?")
+                .to_owned()
+        })
+        .collect()
+}
+
+#[test]
+fn tasks_reads_each_task_list_in_the_python_key_order() {
+    // Arrange: one item holding all seven task lists, written in the reverse of playbook_yaml's
+    // TASK_LISTS order, each list one task named after its key.
+    let text = "- name: top\n  always: [{name: always}]\n  rescue: [{name: rescue}]\n  block: [{name: block}]\n  handlers: [{name: handlers}]\n  post_tasks: [{name: post_tasks}]\n  pre_tasks: [{name: pre_tasks}]\n  tasks: [{name: tasks}]\n";
+
+    // Act
+    let names = task_names(text);
+
+    // Assert: the key order, not the file's order.
+    assert_eq!(
+        names,
+        [
+            "top",
+            "tasks",
+            "pre_tasks",
+            "post_tasks",
+            "handlers",
+            "block",
+            "rescue",
+            "always"
+        ]
+    );
+}
+
+#[test]
+fn tasks_yields_only_mappings_and_descends_depth_first() {
+    // Arrange: a string item, a task list that is not a list, and a nested block.
+    let text = "- just a string\n- name: a\n  tasks: \"{{ not_a_list }}\"\n- name: b\n  block:\n    - name: c\n      block: [{name: d}]\n    - plain\n- name: e\n";
+
+    // Act
+    let names = task_names(text);
+
+    // Assert
+    assert_eq!(names, ["a", "b", "c", "d", "e"]);
+}
+
+#[test]
+fn tasks_of_a_document_that_is_not_a_list_is_empty() {
+    // Arrange: a mapping document, such as templates.yml.
+    let node = doc("templates:\n  - name: t\n    tasks: [{name: x}]\n");
+
+    // Act
+    let found = yaml::tasks(&node);
+
+    // Assert
+    assert!(found.is_empty(), "{found:?}");
 }

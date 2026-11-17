@@ -3,7 +3,7 @@
 //! - [`repo`]: the repository root, `git ls-files`, the playbook task walker and the playbook
 //!   file listing of the static scans;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
-//!   anchors, aliases, `<<` merge keys), and the string walk of the static scans;
+//!   anchors, aliases, `<<` merge keys), and the string and task walks of the static scans;
 //! - [`process`]: bounded child processes with a scrubbed environment, and the confined
 //!   `ansible-playbook` runner (03 Part 1, rule 11);
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
@@ -336,6 +336,37 @@ pub mod yaml {
         walk(node, keys, &mut out);
         out
     }
+
+    /// Every play, block and task in a document or task list, in file order:
+    /// `playbook_yaml.tasks(node)` for the static ports (AC-958). Only mappings are yielded and
+    /// descended into, and each one's task lists are read in the Python's key order. Nothing is
+    /// inherited. `support_scan_python` holds it to the Python on every scanned repository file.
+    pub fn tasks(node: &Node) -> Vec<&Node> {
+        const LISTS: [&str; 7] = [
+            "tasks",
+            "pre_tasks",
+            "post_tasks",
+            "handlers",
+            "block",
+            "rescue",
+            "always",
+        ];
+        fn walk<'a>(node: &'a Node, out: &mut Vec<&'a Node>) {
+            for item in node.as_seq().unwrap_or_default() {
+                if matches!(item, Node::Map(_)) {
+                    out.push(item);
+                    for key in LISTS {
+                        if let Some(children) = item.get(key) {
+                            walk(children, out);
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = vec![];
+        walk(node, &mut out);
+        out
+    }
 }
 
 pub mod repo {
@@ -520,33 +551,14 @@ pub mod repo {
         hits
     }
 
-    /// Every task of a task file or play list, depth first, with `block`/`rescue`/`always`
-    /// children included after their parent. Assertions select a task from here and test
-    /// that task, never the whole file (03 Part 1, rule 8).
+    /// Every play, block and task of a task file or play list, depth first, each one's children
+    /// after it: [`yaml::tasks`] on the file. Assertions select a task from here and test that
+    /// task, never the whole file (03 Part 1, rule 8).
     pub fn tasks(rel: &str) -> Vec<Node> {
-        fn walk(items: &[Node], out: &mut Vec<Node>) {
-            for item in items {
-                out.push(item.clone());
-                for section in [
-                    "block",
-                    "rescue",
-                    "always",
-                    "tasks",
-                    "pre_tasks",
-                    "post_tasks",
-                    "handlers",
-                ] {
-                    if let Some(children) = item.get(section).and_then(Node::as_seq) {
-                        walk(children, out);
-                    }
-                }
-            }
-        }
-        let mut out = vec![];
-        if let Some(items) = yaml::load_one(&path(rel)).as_ref().and_then(Node::as_seq) {
-            walk(items, &mut out);
-        }
-        out
+        yaml::load_one(&path(rel))
+            .as_ref()
+            .map(|node| yaml::tasks(node).into_iter().cloned().collect())
+            .unwrap_or_default()
     }
 }
 

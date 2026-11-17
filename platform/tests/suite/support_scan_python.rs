@@ -1,5 +1,5 @@
-//! `repo::playbook_files` and `yaml::strings` against `playbook_yaml.py` on the repository
-//! (plan 24, AC-958; cli tier: it starts `python3`).
+//! `repo::playbook_files`, `yaml::strings` and `yaml::tasks` against `playbook_yaml.py` on the
+//! repository (plan 24, AC-958; cli tier: it starts `python3`).
 //!
 //! `python3` must import PyYAML: CI's Rust job puts the locked `.venv/bin` first on PATH, and a
 //! workstation runs `uv sync --locked` and does the same. The Python prints its file list, then
@@ -15,6 +15,11 @@
 //! number of those yields that are numbers or dates. On this repository it is also the surplus of
 //! `yaml::strings` over the stock Python walk; in general that surplus can be larger, because the
 //! stock walk merges keys equal as Python values (`yes` and `1`, `10` and `1_0`).
+//!
+//! The task walks are compared per file in order: for each node `playbook_yaml.tasks` yields, the
+//! Python prints a fingerprint, the 64-bit FNV-1a hash of that node's strings (keys included)
+//! sorted and joined with NUL, and `yaml::tasks` must yield nodes with the same fingerprints in the
+//! same order.
 //!
 //! This module tests the Rust helpers against `playbook_yaml.py` and goes when that file is deleted.
 
@@ -43,12 +48,32 @@ for tag in ("int", "float", "timestamp"):
 files = p.files()
 for f in files:
     print("F", f.relative_to(p.REPO).as_posix())
+def fingerprint(node):
+    h = 0xCBF29CE484222325
+    for b in "\0".join(sorted(p.strings(node, True))).encode():
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
 for i, f in enumerate(files):
     doc = yaml.load(f.read_text(), Loader=Loader)
     for keys in (0, 1):
         for s in p.strings(doc, bool(keys)):
             print("S", i, keys, int(isinstance(s, Text)), s.encode().hex())
+    for t in p.tasks(doc):
+        print("T", i, fingerprint(t))
 "#;
+
+/// The fingerprint the script prints for a task node.
+fn fingerprint(node: &yaml::Node) -> u64 {
+    let mut strings = yaml::strings(node, true);
+    strings.sort_unstable();
+    strings
+        .join("\0")
+        .bytes()
+        .fold(0xCBF2_9CE4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3)
+        })
+}
 
 fn unhex(hex: &str) -> String {
     let bytes: Vec<u8> = (0..hex.len())
@@ -67,7 +92,7 @@ fn counts<'a>(items: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> 
 }
 
 #[test]
-fn both_helpers_agree_with_playbook_yaml_on_every_repository_file() {
+fn the_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     // Arrange
     let home = TempDir::new().expect("a temporary directory");
     let mut cmd = process::scrubbed("python3", home.path());
@@ -84,10 +109,19 @@ fn both_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     let stdout = String::from_utf8(out.stdout).expect("utf-8 output");
     let mut python_files = vec![];
     let mut python_strings: BTreeMap<(usize, bool), Vec<String>> = BTreeMap::new();
+    let mut python_tasks: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
     let mut marked = 0;
     for line in stdout.lines() {
         if let Some(path) = line.strip_prefix("F ") {
             python_files.push(path.to_owned());
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("T ") {
+            let (index, print) = rest.split_once(' ').expect("a task line");
+            python_tasks
+                .entry(index.parse().expect("an index"))
+                .or_default()
+                .push(print.parse().expect("a fingerprint"));
             continue;
         }
         let fields: Vec<&str> = line.split(' ').collect();
@@ -108,8 +142,22 @@ fn both_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     assert_eq!(files, python_files);
 
     // Assert: per file and per `keys`, the same strings, as many times each.
+    let mut task_count = 0;
     for (index, file) in files.iter().enumerate() {
         let node = yaml::load_one(&repo::path(file));
+        let rust_tasks: Vec<u64> = node
+            .as_ref()
+            .map(|n| yaml::tasks(n).into_iter().map(fingerprint).collect())
+            .unwrap_or_default();
+        let python_tasks = python_tasks
+            .get(&index)
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        assert_eq!(
+            rust_tasks, python_tasks,
+            "{file}: the two task walks yield different nodes or a different order"
+        );
+        task_count += rust_tasks.len();
         for keys in [false, true] {
             let rust: Vec<&str> = node
                 .as_ref()
@@ -128,7 +176,7 @@ fn both_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     }
     eprintln!(
         "{} files; {} strings across both key passes, {marked} of them numbers or dates the \
-         stock Python walk does not yield",
+         stock Python walk does not yield; {task_count} task nodes",
         files.len(),
         python_strings.values().map(Vec::len).sum::<usize>()
     );
