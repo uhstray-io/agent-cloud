@@ -343,9 +343,15 @@ def test_the_survey_runs_only_at_the_reviewed_commit():
     assert [(v["name"], v["required"]) for v in template["survey_vars"]] == [("expected_repository_sha", True)]
 
 
-def test_the_playbook_keeps_offline_nodes_out_with_the_helpers_name_rule():
-    # The planner trusts the playbook to pass online, well-formed nodes only (plan() no longer re-checks).
-    text = (ROOT / "platform/playbooks/survey-proxmox-backup-storage.yml").read_text()
-    assert "selectattr('status', 'equalto', 'online')" in text
-    assert f"reject('match', '{survey.NAME.pattern}')" in text
-    assert "_online_nodes | length > 0" in text
+def test_the_playbook_selects_online_nodes_and_checks_their_names_with_the_helpers_rule():
+    # The playbook builds storage URLs from these nodes before the planner runs, so the online
+    # filter and the name check live in the playbook; this holds the parsed tasks to them.
+    plays = yaml.safe_load((ROOT / "platform/playbooks/survey-proxmox-backup-storage.yml").read_text())
+    tasks = {t.get("name"): t for t in plays[2]["tasks"]}
+    select = tasks["Select the online nodes"]["ansible.builtin.set_fact"]["_online_nodes"]
+    assert "selectattr('status', 'equalto', 'online')" in select
+    guard_task = tasks["Require well-formed node names before building storage URLs"]
+    guard = guard_task["ansible.builtin.assert"]
+    assert "_online_nodes | length > 0" in guard["that"]
+    assert f"_online_nodes | reject('match', '{survey.NAME.pattern}') | list | length == 0" in guard["that"]
+    assert not {"ignore_errors", "failed_when"} & set(guard_task)
