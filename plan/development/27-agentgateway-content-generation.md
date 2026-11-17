@@ -51,7 +51,7 @@
 | The image model's module is planned, not built. Its licence question is open. | Plane AC-870 (module `social-content-automation`); dgx-spark module `qwen-image-nvfp4-serving` |
 | Whether a studio identity is needed is undecided. | Plane AC-810 |
 
-Facts marked as Plane items come from the Plane records named in the table. They were not re-read in this session.
+Facts marked as Plane items come from the Plane records named in the table, read on 2026-11-16.
 
 ## Design Principles
 
@@ -162,7 +162,7 @@ Blocked on AC-870 (the image model's licence) and on image serving on the DGX Sp
 
 - **3.1 (AC-786)** Verify that the pinned gateway proxies the OpenAI images API, and whether a release ships per-key request limits. Upgrade the pin if it does not. Acceptance: a recorded result for the release tested, from exercising the route, not from inference.
 - **3.2 (AC-787)** Add the image upstream and route by model name. Acceptance: a template branch, a validator change, a new `existing` secret seeded with `Seed OpenBao Key`, and tests in the pattern of `agentgateway-openrouter`. The image model joins the `activepieces` allow-list.
-- **3.3 (AC-788)** Choose and encode a per-identity request limit for images (D6). Acceptance: the choice is recorded in this task's notes. A drill in the style of `Probe agentgateway Isolation (Dev)` shows that a request past the cap is refused for that identity while another identity is still served (scenario "Request past the image cap").
+- **3.3 (AC-788)** Choose and encode a per-identity request limit for images (D6). Acceptance: the choice is recorded in this plan, under D6. A drill in the style of `Probe agentgateway Isolation (Dev)` shows that a request past the cap is refused for that identity while another identity is still served (scenario "Request past the image cap").
 - **3.4 (AC-789)** Conformance: add an images case that compares the gateway with the direct image upstream. Acceptance: `run-agw-conformance.yml` gains a second direct URL, and the case passes against both sides.
 - **3.5 (AC-790)** Dashboards: image latency, errors and per-identity volume. Acceptance: `Verify o11y Dashboard Data (Dev)` passes for the new panels.
 - **3.6 (AC-792)** Validation gate (image). The image route renders through the gateway in production, and the cap holds. Proven by the spec scenario "Request past the image cap".

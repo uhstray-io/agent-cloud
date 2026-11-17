@@ -102,5 +102,7 @@ egress sidecar on an internal network, holding the leaf and the CA bundle.
 - **Sidecar.** If the spike says a piece cannot present a leaf, the sidecar is one more component in
   the Activepieces project.
 - **Pin upgrade.** If v1.5.0 lacks images support, the pin moves for every client.
-- **Plane item keys.** UNVERIFIED whether the existing Plane items carry the sync's external ids. If
-  they do not, the first sync run after merge could create duplicates. Not checked in this session.
+- **Plane item keys.** The module already carries the sync's key (external source `openspec`,
+  `uhstray-io/agent-cloud/agentgateway-content-generation`, read 2026-11-16). Its twelve items get
+  their task keys before this change merges; an item without one would be created again by the
+  first sync.
