@@ -8,8 +8,8 @@
 //! sits in the shared task file, so every caller is covered.
 //!
 //! A request to OpenBao is selected by its shape, not by a variable name: a `uri` task whose URL
-//! holds `/v1/` (the prefix of every OpenBao URL this task file writes; its Cloudflare URLs are
-//! `{{ _cf_api }}/...`) or whose headers carry `X-Vault-Token`.
+//! holds `/v1/` (every OpenBao URL this task file writes has it after the address; its Cloudflare
+//! URLs are `{{ _cf_api }}/...` and do not) or whose headers carry `X-Vault-Token`.
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::Node;

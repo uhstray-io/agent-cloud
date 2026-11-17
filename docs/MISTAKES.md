@@ -2549,8 +2549,9 @@ transport guard, so nothing refused a public `http://` OpenBao address before th
 crossed it. Found by the altitude review of AC-911 (Plane AC-936). The guard check,
 `credential_leaks.rs::every_openbao_play_includes_the_transport_guard`, stayed green. It derives
 its population from the code, as the rule says, but through a stand-in: it walks the top-level
-playbooks and selects plays that declare a `_bao_url` var. This task file builds its URL inline
-inside the task and declares no such var. Why the rule did not fire: the population was "plays
+playbooks and selects plays that declare a `_bao_url` var. The caller's play declared only
+`_records`, and the task file built its URL inline inside each request, so neither was a
+candidate. Why the rule did not fire: the population was "plays
 that declare `_bao_url`", and that is not X. X is "every play that reaches OpenBao", and a
 naming habit is a snapshot of how plays were written on the day, the same failure as the
 hand-typed list. Fixed in the shared task file, so every caller is covered: the address is
