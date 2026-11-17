@@ -1,6 +1,6 @@
 ## Context
 
-Plan 28 (`plan/development/28-social-content-automation.md`) holds the pipeline, the decision table D1 to D13, the risks R1 to R7 and the implementation phases. This document maps each decision a requirement tests to that requirement (D12, the order of work, has none); the requirements are in `specs/platform/social-content-automation/spec.md`. It does not restate the plan.
+Plan 28 (`plan/development/28-social-content-automation.md`) holds the pipeline, the decision table D1 to D13, the risks R1 to R8 and the implementation phases. This document maps each decision a requirement tests to that requirement (D12, the order of work, has none); the requirements are in `specs/platform/social-content-automation/spec.md`. It does not restate the plan.
 
 Every upstream fact the design relies on was read on upstream main on 2026-11-16 and is re-verified on the pinned version before the task that depends on it closes (plan 28, "Upstream facts used").
 
@@ -36,7 +36,7 @@ Trade-off accepted: the approval rule and brand isolation are enforced in flow l
 
 ## Risks / Trade-offs
 
-R1 to R7 with their mitigations are in plan 28, "Risks". R1 (Community-edition API access) comes first: if its spike in task 3.1 fails, work stops and the decision returns to the operator.
+R1 to R8 with their mitigations are in plan 28, "Risks". R1 (Community-edition API access) comes first: if its spike in task 3.1 fails, work stops and the decision returns to the operator.
 
 ## Open Questions
 
