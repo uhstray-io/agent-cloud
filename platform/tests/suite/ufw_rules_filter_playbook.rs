@@ -116,9 +116,14 @@ impl Calls {
         id
     }
 
+    /// Queues `filter(*args)`; returns the index of its result.
+    fn call(&mut self, filter: &str, args: Value) -> usize {
+        self.add(filter, args, json!({}))
+    }
+
     /// Queues one parametrized case of pytest item `item`: `filter(*args)` must give `want`.
     fn case(&mut self, item: String, filter: &str, args: Value, want: Want) {
-        let id = self.add(filter, args, json!({}));
+        let id = self.call(filter, args);
         self.cases.push((item, id, want));
     }
 
@@ -265,7 +270,6 @@ fn refuses(problems: &Value, why: Option<&str>) -> bool {
 #[test]
 fn ufw_filters_give_the_results_their_tests_expect() {
     let mut c = Calls::default();
-    let none = json!({});
 
     // ── ufw_address
     let address = [
@@ -375,9 +379,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     }
 
     // ── ufw_parse_added
-    let show_added = c.add(
-        "ufw_parse_added",
-        json!([[
+    let show_added = c.call("ufw_parse_added", json!([[
             "Added user rules (see 'ufw status' for running firewall):",
             "ufw allow from 192.0.2.0/24 to any port 22 proto tcp comment 'agent-cloud:in:22/tcp:192.0.2.0/24'",
             "ufw route allow from 192.0.2.7 to any port 443 proto tcp comment 'agent-cloud:route:443/tcp:192.0.2.7'",
@@ -386,12 +388,10 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             "ufw allow from 203.0.113.9 to any port 5432 proto tcp comment 'set by hand'",
             "ufw deny out to 198.51.100.2 comment 'agent-cloud:legacy'",
             "(None)",
-        ]]),
-        none.clone(),
-    );
+        ]]));
 
     // ── ufw_tag, through the rules that carry it
-    let tag_ssh = c.desired(none.clone());
+    let tag_ssh = c.desired(json!({}));
     let tag_deny = c.desired(json!({"deny_egress": [{"to": "198.51.100.2"}]}));
 
     // ── ufw_desired_rules
@@ -408,7 +408,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         }),
     );
     let rootless = c.desired(json!({"detected": ["443 tcp"], "upstreams": ["192.0.2.7"]}));
-    let nothing = c.desired(none.clone());
+    let nothing = c.desired(json!({}));
     let nothing_detected = c.desired(json!({"detected": ["443 tcp"]}));
     let twice = c.desired(
         json!({"allow_rules": [{"port": 22, "from": "192.0.2.0/24"}], "detected": ["8080 tcp"],
@@ -429,14 +429,10 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             "bridges": ["podman1"],
         }),
     );
-    let two_ways_read = c.add(
-        "ufw_parse_added",
-        json!([[
+    let two_ways_read = c.call("ufw_parse_added", json!([[
             "ufw allow from 192.0.2.7 to any port 443 proto tcp comment 'agent-cloud:in:443/tcp:192.0.2.7/32'",
             "ufw allow from 192.0.2.7 to any port 443 proto tcp comment 'agent-cloud:in:443/tcp:192.0.2.7'",
-        ]]),
-        none.clone(),
-    );
+        ]]));
     let dual = c.add(
         "ufw_desired_rules",
         json!([["192.0.2.0/24", "any"]]),
@@ -457,28 +453,25 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         "allow from 203.0.113.9 to any port 5432 proto tcp",
         &ssh_tag,
     );
-    let absent_masked = c.add(
+    let absent_masked = c.call(
         "ufw_absent",
         json!([desired_expr, [masked, held(&web_spec, &web_tag)]]),
-        none.clone(),
     );
-    let absent_retag = c.add(
+    let absent_retag = c.call(
         "ufw_absent",
         json!([
             desired_expr,
             [held(&ssh_spec, ""), held(&web_spec, "agent-cloud:old")]
         ]),
-        none.clone(),
     );
-    let absent_held = c.add(
+    let absent_held = c.call(
         "ufw_absent",
         json!([
             desired_expr,
             [held(&ssh_spec, &ssh_tag), held(&web_spec, &web_tag)]
         ]),
-        none.clone(),
     );
-    let masking = c.add(
+    let masking = c.call(
         "ufw_masking",
         json!([
             [
@@ -488,7 +481,6 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             ],
             desired_expr
         ]),
-        none.clone(),
     );
     let bridge_desired = "(['192.0.2.0/24'] | ufw_desired_rules(bridges=['podman1']))";
     // Each declared rule held as stored: its own tag and spec, family and peer blank (the Python
@@ -496,11 +488,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     let bridge_held =
         format!("{{{{ {bridge_desired} | map('combine', {{'family': '', 'peer': ''}}) | list }}}}");
     let bridge_expr = format!("{{{{ {bridge_desired} }}}}");
-    let reassert_off = c.add(
-        "ufw_absent",
-        json!([bridge_expr, bridge_held]),
-        none.clone(),
-    );
+    let reassert_off = c.call("ufw_absent", json!([bridge_expr, bridge_held]));
     let reassert_on = c.add(
         "ufw_absent",
         json!([bridge_expr, bridge_held]),
@@ -508,15 +496,13 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     );
 
     // ── ufw_delete_args
-    let delete_in = c.add(
+    let delete_in = c.call(
         "ufw_delete_args",
         json!(["allow from 192.0.2.7 to any port 443 proto tcp"]),
-        none.clone(),
     );
-    let delete_route = c.add(
+    let delete_route = c.call(
         "ufw_delete_args",
         json!(["route allow from 192.0.2.7 to any port 443 proto tcp"]),
-        none.clone(),
     );
 
     // ── an explicit null
@@ -631,48 +617,60 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             Want::Refused(Some(why)),
         );
     }
-    let egress = |c: &mut Calls, entries: Value, cidrs: Value| {
-        c.add("ufw_egress_problems", json!([entries, cidrs]), json!({}))
-    };
+    let egress = "ufw_egress_problems";
+    // A /32 SSH CIDR and the bare address are one host; a broad range over a single-host SSH
+    // source contains it; IPv6: a supernet is refused, and families never contain each other.
+    let item = "test_egress_containment_is_compared_in_the_spelling_ufw_stores";
     let spelling = [
-        egress(
-            &mut c,
-            json!([{"to": "192.0.2.5"}]),
-            json!(["192.0.2.5/32"]),
-        ),
-        egress(
-            &mut c,
-            json!([{"to": "192.0.2.5/32"}]),
-            json!(["192.0.2.5"]),
-        ),
-        egress(
-            &mut c,
+        (json!([{"to": "192.0.2.5"}]), json!(["192.0.2.5/32"])),
+        (json!([{"to": "192.0.2.5/32"}]), json!(["192.0.2.5"])),
+        (
             json!([{"to": "192.0.2.0/28", "broad": true, "reason": "x"}]),
             json!(["192.0.2.5"]),
         ),
-        egress(
-            &mut c,
+        (
             json!([{"to": "2001:db8::/16", "broad": true, "reason": "x"}]),
             json!(["2001:db8::/32"]),
         ),
     ];
-    let families = egress(
-        &mut c,
-        json!([{"to": "192.0.0.0/8", "broad": true, "reason": "x"}]),
-        json!(["2001:db8::/32"]),
+    for (entries, cidrs) in spelling {
+        c.case(
+            item.into(),
+            egress,
+            json!([entries, cidrs]),
+            Want::Refused(None),
+        );
+    }
+    c.case(
+        item.into(),
+        egress,
+        json!([[{"to": "192.0.0.0/8", "broad": true, "reason": "x"}], ["2001:db8::/32"]]),
+        Want::Exact(json!([])),
     );
-    let mgmt_nothing = egress(&mut c, json!([]), json!(["mgmt-net"]));
-    let mgmt_one = egress(&mut c, json!([{"to": "198.51.100.1"}]), json!(["mgmt-net"]));
-    let any_host = egress(&mut c, json!([{"to": "198.51.100.1"}]), json!(["any"]));
-    let any_all = egress(
-        &mut c,
-        json!([{"to": "::/0", "broad": true, "reason": "x"}]),
-        json!(["any"]),
+    let item = "test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe";
+    c.case(
+        item.into(),
+        egress,
+        json!([[], ["mgmt-net"]]),
+        Want::Exact(json!([])),
     );
-    let every_problem = egress(
-        &mut c,
-        json!([{"to": "192.0.0.0/16", "port": 0, "proto": "icmp"}]),
-        mgmt(),
+    let mgmt_one = c.call(egress, json!([[{"to": "198.51.100.1"}], ["mgmt-net"]]));
+    // `any` is the whole address space: a host inside it is fine, the whole space is not
+    c.case(
+        item.into(),
+        egress,
+        json!([[{"to": "198.51.100.1"}], ["any"]]),
+        Want::Exact(json!([])),
+    );
+    c.case(
+        item.into(),
+        egress,
+        json!([[{"to": "::/0", "broad": true, "reason": "x"}], ["any"]]),
+        Want::Refused(None),
+    );
+    let every_problem = c.call(
+        egress,
+        json!([[{"to": "192.0.0.0/16", "port": 0, "proto": "icmp"}], mgmt()]),
     );
 
     // ── the outbound allowlist
@@ -688,7 +686,7 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         json!([[]]),
         json!({"allow_egress": [{"port": 443}, {"port": 3100, "to": "192.0.2.9"}], "egress_audit": true}),
     );
-    let allow = |c: &mut Calls, args: Value| c.add("ufw_allow_egress_problems", args, json!({}));
+    let allow = "ufw_allow_egress_problems";
     let allow_ok = [
         json!([{"port": 443}]),
         json!([{"port": "80:81", "proto": "tcp"}]),
@@ -733,25 +731,25 @@ fn ufw_filters_give_the_results_their_tests_expect() {
             Want::Refused(Some(why)),
         );
     }
-    let mode_block = allow(&mut c, json!([[], "block"]));
-    let mode_audit = allow(&mut c, json!([[], "audit"]));
+    let mode_block = c.call(allow, json!([[], "block"]));
+    let mode_audit = c.call(allow, json!([[], "audit"]));
     let dns = json!({"port": 53, "proto": "udp"});
     let probe = json!([{"host": "prime.plane.so", "port": 443}]);
-    let enforce_ok = allow(&mut c, json!([[{"port": 443}, dns], "enforce", probe]));
-    let enforce_range = allow(
-        &mut c,
+    let enforce_ok = c.call(allow, json!([[{"port": 443}, dns], "enforce", probe]));
+    let enforce_range = c.call(
+        allow,
         json!([[{"port": "50:60", "proto": "udp"}], "enforce", probe]),
     );
-    let enforce_no_dns = allow(
-        &mut c,
+    let enforce_no_dns = c.call(
+        allow,
         json!([[{"port": 443}, {"port": 53}], "enforce", probe]),
     );
-    let enforce_no_probe = allow(&mut c, json!([[dns], "enforce", []]));
-    let enforce_bad_probe = allow(
-        &mut c,
+    let enforce_no_probe = c.call(allow, json!([[dns], "enforce", []]));
+    let enforce_bad_probe = c.call(
+        allow,
         json!([[dns], "enforce", [{"host": "x"}, "x:443", {"host": "x", "port": 0}]]),
     );
-    let enforce_empty = allow(&mut c, json!([[], "enforce"]));
+    let enforce_empty = c.call(allow, json!([[], "enforce"]));
     let timeouts = [
         (json!(5), true),
         (json!("30"), true),
@@ -1052,10 +1050,8 @@ fn ufw_filters_give_the_results_their_tests_expect() {
     // the declared spec without its tag (untagged, or an old tag) is absent too: it is retagged
     k.eq(item, &r[absent_retag], desired);
     k.eq(item, &r[absent_held], &json!([]));
-    let masked_held = held(
-        "allow from 203.0.113.9 to any port 5432 proto tcp",
-        desired[0]["tag"].as_str().unwrap_or("<no SSH tag>"),
-    );
+    let masked_held = json!({"spec": "allow from 203.0.113.9 to any port 5432 proto tcp",
+        "tag": desired[0]["tag"], "family": "", "peer": ""});
     k.eq(item, &r[masking], &json!([masked_held]));
 
     let item = "test_a_rule_naming_no_address_is_re_asserted_even_when_held";
@@ -1106,27 +1102,14 @@ fn ufw_filters_give_the_results_their_tests_expect() {
         &json!("allow from 192.0.2.5 to any port 80 proto None"),
     );
 
-    // A /32 SSH CIDR and the bare address are one host; a broad range over a single-host SSH
-    // source contains it; IPv6: a supernet is refused, and families never contain each other.
-    let item = "test_egress_containment_is_compared_in_the_spelling_ufw_stores";
-    for id in spelling {
-        k.refused(item, &c.calls[id]["label"], &r[id], None);
-    }
-    k.eq(item, &r[families], &json!([]));
-
-    let item = "test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe";
-    k.eq(item, &r[mgmt_nothing], &json!([]));
     k.that(
-        item,
+        "test_an_ssh_cidr_that_is_not_an_address_cannot_prove_a_denial_safe",
         r[mgmt_one].as_array().is_some_and(|a| a.len() == 1)
             && r[mgmt_one][0]
                 .as_str()
                 .is_some_and(|p| p.contains("SSH CIDR 'mgmt-net' is not an address")),
         || format!("one problem naming the CIDR: {}", r[mgmt_one]),
     );
-    // `any` is the whole address space: a host inside it is fine, the whole space is not
-    k.eq(item, &r[any_host], &json!([]));
-    k.refused(item, &c.calls[any_all]["label"], &r[any_all], None);
 
     // not broad, contains the SSH CIDR, port, proto
     k.that(
