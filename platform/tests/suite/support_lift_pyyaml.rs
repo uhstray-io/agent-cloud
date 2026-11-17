@@ -38,6 +38,7 @@ string_08: 08
 
 /// For each path in `argv`, one line: the file's documents as PyYAML's `safe_load_all` reads them.
 const PYTHON: &str = r#"import json, sys, yaml
+assert yaml.__version__ == "6.0.3", f"PyYAML {yaml.__version__}, the loader follows 6.0.3"
 for f in sys.argv[1:]:
     print(json.dumps({"file": f, "docs": list(yaml.safe_load_all(open(f, encoding="utf-8")))}, ensure_ascii=False))
 "#;
@@ -66,7 +67,7 @@ fn pyyaml_types_every_repository_file_as_the_lifting_loader_does() {
     .collect();
     files.push(fixture.display().to_string());
 
-    // One process for every file, bounded by scrubbed's own 30 s.
+    // One process for every file, bounded by run_for's 30 s.
     let mut cmd = process::scrubbed("python3", dir.path());
     cmd.current_dir(repo::root())
         .arg("-c")

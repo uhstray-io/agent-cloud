@@ -1,14 +1,15 @@
 //! Repository playbooks lifted to JSON, so a playbook-tier test can run a play's tasks through
 //! [`process::ansible_playbook`](crate::process::ansible_playbook) (plan 24, AC-943).
 //!
-//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML. Each test that
-//! runs a lifted play calls `yaml.safe_dump` itself, so `ansible-playbook` runs the play as the
-//! repository wrote it. This module is the Rust side of the reading. It cannot reuse
-//! [`yaml::parse`](crate::yaml::parse): a [`yaml::Node`] has no number type, so every plain scalar
-//! that is not a bool or null is a string, and `"53"` and `53` are the same `Node::Str`. A lifted
-//! play must carry `port: 53` as a number, so this loader builds [`serde_json::Value`] from the
-//! event stream instead. Bool and null come from [`yaml::resolve_plain`]. Numbers and timestamps
-//! follow PyYAML 6.0.3's resolvers (`yaml/resolver.py`) and constructors (`yaml/constructor.py`).
+//! The Python helper `platform/tests/playbook_yaml.py` reads a play with PyYAML, and each Python
+//! test that runs a lifted play dumps it with `yaml.safe_dump`, so `ansible-playbook` runs the play
+//! as the repository wrote it. Here [`write`] puts it in a file as JSON instead. The reading cannot
+//! reuse [`yaml::parse`](crate::yaml::parse): a [`yaml::Node`] has no number type, so every plain
+//! scalar that is not a bool or null is a string, and `"53"` and `53` are the same `Node::Str`. A
+//! lifted play must carry `port: 53` as a number, so this loader builds [`serde_json::Value`] from
+//! the event stream instead. Bool and null come from [`yaml::resolve_plain`]. Numbers and
+//! timestamps follow PyYAML 6.0.3's resolvers (`yaml/resolver.py`) and constructors
+//! (`yaml/constructor.py`).
 //!
 //! Mapping order is kept (serde_json's `preserve_order`): Jinja iterates a dict in insertion
 //! order, so a sorted map would change what a lifted play does.
@@ -291,7 +292,7 @@ impl Builder<'_> {
     fn refuse_tag(&self, tag: Option<&Tag>, scalar: Option<&str>) {
         let Some(tag) = tag else { return };
         let own = scalar.unwrap_or("<collection>");
-        let full = format!("{}{}", tag.handle, tag.suffix);
+        let full = yaml::tag_text(tag);
         let reason = match full.strip_prefix(CORE_TAG) {
             Some(name) => format!("core tag `!!{name}` is not supported by the playbook loader"),
             None => format!("application tag `{full}` is not supported by the playbook loader"),
@@ -361,9 +362,6 @@ fn apply_merges(
     merges: Vec<Value>,
     origin: &str,
 ) -> Map<String, Value> {
-    if merges.is_empty() {
-        return explicit.into_iter().collect();
-    }
     let mut out = Map::new();
     for merge in merges {
         let list = match merge {
