@@ -51,6 +51,11 @@ def test_every_version_a_playbook_asks_for_is_pinned():
             version = (play.get("vars") or {}).get("podman_compose_version") if isinstance(play, dict) else None
             if version:
                 asked.add(str(version))
+    # A role's shared vars file asks for every play that loads it (weft's vars/weft.yml).
+    for path in (REPO / "platform/playbooks/vars").glob("*.yml"):
+        version = (yaml.safe_load(path.read_text()) or {}).get("podman_compose_version")
+        if version:
+            asked.add(str(version))
     assert asked, "no playbook asks for a podman-compose release"
     assert asked <= pinned, f"asked for but not pinned: {asked - pinned}"
 

@@ -349,3 +349,45 @@ PY
   # It catches and never sends: no relay and no forward. The code, not its comments, which say so.
   refute_grep -qiE 'relay|forward' <<<"$(grep -vE '^\s*#' "$DOOR_DIR/compose.mailpit.yml")"
 }
+
+@test "weft: the board and the front door see the real peer: on pasta, never a rootless bridge" {
+  # weft #580: a port published from a rootless bridge is forwarded by rootlessport, which connects
+  # onward from the container's own bridge address. The board and the door then saw every request
+  # come from 10.89.x.y: trusted_proxies naming the Caddy host never matched, CF-Connecting-IP was
+  # never believed, and one person's failed sign-ins locked out everybody. pasta keeps the source
+  # address, and podman refuses pasta beside a bridge, so a service on it has no `networks`.
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import yaml' 2>/dev/null || skip "PyYAML not installed"
+  run python3 - "$WS_DIR/compose.yml" "$DOOR_DIR/compose.yml" "$PB/vars/weft.yml" <<'PY'
+import sys, yaml
+ws, door, weft_vars = (yaml.safe_load(open(p)) for p in sys.argv[1:4])
+for doc, service in ((ws, "board"), (door, "door")):
+    svc = doc["services"][service]
+    assert svc.get("network_mode") == "pasta", f"{service} is not on pasta: {svc.get('network_mode')}"
+    assert "networks" not in svc, f"{service} also names a bridge, which podman refuses beside pasta"
+    # podman-compose 1.6.0 puts every service in one pod by default, and a pod refuses --userns.
+    assert doc.get("x-podman") == {"in_pod": False}, f"{service}'s compose file lets 1.6.0 make a pod"
+# The orchestrator and capture keep their bridge: nothing about them is decided by an address.
+assert all(ws["services"][s].get("networks") == ["weft"] for s in ("orchestrator", "capture"))
+# Ubuntu 24.04's podman-compose 1.0.6 exits on `network_mode: pasta`, so every weft play asks for
+# a release that reads it (test_install_podman_compose_pin.py holds the ask to a pinned wheel).
+assert weft_vars.get("podman_compose_version") == "1.6.0", weft_vars.get("podman_compose_version")
+PY
+  [ "$status" -eq 0 ] || { echo "$output"; false; }
+  # Each play refuses a host without pasta after podman is installed and before tasks/weft-deploy.yml
+  # stops the running container: a missing pasta otherwise fails at creation, after the stop.
+  local play placed refused stopped
+  for play in "$PB/weft-workspace.yml" "$PB/weft-door.yml"; do
+    placed=$(grep -n 'include_tasks: tasks/place-monorepo.yml' "$play" | cut -d: -f1)
+    refused=$(grep -n 'include_tasks: tasks/assert-podman-pasta.yml' "$play" | cut -d: -f1)
+    stopped=$(grep -n 'include_tasks: tasks/weft-deploy.yml' "$play" | head -1 | cut -d: -f1)
+    [ -n "$placed" ] && [ -n "$refused" ] && [ -n "$stopped" ]
+    [ "$placed" -lt "$refused" ] && [ "$refused" -lt "$stopped" ] || { echo "$play: $placed $refused $stopped"; false; }
+  done
+  assert_grep -qF '{{.Host.Pasta.Executable}}' "$PB/tasks/assert-podman-pasta.yml"
+  # A wildcard or loopback bind lets every local process arrive as 127.0.0.1, which the board admits
+  # for its healthcheck. weft-release.yml is reached by every deploy and every rollback before the
+  # pull and the stop (test_weft_deploy_runs.py runs the check itself).
+  [ "$(grep -n 'include_tasks: weft-bind.yml' "$PB/tasks/weft-release.yml" | cut -d: -f1)" -lt \
+    "$(grep -n 'Pull the verified images' "$PB/tasks/weft-release.yml" | cut -d: -f1)" ]
+}

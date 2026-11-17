@@ -88,6 +88,7 @@ RELEASE_STUB = [
      "ansible.builtin.set_fact": {"_weft_images": "{{ _weft_release_json.images }}",
                                   "_weft_release_name": "{{ _weft_release_json.version or _weft_release_json.commit }}"}},
     {"name": "Stub: the real header check", "ansible.builtin.include_tasks": "weft-board-header.yml"},
+    {"name": "Stub: the real bind check", "ansible.builtin.include_tasks": "weft-bind.yml"},
 ]
 # What a release that carries weft #511 lists among the keys its loader accepts.
 HEADER_KEYS = {"deployment_file_keys": ["board", "board.trusted_proxies", "board.client_address_header"]}
@@ -99,7 +100,7 @@ def host(tmp_path):
     pb = tmp_path / "pb"
     (pb / "tasks").mkdir(parents=True)
     for name in ("weft-deploy.yml", "weft-verify-images.yml", "verify-cosign.yml", "weft-workspace-files.yml",
-                 "weft-whisper-model.yml", "weft-board-header.yml"):
+                 "weft-whisper-model.yml", "weft-board-header.yml", "weft-bind.yml"):
         shutil.copy(PLAYBOOKS / "tasks" / name, pb / "tasks" / name)
     (pb / "tasks" / "weft-release.yml").write_text(yaml.safe_dump(RELEASE_STUB))
     # Templates are read from {{ playbook_dir }}/../services/weft-<role>/deployment/templates.
@@ -133,7 +134,7 @@ def _deploy(tmp_path: Path, release: dict, extra: dict | None = None):
         "vars": {
             "weft_release": f"{release['commit']}@{DIGEST}", "weft_workspace_id": "ws1", "weft_voice_udp": 40000,
             "weft_root": str(srv / "weft"), "weft_state_root": str(srv / "weft-state"),
-            "weft_health_minutes": 0, "weft_watch_minutes": 0, "weft_board_bind": "127.0.0.1",
+            "weft_health_minutes": 0, "weft_watch_minutes": 0, "weft_board_bind": "192.0.2.10",
             "_weft_role": "workspace", "_weft_workspace_dir": str(srv / "weft/ws1"),
             "_weft_state_dir": "{{ _weft_workspace_state_dir }}",
             "_weft_deploy_dir": str(tmp_path / "clone/platform/services/weft-workspace/deployment"),
@@ -292,9 +293,10 @@ def _door_env(tmp_path: Path, extra: dict) -> tuple:
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
         "vars": {"_weft_release_name": NEW, "_weft_images": {"weft-door": f"{REGISTRY}/weft-door@{DIGEST}"},
-                 "weft_door_dir": "/srv/weft-door", "weft_door_bind": "127.0.0.1",
+                 "weft_door_dir": "/srv/weft-door", "weft_door_bind": "192.0.2.11",
                  "weft_domain": "weft.example.test", **extra},
         "tasks": [
+            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-bind.yml"), "vars": {"_weft_role": "door"}},
             {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-header.yml")},
             {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-mail.yml")},
             {"ansible.builtin.template": {"src": str(DOOR_DIR / "templates/door.env.j2"),
@@ -398,6 +400,120 @@ def test_a_front_door_without_the_mail_catcher_renders_none_of_it(tmp_path):
     assert not [key for key in _env_lines(env_file) if "MAIL" in key or key == "WEFT_DOOR_URL"], (
         "deploy.sh loads the catcher's overlay from .env alone\n" + env_file.read_text())
     assert not (tmp_path / "engine.log").exists(), "nothing of the catcher is pulled"
+
+
+def _bind_check(tmp_path: Path, role: str, bind: dict, inventory: str = "localhost,"):
+    """The real tasks/weft-bind.yml, as tasks/weft-release.yml includes it for every deploy and
+    rollback, then a file standing in for the stop that comes after it."""
+    play = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
+        "vars": {"_weft_role": role, **bind},
+        "tasks": [
+            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-bind.yml")},
+            {"name": "Stand-in for the stop", "ansible.builtin.copy": {
+                "content": "stopped\n", "dest": str(tmp_path / "stopped"), "mode": "0644"}},
+        ],
+    }]
+    playbook = tmp_path / "bind.yml"
+    playbook.write_text(yaml.safe_dump(play, width=10**6))
+    return run_playbook(playbook, tmp_path, inventory=inventory, env={"ANSIBLE_NOCOLOR": "1"})
+
+
+REFUSED_BINDS = ["0.0.0.0", "::", "[::]", "0:0:0:0:0:0:0:0", "127.0.0.1", "127.1.2.3", "::1", "[::1]",
+                 "::ffff:127.0.0.1", "localhost", "LOCALHOST", " "]
+
+
+@pytest.mark.parametrize("role, key", [("workspace", "weft_board_bind"), ("door", "weft_door_bind")])
+@pytest.mark.parametrize("bind", REFUSED_BINDS)
+def test_a_wildcard_or_loopback_bind_is_refused_before_anything_stops(tmp_path, role, key, bind):
+    # weft #580: the board and the door run on pasta, which keeps a connection's source address.
+    # Published on a wildcard or loopback, a process on the VM connecting to 127.0.0.1 arrives as
+    # 127.0.0.1 (measured on podman 4.9.3), and the board's ingest_from always admits loopback for
+    # its healthcheck: every local process would be admitted as that healthcheck.
+    proc = _bind_check(tmp_path, role, {key: bind})
+    assert proc.returncode != 0, f"{key}={bind!r} was accepted\n" + proc.stdout[-4000:]
+    assert f"{key} is" in proc.stdout and "Nothing has changed" in proc.stdout, proc.stdout[-4000:]
+    assert not (tmp_path / "stopped").exists(), "the stop was reached after the refusal"
+
+
+@pytest.mark.parametrize("role", ["workspace", "door"])
+def test_an_unset_bind_is_the_host_s_address_and_is_held_to_the_same_rule(tmp_path, role):
+    # workspace.env.j2 and door.env.j2 publish on ansible_host when no bind is set.
+    proc = _bind_check(tmp_path, role, {"ansible_host": "127.0.0.1"})
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert not (tmp_path / "stopped").exists()
+
+
+def test_local_mode_publishes_on_loopback(tmp_path):
+    # A local-dev inventory puts every host at 127.0.0.1, with the edge on the same machine.
+    proc = _bind_check(tmp_path, "workspace", {"weft_board_bind": "127.0.0.1"}, inventory=LOCAL_DEV)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert (tmp_path / "stopped").exists()
+
+
+@pytest.mark.parametrize("role, bind", [
+    ("workspace", {"weft_board_bind": "192.0.2.10"}), ("door", {"weft_door_bind": "2001:db8::10"}),
+    ("workspace", {"ansible_host": "192.0.2.10"}),
+    # Each role reads its own key: the other role's loopback is not this one's bind.
+    ("door", {"weft_board_bind": "127.0.0.1", "weft_door_bind": "192.0.2.11"}),
+], ids=["board-address", "door-ipv6", "host-address", "own-key"])
+def test_the_vm_s_own_address_is_accepted_as_a_bind(tmp_path, role, bind):
+    proc = _bind_check(tmp_path, role, bind)
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert (tmp_path / "stopped").exists()
+
+
+PASTA_ENGINE = """#!/bin/bash
+echo "$*" >> "{log}"
+printf '%s' "$(cat "{answer}")"
+exit {rc}
+"""
+
+
+def _pasta_check(tmp_path: Path, answer: str, rc: int = 0):
+    """The real tasks/assert-podman-pasta.yml, as weft-workspace.yml and weft-door.yml include it,
+    against a `podman` that prints `answer` for `info` and exits `rc`. A file stands in for the stop
+    that tasks/weft-deploy.yml makes after it."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (tmp_path / "answer").write_text(answer)
+    (bindir / "podman").write_text(PASTA_ENGINE.format(log=tmp_path / "engine.log", answer=tmp_path / "answer", rc=rc))
+    (bindir / "podman").chmod(0o755)
+    play = [{
+        "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "tasks": [
+            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/assert-podman-pasta.yml"),
+             "vars": {"_app_for": "weft's board"}},
+            {"name": "Stand-in for the stop", "ansible.builtin.copy": {
+                "content": "stopped\n", "dest": str(tmp_path / "stopped"), "mode": "0644"}},
+        ],
+    }]
+    playbook = tmp_path / "pasta.yml"
+    playbook.write_text(yaml.safe_dump(play, width=10**6))
+    env = {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "ANSIBLE_NOCOLOR": "1"}
+    return run_playbook(playbook, tmp_path, env=env)
+
+
+@pytest.mark.parametrize("answer, rc", [("", 0), ("\n", 0), ("", 125)], ids=["no-pasta", "blank", "podman-failed"])
+def test_a_host_whose_podman_has_no_pasta_is_refused_before_anything_stops(tmp_path, answer, rc):
+    # weft #580: the board and the front door run on pasta so that they see the Caddy host's
+    # address; from a rootless bridge every request came from their own bridge address. podman
+    # only recommends passt, and without it the new container fails at creation, after the stop
+    # has taken the running one away. `podman info` names no pasta when podman could not run one.
+    proc = _pasta_check(tmp_path, answer, rc)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "weft's board runs on podman's pasta network mode" in proc.stdout, proc.stdout[-4000:]
+    assert "Run Install Podman" in proc.stdout, "the refusal names the fix:\n" + proc.stdout[-4000:]
+    assert not (tmp_path / "stopped").exists(), "the stop was reached after the refusal"
+
+
+def test_a_host_whose_podman_names_its_pasta_goes_on_to_the_deploy(tmp_path):
+    proc = _pasta_check(tmp_path, "/usr/bin/pasta\n")
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert (tmp_path / "stopped").exists()
+    assert (tmp_path / "engine.log").read_text() == "info --format {{.Host.Pasta.Executable}}\n", (
+        "the read must be podman's own answer, which is what a container's creation will use")
 
 
 DOOR_ENGINE = """#!/bin/bash

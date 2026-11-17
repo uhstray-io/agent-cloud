@@ -44,6 +44,11 @@
       runs, so no container may write it: set weft_state_root apart from weft_root and
       weft_door_dir. Nothing was changed.
 
+# The board and the front door keep a connection's source address (pasta), so what they are
+# published on decides who can arrive as loopback.
+- name: "Refuse a wildcard or loopback address for the published port"
+  ansible.builtin.include_tasks: weft-bind.yml
+
 # A person rollback on staging names the commit or pin in its survey (rollback-weft-host.yml).
 - name: "Take the pin"
   ansible.builtin.set_fact:

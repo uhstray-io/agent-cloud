@@ -53,10 +53,10 @@ door's `weft_release` pin are described in the workspace README. The front door'
 | Variable | Where | Form | Default |
 |---|---|---|---|
 | `weft_door_host` | the inventory template | the front door's inventory host (`weft_staging_door_host` for staging) | none |
-| `weft_door_bind` | the front door host | the address the Caddy host reaches it on | `ansible_host` |
+| `weft_door_bind` | the front door host | the address the Caddy host reaches it on; a wildcard or loopback address is refused before anything stops (`tasks/weft-bind.yml`), outside local mode | `ansible_host` |
 | `weft_door_port` | the front door host | its published port | `8081` |
 | `weft_door_dir` | optional | the records' directory on the VM's own disk | `/srv/weft-door` |
-| `weft_door_trusted_proxies` | the front door host, required | the edge Caddy host's address, as a list of CIDR blocks, the only peers the client address header is believed from | none: a deploy refuses before anything stops |
+| `weft_door_trusted_proxies` | the front door host, required | the edge Caddy host's address, as a list of CIDR blocks, the only peers the client address header is believed from. The Caddy host alone, as a `/32`: the door is on pasta (compose.yml), and anything on this VM reaches it as the VM's default gateway (podman 4.9.3) or `169.254.1.2` (podman 5.3 on), so a range holding either would believe the header from every process on the VM | none: a deploy refuses before anything stops |
 | `weft_door_client_address_header` | optional | the header the edge overwrites with the client's address; every weft name is proxied by Cloudflare | `CF-Connecting-IP` |
 | `weft_caddy_tls` | optional | the `tls` block of the Caddy fragment | `dns cloudflare {$CLOUDFLARE_API_KEY}` |
 | `weft_door_mailpit` | staging's front door only | `true` runs Mailpit and sends the door's mail to it; refused outside staging | `false` |
