@@ -90,7 +90,7 @@ const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 // anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
 static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"^\s*\(*\s*groups(?:\[[^\]]*\]|\.get\(\s*[^,]+?,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$",
+        r"^\s*\(*\s*groups(?:\[[^\]]*\]|\.get\(\s*(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$",
     )
 });
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| re(r#"'[^']*'|"[^"]*""#));
@@ -508,6 +508,12 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
     ("listwrap", "[groups[target_service] | length] | length > 0"),
     ("prefixarith", "(1 + (groups[target_service] | length)) > 0"),
     ("nodefault", "(groups.get(target_service) | length) > 0"),
+    // The `get` key is one name, optionally `| default('')`: a key that could cross `)` lets the
+    // `, [])` belong to another filter, and an empty group passes (#1169 review).
+    (
+        "ziplongest",
+        "(groups.get(target_service) | zip_longest(['x'], []) | length) > 0",
+    ),
 ];
 
 /// Inline asserts with one accepted positive comparison of `length`. Each guards its target.

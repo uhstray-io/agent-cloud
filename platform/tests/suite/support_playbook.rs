@@ -132,19 +132,36 @@ fn run_gives_the_child_no_stdin() {
 
 #[test]
 fn run_for_refuses_a_playbook_run_with_another_bound() {
-    // A playbook started through `run_for` with its own bound would skip `PLAYBOOK_TIMEOUT`; the
-    // refusal comes before anything is spawned (AC-906).
+    // A playbook started through `run_for` with its own bound, longer or shorter, would skip
+    // `PLAYBOOK_TIMEOUT`; the refusal comes before anything is spawned (AC-906). Each form is
+    // checked on every host: the builder's own command (the program on Linux, a `sandbox-exec`
+    // argument on macOS) and the bwrap form, `-- ansible-playbook` (#1169 review).
     let dir = TempDir::new().unwrap();
-    let mut cmd = process::ansible_playbook(dir.path(), "localhost,", "x.yml");
+    let home = TempDir::new().unwrap();
+    let mut bwrap = process::scrubbed("bwrap", home.path());
+    bwrap.args(["--", "ansible-playbook"]);
+    let cases = [
+        (
+            process::ansible_playbook(dir.path(), "localhost,", "x.yml"),
+            Duration::from_secs(3600),
+        ),
+        (
+            process::ansible_playbook(dir.path(), "localhost,", "x.yml"),
+            Duration::from_secs(1),
+        ),
+        (bwrap, Duration::from_secs(1)),
+    ];
 
-    let message = panic_message(|| {
-        process::run_for(&mut cmd, Duration::from_secs(3600));
-    });
+    for (mut cmd, bound) in cases {
+        let message = panic_message(|| {
+            process::run_for(&mut cmd, bound);
+        });
 
-    assert_eq!(
-        message,
-        "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run"
-    );
+        assert_eq!(
+            message, "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run",
+            "bound {bound:?}"
+        );
+    }
 }
 
 #[test]

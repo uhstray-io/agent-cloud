@@ -621,7 +621,7 @@ pub mod process {
     /// runner path: sandboxed under `sandbox-exec` or `bwrap`, unconfined without either. The Python
     /// harness has the same limit; AC-882 tracks a process-group kill.
     ///
-    /// A playbook run (the program, or a sandbox argument, is `ansible-playbook`) is held to
+    /// A playbook run (the program, or any argument, is `ansible-playbook`) is held to
     /// [`PLAYBOOK_TIMEOUT`]: [`run`] is its only route (CONTRIBUTING.md, playbook tier; AC-906).
     pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
         let runs_playbook = std::iter::once(cmd.get_program())

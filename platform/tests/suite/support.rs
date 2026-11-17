@@ -240,7 +240,13 @@ fn ls_files_reads_a_non_ascii_path_as_it_is_on_disk() {
     let home = tempfile::TempDir::new().unwrap();
     std::fs::write(dir.path().join("café.yml"), "a: 1\n").unwrap();
     std::fs::write(dir.path().join("plain.yml"), "b: 2\n").unwrap();
-    for args in [&["init", "-q"][..], &["add", "."][..]] {
+    // `core.quotePath` is pinned in the repository, so a developer's global `false` cannot make
+    // git print the name unquoted and hide a missing `-z` (#1169 review).
+    for args in [
+        &["init", "-q"][..],
+        &["config", "core.quotePath", "true"][..],
+        &["add", "."][..],
+    ] {
         process::scrubbed("git", home.path())
             .current_dir(dir.path())
             .args(args)
