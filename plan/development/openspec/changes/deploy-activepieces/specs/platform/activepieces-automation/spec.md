@@ -4,9 +4,9 @@ Provides a self-hosted workflow-automation service: platform automation builds a
 
 ## ADDED Requirements
 
-### Requirement: Deployed through Semaphore with secrets from OpenBao
+### Requirement: Encryption key and idempotent re-runs
 
-The service SHALL be deployed, redeployed and cleaned only through Semaphore playbooks. Its secrets SHALL come from OpenBao. A deploy MUST NOT regenerate a secret that already exists, and in particular MUST NOT regenerate the encryption key that protects stored connections.
+The service MUST keep its encryption key across redeploys. A deploy MUST NOT regenerate `encryption_key`, because a new key makes every stored connection unreadable. A re-run of the deploy with unchanged inputs MUST report no change.
 
 #### Scenario: A redeploy keeps the encryption key
 
