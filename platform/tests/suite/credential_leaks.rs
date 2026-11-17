@@ -1391,16 +1391,14 @@ impl Guard {
     }
 }
 
-/// Whether a task never runs: its `when` is a constant that is always false, alone or as any item of
-/// a `when:` list (the items are ANDed), or it is tagged `never`, which skips it unless a run asks
-/// for that tag. A constant false is `false`, `False`, `FALSE`, `no`, `No` or `0`, also wrapped once
-/// in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
+/// Whether a task never runs: a constant-false `when`, or the `never` tag.
 pub(crate) fn never_runs(task: &Node) -> bool {
     when_is_constant_false(task) || tagged_never(task)
 }
 
 /// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
-/// list (the items are ANDed).
+/// list (the items are ANDed). A constant false is `false`, `False`, `FALSE`, `no`, `No` or `0`,
+/// also wrapped once in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
     let is_false = |item: &Node| match item {
         Node::Bool(b) => !b,

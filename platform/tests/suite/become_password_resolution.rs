@@ -262,36 +262,58 @@ fn first_executed_task(play: &Node) -> Option<&Node> {
             .and_then(Node::as_seq)
             .filter(|s| !s.is_empty())
     };
-    if let Some(pre) = non_empty("pre_tasks") {
-        return first_in(pre);
-    }
-    if non_empty("roles").is_some() {
+    let first = if let Some(pre) = non_empty("pre_tasks") {
+        first_in(pre)
+    } else if non_empty("roles").is_some() {
         return None;
+    } else {
+        first_in(play.get("tasks").and_then(Node::as_seq)?)
+    };
+    match first {
+        First::Found(task) => Some(task),
+        First::Unknown | First::Nothing => None,
     }
-    first_in(play.get("tasks").and_then(Node::as_seq)?)
 }
 
-fn first_in(seq: &[Node]) -> Option<&Node> {
+/// What a task sequence runs first.
+enum First<'a> {
+    /// This task runs first.
+    Found(&'a Node),
+    /// A `never` tag decides it by the run's `--tags`, so it cannot be known: fail closed.
+    Unknown,
+    /// Nothing in the sequence runs.
+    Nothing,
+}
+
+fn first_in(seq: &[Node]) -> First<'_> {
+    use crate::credential_leaks::{tagged_never, when_is_constant_false};
     for task in seq {
-        // A `never` tag runs or not by the run's --tags, so the first task cannot be known: fail
-        // closed. A constant-false `when` never runs, so the next sibling runs first.
-        if crate::credential_leaks::tagged_never(task) {
-            return None;
+        // A constant-false `when` never runs, whatever its tags: the next sibling runs first.
+        if when_is_constant_false(task) {
+            continue;
         }
-        if is_controller_only_guard(task) || crate::credential_leaks::when_is_constant_false(task) {
+        if tagged_never(task) {
+            return First::Unknown;
+        }
+        if is_controller_only_guard(task) {
             continue;
         }
         let Some(block) = task.get("block").and_then(Node::as_seq) else {
-            return Some(task);
+            return First::Found(task);
         };
-        // A block whose every task is skipped still runs its `always:`; only when that is empty
-        // too does the next sibling run first.
+        // A block whose every task is skipped still runs its `always:`; only when that runs
+        // nothing too does the next sibling run first. An unknown block stays unknown.
+        match first_in(block) {
+            First::Nothing => {}
+            known => return known,
+        }
         let always = task.get("always").and_then(Node::as_seq).unwrap_or(&[]);
-        if let Some(first) = first_in(block).or_else(|| first_in(always)) {
-            return Some(first);
+        match first_in(always) {
+            First::Nothing => {}
+            known => return known,
         }
     }
-    None
+    First::Nothing
 }
 
 /// A hashi_vault lookup whose path argument is [`SECRET_PATH`]: the one set_fact value that reads
@@ -670,6 +692,34 @@ const FIRST_EXECUTED_CASES: &str = r#"
   gather_facts: false
   tasks:
     - ansible.builtin.command: x
+      tags: [never]
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad a never-tagged task inside a block, then the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.command: x
+          tags: [never]
+    - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: bad a never-tagged task inside a block whose always holds the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - block:
+        - ansible.builtin.command: x
+          tags: [never]
+      always:
+        - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
+- name: ok a never-tagged task that never runs, then the resolver
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.command: x
+      when: false
       tags: [never]
     - ansible.builtin.include_tasks: tasks/resolve-become-password.yml
 - name: bad guard then debug

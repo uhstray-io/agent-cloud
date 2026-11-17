@@ -223,17 +223,12 @@ fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
         if !require_test {
             return true;
         }
-        // Only the attribute lines directly above the fn: a blank line ends the run. They may be
-        // `#[test]`, `#[cfg(test)]` or `#[allow(..)]` and must include `#[test]`; anything else
-        // (`#[ignore]`, `#[should_panic]`, `#[cfg_attr(..)]`, another `#[cfg(..)]`) changes whether
-        // or how the test runs, so the fn is not counted.
-        // The last piece is the fn's own line up to `fn`; the lines above it count until a blank one.
-        let mut lines = c[1].split('\n').rev();
-        let own_line = lines.next().into_iter();
-        let run: Vec<&str> = own_line
-            .chain(lines.take_while(|l| !l.trim().is_empty()))
-            .flat_map(|l| ATTRIBUTE.find_iter(l).map(|m| m.as_str()))
-            .collect();
+        // Every attribute on the fn, blank lines between them or not. They may be `#[test]`,
+        // `#[cfg(test)]` or `#[allow(..)]` and must include `#[test]`. Anything else (`#[ignore]`,
+        // `#[should_panic]`, `#[cfg_attr(..)]`, another `#[cfg(..)]`) changes whether or how the
+        // test runs; others (`#[serial]`, say) are refused on purpose: a named test must carry
+        // only these.
+        let run: Vec<&str> = ATTRIBUTE.find_iter(&c[1]).map(|m| m.as_str()).collect();
         run.contains(&"#[test]")
             && run
                 .iter()
@@ -929,6 +924,8 @@ fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
     assert!(!defines_test(cfg_out, "x"));
     assert!(defines_test(cfg_out, "y"));
     assert!(!defines_test("#[test]\n#[ignore]\nfn x() {}\n", "x"));
+    assert!(!defines_test("#[ignore]\n\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test("#[cfg(any())]\n\n#[test]\nfn x() {}\n", "x"));
     assert!(!defines_test(
         "#[cfg_attr(test, ignore)]\n#[test]\nfn x() {}\n",
         "x"
