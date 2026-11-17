@@ -17,9 +17,8 @@
 //! stock walk merges keys equal as Python values (`yes` and `1`, `10` and `1_0`).
 //!
 //! The task walks are compared per file in order: for each node `playbook_yaml.tasks` yields, the
-//! Python prints a fingerprint, the 64-bit FNV-1a hash of that node's strings (keys included)
-//! sorted and joined with NUL, and `yaml::tasks` must yield nodes with the same fingerprints in the
-//! same order.
+//! Python prints that node's strings (keys included), sorted and hex-encoded, and `yaml::tasks`
+//! must yield nodes with the same sorted strings in the same order.
 //!
 //! This module tests the Rust helpers against `playbook_yaml.py` and goes when that file is deleted.
 
@@ -48,31 +47,20 @@ for tag in ("int", "float", "timestamp"):
 files = p.files()
 for f in files:
     print("F", f.relative_to(p.REPO).as_posix())
-def fingerprint(node):
-    h = 0xCBF29CE484222325
-    for b in "\0".join(sorted(p.strings(node, True))).encode():
-        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
-    return h
-
 for i, f in enumerate(files):
     doc = yaml.load(f.read_text(), Loader=Loader)
     for keys in (0, 1):
         for s in p.strings(doc, bool(keys)):
             print("S", i, keys, int(isinstance(s, Text)), s.encode().hex())
     for t in p.tasks(doc):
-        print("T", i, fingerprint(t))
+        print("T", i, *(s.encode().hex() for s in sorted(p.strings(t, True))))
 "#;
 
-/// The fingerprint the script prints for a task node.
-fn fingerprint(node: &yaml::Node) -> u64 {
+/// A task node's strings, keys included, sorted: what the script prints for it.
+fn sorted_strings(node: &yaml::Node) -> Vec<String> {
     let mut strings = yaml::strings(node, true);
     strings.sort_unstable();
-    strings
-        .join("\0")
-        .bytes()
-        .fold(0xCBF2_9CE4_8422_2325, |h, b| {
-            (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01B3)
-        })
+    strings.into_iter().map(str::to_owned).collect()
 }
 
 fn unhex(hex: &str) -> String {
@@ -109,7 +97,7 @@ fn the_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     let stdout = String::from_utf8(out.stdout).expect("utf-8 output");
     let mut python_files = vec![];
     let mut python_strings: BTreeMap<(usize, bool), Vec<String>> = BTreeMap::new();
-    let mut python_tasks: BTreeMap<usize, Vec<u64>> = BTreeMap::new();
+    let mut python_tasks: BTreeMap<usize, Vec<Vec<String>>> = BTreeMap::new();
     let mut marked = 0;
     for line in stdout.lines() {
         if let Some(path) = line.strip_prefix("F ") {
@@ -117,11 +105,12 @@ fn the_helpers_agree_with_playbook_yaml_on_every_repository_file() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("T ") {
-            let (index, print) = rest.split_once(' ').expect("a task line");
+            let mut fields = rest.split(' ');
+            let index = fields.next().expect("an index").parse().expect("an index");
             python_tasks
-                .entry(index.parse().expect("an index"))
+                .entry(index)
                 .or_default()
-                .push(print.parse().expect("a fingerprint"));
+                .push(fields.map(unhex).collect());
             continue;
         }
         let fields: Vec<&str> = line.split(' ').collect();
@@ -141,13 +130,14 @@ fn the_helpers_agree_with_playbook_yaml_on_every_repository_file() {
     // Assert: the same files, in the same order.
     assert_eq!(files, python_files);
 
-    // Assert: per file and per `keys`, the same strings, as many times each.
+    // Assert: per file, the same task nodes in the same order; per file and per `keys`, the same
+    // strings, as many times each.
     let mut task_count = 0;
     for (index, file) in files.iter().enumerate() {
         let node = yaml::load_one(&repo::path(file));
-        let rust_tasks: Vec<u64> = node
+        let rust_tasks: Vec<Vec<String>> = node
             .as_ref()
-            .map(|n| yaml::tasks(n).into_iter().map(fingerprint).collect())
+            .map(|n| yaml::tasks(n).into_iter().map(sorted_strings).collect())
             .unwrap_or_default();
         let python_tasks = python_tasks
             .get(&index)

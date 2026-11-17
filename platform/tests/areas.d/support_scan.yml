@@ -1,7 +1,7 @@
-# The static-scan helpers (repo::playbook_files and yaml::strings in src/lib.rs, AC-958):
-# suite/support_scan.rs pins them on fixtures, suite/support_scan_fixture.rs runs playbook_files
-# over a temporary tree (its order and refusals), and suite/support_scan_python.rs holds both to
-# playbook_yaml.py on every repository file.
+# The static-scan helpers (repo::playbook_files, yaml::strings and yaml::tasks in src/lib.rs,
+# AC-958): suite/support_scan.rs pins them on fixtures, suite/support_scan_fixture.rs runs
+# playbook_files over a temporary tree (its order and refusals), and suite/support_scan_python.rs
+# holds all three to playbook_yaml.py on every scanned repository file.
 #
 # paths: playbook YAML, so a playbook-only change runs the comparison with playbook_yaml.py,
 # which reads repository content. Semaphore YAML, which the comparison also reads, is left out on
