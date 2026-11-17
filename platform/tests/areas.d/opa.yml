@@ -1,0 +1,14 @@
+# The OPA policy engine (plan 24, Phase 4): the static tests ported from test_service_opa.bats and
+# test_rego_ci.py. service_opa is in `always`: docs/MISTAKES.md 10.33 and 1.28 cite the BATS file it
+# replaces, and the rules those entries record (the write refusal, --authorization=basic directly
+# before --bundle) guard the policy every caller reaches, so the module runs in every lane.
+# rego_ci runs with the paths below; a change to the workflow file also selects everything (`full`
+# in areas.yml).
+paths:
+  - "platform/services/opa/deployment/**"
+  - "platform/playbooks/deploy-opa.yml"
+  - ".github/workflows/lint-and-test.yml"
+tiers:
+  static: [rego_ci]
+always:
+  static: [service_opa]
