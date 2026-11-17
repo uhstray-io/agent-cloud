@@ -341,3 +341,11 @@ def test_the_survey_runs_only_at_the_reviewed_commit():
     templates = yaml.safe_load((ROOT / "platform/semaphore/templates.yml").read_text())["templates"]
     template = next(t for t in templates if t["name"] == "Survey Proxmox Backup Storage (Dev)")
     assert [(v["name"], v["required"]) for v in template["survey_vars"]] == [("expected_repository_sha", True)]
+
+
+def test_the_playbook_keeps_offline_nodes_out_with_the_helpers_name_rule():
+    # The planner trusts the playbook to pass online, well-formed nodes only (plan() no longer re-checks).
+    text = (ROOT / "platform/playbooks/survey-proxmox-backup-storage.yml").read_text()
+    assert "selectattr('status', 'equalto', 'online')" in text
+    assert f"reject('match', '{survey.NAME.pattern}')" in text
+    assert "_online_nodes | length > 0" in text
