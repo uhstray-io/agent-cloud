@@ -7,7 +7,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use agent_cloud_tests::http::{Mock, Server, matchers};
 use agent_cloud_tests::playbook;
 use agent_cloud_tests::seed::{self, LOGIN, ROLE_ID, ROLE_SECRET, RunOpts};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use tempfile::TempDir;
 
 /// One play on `localhost` with `tasks`, as the JSON a seed playbook is written in.
@@ -57,23 +57,13 @@ fn a_seed_run_logs_in_with_the_role_and_shows_the_inputs_and_the_inventory() {
             debug("marker: {{ seed_marker }}"),
         ])),
     );
-    let mut inventory_vars = Map::new();
-    inventory_vars.insert(
-        "seed_marker".to_owned(),
-        json!("synthetic-inventory-marker"),
-    );
     let opts = RunOpts {
         inputs: vec![("SEED_X".to_owned(), "synthetic-seed-input".to_owned())],
-        inventory_vars,
+        inventory_vars: json!({"seed_marker": "synthetic-inventory-marker"}),
         ..RunOpts::default()
     };
 
-    let (code, output) = seed::run_seed(
-        dir.path(),
-        &path.display().to_string(),
-        &server.url(),
-        &opts,
-    );
+    let (code, output) = seed::run_seed(dir.path(), &path, &server.url(), &opts);
 
     assert_eq!(code, 0, "{output}");
     assert_eq!(
@@ -98,7 +88,6 @@ fn a_seed_run_logs_in_with_the_role_and_shows_the_inputs_and_the_inventory() {
 
 #[test]
 fn a_run_that_prints_a_secret_panics_naming_it_and_never_its_value() {
-    let server = Server::start();
     let dir = TempDir::new().unwrap();
     let path = playbook::write(
         dir.path(),
@@ -116,13 +105,9 @@ fn a_run_that_prints_a_secret_panics_naming_it_and_never_its_value() {
         ..RunOpts::default()
     };
 
+    // The play makes no request, so the address is never dialled and no server is needed.
     let outcome = catch_unwind(AssertUnwindSafe(|| {
-        seed::run_seed(
-            dir.path(),
-            &path.display().to_string(),
-            &server.url(),
-            &opts,
-        )
+        seed::run_seed(dir.path(), &path, "http://127.0.0.1:9", &opts)
     }));
 
     let message = panic_message(outcome.expect_err("a printed secret must panic").as_ref());
@@ -151,12 +136,7 @@ fn an_undeclared_run_leaves_openbao_addr_undefined_and_takes_the_environment_add
         ..RunOpts::default()
     };
 
-    let (code, output) = seed::run_seed(
-        dir.path(),
-        &path.display().to_string(),
-        "synthetic-unused-address",
-        &opts,
-    );
+    let (code, output) = seed::run_seed(dir.path(), &path, "synthetic-unused-address", &opts);
 
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("declared: UNDEFINED"), "{output}");

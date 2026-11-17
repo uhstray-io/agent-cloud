@@ -113,10 +113,10 @@ pub fn reply(status: u16, body: &Value) -> ResponseTemplate {
 
 /// What a seed run is given: the keyword arguments of `seed_harness.run_seed`. `Default` is the
 /// usual run, with the address declared, no inputs and no extra vars.
-#[derive(Default)]
 pub struct RunOpts {
-    /// Extra `-e` vars. They override the AppRole credentials of [`role`] (`extra`).
-    pub extra: Map<String, Value>,
+    /// Extra `-e` vars, a JSON object. They override the AppRole credentials of [`role`]
+    /// (`extra`). [`run_seed`] panics when this is not an object.
+    pub extra: Value,
     /// Seed inputs: process-environment variables whose values the run must never print
     /// (`inputs`).
     pub inputs: Vec<(String, String)>,
@@ -129,13 +129,41 @@ pub struct RunOpts {
     /// The address the inventory declares as `openbao_addr`, when it is not the server's and not
     /// empty (`declared`).
     pub declared: Option<String>,
-    /// More `all.vars` in the inventory, after `openbao_addr` (`inventory_vars`).
-    pub inventory_vars: Map<String, Value>,
+    /// More `all.vars` in the inventory, a JSON object, after `openbao_addr` (`inventory_vars`).
+    /// [`run_seed`] panics when this is not an object.
+    pub inventory_vars: Value,
+}
+
+impl Default for RunOpts {
+    fn default() -> Self {
+        RunOpts {
+            extra: json!({}),
+            inputs: Vec::new(),
+            undeclared: false,
+            env_addr: None,
+            verbose: false,
+            declared: None,
+            inventory_vars: json!({}),
+        }
+    }
+}
+
+/// The JSON object a [`RunOpts`] field holds. Panics naming the field when it holds anything else,
+/// without printing the value.
+fn object_field<'a>(field: &str, value: &'a Value) -> &'a Map<String, Value> {
+    value
+        .as_object()
+        .unwrap_or_else(|| panic!("RunOpts.{field} must be a JSON object"))
 }
 
 /// Writes the inventory `run_seed` runs against: `openbao_addr` declared as `address`, or as
-/// `opts.declared`, unless `opts.undeclared` declares no address at all.
-fn write_inventory(dir: &Path, address: &str, opts: &RunOpts) -> PathBuf {
+/// `opts.declared`, plus `inventory_vars`; unless `opts.undeclared` declares no address at all.
+fn write_inventory(
+    dir: &Path,
+    address: &str,
+    opts: &RunOpts,
+    inventory_vars: &Map<String, Value>,
+) -> PathBuf {
     let group = if opts.undeclared {
         json!({"hosts": {}})
     } else {
@@ -146,7 +174,7 @@ fn write_inventory(dir: &Path, address: &str, opts: &RunOpts) -> PathBuf {
             .unwrap_or(address);
         let mut vars = Map::new();
         vars.insert("openbao_addr".to_owned(), json!(declared));
-        for (name, value) in &opts.inventory_vars {
+        for (name, value) in inventory_vars {
             vars.insert(name.clone(), value.clone());
         }
         json!({"vars": vars})
@@ -155,16 +183,33 @@ fn write_inventory(dir: &Path, address: &str, opts: &RunOpts) -> PathBuf {
 }
 
 /// Runs `playbook` once against the fake at `address` and returns its exit code and its output,
-/// stdout then stderr (`seed_harness.run_seed`). The address is declared as `openbao_addr` in
-/// the inventory, as in production, where the seed refuses any other (`tasks/assert-bao-addr-declared.yml`).
+/// stdout then stderr (`seed_harness.run_seed`). `playbook` is a path, relative to the repository
+/// root or absolute; it must be UTF-8. The address is declared as `openbao_addr` in the inventory,
+/// as in production, where the seed refuses any other
+/// (`tasks/assert-bao-addr-declared.yml`).
 ///
 /// The output must hold none of [`NEVER_PRINTED`] and no input's value. A leak panics naming each
 /// entry or input that leaked, never its value. A timeout panics without the child's output
 /// ([`process::run`]).
-pub fn run_seed(dir: &Path, playbook: &str, address: &str, opts: &RunOpts) -> (i32, String) {
-    let inventory = write_inventory(dir, address, opts);
+pub fn run_seed(
+    dir: &Path,
+    playbook: impl AsRef<Path>,
+    address: &str,
+    opts: &RunOpts,
+) -> (i32, String) {
+    let playbook_path = playbook.as_ref();
+    let playbook = playbook_path.to_str().unwrap_or_else(|| {
+        panic!(
+            "the playbook path is not UTF-8: {}",
+            playbook_path.display()
+        )
+    });
+    let inventory_vars = object_field("inventory_vars", &opts.inventory_vars);
+    let extra_vars = object_field("extra", &opts.extra);
+
+    let inventory = write_inventory(dir, address, opts, inventory_vars);
     let mut extra = role();
-    for (name, value) in &opts.extra {
+    for (name, value) in extra_vars {
         extra.insert(name.clone(), value.clone());
     }
     let extra_json =

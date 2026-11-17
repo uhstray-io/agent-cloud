@@ -4,10 +4,11 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::path::Path;
 use std::time::Duration;
 
 use agent_cloud_tests::http::{Mock, Server, matchers};
-use agent_cloud_tests::seed::{self, LOGIN, NEVER_PRINTED, ROLE_ID, ROLE_SECRET};
+use agent_cloud_tests::seed::{self, LOGIN, NEVER_PRINTED, ROLE_ID, ROLE_SECRET, RunOpts};
 use serde_json::{Value, json};
 
 /// One raw HTTP/1.1 request with `Connection: close`; returns the whole response text.
@@ -153,5 +154,70 @@ fn the_role_and_the_never_printed_values_are_the_python_ones() {
             "synthetic-login-value",
             "synthetic-leftover-value",
         ]
+    );
+}
+
+#[test]
+fn run_seed_names_an_options_field_that_is_not_a_json_object_and_writes_nothing() {
+    // The check runs before the inventory is written and before any process starts.
+    let dir = tempfile::TempDir::new().unwrap();
+    let not_objects = [
+        RunOpts {
+            extra: json!("synthetic-not-an-object"),
+            ..RunOpts::default()
+        },
+        RunOpts {
+            inventory_vars: json!(["synthetic-not-an-object"]),
+            ..RunOpts::default()
+        },
+    ];
+    for (opts, field) in not_objects.iter().zip(["extra", "inventory_vars"]) {
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            seed::run_seed(
+                dir.path(),
+                "platform/tests/none.yml",
+                "http://127.0.0.1:9",
+                opts,
+            )
+        }));
+        let message = panic_message(
+            outcome
+                .expect_err("a field that is not an object panics")
+                .as_ref(),
+        );
+        assert!(
+            message.contains(&format!("RunOpts.{field} must be a JSON object")),
+            "{message}"
+        );
+        assert!(!message.contains("synthetic-not-an-object"), "{message}");
+    }
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn run_seed_names_a_playbook_path_that_is_not_utf8_and_starts_nothing() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let playbook = Path::new(OsStr::from_bytes(b"platform/tests/\xff.yml"));
+
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        seed::run_seed(
+            dir.path(),
+            playbook,
+            "http://127.0.0.1:9",
+            &RunOpts::default(),
+        )
+    }));
+
+    let message = panic_message(
+        outcome
+            .expect_err("a path that is not UTF-8 panics")
+            .as_ref(),
+    );
+    assert!(
+        message.contains("the playbook path is not UTF-8"),
+        "{message}"
     );
 }
