@@ -159,7 +159,7 @@
 
   tasks:
     # A play var re-renders at every reference, so a run spanning midnight UTC could read two
-    # dates; set_fact freezes it once (docs/MISTAKES.md 6.7, 2.40).
+    # dates; set_fact freezes it once (docs/MISTAKES.md 10.8).
     - name: "Freeze today's UTC date for the shared-key grace period"
       ansible.builtin.set_fact:
         _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"
@@ -1002,7 +1002,7 @@
 
   tasks:
     # Reuses Phase 1's host fact so both plays agree on one date; computed here only when this
-    # play runs alone (docs/MISTAKES.md 6.7, 2.40).
+    # play runs alone (docs/MISTAKES.md 10.8).
     - name: "Freeze today's UTC date for the shared-key grace period"
       ansible.builtin.set_fact:
         _agw_today: "{{ agw_today | default(now(utc=true).strftime('%Y-%m-%d')) | string }}"

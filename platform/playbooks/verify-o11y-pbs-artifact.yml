@@ -310,7 +310,7 @@
       no_log: true
 
     # Set once: an include var re-renders at every reference, so the receipt could carry
-    # several end times (docs/MISTAKES.md 6.7, 2.40).
+    # several end times (docs/MISTAKES.md 10.8).
     - name: Freeze the verification end time
       ansible.builtin.set_fact:
         _pbs_verify_end: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"

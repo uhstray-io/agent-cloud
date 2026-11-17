@@ -108,7 +108,6 @@ and why.
 | 2.37 | A credential probe passed on the operator's own git login: the App token mint had failed, the stored password was empty, and a global helper answered; the probe tag was pushed under the operator's identity | Wrong-reason pass | 1 | Test (`platform/tests/test_release_version_playbook.py`) for the playbook; workstation probes Convention |
 | 2.38 | A mutation check swapped one character for another and restored the file within the same second; Python kept loading the mutant's cached bytecode, and the next test run tested the mutant (widens 2.28) | Wrong-reason result | 1 | Convention (a fresh `PYTHONPYCACHEPREFIX` per mutation run) |
 | 2.39 | A "no user is signed in after a refused callback" test asked with the pre-sign-in cookie, which could never show a user; a callback that stored the user and then refused stayed green | False-green test | 1 | Test (`callback_with_a_wrong_nonce_is_refused` and `callback_with_a_token_signed_by_another_key_is_refused` probe with the cookie the refusal sets; leak mutant red) |
-| 2.40 | A lazy-evaluation check matched `now()` with no arguments and passed five `now(utc=true)` vars entries in four playbooks | Wrong-reason pass | 1 | Test (`platform/tests/suite/backup_credentials.rs` `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, ratchet now empty) |
 | 3.1 | Wrote a probe value over a real credential in a live secret store | Live-state damage | 1 | OPA (`agent_actions.rego`; inert until callers send fields) |
 | 3.2 | Attempted to mutate a shared orchestrator credential without asking | Live-state damage | 1 | Sandbox + OPA (`agent_actions.rego`; inert until callers send grants) |
 | 3.3 | Treated failed workstation login as a controller access prerequisite | Wrong executor boundary | 1 | Test + convention |
@@ -197,7 +196,7 @@ and why.
 | 10.5 | Added a suite to `testpaths`, which CI overrides with an explicit path — 16 tests ran nowhere | Test not covered | 1 | CI (root-level pytest) |
 | 10.6 | Wrote a parser from one example file; the grammar showed four deviations it never exercised | Unverified claim | 1 | Test (6 grammar cases) |
 | 10.7 | Named the rollback hazard, then gated the restore on a condition an earlier failure skips | Live-state damage | 1 | Test (block/rescue, mutation-proven) |
-| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference | Half-finished run, credentials left in a clone | 1 | Test (closed rule, mutation-proven) |
+| 10.8 | Two Ansible constructs whose semantics only exist at runtime — a word-split `cmd:` and a `vars:` lookup re-evaluated per reference — **x2** (2026-11-14: five `vars` entries built from `now(utc=true)` stood while the closed rule claimed to refuse them; its pattern matched bare `now()` only) | Half-finished run, credentials left in a clone | 2 | Test (closed rule, mutation-proven) |
 | 10.9 | Local validation templates were bound to GitHub main, so every "validated locally" run executed code that was not the code being written (×2: the dispatcher re-made it) | Wrong code under validation | 2 | Bootstrap record + structural bind + (Local)-first dispatch |
 | 10.10 | A register on a skipped task overwrote the passing result it was guarding, misreporting a healthy credential as broken | Assumed runtime semantics | 1 | Convention |
 | 10.11 | manage-secrets stored secrets with a whole-document POST, deleting every undeclared sibling key on every deploy | Destructive write to live state | 1 | Test |
@@ -3158,35 +3157,6 @@ held beforehand. Then write the mutant that does the forbidden thing and watch i
 `callback_with_a_token_signed_by_another_key_is_refused` probe with
 `callback.session.unwrap_or(login_session)`; the store-then-refuse mutant turns both
 red. The general rule is `Convention`.
-
-### 2.40 A lazy-evaluation check matched now() with no arguments and passed five now(utc=true) vars entries
-
-**What happened.** The check that refuses a `vars` entry built from a non-deterministic
-lookup (first a BATS test, then `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`
-in `platform/tests/suite/backup_credentials.rs`) matched the bare `now()` call only. The
-review of #1149 found five `vars` entries, in four playbooks, built from `now(utc=true...)`
-that it passed:
-`_agw_today` in both the Phase 1 and Phase 3 plays of `deploy-agentgateway.yml`, the
-task-local `_today` in `rollback-inference-route.yml`, and the include var
-`pbs_receipt_observed_end` in `verify-o11y-pbs-artifact.yml` and
-`sync-o11y-protected-pbs-copy.yml`. Each re-renders at every reference (6.7). `_agw_today`
-feeds play vars read at several tasks in each play, and the two plays computed it apart, so
-a deploy spanning midnight UTC could read two dates; the receipt task reads its end time
-twice, so a receipt could validate one end time and record another. The rollback `_today`
-was read once, so it was harmless there. The widened check held them in a shrink-only
-ratchet of four `file:name` keys (the two `_agw_today` entries share one); AC-910
-computed each once in a `set_fact` and emptied the ratchet.
-
-**Root cause.** The pattern was written for the call form the author had in front of them,
-`now()`, and was never tried against the argumented form the playbooks actually use.
-
-**The rule.** A check for a call matches every argument form of that call. Mutation-check
-it with an argumented call, not only the bare one. A value built from `now()`, a random
-lookup or a pipe is computed once by `set_fact`, never as a `vars` entry (6.7).
-
-**Enforced by.** Test: `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup` in
-`platform/tests/suite/backup_credentials.rs` matches `now(...)` with arguments, and its
-ratchet is empty, so any new offender fails.
 
 ## 3. Acting on live state
 
@@ -6191,6 +6161,8 @@ was the one outside the thing being looked for.
 
 ### 10.8 Two constructs that lint cleanly and mean something else when they run
 
+**Occurrences: 2** — 2026-08-26, 2026-11-14
+
 **What happened.** A new playbook copies credentials from OpenBao into the private
 repo and pushes a branch. It passed `ansible-lint` at the `production` profile and
 read correctly. Run end-to-end against a mock store and a local bare remote, it
@@ -6239,6 +6211,21 @@ across every playbook in the repo — `lookup('pipe'/'url'/'random_choice')`,
 answer. Both mutation-proven by reintroducing the exact original bug.
 
 **Enforcement moved — 2026-11-13.** The BATS file was ported to the Rust suite (plan 24) and deleted: `platform/tests/suite/backup_credentials.rs::no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, `platform/tests/suite/backup_credentials.rs::the_branch_name_is_frozen_by_a_set_fact_task`, `platform/tests/suite/backup_credentials.rs::the_frozen_branch_is_written_as_a_folded_scalar` and `platform/tests/suite/backup_credentials.rs::every_git_call_carrying_a_space_uses_argv_not_cmd` are its replacements.
+
+**Occurrence 2 — 2026-11-14.** The review of #1149 found five `vars` entries built from
+`now(utc=true...)`, in four playbooks, standing while this entry's closed rule claimed to
+refuse `now()` in any play's `vars` block: `_agw_today` in both the Phase 1 and Phase 3
+plays of `deploy-agentgateway.yml`, the task-local `_today` in `rollback-inference-route.yml`,
+and the include var `pbs_receipt_observed_end` in `verify-o11y-pbs-artifact.yml` and
+`sync-o11y-protected-pbs-copy.yml`. `_agw_today` fed play vars read at several tasks, and
+the two plays computed it apart, so a deploy spanning midnight UTC could read two dates; the
+receipt task reads its end time twice, so a receipt could validate one end time and record
+another; the rollback `_today` was read once, so it was harmless there. The rule did not
+fire because its enforcement did not cover the case: the BATS pattern matched the bare call
+`now()` only, never the argumented form the playbooks use. The Rust port (above) matches
+`now` with any arguments and held them in a shrink-only ratchet; AC-910 computed each value
+once with `set_fact` and emptied the ratchet, so any new offender fails. A check for a call
+is mutation-tested with an argumented call, not only the bare one.
 
 ### 10.9 Local validation ran GitHub's code, not the working tree
 
