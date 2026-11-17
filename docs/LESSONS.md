@@ -7,11 +7,11 @@ Constraints learned from accepted work, one per entry, newest last, so the next 
 ### L-001 · 2026-11-17 · tests
 
 - **ACCEPTED:** #1199 (AC-968).
-- **DERIVED:** Size a test's wall-clock deadline from the smallest window the code under test splits it into, not from the total; where that code has a production budget constant, pass the constant instead.
+- **DERIVED:** When the code under test splits a wall-clock deadline into reserves, size the test's deadline from the smallest window the split leaves, not from the total. When the code only caps each call, pass its production budget constant, so only those caps bind.
 - **APPLIES TO:** tests that pass `deadline=`, `timeout=` or a budget to runner or helper code under `platform/tests/` and `platform/playbooks/files/`.
 
 ### L-002 · 2026-11-17 · tests
 
 - **ACCEPTED:** #1199 (AC-968).
-- **DERIVED:** Prove a fix for a test that fails only under load by injecting the delay into the code path (a late wake-up, a slow child start): the old budget must fail and the new one pass. Passes under a CPU busy-loop are not evidence; one loop per core did not reproduce such a failure.
+- **DERIVED:** Prove a fix for a test that fails only under load by injecting the delay into the code path (a late wake-up, a slow child start): the old budget must fail and the new one pass. Passes under a CPU busy-loop are not evidence.
 - **APPLIES TO:** fixes for timing-dependent tests.
