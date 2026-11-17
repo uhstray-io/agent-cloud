@@ -17,9 +17,11 @@
 //! A refusal panics with the file, the mapping key and the scalar. Each one is a node PyYAML
 //! reads in a way JSON cannot keep, or one this loader will not read the way PyYAML does:
 //! - a tag. The Python helper's loader (`playbook_yaml.Loader`) reads a local tag such as
-//!   `!custom` as null and keeps a core tag's value (`!!str x` is `x`). No repository file has a
-//!   tag, so this loader refuses every one rather than copy that split;
+//!   `!custom` as null and keeps a core tag's value (`!!str x` is `x`). No file under
+//!   `platform/playbooks` or `platform/semaphore` has a tag (a compose file has `!reset`), so this
+//!   loader refuses every one rather than copy that split;
 //! - a plain timestamp, `.inf` or `.nan`, or an integer beyond `i64`;
+//! - a plain `=`, or a plain `<<` anywhere but a mapping key: PyYAML refuses both;
 //! - a mapping key that is not a string. PyYAML keeps `200` or `yes` as an int or bool key (and
 //!   refuses a sequence or mapping key as unhashable); a JSON object key is a string.
 //!
@@ -150,6 +152,12 @@ fn resolve_plain_value(text: &str) -> Result<Value, &'static str> {
     match yaml::resolve_plain(text) {
         Node::Bool(b) => Ok(Value::Bool(b)),
         Node::Null => Ok(Value::Null),
+        // PyYAML resolves a plain `=` to its value tag and a plain `<<` that is not a merge key to
+        // its merge tag, and has no constructor for either (a `<<` key is a merge: `on_event`).
+        Node::Str(_) if text == "=" => Err("PyYAML has no constructor for a plain `=`"),
+        Node::Str(_) if text == "<<" => {
+            Err("PyYAML has no constructor for a plain `<<` outside a mapping key")
+        }
         // PyYAML tries the float, int and timestamp resolvers in turn; a text matches at most one.
         Node::Str(_) if FLOAT.is_match(text) => float_value(text),
         Node::Str(_) if INT.is_match(text) => int_value(text),
@@ -405,7 +413,13 @@ impl MarkedEventReceiver for Builder<'_> {
                 let is_merge_key = plain
                     && text == "<<"
                     && matches!(self.stack.last(), Some(Frame::Map { key: None, .. }));
-                let item = if plain {
+                let item = if is_merge_key {
+                    // Read only as a merge key, never as a value (`push`).
+                    Item {
+                        value: Value::String(text.clone()),
+                        text: Some(text),
+                    }
+                } else if plain {
                     let value = resolve_plain_value(&text).unwrap_or_else(|why| {
                         refuse(self.origin, &self.key_label(&text), why, Some(&text))
                     });

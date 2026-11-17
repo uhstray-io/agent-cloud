@@ -124,7 +124,7 @@ fn plain_scalars_lift_with_pyyaml_types() {
 /// refusal names the file's mapping key and the offending text.
 #[test]
 fn forms_json_cannot_hold_are_refused_by_name() {
-    let cases: [(&str, &[&str]); 8] = [
+    let cases: [(&str, &[&str]); 11] = [
         ("v: .inf", &["key `v`", ".inf"]),
         ("v: .nan", &["key `v`", ".nan"]),
         ("v: 2026-11-17", &["key `v`", "2026-11-17"]),
@@ -133,6 +133,9 @@ fn forms_json_cannot_hold_are_refused_by_name() {
         ("200: a", &["key `200`", "200"]),
         ("yes: a", &["key `yes`", "yes"]),
         ("? [a]\n: b", &["key `<non-scalar key>`", "a sequence"]),
+        ("v: =", &["key `v`", "plain `=`"]),
+        ("v: <<", &["key `v`", "plain `<<`"]),
+        ("- <<", &["key `<root>`", "plain `<<`"]),
     ];
     for (text, needles) in cases {
         let payload = std::panic::catch_unwind(|| playbook::loads(text))
@@ -160,9 +163,17 @@ fn every_repository_yaml_file_has_the_structure_yaml_parse_gives() {
     for file in files {
         let text =
             std::fs::read_to_string(repo::path(&file)).unwrap_or_else(|e| panic!("{file}: {e}"));
-        let Ok(lifted) = std::panic::catch_unwind(|| playbook::parse(&text, &file)) else {
-            refused.insert(file);
-            continue;
+        let lifted = match std::panic::catch_unwind(|| playbook::parse(&text, &file)) {
+            Ok(lifted) => lifted,
+            Err(payload) => {
+                let message = panic_message(payload.as_ref());
+                assert!(
+                    message.contains("a mapping key must be a string"),
+                    "{file}: refused for another reason: {message}"
+                );
+                refused.insert(file);
+                continue;
+            }
         };
         let nodes = yaml::parse(&text, &file);
         assert_eq!(lifted.len(), nodes.len(), "{file}: document count");
