@@ -27,7 +27,13 @@ verify MUST NOT run as this identity.
 ### Requirement: The content caller reaches the gateway only on its internal listener with an allowlisted client leaf
 The content caller SHALL reach the gateway only over its internal listener, as a client admitted under
 the inference-gateway-agentgateway requirement "The gateway admits only declared client certificates",
-with its own client leaf named on `agw_client_cert_allowlist`.
+with its own client leaf named on `agw_client_cert_allowlist`. The gateway MUST refuse a leaf that the
+allowlist does not admit with HTTP 403 before it checks the API key, so a caller holding such a leaf
+learns nothing about a key's validity (measured on v1.5.0, `config.yaml.j2:44-46`).
+
+#### Scenario: Off-allowlist certificate
+- WHEN a client presents an internal-CA leaf that the allowlist does not admit, with or without a valid API key
+- THEN the gateway answers HTTP 403 before it checks the API key
 
 #### Scenario: Keyless request with an admitted certificate
 - WHEN the content caller's allowlisted leaf sends a request without an API key
