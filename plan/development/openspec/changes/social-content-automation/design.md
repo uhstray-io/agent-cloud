@@ -41,7 +41,7 @@ R1 to R7 with their mitigations are in plan 28, "Risks". R1 (Community-edition A
 
 ## Open Questions
 
-Plan 28, "Open Questions": the approval surface (task 4.4), a publish gate holding the publishing key (operator decision), and the outcomes of R1 and R2.
+Plan 28, "Open Questions".
 
 ## Migration Plan
 

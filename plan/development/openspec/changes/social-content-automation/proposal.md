@@ -39,4 +39,4 @@ The planned build:
 4. Remove the declared flows from the repository and apply; the playbook never deletes a flow it does not own.
 5. Leave drafts, scheduled posts and published posts in the publishing service alone. Removing them is a separate operator decision.
 
-How the Community edition stops a flow, and how the publishing service revokes its key, are open until tasks 3.1 and 3.3 (plan 28, Open Questions).
+How the Community edition stops a flow depends on R1 (plan 28 D13); how the publishing service revokes its key is plan 28 Open Question 5.
