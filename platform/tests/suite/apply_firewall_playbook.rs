@@ -4,8 +4,8 @@
 //! Three tasks of the real play are lifted (the upstream normalisation, its refusal, and the
 //! declared-rule computation), fed fixed detected ports, and run with one host per
 //! `firewall_upstream_source` value. A good value must yield both detected-port rules for every
-//! source; a blank one must stop the run before the rules are computed. Each value is a host var, so the good values share one
-//! run and the blank ones another (plan 21 F1). Runs go through `process::ansible_playbook`, so
+//! source; a blank one must stop the run before the rules are computed. Each value is a host
+//! var, so the good values share one run and the blank ones another (plan 21 F1). Runs go through `process::ansible_playbook`, so
 //! they are bounded, and confined to the test's directory where a kernel sandbox
 //! (sandbox-exec, bwrap) is present (`process::sandbox`).
 //!

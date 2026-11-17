@@ -24,8 +24,8 @@ const REFUSAL: &str =
 
 /// Runs the lifted vars and refusal against `hosts` (name, host vars) with `groups`
 /// (`{group: {member: ansible_host}}`); each host's computed `_rules` land in
-/// `dir/rules-<host>.json`. Returns whether the run passed, its stdout (the refusal checks read
-/// only stdout, as the pytest did) and its stderr (for failure messages).
+/// `dir/rules-<host>.json`. Returns whether the run passed, its stdout (the refusal checks match
+/// stdout only) and its stderr (for failure messages).
 fn render(dir: &TempDir, hosts: &[(&str, Value)], groups: Value) -> (bool, String, String) {
     let play = playbook::plays(PLAYBOOK).remove(0);
     let refusal: Vec<&Value> = play["tasks"]

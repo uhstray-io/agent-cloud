@@ -368,16 +368,12 @@ fn controller_cidr_is_checked_before_enable_and_the_ssh_allows() {
         "(firewall_controller_cidr | ufw_address) in _fw_ssh_cidrs_stored",
         "the refusal task",
     );
-    let name = regex::escape(CONTROLLER_REFUSAL);
-    // The enable task, not the first comment that names the command.
+    // Each anchor is a task's own `- name:` line, which no comment can stand in for.
+    let refusal = format!(r#"^\s*- name: "{}""#, regex::escape(CONTROLLER_REFUSAL));
+    assert_precedes(&pb, &refusal, r#"^\s*- name: "Enable UFW""#);
     assert_precedes(
         &pb,
-        &name,
-        r#"ansible\.builtin\.command: "ufw --force enable""#,
-    );
-    assert_precedes(
-        &pb,
-        &name,
-        r#"name: "Allow SSH \(22/tcp\) from each admin CIDR"#,
+        &refusal,
+        r#"^\s*- name: "Allow SSH \(22/tcp\) from each admin CIDR"#,
     );
 }
