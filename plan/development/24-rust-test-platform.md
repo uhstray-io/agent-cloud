@@ -209,7 +209,7 @@ mechanism first (2026-11-16): the release after v0.16.0 carries the port mechani
 2026-11-17 the operator chose to promote that release inside the release limits, so R7 is followed: the
 remaining test ports (AC-735 to AC-737) continue by group in the following releases, each release
 planned to R7's file budget and each port a pull request of one group, within R8's per-pull-request limit. The
-product-code ports and the retirement of pytest and BATS (AC-739 to AC-741) come after them, from v0.18.0
+product-code ports and the retirement of pytest and BATS (AC-739 to AC-741) come after them, from Plane milestone v0.18.0
 (operator decision, 2026-11-16), so pytest and BATS stay in CI until then. Phases 4 to 10 port about
 140,000 lines of tests and 42,000 lines of product code.
 
