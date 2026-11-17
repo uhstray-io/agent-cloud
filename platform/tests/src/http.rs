@@ -99,12 +99,12 @@ impl Server {
 }
 
 impl Drop for Server {
-    /// Stops the server and waits, about 2 s at most after any held reply's own timeout, until
-    /// its port refuses connections (wiremock's drop verifies under the state read lock, which a held
-    /// reply's write lock blocks):
-    /// dropping the MockServer only signals its accept loop, which runs on a detached thread
-    /// (wiremock `bare_server.rs`), so the listener closes a moment later. Running out of time is
-    /// not an error: a parallel test can be handed the freed port and keep it open.
+    /// Stops the server and waits until its port refuses connections. Dropping the MockServer first
+    /// verifies its mocks under the state read lock, which a held reply's write lock blocks until
+    /// that reply's own timeout; it then signals the accept loop, which runs on a detached thread
+    /// (wiremock `bare_server.rs`), so the listener closes a moment later. This waits about 2 s
+    /// more at most. Running out of time is not an error: a parallel test can be handed the freed
+    /// port and keep it open.
     ///
     /// wiremock's own drop panics when a `Mock::expect` is unmet, and that panic prints every
     /// recorded request: method, full URL, every header unredacted, and the body up to a print
