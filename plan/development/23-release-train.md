@@ -4,7 +4,7 @@
 **Status:** ACTIVE (Part A built 2026-11-12: #1081, #1093, #1083 and the docs; Release 1 shipped as v0.15.0; Release 2 in progress, widened past the release limit on 2026-11-13 (operator decision); Part B and Releases 3–9 not started)
 **Author:** Joseph A. Wisneski IV
 **Context:** [`plan/architecture/10-release-policy.md`](../architecture/10-release-policy.md)
-caps a release, one `dev` → `main` promotion, at 100 pull requests and 120 changed files.
+caps a release, one `dev` → `main` promotion, at 100 pull requests and 150 changed files.
 This plan builds the gates that enforce those caps. It then cuts the remaining planned work
 into releases that fit them, in dependency order. Inputs: the 24 active OpenSpec changes,
 read from `origin/dev` at `4c819b53` on 2026-11-10, the open pull request queue, and
@@ -43,8 +43,8 @@ claims this plan depends on were re-checked at their cited lines.
 ## Design Principles
 
 - **A release is the planning unit** (policy R7). Each release has a declared scope with a
-  file budget of at most 90, ordered so that nothing waits on a later release.
-- **Plan about 60 files, not 90.** Recent work produces fixes during live runs, and
+  file budget of at most 112, ordered so that nothing waits on a later release.
+- **Plan about 60 files, not 112.** Recent work produces fixes during live runs, and
   documentation and ledger pull requests arrive without being planned. A planned scope of 40–70
   files leaves room for them, so the release is cut when its scope lands (R6), not when it fills.
 - **Hot files are cheap.** `AGENTS.md`, `platform/semaphore/templates.yml`,
@@ -64,7 +64,7 @@ The enforcement path (built in phases 1–4) and the loop each release follows:
 ```mermaid
 flowchart LR
     subgraph Loop["Per release (days, not weeks)"]
-        P["Plan: pick scope from the roadmap head,<br/>gates cleared, ≤ 90 files"] --> B["Build: PRs into dev<br/>guard prints the budget"]
+        P["Plan: pick scope from the roadmap head,<br/>gates cleared, ≤ 112 files"] --> B["Build: PRs into dev<br/>guard prints the budget"]
         B --> R["Run: live and Dev runs, 0 files"]
         R --> C{"R6 trigger:<br/>scope landed or 80%"}
         C -->|no| B
@@ -89,7 +89,7 @@ flowchart TD
 | Question | Decision | Why |
 |---|---|---|
 | Where the counts live | A new `release-budget` subcommand in `scripts/semver.py`, printing JSON: `prs`, `files`, both limits, remaining, `warn` (≥ 80%), `full` | Plan 20 keeps every release rule in one script. The guard already imports `semver` (`scripts/merge-when-green.py`, `check_title`) |
-| The limits' source | Constants in `scripts/semver.py`, 100 and 120 | One value, one place. Policy R2/R3 cite the script |
+| The limits' source | Constants in `scripts/semver.py`, 100 and 150 | One value, one place. Policy R2/R3 cite the script |
 | How intake counts the PR being merged | PRs: `prs + 1`. Files: the union of `git diff --name-only origin/main...origin/dev` (the fetched `dev` tip, see the next row) and the PR's changed files, which the guard already reads (`changed_files()`); a rename counts once, under its new path (R3) | A union is conservative: a PR that restores a file to `main`'s content is still counted |
 | Where intake reads git | The guard calls only the GitHub API today (`gh api`, `gh pr merge`). The count needs git history with tags, so the guard fetches `main`, `dev` and the `v*` tags into the checkout it is run from and counts at the fetched `origin/dev`. It refuses unless that commit equals GitHub's live `dev` ref (`repos/{REPO}/git/ref/heads/dev`); the pull request's `base.sha` is not the reference (`check_release_budget`) | `base.sha` does not track `dev`'s tip: on 2026-11-12, each of the 8 open pull requests that `gh pr list -L 8` returned had a stale `base.sha`, so comparing against it would refuse almost every pull request. Checking against the live ref is what makes the local count the release GitHub will merge into. The compare API was not chosen: its file-list cap is unverified |
 | The transition (R12) | The start tag, `v0.15.0`, is a constant beside the limits. Until that tag exists, `release-budget` reports `transition: true`, and neither gate refuses | One place encodes R12, so phases 2 and 3 can land in Release 1 without refusing the carry-over release itself |
@@ -113,7 +113,7 @@ flowchart TD
 | # | Phase | Acceptance |
 |---|---|---|
 | 5 | **Plane cycle per release.** In the agent-cloud Plane project, each release is one cycle. Its work items are the OpenSpec tasks in scope. The modules already exist, one per OpenSpec change (`Sync Plane Projects`). Convention first. Automate only if keeping it by hand proves too slow | Each release in the roadmap below has a cycle, and the cycle's work items match the declared scope |
-| 6 | **Lower the cost of each promotion.** (a) A read-only promotion-readiness check lists `main`-bound templates that declare `isolated_environment` but have no `main` copy (v0.14.0 found two missing at promotion time). (b) Reuse the release-notes renderer already in flight, not a second one. (c) Try CodeRabbit on the first promotion of ≤ 120 files; whether its limits allow this is **unverified**. (d) Check whether CodeQL default setup (`configured`, verified 2026-11-10) analyses pull requests into `dev`, so alerts appear when a PR merges, not at promotion; **unverified** | Release 3's promotion uses the readiness check. The reviews of Release 2's promotion, the first under the limits, and Release 3's record whether CodeRabbit reviewed them |
+| 6 | **Lower the cost of each promotion.** (a) A read-only promotion-readiness check lists `main`-bound templates that declare `isolated_environment` but have no `main` copy (v0.14.0 found two missing at promotion time). (b) Reuse the release-notes renderer already in flight, not a second one. (c) Try CodeRabbit on the first promotion of ≤ 150 files; whether its limits allow this is **unverified**. (d) Check whether CodeQL default setup (`configured`, verified 2026-11-10) analyses pull requests into `dev`, so alerts appear when a PR merges, not at promotion; **unverified** | Release 3's promotion uses the readiness check. The reviews of Release 2's promotion, the first under the limits, and Release 3's record whether CodeRabbit reviewed them |
 
 ### Part C — release roadmap, in dependency order
 
@@ -172,8 +172,8 @@ scope is re-sized from the real diff when each release is planned.
 
 | Check | Passes when |
 |---|---|
-| Gate exists | The guard refuses a merge into `dev` that would make 101 PRs, or 121 files when the merge adds a new path (a merge adding none passes the file limit, R5), unless `--budget-acknowledged` is passed (R10: only for the pull requests an operator approval names; the guard does not verify the approval), and the promotion check fails an over-limit promotion |
-| Releases fit | Every promotion after Release 1 (v0.15.0, the carry-over release) is ≤ 100 PRs and ≤ 120 files, or goes over a limit only through R10's operator-approved break-glass, with the reason given in its release notes |
+| Gate exists | The guard refuses a merge into `dev` that would make 101 PRs, or 151 files when the merge adds a new path (a merge adding none passes the file limit, R5), unless `--budget-acknowledged` is passed (R10: only for the pull requests an operator approval names; the guard does not verify the approval), and the promotion check fails an over-limit promotion |
+| Releases fit | Every promotion after Release 1 (v0.15.0, the carry-over release) is ≤ 100 PRs and ≤ 150 files, or goes over a limit only through R10's operator-approved break-glass, with the reason given in its release notes |
 | Order holds | No release's code waits on a later release. A gate that slips moves its work down the table and pulls the next ready release forward. The order is not violated |
 | Cadence | Promotions land days apart, not weeks |
 | Runs follow | Each change's live gates run within the next release window after its code merges, and each finished change is archived with a Hindsight outcome retained |
@@ -184,7 +184,7 @@ scope is re-sized from the real diff when each release is planned.
   The backstop needs `contents: read`.
 - **Operator merges stay operator merges.** Phases 1 and 3 touch release scripts and a workflow
   file. Plan 20's guard refusal for those paths stands, so a person merges them.
-- **Smaller production changes.** Each `main`-bound promotion changes at most 120 files,
+- **Smaller production changes.** Each `main`-bound promotion changes at most 150 files,
   which shortens rollback analysis when something regresses.
 - **The 2026-12-11 deadline is a credential event.** Whatever is decided, the vLLM key copies
   in OpenBao (`direct_*`, `inference-gateway-agentgateway/tasks.md:653`) are part of it.
@@ -208,3 +208,4 @@ scope is re-sized from the real diff when each release is planned.
 | 2026-11-12 | Release 1 shipped as v0.15.0 (#1112); the pull requests that missed the cut move to Release 2. Operator decision: Release 2 is the Rust test platform foundation, planned to R7's 90 files; old Releases 2–8 are now 3–9, and Part B moves with the trust foundation to Release 3. |
 | 2026-11-13 | Release 2 widened by operator decision: Rust wave 1, small fixes and docs, and three carried pull requests join v0.16.0, over policy 10's limit; the merge guard gains --budget-acknowledged (AC-893) and the promotion merges through R10's break-glass. Release 3 is unchanged. |
 | 2026-11-14 | Validation criteria: "Releases fit" admits R10's operator-approved break-glass with its reason, in place of "with no break-glass"; "Gate exists" names the guard's `--budget-acknowledged`. |
+| 2026-11-17 | The per-release file limit is 150 (policy 10, operator decision 2026-11-17); R7's plan budget 112. |
