@@ -39,7 +39,8 @@ requirement "Leaves are renewed on a schedule and the new certificate is in use"
 (`plan/development/openspec/changes/production-internal-ca/specs/platform/internal-ca/spec.md:91`).
 The content caller's leaf MUST have a proof path: a leaf with none MUST be reported as an error,
 and renewal MUST issue no certificate while any such error stands, as renewal already does for
-every declared leaf.
+every declared leaf (`platform/playbooks/renew-internal-certs.yml`, task "Refuse a declared leaf
+with no proof path").
 
 #### Scenario: Allowlisted leaf proven at renewal
 - WHEN renewal renews the content caller's leaf and its user opens the files on each call (host sets `agw_verify_base_url` to an `https://` URL)

@@ -46,8 +46,8 @@ should not sit behind.
   the identity.
 - **Image path, after tasks 3.1 and 3.2 are deployed.** Remove the image entries from `agw_models`
   in site-config and redeploy. If the pin moved in task 3.1, restore the previous pin at
-  every pin site (plan 27, Verified facts; the reviewed-pin checks refuse a partial change) and
-  redeploy through the Semaphore template. Task 3.3 adds the request limit; its removal is written with that task.
+  every pin site (plan 27, Verified facts; the deploy refuses a rendered image that differs from
+  the reviewed pin) and redeploy through the Semaphore template. Task 3.3 adds the request limit; its removal is written with that task.
 - Each rollback step is a Semaphore template run or a site-config change. None is a manual edit on
   a host.
 
@@ -55,8 +55,7 @@ should not sit behind.
 
 - Files in this repository: the six OpenSpec change files, plan 27
   (`plan/development/27-agentgateway-content-generation.md`), and one line in `AGENTS.md`. Later
-  tasks add about 0 to 3 files on the text path and about 14 on the image path (plan 27,
-  "Release-Budget Cost").
+  tasks add files on the text and image paths; plan 27, "Release-Budget Cost", has the counts.
 - No new container. No new listener. No change to the public edge. The text path uses the gateway's
   internal listener, which already requires client certificates when `agw_listener_tls` is on
   (AGENTS.md, `Deploy agentgateway` row).
