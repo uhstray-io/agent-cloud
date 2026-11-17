@@ -374,8 +374,6 @@ protects 1.7, which is the only irreversible step in the change.
       subdomain set and the record exists live (confirmed in a plan run). No action needed.
 - [ ] 6.5 Operator prerequisite: update the OAuth redirect destination at X and LinkedIn
       (member and company page), the first-rollout platforms, to the new public host.
-      Scope 2026-11-12 (AC-762): YouTube and Discord are deferred; register their redirects
-      when they are connected.
       Account connection fails until this is done.
       EXACT PATHS (read from upstream v2.23.0 providers, hit live 2026-08-30 —
       LinkedIn refused the unregistered local URL with "redirect_uri does not
