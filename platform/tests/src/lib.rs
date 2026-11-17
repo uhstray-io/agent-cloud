@@ -1,6 +1,7 @@
 //! Shared support for the agent-cloud test suite (plan 24).
 //!
-//! - [`repo`]: the repository root, `git ls-files`, and the playbook task walker;
+//! - [`repo`]: the repository root, `git ls-files`, the playbook task walker and the playbook
+//!   file listing of the static scans;
 //! - [`yaml`]: YAML loaded the way Ansible and podman-compose read it (YAML 1.1 scalars,
 //!   anchors, aliases, `<<` merge keys);
 //! - [`process`]: bounded child processes with a scrubbed environment, and the confined
@@ -299,11 +300,21 @@ pub mod yaml {
     /// string too when `keys`: `playbook_yaml.strings(value, keys)` for the static ports
     /// (AC-958).
     ///
-    /// One difference from the Python, pinned by `support_scan_python`: a [`Node`] has no number
-    /// type, so a plain `53`, `0644` or `2026-11-17`, which PyYAML reads as an int, float or date
-    /// and does not yield, is a `Node::Str` here and is yielded. The two cannot be told apart
-    /// from a quoted `"53"`, which PyYAML does yield, so dropping them would lose strings the
-    /// Python returns; keeping them only adds values no text pattern a scan looks for can match.
+    /// Where it differs from the Python, all from [`parse`]'s reading of a scalar:
+    /// - a [`Node`] has no number type, so a plain `53`, `0644` or `2026-11-17`, which PyYAML reads
+    ///   as an int, float or date and does not yield, is a `Node::Str` here and is yielded. It
+    ///   cannot be told apart from a quoted `"53"`, which PyYAML does yield, so dropping it would
+    ///   lose strings the Python returns. A scan that matches digits sees these extra values;
+    /// - for the same reason a plain `53:` and a quoted `"53":` key in one mapping are one key
+    ///   here, the later value replacing the earlier, where PyYAML keeps both: such a mapping
+    ///   yields one value fewer;
+    /// - `playbook_yaml.py` reads a node with a local `!tag` as null, and PyYAML refuses a plain
+    ///   `=`; here both are read as their text.
+    ///
+    /// `support_scan_python` holds this to the Python on every scanned repository file: every
+    /// string the Python yields is yielded here, and every extra one is a plain scalar PyYAML
+    /// reads as an int, float or timestamp. No scanned file has a tag, a plain `=` or a mapping
+    /// with both key forms (checked 2026-11-17).
     pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
         fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
             match node {
@@ -367,8 +378,14 @@ pub mod repo {
     /// under the same flags as the playbooks, so both roots are scanned.
     ///
     /// Read from the disk, as `Path.rglob` reads it, not from git: an untracked file under the
-    /// roots is listed, as the Python checkers list it. That differs from [`ls_files`], whose
-    /// callers decide on tracked files only. A directory that cannot be read panics.
+    /// roots is listed, as the Python checkers list it ([`ls_files`] lists tracked files only).
+    /// Only the `.yml` extension counts, as in the Python: a `.yaml` file is not listed.
+    ///
+    /// It refuses what the Python passes over in silence: a root or directory that cannot be read
+    /// (`rglob` yields nothing for a missing root) and a symlink under the roots. `rglob` does not
+    /// descend a symlinked directory, but a path through one still reaches the file, so a
+    /// playbook there could run while every guard built on this list skips it; none exists
+    /// (checked 2026-11-17).
     pub fn playbook_files() -> Vec<String> {
         fn walk(dir: &Path, parts: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
             let entries =
@@ -381,6 +398,11 @@ pub mod repo {
                 let kind = entry
                     .file_type()
                     .unwrap_or_else(|e| panic!("{}: {e}", entry.path().display()));
+                assert!(
+                    !kind.is_symlink(),
+                    "{}: a symlink under the playbook roots; the scan does not follow one",
+                    entry.path().display()
+                );
                 parts.push(name);
                 if kind.is_dir() {
                     walk(&entry.path(), parts, out);
