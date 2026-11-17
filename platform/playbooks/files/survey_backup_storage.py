@@ -3,8 +3,8 @@
 
 Two modes, JSON on stdin, JSON on stdout:
 
-  plan       {nodes, storage_listings, jobs} -> which (node, storage) pairs to read and
-             which prune retentions to dry-run on each. A shared storage is read once.
+  plan       {nodes, storage_listings, jobs, storage_config} -> which (node, storage) pairs to
+             read and which prune retentions to dry-run on each. A shared storage is read once.
   summarize  {plan, vms, storage_config, jobs, content_reads, prune_reads} -> the receipt the playbook prints.
 
 The receipt carries storage IDs, guest IDs and names, sizes, dates and job settings. It
@@ -39,29 +39,100 @@ def _has_backup(content):
     return "backup" in str(content or "").split(",")
 
 
+def _canonical(value, owner):
+    """A prune-backups value as one string: a dict becomes sorted k=v, spaces are dropped."""
+    if isinstance(value, dict):
+        value = ",".join(f"{k}={value[k]}" for k in sorted(value))
+    value = str(value).replace(" ", "")
+    if not RETENTION.match(value):
+        raise Refusal(f"{owner} carries a prune-backups value this survey does not parse.")
+    return value
+
+
 def _retention(job):
     """A job's prune-backups as one canonical string, or the storage's own setting."""
     value = job.get("prune-backups")
     if value in (None, "", {}):
         return DEFAULT_RETENTION
-    if isinstance(value, dict):
-        value = ",".join(f"{k}={value[k]}" for k in sorted(value))
-    value = str(value).replace(" ", "")
-    if not RETENTION.match(value):
-        raise Refusal("A backup job carries a prune-backups value this survey does not parse.")
-    return value
+    return _canonical(value, "A backup job")
 
 
-def _job_vmids(job):
-    if str(job.get("all", 0)) == "1":
-        return None  # every guest
-    return {int(v) for v in str(job.get("vmid") or "").split(",") if v.strip().isdigit()}
+def _storage_prunes(cfg):
+    """Whether a storage sets prune-backups itself, the setting a job that defers to it uses."""
+    return (cfg or {}).get("prune-backups") not in (None, "", {})
+
+
+def _resolve(retention, storage_cfg):
+    """The retention a job means: its own, or the storage's when it defers. None when the storage sets none."""
+    if retention != DEFAULT_RETENTION:
+        return retention
+    if not _storage_prunes(storage_cfg):
+        return None
+    return _canonical(storage_cfg["prune-backups"], "The storage")
+
+
+def _retained(retention):
+    """Upper bound on the archives one retention keeps per guest, or None when it keeps them all.
+
+    For each keep-* option Proxmox keeps at most N distinct buckets (days, weeks, ...), and one
+    archive can fill several, so the sum of the positive keep-* values bounds what is kept.
+    keep-all, or no positive keep-* option at all, keeps everything: there is no bound.
+    """
+    pairs = [part.split("=", 1) for part in retention.split(",")]
+    if any(key == "keep-all" and int(value) > 0 for key, value in pairs):
+        return None
+    counts = [int(value) for key, value in pairs if key != "keep-all" and int(value) > 0]
+    return sum(counts) if counts else None
+
+
+def _archives_kept(retentions, storage_cfg):
+    """The archives a guest's jobs keep at its newest size, as the largest bound among them.
+
+    0 when no job backs the guest up; None when any retention is unbounded or a storage
+    default is unset, so the survey cannot say what would be kept.
+    """
+    kept = []
+    for retention in retentions:
+        resolved = _resolve(retention, storage_cfg)
+        bound = _retained(resolved) if resolved else None
+        if bound is None:
+            return None
+        kept.append(bound)
+    return max(kept, default=0)
+
+
+def _vmids(text):
+    return {int(v) for v in str(text or "").split(",") if v.strip().isdigit()}
+
+
+def _job_guests(job, vms):
+    """The guests a vzdump job backs up, chosen as Proxmox's VZDump.pm chooses them: (selects, vmid set).
+
+    A pool comes first, then the vmid list, then all guests minus `exclude`. A job that names a
+    node drops the existing guests living elsewhere. A listed vmid that no longer exists stays.
+    """
+    existing = {int(v["vmid"]): v for v in vms if str(v.get("vmid", "")).isdigit()}
+    if job.get("pool"):
+        selects = "pool"
+        guests = {vmid for vmid, v in existing.items() if v.get("pool") == job["pool"]}
+    elif _vmids(job.get("vmid")):
+        selects = "list"
+        guests = _vmids(job.get("vmid"))
+    elif str(job.get("all", 0)) == "1":
+        selects = "all"
+        guests = set(existing) - _vmids(job.get("exclude"))
+    else:
+        selects, guests = "none", set()
+    if job.get("node"):
+        guests = {vmid for vmid in guests if vmid not in existing or existing[vmid].get("node") == job["node"]}
+    return selects, guests
 
 
 def plan(data):
     online = [_name(n.get("node"), "node name") for n in data["nodes"] if n.get("status") == "online"]
     if not online:
         raise Refusal("No Proxmox node is online.")
+    configs = {c.get("storage"): c for c in data.get("storage_config") or []}
     retentions = {}
     for job in data["jobs"]:
         if job.get("type", "vzdump") == "vzdump" and job.get("storage"):
@@ -77,9 +148,13 @@ def plan(data):
             if key in seen:
                 continue
             seen.add(key)
+            # Proxmox errors on a preview with no retention when the storage sets none, so it is never asked.
+            wanted = retentions.get(storage, {DEFAULT_RETENTION})
+            if not _storage_prunes(configs.get(storage)):
+                wanted = wanted - {DEFAULT_RETENTION}
             reads.append({"node": node, "storage": storage,
                           "status": {k: row.get(k) for k in ("type", "shared", "total", "used", "avail")},
-                          "retentions": sorted(retentions.get(storage, {DEFAULT_RETENTION}))})
+                          "retentions": sorted(wanted)})
     if not reads:
         raise Refusal("No active backup-capable storage is visible to the Proxmox token.")
     return {"online_nodes": online, "reads": reads}
@@ -132,7 +207,8 @@ def _same_backend(a, b):
 
 
 def summarize(data):
-    names = {int(v["vmid"]): v.get("name") for v in data["vms"] if str(v.get("vmid", "")).isdigit()}
+    vms = data["vms"]
+    names = {int(v["vmid"]): v.get("name") for v in vms if str(v.get("vmid", "")).isdigit()}
     config = {c.get("storage"): c for c in data["storage_config"]}
     jobs = [j for j in data["jobs"] if j.get("type", "vzdump") == "vzdump"]
     # Raw uri results: content reads loop over plan reads, prune reads over (read, retention).
@@ -154,21 +230,18 @@ def summarize(data):
         all_bytes = sum(int(v.get("size") or 0) for v in volumes)
         backup_bytes = sum(int(v.get("size") or 0) for v in backups)
 
-        remove = {}
+        # Each previewed retention maps to the volumes its prune would remove on this storage.
+        previewed = {}
         for prune in r["prunes"]:
-            for row in _ok(prune, "prune preview", storage):
-                if row.get("mark") == "remove":
-                    remove.setdefault(row["volid"], set()).add(prune["retention"])
-        size_of = {v.get("volid"): int(v.get("size") or 0) for v in volumes}
-        # A guest's archive counts as prunable only under the retention of the job that backs it up.
-        keep_last = {}
+            previewed[prune["retention"]] = {row["volid"] for row in _ok(prune, "prune preview", storage)
+                                             if row.get("mark") == "remove"}
+        # A guest's retentions are those of the vzdump jobs on this storage that back it up.
+        retention_of = {}
         for job in jobs:
-            if job.get("storage") != storage:
-                continue
-            m = re.search(r"keep-last=([0-9]+)", _retention(job))
-            vmids = _job_vmids(job)
-            for vmid in (vmids if vmids is not None else names):
-                keep_last[vmid] = max(keep_last.get(vmid, 0), int(m.group(1)) if m else 0)
+            if job.get("storage") == storage:
+                for vmid in _job_guests(job, vms)[1]:
+                    retention_of.setdefault(vmid, set()).add(_retention(job))
+        cfg = config.get(storage)
 
         by_vmid = {}
         for v in backups:
@@ -176,25 +249,30 @@ def summarize(data):
             g = by_vmid.setdefault(vmid, {"vmid": vmid, "name": names.get(vmid), "archives": 0, "bytes": 0,
                                          "oldest": None, "newest": None, "newest_bytes": 0,
                                          "protected": 0, "prunable": 0, "prunable_bytes": 0})
-            size, ctime = int(v.get("size") or 0), int(v.get("ctime") or 0)
+            size, ctime, volid = int(v.get("size") or 0), int(v.get("ctime") or 0), v.get("volid")
             g["archives"] += 1
             g["bytes"] += size
             g["protected"] += 1 if v.get("protected") in (1, True) else 0
             g["oldest"] = ctime if g["oldest"] is None else min(g["oldest"], ctime)
             if g["newest"] is None or ctime > g["newest"]:
                 g["newest"], g["newest_bytes"] = ctime, size
-            if v.get("volid") in remove:
+            # Prunable only when every retention backing this guest was previewed here and removes it.
+            wanted = retention_of.get(vmid, set())
+            if wanted and all(volid in previewed.get(x, set()) for x in wanted):
                 g["prunable"] += 1
                 g["prunable_bytes"] += size
+        needs = {vmid: _archives_kept(retention_of.get(vmid, set()), cfg) for vmid in by_vmid}
         rows = []
         for g in sorted(by_vmid.values(), key=lambda g: -g["bytes"]):
-            k = keep_last.get(g["vmid"], 0)
+            kept = needs[g["vmid"]]
             rows.append({"vmid": g["vmid"], "name": g["name"], "guest_exists": g["vmid"] in names,
                          "archives": g["archives"], "gib": _gib(g["bytes"]),
                          "oldest": _day(g["oldest"]), "newest": _day(g["newest"]),
                          "protected": g["protected"], "prunable": g["prunable"],
-                         "prunable_gib": _gib(g["prunable_bytes"]), "job_keep_last": k or None,
-                         "gib_at_full_retention": _gib(g["newest_bytes"] * k) if k else None})
+                         "prunable_gib": _gib(g["prunable_bytes"]),
+                         "job_retention": sorted(retention_of.get(g["vmid"], set())),
+                         "retained_at_job_retention": kept,
+                         "gib_at_full_retention": _gib(g["newest_bytes"] * kept) if kept else None})
         total, used = int(status.get("total") or 0), int(status.get("used") or 0)
         storages.append({
             "storage": storage, "read_on_node": node, "type": status.get("type"),
@@ -204,11 +282,12 @@ def summarize(data):
             "backup_archives": len(backups), "backup_gib": _gib(backup_bytes),
             "other_volume_gib": _gib(all_bytes - backup_bytes),
             "unaccounted_gib": _gib(used - all_bytes),
-            "prunable_archives": len(remove),
-            "prunable_gib": _gib(sum(size_of.get(v, 0) for v in remove)),
+            "prunable_archives": sum(g["prunable"] for g in by_vmid.values()),
+            "prunable_gib": _gib(sum(g["prunable_bytes"] for g in by_vmid.values())),
             "orphan_guest_gib": _gib(sum(g["bytes"] for g in by_vmid.values() if g["vmid"] not in names)),
             "gib_needed_at_job_retention": _gib(sum(
-                g["newest_bytes"] * keep_last.get(g["vmid"], 0) for g in by_vmid.values())),
+                g["newest_bytes"] * needs[vmid] for vmid, g in by_vmid.items() if needs[vmid] is not None)),
+            "retention_need_unknown_guests": sorted(vmid for vmid, kept in needs.items() if kept is None),
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
             "_used": used, "_all": all_bytes, "_total": total,
@@ -217,6 +296,9 @@ def summarize(data):
     shared_backends = []
     for i, a in enumerate(storages):
         for b in storages[i + 1:]:
+            # Node-local storages on different nodes are separate disks, whatever their paths say.
+            if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
+                continue
             reason = _same_backend(config.get(a["storage"], {"storage": a["storage"]}),
                                    config.get(b["storage"], {"storage": b["storage"]}))
             if not reason and a["_total"] and a["_total"] == b["_total"] and a["_used"] == b["_used"]:
@@ -231,13 +313,13 @@ def summarize(data):
 
     job_rows = []
     for job in jobs:
-        vmids = _job_vmids(job)
+        selects, guests = _job_guests(job, vms)
         job_rows.append({"id": job.get("id"), "enabled": str(job.get("enabled", 1)) != "0",
                          "schedule": job.get("schedule") or job.get("starttime"),
                          "node": job.get("node") or "all", "storage": job.get("storage"),
                          "retention": _retention(job), "mode": job.get("mode"),
-                         "guests": "all" if vmids is None else len(vmids),
-                         "missing_guests": [] if vmids is None else sorted(v for v in vmids if v not in names)})
+                         "selects": selects, "guests": len(guests),
+                         "missing_guests": sorted(v for v in guests if v not in names) if selects == "list" else []})
     return {"storages": storages, "shared_backends": shared_backends, "jobs": job_rows}
 
 

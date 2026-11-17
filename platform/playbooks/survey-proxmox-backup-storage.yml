@@ -7,7 +7,8 @@
 #   - capacity (total, used, available);
 #   - archives per guest (count, size, oldest and newest), flagging guests that no longer exist;
 #   - what a prune at each job's own retention would remove (Proxmox's prune preview);
-#   - the space a job's retention needs at the newest archive size;
+#   - the space a job's retention needs at the newest archive size, an upper bound, reported
+#     as unknown when the retention keeps everything or a storage default is not set;
 #   - bytes on the storage that no listed volume explains (partial files, foreign data);
 #   - storage IDs that look like the same filesystem (same server and export, nested paths,
 #     or identical byte counts), whose usage must be read together;
@@ -110,6 +111,7 @@
         argv: [python3, "{{ _survey }}", plan]
         stdin: >-
           {{ {'nodes': _cluster_reads.results[0].json.data,
+              'storage_config': _cluster_reads.results[1].json.data,
               'jobs': _cluster_reads.results[2].json.data,
               'storage_listings': _node_storage_reads.results} | to_json }}
       register: _plan_run
