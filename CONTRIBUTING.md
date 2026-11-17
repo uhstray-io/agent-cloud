@@ -265,7 +265,8 @@ The Rust suite in `platform/tests/` is replacing pytest and BATS area by area
 - Format suite files with `rustfmt --edition 2024 platform/tests/suite/*.rs`: `cargo fmt` does not
   reach them, and the `rust_format` test checks them.
 - A port adds its ledger ratchet lines in `platform/tests/ledger_citation_ratchet.d/<group>.txt` and
-  does not edit `docs/MISTAKES.md` (plan 24, D10).
+  does not edit `docs/MISTAKES.md` (plan 24, D10; provisional, pending the operator's decision on
+  `docs/MISTAKES.md` 5.29). Each line's reason names the replacing test as `suite/<module>.rs::<fn>`.
 - Read repository YAML with `agent_cloud_tests::yaml`, never a string match. It resolves
   bare `yes`/`no` as YAML 1.1 booleans, as Ansible and podman-compose do, and applies
   anchors and `<<` merge keys. Select a task with `repo::tasks` and assert on that task.

@@ -9,4 +9,11 @@ old file plus every `*.txt` here, sorted by name. Other files are ignored.
 
 A port pull request adds its lines here, in its own file, and never edits `docs/MISTAKES.md`:
 a citation of a test the port deletes is covered by a line whose reason names the replacing
-Rust test. One later change rewrites the citations. The old file stays and only shrinks.
+Rust test. The ledger is append-only: one later change adds each citing entry's "Enforcement
+moved" note. The old file stays and only shrinks.
+
+Each line's reason names the replacing Rust test(s) as `suite/<module>.rs::<fn>`; the test
+`every_ratchet_directory_line_names_an_existing_replacing_test` in `../suite/ledger.rs` fails a
+line that names none, or one that does not exist. The later change writes each citing entry's
+"Enforcement moved" note (`docs/MISTAKES.md` 5.29) from these names. Provisional, pending the
+operator's decision on 5.29 (plan 24, D10).

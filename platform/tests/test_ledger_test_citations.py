@@ -35,7 +35,7 @@ longer cited, fails this test until it is deleted.
 A port adds its ratchet lines in its own file, `ledger_citation_ratchet.d/<group>.txt`, same
 format; the entries are the old file plus every `*.txt` there, sorted by name. A port never edits
 docs/MISTAKES.md: a citation of a test it deletes is covered by a ratchet line whose reason names
-the replacing Rust test, and one later change rewrites citations.
+the replacing Rust test, and one later change adds each citing entry's "Enforcement moved" note.
 """
 
 from __future__ import annotations

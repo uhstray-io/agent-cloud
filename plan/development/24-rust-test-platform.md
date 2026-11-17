@@ -140,11 +140,27 @@ unaffected. From `platform/tests/`, `cargo nextest run` runs everything and
 | D7 | **YAML 1.1 booleans.** `.yamllint.yml` allows bare `yes`/`no`, which Ansible (PyYAML, YAML 1.1) reads as booleans and `yaml-rust2` (YAML 1.2) reads as strings. The support library resolves scalars with YAML 1.1 rules wherever a test compares booleans, and a table test in `suite/support.rs` pins the resolver to PyYAML's bool and null sets (`yaml/resolver.py`) | Banning bare `yes`/`no` repository-wide is a separate change |
 | D8 | **CI: one always-running `Rust (tests)` job, selection inside it.** It runs `testsel` against the pull request's base, then nextest with the `ci` profile, and the `Unit Tests` aggregator needs it. A promotion pull request into `main` runs every test: `testsel` selects `all()` for `ci` against `main`. The nightly run on `dev` is to use the `full` lane | A job skipped by a path filter fails the aggregator (Problem, "Lanes do not exist today") |
 | D9 | **The ledger learns Rust.** The citation check (`test_ledger_test_citations.py`) is ported first and resolves `platform/tests/suite/<module>.rs::<fn>`. A ported test's old citation is ratcheted with the replacing test named in the reason. The ledger is append-only, so its old text stays | Deleting a cited file before the checker reads Rust turns the check red (`docs/MISTAKES.md` 8.2) |
-| D10 | **Per-file registration (operator decision 2026-11-16: mechanism before ports).** A port pull request touches only its own module file(s), its own `areas.d/<area>.yml`, its own `ledger_citation_ratchet.d/<group>.txt`, and the old tests it deletes; never `suite/main.rs`, `areas.yml`, the old ratchet file or `docs/MISTAKES.md`. `build.rs` declares the suite modules from the files. `cargo fmt` does not reach suite modules, so `rust_format` (always set) checks them; format with `rustfmt --edition 2024 platform/tests/suite/*.rs` | Shared lists made every wave 1 port pull request edit the same files (#1143, #1144, #1148), so parallel ports conflicted and each merge forced every other through refresh and re-review. Hand-listed `mod` lines cannot be per-file without generation. No new dependency |
+| D10 | **Per-file registration (operator decision 2026-11-16: mechanism before ports).** A port pull request touches only its own module file(s), its own `areas.d/<area>.yml`, its own `ledger_citation_ratchet.d/<group>.txt`, and the old tests it deletes; never `suite/main.rs`, `areas.yml`, the old ratchet file or `docs/MISTAKES.md`. **Provisional, pending the operator's decision on `docs/MISTAKES.md` 5.29**, which asks a port to add each citing entry's "Enforcement moved" note in the same pull request: each `ratchet.d` line names its replacing test(s) as `suite/<module>.rs::<fn>`, `ledger::every_ratchet_directory_line_names_an_existing_replacing_test` fails a line that names none or one that does not exist, and one closing change after the port writes every note from those lines. `build.rs` declares the suite modules from the files. `cargo fmt` does not reach suite modules, so `rust_format` (always set) checks them; format with `rustfmt --edition 2024 platform/tests/suite/*.rs` | Shared lists made every wave 1 port pull request edit the same files (#1143, #1144, #1148), so parallel ports conflicted and each merge forced every other through refresh and re-review. Hand-listed `mod` lines cannot be per-file without generation. No new dependency |
 
 ### What a port still has to touch
 
-Filled from the trial port of 2026-11-16 (decision 6 of brief 11).
+Found by a trial port on 2026-11-16, on a branch that was never pushed: it deleted two uncited test
+files (`test_netbox_prefix.bats`, `test_rego_ci.py`) and two that `docs/MISTAKES.md` cites
+(`test_commit_msg_hook.bats`, `test_ruleset_protect_dev.py`), then ran the Python partition, shard,
+doc-reference and ledger tests and `lane.sh push`. A new suite file was also dropped in with no
+other edit.
+
+| Coupling | Result | What a port does |
+|---|---|---|
+| A new `suite/<module>.rs` | Compiled with no other edit; the `lanes` listing test fails until an area file lists it | Adds `areas.d/<area>.yml` |
+| A deleted test that the ledger cites | The Python citation check (`test_every_cited_test_exists`) fails, naming each citing entry, the Index row included; it passed again with the port's ratchet file, and so did the Rust `ledger` module in `lane.sh push` | Adds `ledger_citation_ratchet.d/<group>.txt`, one line per occurrence |
+| A deleted Python test still in `test_durations.json` | No failure: the shard split weighs only the files on disk (`shards.py`, `file_weights`); a stale entry only feeds the median used for unrecorded files | Nothing. The file is rebuilt with `scripts/test-durations.py` when the shards drift (plan 21) |
+| A Markdown link to a test file | `test_doc_references.py` fails on the link | The only one, in `O11Y-WORKFLOW-AGE-DIAGNOSTICS.md`, was made plain text in the same change, so no port has to touch it |
+| A test path named in prose or a code span (`AGENTS.md`, plans) | No check reads it; the text goes stale | Nothing in the port. The closing change that writes the ledger's "Enforcement moved" notes updates these too |
+| An allowlist beside its test (`known_*.txt`, `check_mode_allowlist.txt`, `local_mode_reads_allowlist.txt`) | Each names only its own test | Moves with that test's group, never shared |
+
+Shared files a port still touches: none. The `bats` workflow job and the pytest configuration go in
+Phases 4 and 10, which are operator merges.
 
 ### Lanes
 

@@ -385,6 +385,15 @@ fn parse_ratchet(text: &str) -> Vec<(String, String)> {
 /// name. A missing file or directory adds nothing.
 fn load_ratchet(root: &Path) -> Vec<(String, String)> {
     let mut text = fs::read_to_string(root.join(RATCHET)).unwrap_or_default();
+    for file in ratchet_dir_files(root) {
+        text.push('\n');
+        text.push_str(&fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}")));
+    }
+    parse_ratchet(&text)
+}
+
+/// Every `*.txt` in the ratchet directory under `root`, by name; none when it is missing.
+fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(root.join(RATCHET_DIR))
         .into_iter()
         .flatten()
@@ -392,11 +401,46 @@ fn load_ratchet(root: &Path) -> Vec<(String, String)> {
         .filter(|p| p.extension().is_some_and(|x| x == "txt"))
         .collect();
     files.sort();
-    for file in files {
-        text.push('\n');
-        text.push_str(&fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}")));
+    files
+}
+
+/// A replacing test named in a ratchet reason: `[platform/tests/]suite/<module>.rs::<fn>`, the
+/// form a ledger citation of a Rust test takes.
+static REPLACING_TEST: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?:platform/tests/)?suite/[\w-]+\.rs::\w+"));
+
+/// Each line of a ratchet directory file under `root` whose reason names no replacing Rust test,
+/// or names one that does not resolve. A port deletes a cited test only with its replacement
+/// named, so the later change that writes each entry's "Enforcement moved" note
+/// (docs/MISTAKES.md 5.29) can take the names from these lines.
+fn ratchet_dir_problems(root: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    for file in ratchet_dir_files(root) {
+        let name = file
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let text = fs::read_to_string(&file).unwrap_or_else(|e| panic!("{file:?}: {e}"));
+        for (key, reason) in parse_ratchet(&text) {
+            let named: Vec<&str> = REPLACING_TEST
+                .find_iter(&reason)
+                .map(|m| m.as_str())
+                .collect();
+            if named.is_empty() {
+                problems.push(format!(
+                    "{name}: `{key}` names no replacing test (suite/<module>.rs::<fn>)"
+                ));
+            }
+            for test in named {
+                let claim = format!("### 0\n\n`{test}`\n");
+                if !unresolved(&claim, root).is_empty() {
+                    problems.push(format!(
+                        "{name}: `{key}` names `{test}`, which does not exist"
+                    ));
+                }
+            }
+        }
     }
-    parse_ratchet(&text)
+    problems
 }
 
 fn counts<'a>(items: impl Iterator<Item = &'a str>) -> BTreeMap<&'a str, usize> {
@@ -474,6 +518,45 @@ fn ratchet_entries_carry_a_reason_and_still_fail() {
     assert!(
         stale.is_empty(),
         "ratchet entries that now resolve or are no longer cited; delete them: {stale:?}"
+    );
+}
+
+#[test]
+fn every_ratchet_directory_line_names_an_existing_replacing_test() {
+    // Arrange / Act
+    let problems = ratchet_dir_problems(repo::root());
+
+    // Assert
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn a_ratchet_directory_line_without_a_real_replacing_test_is_refused() {
+    // Arrange
+    let root = fixture();
+    let suite = root.path().join("platform/tests/suite");
+    fs::create_dir_all(&suite).expect("suite fixture");
+    fs::write(suite.join("ported.rs"), "#[test]\nfn real_fn() {}\n").expect("rs fixture");
+    let dir = root.path().join(RATCHET_DIR);
+    fs::create_dir_all(&dir).expect("ratchet dir");
+    fs::write(
+        dir.join("port.txt"),
+        "1.1 test_a # replaced by suite/ported.rs::real_fn\n\
+         1.2 test_b # ported, no name\n\
+         1.3 test_c # replaced by platform/tests/suite/ported.rs::missing_fn\n",
+    )
+    .expect("ratchet file");
+
+    // Act
+    let problems = ratchet_dir_problems(root.path());
+
+    // Assert
+    assert_eq!(
+        problems,
+        strings(&[
+            "port.txt: `1.2 test_b` names no replacing test (suite/<module>.rs::<fn>)",
+            "port.txt: `1.3 test_c` names `platform/tests/suite/ported.rs::missing_fn`, which does not exist",
+        ])
     );
 }
 
