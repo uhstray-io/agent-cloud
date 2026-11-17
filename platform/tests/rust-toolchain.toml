@@ -1,0 +1,7 @@
+# The Rust toolchain for the test crate: the version CI installs (lint-and-test.yml, Rust (tests)
+# job) and Cargo.toml's rust-version. rustup installs it on first use (RUSTUP_AUTO_INSTALL,
+# default 1). CI's `rustup override set` in this directory takes precedence over this file.
+# rustfmt: suite/rust_format.rs runs it in every lane. local_dev_setup.rs keeps the three in step.
+[toolchain]
+channel = "1.96"
+components = ["rustfmt"]

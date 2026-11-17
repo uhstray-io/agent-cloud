@@ -1,5 +1,6 @@
-//! The local-dev setup files: `.gitignore` (the working inventory) and the `Brewfile` toolchain
-//! (static tier).
+//! The local-dev setup files: `.gitignore` (the working inventory), the `Brewfile` toolchain and
+//! the Rust toolchain pin, `platform/tests/rust-toolchain.toml`, kept equal to `Cargo.toml`'s
+//! `rust-version` and to the version CI's Rust (tests) job installs and selects (static tier).
 //!
 //! The working inventory `platform/inventory/local-dev.yml` holds a machine's own values, so it
 //! must be ignored by git, while the committed template beside it must not be. The Brewfile is
@@ -35,6 +36,7 @@
 //! | Brewfile: socat comment references make local-https (documents purpose) | `socat_line_documents_make_local_https` (candidate: pins text) |
 
 use agent_cloud_tests::repo;
+use agent_cloud_tests::yaml::{self, Node};
 
 const GITIGNORE: &str = ".gitignore";
 const BREWFILE: &str = "Brewfile";
@@ -43,7 +45,7 @@ const COMMITTED_TEMPLATE: &str = "platform/inventory/local-dev.yml.example";
 
 /// The tools the local-dev scripts, the git hooks and the test lanes need; each is one
 /// `brew "<name>"` line.
-const REQUIRED_TOOLS: [&str; 12] = [
+const REQUIRED_TOOLS: [&str; 13] = [
     "ansible",
     "ansible-lint",
     "bats-core",
@@ -51,6 +53,7 @@ const REQUIRED_TOOLS: [&str; 12] = [
     "jq",
     "podman",
     "podman-compose",
+    "rustup",
     "shellcheck",
     "socat",
     "yamllint",
@@ -213,4 +216,72 @@ fn socat_line_documents_make_local_https() {
         socat.contains("local-https"),
         "the socat line does not name make local-https: {socat}"
     );
+}
+
+/// The value of the first `<key> = "<value>"` line of a TOML file, the way the files here write it.
+fn toml_string(rel: &str, key: &str) -> String {
+    let prefix = format!("{key} = \"");
+    text(rel)
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix.as_str())?.strip_suffix('"'))
+        .unwrap_or_else(|| panic!("{rel}: no `{key} = \"...\"` line"))
+        .to_owned()
+}
+
+#[test]
+fn the_rust_toolchain_file_matches_cargo_and_ci() {
+    // The toolchain file picks the version on a workstation; CI installs its own and overrides the
+    // file. All three must name one version, or a workstation tests with another compiler than CI.
+    let channel = toml_string("platform/tests/rust-toolchain.toml", "channel");
+    let rust_version = toml_string("platform/tests/Cargo.toml", "rust-version");
+    assert_eq!(
+        channel, rust_version,
+        "rust-toolchain.toml's channel must equal Cargo.toml's rust-version"
+    );
+    // Every toolchain the Rust (tests) job installs or selects with a directory override, across
+    // all its steps (rustup's last override wins, so a later one counts too): at least one of
+    // each, and all must name the file's channel. A guard against drift between the three pins,
+    // not a shell parser: `cargo +<tc>` or a RUSTUP_TOOLCHAIN env in the job is not read.
+    let workflow = yaml::load_one(&repo::path(".github/workflows/lint-and-test.yml"))
+        .expect("the workflow is empty");
+    let steps = workflow
+        .get("jobs")
+        .and_then(|jobs| jobs.get("rust-tests"))
+        .and_then(|job| job.get("steps"))
+        .and_then(Node::as_seq)
+        .expect("the workflow has no jobs.rust-tests.steps");
+    // Each run is read on its own with backslash continuations joined, then line by line: a line
+    // is split at whitespace and at the shell's `;`, `&`, `|`, `(` and `)`, and stops at a `#`
+    // comment. So a command after `&&` or `;`, inside `if ... then`, or continued with `\` is found;
+    // a commented-out command, or one whose words a bare newline splits, is not.
+    let runs: Vec<String> = steps
+        .iter()
+        .filter_map(|step| step.get("run").and_then(Node::as_str))
+        .map(|run| run.replace("\\\n", " "))
+        .collect();
+    for command in [
+        ["rustup", "toolchain", "install"],
+        ["rustup", "override", "set"],
+    ] {
+        let mut versions: Vec<&str> = Vec::new();
+        for line in runs.iter().flat_map(|run| run.lines()) {
+            let words: Vec<&str> = line
+                .split(|c: char| c.is_whitespace() || ";&|()".contains(c))
+                .filter(|word| !word.is_empty())
+                .take_while(|word| !word.starts_with('#'))
+                .collect();
+            versions.extend(words.windows(4).filter(|w| w[..3] == command).map(|w| w[3]));
+        }
+        let shown = command.join(" ");
+        assert!(
+            !versions.is_empty(),
+            "the Rust (tests) job has no `{shown}`"
+        );
+        for version in versions {
+            assert_eq!(
+                channel, version,
+                "rust-toolchain.toml's channel must equal every `{shown}` version in the Rust (tests) job"
+            );
+        }
+    }
 }
