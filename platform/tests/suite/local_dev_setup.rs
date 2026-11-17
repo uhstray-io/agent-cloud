@@ -41,11 +41,13 @@ const BREWFILE: &str = "Brewfile";
 const WORKING_INVENTORY: &str = "platform/inventory/local-dev.yml";
 const COMMITTED_TEMPLATE: &str = "platform/inventory/local-dev.yml.example";
 
-/// The tools the local-dev scripts and CI need; each is one `brew "<name>"` line.
-const REQUIRED_TOOLS: [&str; 11] = [
+/// The tools the local-dev scripts, the git hooks and the test lanes need; each is one
+/// `brew "<name>"` line.
+const REQUIRED_TOOLS: [&str; 12] = [
     "ansible",
     "ansible-lint",
     "bats-core",
+    "cargo-nextest",
     "jq",
     "podman",
     "podman-compose",
