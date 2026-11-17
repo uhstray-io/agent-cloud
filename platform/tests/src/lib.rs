@@ -294,6 +294,36 @@ pub mod yaml {
         );
         docs.into_iter().next()
     }
+
+    /// Every string inside `node`, depth first in document order, and every mapping key's
+    /// string too when `keys`: `playbook_yaml.strings(value, keys)` for the static ports
+    /// (AC-958).
+    ///
+    /// One difference from the Python, pinned by `support_scan_python`: a [`Node`] has no number
+    /// type, so a plain `53`, `0644` or `2026-11-17`, which PyYAML reads as an int, float or date
+    /// and does not yield, is a `Node::Str` here and is yielded. The two cannot be told apart
+    /// from a quoted `"53"`, which PyYAML does yield, so dropping them would lose strings the
+    /// Python returns; keeping them only adds values no text pattern a scan looks for can match.
+    pub fn strings(node: &Node, keys: bool) -> Vec<&str> {
+        fn walk<'a>(node: &'a Node, keys: bool, out: &mut Vec<&'a str>) {
+            match node {
+                Node::Str(s) => out.push(s),
+                Node::Map(entries) => {
+                    for (key, value) in entries {
+                        if keys {
+                            walk(key, keys, out);
+                        }
+                        walk(value, keys, out);
+                    }
+                }
+                Node::Seq(items) => items.iter().for_each(|item| walk(item, keys, out)),
+                Node::Bool(_) | Node::Null => {}
+            }
+        }
+        let mut out = vec![];
+        walk(node, keys, &mut out);
+        out
+    }
 }
 
 pub mod repo {
@@ -329,6 +359,44 @@ pub mod repo {
 
     pub fn path(rel: &str) -> PathBuf {
         root().join(rel)
+    }
+
+    /// Every `*.yml` file under `platform/playbooks` and `platform/semaphore`, repository-relative,
+    /// in `playbook_yaml.files()`'s order: sorted by path component, as Python sorts `Path`s, so
+    /// `a/b.yml` comes before `a-c/x.yml` (AC-958). Semaphore's own playbooks and shared tasks run
+    /// under the same flags as the playbooks, so both roots are scanned.
+    ///
+    /// Read from the disk, as `Path.rglob` reads it, not from git: an untracked file under the
+    /// roots is listed, as the Python checkers list it. That differs from [`ls_files`], whose
+    /// callers decide on tracked files only. A directory that cannot be read panics.
+    pub fn playbook_files() -> Vec<String> {
+        fn walk(dir: &Path, parts: &mut Vec<String>, out: &mut Vec<Vec<String>>) {
+            let entries =
+                std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+            for entry in entries {
+                let entry = entry.unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+                let name = entry.file_name().into_string().unwrap_or_else(|name| {
+                    panic!("{}: a name that is not UTF-8: {name:?}", dir.display())
+                });
+                let kind = entry
+                    .file_type()
+                    .unwrap_or_else(|e| panic!("{}: {e}", entry.path().display()));
+                parts.push(name);
+                if kind.is_dir() {
+                    walk(&entry.path(), parts, out);
+                } else if parts.last().is_some_and(|n| n.ends_with(".yml")) {
+                    out.push(parts.clone());
+                }
+                parts.pop();
+            }
+        }
+        let mut found = vec![];
+        for base in ["platform/playbooks", "platform/semaphore"] {
+            let mut parts: Vec<String> = base.split('/').map(str::to_owned).collect();
+            walk(&path(base), &mut parts, &mut found);
+        }
+        found.sort();
+        found.into_iter().map(|parts| parts.join("/")).collect()
     }
 
     /// `git -C <dir> <args>`; panics unless the exit status is at most `max_status`. The variables
