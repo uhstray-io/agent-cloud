@@ -59,9 +59,6 @@
     # exited 0. Neither alone is enough: a long-running "no" container can exit 0, and a
     # labelled one that failed did not finish its job (PR 253 Codex reviews).
     _restart_ok: [always]
-    _rootless_podman: >-
-      {{ _engine == 'podman' and not (local_mode | default(false) | bool)
-         and not (podman_rootful | default(false) | bool) }}
 
   tasks:
     - name: "List the service's containers (by compose working directory)"
@@ -97,7 +94,7 @@
       changed_when: false
       failed_when: false
       check_mode: false
-      when: _rootless_podman | bool
+      when: (_engine == 'podman' and not (groups['all'] | local_dev_inventory) and not (podman_rootful | default(false) | bool))
 
     # Linger keeps the user's systemd running; podman's user boot unit is what starts the
     # containers after a reboot (tasks/enable-linger.yml links it into default.target.wants).
@@ -107,7 +104,7 @@
         database: passwd
         key: "{{ linger_user | default(ansible_user) | default(lookup('env', 'USER')) }}"
       check_mode: false
-      when: _rootless_podman | bool
+      when: (_engine == 'podman' and not (groups['all'] | local_dev_inventory) and not (podman_rootful | default(false) | bool))
 
     - name: "Rootless podman on Linux: is podman's user boot unit enabled?"
       ansible.builtin.stat:
@@ -116,7 +113,7 @@
              }}/.config/systemd/user/default.target.wants/podman-restart.service
       register: _boot_unit
       check_mode: false
-      when: _rootless_podman | bool
+      when: (_engine == 'podman' and not (groups['all'] | local_dev_inventory) and not (podman_rootful | default(false) | bool))
 
     - name: "Rootful podman: is the system boot unit enabled?"
       ansible.builtin.command:
@@ -128,7 +125,7 @@
       when:
         - _engine == 'podman'
         - podman_rootful | default(false) | bool
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
 
     # ensure-service-persistence.yml gives a rootful service whose containers are not on
     # `always` one boot unit that `podman start`s them by name.
@@ -142,7 +139,7 @@
       when:
         - _engine == 'podman'
         - podman_rootful | default(false) | bool
-        - not (local_mode | default(false) | bool)
+        - not (groups['all'] | local_dev_inventory)
 
     - name: "Rootful podman: which containers does it start?"
       # The file ensure-service-persistence.yml wrote; its ExecStart= line is that playbook's.
