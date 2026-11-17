@@ -33,6 +33,20 @@ fn any_line_never_matches_across_a_newline() {
 }
 
 #[test]
+fn any_line_keeps_a_carriage_return_as_part_of_its_line() {
+    // grep splits at `\n` only, so a CRLF file's `\r` is the last character of its line: a
+    // forbidden pattern that must consume it still matches.
+    assert!(any_line("secret=abcd\r\nnext", "secret=.{5}$"));
+}
+
+#[test]
+fn any_line_sees_no_line_after_the_final_newline() {
+    // A trailing `\n` ends the last line; it does not start an empty one.
+    assert!(!any_line("ab\n", "^$"));
+    assert!(any_line("ab\n\n", "^$"));
+}
+
+#[test]
 fn any_line_is_false_when_no_line_matches() {
     assert!(!any_line("ab\ncd", "zz"));
 }
@@ -76,6 +90,12 @@ fn assert_text_passes_when_the_literal_is_present() {
 #[should_panic(expected = r#"platform/tests/Cargo.toml: `edition = "2015"` is missing"#)]
 fn assert_text_panics_when_the_literal_is_absent() {
     assert_text(CARGO, r#"edition = "2015""#);
+}
+
+#[test]
+#[should_panic(expected = "platform/tests/Cargo.toml: an empty literal asserts nothing")]
+fn assert_text_refuses_an_empty_literal() {
+    assert_text(CARGO, "");
 }
 
 #[test]

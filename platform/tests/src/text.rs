@@ -1,10 +1,12 @@
 //! Text assertions for the static tier (plan 24).
 //!
 //! A static test reads repository files and checks them as text: a line matches, a literal is
-//! present. Each static port copied the same six helpers, so they live here once. `any_line` and
-//! the line assertions use grep's line semantics: the text is split into lines and each line is
-//! matched on its own, so `^` and `$` anchor each line and no match crosses a newline. The `regex`
-//! crate reads the constructs these patterns use as grep does.
+//! present. Seven suite modules carry their own `read`, and each port wrote the grep forms inline,
+//! so they live here once. `any_line` and the line assertions split the text at each `\n` the way
+//! grep does: each line is matched on its own, so `^` and `$` anchor each line, no match crosses a
+//! newline, and a `\r` before the `\n` stays part of the line. Patterns are the `regex` crate's
+//! syntax, which reads the ERE constructs the ported BATS patterns use; its escapes such as `\d`
+//! and `\t` are its own, not GNU grep's.
 
 use regex::Regex;
 
@@ -19,7 +21,7 @@ pub fn read(rel: &str) -> String {
 /// compile panics, naming it.
 pub fn any_line(text: &str, pattern: &str) -> bool {
     let re = Regex::new(pattern).unwrap_or_else(|e| panic!("invalid pattern `{pattern}`: {e}"));
-    text.lines().any(|line| re.is_match(line))
+    text.split_terminator('\n').any(|line| re.is_match(line))
 }
 
 /// `grep -qE pattern file` must succeed.
@@ -38,8 +40,12 @@ pub fn refute_line(rel: &str, pattern: &str) {
     );
 }
 
-/// `grep -qF literal file` must succeed.
+/// `grep -qF literal file` must succeed. An empty literal panics: every text contains it.
 pub fn assert_text(rel: &str, literal: &str) {
+    assert!(
+        !literal.is_empty(),
+        "{rel}: an empty literal asserts nothing"
+    );
     assert!(read(rel).contains(literal), "{rel}: `{literal}` is missing");
 }
 
