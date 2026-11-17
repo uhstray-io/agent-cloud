@@ -12,14 +12,17 @@
 //! 1. `import_playbook: preflight-target-group.yml` with `preflight_group` and
 //!    `preflight_group_expected` both set, non-empty and equal. It covers that exact group; a
 //!    `hosts: a:b` union needs both covered.
-//! 2. An inline localhost play whose assert takes the `length` of a group lookup, and names the
-//!    target: `groups[<key>]` or `groups.get(<key>, [])`, where `<key>` is one identifier or quoted
-//!    name, optionally `| default('<name>')` (`get` takes an empty-list default only; either takes
-//!    an optional `| default([])`), piped straight to `length`. It is compared ONCE, `> 0`,
-//!    `!= 0`, or `>=`/`==` a positive integer, and has no `and`/`or`/`not`/`if`/`else` and no
-//!    backslash.
-//!    Quoted text is ignored by that shape check (AC-907); the target name is read from the whole
-//!    condition.
+//! 2. An inline localhost play whose assert takes the `length` of a group lookup, and whose lookup
+//!    key is the play's target: `groups[<key>]` or `groups.get(<key>, [])`, where `<key>` is one
+//!    identifier or quoted name, optionally `| default('<name>')` (`get` takes an empty-list
+//!    default only; either takes an optional `| default([])`), piped straight to `length`. It is
+//!    compared ONCE, `> 0`, `!= 0`, or `>=`/`==` a positive integer, and has no
+//!    `and`/`or`/`not`/`if`/`else` and no backslash.
+//!    A templated target (`{{ target_service }}`) is covered by a key that is that variable, and a
+//!    literal target (`app_svc`) by a key that is that quoted name. A default on the key does not
+//!    change which one it is: `groups.get(target_service | default('other_svc'), [])` covers
+//!    `{{ target_service }}` and never `other_svc` (AC-915). Quoted text is blanked, length for
+//!    length, before the shape check (AC-907).
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
 //! judged by the plays it runs.
@@ -49,8 +52,11 @@
 //!
 //! Added after the port, with no BATS row: `a_legacy_key_wrapper_over_an_unguarded_inner_play_is_an_offender`
 //! and `a_legacy_key_assert_guard_is_recognised` (the `ansible.legacy.*` spellings ansible-core
-//! runs), `the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines`, and the
-//! `longer_name` row of `NOT_ACCEPTED` (the trailing word boundary in `covered_inline`).
+//! runs), `the_ratchet_reads_each_name_trimmed_and_skips_blank_and_comment_lines`, the
+//! `longer_name` row of `NOT_ACCEPTED` (a key is compared whole, so `target_service_x` is not
+//! `target_service`), and for AC-915 `a_guard_keyed_on_another_group_does_not_cover_the_play`,
+//! `a_guard_keyed_on_the_literal_group_covers_the_play` and
+//! `guard_key_reads_the_key_from_the_original_text`.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -86,9 +92,10 @@ const LOCAL: [&str; 2] = ["localhost", "127.0.0.1"];
 const PLAYBOOKS: &str = "platform/playbooks";
 const RATCHET: &str = "platform/tests/known_deploy_without_preflight.txt";
 
-/// A lookup key: one identifier or quoted name (quotes are blanked first), optionally with
-/// `| default('<name>')`. Shared by the subscript and the `get` form, so the two cannot drift.
-const KEY: &str = r"(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?";
+/// A lookup key: one identifier or quoted name, optionally with `| default('<name>')`. Quoted text
+/// is blanked to `'` + underscores + `'` before the match (`blank_quoted`), so a quoted name here
+/// is `'_*'`. Shared by the subscript and the `get` form, so the two cannot drift.
+const KEY: &str = r"(?:[A-Za-z_]\w*|'_*')(?:\s*\|\s*default\(\s*'_*'\s*\))?";
 
 // The condition must BE a `length` of one group lookup, from its start to its end: a prefix such
 // as `1 + (...)`, a list around it, or a subscript inside a string would otherwise pass (AC-907).
@@ -101,16 +108,29 @@ const KEY: &str = r"(?:[A-Za-z_]\w*|'')(?:\s*\|\s*default\(\s*''\s*\))?";
 // anything after it (`> 0 - 1`, `> 0.5`) could change what the comparison tests (#1151 review).
 static GROUP_LENGTH: LazyLock<Regex> = LazyLock::new(|| {
     re(&format!(
-        r"^\s*\(*\s*groups(?:\[\s*{KEY}\s*\]|\.get\(\s*{KEY}\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$"
+        r"^\s*\(*\s*groups(?:\[\s*(?P<sub>{KEY})\s*\]|\.get\(\s*(?P<get>{KEY})\s*,\s*\[\s*\]\s*\))(?:\s*\|\s*default\(\s*\[\s*\]\s*\))?\s*\|\s*length\s*\)*\s*(?:>\s*0|!=\s*0|(?:>=|==)\s*[1-9]\d*)\s*\)*\s*$"
     ))
 });
 static QUOTED: LazyLock<Regex> = LazyLock::new(|| re(r#"'[^']*'|"[^"]*""#));
 static COMPARATOR: LazyLock<Regex> = LazyLock::new(|| re(r"[<>!=]=|[<>]"));
 static NEUTRALISER: LazyLock<Regex> = LazyLock::new(|| re(r"\b(?:and|or|not|if|else)\b"));
 static BRACED_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)"));
+/// The identifier a lookup key starts with, read as `KEY` reads it (`\w` is Unicode there too).
+static LEADING_NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^[A-Za-z_]\w*"));
 
 fn re(pattern: &str) -> Regex {
     Regex::new(pattern).expect("valid regex")
+}
+
+/// `text` with each quoted span replaced by `'` + underscores + `'` of the same byte length, so an
+/// offset in the result is the same offset in `text` (AC-915). The shape check reads this form; a
+/// key is then read from `text` at the offsets the blanked match gives.
+fn blank_quoted(text: &str) -> String {
+    QUOTED
+        .replace_all(text, |caps: &regex::Captures| {
+            format!("'{}'", "_".repeat(caps[0].len() - 2))
+        })
+        .into_owned()
 }
 
 /// What the checker found in one directory of playbooks.
@@ -154,7 +174,7 @@ fn offenders(dir: &Path) -> Report {
 /// targets a group at all.
 fn check_playbook(path: &Path) -> (Option<String>, bool) {
     let mut groups: BTreeSet<String> = BTreeSet::new();
-    let mut inline: Vec<String> = vec![];
+    let mut inline: Vec<GuardKey> = vec![];
     let mut reasons: Vec<String> = vec![];
     let mut targets = false;
 
@@ -284,31 +304,23 @@ fn play_name(play: &Node) -> String {
     format!("{name:?}")
 }
 
-/// Whether an inline guard names the subject: the literal group name, or for a templated target
-/// the first identifier inside `{{ }}`. The name must stand alone, not inside a longer word.
-fn covered_inline(subject: &str, guards: &[String]) -> bool {
-    let name = if subject.contains("{{") {
-        match BRACED_NAME.captures(subject) {
-            Some(caps) => caps[1].to_owned(),
-            None => return false,
-        }
-    } else {
-        subject.to_owned()
-    };
-    if name.is_empty() {
-        return false;
+/// Whether an inline guard tests the subject group. A templated subject is covered by a variable
+/// key naming the first identifier inside `{{ }}`; a literal one by a group key of that name. The
+/// two never cover each other: `groups['target_service']` names a group, not the variable (AC-915).
+fn covered_inline(subject: &str, keys: &[GuardKey]) -> bool {
+    if subject.contains("{{") {
+        return BRACED_NAME
+            .captures(subject)
+            .is_some_and(|caps| keys.contains(&GuardKey::Var(caps[1].to_owned())));
     }
-    let alone = re(&format!(
-        r"(?:^|[^A-Za-z0-9_]){}(?:[^A-Za-z0-9_]|$)",
-        regex::escape(&name)
-    ));
-    guards.iter().any(|guard| alone.is_match(guard))
+    keys.contains(&GuardKey::Group(subject.to_owned()))
 }
 
-/// Each assert condition in a localhost play's tasks (nested blocks included) that a populated
-/// group alone satisfies, on a task whose own keys, and its blocks' keys, cannot skip or soften it.
-/// The play's keys are not read: the repository's guard plays carry `tags: [verify]` (AC-912).
-fn inline_guard_items(play: &Node) -> Vec<String> {
+/// The lookup key of each assert condition in a localhost play's tasks (nested blocks included)
+/// that a populated group alone satisfies, on a task whose own keys, and its blocks' keys, cannot
+/// skip or soften it. The play's keys are not read: the repository's guard plays carry
+/// `tags: [verify]` (AC-912).
+fn inline_guard_items(play: &Node) -> Vec<GuardKey> {
     let mut out = vec![];
     for task in tasks(play.get("tasks")) {
         for key in ASSERT_KEYS {
@@ -321,8 +333,8 @@ fn inline_guard_items(play: &Node) -> Vec<String> {
                 None => vec![],
             };
             for text in conditions.into_iter().filter_map(Node::as_str) {
-                if is_populated_group_check(text) {
-                    out.push(text.to_owned());
+                if let Some(key) = guard_key(text) {
+                    out.push(key);
                 }
             }
         }
@@ -330,15 +342,36 @@ fn inline_guard_items(play: &Node) -> Vec<String> {
     out
 }
 
-/// One condition that a populated group alone satisfies: the `GROUP_LENGTH` shape (quotes
-/// blanked), exactly one comparison, and no `and`/`or`/`not`/`if`/`else`, the last two read with
-/// quotes included.
-fn is_populated_group_check(text: &str) -> bool {
-    let unquoted = QUOTED.replace_all(text, "''");
-    !text.contains('\\')
-        && GROUP_LENGTH.is_match(&unquoted)
-        && COMPARATOR.find_iter(text).count() == 1
-        && !NEUTRALISER.is_match(text)
+/// The group a guard tests, as its lookup key names it. A literal name (`groups['app_svc']`,
+/// `groups.get("app_svc", [])`) is a group; a bare identifier (`groups[target_service]`) is the
+/// variable the target comes from. A `| default(...)` on the key is not part of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GuardKey {
+    Group(String),
+    Var(String),
+}
+
+/// The lookup key of one condition that a populated group alone satisfies, or `None` for any other.
+/// The shape is `GROUP_LENGTH`, read on the blanked text; the key is then read from the original
+/// text at the offsets of the blanked match, so a quoted name is the name written (AC-915). A
+/// condition is refused with a backslash (`QUOTED` does not model escapes), with
+/// `and`/`or`/`not`/`if`/`else` (read with quotes included), or with other than one comparison.
+fn guard_key(text: &str) -> Option<GuardKey> {
+    if text.contains('\\') || NEUTRALISER.is_match(text) || COMPARATOR.find_iter(text).count() != 1
+    {
+        return None;
+    }
+    let blanked = blank_quoted(text);
+    let caps = GROUP_LENGTH.captures(&blanked)?;
+    let span = caps.name("sub").or_else(|| caps.name("get"))?;
+    let key = text.get(span.range())?.trim();
+    if let Some(quote @ ('\'' | '"')) = key.chars().next() {
+        let inner = &key[1..];
+        let end = inner.find(quote)?;
+        return Some(GuardKey::Group(inner[..end].to_owned()));
+    }
+    let name = LEADING_NAME.find(key)?;
+    Some(GuardKey::Var(name.as_str().to_owned()))
 }
 
 /// The only keys a guard task, or a block around one, may carry. The set is closed, as in
@@ -445,16 +478,30 @@ fn fixture(files: &[(&str, &str)]) -> tempfile::TempDir {
 /// A deploy playbook whose only guard is one inline assert on `condition`, then a play that
 /// targets the templated group.
 fn inline_playbook(condition: &str) -> String {
-    guarded_playbook(&format!(
-        "    - name: \"Require a populated group\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n"
-    ))
+    inline_playbook_for("{{ target_service }}", condition)
+}
+
+/// As `inline_playbook`, with the target play's `hosts:` value given.
+fn inline_playbook_for(hosts: &str, condition: &str) -> String {
+    guarded_playbook_for(
+        hosts,
+        &format!(
+            "    - name: \"Require a populated group\"\n      ansible.builtin.assert:\n        that: \"{condition}\"\n"
+        ),
+    )
 }
 
 /// A localhost play running `tasks` (indented as a play's task list), then a play that targets
 /// the templated group.
 fn guarded_playbook(tasks: &str) -> String {
+    guarded_playbook_for("{{ target_service }}", tasks)
+}
+
+/// As `guarded_playbook`, with the target play's `hosts:` value given (a YAML double-quoted
+/// scalar).
+fn guarded_playbook_for(hosts: &str, tasks: &str) -> String {
     format!(
-        "- name: \"Inline guard\"\n  hosts: localhost\n  tasks:\n{tasks}- name: \"Work\"\n  hosts: \"{{{{ target_service }}}}\"\n  tasks: []\n"
+        "- name: \"Inline guard\"\n  hosts: localhost\n  tasks:\n{tasks}- name: \"Work\"\n  hosts: \"{hosts}\"\n  tasks: []\n"
     )
 }
 
@@ -499,8 +546,8 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
         "fraction",
         "(groups.get(target_service, []) | length) > 0.5",
     ),
-    // The target is `target_service`; the guard names `target_service_x`. Without the trailing
-    // word boundary in `covered_inline`, the prefix matches and the file counts as guarded.
+    // The target is `target_service`; the guard names `target_service_x`. A key is compared whole,
+    // so the prefix is not the target and the file stays an offender.
     (
         "longer_name",
         "(groups.get(target_service_x, []) | length) > 0",
@@ -538,6 +585,16 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
         "subconcat",
         "(groups[target_service ~ '_backup'] | length) > 0",
     ),
+    // AC-915: the key is the group, not the target. A default is not the key, so `other_svc` is
+    // the group this guards and the target stays unguarded.
+    (
+        "literalindefault",
+        "groups['other_svc' | default('target_service')] | length > 0",
+    ),
+    // AC-915: `get` closes before its empty-list default, so the lookup is not the `get` form.
+    ("gettuple", "(groups.get(a) | default(b), []) | length > 0"),
+    // AC-915: a quoted name is a group named literally, never the variable `target_service`.
+    ("quotedvarname", "(groups['target_service'] | length) > 0"),
 ];
 
 /// Inline asserts with one accepted positive comparison of `length`. Each guards its target.
@@ -888,10 +945,81 @@ fn a_condition_with_a_backslash_is_refused() {
     let bypass = r"groups[('\'' ~ target_service)[1:]] | length + ['\''] | length > 0";
 
     // Act and assert
-    assert!(!is_populated_group_check(bypass), "{bypass}");
-    assert!(is_populated_group_check(
-        "(groups.get(target_service, []) | length) > 0"
-    ));
+    assert!(guard_key(bypass).is_none(), "{bypass}");
+    assert_eq!(
+        guard_key("(groups.get(target_service, []) | length) > 0"),
+        Some(GuardKey::Var("target_service".to_owned()))
+    );
+}
+
+#[test]
+fn guard_key_reads_the_key_from_the_original_text() {
+    // Arrange and act: a quoted name is read as written, a bare name is the variable, and a
+    // default on the key is not part of it (AC-915). The blanked text holds no names at all.
+    let literal = guard_key("groups.get('opa_svc', []) | length == 1");
+    let variable = guard_key("(groups[target_service | default('x')] | length) > 0");
+    let double = guard_key(r#"(groups.get("app_svc", []) | length) > 0"#);
+
+    // Assert
+    assert_eq!(literal, Some(GuardKey::Group("opa_svc".to_owned())));
+    assert_eq!(variable, Some(GuardKey::Var("target_service".to_owned())));
+    assert_eq!(double, Some(GuardKey::Group("app_svc".to_owned())));
+}
+
+#[test]
+fn a_guard_keyed_on_another_group_does_not_cover_the_play() {
+    // Arrange: each target is a literal group the guard does not test. The first is the redirect:
+    // the guard's default names the target's group, so a checker that reads the name anywhere in
+    // the condition counts it as covered (AC-915).
+    let redirect = inline_playbook_for(
+        "other_svc",
+        "(groups.get(target_service | default('other_svc'), []) | length) > 0",
+    );
+    let subscript = inline_playbook_for("app_svc", "(groups[target_service] | length) > 0");
+    let literal = inline_playbook_for("app_svc", "(groups['other_svc'] | length) > 0");
+    let dir = fixture(&[
+        ("deploy-redirect.yml", redirect.as_str()),
+        ("deploy-subscript.yml", subscript.as_str()),
+        ("deploy-literal.yml", literal.as_str()),
+    ]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert_eq!(
+        offender_names(&report),
+        [
+            "deploy-literal.yml",
+            "deploy-redirect.yml",
+            "deploy-subscript.yml"
+        ],
+        "{:?}",
+        report.offenders
+    );
+}
+
+#[test]
+fn a_guard_keyed_on_the_literal_group_covers_the_play() {
+    // Arrange: the literal target is the group the guard tests, in each accepted spelling.
+    let subscript = inline_playbook_for("app_svc", "(groups['app_svc'] | length) > 0");
+    let get = inline_playbook_for("app_svc", "(groups.get('app_svc', []) | length) > 0");
+    let defaulted = inline_playbook_for(
+        "app_svc",
+        "groups.get('app_svc' | default(''), []) | length == 1",
+    );
+    let dir = fixture(&[
+        ("deploy-subscript.yml", subscript.as_str()),
+        ("deploy-get.yml", get.as_str()),
+        ("deploy-defaulted.yml", defaulted.as_str()),
+    ]);
+
+    // Act
+    let report = offenders(dir.path());
+
+    // Assert
+    assert!(report.offenders.is_empty(), "{:?}", report.offenders);
+    assert_eq!(report.checked, 3);
 }
 
 #[test]
