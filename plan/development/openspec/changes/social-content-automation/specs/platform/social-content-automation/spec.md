@@ -159,7 +159,7 @@ Flow definitions and connections SHALL be declared in the repository and applied
 
 #### Scenario: Unowned flow is never deleted
 
-- **GIVEN** a flow exists in Activepieces that the repository does not declare
+- **GIVEN** a flow exists in Activepieces that the repository does not declare and that the apply playbook did not create
 - **WHEN** the apply playbook runs
 - **THEN** that flow is left in place
 
