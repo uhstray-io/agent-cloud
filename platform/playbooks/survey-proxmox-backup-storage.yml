@@ -15,13 +15,15 @@
 #   - for a PBS storage, sizes_are_logical: its snapshot sizes share chunks, so its unexplained
 #     and prunable bytes are reported as unknown (null);
 #   - storage IDs that look like the same filesystem (same server and export, same path, one
-#     path inside the other, or identical total and used bytes), whose usage must be read together;
+#     path inside the other, identical total and used bytes, or the same CephFS filesystem; two
+#     CephFS storages are paired by filesystem name only, never by bytes), whose usage must be read together;
 #   - every backup job's schedule, node, storage, retention and guests it names that no longer exist;
 #   - the newest archive per guest on each storage, so a guest's last backup is visible across storages;
 #   - whether each CephFS storage shares a filesystem with another, decided by filesystem name (its
-#     fs-name, or the cluster's only filesystem; unknown when neither resolves), and that filesystem's
-#     pools (a CephFS with a monitor list names an external cluster and is not read; a disabled one is
-#     left out);
+#     fs-name, or the cluster's only filesystem; unknown, and listed as no one's sharer, when neither
+#     resolves), and that filesystem's pools (a CephFS with a monitor list names an external cluster
+#     and is not read);
+#   - a disabled storage of any type is left out of every figure, whatever its status row says;
 #   - per online node, the installed disks: device path, size, model, vendor, serial, Proxmox's `used`
 #     tag and the in-use flag it implies (a disk is in use when its `used` field is set), and OSD id.
 #

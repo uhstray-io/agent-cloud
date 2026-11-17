@@ -14,7 +14,8 @@ The receipt carries storage IDs, guest IDs and names, sizes, dates and job setti
 filesystems and pools, and each node's disks: device path, size, model, vendor, serial, Proxmox's
 `used` tag, the in-use flag that tag implies, and OSD id. A CephFS storage shares a filesystem with
 another when their filesystem names agree: the storage's `fs-name`, or the cluster's only filesystem.
-A storage whose filesystem resolves neither way is unknown, and so is what it shares. The receipt
+A storage whose filesystem resolves neither way is unknown, and so is what it shares; it is never
+listed as another storage's sharer, so a resolved storage lists only the resolved storages it shares with. The receipt
 never carries a server address, export, mount path, volume ID, note text, WWN, SMART health or token.
 A refusal exits 1 with {"refusal": "..."} so the play can print why without the input.
 """
@@ -167,7 +168,9 @@ def plan(data):
             raise Refusal(f"Proxmox answered {listing.get('status')} listing the storages of node {node}.")
         for row in (listing.get("json") or {}).get("data") or []:
             storage = _name(row.get("storage"), "storage ID")
-            if not (_has_backup(row.get("content")) and _flag(row.get("active"))):
+            # A disabled storage is left out whatever its status row says, so nothing about it is read.
+            if not (_has_backup(row.get("content")) and _flag(row.get("active"))) \
+                    or _flag(configs.get(storage, {}).get("disable")):
                 continue
             key = storage if _flag(row.get("shared")) else f"{node}/{storage}"
             if key in seen:
@@ -313,18 +316,17 @@ def _cephfs(config, ceph_reads):
         entry = next((f for f in filesystems if f.get("name") == filesystem), {}) if filesystem else {}
         rows.append({"storage": cfg.get("storage"), "external": external, "filesystem": filesystem,
                      "filesystem_source": source, "data_pools": list(entry.get("data_pools") or [])})
-    # An unresolved storage could sit on any filesystem, so while one is unresolved no internal storage can
-    # claim a sharer. An external storage names another cluster's filesystem, so it shares none here.
-    internal = [row for row in rows if not row["external"]]
-    unresolved = any(row["filesystem_source"] == "unresolved" for row in internal)
+    # An unresolved storage could sit on any filesystem, so what it shares is unknown (null), and it is
+    # never listed as another storage's sharer. An external storage names another cluster's filesystem,
+    # so it shares none here. Resolved storages list the resolved storages on their filesystem.
     for row in rows:
         if row["external"]:
             row["shares_filesystem_with"] = []
-        elif unresolved:
+        elif row["filesystem"] is None:
             row["shares_filesystem_with"] = None
         else:
             row["shares_filesystem_with"] = sorted(
-                other["storage"] for other in internal
+                other["storage"] for other in rows
                 if other is not row and other["filesystem"] == row["filesystem"])
     named = {pool for row in rows for pool in row["data_pools"]}
     usage = [{"pool": p.get("pool_name"), "used_gib": _gib(p.get("bytes_used")),

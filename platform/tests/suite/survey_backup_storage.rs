@@ -1,6 +1,6 @@
-//! The backup-storage survey's summarizer, `platform/playbooks/files/survey_backup_storage.py
-//! summarize` (cli tier): the receipt sections that read the newest archive per guest, CephFS
-//! filesystem sharing and pools, and each online node's disks.
+//! The backup-storage survey's helper, `platform/playbooks/files/survey_backup_storage.py` (cli tier):
+//! the planner's storage selection, and the receipt sections that read the newest archive per guest,
+//! CephFS filesystem sharing and pools, and each online node's disks.
 //!
 //! Each test runs the helper on a hand-written payload with the shape the playbook's summarize task
 //! sends, and asserts on its stdout text. Where the receipt must never print a value, the payload
@@ -180,12 +180,12 @@ fn a_disks_serial_prints_and_its_wwn_and_health_never_do() {
     }
 }
 
-/// Runs `summarize` on a JSON payload and returns the whole process output, whatever the exit code.
-fn run(payload: &Value) -> std::process::Output {
+/// Runs the helper in `mode` (`plan` or `summarize`) on a JSON payload and returns the whole process output, whatever the exit code.
+fn run(mode: &str, payload: &Value) -> std::process::Output {
     let home = TempDir::new().expect("a temporary home");
     let script = repo::path(HELPER);
     scrubbed("python3", home.path())
-        .args(["-I", script.to_str().expect("utf-8 path"), "summarize"])
+        .args(["-I", script.to_str().expect("utf-8 path"), mode])
         .write_stdin(payload.to_string())
         .assert()
         .get_output()
@@ -194,7 +194,7 @@ fn run(payload: &Value) -> std::process::Output {
 
 /// The receipt of a payload the helper must summarize (exit 0), parsed.
 fn receipt(payload: &Value) -> Value {
-    let out = run(payload);
+    let out = run("summarize", payload);
     assert!(
         out.status.success(),
         "{}",
@@ -205,7 +205,7 @@ fn receipt(payload: &Value) -> Value {
 
 /// The refusal text of a payload the helper must refuse (exit 1).
 fn refusal(payload: &Value) -> String {
-    let out = run(payload);
+    let out = run("summarize", payload);
     assert_eq!(
         out.status.code(),
         Some(1),
@@ -309,14 +309,19 @@ fn cephfs_storages_on_one_filesystem_by_name_share_it_and_no_byte_count_is_infer
 }
 
 #[test]
-fn an_unresolved_cephfs_storage_leaves_every_sharing_claim_on_this_cluster_unknown() {
-    // Arrange: cephA names fsA. cephB names no filesystem and the cluster has two, so cephB is unresolved.
-    // The used bytes differ, so no byte-count pair is in play either.
+fn an_unresolved_cephfs_storage_alone_is_unknown_and_never_listed_as_a_sharer() {
+    // Arrange: cephA and cephC name fsA. cephB names no filesystem and the cluster has two, so cephB is
+    // unresolved. The used bytes differ, so no byte-count pair is in play either.
     let payload = cephfs_payload(
-        &[("cephA", 10_737_418_240), ("cephB", 21_474_836_480)],
+        &[
+            ("cephA", 10_737_418_240),
+            ("cephB", 21_474_836_480),
+            ("cephC", 32_212_254_720),
+        ],
         json!([
             {"storage": "cephA", "type": "cephfs", "content": "backup", "fs-name": "fsA"},
-            {"storage": "cephB", "type": "cephfs", "content": "backup"}
+            {"storage": "cephB", "type": "cephfs", "content": "backup"},
+            {"storage": "cephC", "type": "cephfs", "content": "backup", "fs-name": "fsA"}
         ]),
         json!([{"name": "fsA", "data_pools": ["a_data"]}, {"name": "fsB", "data_pools": ["b_data"]}]),
     );
@@ -324,12 +329,41 @@ fn an_unresolved_cephfs_storage_leaves_every_sharing_claim_on_this_cluster_unkno
     // Act
     let out = receipt(&payload);
 
-    // Assert: both rows say null, not [], so the resolved storage's claim is unknown too.
-    let rows = cephfs_rows(&out);
-    assert_eq!(rows[0]["filesystem_source"], json!("fs-name"), "{out}");
-    assert_eq!(rows[1]["filesystem_source"], json!("unresolved"), "{out}");
-    assert_eq!(rows[0]["shares_filesystem_with"], json!(null), "{out}");
-    assert_eq!(rows[1]["shares_filesystem_with"], json!(null), "{out}");
+    // Assert: cephB alone is null; cephA and cephC list each other, and shared_backends agrees with them.
+    let rows: std::collections::BTreeMap<String, Value> = cephfs_rows(&out)
+        .into_iter()
+        .map(|row| {
+            (
+                row["storage"].as_str().expect("a storage ID").to_owned(),
+                row,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows["cephB"]["filesystem_source"],
+        json!("unresolved"),
+        "{out}"
+    );
+    assert_eq!(
+        rows["cephB"]["shares_filesystem_with"],
+        json!(null),
+        "{out}"
+    );
+    assert_eq!(
+        rows["cephA"]["shares_filesystem_with"],
+        json!(["cephC"]),
+        "{out}"
+    );
+    assert_eq!(
+        rows["cephC"]["shares_filesystem_with"],
+        json!(["cephA"]),
+        "{out}"
+    );
+    assert_eq!(
+        out["shared_backends"],
+        json!([{"storages": ["cephA", "cephC"], "reason": "same CephFS filesystem", "combined_unaccounted_gib": null}]),
+        "{out}"
+    );
 }
 
 #[test]
@@ -376,6 +410,42 @@ fn a_disabled_cephfs_storage_is_left_out_of_every_cephfs_figure() {
     assert_eq!(rows[0]["storage"], json!("cephA"), "{out}");
     assert_eq!(out["cephfs"]["status"], json!("read"), "{out}");
     assert!(!out.to_string().contains("cephOff"), "{out}");
+}
+
+#[test]
+fn the_planner_reads_no_disabled_storage_even_when_its_status_row_says_active() {
+    // Arrange: node n1 lists two backup storages as active; the cluster config disables `off`.
+    let status = json!({"type": "nfs", "shared": 1, "total": TOTAL, "used": 0, "avail": TOTAL});
+    let row = |storage: &str| {
+        let mut row = status.clone();
+        row["storage"] = json!(storage);
+        row["content"] = json!("backup");
+        row["active"] = json!(1);
+        row
+    };
+    let payload = json!({
+        "nodes": [{"node": "n1", "status": "online"}], "jobs": [],
+        "storage_config": [{"storage": "on", "type": "nfs"}, {"storage": "off", "type": "nfs", "disable": 1}],
+        "storage_listings": [{"item": "n1", "status": 200, "json": {"data": [row("on"), row("off")]}}]
+    });
+
+    // Act
+    let out = run("plan", &payload);
+
+    // Assert: only `on` is planned.
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let plan: Value = serde_json::from_slice(&out.stdout).expect("the plan is JSON");
+    let planned: Vec<&str> = plan["reads"]
+        .as_array()
+        .expect("plan reads")
+        .iter()
+        .map(|read| read["storage"].as_str().expect("a storage ID"))
+        .collect();
+    assert_eq!(planned, ["on"], "{plan}");
 }
 
 #[test]
