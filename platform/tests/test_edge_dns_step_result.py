@@ -62,13 +62,6 @@ def _tasks():
     return play["tasks"]
 
 
-def _all_tasks(tasks=None):
-    for t in _tasks() if tasks is None else tasks:
-        yield t
-        for key in ("block", "rescue", "always"):
-            yield from _all_tasks(t.get(key) or [])
-
-
 def _run(tmp_path, tf_plan, tf_verify, action, show_plan=None, show_verify=None, fails=False):
     tail = [t for t in _tasks() if t.get("name") in TAIL]
     assert len(tail) == len(TAIL)
@@ -128,52 +121,6 @@ def test_changes_without_a_parsable_summary_still_fail(tmp_path):
     assert res["status"] == "fail" and res["evidence"] == {"plan_changes": None}
 
 
-DRY_RUN = "Dry run: OpenTofu init, plan and show in a throwaway data directory"
-
-
-def _dry_run_task():
-    (task,) = [t for t in _all_tasks() if t.get("name") == DRY_RUN]
-    return task
-
-
-def test_both_plans_detect_changes_by_exit_code():
-    plans = [t for t in _all_tasks()
-             if (t.get("ansible.builtin.command") or {}).get("argv", [None, None])[:2] == ["tofu", "plan"]]
-    assert len(plans) == 2
-    for t in plans:
-        assert "-detailed-exitcode" in t["ansible.builtin.command"]["argv"], t["name"]
-    assert "tofu plan -input=false -no-color -detailed-exitcode" in _dry_run_task()["ansible.builtin.shell"]["cmd"]
-
-
-def test_every_credential_bearing_tofu_command_is_no_log():
-    # PR 436 Codex review: each tofu command runs with the R2 keys and the Cloudflare token in
-    # its environment, so it is its own no_log task; failures surface through the visible report.
-    tofu = [t for t in _all_tasks() if (t.get("ansible.builtin.command") or {}).get("argv", [None])[0] == "tofu"]
-    assert len(tofu) == 6  # init, plan, show, apply, plan after apply, show
-    tofu.append(_dry_run_task())  # the dry run's init, plan and show, in one throwaway root
-    for t in tofu:
-        assert t.get("no_log") is True, t["name"]
-        assert t.get("failed_when") is False, t["name"]
-        assert t["environment"] == "{{ _tf_env }}", t["name"]
-    (env,) = [t for t in _all_tasks() if "_tf_env" in (t.get("ansible.builtin.set_fact") or {})]
-    assert env.get("no_log") is True
-    (unpack,) = [t for t in _all_tasks() if "_tf_dry_result" in (t.get("ansible.builtin.set_fact") or {})]
-    assert unpack.get("no_log") is True, "the dry run's plan text and JSON carry the origin address"
-
-
-def test_the_visible_report_carries_only_exit_codes_and_counts():
-    (report,) = [t for t in _tasks() if "_tf_report" in (t.get("ansible.builtin.set_fact") or {})]
-    assert "no_log" not in report
-    assert set(report["ansible.builtin.set_fact"]["_tf_report"]) == {
-        "init_rc", "plan_rc", "apply_rc", "apply_changed", "verify_rc", "show_rc", "verify_show_rc",
-        "plan_changes", "verify_changes", "plan_actions", "verify_actions", "plan_guard", "verify_guard"}
-    for t in _tasks():
-        if "ansible.builtin.debug" in t:
-            shown = str(t["ansible.builtin.debug"])
-            protected = ("_tf_plan", "_tf_apply", "_tf_verify", "_tf_init", "_tf_env", "_tf_show", "_cf")
-            assert not [p for p in protected if p in shown], t["name"]
-
-
 # A `tofu show -json` plan carrying values that must never reach the visible report.
 SECRET_ORIGIN = "203.0.113.77"
 PLAN_JSON = json.dumps({"format_version": "1.2", "resource_changes": [
@@ -204,16 +151,6 @@ def test_the_post_apply_plan_is_listed_the_same_way(tmp_path):
                show_verify={"rc": 0, "stdout": PLAN_JSON})
     assert res["status"] == "fail"
     assert '"cloudflare_record.app: update"' in _run.stdout and SECRET_ORIGIN not in _run.stdout
-
-
-def test_saved_plans_are_removed_and_shown_inside_the_no_log_boundary():
-    (block,) = [t for t in _tasks() if t.get("name") == "OpenTofu run"]
-    shows = [t for t in block["block"] if (t.get("ansible.builtin.command") or {}).get("argv", [None, None])[:2]
-             == ["tofu", "show"]]
-    assert len(shows) == 2 and all(t.get("no_log") is True for t in shows)
-    (cleanup,) = block["always"]
-    assert cleanup["ansible.builtin.file"]["state"] == "absent"
-    assert set(cleanup["loop"]) == {"{{ _tf_planfile }}", "{{ _tf_verify_planfile }}"}
 
 
 # A fake tofu that writes what the real one would: init fills the data directory

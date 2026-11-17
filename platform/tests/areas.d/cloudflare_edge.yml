@@ -1,0 +1,12 @@
+# The Cloudflare edge's static tests (plan 24, Phase 4): the MCP edge rules and record, the Grafana
+# apply gate, and the edge-dns step result. They read the Cloudflare OpenTofu root, the apply
+# playbooks, the Semaphore templates and the o11y tasks file as text and YAML. Their playbook-tier
+# and guard-import tests stay in Python until they are ported.
+paths:
+  - "platform/infra/cloudflare/**"
+  - "platform/playbooks/apply-cloudflare-tofu.yml"
+  - "platform/playbooks/apply-cloudflare-grafana-api-tofu.yml"
+  - "platform/semaphore/templates.yml"
+  - "plan/development/openspec/changes/o11y-signal-labeling-profiling-alerting/tasks.md"
+tiers:
+  static: [cloudflare_mcp_edge, cloudflare_grafana_plan_guard, edge_dns_step_result]
