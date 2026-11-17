@@ -27,4 +27,4 @@ None. The service is greenfield (plan 26, D7).
 
 ## Open Questions
 
-The open questions are plan 26, Open items (O1 to O11). The API-key question for the Community edition is plan 26, Risk: no API key on Community edition.
+The open questions are plan 26, Open items (O1 to O12). The API-key question for the Community edition is plan 26, Risk: no API key on Community edition.
