@@ -33,19 +33,15 @@ fn every_suite_module_is_rustfmt_clean() {
     // rustup's `rustfmt` proxy finds its toolchain through these; the scrubbed HOME hides
     // the default `~/.rustup` and `~/.cargo`.
     let real_home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-    for (var, default) in [("RUSTUP_HOME", ".rustup"), ("CARGO_HOME", ".cargo")] {
-        match (std::env::var_os(var), &real_home) {
-            (Some(value), _) => {
-                cmd.env(var, value);
-            }
-            (None, Some(home)) => {
-                cmd.env(var, home.join(default));
-            }
-            (None, None) => {}
+    for (var, default) in [
+        ("RUSTUP_HOME", Some(".rustup")),
+        ("CARGO_HOME", Some(".cargo")),
+        ("RUSTUP_TOOLCHAIN", None),
+    ] {
+        let fallback = || Some(real_home.as_ref()?.join(default?).into_os_string());
+        if let Some(value) = std::env::var_os(var).or_else(fallback) {
+            cmd.env(var, value);
         }
-    }
-    if let Some(toolchain) = std::env::var_os("RUSTUP_TOOLCHAIN") {
-        cmd.env("RUSTUP_TOOLCHAIN", toolchain);
     }
     let output = cmd
         .args(["--check", "--edition", &edition])

@@ -29,9 +29,12 @@
 //! only on Rust citations, which the Python checker does not read.
 //!
 //! A citation that cannot resolve because its test was deleted or renamed after the entry was
-//! written stays in the append-only ledger. `platform/tests/ledger_citation_ratchet.txt` lists
-//! it as `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers
-//! one occurrence. The list may only shrink. A Rust citation cannot be ratcheted while the Python
+//! written stays in the append-only ledger. `platform/tests/ledger_citation_ratchet.txt`, and one
+//! file per port group in `platform/tests/ledger_citation_ratchet.d/`, list it as
+//! `<entry> <citation> # <reason>`. The comparison is a multiset: one ratchet line covers one
+//! occurrence. The old file may only shrink; a port adds its lines in its own `ratchet.d` file,
+//! each naming the replacing test as `suite/<module>.rs::<fn>`, and edits no ledger file (plan 24,
+//! D10). A Rust citation cannot be ratcheted while the Python
 //! checker runs: it does not read `.rs` spans, so it reads such a ratchet line as stale. Until
 //! the Python checker goes (Phase 5), a cited Rust test that is renamed gets a dated note in the
 //! ledger entry naming its new name, as 10.15's "Enforcement moved" note does.
@@ -131,6 +134,12 @@ fn rust_citation_path(root: &Path, path: &str) -> PathBuf {
     } else {
         root.join(path)
     }
+}
+
+/// A Rust citation resolves: its file exists and, when it names one, defines the fn.
+fn rust_citation_resolves(root: &Path, path: &str, name: Option<&str>) -> bool {
+    let file = rust_citation_path(root, path);
+    file.is_file() && name.is_none_or(|name| defines(&file, name))
 }
 
 fn looks_like_bats_name(span: &str) -> bool {
@@ -315,10 +324,13 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
             let Some(file) = file_span(s) else {
                 continue;
             };
-            let is_rs = file.path.ends_with(".rs");
-            let found: Vec<PathBuf> = if is_rs {
-                vec![rust_citation_path(root, &file.path)]
-            } else if file.path.contains('/') {
+            if file.path.ends_with(".rs") {
+                if !rust_citation_resolves(root, &file.path, file.name.as_deref()) {
+                    claim_bad.push(s.clone());
+                }
+                continue;
+            }
+            let found: Vec<PathBuf> = if file.path.contains('/') {
                 vec![root.join(&file.path)]
             } else {
                 by_name.get(&file.path).cloned().unwrap_or_default()
@@ -328,9 +340,7 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
                 claim_bad.push(s.clone());
                 continue;
             }
-            if !is_rs {
-                cited.extend(found.iter().cloned());
-            }
+            cited.extend(found.iter().cloned());
             if let Some(name) = &file.name
                 && !found.iter().any(|p| defines(p, name))
             {
@@ -435,8 +445,7 @@ fn ratchet_dir_problems(root: &Path) -> Vec<String> {
             for caps in named {
                 // Resolved as a Rust ledger citation is, without the repository walk the
                 // other citation forms need.
-                let module = rust_citation_path(root, &caps["path"]);
-                if !(module.is_file() && defines(&module, &caps["name"])) {
+                if !rust_citation_resolves(root, &caps["path"], Some(&caps["name"])) {
                     problems.push(format!(
                         "{name}: `{key}` names `{}`, which does not exist",
                         &caps[0]
