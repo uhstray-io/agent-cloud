@@ -58,7 +58,7 @@
 //! | seed-openbao-key uses the resolved value everywhere, not the raw extra var | `seed_openbao_key_merges_the_resolved_value_only` (candidate: pins text) |
 //! | no Semaphore template still instructs operators to pass a secret as -e | `no_template_asks_for_a_secret_as_an_extra_var` (candidate: pins text) |
 //! | NetBox token bootstrap guards AppRole transport before login | `netbox_token_bootstrap_guards_transport_before_login` |
-//! | every play that resolves an OpenBao URL includes the transport guard | `every_openbao_play_includes_the_transport_guard`, with the self-check `never_runs_reads_wrapped_comparisons_and_the_never_tag` |
+//! | every play that resolves an OpenBao URL includes the transport guard | `every_openbao_play_includes_the_transport_guard` (self-check: `never_runs_reads_wrapped_comparisons_and_the_never_tag`) |
 //! | the transport pattern accepts internal endpoints and refuses public ones | `transport_pattern_accepts_internal_endpoints_and_refuses_public_ones` |
 //! | repo: no generated Python bytecode is tracked | `no_python_bytecode_is_tracked` (its two .gitignore lines: candidate: pins text) |
 //! | bao-merge-keys: creation is CAS-guarded, and losing the race falls back to a merge | `bao_merge_keys_creates_a_path_only_under_cas` |
