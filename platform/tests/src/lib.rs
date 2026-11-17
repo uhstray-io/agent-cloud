@@ -716,9 +716,12 @@ pub mod process {
         format!("'{}'", s.replace('\'', r"'\''"))
     }
 
-    /// A child's stdout, then its stderr, as one string with no separator between them: the
-    /// Python tests' `out.stdout + out.stderr`. Bytes that are not UTF-8 are replaced, as
-    /// `String::from_utf8_lossy` replaces them.
+    /// A child's stdout, then its stderr, as one string with no separator between them, like the
+    /// Python tests' `out.stdout + out.stderr`. Two differences from those: Python's `text=True`
+    /// (`harness_sandbox.py`'s `run`) turns `\r\n` and a lone `\r` into `\n`, while this keeps
+    /// every `\r`; and Python raises on bytes that are not UTF-8, while this replaces them, as
+    /// `String::from_utf8_lossy` does. So a ported check for `a\nb` in output that ends lines with
+    /// `\r\n` looks for `a\r\nb` here.
     pub fn output_text(out: &Output) -> String {
         format!(
             "{}{}",
