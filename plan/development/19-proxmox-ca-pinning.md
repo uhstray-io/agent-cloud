@@ -18,6 +18,8 @@ Where verification is off today (origin/dev, 2026-11-05):
 - **Verification on but no CA pinned:** several PBS playbooks (`configure-pbs-backup-access.yml`, `backup-o11y-to-pbs.yml`, `register-o11y-pbs-restore-storage.yml` and others) call Proxmox with `validate_certs: true` and no `ca_path`, so they trust the runner's public store. Whether they pass against the self-signed cluster certificate is unverified.
 - **Shared tasks with no setting of their own** (`tasks/assert-node-cpu-model.yml`, `tasks/o11y-pbs-physical-storage-survey.yml`) inherit whatever their caller sets.
 
+**Added after this plan was written.** `survey-proxmox-backup-storage.yml` (template `Survey Proxmox Backup Storage (Dev)`) was added on 2026-11-16 by PR #1130. It is read-only (GET only), and it sends the Proxmox API token over TLS that is not verified until Phase 2: its play-level `module_defaults` read the `proxmox_validate_certs` switch, which defaults to off. Turning verification on in that playbook alone would only fail the run, because the runner does not yet trust the cluster CA. The operator accepted the deferral on 2026-11-16, for PR #1130 only (its review thread on the play's `validate_certs` line). Phase 2 switches it with the other plays: its Proxmox calls build their URL from `_pve_host`, a name the Phase 2 repository test lists, so that test covers it once the test exists.
+
 Out of scope: the NetBox Proxmox discovery worker (`verify_ssl` defaults to off in `proxmox_discovery/__init__.py`), the PBS API on its own port, pfSense, and service health checks. The discovery worker is the follow-up in Phase 4.
 
 ## Design Principles
