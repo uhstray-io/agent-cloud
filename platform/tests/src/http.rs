@@ -12,8 +12,8 @@
 //! - A reply held until the test releases it: a closure responder that blocks, for example on a
 //!   `Mutex<mpsc::Receiver<()>>` with `recv_timeout` (a responder must be `Sync`, which a bare
 //!   `Receiver` is not). It runs under the server's state lock on the server's one thread, so
-//!   while it holds the server accepts nothing, and [`Server::requests`], [`Server::mount`] and
-//!   the drop all wait. The timeout bounds that, as the Python fakes' 30 s wait does.
+//!   while it holds the server serves nothing, and [`Server::requests`], [`Server::mount`] and
+//!   the drop all wait. The timeout bounds that, as the Python fake's 30 s wait does.
 //!
 //! Not covered, because wiremock 0.6.5 has neither: TLS (`serve(ssl_context=...)`, its listener is
 //! a plain `TcpListener`) and response bodies written in timed parts or cut off mid-stream (a reply
@@ -98,7 +98,8 @@ impl Server {
 }
 
 impl Drop for Server {
-    /// Stops the server and waits, about 2 s at most, until its port refuses connections:
+    /// Stops the server and waits, about 2 s at most after any held reply's own timeout, until
+    /// its port refuses connections:
     /// dropping the MockServer only signals its accept loop, which runs on a detached thread
     /// (wiremock `bare_server.rs`), so the listener closes a moment later. Running out of time is
     /// not an error: a parallel test can be handed the freed port and keep it open.

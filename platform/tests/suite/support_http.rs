@@ -3,6 +3,7 @@
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, mpsc};
 use std::time::Duration;
 
 use agent_cloud_tests::http::{Mock, ResponseTemplate, Server, matchers, refused_port, refuses};
@@ -141,8 +142,8 @@ fn a_wildcard_bind_reports_a_loopback_url() {
 
 #[test]
 fn an_ipv6_bind_reports_a_bracketed_url() {
-    // Needs an IPv6 loopback, as CI's ubuntu-24.04 has. It fails rather than passing unseen:
-    // libtest has no skip, and an early return would read as a pass.
+    // Needs an IPv6 loopback. It fails rather than passing unseen where there is none: libtest
+    // has no skip, and an early return would read as a pass.
     let server = Server::bind("::1");
     reply_on(&server, "/", 200, "here");
 
@@ -252,4 +253,32 @@ fn an_error_responder_drops_the_connection_without_a_reply() {
         assert_eq!(e.kind(), ErrorKind::ConnectionReset, "{e}");
     }
     assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn a_blocking_responder_holds_the_reply_until_released() {
+    // The Rust form of a fake that holds a reply until the test releases it
+    // (test_semaphore_inventory_sync.py, `hold_collection_get`). A responder must be Sync, so the
+    // receiver sits in a Mutex; its timeout bounds the hold.
+    let server = Server::start();
+    let (release, held) = mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    server.mount(Mock::given(matchers::path("/held")).respond_with(
+        move |_: &agent_cloud_tests::http::Request| {
+            match held.lock().unwrap().recv_timeout(Duration::from_secs(10)) {
+                Ok(()) => ResponseTemplate::new(200),
+                Err(_) => ResponseTemplate::new(504),
+            }
+        },
+    ));
+    let addr = server.addr();
+
+    let client = std::thread::spawn(move || send(addr, "GET", "/held", &[], b""));
+    std::thread::sleep(Duration::from_millis(300));
+    let answered_while_held = client.is_finished();
+    release.send(()).unwrap();
+    let response = client.join().unwrap();
+
+    assert!(!answered_while_held, "the reply came before the release");
+    assert_eq!(status(&response), "200");
 }
