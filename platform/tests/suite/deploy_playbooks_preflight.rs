@@ -13,11 +13,12 @@
 //!    `preflight_group_expected` both set, non-empty and equal. It covers that exact group; a
 //!    `hosts: a:b` union needs both covered.
 //! 2. An inline localhost play whose assert takes the `length` of a group lookup, and names the
-//!    target: `groups[<name>]`, or `groups.get(<key>, [])` where `<key>` is one identifier or quoted
-//!    name, optionally `| default('<name>')` (an empty-list default only, with an optional
+//!    target: `groups[<name>]`, or `groups.get(<key>, [])` where `<key>` is one identifier or
+//!    quoted name, optionally `| default('<name>')` (an empty-list default only, with an optional
 //!    `| default([])`), piped straight to `length`. It is compared ONCE, `> 0`, `!= 0`, or
-//!    `>=`/`==` a positive integer, and has no `and`/`or`/`not`/`if`/`else`. Quoted text is ignored
-//!    by that shape check (AC-907); the target name is read from the whole condition.
+//!    `>=`/`==` a positive integer, and has no `and`/`or`/`not`/`if`/`else` and no backslash.
+//!    Quoted text is ignored by that shape check (AC-907); the target name is read from the whole
+//!    condition.
 //!
 //! An `import_playbook` of anything else is followed, so a thin wrapper over a guarded playbook is
 //! judged by the plays it runs.
