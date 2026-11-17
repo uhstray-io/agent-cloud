@@ -47,7 +47,7 @@ Kubernetes path; this service targets the Compose/Podman single-site tier like i
 
 Upstream's reference deployment runs eight containers: the application, its datastore
 and cache, a workflow engine, a *second* datastore for that engine, an Elasticsearch
-node, a workflow UI, and admin tooling. We run five — application, datastore, cache,
+node, a workflow UI, and admin tooling. We planned five (superseded in part on 2026-08-30; see the closing paragraph of this section) — application, datastore, cache,
 workflow engine, and the engine's datastore — with the search node, the workflow UI, and
 the admin tooling removed.
 
@@ -154,7 +154,8 @@ Writing it once as a capability makes the next host a re-use rather than a re-de
 - **The trimmed workflow engine may not execute scheduled work without the search
   node** → Gated behind observing a real scheduled post publish on the local instance
   before production is touched. The add-back is one inventory-gated block, scoped in
-  advance, so the recovery is a configuration change rather than a redesign.
+  advance, so the recovery is a configuration change rather than a redesign. This risk
+  fired on 2026-08-30 and the add-back is now required (see "Trim the workflow engine").
 - **Removing password authentication is effectively one-way** → Key authentication is
   proven from two independent directions first, with password authentication explicitly
   refused during the proof so a silent fallback cannot masquerade as success; privilege

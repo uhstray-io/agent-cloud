@@ -54,7 +54,7 @@ flowchart TD
     end
 
     PZ -->|"OIDC: authorize / token / userinfo"| AK["Authentik .186"]
-    PZ -->|"publish"| SOC["X, LinkedIn, YouTube, Discord"]
+    PZ -->|"publish"| SOC["X, LinkedIn<br/>(YouTube, Discord deferred)"]
     BAO["OpenBao"] -.->|"manage-secrets (Ansible memory)"| PZ
 ```
 
@@ -177,7 +177,7 @@ Pass 2 of the firewall (picking up the detected `:5000`) runs in Phase 3, after 
 
 | Risk | Mitigation |
 |---|---|
-| **The trimmed Temporal (D1) is unverified upstream** — nobody publishes a Postiz + `ENABLE_ES=false` configuration | Phase 2.11 is a hard gate before prod is touched. Fallback (add Elasticsearch back as an inventory-gated compose block) is designed in |
+| **The trimmed Temporal (D1) is unverified upstream** — nobody publishes a Postiz + `ENABLE_ES=false` configuration | Phase 2.11 is a hard gate before prod is touched. Fallback (add Elasticsearch back as an inventory-gated compose block) is designed in. **Fired 2026-08-30:** the search overlay is now required (service README) |
 | The dev-test social credentials have sat in a plaintext `.env` | Seeded as-is now (operator decision), but treat rotation as a follow-up; OpenBao becomes the source of truth so rotation is a `seed-postiz-secrets` re-run |
 | OAuth redirect URIs at the first-rollout providers (X, LinkedIn) need manual updates | Called out as Phase 3 step 4; account connection is the visible failure if skipped |
 | `FRONTEND_URL` must match the browser origin **exactly**, and locally that includes `:8443` unless `make local-https` is running | Parameterized as `postiz_public_url` per environment, never a constant |
