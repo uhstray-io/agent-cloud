@@ -168,7 +168,7 @@ and why.
 | 5.23 | A repo-wide guard and a PR that adds an offender were each green on their own head; the second merged five minutes after the first with CI from before it, and `dev` was red for 18 minutes; widens 5.16 | Process | 1 | `scripts/merge-when-green.py` (`check_dev_drift`) + test |
 | 5.24 | Opened a PR without the `/simplify` and `/security-review` the branch workflow requires; the post-merge pass found a fixture-server hang (first occurrence recorded only as a cause in 10.33) — **x5**: #993 and #1078, and six launch-gate PRs, with no pass or a pass on an earlier head | Process | 5 | Superseded by 5.25 |
 | 5.25 | A review pass is a commit status on the head it covered, required on the merge head; supersedes 5.24's rule after its fourth occurrence — **x2**: #1107, a pass's own fixes posted as reviewed; #1128, statuses posted on a merge head no pass had run on | Process | 2 | `scripts/merge-when-green.py` (`REVIEW_PASS_STATUSES`) + test |
-| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
+| 5.26 | Release actions follow the operator's standing authorization; supersedes 5.7's per-action rule, which stays for a push to `main` or `dev`, a force push, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the operator, and other organisations' repositories (2026-11-16: also `--budget-acknowledged`) | Process | 1 | `protect-main` (force push, deletion, pull request required; admin break-glass bypass, which an admin-role agent account holds) + `protect-dev` (force push, deletion; no bypass) + `scripts/merge-when-green.py` (merges into `dev`); convention for the rest |
 | 5.27 | A live service's change kept most tasks unticked, and five of its seven ticks were on `dev` only when the sync imported the items from `main`; the sync never writes status, so the runner module read as unstarted and could not be milestoned without checking each item | Process | 1 | Convention (sync sets Done on a tick reaching `main` proposed; reverses Plane owning status) |
 | 5.28 | Wrote "inline, no intermediate variable" into plan 24, then briefed a worker to keep `_local` and wrote that AC-784's play variables already complied; the bypass reproduced under `--limit` | Process | 1 | Convention (a ratchet check on mode variables proposed, AC-865) |
 | 5.29 | Briefed six port workers never to edit the ledger, which forbade the "Enforcement moved" note a deleted cited test needs; the ratchet kept every gate green (widens 5.28) | Process | 1 | Convention (a ledger test requiring the note proposed) |
@@ -5267,6 +5267,13 @@ convention: a `dev` merge hold, which nothing the guard reads records, a fast-fo
 to `dev`, a squash merge, `--dev-drift-acknowledged`, merging a pull request the guard leaves to the
 operator (the guard refuses it, and a plain `gh pr merge` would not), other organisations'
 repositories, and the two promotion rounds, which no check counts.
+
+**Update 2026-11-16.** `--budget-acknowledged` (policy 10 R10, built in #1154) joins both lists
+above. It is still asked every time: the operator approves a release going over a limit and names
+the pull requests the approval covers, and the flag is passed only for those. It is also
+convention, for the same reason as `--dev-drift-acknowledged`: the guard accepts the flag on any
+pull request and checks neither the approval nor which pull requests it names. AGENTS.md's Branch
+Workflow callout already lists it (`AGENTS.md:600`).
 
 ### 5.27 A live service's tasks stayed unticked, and a late tick never reached the tracker
 

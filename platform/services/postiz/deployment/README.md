@@ -38,9 +38,11 @@ UI, and admin tooling. The UI and admin tooling stay out. Elasticsearch was orig
 trimmed too, but the gate scoped for that decision fired: as of v2.23.0 the backend
 registers more than 3 `Text` search attributes at startup, SQL visibility refuses that,
 and the backend never binds (measured 2026-08-30). The search node is therefore added
-back as `compose.search.yml`, applied when the inventory sets `postiz_temporal_search:
-true` — which every working deployment now needs. The base compose stays five containers
-with `ENABLE_ES=false` so the trim remains inspectable and the gate stays in inventory.
+back as `compose.search.yml`. Every working deployment needs it, so it is applied
+unless the inventory sets `postiz_temporal_search: false` (`COMPOSE_OVERLAYS` in
+`platform/playbooks/deploy-postiz.yml`, `default(true)`). The base compose stays five
+containers with `ENABLE_ES=false` so the trim remains inspectable and the gate stays in
+inventory.
 
 ## Configuration — two files, two jobs
 
