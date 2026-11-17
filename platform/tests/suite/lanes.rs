@@ -2,8 +2,10 @@
 //!
 //! The cases run over inline configurations, so an edit to the repository's `areas.yml` cannot
 //! change what they prove. The tests that read the repository itself are the invariant that
-//! every suite module is listed once, the pre-commit hook that runs the commit lane, and the
-//! `testsel` and `lane.sh` runs.
+//! every suite module is listed once, the guard that every repo-wide scan outside the security
+//! set runs when a file it reads changes, the pre-commit hook that runs the commit lane, and the
+//! `testsel` and `lane.sh` runs. This module is in the security set (`areas.yml`), so the guard
+//! runs in every lane.
 
 use std::collections::BTreeSet;
 
@@ -774,6 +776,28 @@ fn call_args(src: &str, open: usize) -> Vec<&str> {
     panic!("an unclosed call at byte {open}");
 }
 
+/// The byte where `const NAME:` or `static NAME:` starts in the code of `src` (comments and
+/// literals skipped, so a doc comment quoting it does not count), or `None`.
+fn definition(src: &str, name: &str) -> Option<usize> {
+    let heads = [format!("const {name}:"), format!("static {name}:")];
+    let mut i = 0;
+    while i < src.len() {
+        if let Some(end) = skip_at(src, i) {
+            i = end;
+            continue;
+        }
+        let ident_before = src[..i]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_');
+        if !ident_before && heads.iter().any(|head| src[i..].starts_with(head.as_str())) {
+            return Some(i);
+        }
+        i += src[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    None
+}
+
 /// The string literals of `expr`, which may hold only literals, constants defined in `src`,
 /// `&`, `[`, `]`, `,`, whitespace and comments. Anything else (a variable, a call, a macro)
 /// cannot be read without running the code, so it is an error.
@@ -792,9 +816,7 @@ fn literals_of(expr: &str, src: &str) -> Result<Vec<String>, String> {
                 .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
                 .collect();
             i += name.len();
-            let def = ["const", "static"]
-                .iter()
-                .find_map(|kw| src.find(&format!("{kw} {name}:")))
+            let def = definition(src, &name)
                 .ok_or_else(|| format!("`{name}` is not a const or static of this file"))?;
             let eq = def + src[def..].find('=').ok_or("a constant without `=`")?;
             let mut end = eq + 1;
@@ -811,13 +833,8 @@ fn literals_of(expr: &str, src: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-/// The marker that exempts one call on its line from [`repo_wide_scans`]: for a call whose
-/// pathspecs are not its own scan (they come from another module, as in this file's guard).
-const NOT_A_SCAN: &str = "// lanes: not a repo-wide scan";
-
 /// Every `repo::grep(pattern, pathspecs)` and `repo::ls_files(pathspecs)` call in the code of
-/// `src` (comments and string literals skipped), as its line and its pathspecs. A call whose
-/// line carries [`NOT_A_SCAN`] is left out.
+/// `src` (comments and string literals skipped), as its line and its pathspecs.
 fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
     let mut scans = vec![];
     let mut i = 0;
@@ -836,14 +853,6 @@ fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
         if let Some((needle, arg)) = call {
             let line = src[..i].matches('\n').count() + 1;
             let open = i + needle.len() - 1;
-            if src
-                .lines()
-                .nth(line - 1)
-                .is_some_and(|l| l.contains(NOT_A_SCAN))
-            {
-                i = open + 1;
-                continue;
-            }
             let args = call_args(src, open);
             let specs = args
                 .get(arg)
@@ -861,19 +870,24 @@ fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
 
 #[test]
 fn repo_wide_scans_reads_literals_constants_and_skips_comments_and_strings() {
-    // Arrange: a pattern holding a paren and a comma, a constant list with an exclusion, a scan
-    // named only in a comment and in a string, and a lookalike function.
-    let src = r#"
+    // Arrange: a pattern holding a paren and a comma; a constant list with an exclusion, after a
+    // constant whose name it prefixes and a doc comment that quotes it; char literals of a quote
+    // and a paren; a scan named only in a comment, in a string and in a raw string holding
+    // quotes; and a lookalike function.
+    let src = r##"
+/// `const SPECS: [&str; 1] = ["decoy"];` in a doc comment is not the definition.
+const SPECS_2: [&str; 1] = ["wrong"];
 const SPECS: [&str; 2] = [":(glob)platform/**/*.yml", ":!platform/x.yml"];
 fn f() {
+    let (q, p) = ('"', '(');
+    let raw = r#"a "quoted" repo::grep("x", &["raw"])"#;
     // repo::grep("no", &["comment"])
     let s = "repo::ls_files(&[\"string\"])";
     my_repo::grep("no", &["lookalike"]);
     repo::grep(r"a(b, c", &["platform", "agents"]);
     repo::ls_files(&SPECS);
-    repo::ls_files(&computed); // lanes: not a repo-wide scan
 }
-"#;
+"##;
 
     // Act
     let scans = repo_wide_scans(src).expect("the scans read");
@@ -882,9 +896,9 @@ fn f() {
     assert_eq!(
         scans,
         [
-            (7, vec!["platform".to_owned(), "agents".to_owned()]),
+            (11, vec!["platform".to_owned(), "agents".to_owned()]),
             (
-                8,
+                12,
                 vec![
                     ":(glob)platform/**/*.yml".to_owned(),
                     ":!platform/x.yml".to_owned()
@@ -933,7 +947,7 @@ fn every_repo_wide_scan_runs_when_a_file_it_reads_changes() {
         for (line, specs) in repo_wide_scans(&src).unwrap_or_else(|e| panic!("{rel}: {e}")) {
             scans += 1;
             let specs: Vec<&str> = specs.iter().map(String::as_str).collect();
-            let files = repo::ls_files(&specs); // lanes: not a repo-wide scan
+            let files = repo::ls_files(&specs);
             assert!(
                 !files.is_empty(),
                 "{rel}:{line}: {specs:?} cover no tracked file"

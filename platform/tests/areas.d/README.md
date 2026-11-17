@@ -32,10 +32,12 @@ file, where another area claims it, skips the test.
 
 The `lanes` test `every_repo_wide_scan_runs_when_a_file_it_reads_changes` checks this for every
 `repo::grep` and `repo::ls_files` call outside `always`. It reads the pathspecs from the module's
-source: string literals and constants of the same file. A pathspec built at run time is refused,
-and a call whose pathspecs are not its own scan is exempted with the trailing comment
-`// lanes: not a repo-wide scan`. Reads of named files (`text::read`, `repo::tasks`,
-`yaml::load_one`) are not checked mechanically: list those files in the area's `paths`.
+source: string literals and constants of the same file. A pathspec built at run time is refused.
+It sees those two calls written out, nothing else: not `repo::grep_in` or `repo::ls_files_in`
+given the repository root, a call through a function value, or a directory walk. Reads of named
+files (`text::read`, `repo::tasks`, `yaml::load_one`) and the configuration a playbook run loads
+(the root `ansible.cfg` loads `platform/playbooks/filter_plugins/`) are not checked mechanically
+either: list those files in the area's `paths`.
 
 ```yaml
 # areas.d/netbox_prefix.yml
