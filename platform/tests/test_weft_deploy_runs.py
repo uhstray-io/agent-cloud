@@ -482,9 +482,10 @@ def test_staging_s_front_door_keeps_the_mail_catcher_whoever_the_rack_s_workspac
     assert proc.returncode == 0, proc.stdout[-4000:]
 
 
-def _workspace_mail_check(tmp_path: Path, workspace: dict, door: dict | None):
+def _workspace_mail_check(tmp_path: Path, workspace: dict, door: dict | None, in_rack_group: bool = False):
     """The real tasks/weft-door-mail.yml as tasks/weft-release.yml includes it for a workspace, with
-    localhost as the workspace and `door` as the rack's front door, then a stand-in for the stop."""
+    localhost as the workspace (in weft_workspaces when `in_rack_group`) and `door` as the rack's
+    front door, then a stand-in for the stop."""
     play = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
         "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
@@ -497,17 +498,28 @@ def _workspace_mail_check(tmp_path: Path, workspace: dict, door: dict | None):
     }]
     playbook = tmp_path / "mail.yml"
     playbook.write_text(yaml.safe_dump(play, width=10**6))
-    return run_playbook(playbook, tmp_path, inventory=_rack_inventory(tmp_path, {}, door), env={"ANSIBLE_NOCOLOR": "1"})
+    inventory = _rack_inventory(tmp_path, {}, door)
+    if in_rack_group:
+        declared = yaml.safe_load(inventory.read_text())
+        declared["all"]["children"]["weft_workspaces"]["hosts"] = {"localhost": None}
+        inventory.write_text(yaml.safe_dump(declared))
+    return run_playbook(playbook, tmp_path, inventory=inventory, env={"ANSIBLE_NOCOLOR": "1"})
 
 
-@pytest.mark.parametrize("owner", [None, "customer"], ids=["unmarked", "customer"])
-def test_a_customer_s_workspace_is_refused_while_the_rack_s_front_door_has_the_mail_catcher(tmp_path, owner):
+@pytest.mark.parametrize("owner, environment, in_rack_group", [
+    (None, "rack", False), ("customer", "rack", False),
+    # A rack workspace misdeclared as staging: Stand Up and Deploy weft Workspace accept it, so the
+    # staging skip must not open for a host in weft_workspaces.
+    (None, "staging", True),
+], ids=["unmarked", "customer", "rack-host-declared-staging"])
+def test_a_customer_s_workspace_is_refused_while_the_rack_s_front_door_has_the_mail_catcher(
+        tmp_path, owner, environment, in_rack_group):
     # Standing a customer's workspace up does not redeploy the front door, so the door's own check
     # would not see it: the workspace's deploy refuses instead, before anything stops.
-    workspace = {"weft_environment": "rack"}
+    workspace = {"weft_environment": environment}
     if owner is not None:
         workspace["weft_workspace_owner"] = owner
-    proc = _workspace_mail_check(tmp_path, workspace, {"weft_door_mailpit": True})
+    proc = _workspace_mail_check(tmp_path, workspace, {"weft_door_mailpit": True}, in_rack_group)
     assert proc.returncode != 0, proc.stdout[-4000:]
     assert "counts as a customer's workspace" in proc.stdout and "weft-door-svc" in proc.stdout, proc.stdout[-4000:]
     assert not (tmp_path / "stopped").exists(), "the stop was reached after the refusal"

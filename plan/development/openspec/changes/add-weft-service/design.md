@@ -111,6 +111,12 @@ weft's slow checks run on the platform's runner service with `github_runner_life
 - **The shared package-read PAT.** Until task 5.4, `tasks/registry-login.yml` logs in with the shared `secret/services/github:pat`, which then sits in the deploy user's `auth.json` on every weft VM, where the orchestrator, through its socket, can read it. Task 5.4 replaces it with a weft-only read credential, a GitHub App installation token if GitHub's container registry accepts one for these packages, before the rack.
 - **The orchestrator holds the deploy user's podman socket.** A compromised orchestrator can run anything as the deploy user: its image store, its containers, `.env` and the clone between the render and `deploy.sh up`, until the VM is rebuilt. `weft.toml` and the verifiers are out of its reach, so it cannot make a deploy choose a different release, but it can change what that release runs. Task 5.5 gives it the socket of a separate unprivileged user who runs only agent and egress-proxy containers: the GitHub runner's pattern, one unprivileged account's rootless socket (`runner-dotenv.j2`, `tasks/podman-user-docker-socket.yml`), recorded in `platform/services/weft-workspace/deployment/CLAUDE.md` (task 2.3).
 
+**Known gaps in the rack's mail catcher, which must close before the first customer** (task 6.3; Jacob, 2026-11-17, weft #332). `tasks/weft-door-mail.yml` reads site-config, not the running hosts:
+
+- **Removing `weft_door_mailpit` changes nothing until the door is deployed.** The running front door keeps Mailpit until Deploy weft Front Door runs, and a customer workspace stood up in between passes the workspace check, which reads the door's site-config value. Deploy the door with the real provider before the first customer's Stand Up weft Workspace.
+- **A workspace dropped from inventory but still running is invisible** to the door's check, which reads `weft_workspaces`.
+- **weft's front door has no setting to close sign-up** ([weft #608](https://github.com/uhstray-io/weft/issues/608)), so anyone who reaches the rack's door can sign up, and their link lands in a catcher only the operator reads. The rack's door must not be offered to customers before task 6.3.
+
 ### For Joe's review
 
 - **C4, the Caddy layout.** weft's fragment goes to central Caddy through `tasks/distribute-caddy-site.yml`, the flat layout `manage-caddy-sites.yml` manages (`weft-edge.yml`). weft does not migrate production Caddy to the composable layout; that stays Joe's.

@@ -80,14 +80,18 @@ weft #332).
   speaks plain SMTP only to its own loopback. `deploy.sh` loads the overlay only when `.env` names
   the image, and stops and recreates the two together: podman will not remove a container another
   shares the namespace of. The messages do not survive a deploy.
-- **On the rack, never with a customer.** `tasks/weft-door-mail.yml` refuses `weft_door_mailpit`,
-  in a deploy and in a rollback, before anything stops: on a host whose `weft_environment` is
-  neither `staging` nor `rack`, and on the rack's door once any host in `weft_workspaces` is not
-  marked `weft_workspace_owner: operator`. An unmarked workspace counts as a customer's. It also
-  refuses to deploy or roll back a customer's workspace while the rack's door sets
-  `weft_door_mailpit`, so standing one up cannot slip past the door's check. A customer's sign-ups
-  and resets would otherwise reach nobody, and their links would sit in a catcher only the operator
-  reads. Before the first customer the door gets a real provider (OpenSpec task 6.3).
+- **On the rack, refused once site-config declares a customer workspace.** `tasks/weft-door-mail.yml`
+  refuses `weft_door_mailpit`, in a deploy and in a rollback, before anything stops: on a host
+  whose `weft_environment` is neither `staging` nor `rack`, and on the rack's door once any host in
+  `weft_workspaces` is not marked `weft_workspace_owner: operator`. An unmarked workspace counts as
+  a customer's. It also refuses to deploy or roll back a customer's workspace (any host in
+  `weft_workspaces`, whatever its `weft_environment`) while the rack's door sets
+  `weft_door_mailpit` in site-config. Every check reads site-config, not the running hosts: a door
+  keeps Mailpit until it is redeployed without it, a workspace dropped from inventory but still
+  running is not seen, and weft's front door cannot close sign-up (weft #608), so anyone who reaches
+  it can sign up and their link lands in the catcher. So the rack's door gets a real provider and
+  is deployed with it before the first customer's Stand Up, and is not offered to customers before
+  then (OpenSpec task 6.3 and `design.md`'s known gaps).
 - **The image** is `_weft_mailpit_image` in `playbooks/vars/weft.yml`, by digest; site-config may
   override it with `weft_mailpit_image`, which must also be a digest.
 - **Reading it.** The UI has no sign-in and shows working sign-up and reset links, so it is
