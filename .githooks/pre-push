@@ -532,6 +532,20 @@ if [ -n "$bats_pid" ]; then
   fi
 fi
 
+# ── Rust suite ──────────────────────────────────────────────────────────────
+# The push lane (plan 24): every tier of the areas this push touches since origin/dev, and
+# the security set. lane.sh itself skips, with a message, when cargo-nextest is not installed.
+# It runs after the other suites, so the outputs do not interleave.
+if [ -x platform/tests/lane.sh ]; then
+  printf 'pre-push: running the Rust suite (push lane)...\n' >&2
+  if ! platform/tests/lane.sh push; then
+    printf 'pre-push: Rust suite FAILED.\n' >&2
+    failed=1
+  fi
+else
+  printf 'pre-push: platform/tests/lane.sh is missing from this checkout, so the Rust suite did not run.\n' >&2
+fi
+
 if [ "$failed" != "0" ]; then
   printf '\n' >&2
   printf 'PUSH BLOCKED: a test suite failed.\n' >&2

@@ -177,16 +177,21 @@
       environment:
         CONTAINER_ENGINE: "{{ container_engine | default('podman') }}"
         LOCAL_MODE: "{{ 'true' if (local_mode | default(false) | bool) else '' }}"
-        # Compose substitution for the published host port (no .env — OPA has no
-        # secrets). Inventory opa_bind/opa_port flow straight into compose.
+        # Compose substitutions for the published host port. OPA has no secrets; deploy.sh writes
+        # these into a non-secret .env so a changed value recreates OPA (write_env).
         OPA_BIND: "{{ opa_bind | default('127.0.0.1') }}"
         OPA_PORT: "{{ opa_port | default('8281') }}"
         # Listener TLS: the overlay mounts ./certs and serves the leaf named by OPA_SERVER_LEAF.
         # Empty COMPOSE_OVERLAYS adds nothing (common.sh's compose() loops over its words).
         COMPOSE_OVERLAYS: "{{ 'compose.tls.yml' if _opa_tls else '' }}"
         OPA_SERVER_LEAF: "{{ opa_server_leaf | default('opa-server') }}"
+        # Operator lever (survey `deploy_force_recreate`, only the literal true): recreate OPA even when
+        # its policies, compose files, .env and image all match, as for Authentik and o11y.
+        FORCE_RECREATE: "{{ 'true' if ((deploy_force_recreate | default('false') | string | lower) == 'true') else '' }}"
       register: _deploy
-      changed_when: true
+      # deploy.sh recreates OPA only when its policies, compose files or image changed (common.sh
+      # compose_up_if_changed) and says which on its own line.
+      changed_when: "'DEPLOY_CHANGED=true' in _deploy.stdout_lines"
       when: not ansible_check_mode
 
     - name: "Show deploy.sh output"

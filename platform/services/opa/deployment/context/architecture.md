@@ -69,8 +69,11 @@ Production OPA was deployed on 2026-10-29 (Semaphore task 10380); its checklist 
   `/health` (the same as production). Phase 2 adds per-agent bearer tokens (OpenBao). Phase 3
   ships decision logs to Loki via stdout.
 - Policies are mounted read-only from `./policies` and loaded as a bundle, with the same
-  authorization policy as production (writes and data reads refused, as in production); a change
-  is applied by redeploy (git pull + restart). Rego is tested with `opa test --bundle /policies`.
+  authorization policy as production (writes and data reads refused, as in production). OPA
+  reads them only at startup, so a change is applied by redeploy: deploy.sh hashes the policy
+  tree (`compose_up_if_changed policies`) and recreates OPA when it differs from what the
+  running container started with. Rego is tested with `opa test --bundle /policies`, which reads
+  the files on disk, not the running server.
 - Local-dev also routes `opa.agent-cloud.test` through Caddy
   (`platform/inventory/local-dev.yml.example`, the `caddy_routes` OPA entry) so a
   caller such as skynet can verify a step-ca certificate. That route is a plain proxy

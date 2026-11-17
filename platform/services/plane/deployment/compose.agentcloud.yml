@@ -7,7 +7,7 @@
 # What it changes, and why:
 #   restart   Plane ships `unless-stopped`, which podman's boot unit does not restart. Every
 #             long-lived service is `always`; one-shot init containers are "no" + the
-#             agent-cloud.one-shot label (platform/tests/test_restart_policy.bats). Every service
+#             agent-cloud.one-shot label (platform/tests/suite/restart_policy.rs). Every service
 #             in the base is named here — deploy.sh refuses a base that brings one this file
 #             does not, so a release adding a service cannot slip in on Plane's policy.
 #   profiles  Plane switches optional services off with `deploy.replicas: 0`, which

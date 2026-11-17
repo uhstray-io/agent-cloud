@@ -3,50 +3,50 @@
 # podman/compose entrypoint. The shared Phase-1 preamble for composable service
 # deploys (deploy-dns and the other composable service deploys).
 #
-# Two modes, selected by local_mode:
-#   prod  (unset/false): git clone/update from monorepo_repo at _branch.
-#   local (true):        copy the checkout that supplied this playbook. For the
+# Two modes, selected by the inventory's identity (`groups['all'] | local_dev_inventory`, plan 24),
+# never by local_mode, which an extra var can set:
+#   prod  (any other inventory): git clone/update from monorepo_repo at _branch.
+#   local (a local-dev inventory): copy the checkout that supplied this playbook. For the
 #                        normal local template this is the read-only working-tree
 #                        mount, including uncommitted changes. A separately bound
 #                        branch template copies its own checkout instead.
 #                        The Semaphore container has no sudo/apt.
-#                        local_mode is checked against the inventory first
-#                        (tasks/assert-local-mode-identity.yml): a local-dev inventory
-#                        only, so `-e local_mode=true` cannot force local mode onto a production host.
+#                        The first task (tasks/assert-local-mode-identity.yml) still refuses a
+#                        local_mode that disagrees with the inventory, so a misdeclared inventory fails.
 #
 # Expects in the including play's scope:
 #   _monorepo_dir          — where the repo lands on the target
 #   _branch                — service_branch | default('main')  (prod clone)
 #   monorepo_repo          — clone URL                          (prod only)
-#   local_mode             — bool (inventory; the first task below refuses one that disagrees)
+#   local_mode             — the inventory's declaration; read only by the first task below
 #
 # DRY: edit the placement logic HERE, never per service (CLAUDE.md Engineering
 # Principles — reuse over per-service glue).
 
 - name: "Refuse a local_mode that disagrees with the inventory's identity"
-  # Sibling task. It runs first, before any local_mode read in this file and the tasks it includes.
+  # Sibling task. It runs first, before any read of the mode in this file and the tasks it includes.
   ansible.builtin.include_tasks: assert-local-mode-identity.yml
 
 - name: "Assert required variables for monorepo placement"
   ansible.builtin.assert:
     that:
       - _monorepo_dir is defined
-      - (_branch is defined) or (local_mode | default(false) | bool)
-      - (monorepo_repo is defined) or (local_mode | default(false) | bool)
+      - (_branch is defined) or (groups['all'] | local_dev_inventory)
+      - (monorepo_repo is defined) or (groups['all'] | local_dev_inventory)
     fail_msg: "Missing required variables for place-monorepo.yml"
 
 - name: "Refuse to place main from a non-main checkout"
   # The playbook's checkout and _branch are two selectors for one deploy; this makes
   # them agree (docs/MISTAKES.md 3.12). Local mode copies the checkout, so they cannot differ.
   ansible.builtin.include_tasks: assert-placement-branch.yml
-  when: not (local_mode | default(false) | bool)
+  when: not (groups['all'] | local_dev_inventory)
 
 - name: "Install git if needed"
   ansible.builtin.apt:
     name: git
     state: present
   become: true
-  when: not (local_mode | default(false) | bool)
+  when: not (groups['all'] | local_dev_inventory)
 
 - name: "Clone or update agent-cloud monorepo"
   ansible.builtin.git:
@@ -54,7 +54,7 @@
     dest: "{{ _monorepo_dir }}"
     version: "{{ _branch }}"
     force: true
-  when: not (local_mode | default(false) | bool)
+  when: not (groups['all'] | local_dev_inventory)
 
 - name: "Refuse an rsync that ignores .gitignore on --delete (local mode)"
   # openrsync (macOS /usr/bin/rsync) does not honour the .gitignore filter on --delete, so it
@@ -69,7 +69,7 @@
   check_mode: false
   when:
     - not ansible_check_mode
-    - local_mode | default(false) | bool
+    - (groups['all'] | local_dev_inventory)
 - name: "Copy working tree into place (local mode)"
   # The playbook's checkout is the only source that can honestly support a
   # branch-specific validation claim. An inventory path could point at a
@@ -120,7 +120,7 @@
     executable: /bin/bash   # `set -o pipefail` needs bash (Ubuntu /bin/sh is dash)
   when:
     - not ansible_check_mode
-    - local_mode | default(false) | bool
+    - (groups['all'] | local_dev_inventory)
   register: _rsync_result
   changed_when: _rsync_result.stdout | rsync_itemize_changed
 
@@ -133,7 +133,7 @@
 
 - name: "Keep rootless containers running across a reboot"
   # Every composable service gets linger + podman's user boot unit here, so no
-  # deploy has to remember to ask. Self-gates on local_mode and on hosts without
+  # deploy has to remember to ask. Self-gates on the local-dev inventory and on hosts without
   # podman's user unit. A dedicated service account (the CI runner) still
   # includes it again with its own linger_user.
   ansible.builtin.include_tasks: enable-linger.yml

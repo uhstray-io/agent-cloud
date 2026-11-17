@@ -270,7 +270,7 @@ PY
 @test "caddy: the OPA site renders as a plain TLS proxy to opa:8181, with no edge gate" {
   # Template pin: a route with no gate flags renders as a plain TLS proxy. It feeds a hand-written route,
   # so it does not guard the inventory; the declared OPA route itself (no forward_auth, no allowlist flag)
-  # is pinned by test_local_dev_inventory.bats. OPA limits itself to decisions and health with its own
+  # is pinned by platform/tests/suite/local_dev_inventory.rs. OPA limits itself to decisions and health with its own
   # authorization policy: the site adds server authentication for callers and nothing else.
   _render_caddy '[{host: opa.agent-cloud.test, upstream: "opa:8181"}]'
   local c="$BATS_TEST_TMPDIR/Caddyfile"

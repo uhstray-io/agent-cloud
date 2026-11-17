@@ -11,9 +11,10 @@ Run by deploy-plane.yml INSIDE the plane-api container, after plane_session.py, 
 
 Plane documents licence activation only as a UI step (Workspace settings, Billing and plans;
 design.md row 0.4). The web app calls POST /api/payments/workspaces/{slug}/licenses/ with
-{"license_key"}, which needs billing-manage permission (owner or Admin; before the licence the
-Admin role does not exist, so the owner is the one account that has it): the automation account,
-which created the workspace, activates, and no person needs Admin first. In the v3.3.3 image
+{"license_key"}, which needs billing-manage permission (owner or Admin; Admin is a Business and
+Enterprise feature, refused on Pro, docs/MISTAKES.md 1.39, so the owner is the one account that
+has it): the automation account, which created the workspace, activates, and no person needs
+Admin first. In the v3.3.3 image
 (plane/payment/views/license_activate.py) the route answers 200 once Plane's payment server has
 accepted the key, and 400 when it refuses it, with a body that can echo the key.
 

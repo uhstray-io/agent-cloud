@@ -225,6 +225,21 @@ repos:
         verbose: true
         stages: [pre-commit]
 
+  # The commit lane of the Rust suite (plan 24): the static tests of the areas the staged change
+  # touches, and the security set's static tests, ledger check included. lane.sh skips with a
+  # message when cargo-nextest is not installed; CI's Rust (tests) job runs the suite. Inside
+  # Gate 1, so SKIP_SECRET_SCAN=1 skips it too.
+  - repo: local
+    hooks:
+      - id: rust-commit-lane
+        name: Rust suite, commit lane (plan 24)
+        language: system
+        entry: platform/tests/lane.sh commit
+        always_run: true
+        pass_filenames: false
+        verbose: true
+        stages: [pre-commit]
+
   # Standard pre-commit hooks for general hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0

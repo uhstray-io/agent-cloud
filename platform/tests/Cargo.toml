@@ -25,6 +25,11 @@ path = "suite/main.rs"
 
 [dependencies]
 assert_cmd = "2.2"
+globset = "0.4.21"
 predicates = "3.1"
+regex = "1.13"
 tempfile = "3.27"
 yaml-rust2 = "0.13"
+
+[dev-dependencies]
+proptest = "1.12"

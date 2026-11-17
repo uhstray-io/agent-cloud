@@ -314,3 +314,11 @@ task_with() {
     [ "${args%" --authorization=basic --bundle /policies "}" != "$args" ]
   done
 }
+
+@test "opa: deploy.sh recreates OPA when the policies it loads at startup change" {
+  # OPA loads ./policies only at startup; plain `compose up -d` kept a container serving old
+  # policies after a deploy placed new ones (docs/MISTAKES.md 3.11).
+  grep -qE '^[[:space:]]*compose_up_if_changed policies$' "$DEPLOY_DIR/deploy.sh"
+  refute_grep '^[[:space:]]*compose up -d' "$DEPLOY_DIR/deploy.sh"
+  grep -qF "changed_when: \"'DEPLOY_CHANGED=true' in _deploy.stdout_lines\"" "$REPO_ROOT/platform/playbooks/deploy-opa.yml"
+}

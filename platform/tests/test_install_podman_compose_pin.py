@@ -20,7 +20,7 @@ def test_the_block_is_opt_in_linux_only_and_never_local():
     when = BLOCK["when"]
     assert "podman_compose_version is defined" in when
     assert "ansible_system == 'Linux'" in when
-    assert any("local_mode" in w and w.startswith("not") for w in when)
+    assert any("local_dev_inventory" in w and w.startswith("not") for w in when)
 
 
 def test_the_wheel_is_installed_by_hash_alone():

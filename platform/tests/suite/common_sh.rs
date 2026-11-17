@@ -1,6 +1,6 @@
 //! `platform/lib/common.sh`, the shared bash library every `deploy.sh` sources (cli tier).
 //!
-//! Ported from `platform/tests/test_common.bats` (plan 24, Phase 1 pilot). Each test sources
+//! Replaces `platform/tests/test_common.bats` (plan 24, Phase 1 pilot). Each test sources
 //! the library into a scrubbed `bash -c` and asserts on the process: status, stdout, stderr
 //! and the files it wrote.
 

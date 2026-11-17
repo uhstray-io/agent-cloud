@@ -166,7 +166,7 @@ their identity changes, so a renewal needs no restart.
   containers. An unchanged re-run recreates nothing. The local bring-up on a locally built image
   is tolerated by `step_pull_images`, as honcho does.
 - **`restart: always`** on both services. Podman's boot unit starts only `always` containers
-  (enforced by `platform/tests/test_restart_policy.bats`).
+  (enforced by `platform/tests/suite/restart_policy.rs`).
 - **Healthchecks use `CMD-SHELL`**, the same form honcho uses, because podman-compose mis-quotes
   exec-form `CMD` lists.
 - **`skynet-db` gets no `env_file`.** It takes only `POSTGRES_*` from the compose environment, so

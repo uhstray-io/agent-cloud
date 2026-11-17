@@ -10,14 +10,13 @@ and check each combination of inventory and `-e local_mode=` against the rule th
 
 A refusal test parametrizes over forgeries.templated_forgeries (docs/MISTAKES.md 1.15): an
 extra var renders afresh at each read, so the forged value is a template as well as a plain
-value. Every inventory here connects with `local` and every task is an assert or a check-mode
-run, so nothing is copied, cloned or written. The place-monorepo case runs with --check: its
-first task refuses before any copy. A static test pins the first task of place-monorepo.yml and
-enable-linger.yml to the include, so the guard cannot be placed after a read of local_mode. A
-caller's own raw local_mode gate is not covered here: AC-726.
+value. Every run here is an assert or a --check run (the place-monorepo and linger runs pass
+--check), so nothing is copied, cloned, linked or written. A static test pins the first task of
+place-monorepo.yml and enable-linger.yml to the include, so the guard cannot be placed after a read
+of local_mode. Whether a shared task takes the production branch past the guard, under a forged
+value, is in test_local_mode_shared_tasks.py (AC-726).
 """
 
-import re
 from pathlib import Path
 
 import forgeries
@@ -34,6 +33,7 @@ from local_mode_inventories import (
     passed,
     refused,
     run,
+    task_statuses,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -47,6 +47,17 @@ LOCAL_UNSET_INI = """\
 localhost ansible_connection=local
 dns-local ansible_connection=local
 """
+
+# The linger tasks that read the mode from the inventory. On a local-dev run each is reported skipping,
+# by name. The boot-unit block prints its two inner tasks, not its own header.
+LINGER_LOCAL_GATES = (
+    "Check whether lingering is already enabled for testuser",
+    "Enable lingering (rootless containers survive reboot) for testuser",
+    "Look up the account that owns the rootless containers",
+    "Check the host ships podman's user boot unit",
+    "Ensure the user unit wants directory exists",
+    "Link podman-restart.service into default.target",
+)
 
 
 def _guard(tmp_path, inventory, *args, hosts="all", suffix="ini"):
@@ -135,5 +146,7 @@ def test_a_forged_local_mode_is_refused_before_any_linger_task(tmp_path, forge):
 def test_a_local_dev_inventory_passes_the_linger_guard_and_skips_the_linger_tasks(tmp_path):
     proc = _linger(tmp_path, LOCAL_INI)
     passed(proc)
-    # The linger tasks self-gate under local_mode: they are skipped, not run.
-    assert re.search(r"skipped=[1-9]", proc.output), proc.output
+    # The linger tasks read the mode from the inventory: on a local-dev run each one is skipped, by name.
+    statuses = task_statuses(proc.stdout)
+    for name in LINGER_LOCAL_GATES:
+        assert statuses.get(name) == "skipping", (name, statuses, proc.output)
