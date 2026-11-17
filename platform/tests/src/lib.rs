@@ -631,11 +631,13 @@ pub mod process {
     /// harness has the same limit; AC-882 tracks a process-group kill.
     ///
     /// A playbook run (the program, or any argument, is `ansible-playbook`) is held to
-    /// [`PLAYBOOK_TIMEOUT`]: [`run`] is its only route (CONTRIBUTING.md, playbook tier; AC-906).
+    /// [`PLAYBOOK_TIMEOUT`]: `run_for` refuses any other bound, so [`run`] is the route that passes
+    /// (CONTRIBUTING.md, playbook tier; AC-906). The builder's own `.output()` or `.assert()` skips
+    /// this check and keeps the `PLAYBOOK_TIMEOUT` that [`ansible_playbook`] sets.
     pub fn run_for(cmd: &mut Command, timeout: Duration) -> Output {
         let runs_playbook = std::iter::once(cmd.get_program())
             .chain(cmd.get_args())
-            .any(|arg| std::path::Path::new(arg).file_name() == Some("ansible-playbook".as_ref()));
+            .any(|arg| Path::new(arg).file_name() == Some("ansible-playbook".as_ref()));
         assert!(
             !runs_playbook || timeout == PLAYBOOK_TIMEOUT,
             "a playbook run is held to PLAYBOOK_TIMEOUT: start it with process::run"
