@@ -339,8 +339,13 @@ fn section<'a, const N: usize>(
             .as_str()
             .is_some_and(|k| keys.contains(&k) || optional.contains(&k))
         {
+            let optionally = if optional.is_empty() {
+                String::new()
+            } else {
+                format!(", optionally {optional:?}")
+            };
             return Err(format!(
-                "{origin}: {what} has the unknown key {key:?} (expected {keys:?}, optionally {optional:?})"
+                "{origin}: {what} has the unknown key {key:?} (expected {keys:?}{optionally})"
             ));
         }
     }

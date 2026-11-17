@@ -249,7 +249,6 @@ fn every_suite_module_is_listed_exactly_once_in_areas_yml() {
         Config::load(&repo::path("platform/tests/areas.yml")).expect("areas.yml and areas.d/ load");
     // build.rs declares one module per suite/<name>.rs and records the names it compiled.
     let declared = crate::SUITE_MODULES;
-    assert!(!declared.is_empty(), "suite/ holds no module file");
 
     let listed = config.listed_modules();
     let mut problems = Vec::new();

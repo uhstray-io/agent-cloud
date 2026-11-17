@@ -307,12 +307,7 @@ fn unresolved(text: &str, root: &Path) -> Vec<String> {
             };
             let is_rs = file.path.ends_with(".rs");
             let found: Vec<PathBuf> = if is_rs {
-                let base = if file.path.starts_with("suite/") {
-                    root.join("platform/tests")
-                } else {
-                    root.to_path_buf()
-                };
-                vec![base.join(&file.path)]
+                vec![rust_citation_path(root, &file.path)]
             } else if file.path.contains('/') {
                 vec![root.join(&file.path)]
             } else {
@@ -393,6 +388,16 @@ fn load_ratchet(root: &Path) -> Vec<(String, String)> {
 }
 
 /// Every `*.txt` in the ratchet directory under `root`, by name; none when it is missing.
+/// The file a Rust citation names: a path starting `suite/` is relative to `platform/tests/`,
+/// any other to the repository root.
+fn rust_citation_path(root: &Path, path: &str) -> PathBuf {
+    if path.starts_with("suite/") {
+        root.join("platform/tests").join(path)
+    } else {
+        root.join(path)
+    }
+}
+
 fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = fs::read_dir(root.join(RATCHET_DIR))
         .into_iter()
@@ -407,7 +412,7 @@ fn ratchet_dir_files(root: &Path) -> Vec<PathBuf> {
 /// A replacing test named in a ratchet reason: `[platform/tests/]suite/<module>.rs::<fn>`, the
 /// form a ledger citation of a Rust test takes.
 static REPLACING_TEST: LazyLock<Regex> =
-    LazyLock::new(|| re(r"(?:platform/tests/)?suite/(?P<module>[\w-]+)\.rs::(?P<name>\w+)"));
+    LazyLock::new(|| re(r"(?P<path>(?:platform/tests/)?suite/[\w-]+\.rs)::(?P<name>\w+)"));
 
 /// Each line of a ratchet directory file under `root` whose reason names no replacing Rust test,
 /// or names one that does not resolve. A port deletes a cited test only with its replacement
@@ -430,7 +435,7 @@ fn ratchet_dir_problems(root: &Path) -> Vec<String> {
             for caps in named {
                 // Resolved as a Rust ledger citation is, without the repository walk the
                 // other citation forms need.
-                let module = root.join(format!("platform/tests/suite/{}.rs", &caps["module"]));
+                let module = rust_citation_path(root, &caps["path"]);
                 if !(module.is_file() && defines(&module, &caps["name"])) {
                     problems.push(format!(
                         "{name}: `{key}` names `{}`, which does not exist",

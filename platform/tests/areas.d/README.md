@@ -13,9 +13,8 @@ shared one. `Config::load` in `src/lanes.rs` reads every `*.yml` here, in name o
 - Each module (`suite/<module>.rs`) is listed exactly once across `areas.yml` and every file
   here; the `lanes` test `every_suite_module_is_listed_exactly_once_in_areas_yml` checks it.
 
-An area file declares a new area; it cannot add to one already defined. A port whose tests
-belong to the paths of an existing area declares its own area with the same globs: a changed
-path selects every area whose globs match it.
+A port whose tests belong to the paths of an existing area declares its own area with the same
+globs: a changed path selects every area whose globs match it.
 
 ```yaml
 # areas.d/netbox_prefix.yml
