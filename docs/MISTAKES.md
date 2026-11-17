@@ -2560,7 +2560,7 @@ for this file by
 `platform/tests/suite/cloudflare_record_bao_transport.rs::every_openbao_request_uses_the_url_the_guard_checked`
 and
 `platform/tests/suite/cloudflare_record_bao_transport.rs::the_guard_runs_whenever_an_openbao_request_runs`,
-which select a request by its shape (a `/v1/auth/` URL or an `X-Vault-Token` header). Removing
+which select a request by its shape (a `/v1/` URL or an `X-Vault-Token` header). Removing
 the include turns all three red; moving it after the login turns the first red. Widening the
 repository-wide check to select by the request shape in every playbook and task file is Plane
 AC-937; that is this entry's guard proposal.
