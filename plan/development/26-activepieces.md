@@ -119,12 +119,12 @@ Repository facts, read on the base commit `1ae46279` of this branch. Each row is
 | R17 | Plane's first-run script signs up the instance admin only when `is_setup_done` is false, and signs in instead when the instance is already set up, so a re-run creates nothing. | `platform/services/plane/deployment/configure_instance.py:26-33` |
 | R18 | `scripts/local-dev.sh` dispatches a repo-bound template, which runs that record's branch and not the working tree, when a playbook has no `(Local)` template in `platform/semaphore/templates-local.yml`. | `scripts/local-dev.sh:154` |
 | R19 | `apply-firewall.yml` reads its rules from host variables, including the outbound allowlist and denials and the audit or enforce mode. A variable passed only at launch is gone on the next plain run. | `platform/playbooks/apply-firewall.yml:118-121`, `:136-139`, `:160-175` |
-| R20 | `compose_inputs_digest` hashes the compose files, `.env` and `env/*.env`, so a changed `.env` makes `compose_up_if_changed` recreate. | `platform/lib/common.sh:190-198` |
-| R21 | `assert-containers-stable.yml` fails a deploy when a container of the project is not running or is crash-looping (MISTAKES 2.34). | `platform/playbooks/tasks/assert-containers-stable.yml:1-12` |
+| R20 | `compose_inputs_digest` hashes the compose files, `.env` and `env/*.env`, so a changed `.env` makes `compose_up_if_changed` recreate. | `platform/lib/common.sh:190-198` (inputs), `:262-271` (recreate decision) |
+| R21 | `assert-containers-stable.yml` fails a deploy when a container of the project is not running or is crash-looping (MISTAKES 2.34). | `platform/playbooks/tasks/assert-containers-stable.yml:1-17` |
 | R22 | The roster default is built from per-user variables that exist only on the Authentik host, and `load-platform-admins.yml` loads it only when `agw_admin_identities_enabled` is set. | `platform/playbooks/vars/platform-admins.yml:38`, `:56`; `platform/playbooks/tasks/load-platform-admins.yml:16-41` |
 | R23 | The Postiz key capture reads its database with `exec <container> psql -tAc`, `changed_when: false`, `check_mode: false`. | `platform/playbooks/store-postiz-api-key.yml:70-87` |
-| R24 | The repository Caddyfile imports `sites/*.caddy` fragments for new services. | `platform/services/caddy/deployment/Caddyfile:5-9` |
-| R25 | `deploy-authentik.yml` enables only the apps listed in `authentik_apps`; an app missing from it gets no blueprint and no binding, and the deploy still passes. | `platform/playbooks/deploy-authentik.yml:225-234` |
+| R24 | The repository Caddyfile imports `sites/*.caddy` fragments for new services. | `platform/services/caddy/deployment/Caddyfile:10` |
+| R25 | `deploy-authentik.yml` enables only the apps listed in `authentik_apps`; an app missing from it gets no blueprint and no binding, and the deploy still passes. | `platform/playbooks/deploy-authentik.yml:226-234` (enabled list and catalog check), `:293-297` (blueprint set), `:315-318` (bindings rendered from the enabled set) |
 
 ## Architecture
 
@@ -180,7 +180,7 @@ sequenceDiagram
 |------|------|
 | `compose.yml` | Four services: `app`, `worker`, `postgres` and `redis`. Each has `restart: always`, the rule for repo compose services (AGENTS.md, Starting at boot). Only `app` publishes a port, on the bind the deploy renders. `app` has a healthcheck on `/api/v1/health` (F17, F28), and `worker` has `depends_on: app` with `condition: service_healthy`. The worker reaches the app at `http://app` (F15). One named `cache` volume is mounted at `/usr/src/app/cache` in `app` and `worker`, the path upstream uses (F38). The image digest is pinned (D6). |
 | `compose.local.yml` | The local-dev overlay. It attaches the services to the `local-dev` network, so the publish bind does not gate container peers there (D10). Its contents are set in task 1.2. |
-| `deploy.sh` | Container lifecycle only. It calls `compose_up_if_changed` and `wait_for_healthy` from `platform/lib/common.sh` (R9). The worker's start order comes from the app healthcheck. The first-account hold is the publish bind, which is rendered into `.env`; `compose_up_if_changed` hashes `.env` (R20), so the second compose up in a first run recreates the app on the declared bind. Plane's staged start (R10) is not needed. After compose up, the deploy verify runs `tasks/assert-containers-stable.yml` (R21), so a crash-looping worker fails the run instead of passing behind a healthy app. It holds no secret handling. |
+| `deploy.sh` | Container lifecycle only. It calls `compose_up_if_changed` and `wait_for_healthy` from `platform/lib/common.sh` (R9). The worker's start order comes from the app healthcheck. The first-account hold is the publish bind, which is rendered into `.env`; `compose_up_if_changed` hashes `.env` (R20), so the second compose up in a first run recreates the project with the app on the declared bind. Plane's staged start (R10) is not needed. After compose up, the deploy verify runs `tasks/assert-containers-stable.yml` (R21), so a crash-looping worker fails the run instead of passing behind a healthy app. It holds no secret handling. |
 | `templates/env.j2` | The env file, rendered from OpenBao values and inventory. It sets the variables in the table below. |
 | `CLAUDE.md`, `README.md`, `AGENTS.md` | Operator and agent notes. `AGENTS.md` is a symlink to `CLAUDE.md`, as in the other service directories. |
 | `.gitignore` | Keeps rendered env files out of git. |
@@ -233,11 +233,11 @@ Open item O9: `deploy-authentik.yml` collects `prod_required` only from `oidc` a
 
 The owner is a key in the platform-admins roster (R8). Inventory variable `activepieces_owner` names that key. The deploy takes the owner's email from the roster entry and the password from `owner_password`. The roster file's own default is built from per-user variables that exist only on the Authentik host and resolves to placeholder addresses elsewhere (R22), so the deploy refuses to run unless `platform_admins` is declared for the Activepieces host and `activepieces_owner` names exactly one user entry in it with an email. The shared loader `tasks/load-platform-admins.yml` loads the list only behind the agentgateway flag (R22); task 1.4 makes that gate a parameter rather than copying the loader.
 
-The read-back checks for the roster owner's email, not for any account, so changing `activepieces_owner` is noticed. It uses the shape of the Postiz key capture: one `psql -tAc` inside the Postgres container with `changed_when: false` and `check_mode: false`, so a dry run still reads it (R23). A re-run creates nothing: the read-back finds the owner and no second sign-up is made, as Plane's first-run script signs in instead when the instance is already set up (R17). Removing someone from the roster blocks them at the gate (D2). Their local Activepieces account remains until it is reconciled (O6).
+The read-back asks whether an owner account exists (D10c). It is not keyed on the roster email: if the roster names a different email than the existing owner, the run fails and leaves the bind as rendered, so a roster edit never moves the bind. The query follows the Postiz database read (R23) but is not credential handling, so it does not take that task's `no_log`. A re-run creates nothing: the read-back finds the owner and no second sign-up is made, as Plane's first-run script signs in instead when the instance is already set up (R17). Removing someone from the roster blocks them at the gate (D2). Their local Activepieces account remains until it is reconciled (O6).
 
 ### Edge
 
-The production route is a Caddy block in site-config `caddy_managed_sites`, with `forward_auth` pointed at the Authentik outpost. `Manage Caddy Sites` places it. This follows the production Caddy, which is a flat-Caddyfile site (AGENTS.md, Deployment Status), as Plane's routes do. The repository's `sites/<name>.caddy` fragment path (R24) is not used, because production does not run it today; moving every route to fragments is a platform change, not this plan's. The DNS record lives in `platform/infra/cloudflare/dns.tf`, and `Apply Cloudflare Tofu` applies it. The route opens last (D10d). Webhook exemptions, where approved, are exact paths declared per flow (D12).
+The production route is a Caddy block in site-config `caddy_managed_sites`, with `forward_auth` pointed at the Authentik outpost. `Manage Caddy Sites` places it. This follows the production Caddy, which is a flat-Caddyfile site (AGENTS.md, Deployment Status). The repository's `sites/<name>.caddy` fragment path (R24) is not used, because production does not run it today; moving every route to fragments is a platform change, not this plan's. The DNS record lives in `platform/infra/cloudflare/dns.tf`, and `Apply Cloudflare Tofu` applies it. The route opens last (D10d). Webhook exemptions, where approved, are exact paths declared per flow (D12).
 
 ### Publish bind and firewall
 
@@ -245,7 +245,7 @@ The publish bind is the gate. While no owner exists, the deploy publishes the ap
 
 The firewall is the backstop. Its host variables are declared in site-config inventory (task 2.1), not passed as launch variables, so a later plain `Apply Firewall` run keeps them (R19). They are `firewall_detect_ports: false`, which stops detection from admitting the published port from `firewall_upstream_source` before the owner exists (R7), and `firewall_allow_groups`, which admits the app port from the Caddy group (R7). SSH is admitted from the controller only (task 2.2). Task 2.3 runs `Probe Reachability (Dev)` twice, once expecting the app port open from the Caddy group and once expecting it closed from another LAN group (R13).
 
-Egress is enforced as code, because the in-process guard is best-effort (F34). `firewall_allow_egress` and `firewall_deny_egress` are declared through `apply-firewall` (R7). The egress mode is `audit` from task 2.2, which keeps outgoing traffic allowed by default. It becomes `enforce`, with `firewall_egress_probes`, in task 2.6, before the 2.8 gate. Enforce restricts traffic the host itself sends (OUTPUT); the firewall's own documentation does not say whether a rootless container's outbound traffic crosses it (R19). Open item O11 proves it from inside the worker before the gate relies on it.
+Egress is enforced as code, because the in-process guard is best-effort (F34). `firewall_allow_egress` and `firewall_deny_egress` are declared through `apply-firewall` (R7). The egress mode is `audit` from task 2.2, which keeps outgoing traffic allowed by default. It becomes `enforce`, with `firewall_egress_probes`, in task 2.6, before the 2.8 gate. Enforce restricts traffic the host itself sends (OUTPUT); the firewall's own documentation does not say whether a rootless container's outbound traffic crosses it (`apply-firewall.yml:185-188`). Open item O11 proves it from inside the worker before the gate relies on it.
 
 ### Backup and restore
 
@@ -328,6 +328,7 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `platform/inventory/local-dev.yml.example` | changed |
 | `platform/playbooks/bootstrap-local-dev.yml` | changed |
 | `platform/services/authentik/deployment/app-catalog.yml` | changed |
+| `platform/playbooks/tasks/load-platform-admins.yml` | changed (its agentgateway gate becomes a parameter, task 1.4) |
 | `platform/services/authentik/deployment/templates/env.j2` | changed |
 | `platform/infra/cloudflare/dns.tf` | changed |
 | `AGENTS.md` | changed |
@@ -336,7 +337,7 @@ One list, with the status of each file. The counts are estimates, so they can be
 | `plan/architecture/network-architecture.md` | changed |
 | `platform/playbooks/README.md` | changed |
 
-The list has about 23 new files and about 14 changed files, so about 37 in total. `platform/playbooks/deploy-authentik.yml` is changed only if task 2.4 widens its `prod_required` filter (O9), which would make the total about 38. Site-config changes do not count against this repository's budget.
+The list has about 23 new files and about 15 changed files, so about 38 in total. `platform/playbooks/deploy-authentik.yml` is changed only if task 2.4 widens its `prod_required` filter (O9), which would make the total about 39. Site-config changes do not count against this repository's budget.
 
 ## Risk: no API key on Community edition
 
@@ -362,7 +363,7 @@ Each open item is owned by one task. None is stated as fact in this plan.
 | O8 | Does a Community instance at 0.93.0 allow one authenticated API call? F27 says the dashboard that creates keys is available only in the Platform and Enterprise editions. | Spike once, before task 1.2; referenced by task 1.5 | Open. See the risk section. A refuted result goes to the operator. |
 | O9 | The production check at `deploy-authentik.yml:243` takes `prod_required` only from `oidc` apps (R15), so a forward_auth app is not guarded. | Task 2.4 | Open. Widening that filter is a change to the shared Authentik deploy, decided within task 2.4. |
 | O10 | Under `AP_NETWORK_MODE=STRICT`, does the engine call the app at `http://app`? The SSRF guard exempts the sandbox RPC port on loopback and the `AP_SSRF_ALLOW_LIST` entries (F37). | Task 1.2 | Open. If it does, allow-list the app container's address only, never the compose subnet, which would expose Postgres and Redis. |
-| O11 | Does the host firewall's enforce mode refuse a rootless container's outbound traffic? It restricts host-sent traffic (OUTPUT) and documents no rule for rootless containers (R19). | Task 2.6 | Open. Prove it with a connection from inside the worker container to an undeclared address. If it is not refused, the egress control moves to the worker's compose network before the 2.8 gate. |
+| O11 | Does the host firewall's enforce mode refuse a rootless container's outbound traffic? It restricts host-sent traffic (OUTPUT) and documents no rule for rootless containers (`apply-firewall.yml:185-188`). | Task 2.6 | Open. Prove it with a connection from inside the worker container to an undeclared address. If it is not refused, the egress control moves to the worker's compose network before the 2.8 gate. |
 
 ## Instance values (in site-config)
 

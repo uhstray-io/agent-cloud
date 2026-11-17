@@ -73,11 +73,11 @@ The host firewall SHALL admit the application port from the reverse proxy host a
 
 ### Requirement: Outbound traffic from the service host follows a declared allowlist
 
-When the egress mode is enforce, the host firewall SHALL refuse outbound connections from the service host that its declared egress allowlist does not name. The in-process SSRF guard MUST NOT be the only egress control, because upstream describes it as best-effort.
+When the egress mode is enforce, outbound connections from the service host or any container of its compose project that the declared egress allowlist does not name SHALL be refused. The in-process SSRF guard MUST NOT be the only egress control, because upstream describes it as best-effort.
 
 #### Scenario: An undeclared outbound connection is refused
 
-- **WHEN** the egress mode is enforce and a process on the service host opens a connection to a destination and port the allowlist does not name
+- **WHEN** the egress mode is enforce and a process on the service host, or in a container of its compose project, opens a connection to a destination and port the allowlist does not name
 - **THEN** the connection is refused, and each declared egress probe still succeeds
 
 ### Requirement: Webhook paths are exempted by exact path only
