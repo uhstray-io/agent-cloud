@@ -20,8 +20,6 @@
 //! `task_block` and `assert_precedes` are the `assert_helpers.bash` forms (`task_block`,
 //! `assert_precedes`) over this text: one Ansible task's body, and the order of two first matches.
 
-use std::sync::LazyLock;
-
 use regex::Regex;
 
 use crate::repo;
@@ -56,10 +54,14 @@ fn compile(origin: &str, pattern: &str) -> Regex {
 
 /// Whether an escape outside a character class in `pattern` writes U+000A. A backslash takes the
 /// byte after it with it, so `\\n` (an escaped backslash, then `n`) is not an escape. Escapes inside
-/// a class are not refused: `[^\n]` is any character but a line feed, which a line holds. Two
-/// patterns get past this scan and match no line: a class of the line feed alone (`[\n]`), and an
-/// escape spread out under `(?x)` (`\x 0a`). Every escape character is ASCII, so the walk goes by
-/// byte.
+/// a class are not refused: `[^\n]` is any character but a line feed, which a line holds. Every
+/// escape character is ASCII, so the walk goes by byte.
+///
+/// The scan reads the class grammar only roughly (the exact check is AC-963). It lets through, so
+/// a refute on them passes whatever the file holds: a class of the line feed alone (`[\n]`), an
+/// escape spread out under `(?x)` (`\x 0a`), and a line feed after a class whose range ends in `[`
+/// (`[!-[]\n`), whose `[` it counts as a nested class. It refuses, loudly, two valid `(?x)` forms:
+/// blanks before a class's leading `]` (`(?x)[ ]\n]`), and a `\n` inside a `#` comment.
 fn writes_line_feed(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
     let mut class_depth = 0usize;
@@ -67,16 +69,8 @@ fn writes_line_feed(pattern: &str) -> bool {
     while i < bytes.len() {
         match bytes[i] {
             b'\\' => {
-                if class_depth == 0 {
-                    match bytes.get(i + 1) {
-                        Some(b'n') => return true,
-                        Some(&kind @ (b'x' | b'u' | b'U'))
-                            if hex_escape_value(kind, &bytes[i + 2..]) == Some(0x0A) =>
-                        {
-                            return true;
-                        }
-                        _ => {}
-                    }
+                if class_depth == 0 && escape_writes_line_feed(&bytes[i + 1..]) {
+                    return true;
                 }
                 i += 2;
                 continue;
@@ -100,6 +94,15 @@ fn writes_line_feed(pattern: &str) -> bool {
         i += 1;
     }
     false
+}
+
+/// Whether the escape whose bytes follow a backslash (`after`) writes U+000A.
+fn escape_writes_line_feed(after: &[u8]) -> bool {
+    match after.first() {
+        Some(b'n') => true,
+        Some(&kind @ (b'x' | b'u' | b'U')) => hex_escape_value(kind, &after[1..]) == Some(0x0A),
+        _ => false,
+    }
 }
 
 /// The code point of the hex escape whose letter is `kind` (`x`, `u` or `U`) and whose digits
@@ -193,14 +196,16 @@ pub fn task_block(text: &str, name: &str) -> String {
     };
     let indent = dash_column(start);
     lines
-        .take_while(|line| !(NEXT_TASK.is_match(line) && dash_column(line) <= indent))
+        .take_while(|line| !(is_task_header(line) && dash_column(line) <= indent))
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// A task header line, at any indent.
-static NEXT_TASK: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[[:space:]]*- name:").expect("a fixed pattern"));
+/// A task header line at any indent: the BATS `^[[:space:]]*- name:`, with the same six blanks.
+fn is_task_header(line: &str) -> bool {
+    line.trim_start_matches([' ', '\t', '\n', '\x0B', '\x0C', '\r'])
+        .starts_with("- name:")
+}
 
 /// 1-based column of the first `-` in `line`, 0 when it has none (awk's `index($0, "-")`).
 fn dash_column(line: &str) -> usize {
@@ -213,18 +218,22 @@ fn dash_column(line: &str) -> usize {
 /// which includes one line matching both patterns: the panic gives both line numbers.
 #[track_caller]
 pub fn assert_precedes(text: &str, a: &str, b: &str) {
-    let re_a = compile("", a);
-    let re_b = compile("", b);
-    let Some(line_a) = first_line_matching(text, &re_a) else {
-        panic!("no line matches `{a}`");
-    };
-    let Some(line_b) = first_line_matching(text, &re_b) else {
-        panic!("no line matches `{b}`");
-    };
+    let line_a = first_line(text, a);
+    let line_b = first_line(text, b);
     assert!(
         line_a < line_b,
         "`{a}` (line {line_a}) is not before `{b}` (line {line_b})"
     );
+}
+
+/// 1-based number of the first line of `text` that `pattern` matches; panics, naming it, when none
+/// does.
+#[track_caller]
+fn first_line(text: &str, pattern: &str) -> usize {
+    let Some(line) = first_line_matching(text, &compile("", pattern)) else {
+        panic!("no line matches `{pattern}`");
+    };
+    line
 }
 
 /// 1-based number of the first line of `text` that `re` matches.

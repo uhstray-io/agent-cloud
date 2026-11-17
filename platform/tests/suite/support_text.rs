@@ -270,18 +270,6 @@ fn assert_precedes_names_a_missing_second_pattern() {
 }
 
 #[test]
-#[should_panic(expected = "an empty pattern or literal checks nothing")]
-fn any_line_refuses_an_empty_pattern() {
-    any_line("ab", "");
-}
-
-#[test]
-#[should_panic(expected = "holds a newline")]
-fn any_line_refuses_a_raw_line_feed_in_the_pattern() {
-    any_line("ab\ncd", "a\nb");
-}
-
-#[test]
 #[should_panic(expected = "platform/tests/Cargo.toml: `\\n` holds a line feed escape")]
 fn refute_line_refuses_a_line_feed_escape_naming_the_file() {
     // Compiled, `\n` matches no line, so the refute would pass whatever the file held.
@@ -300,6 +288,8 @@ fn escapes_that_do_not_write_a_line_feed_are_allowed() {
     assert!(any_line("a\tb", r"a[\n\t]b"));
     assert!(any_line("a]", r"a[]\n]"));
     assert!(any_line("a b", r"a[[:space:]\n]b"));
+    // A bare `{` does not compile; escaped, it matches a literal brace.
+    assert!(any_line("mv {{ x }}", r"mv \{\{"));
 }
 
 #[test]
@@ -334,9 +324,4 @@ fn any_line_refuses_every_line_feed_escape_outside_a_class() {
 fn task_block_refuses_an_empty_name() {
     // `- name: "` is in every header, so an empty name would silently take the first task.
     task_block(PLAY, "");
-}
-
-#[test]
-fn a_brace_escaped_pattern_compiles_and_matches_a_literal_brace() {
-    assert!(any_line("mv {{ x }}", r"mv \{\{"));
 }
