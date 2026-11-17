@@ -174,7 +174,7 @@ fn assert_never_printed_names_the_entry_that_leaked_and_never_the_value() {
 }
 
 #[test]
-fn assert_never_printed_names_an_extra_input_that_leaked_by_its_name() {
+fn assert_never_printed_names_a_named_value_that_leaked_by_its_name() {
     let outcome = catch_unwind(AssertUnwindSafe(|| {
         seed::assert_never_printed(
             "prints synthetic-extra-value",

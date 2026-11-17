@@ -166,17 +166,17 @@ fn write_inventory(dir: &Path, address: &str, opts: &RunOpts) -> PathBuf {
     playbook::write(dir, "inventory.json", &json!({"all": group}))
 }
 
-/// Panics when `output` holds one of [`NEVER_PRINTED`], or the value of one of `extra`, a list of
-/// `(name, value)` seed inputs. The panic names each entry that leaked, as `NEVER_PRINTED[i]` or by
-/// its input name in backticks, and never a value or the output.
-pub fn assert_never_printed(output: &str, extra: &[(&str, &str)]) {
+/// Panics when `output` holds one of [`NEVER_PRINTED`], or one of the `named` values, a list of
+/// `(name, value)` pairs (seed inputs, or a test's own secrets). The panic names each entry that
+/// leaked, as `NEVER_PRINTED[i]` or by its name in backticks, and never a value or the output.
+pub fn assert_never_printed(output: &str, named: &[(&str, &str)]) {
     let mut leaked: Vec<String> = Vec::new();
     for (index, value) in NEVER_PRINTED.iter().enumerate() {
         if output.contains(*value) {
             leaked.push(format!("NEVER_PRINTED[{index}]"));
         }
     }
-    for &(name, value) in extra {
+    for &(name, value) in named {
         if output.contains(value) {
             leaked.push(format!("`{name}`"));
         }
