@@ -809,11 +809,7 @@ fn definition(src: &str, name: &str) -> Result<usize, String> {
             i = end;
             continue;
         }
-        let ident_before = src[..i]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_');
-        if !ident_before
+        if !src[..i].ends_with(is_ident)
             && heads.iter().any(|head| src[i..].starts_with(head.as_str()))
             && found.replace(i).is_some()
         {
@@ -859,11 +855,52 @@ fn literals_of(expr: &str, src: &str) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
+/// A character that continues an identifier.
+fn is_ident(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// The first byte at or after `i` that is neither whitespace nor in a comment.
+fn skip_trivia(src: &str, mut i: usize) -> usize {
+    loop {
+        if let Some(end) = comment_end(src, i) {
+            i = end;
+        } else if let Some(c) = src[i..].chars().next().filter(|c| c.is_whitespace()) {
+            i += c.len_utf8();
+        } else {
+            return i;
+        }
+    }
+}
+
+/// When a call to `repo::grep` or `repo::ls_files` starts at byte `i`, its name, the index of
+/// the argument holding its pathspecs, and the byte of its `(`. Rust allows whitespace and
+/// comments between the path's tokens and before the `(`, and a raw name (`r#grep`).
+fn scan_call_at(src: &str, i: usize) -> Option<(&'static str, usize, usize)> {
+    let after = src[i..].strip_prefix("repo")?;
+    if src[..i].ends_with(is_ident) || after.starts_with(is_ident) {
+        return None;
+    }
+    let colons = skip_trivia(src, i + "repo".len());
+    src[colons..].starts_with("::").then_some(())?;
+    let mut name_at = skip_trivia(src, colons + 2);
+    if src[name_at..].starts_with("r#") {
+        name_at += 2;
+    }
+    let (name, arg) = [("grep", 1), ("ls_files", 0)]
+        .into_iter()
+        .find(|(name, _)| {
+            src[name_at..]
+                .strip_prefix(name)
+                .is_some_and(|rest| !rest.starts_with(is_ident))
+        })?;
+    let open = skip_trivia(src, name_at + name.len());
+    src[open..].starts_with('(').then_some((name, arg, open))
+}
+
 /// Every `repo::grep(pattern, pathspecs)` and `repo::ls_files(pathspecs)` call in the code of
-/// `src` (comments and string literals skipped), as its line and its pathspecs. Whitespace and
-/// comments may stand between the callee and its `(`, as Rust allows.
+/// `src` (comments and string literals skipped), as its line and its pathspecs.
 fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
-    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
     let mut scans = vec![];
     let mut i = 0;
     while i < src.len() {
@@ -871,30 +908,17 @@ fn repo_wide_scans(src: &str) -> Result<Vec<(usize, Vec<String>)>, String> {
             i = end;
             continue;
         }
-        let ident_before = src[..i].chars().next_back().is_some_and(is_ident);
-        let call = [("repo::grep", 1), ("repo::ls_files", 0)]
-            .into_iter()
-            .find(|(callee, _)| !ident_before && src[i..].starts_with(callee));
-        if let Some((callee, arg)) = call {
-            let mut open = i + callee.len();
-            while let Some(end) = comment_end(src, open).or_else(|| {
-                let c = src[open..].chars().next().filter(|c| c.is_whitespace())?;
-                Some(open + c.len_utf8())
-            }) {
-                open = end;
-            }
-            if src[open..].starts_with('(') {
-                let line = src[..i].matches('\n').count() + 1;
-                let args = call_args(src, open);
-                let specs = args
-                    .get(arg)
-                    .ok_or_else(|| format!("line {line}: `{callee}` without its pathspecs"))?;
-                scans.push((
-                    line,
-                    literals_of(specs, src).map_err(|e| format!("line {line}: {e}"))?,
-                ));
-                i = open;
-            }
+        if let Some((name, arg, open)) = scan_call_at(src, i) {
+            let line = src[..i].matches('\n').count() + 1;
+            let args = call_args(src, open);
+            let specs = args
+                .get(arg)
+                .ok_or_else(|| format!("line {line}: `repo::{name}` without its pathspecs"))?;
+            scans.push((
+                line,
+                literals_of(specs, src).map_err(|e| format!("line {line}: {e}"))?,
+            ));
+            i = open;
         }
         i += src[i..].chars().next().map_or(1, char::len_utf8);
     }
@@ -907,7 +931,8 @@ fn repo_wide_scans_reads_literals_constants_and_skips_comments_and_strings() {
     // constant whose name it prefixes and a doc comment that quotes it; char literals of a quote
     // and a paren; a scan named only in a comment, in a string and in a raw string holding an
     // unpaired quote; a non-ASCII name in code; a lookalike function; a nested block comment whose
-    // inner `*/` does not end it; and a comment between a callee and its `(`.
+    // inner `*/` does not end it; a comment between a callee and its `(`, and inside the path; and
+    // a raw name.
     let src = r##"
 /// `const SPECS: [&str; 1] = ["decoy"];` in a doc comment is not the definition.
 const SPECS_2: [&str; 1] = ["wrong"];
@@ -924,6 +949,8 @@ fn f() {
     /* outer /* inner */ repo::grep("no", &["nested"]); // */ repo::ls_files(&["after"]);
     repo::ls_files /* files */ (&["spaced"]);
     repo::grep_in(dir, "no", &["boundary"]);
+    repo/* c */::grep("x", &["inpath"]);
+    repo::r#ls_files(&["raw"]);
 }
 "##;
 
@@ -944,6 +971,8 @@ fn f() {
             ),
             (14, vec!["after".to_owned()]),
             (15, vec!["spaced".to_owned()]),
+            (17, vec!["inpath".to_owned()]),
+            (18, vec!["raw".to_owned()]),
         ]
     );
 }
