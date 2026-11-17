@@ -18,6 +18,7 @@ import json
 import re
 import sys
 from datetime import UTC, datetime
+from itertools import combinations
 
 GIB = 1024 ** 3
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -219,7 +220,7 @@ def summarize(data):
     for r in data["prune_reads"]:
         read, retention = r["item"]
         reads[(read["node"], read["storage"])]["prunes"].append({**r, "retention": retention})
-    storages, sizes = [], []  # sizes[i]: storages[i]'s raw bytes, for the backend comparison only
+    storages, measured = [], []  # measured: (row, raw bytes), for the backend comparison only
     for item in data["plan"]["reads"]:
         node, storage = item["node"], item["storage"]
         r = reads.get((node, storage))
@@ -293,23 +294,20 @@ def summarize(data):
             "retentions_previewed": sorted(p["retention"] for p in r["prunes"]),
             "by_guest": rows,
         })
-        sizes.append((total, used, all_bytes))
+        measured.append((storages[-1], (total, used, all_bytes)))
 
     shared_backends = []
-    for i, a in enumerate(storages):
-        for j in range(i + 1, len(storages)):
-            b = storages[j]
-            # Node-local storages on different nodes are separate disks, whatever their paths say.
-            if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
-                continue
-            (a_total, a_used, a_all), (b_total, b_used, b_all) = sizes[i], sizes[j]
-            reason = _same_backend(config.get(a["storage"], {}), config.get(b["storage"], {}))
-            if not reason and a_total and a_total == b_total and a_used == b_used:
-                reason = "identical total and used bytes (inferred, not proven)"
-            if reason:
-                unaccounted = max(a_used, b_used) - a_all - b_all
-                shared_backends.append({"storages": [a["storage"], b["storage"]], "reason": reason,
-                                        "combined_unaccounted_gib": _gib(unaccounted)})
+    for (a, (a_total, a_used, a_all)), (b, (b_total, b_used, b_all)) in combinations(measured, 2):
+        # Node-local storages on different nodes are separate disks, whatever their paths say.
+        if a["read_on_node"] != b["read_on_node"] and not (a["shared"] or b["shared"]):
+            continue
+        reason = _same_backend(config.get(a["storage"], {}), config.get(b["storage"], {}))
+        if not reason and a_total and a_total == b_total and a_used == b_used:
+            reason = "identical total and used bytes (inferred, not proven)"
+        if reason:
+            unaccounted = max(a_used, b_used) - a_all - b_all
+            shared_backends.append({"storages": [a["storage"], b["storage"]], "reason": reason,
+                                    "combined_unaccounted_gib": _gib(unaccounted)})
 
     job_rows = []
     for job, selects, guests in job_guests:

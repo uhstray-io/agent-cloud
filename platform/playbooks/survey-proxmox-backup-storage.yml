@@ -24,7 +24,7 @@
   ansible.builtin.import_playbook: refuse-internal-extra-vars.yml
 
 # The run reads the Proxmox token and executes the helper from the Dev checkout, so it runs only
-# at the exact commit a review approved (expected_repository_sha), as every other survey does.
+# at the exact commit a review approved (expected_repository_sha), as survey-pbs-provisioning-candidates.yml does.
 - name: Require the exact reviewed checkout
   ansible.builtin.import_playbook: require-reviewed-checkout.yml
   vars:
