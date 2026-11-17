@@ -781,12 +781,8 @@ def test_a_late_flipping_template_never_reaches_the_teardown_scripts(mode, name,
             playbook, extra = _clean_only(run), {"confirm_reset": "obs"}
         (run / "evil").write_text(f"#!/bin/sh\ntouch {marker}\n")
         (run / "evil").chmod(0o755)
-        counter = run / "renders"
-        shell = f"n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}; echo $n"
-        cond = f"(lookup('ansible.builtin.pipe', {forgeries._string(shell)}) | int < {limit})"
-        template = ("{{ " + cond + " | ternary(" + forgeries._literal(honest(run)) + ", "
-                    + forgeries._literal(bad(run)) + ") }}")
-        _run(playbook, run, "-e", json.dumps({name: template}),
+        forge = forgeries.honest_for(name, honest(run), bad(run), limit, run)
+        _run(playbook, run, "-e", forge,
              "-e", json.dumps({**extra, "ansible_become": False}), inventory=inv, path_prepend=bindir)
         assert not marker.exists(), f"{mode}: {name} honest for {limit} renderings ran the smuggled command"
 
