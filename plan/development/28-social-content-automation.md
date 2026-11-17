@@ -36,7 +36,7 @@
 | D2 | Approval rule (AC-795, Done, Joseph, 2026-11-12). Generation, automatic or recommended, MAY create drafts with no approval. Scheduling and publishing need a person's approval every time, and the approval records who approved which revision. Flows never send the immediate post type. The only write made without an approval record is a draft. A post becomes scheduled only through the status change that follows an approval. A revision is identified by a sha256 over the post's canonical text, the sha256 of each attached media file and its target integration identifier, computed at approval and again at schedule; a mismatch refuses the schedule. The approval record (revision, approver as named by the identity provider, time) is append-only and kept outside the run history of the flow that generated the draft; its store is chosen with the approval surface in task 4.4. | A public post must not appear on an account without a person's decision on that exact revision. |
 | D3 | Flows are code. Definitions are versioned in `platform/services/activepieces/flows/` (planned) and applied by one `Manage Activepieces Flows` playbook, which writes the connections first (an included task file) and then the flows; a connection or flow the playbook owns and the declaration no longer lists is removed. A dry run shows the diff, a re-run converges, and the playbook never deletes a flow it does not own. No hand-built production flow. | Engineering principles 3 and 4 in `AGENTS.md`. Whether the Community edition supports this path is risk R1. |
 | D4 | No credential in flow JSON. The gateway client key (`secret/services/agentgateway:client_activepieces`) and the publishing service's API key (`secret/services/postiz:postiz_api_key`) are written into Activepieces connections by a `no_log` playbook that reads OpenBao. Neither is pasted into a flow, and neither is copied under another service's path. | A flow definition is committed and readable. The publishing key is organisation-wide (R5). |
-| D5 | The gateway is reached through the HTTP piece. The OpenAI piece's base URL is fixed, and the AI provider setting that would allow another base URL needs a plan that includes AI providers. Structured output uses `response_format` with a json_schema, which the gateway deploy already proves (`platform/playbooks/deploy-agentgateway.yml:40-41` and `:1396-1420`). | Upstream facts below. |
+| D5 | The gateway is reached through the HTTP piece. The OpenAI piece's base URL is fixed, and the AI provider setting that would allow another base URL needs a plan that includes AI providers. Structured output uses `response_format` with a json_schema, which the gateway deploy already proves (`platform/playbooks/deploy-agentgateway.yml:40-42` and `:1396-1450`). | Upstream facts below. |
 | D6 | The publishing service is reached through the Postiz piece, with custom auth (`base_url` and `api_key`). The HTTP piece or a custom API call covers the routes the piece lacks, such as the status change. | Upstream facts below. |
 | D7 | Exactly once. The publishing service's create-post call is not idempotent. The flow therefore writes a record keyed uniquely by the revision before it calls the service, then stores the post identifier the service returns. A retry finds the pending record and reconciles it against the service's post list (the Postiz piece has a List Posts action) instead of creating again. The store is chosen in task 4.4. | A check-then-create without a unique record lets two runs (a scheduled run and a retried handoff) both pass the check. The lesson carried from the earlier flow engine: idempotent writes keyed by a stored external identifier. |
 | D8 | Brand profiles. The schema comes first (AC-828), planned at `platform/content/brand-profile.schema.json` with a placeholder example. Then one profile per brand, with values in site-config. Schema fields: name, domain and parent brand; colour tokens with light and dark roles; type families and weights; logo and mark references, favicon and open-graph card; voice rules with example lines; audiences; allowed claims, and forbidden or unbacked claims; imagery rules; social accounts per platform mapped to publishing integrations; and a provenance source for each field. Profiles serve three uses: hand-seeded profiles, profiles extracted by the studio (AC-810, undecided), and the system and image prompts of generation. | One source of voice and claims for every generated draft. |
@@ -88,7 +88,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 - Plan 28 and the change exist and carry the decision table.
 - The approval rule of D2 is recorded with the approver-and-revision requirement.
 
-**Gate:** `openspec validate social-content-automation --strict` passes with the approval requirement in the spec; its scenario "Schedule refused without a recorded approval" is proven at task 4.4 and Gate A.
+**Gate:** `openspec validate social-content-automation --strict` passes with the approval requirement in the spec; its scenario "Schedule refused without a recorded approval" is proven at the phase 4 gate (task 4.6) and at Gate A.
 
 ### Phase 2: Brand profiles (needs nothing outside this change)
 
@@ -111,12 +111,12 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 
 **Acceptance criteria:**
 - The spike for R1 runs first. If the Community edition does not support the flow API path, work stops and the decision returns to the operator (edition, AC-768).
-- A dry run shows the diff, and a second run with unchanged declarations reports no change. An unowned flow is left in place.
-- The kill switch (D13) stops every draft-creating and scheduling flow, and the static check of Requirement 2 runs in the repository's tests.
+- A dry run shows the diff, and a second run with unchanged declarations reports no change. An owned connection or flow dropped from the declaration is removed, and an unowned flow is left in place.
+- The kill switch (D13) is built, and the static check of Requirement 2 runs in the repository's tests. The kill switch is proven at the phase 4 gate, once there are flows for it to stop.
 - One completion returns through the gateway under the `activepieces` identity, and no key appears in a flow definition.
 - The publishing-service connection upserts by its external identifier and reads its key from OpenBao.
 
-**Gate:** Scenario "Re-run of the apply playbook converges".
+**Gate:** Scenarios "Re-run of the apply playbook converges" and "Owned connection or flow dropped from the declaration is removed".
 
 ### Phase 4: Text pipeline (no connected social account needed, except where R2 says)
 
@@ -131,7 +131,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 - The declared cadence of scheduled generation stays under the ceiling of R6.
 - A forced failing run raises an alert on the observability alert route.
 
-**Gate:** Scenarios "Retried handoff creates no second post", "Draft naming an internal hostname is refused" and "Failed run raises an alert".
+**Gate:** Scenarios "Schedule refused without a recorded approval", "Retried handoff creates no second post", "Draft naming an internal hostname is refused", "Thrown kill switch stops drafting and scheduling", "Released kill switch resumes flows" and "Failed run raises an alert".
 
 ### Phase 5: Gate A (needs connected X and LinkedIn accounts, operator action)
 
@@ -143,7 +143,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 - One approved revision of the post is published to each of the two accounts.
 - A rerun of the handoff adds no post.
 
-**Gate:** Scenarios "Approval of one revision does not schedule the next revision" and "Retried handoff creates no second post".
+**Gate:** Scenarios "Schedule refused without a recorded approval", "Approval of one revision does not schedule the next revision" and "Retried handoff creates no second post".
 
 ### Phase 6: Images (blocked on the image path of plan 27)
 
@@ -159,7 +159,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 
 ### Release budget
 
-The build these phases describe adds about 16 files (an estimate, not a measurement): the brand-profile schema and its placeholder example (2), three flow definitions for generation, handoff and scheduled generation (3), the apply playbook and its connections task file (2), the Semaphore template entries in `platform/semaphore/templates.yml` (1), the guardrail module and its unit test (2), the static check over flow definitions in the Rust suite, which also refuses a literal value in any auth, connection-property or header field (1; the existing credential scan does not cover them: it skips `plan/` and markdown, and its key pattern does not match a quoted JSON key, `platform/tests/suite/credential_leaks.rs:358-378` and `:838-839`), the alert rule and its job declaration (1), the Activepieces and Postiz context documents (2), the `AGENTS.md` workflow table (1) and the task tick-offs in this change (1). Policy 10 limits a release to 120 changed files ([10-release-policy.md](../architecture/10-release-policy.md)).
+The build these phases describe adds about 16 files (an estimate, not a measurement): the brand-profile schema and its placeholder example (2), three flow definitions for generation, handoff and scheduled generation (3), the apply playbook and its connections task file (2), the Semaphore template entries in `platform/semaphore/templates.yml` (1), the guardrail module and its unit test (2), the static check over flow definitions in the Rust suite, which also refuses a literal value in any auth, connection-property or header field (1; the existing credential scan does not cover them: its key pattern does not match a quoted JSON key, `platform/tests/suite/credential_leaks.rs:358-378` and `:838-839`), the alert rule and its job declaration (1), the Activepieces and Postiz context documents (2), the `AGENTS.md` workflow table (1) and the task tick-offs in this change (1). Policy 10 limits a release to 120 changed files ([10-release-policy.md](../architecture/10-release-policy.md)).
 
 ### Dependency order
 
@@ -241,7 +241,7 @@ Every fact in this section was checked on upstream main on 2026-11-16. Each one 
 Repository facts:
 
 - The publishing service's automation endpoint, its key and its public-host rule are in [use-cases.md](../../platform/services/postiz/context/use-cases.md), at lines 14, 22 to 26, 28 to 41 and 43 to 60. Postiz is pinned at v2.23.0 (plan 14, D1).
-- The gateway deploy proves one `response_format` json_schema completion (`platform/playbooks/deploy-agentgateway.yml:40-41` and `:1396-1420`).
+- The gateway deploy proves one `response_format` json_schema completion (`platform/playbooks/deploy-agentgateway.yml:40-42` and `:1396-1450`).
 - The Plane sync builds the external identifier of a task as `<owner/repo>/<change>/<task id>` (`platform/services/plane/lib/openspec_to_plane.py:159`). The module identifier is `<owner/repo>/<change>` (`:188`). Checked tasks are skipped as done before import (`:27-31`). Task ids are permanent (`:33-38`).
 - The production OpenBao store holds no `secret/services/postiz` path (Check Secrets, task 17396, 2026-11-16). The X and LinkedIn developer-app credentials are not yet stored anywhere (AC-760 and AC-761).
 - No file in the repository mentions Activepieces at the base commit.

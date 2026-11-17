@@ -109,7 +109,7 @@ A draft MUST name exactly one target account. A handoff MUST refuse a target int
 
 ### Requirement: Flows and connections are declared as code and applied by playbook
 
-Flow definitions and connections SHALL be declared in the repository and applied by a playbook that reads credentials from the secret store. A re-run of the apply MUST converge: when the declarations are unchanged, the re-run MUST report no change. The apply MUST NOT delete a flow it does not own. Flow definitions MUST NOT contain a credential value.
+Flow definitions and connections SHALL be declared in the repository and applied by a playbook that reads credentials from the secret store. A re-run of the apply MUST converge: when the declarations are unchanged, the re-run MUST report no change. The apply MUST remove a connection or flow it created that the declaration no longer lists, and MUST NOT delete a flow it does not own. Flow definitions MUST NOT contain a credential value.
 
 #### Scenario: Re-run of the apply playbook converges
 
