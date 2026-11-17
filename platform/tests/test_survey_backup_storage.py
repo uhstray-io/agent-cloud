@@ -284,6 +284,20 @@ def test_pbs_sizes_are_logical_so_unexplained_and_reclaimable_bytes_are_unknown(
     store = survey.summarize(summary)["storages"][0]
     assert store["sizes_are_logical"] is True and store["backup_gib"] == 60.0
     assert store["unaccounted_gib"] is None and store["prunable_gib"] is None and store["prunable_archives"] == 1
+    assert store["by_guest"][0]["prunable_gib"] is None
+
+
+def test_two_pbs_ids_on_one_datastore_report_no_combined_unexplained_bytes():
+    config = [{"storage": s, "type": "pbs", "server": "192.0.2.20", "datastore": "main"} for s in ("p1", "p2")]
+    listing = {"item": "n1", "status": 200, "json": {"data": [
+        {"storage": s, "type": "pbs", "content": "backup", "active": 1, "shared": 1,
+         "total": 100 * GIB, "used": 10 * GIB, "avail": 90 * GIB} for s in ("p1", "p2")]}}
+    plan = survey.plan({"nodes": NODES, "jobs": [], "storage_listings": [listing], "storage_config": config})
+    summary = {"plan": plan, "vms": [], "storage_config": config, "jobs": [],
+               "content_reads": [{"item": r, "status": 200, "json": {"data": []}} for r in plan["reads"]],
+               "prune_reads": []}
+    assert survey.summarize(summary)["shared_backends"] == [
+        {"storages": ["p1", "p2"], "reason": "same server and export", "combined_unaccounted_gib": None}]
 
 
 def test_two_ids_for_one_export_listing_the_same_archives_count_them_once():

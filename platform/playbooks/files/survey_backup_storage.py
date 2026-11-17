@@ -251,8 +251,9 @@ def summarize(data):
             # Proxmox checks Datastore.Allocate for the preview (pve-storage PruneBackups.pm, dryrun).
             marks = _ok(prune, "prune preview", storage, "Datastore.Allocate")
             previewed[prune["retention"]] = {row["volid"] for row in marks if row.get("mark") == "remove"}
-        # A guest's retentions are those of the vzdump jobs on this storage that back it up. A job
-        # runs, and prunes, on the guest's current node, so a node-local copy elsewhere is never pruned.
+        # A guest's retentions are those of the vzdump jobs on this storage that back it up. A job backs
+        # up and prunes a guest on the node it lives on, so its node-local copies elsewhere are never
+        # pruned, and a guest that no longer exists is never pruned at all.
         retention_of, protects_every_archive = {}, set()
         for job, _, guests in job_guests:
             if job.get("storage") == storage:
@@ -298,14 +299,14 @@ def summarize(data):
                          "archives": g["archives"], "gib": _gib(g["bytes"]),
                          "oldest": _day(g["oldest"]), "newest": _day(g["newest"]),
                          "protected": g["protected"], "prunable": g["prunable"],
-                         "prunable_gib": _gib(g["prunable_bytes"]),
+                         "prunable_gib": None if logical else _gib(g["prunable_bytes"]),
                          "job_retention": sorted(retention_of.get(g["vmid"], set())),
                          "retained_at_job_retention": kept,
                          "gib_at_full_retention": _gib(need_bytes[g["vmid"]]) if g["vmid"] in need_bytes else None})
         total, used = int(status.get("total") or 0), int(status.get("used") or 0)
         storages.append({
             "storage": storage, "read_on_node": node, "type": status.get("type"),
-            "shared": _flag(status.get("shared")),
+            "shared": shared,
             "total_gib": _gib(total), "used_gib": _gib(used), "avail_gib": _gib(status.get("avail")),
             "used_percent": round(100 * used / total, 1) if total else None,
             "backup_archives": len(backups), "backup_gib": _gib(backup_bytes),
