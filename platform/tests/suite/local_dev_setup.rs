@@ -250,32 +250,31 @@ fn the_rust_toolchain_file_matches_cargo_and_ci() {
         .and_then(|job| job.get("steps"))
         .and_then(Node::as_seq)
         .expect("the workflow has no jobs.rust-tests.steps");
-    // Shell continuation lines joined, so a version on the next line is read as part of its
-    // command.
-    let runs: Vec<String> = steps
+    // Each run read as one stream of words, continuation backslashes dropped, so a command after
+    // `&&` or `;`, inside `if ... then`, or split across lines is still found.
+    let words: Vec<&str> = steps
         .iter()
         .filter_map(|step| step.get("run").and_then(Node::as_str))
-        .map(|run| run.replace("\\\n", " "))
+        .flat_map(|run| run.split_whitespace().filter(|word| *word != "\\"))
         .collect();
-    for command in ["rustup toolchain install ", "rustup override set "] {
-        let versions: Vec<&str> = runs
-            .iter()
-            .flat_map(|run| run.lines())
-            .filter_map(|line| {
-                line.trim_start()
-                    .strip_prefix(command)?
-                    .split_whitespace()
-                    .next()
-            })
+    for command in [
+        ["rustup", "toolchain", "install"],
+        ["rustup", "override", "set"],
+    ] {
+        let versions: Vec<&str> = words
+            .windows(4)
+            .filter(|w| w[..3] == command)
+            .map(|w| w[3])
             .collect();
+        let shown = command.join(" ");
         assert!(
             !versions.is_empty(),
-            "the Rust (tests) job has no `{command}` line"
+            "the Rust (tests) job has no `{shown}`"
         );
         for version in versions {
             assert_eq!(
                 channel, version,
-                "rust-toolchain.toml's channel must equal every `{command}` version in the Rust (tests) job"
+                "rust-toolchain.toml's channel must equal every `{shown}` version in the Rust (tests) job"
             );
         }
     }
