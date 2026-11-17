@@ -123,10 +123,23 @@ fn a_value_needing_a_backslash_is_refused() {
 }
 
 #[test]
-fn the_guard_references_its_nesting_flag() {
-    // The Python set on b09a5a34: _conn_forged, _conn_names, _extra_var_guard_nested, _pass,
-    // _password. Containment only, so a guard edit does not need this test changed.
-    assert!(forgeries::GUARD_REFERENCED.contains("_extra_var_guard_nested"));
+fn the_guard_references_every_name_the_python_finds() {
+    // The Python set on b09a5a34. Every one is required, so a walk that skips list items or keys
+    // and drops a name fails here instead of letting by_name accept a name the guard reads. The
+    // check is containment: a name the guard gains needs no edit; one it drops does.
+    for name in [
+        "_conn_forged",
+        "_conn_names",
+        "_extra_var_guard_nested",
+        "_pass",
+        "_password",
+    ] {
+        assert!(
+            forgeries::GUARD_REFERENCED.contains(name),
+            "GUARD_REFERENCED lacks {name}: {:?}",
+            *forgeries::GUARD_REFERENCED
+        );
+    }
     assert!(
         forgeries::GUARD_REFERENCED
             .iter()
