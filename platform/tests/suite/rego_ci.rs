@@ -74,8 +74,14 @@ fn rego_job_verifies_opa_before_use_and_keeps_the_gate() {
         Some("3985fb4814b3860511beac516f59c5509eee9fdc83dbe910b67f3999f743b901"),
         "{WORKFLOW}: OPA_SHA256 is not the reviewed digest"
     );
-    assert!(script.contains("--retry 3 --retry-all-errors"));
-    assert!(script.contains("--connect-timeout 10 --max-time 60"));
+    assert!(
+        script.contains("--retry 3 --retry-all-errors"),
+        "{WORKFLOW}: the install step does not retry the download"
+    );
+    assert!(
+        script.contains("--connect-timeout 10 --max-time 60"),
+        "{WORKFLOW}: the install step has no connect or total timeout"
+    );
     let check = script
         .find("sha256sum --check")
         .expect("the install step never checks the digest");
@@ -88,8 +94,14 @@ fn rego_job_verifies_opa_before_use_and_keeps_the_gate() {
     );
 
     let run = str_field(step(job, "Run Rego tests"), "run");
-    assert!(run.contains("opa check --strict platform/services/opa/deployment/policies"));
-    assert!(run.contains("opa test platform/services/opa/deployment/policies -v"));
+    assert!(
+        run.contains("opa check --strict platform/services/opa/deployment/policies"),
+        "{WORKFLOW}: the Rego step does not run `opa check --strict` over the policy tree"
+    );
+    assert!(
+        run.contains("opa test platform/services/opa/deployment/policies -v"),
+        "{WORKFLOW}: the Rego step does not run `opa test -v` over the policy tree"
+    );
 
     let gate = field(jobs, "test");
     assert_eq!(

@@ -55,6 +55,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::text::{any_line, read};
+use agent_cloud_tests::yaml::{self, Node};
 use regex::Regex;
 
 const COMPOSE: &str = "platform/services/opa/deployment/compose.yml";
@@ -97,6 +98,7 @@ fn re(pattern: &str) -> Regex {
 
 // The assertions below take the text they test, so one helper serves a whole file and an awk
 // chunk alike. `label` names that text in a failure. Each mirrors one grep form of the BATS file.
+// Lines are split as grep splits them: at each `\n`, with a `\r` before it kept on its line.
 
 /// `grep -qE pattern`: some line of `text` matches the regex.
 fn assert_re(label: &str, text: &str, pattern: &str) {
@@ -130,7 +132,7 @@ fn refute_lit(label: &str, text: &str, literal: &str) {
 /// `grep -qxF literal`: some whole line of `text` equals the literal.
 fn assert_exact(label: &str, text: &str, literal: &str) {
     assert!(
-        text.lines().any(|line| line == literal),
+        text.split_terminator('\n').any(|line| line == literal),
         "{label}: no line is exactly `{literal}`"
     );
 }
@@ -138,39 +140,37 @@ fn assert_exact(label: &str, text: &str, literal: &str) {
 /// `grep -c pattern`: how many lines of `text` match the regex.
 fn count_re(text: &str, pattern: &str) -> usize {
     let re = re(pattern);
-    text.lines().filter(|line| re.is_match(line)).count()
+    text.split_terminator('\n')
+        .filter(|line| re.is_match(line))
+        .count()
 }
 
 /// `grep -n pattern | head -n 1 | cut -d: -f1`: the 1-based number of the first matching line.
 fn first_line(text: &str, pattern: &str) -> Option<usize> {
     let re = re(pattern);
-    text.lines()
+    text.split_terminator('\n')
         .position(|line| re.is_match(line))
         .map(|index| index + 1)
 }
 
-/// The awk `command_args`: the `      - ` items of a service's `command:` list, the dash removed.
-/// The list ends at the next four-space key, so a later service's list is never read.
-fn command_args(text: &str) -> Vec<String> {
-    let key = re(r"^    [a-z_]+:");
-    let mut in_command = false;
-    let mut args = Vec::new();
-    for line in text.lines() {
-        if line.starts_with("    command:") {
-            in_command = true;
-            continue;
-        }
-        if in_command && key.is_match(line) {
-            in_command = false;
-        }
-        if !in_command {
-            continue;
-        }
-        if let Some(arg) = line.strip_prefix("      - ") {
-            args.push(arg.to_owned());
-        }
-    }
-    args
+/// The items of `services.opa.command` in the compose file at `rel`, each one a string, read as YAML.
+/// Panics, naming the file, when the document or the list is missing or an item is not a string.
+fn command_args(rel: &str) -> Vec<String> {
+    let doc = yaml::load_one(&repo::path(rel)).unwrap_or_else(|| panic!("{rel}: no YAML document"));
+    let command = doc
+        .get("services")
+        .and_then(|services| services.get("opa"))
+        .and_then(|opa| opa.get("command"))
+        .and_then(Node::as_seq)
+        .unwrap_or_else(|| panic!("{rel}: no services.opa.command list"));
+    command
+        .iter()
+        .map(|arg| {
+            arg.as_str()
+                .unwrap_or_else(|| panic!("{rel}: a services.opa.command item is not a string"))
+                .to_owned()
+        })
+        .collect()
 }
 
 /// The awk `task_with`: the first `    - name:` task of a playbook whose text matches `pattern`.
@@ -180,7 +180,7 @@ fn task_with(text: &str, pattern: &str) -> String {
     let pat = re(pattern);
     let mut chunks = Vec::new();
     let mut current = String::new();
-    for line in text.lines() {
+    for line in text.split_terminator('\n') {
         if line.starts_with("    - name:") {
             chunks.push(std::mem::take(&mut current));
         }
@@ -201,7 +201,7 @@ fn sed_range(text: &str, start: &str, end: &str) -> String {
     let (start, end) = (re(start), re(end));
     let mut out = String::new();
     let mut open = false;
-    for line in text.lines() {
+    for line in text.split_terminator('\n') {
         if open {
             out.push_str(line);
             out.push('\n');
@@ -215,6 +215,11 @@ fn sed_range(text: &str, start: &str, end: &str) -> String {
         }
     }
     out
+}
+
+/// The TLS argv block of the verify play (`_opa_tls_args`), from its key up to the `tasks:` key.
+fn tls_args_block(pb: &str) -> String {
+    sed_range(pb, "^    _opa_tls_args:", "^  tasks:")
 }
 
 #[test]
@@ -315,15 +320,14 @@ fn tls_overlay_keeps_the_uid_and_mounts_certs_read_only() {
 
 #[test]
 fn tls_overlay_command_repeats_the_base_and_adds_three_tls_flags() {
-    let base = read(COMPOSE);
     let over = read(COMPOSE_TLS);
-    let base_args = command_args(&base);
+    let base_args = command_args(COMPOSE);
     assert!(!base_args.is_empty(), "{COMPOSE}: no command list");
     for arg in &base_args {
         assert_exact(COMPOSE_TLS, &over, &format!("      - {arg}"));
     }
     assert_eq!(
-        command_args(&over).len(),
+        command_args(COMPOSE_TLS).len(),
         base_args.len() + 3,
         "{COMPOSE_TLS}: the overlay must add exactly three arguments to the base list"
     );
@@ -339,7 +343,7 @@ fn tls_overlay_command_repeats_the_base_and_adds_three_tls_flags() {
     );
     assert_exact(COMPOSE_TLS, &over, "      - --tls-cert-refresh-period=30s");
     assert_eq!(
-        command_args(&over).last().map(String::as_str),
+        command_args(COMPOSE_TLS).last().map(String::as_str),
         Some("/policies"),
         "{COMPOSE_TLS}: the command list must end with `/policies`"
     );
@@ -428,7 +432,7 @@ fn declaration_names_the_leaf_profile_dir_reload_and_verify_url() {
 #[test]
 fn verify_probes_https_through_curl_and_refuses_a_plain_http_200() {
     let pb = read(PLAYBOOK);
-    let args = sed_range(&pb, "^    _opa_tls_args:", "^  tasks:");
+    let args = tls_args_block(&pb);
     assert_exact(PLAYBOOK, &args, "      - --cacert");
     assert_lit(
         PLAYBOOK,
@@ -448,8 +452,10 @@ fn verify_probes_https_through_curl_and_refuses_a_plain_http_200() {
 #[test]
 fn decisions_are_gated_on_opa_tls_and_the_plain_ones_on_its_absence() {
     let pb = read(PLAYBOOK);
-    let uri = task_with(&pb, "ansible.builtin.uri:");
-    assert_exact(PLAYBOOK, &uri, "      when: not _opa_tls");
+    // BATS took the first chunk holding `ansible.builtin.uri:`, which is this task (deploy-opa.yml's
+    // first uri task, line 252): the same chunk, now found by its name.
+    let health = task_with(&pb, r"OPA health \(/health -> 200\)");
+    assert_exact(PLAYBOOK, &health, "      when: not _opa_tls");
     let plain_allow = task_with(&pb, "Sample decision: infra-agent read netbox -> allow");
     assert_exact(
         PLAYBOOK,
@@ -629,7 +635,7 @@ fn tls_refusal_drops_fail_and_passes_only_on_a_last_line_401() {
     let tls = task_with(&pb, "Authorization refusals over TLS");
     assert_lit(PLAYBOOK, &tls, "{{ _opa_tls_probe_args");
     // The probe args are the TLS args without --fail, so the expected 401 exits 0.
-    let vars = sed_range(&pb, "^    _opa_tls_args:", "^  tasks:");
+    let vars = tls_args_block(&pb);
     assert_exact(
         PLAYBOOK,
         &vars,
@@ -705,7 +711,7 @@ fn authz_admits_exactly_the_decision_post_and_the_health_get() {
 fn both_command_lists_pass_authorization_basic_directly_before_bundle() {
     // Without the flag the policy is never asked, and every request reaches the handlers.
     for rel in [COMPOSE, COMPOSE_TLS] {
-        let args = command_args(&read(rel));
+        let args = command_args(rel);
         let flags = args
             .iter()
             .filter(|arg| arg.as_str() == "--authorization=basic")
@@ -730,10 +736,10 @@ fn deploy_sh_recreates_opa_when_the_policies_it_loads_change() {
         "^[[:space:]]*compose_up_if_changed policies$",
     );
     refute_re(DEPLOY_SH, &deploy, "^[[:space:]]*compose up -d");
-    let deploy = task_with(&read(PLAYBOOK), "Run deploy.sh");
+    let deploy_task = task_with(&read(PLAYBOOK), "Run deploy.sh");
     assert_lit(
         PLAYBOOK,
-        &deploy,
+        &deploy_task,
         "changed_when: \"'DEPLOY_CHANGED=true' in _deploy.stdout_lines\"",
     );
 }
