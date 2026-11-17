@@ -8,10 +8,13 @@ honest_for(1) byte for byte, with no run. The counter's own shell is run from WO
 as parallel hosts' forks run it, to prove no rendering is lost or counted twice (AC-902).
 
 These tests prove the helpers, not a refusal, and send no refused input, so the templated-forgery rule
-in test_extra_var_refusal_tests.py has nothing to require of them.
+in test_extra_var_refusal_tests.py has nothing to require of them. test_the_render_counter_has_one_implementation
+guards that the counter shell is written only once, in forgeries.py, so no file under platform/tests can
+carry an unlocked copy (AC-919).
 """
 
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -67,3 +70,30 @@ def test_the_counter_neither_loses_nor_repeats_a_rendering_under_concurrency(tmp
     assert all(worker.returncode == 0 for worker in workers)
     assert sorted(printed) == list(range(WORKERS * RENDERS)), sorted(printed)
     assert int(counter.read_text()) == WORKERS * RENDERS
+
+
+# The counter's shell is built only by forgeries._render_counter, which holds the lock (AC-902). The needle
+# is assembled here so this file does not contain it literally.
+COUNTER_NEEDLE = "echo $((n+1)) " + ">"
+COUNTER_SOURCE_SUFFIXES = {".py", ".rs", ".sh", ".bats"}
+COUNTER_SKIPPED_DIRS = {"target", ".venv", "__pycache__"}
+
+
+def test_the_render_counter_has_one_implementation():
+    # One counter, forgeries._render_counter, so the lock cannot be bypassed by a copy: an unlocked copy, as
+    # test_executor_internal_overrides.py once had, lets a read see a truncated file and count again (AC-902,
+    # AC-919). Every other source file under this directory must not carry the shell.
+    tests = Path(__file__).resolve().parent
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(tests):
+        dirnames[:] = [d for d in dirnames if d not in COUNTER_SKIPPED_DIRS]
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            rel = path.relative_to(tests)
+            if path.suffix not in COUNTER_SOURCE_SUFFIXES or rel == Path("forgeries.py"):
+                continue
+            if COUNTER_NEEDLE.encode() in path.read_bytes():
+                offenders.append(str(rel))
+    assert not offenders, (
+        "the render counter is built only in forgeries._render_counter; a second copy is in: "
+        + ", ".join(sorted(offenders)))
