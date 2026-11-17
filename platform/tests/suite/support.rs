@@ -263,27 +263,32 @@ fn ls_files_reads_a_non_ascii_path_as_it_is_on_disk() {
 fn ls_files_ignores_an_inherited_repository_location() {
     // Arrange: a hook exports `GIT_DIR` and `GIT_INDEX_FILE`, and they override `-C`. A direct
     // `cargo nextest run` does not pass through `lane.sh`, which unsets them, so `git_in` removes
-    // them itself (#1169 review).
-    let dir = tempfile::TempDir::new().unwrap();
+    // them itself (#1169 review). They point at a second repository, never the checkout.
     let home = tempfile::TempDir::new().unwrap();
-    std::fs::write(dir.path().join("only.yml"), "a: 1\n").unwrap();
-    for args in [&["init", "-q"][..], &["add", "."][..]] {
-        process::scrubbed("git", home.path())
-            .current_dir(dir.path())
-            .args(args)
-            .assert()
-            .success();
-    }
-    let outer = repo::root().join(".git");
+    let repository = |file: &str| {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join(file), "a: 1\n").unwrap();
+        for args in [&["init", "-q"][..], &["add", "."][..]] {
+            process::scrubbed("git", home.path())
+                .current_dir(dir.path())
+                .args(args)
+                .assert()
+                .success();
+        }
+        dir
+    };
+    let target = repository("only.yml");
+    let other_repository = repository("other.yml");
+    let other = other_repository.path().join(".git");
     // SAFETY: nextest runs each test in its own process, so no other thread reads the environment
     // while this one sets it (edition 2024 makes set_var unsafe).
     unsafe {
-        std::env::set_var("GIT_DIR", &outer);
-        std::env::set_var("GIT_INDEX_FILE", outer.join("index"));
+        std::env::set_var("GIT_DIR", &other);
+        std::env::set_var("GIT_INDEX_FILE", other.join("index"));
     }
 
     // Act
-    let tracked = repo::ls_files_in(dir.path(), &[]);
+    let tracked = repo::ls_files_in(target.path(), &[]);
 
     // Assert
     assert_eq!(tracked, ["only.yml"]);
