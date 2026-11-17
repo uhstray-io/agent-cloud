@@ -6,7 +6,7 @@
 # freed, this answers where the space went, per storage:
 #   - capacity (total, used, available);
 #   - archives per guest (count, size, oldest and newest), flagging guests that no longer exist;
-#   - what a prune at each job's own retention would remove (Proxmox's prune preview);
+#   - what a prune at each enabled job's own retention would remove (Proxmox's prune preview);
 #   - the space a job's retention needs, estimated at the newest archive size plus protected
 #     archives, reported as unknown when the retention keeps everything, a storage default is
 #     not set, a job protects every archive, or the guest has no archive there yet; the
