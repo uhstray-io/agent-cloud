@@ -13,7 +13,7 @@ Social posts for the instance's brands are written and scheduled by hand. This c
 
 ### New Capabilities
 
-- `platform/social-content-automation`: AI-drafted social posts handed to the publishing service with a recorded approval before any schedule; see the spec.
+- `platform/social-content-automation`: AI-drafted social posts handed to the publishing service with a recorded approval before the pipeline schedules it; see the spec.
 
 ### Modified Capabilities
 

@@ -52,7 +52,7 @@ Needs the gateway and Postiz connections from phase 3 and the brand profile from
 
 ## 5. Gate A (needs connected X and LinkedIn accounts: operator)
 
-Needs the X and LinkedIn developer apps and their connected accounts, which the operator provides. Gate A is the first live publication, and it targets the first brand only.
+Needs the X and LinkedIn developer apps and their connected accounts, which the operator provides, and the operator's decision on plan 28 Open Question 8. Gate A is the first live publication, and it targets the first brand only.
 
 - [ ] 5.1 Gate A: an AI-drafted, human-approved text post published to the first brand's X and LinkedIn through Postiz in production; a rerun of the handoff does not double-post (AC-805)
       Plane: AC-805. Blocked by: 4.2, 4.4; the operator's decision on plan 28 Open Question 8 (a member scheduling a generated draft by hand); gateway text gate (AC-791); Activepieces gate (AC-781); X and LinkedIn apps and connected accounts (AC-760, AC-761; Postiz change tasks 6.5, 7.1, 7.7); production Postiz key (AC-763); gateway client leaf (AC-825) and egress spike (AC-826). Acceptance: one approved draft per target account is published on X and on LinkedIn, and a rerun of the handoff adds no post. Gate: Requirement "Drafts need no approval; scheduling and publishing need a recorded approval", scenarios "Schedule refused without a recorded approval" and "Approval of one revision does not schedule the next revision"; Requirement "Handoff to the publishing service is exactly once", scenario "Retried handoff creates no second post".

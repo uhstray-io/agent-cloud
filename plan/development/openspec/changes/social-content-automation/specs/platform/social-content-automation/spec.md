@@ -124,7 +124,7 @@ The checks cover the length limit of each target platform, a list of banned term
 
 ### Requirement: Each draft targets exactly one mapped account of its brand
 
-A draft MUST name exactly one target account. A handoff MUST refuse a target integration that the declared brand mapping does not assign to the draft's brand, before it creates any post. A post to any other account MUST have its own recorded approval.
+A draft MUST name exactly one target account. A handoff MUST refuse a target integration that the declared brand mapping does not assign to the draft's brand, before it creates any post. A generated post to any other account MUST have its own recorded approval.
 
 #### Scenario: Target integration not mapped to the brand is refused
 
