@@ -263,8 +263,10 @@ fn a_blocking_responder_holds_the_reply_until_released() {
     let server = Server::start();
     let (release, held) = mpsc::channel::<()>();
     let held = Mutex::new(held);
+    let (entered, reached) = mpsc::channel::<()>();
     server.mount(Mock::given(matchers::path("/held")).respond_with(
         move |_: &agent_cloud_tests::http::Request| {
+            entered.send(()).unwrap();
             match held.lock().unwrap().recv_timeout(Duration::from_secs(10)) {
                 Ok(()) => ResponseTemplate::new(200),
                 Err(_) => ResponseTemplate::new(504),
@@ -274,7 +276,10 @@ fn a_blocking_responder_holds_the_reply_until_released() {
     let addr = server.addr();
 
     let client = std::thread::spawn(move || send(addr, "GET", "/held", &[], b""));
-    std::thread::sleep(Duration::from_millis(300));
+    reached
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the request reaches the responder");
+    std::thread::sleep(Duration::from_millis(100));
     let answered_while_held = client.is_finished();
     release.send(()).unwrap();
     let response = client.join().unwrap();
