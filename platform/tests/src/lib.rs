@@ -6,9 +6,13 @@
 //! - [`process`]: bounded child processes with a scrubbed environment, and the confined
 //!   `ansible-playbook` runner (03 Part 1, rule 11);
 //! - [`lanes`]: which tests a lane runs, from `areas.yml` and the changed paths (the
-//!   `testsel` binary and `lane.sh` use it).
+//!   `testsel` binary and `lane.sh` use it);
+//! - [`playbook`]: repository playbooks lifted to JSON with YAML 1.1 types, for running a play's
+//!   tasks through [`process::ansible_playbook`] (AC-943).
 
 pub mod lanes;
+
+pub mod playbook;
 
 pub mod yaml {
     //! YAML as PyYAML's `SafeLoader` reads it.
@@ -184,7 +188,7 @@ pub mod yaml {
 
     /// The handle yaml-rust2 gives a `!!` core tag. No repository file uses one, so the
     /// loader refuses them all rather than construct some and misread others.
-    const CORE_TAG: &str = "tag:yaml.org,2002:";
+    pub(crate) const CORE_TAG: &str = "tag:yaml.org,2002:";
 
     // `!!bool` arrives as handle `tag:yaml.org,2002:` plus suffix `bool`; the verbatim
     // `!<tag:yaml.org,2002:bool>` as an empty handle plus the whole URI. Join them so both match.
