@@ -71,7 +71,7 @@ A handoff SHALL create at most one publishing-service post for a draft, and SHAL
 
 A draft MUST pass the deterministic guardrail checks before it is offered for approval. A draft that fails a check MUST be returned with the reason for the failure and MUST NOT reach the approval step.
 
-The checks cover the length limit of each target platform, a list of banned terms declared for the brand, links that resolve to allowed domains, and internal hostnames and credential-shaped strings.
+The checks cover the length limit of each target platform, a list of banned terms declared for the brand, links whose host is an allowed domain, and hostnames under a declared internal zone and credential-shaped strings.
 
 #### Scenario: Failing draft returned with its reason
 
@@ -80,7 +80,7 @@ The checks cover the length limit of each target platform, a list of banned term
 
 #### Scenario: Draft naming an internal hostname is refused
 
-- **WHEN** a draft contains a hostname that resolves only inside the platform's internal zones
+- **WHEN** a draft contains a hostname under one of the platform's declared internal zones
 - **THEN** the draft is refused and does not reach the approval step
 
 #### Scenario: Passing draft reaches the approval step
@@ -117,6 +117,12 @@ Flow definitions and connections SHALL be declared in the repository and applied
 - **WHEN** the apply playbook runs again
 - **THEN** it reports no change
 
+#### Scenario: Owned connection or flow dropped from the declaration is removed
+
+- **GIVEN** the apply playbook created a connection or a flow that the declaration no longer lists
+- **WHEN** the apply playbook runs
+- **THEN** that connection or flow is removed, and nothing it does not own is touched
+
 #### Scenario: Unowned flow is never deleted
 
 - **GIVEN** a flow exists in Activepieces that the repository does not declare
@@ -132,6 +138,21 @@ Flow definitions and connections SHALL be declared in the repository and applied
 
 - **WHEN** the connections are applied
 - **THEN** each connection's credential is read from the secret store during the run and written into the connection, and the value is not printed
+
+### Requirement: A kill switch stops content flows
+
+One switch, thrown by a playbook, MUST stop every flow that creates a draft or schedules a post. While it is thrown no draft SHALL be created and no post SHALL be scheduled.
+
+#### Scenario: Thrown kill switch stops drafting and scheduling
+
+- **GIVEN** the kill switch is thrown
+- **WHEN** a brief arrives or a scheduled generation fires
+- **THEN** no draft is created and no post is scheduled
+
+#### Scenario: Released kill switch resumes flows
+
+- **WHEN** the kill switch is released
+- **THEN** the next brief produces a draft as before
 
 ### Requirement: Generation reaches the model only through the inference gateway under its own identity
 

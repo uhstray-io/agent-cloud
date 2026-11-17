@@ -23,13 +23,13 @@ None. The publishing service's capability belongs to change `deploy-postiz-socia
 
 - The planned build adds about 16 files (plan 28, "Release budget").
 - It depends on the changes `deploy-postiz-social-publishing`, `deploy-activepieces` and `agentgateway-content-generation`.
-- It reads two existing OpenBao fields, the `activepieces` client key at `secret/services/agentgateway` and `postiz_api_key` at `secret/services/postiz`, and declares no new OpenBao path.
+- It reads two OpenBao fields that other changes create and that do not exist yet: `postiz_api_key` at `secret/services/postiz` (AC-763) and the `activepieces` client key at `secret/services/agentgateway` (plan 27, AC-785). It declares no new OpenBao path.
 - Brand values live in site-config.
 - Operator prerequisites: the X and LinkedIn developer apps and connected accounts (AC-760, AC-761) and the production Postiz API key (AC-763).
 
 ## Rollback Plan
 
-This commit: revert it; it removes plan 28, this change and the `AGENTS.md` line, and nothing depends on them.
+This pull request: revert its merge commit (`git revert -m 1 <merge commit>`); that removes plan 28, this change and the `AGENTS.md` line, and nothing depends on them.
 
 The planned build:
 

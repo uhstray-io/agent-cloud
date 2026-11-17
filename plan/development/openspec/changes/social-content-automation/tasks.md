@@ -5,7 +5,7 @@ Needs nothing outside this change. Both tasks are done.
 - [x] 1.1 Write plan 28 and this change (AC-793)
       Plane: AC-793. Blocked by: none.
 - [x] 1.2 Decision: approval policy — drafts without approval, every schedule/publish approved, approval records approver + revision (AC-795, Joseph 2026-11-12)
-      Plane: AC-795. Blocked by: none. Gate: Requirement "Drafts need no approval; scheduling and publishing need a recorded approval", scenario "Schedule refused without a recorded approval".
+      Plane: AC-795. Blocked by: none. Gate: `openspec validate social-content-automation --strict` passes with Requirement "Drafts need no approval; scheduling and publishing need a recorded approval" in the spec; its scenario "Schedule refused without a recorded approval" is proven at 4.4 and 5.1.
 
 ## 2. Brand profiles (needs nothing outside this change)
 
@@ -31,7 +31,7 @@ Needs a running Activepieces instance from change `deploy-activepieces`. The loc
 - [ ] 3.2 Connection to agentgateway through the HTTP piece, key written from OpenBao by a no_log playbook, proven with one completion (AC-797)
       Plane: AC-797. Blocked by: 3.1; plan 27 identity (AC-785), client leaf (AC-825), egress spike (AC-826). Spike: R3. Acceptance: one completion returns through the `activepieces` identity, and no key appears in a flow definition. If the HTTP piece cannot take its key from a stored connection, choose another mechanism before this task closes.
 - [ ] 3.3 Connection to Postiz through the Postiz piece (base_url and api_key upsert), key from OpenBao (AC-798)
-      Plane: AC-798. Blocked by: 3.1; production Postiz key captured (AC-763). Acceptance: the connection upserts by its external id, a second apply changes nothing, and the key is read from the `postiz_api_key` field at `secret/services/postiz`. The procedure to revoke the key is recorded (plan 28, Open Questions). Gate: Requirement "Flows and connections are declared as code and applied by playbook", scenario "Re-run of the apply playbook converges".
+      Plane: AC-798. Blocked by: 3.1; production Postiz key captured (AC-763). Acceptance: the connection upserts by its external id, a second apply changes nothing, and the key is read from the `postiz_api_key` field at `secret/services/postiz`. The procedure to revoke the key is recorded (plan 28, Open Questions). Gate: Requirement "Flows and connections are declared as code and applied by playbook", scenarios "Re-run of the apply playbook converges" and "Owned connection or flow dropped from the declaration is removed"; Requirement "A kill switch stops content flows", scenario "Thrown kill switch stops drafting and scheduling".
 
 ## 4. Text pipeline (no connected social account needed, except where R2 says)
 
@@ -48,7 +48,7 @@ Needs the gateway and Postiz connections from phase 3 and the brand profile from
 - [ ] 4.5 Scheduled generation: a Schedule-trigger flow on a declared cadence from a topic backlog held in site-config; drafts still pass guardrail and approval (AC-802)
       Plane: AC-802. Blocked by: 4.4. Acceptance: the declared cadence stays under the post-creation ceiling (plan 28 R6), and every generated draft passes 4.2 and then 4.4.
 - [ ] 4.6 Failure alerting for content flows through the o11y alert path (AC-804)
-      Plane: AC-804. Blocked by: 3.1. Acceptance: a forced failing run raises an alert on the observability alert route. Gate: Requirement "Guardrail checks run before approval", scenario "Draft naming an internal hostname is refused"; Requirement "Handoff to the publishing service is exactly once", scenario "Retried handoff creates no second post"; Requirement "A failed content flow run raises an alert", scenario "Failed run raises an alert".
+      Plane: AC-804. Blocked by: 3.1, 4.2, 4.4 (it carries the phase gate). Acceptance: a forced failing run raises an alert on the observability alert route. Gate: Requirement "Guardrail checks run before approval", scenario "Draft naming an internal hostname is refused"; Requirement "Handoff to the publishing service is exactly once", scenario "Retried handoff creates no second post"; Requirement "A failed content flow run raises an alert", scenario "Failed run raises an alert".
 
 ## 5. Gate A (needs connected X and LinkedIn accounts: operator)
 

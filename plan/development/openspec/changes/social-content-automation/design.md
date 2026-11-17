@@ -29,7 +29,7 @@ Non-Goals:
 | D9 Brand isolation | "Each draft targets exactly one mapped account of its brand" |
 | D10 Guardrail as a tested repository module | "Guardrail checks run before approval" |
 | D11 Failure alerting | "A failed content flow run raises an alert" |
-| D13 Kill switch | Plan 28 phase 3 acceptance |
+| D13 Kill switch | "A kill switch stops content flows" |
 
 D6 (the Postiz piece) and D12 (order of work) shape the tasks, not a requirement.
 

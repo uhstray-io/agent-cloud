@@ -17,7 +17,7 @@
 - Posts for the instance's brands are written and scheduled by hand.
 - A text model can draft them, but its output must not reach a public account without an approval, and generation must not be able to publish directly.
 - The publishing service already holds the connected accounts and schedules publication (plan 14). What is missing is generation, checks, a handoff that is safe to retry, and a recorded approval for every schedule.
-- The earlier flow engine, n8n, was retired. Activepieces replaces it (plan 26). No file in the repository mentions Activepieces at the base commit.
+- The earlier flow engine, n8n, was retired on 2026-11-10 (`platform/semaphore/retired-templates.yml:86-88`). Activepieces replaces it (plan 26). No file in the repository mentions Activepieces at the base commit.
 
 ## Design Principles
 
@@ -36,7 +36,7 @@
 | D2 | Approval rule (AC-795, Done, Joseph, 2026-11-12). Generation, automatic or recommended, MAY create drafts with no approval. Scheduling and publishing need a person's approval every time, and the approval records who approved which revision. Flows never send the immediate post type. The only write made without an approval record is a draft. A post becomes scheduled only through the status change that follows an approval. A revision is identified by a sha256 over the post's canonical text, the sha256 of each attached media file and its target integration identifier, computed at approval and again at schedule; a mismatch refuses the schedule. The approval record (revision, approver as named by the identity provider, time) is append-only and kept outside the run history of the flow that generated the draft; its store is chosen with the approval surface in task 4.4. | A public post must not appear on an account without a person's decision on that exact revision. |
 | D3 | Flows are code. Definitions are versioned in `platform/services/activepieces/flows/` (planned) and applied by one `Manage Activepieces Flows` playbook, which writes the connections first (an included task file) and then the flows; a connection or flow the playbook owns and the declaration no longer lists is removed. A dry run shows the diff, a re-run converges, and the playbook never deletes a flow it does not own. No hand-built production flow. | Engineering principles 3 and 4 in `AGENTS.md`. Whether the Community edition supports this path is risk R1. |
 | D4 | No credential in flow JSON. The gateway client key (`secret/services/agentgateway:client_activepieces`) and the publishing service's API key (`secret/services/postiz:postiz_api_key`) are written into Activepieces connections by a `no_log` playbook that reads OpenBao. Neither is pasted into a flow, and neither is copied under another service's path. | A flow definition is committed and readable. The publishing key is organisation-wide (R5). |
-| D5 | The gateway is reached through the HTTP piece. The OpenAI piece's base URL is fixed, and the AI provider setting that would allow another base URL needs a plan that includes AI providers. Structured output uses `response_format` with a json_schema, which the gateway deploy already proves (`platform/playbooks/deploy-agentgateway.yml:40-41` and `:1396-1411`). | Upstream facts below. |
+| D5 | The gateway is reached through the HTTP piece. The OpenAI piece's base URL is fixed, and the AI provider setting that would allow another base URL needs a plan that includes AI providers. Structured output uses `response_format` with a json_schema, which the gateway deploy already proves (`platform/playbooks/deploy-agentgateway.yml:40-41` and `:1396-1420`). | Upstream facts below. |
 | D6 | The publishing service is reached through the Postiz piece, with custom auth (`base_url` and `api_key`). The HTTP piece or a custom API call covers the routes the piece lacks, such as the status change. | Upstream facts below. |
 | D7 | Exactly once. The publishing service's create-post call is not idempotent. The flow therefore writes a record keyed uniquely by the revision before it calls the service, then stores the post identifier the service returns. A retry finds the pending record and reconciles it against the service's post list (the Postiz piece has a List Posts action) instead of creating again. The store is chosen in task 4.4. | A check-then-create without a unique record lets two runs (a scheduled run and a retried handoff) both pass the check. The lesson carried from the earlier flow engine: idempotent writes keyed by a stored external identifier. |
 | D8 | Brand profiles. The schema comes first (AC-828), planned at `platform/content/brand-profile.schema.json` with a placeholder example. Then one profile per brand, with values in site-config. Schema fields: name, domain and parent brand; colour tokens with light and dark roles; type families and weights; logo and mark references, favicon and open-graph card; voice rules with example lines; audiences; allowed claims, and forbidden or unbacked claims; imagery rules; social accounts per platform mapped to publishing integrations; and a provenance source for each field. Profiles serve three uses: hand-seeded profiles, profiles extracted by the studio (AC-810, undecided), and the system and image prompts of generation. | One source of voice and claims for every generated draft. |
@@ -88,7 +88,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 - Plan 28 and the change exist and carry the decision table.
 - The approval rule of D2 is recorded with the approver-and-revision requirement.
 
-**Gate:** Scenario "Schedule refused without a recorded approval".
+**Gate:** `openspec validate social-content-automation --strict` passes with the approval requirement in the spec; its scenario "Schedule refused without a recorded approval" is proven at task 4.4 and Gate A.
 
 ### Phase 2: Brand profiles (needs nothing outside this change)
 
@@ -159,7 +159,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 
 ### Release budget
 
-The build these phases describe adds about 16 files (an estimate, not a measurement): the brand-profile schema and its placeholder example (2), three flow definitions for generation, handoff and scheduled generation (3), the apply playbook and its connections task file (2), the Semaphore template entries in `platform/semaphore/templates.yml` (1), the guardrail module and its unit test (2), the static check over flow definitions in the Rust suite (1; literal credentials are already scanned by `platform/tests/suite/credential_leaks.rs`), the alert rule and its job declaration (1), the Activepieces and Postiz context documents (2), the `AGENTS.md` workflow table (1) and the task tick-offs in this change (1). Policy 10 limits a release to 120 changed files ([10-release-policy.md](../architecture/10-release-policy.md)).
+The build these phases describe adds about 16 files (an estimate, not a measurement): the brand-profile schema and its placeholder example (2), three flow definitions for generation, handoff and scheduled generation (3), the apply playbook and its connections task file (2), the Semaphore template entries in `platform/semaphore/templates.yml` (1), the guardrail module and its unit test (2), the static check over flow definitions in the Rust suite, which also refuses a literal value in any auth, connection-property or header field (1; the existing credential scan does not cover them: it skips `plan/` and markdown, and its key pattern does not match a quoted JSON key, `platform/tests/suite/credential_leaks.rs:358-378` and `:838-839`), the alert rule and its job declaration (1), the Activepieces and Postiz context documents (2), the `AGENTS.md` workflow table (1) and the task tick-offs in this change (1). Policy 10 limits a release to 120 changed files ([10-release-policy.md](../architecture/10-release-policy.md)).
 
 ### Dependency order
 
@@ -177,11 +177,12 @@ The requirement numbers in the rows below follow the order of the requirements i
 | Exactly once (Requirement 3) | A retried handoff finds the stored post identifier, and one post and one schedule remain for the draft. |
 | Guardrail (Requirement 4) | A draft over a platform's length limit, or naming an internal hostname, is returned with its reason and never reaches approval. |
 | Brand isolation (Requirement 5) | A handoff naming an integration the mapping does not assign to the draft's brand is refused before any post is created. |
-| Converge re-run (Requirement 6) | A second apply of unchanged declarations reports no change, and an unowned flow is untouched. |
-| No credential in definitions (Requirement 6) | The committed flow definitions contain no literal credential value (`platform/tests/suite/credential_leaks.rs` scans every committed file). |
-| Gateway identity (Requirement 7) | A completion made by a flow is recorded under the `activepieces` identity, and no flow calls a model backend directly. |
-| Failure alert (Requirement 8) | A forced failing run raises an alert on the observability alert route, and a successful run raises none. |
-| Brand profiles (Requirement 9) | Every profile validates against the schema with a source on each field, and the repository example holds placeholders only. |
+| Converge re-run (Requirement 6) | A second apply of unchanged declarations reports no change, an owned connection or flow dropped from the declaration is removed, and an unowned flow is untouched. |
+| No credential in definitions (Requirement 6) | The static check refuses a flow definition with a literal value in an auth, connection-property or header field. |
+| Kill switch (Requirement 7) | With the switch thrown, no brief or scheduled run creates a draft or schedules a post; released, drafting resumes. |
+| Gateway identity (Requirement 8) | A completion made by a flow is recorded under the `activepieces` identity, and no flow calls a model backend directly. |
+| Failure alert (Requirement 9) | A forced failing run raises an alert on the observability alert route, and a successful run raises none. |
+| Brand profiles (Requirement 10) | Every profile validates against the schema with a source on each field, and the repository example holds placeholders only. |
 | Gate A | One AI-drafted, human-approved text post is published to the first brand's X and LinkedIn accounts through the publishing service in production, and a rerun of the handoff adds no post. |
 | Gate B | Gate A holds, and an approved AI-generated brand image is attached to an approved text post; an image replaced after approval is not scheduled (Requirement 1). |
 | Post-creation ceiling | The scheduled cadence stays under the ceiling of R6. |
@@ -201,7 +202,7 @@ The requirement numbers in the rows below follow the order of the requirements i
 | # | Risk | Mitigation and where it is decided |
 |---|---|---|
 | R1 | The Community edition may not support the flow API path that D3 needs: its API keys are documented for the Platform and Enterprise editions, and the `IMPORT_FLOW` operation's semantics are not documented. There is no export endpoint. | Spike first, in task 3.1. If it fails, work stops and the decision goes back to the operator (edition, AC-768). No workaround is designed in this plan. |
-| R2 | A publishing-service draft may need a connected integration, and the local publishing service has none (the operator declined local OAuth callbacks on 2026-08-30). | Spike in task 4.4 on the pinned v2.23.0: whether a draft can exist with no integration, and whether the status-change route exists on the pin. If a draft needs an integration, it lives in the flow until approval, and the publishing leg is proven at Gate A. |
+| R2 | A publishing-service draft may need a connected integration, and the local publishing service has none (the operator declined local OAuth callbacks on 2026-08-30). | Spike in task 4.4 on the pinned v2.23.0: whether a draft can exist with no integration, and whether the status-change route exists on the pin. If a draft needs an integration, it lives in the flow until approval, and the publishing leg is proven at Gate A. If the status-change route is absent on the pin, work stops and the decision returns to the operator (a pin bump of the publishing service). |
 | R3 | The HTTP piece may not be able to take its key from a stored connection. | Spike in task 3.2. If it cannot, another mechanism is chosen before task 3.2 closes. A key in a flow definition is never an acceptable fallback. |
 | R4 | Outbound calls may not support a client certificate. | Spike AC-826 (plan 27). An mTLS egress proxy is the fallback. |
 | R5 | The publishing service's API key is organisation-wide, and Activepieces holds it. | The approval guarantee rests on flow logic and the static check (Security Considerations). Open Question 6. |
@@ -240,7 +241,7 @@ Every fact in this section was checked on upstream main on 2026-11-16. Each one 
 Repository facts:
 
 - The publishing service's automation endpoint, its key and its public-host rule are in [use-cases.md](../../platform/services/postiz/context/use-cases.md), at lines 14, 22 to 26, 28 to 41 and 43 to 60. Postiz is pinned at v2.23.0 (plan 14, D1).
-- The gateway deploy proves one `response_format` json_schema completion (`platform/playbooks/deploy-agentgateway.yml:40-41` and `:1396-1411`).
+- The gateway deploy proves one `response_format` json_schema completion (`platform/playbooks/deploy-agentgateway.yml:40-41` and `:1396-1420`).
 - The Plane sync builds the external identifier of a task as `<owner/repo>/<change>/<task id>` (`platform/services/plane/lib/openspec_to_plane.py:159`). The module identifier is `<owner/repo>/<change>` (`:188`). Checked tasks are skipped as done before import (`:27-31`). Task ids are permanent (`:33-38`).
 - The production OpenBao store holds no `secret/services/postiz` path (Check Secrets, task 17396, 2026-11-16). The X and LinkedIn developer-app credentials are not yet stored anywhere (AC-760 and AC-761).
 - No file in the repository mentions Activepieces at the base commit.
