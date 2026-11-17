@@ -11,6 +11,7 @@
 //!   tasks through [`process::ansible_playbook`] (AC-943).
 
 pub mod lanes;
+pub mod text;
 
 pub mod playbook;
 
