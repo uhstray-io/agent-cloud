@@ -21,16 +21,17 @@
 //!
 //! | BATS @test | Rust fn |
 //! |---|---|
-//! | cred backup: the playbook exists and guards its transport | `the_playbook_guards_every_openbao_endpoint_it_builds` |
-//! | cred backup: no non-deterministic lookup sits in a play's vars block | `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, with `the_branch_name_is_frozen_by_a_set_fact_task` and, candidate: pins text, `the_frozen_branch_is_written_as_a_folded_scalar` |
-//! | cred backup: every git call carrying a space uses argv, not cmd | `every_git_call_carrying_a_space_uses_argv_not_cmd` |
+//! | cred backup: the playbook exists and guards its transport | `the_playbook_guards_every_openbao_endpoint_it_builds`, with the self-check `a_guard_bound_to_another_url_is_refused` |
+//! | cred backup: no non-deterministic lookup sits in a play's vars block | `no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup`, with the self-check `two_same_named_vars_entries_in_one_file_count_twice`, `the_branch_name_is_frozen_by_a_set_fact_task` and, candidate: pins text, `the_frozen_branch_is_written_as_a_folded_scalar` |
+//! | cred backup: every git call carrying a space uses argv, not cmd | `every_git_call_carrying_a_space_uses_argv_not_cmd`, with the self-check `a_free_form_git_command_is_not_argv` |
 //! | cred backup: the scratch dir is wiped even when the run fails | `the_scratch_dir_is_wiped_even_when_the_run_fails` |
-//! | cred backup: nothing it prints can carry a credential value | `no_debug_task_prints_a_secret_field_value`, with `the_secret_value_write_is_no_log` |
+//! | cred backup: nothing it prints can carry a credential value | `no_debug_task_prints_a_secret_field_value`, with `the_secret_value_write_is_no_log` and the self-check `a_set_fact_alias_of_the_payload_is_flagged` |
 //! | cred backup: the store path is built from a validated name, not taken whole | `the_store_path_is_built_from_a_validated_name_not_taken_whole` |
-//! | cred backup: the deploy key exists on the runner only inside the dir that is always wiped | `the_deploy_key_is_read_from_one_fixed_store_path`, `the_materialised_key_is_0600_no_log_under_the_scratch_dir`, `git_ssh_names_only_the_deploy_key_with_strict_host_keys`, `the_key_is_written_only_after_the_scratch_dir_exists` |
+//! | cred backup: the deploy key exists on the runner only inside the dir that is always wiped | `the_deploy_key_is_read_from_one_fixed_store_path`, `the_materialised_key_is_0600_no_log_under_the_scratch_dir`, `git_ssh_names_only_the_deploy_key_with_strict_host_keys` (with the self-check `a_changed_ssh_command_is_refused`), `the_key_is_written_only_after_the_scratch_dir_exists` |
 //! | cred backup: the key is never taken from a task parameter, and the seed path says why | `the_deploy_key_is_never_a_task_parameter`, with candidate: pins text `every_key_missing_message_says_how_to_seed_the_key` |
 
 use std::fs;
+use std::sync::LazyLock;
 
 use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{self, Node};
@@ -43,6 +44,17 @@ const PUSH: &str = "platform/playbooks/tasks/site-config-push.yml";
 const GUARD_INCLUDE: &str = "tasks/assert-bao-transport.yml";
 const CLONE_INCLUDE: &str = "tasks/site-config-clone.yml";
 const KEY_PATH: &str = "secret/data/services/ssh/site-config";
+/// The clone's GIT_SSH_COMMAND, whole (platform/playbooks/tasks/site-config-clone.yml): the deploy
+/// key only (IdentitiesOnly), strict host keys against the pinned known-hosts file.
+const EXPECTED_GIT_SSH: &str = "ssh -i {{ _sc_wd_result.path }}/deploy_key -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=yes -o UserKnownHostsFile={{ _sc_kh }}";
+/// The non-deterministic lookups a vars entry may not hold (see the test that uses it).
+static NONDETERMINISTIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\b(?:lookup|query|q)\s*\(\s*['"](?:ansible\.(?:builtin|legacy)\.)?(?:pipe|url|random_choice)['"]|\bnow\s*\(|\|\s*random\b"#,
+    )
+    .expect("a valid regex")
+});
 /// A task's module under any of the three spellings Ansible accepts for a module key: the short
 /// name, `ansible.builtin.<short>`, or `ansible.legacy.<short>` (ansible/utils/fqcn.py). A check
 /// that reads one spelling alone is blind to a task written under another, so every module read
@@ -185,10 +197,11 @@ fn the_playbook_guards_every_openbao_endpoint_it_builds() {
         .iter()
         .filter(|m| m.get("_bao_url").is_some())
         .count();
-    let guards = maps(&doc)
-        .iter()
+    let guard_maps: Vec<&Node> = maps(&doc)
+        .into_iter()
         .filter(|m| include_target(m) == Some(GUARD_INCLUDE))
-        .count();
+        .collect();
+    let guards = guard_maps.len();
 
     // Assert: every endpoint is checked by the transport guard before use.
     assert!(endpoints > 0, "{PB} builds no _bao_url");
@@ -196,6 +209,42 @@ fn the_playbook_guards_every_openbao_endpoint_it_builds() {
         guards, endpoints,
         "every _bao_url must be followed by one transport guard"
     );
+    // And each guard checks THAT url: a guard bound to another value passes the count and checks
+    // nothing the play sends to.
+    let misbound: Vec<String> = guard_maps
+        .into_iter()
+        .filter(|m| !guard_checks_bao_url(m))
+        .map(|m| task_name(m).to_owned())
+        .collect();
+    assert!(
+        misbound.is_empty(),
+        "a transport guard must bind vars._assert_bao_url to {{{{ _bao_url }}}}: {misbound:?}"
+    );
+}
+
+/// Whether a guard include binds `vars._assert_bao_url` to exactly `{{ _bao_url }}`, whitespace
+/// inside the expression ignored.
+fn guard_checks_bao_url(include: &Node) -> bool {
+    include
+        .get("vars")
+        .and_then(|v| v.get("_assert_bao_url"))
+        .and_then(Node::as_str)
+        .is_some_and(|s| {
+            s.chars().filter(|c| !c.is_whitespace()).collect::<String>() == "{{_bao_url}}"
+        })
+}
+
+#[test]
+fn a_guard_bound_to_another_url_is_refused() {
+    let bound = |url: &str| {
+        let text = format!(
+            "name: g\nansible.builtin.include_tasks: {GUARD_INCLUDE}\nvars:\n  _assert_bao_url: \"{url}\"\n"
+        );
+        guard_checks_bao_url(&yaml::parse(&text, "synthetic")[0])
+    };
+    assert!(bound("{{ _bao_url }}"));
+    assert!(bound("{{_bao_url}}"));
+    assert!(!bound("{{ other_url }}"));
 }
 
 #[test]
@@ -206,33 +255,16 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
     // pipe, url and random_choice lookups, now(), and `| random` are the non-deterministic ones. A
     // lookup is named by its call (lookup, query or the q shorthand) and by its plugin name, with or
     // without the ansible.builtin or ansible.legacy prefix; now() takes any arguments.
-    let bad = Regex::new(
-        r#"\b(?:lookup|query|q)\s*\(\s*['"](?:ansible\.(?:builtin|legacy)\.)?(?:pipe|url|random_choice)['"]|\bnow\s*\(|\|\s*random\b"#,
-    )
-    .expect("a valid regex");
     let files = repo::ls_files(&[":(glob)platform/playbooks/**/*.yml"]);
     assert!(!files.is_empty(), "no playbook YAML files found");
 
-    // Each offender is named `<file>:<vars key>`, so the ratchet below lists exact entries.
     let mut offenders = std::collections::BTreeSet::new();
     for file in &files {
         let text = fs::read_to_string(repo::path(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
-        for doc in yaml::parse(&text, file) {
-            for map in maps(&doc) {
-                let Some(vars) = map.get("vars").and_then(Node::as_map) else {
-                    continue;
-                };
-                for (key, value) in vars {
-                    if any_string(value, &|s: &str| bad.is_match(s)) {
-                        let key = key.as_str().unwrap_or("(non-string key)");
-                        offenders.insert(format!("{file}:{key}"));
-                    }
-                }
-            }
-        }
+        offenders.extend(vars_offenders(file, &text));
     }
 
-    // A ratchet: the vars entries built from now(...) before the check read now() with
+    // A ratchet, keyed `<file>#<n>:<vars key>`: the vars entries built from now(...) before the check read now() with
     // arguments (#1149 review, docs/MISTAKES.md 10.8). AC-910 moved every one to set_fact, so
     // the list is empty and stays empty: a new offender fails, and so does an entry that is
     // fixed but still listed.
@@ -253,6 +285,33 @@ fn no_playbook_builds_a_vars_entry_from_a_nondeterministic_lookup() {
         fixed.is_empty(),
         "listed in the ratchet but no longer an offender; remove it from KNOWN: {fixed:?}"
     );
+}
+
+/// The vars entries in one file built from a non-deterministic lookup, each named
+/// `<file>#<n>:<key>`, where n is the 0-based index of the containing mapping among every mapping
+/// of every document in the file. The index keeps two same-named entries in one file apart, so each
+/// counts.
+fn vars_offenders(file: &str, text: &str) -> std::collections::BTreeSet<String> {
+    let mut offenders = std::collections::BTreeSet::new();
+    let docs = yaml::parse(text, file);
+    for (n, map) in docs.iter().flat_map(maps).enumerate() {
+        let Some(vars) = map.get("vars").and_then(Node::as_map) else {
+            continue;
+        };
+        for (key, value) in vars {
+            if any_string(value, &|s: &str| NONDETERMINISTIC.is_match(s)) {
+                let key = key.as_str().unwrap_or("(non-string key)");
+                offenders.insert(format!("{file}#{n}:{key}"));
+            }
+        }
+    }
+    offenders
+}
+
+#[test]
+fn two_same_named_vars_entries_in_one_file_count_twice() {
+    let text = "- hosts: a\n  vars:\n    _x: \"{{ now(utc=true) }}\"\n- hosts: b\n  vars:\n    _x: \"{{ now(utc=true) }}\"\n";
+    assert_eq!(vars_offenders("synthetic.yml", text).len(), 2);
 }
 
 #[test]
@@ -296,12 +355,16 @@ fn every_git_call_carrying_a_space_uses_argv_not_cmd() {
     let push = repo::tasks(PUSH);
 
     let identify = named(&clone, "Identify the commit");
-    let commit = named(&push, "Commit");
-    let stage = named(&push, "Stage only the path this run wrote");
-
-    assert!(!has_key(identify, "cmd"), "the identity task uses cmd:");
-    assert!(!has_key(commit, "cmd"), "the commit task uses cmd:");
-    assert!(!has_key(stage, "cmd"), "the stage task uses cmd:");
+    for (label, task) in [
+        ("identity", identify),
+        ("commit", named(&push, "Commit")),
+        ("stage", named(&push, "Stage only the path this run wrote")),
+    ] {
+        assert!(
+            passes_argv(task),
+            "the {label} task must pass argv, not cmd: or a free-form string"
+        );
+    }
 
     let argv: Option<Vec<&str>> = args(identify, "command")
         .and_then(|c| c.get("argv"))
@@ -312,6 +375,27 @@ fn every_git_call_carrying_a_space_uses_argv_not_cmd() {
         Some(vec!["git", "config", "user.{{ item.k }}", "{{ item.v }}"]),
         "the identity task must pass its name and email as argv"
     );
+}
+
+/// Whether a task's `command` is a mapping holding `argv` as a list and no `cmd`. A free-form string
+/// word-splits exactly like `cmd:`.
+fn passes_argv(task: &Node) -> bool {
+    args(task, "command")
+        .is_some_and(|c| c.get("argv").and_then(Node::as_seq).is_some() && !has_key(c, "cmd"))
+}
+
+#[test]
+fn a_free_form_git_command_is_not_argv() {
+    let task = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    assert!(!passes_argv(&task(
+        "name: Commit\nansible.builtin.command: git commit -m \"x y\"\n"
+    )));
+    assert!(!passes_argv(&task(
+        "name: Commit\nansible.builtin.command:\n  cmd: git commit -m x\n"
+    )));
+    assert!(passes_argv(&task(
+        "name: Commit\nansible.builtin.command:\n  argv: [git, commit, -m, x y]\n"
+    )));
 }
 
 #[test]
@@ -394,6 +478,44 @@ fn no_debug_task_prints_a_secret_field_value() {
         leaks.is_empty(),
         "a debug task reads the secret payload, which can print a value; only \
          {DEBUG_SECRET_READS:?} may appear: {leaks:?}"
+    );
+
+    // A set_fact that copies the payload into a fact is an alias a later debug can print without
+    // naming `_secret`, so every set_fact is held to the same allow-list.
+    let aliases: Vec<String> = tasks.iter().flat_map(set_fact_secret_reads).collect();
+    assert!(
+        aliases.is_empty(),
+        "a set_fact copies the secret payload into a fact, which a later debug can print; only \
+         {DEBUG_SECRET_READS:?} may appear: {aliases:?}"
+    );
+}
+
+/// The undeclared `_secret` reads of a set_fact task, named by task; empty for any other task.
+fn set_fact_secret_reads(task: &Node) -> Vec<String> {
+    if args(task, "set_fact").is_none() {
+        return vec![];
+    }
+    undeclared_secret_reads(task)
+        .into_iter()
+        .map(|expr| format!("{}: {expr}", task_name(task)))
+        .collect()
+}
+
+#[test]
+fn a_set_fact_alias_of_the_payload_is_flagged() {
+    let task = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    assert_eq!(
+        set_fact_secret_reads(&task(
+            "name: alias\nansible.builtin.set_fact:\n  _x: \"{{ _secret.json.data.data }}\"\n"
+        ))
+        .len(),
+        1
+    );
+    assert!(
+        set_fact_secret_reads(&task(
+            "name: names\nset_fact:\n  _n: \"{{ _secret.json.data.data.keys() | list }}\"\n"
+        ))
+        .is_empty()
     );
 }
 
@@ -508,20 +630,37 @@ fn git_ssh_names_only_the_deploy_key_with_strict_host_keys() {
     let defs = values_of(&doc, "GIT_SSH_COMMAND");
     assert_eq!(defs.len(), 1, "exactly one GIT_SSH_COMMAND definition");
     let ssh = defs[0].as_str().expect("GIT_SSH_COMMAND is a string");
-    for needle in [
-        "ssh -i {{ _sc_wd_result.path }}/deploy_key -o IdentitiesOnly=yes",
-        "StrictHostKeyChecking=yes",
-        "UserKnownHostsFile=",
-    ] {
-        assert!(
-            ssh.contains(needle),
-            "GIT_SSH_COMMAND lacks {needle:?}: {ssh}"
-        );
-    }
+    assert!(
+        pins_git_ssh(ssh),
+        "GIT_SSH_COMMAND differs from EXPECTED_GIT_SSH. Parsing a shell command line for its \
+         options is bypassable by quoting or templating, so the command is pinned whole: any \
+         change to it must be reviewed and the const updated with it.\n  found:    {ssh}\n  \
+         expected: {EXPECTED_GIT_SSH}"
+    );
 
     assert!(
         !any_string(&doc, &|s: &str| s.contains("accept-new")),
         "accept-new is trust on first use and must not appear in code"
+    );
+}
+
+/// Whether an ssh command is exactly [`EXPECTED_GIT_SSH`], byte for byte. Whitespace is not
+/// collapsed: a newline is a command separator to the shell git runs the command with, so a line
+/// break where a space belongs changes the command (the folded scalar parses to single spaces).
+fn pins_git_ssh(cmd: &str) -> bool {
+    cmd == EXPECTED_GIT_SSH
+}
+
+#[test]
+fn a_changed_ssh_command_is_refused() {
+    assert!(pins_git_ssh(EXPECTED_GIT_SSH));
+    let shadowed = EXPECTED_GIT_SSH.replacen("ssh ", "ssh -o StrictHostKeyChecking=no ", 1);
+    assert!(!pins_git_ssh(&shadowed));
+    let split =
+        EXPECTED_GIT_SSH.replacen(" -o StrictHostKeyChecking", "\n-o StrictHostKeyChecking", 1);
+    assert!(
+        !pins_git_ssh(&split),
+        "a newline is a shell command separator"
     );
 }
 
