@@ -10,7 +10,7 @@ Goals: the requirements in the spec, in the order of plan 28's phases.
 
 Non-Goals:
 
-- Images before plan 27's image path and the licence decision (AC-870).
+- Images before plan 27's image path (AC-792). The image-model decision (AC-870) was taken on 2026-11-16: plan 27 records the switch and the dgx-spark fit test it waits on.
 - The studio (AC-810): its decision is open and outside the v0.17.0 scope.
 - Changing the publishing service's own capability (change `deploy-postiz-social-publishing`).
 - Deploying Activepieces (change `deploy-activepieces`).

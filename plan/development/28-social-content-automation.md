@@ -2,7 +2,7 @@
 
 > **Depends on:** 14 (Postiz), 26 (deploy-activepieces), 27 (agentgateway-content-generation)
 >
-> Plans 26 and 27 are cited here by their OpenSpec change names. Their design is not restated in this plan. Neither change is on `dev` on 2026-11-16 (they are planned in parallel), so facts attributed to them are unverified here until they merge.
+> Plans 26 and 27 are cited here by their OpenSpec change names. Their design is not restated in this plan. Plan 27 ([27-agentgateway-content-generation.md](27-agentgateway-content-generation.md)) is on `dev` since 2026-11-17. Plan 26 is not yet, so facts attributed to change `deploy-activepieces` are unverified here until it merges.
 
 **Author:** Joseph A. Wisneski IV
 **Date:** 2026-11-16
@@ -149,7 +149,7 @@ The six phases match the phases of the OpenSpec change `social-content-automatio
 
 **Goal:** Gate B. Gate A, plus an approved AI-generated brand image attached to an approved text post.
 
-**Tasks:** 6.1 the image step (AC-803), blocked by the gateway image gate (AC-792) and the licence decision (AC-870). 6.2 Gate B (AC-806).
+**Tasks:** 6.1 the image step (AC-803), blocked by the gateway image gate (AC-792), which waits on the dgx-spark fit test of the model chosen by the AC-870 decision (2026-11-16, plan 27). 6.2 Gate B (AC-806).
 
 **Acceptance criteria:**
 - The image is generated through the gateway, approved with its text, and attached to the post in the publishing service.
@@ -217,7 +217,7 @@ The requirement numbers in the rows below follow the order of the requirements i
    - (c) The studio (AC-810). It is the intended long-term interface and is outside the v0.17.0 scope.
 2. **R1 outcome (task 3.1).** Not yet known. If the Community edition does not support the flow API path, the decision returns to the operator.
 3. **R2 outcome (task 4.4).** Not yet known.
-4. **Image path and licence (phase 6).** The image step waits on the image path of plan 27 (AC-792) and on the licence decision (AC-870).
+4. **Image path (phase 6).** The image step waits on the image path of plan 27 (AC-792). The image-model decision (AC-870) was taken on 2026-11-16 and is recorded in plan 27.
 5. **Publishing-service key revocation.** The procedure to revoke the key is not yet established. It is an open item for task 3.3.
 6. **A publish gate holding the publishing key (operator decision).** R5 leaves the approval guarantee in flow logic because Activepieces holds a key that can schedule or publish immediately. A small service on the launch gate's pattern (`platform/services/launch-gate/deployment/CLAUDE.md`) could hold the key, the approval records, the brand mapping and the kill switch, and give flows only a caller token. It is a new service and is not designed here.
 
@@ -253,7 +253,7 @@ Repository facts:
 | [14-postiz-social-publishing.md](14-postiz-social-publishing.md) | The publishing service that drafts are handed to. D1 here repeats its scheduling decision. |
 | [deploy-postiz-social-publishing](openspec/changes/deploy-postiz-social-publishing/) | The change that delivers the publishing service, its API key and its capability `platform/postiz-publishing`. |
 | Change `deploy-activepieces` (plan 26) | Delivers the flow engine this plan builds on. Cited by change name. |
-| Change `agentgateway-content-generation` (plan 27) | Delivers the gateway text path, the image path and the `activepieces` client identity. Cited by change name. |
+| [27-agentgateway-content-generation.md](27-agentgateway-content-generation.md), change `agentgateway-content-generation` | Delivers the gateway text path, the image path and the `activepieces` client identity. |
 | [social-content-automation](openspec/changes/social-content-automation/) | The OpenSpec change that carries this plan's design, tasks and spec. |
 | [use-cases.md](../../platform/services/postiz/context/use-cases.md) | The publishing service's automation endpoint and key. |
 | [10-release-policy.md](../architecture/10-release-policy.md) | Policy 10: at most 100 pull requests and 120 changed files per release. The planned build's size is measured against it. |

@@ -59,9 +59,9 @@ Needs the X and LinkedIn developer apps and their connected accounts, which the 
 
 ## 6. Images (blocked on plan 27's image path)
 
-Blocked on the image path in plan 27 and on the licence decision (AC-870). No task in this phase starts before both are settled.
+Blocked on the image path in plan 27 (AC-792), which waits on the dgx-spark fit test of the model chosen by the AC-870 decision (2026-11-16, recorded in plan 27). No task in this phase starts before that gate passes.
 
 - [ ] 6.1 Image step: brand image through the gateway's image route, approved with the text, uploaded to Postiz media and attached (AC-803)
-      Plane: AC-803. Blocked by: gateway image gate (AC-792), licence decision (AC-870). Acceptance: the image is generated through the gateway, approved with its text, and attached to the post in Postiz.
+      Plane: AC-803. Blocked by: gateway image gate (AC-792). Acceptance: the image is generated through the gateway, approved with its text, and attached to the post in Postiz.
 - [ ] 6.2 Gate B: Gate A plus an approved AI-generated brand image (AC-806)
       Plane: AC-806. Blocked by: 6.1, 5.1. Acceptance: Gate A holds, and an approved AI-generated brand image is published with an approved text post. Gate: Requirement "Drafts need no approval; scheduling and publishing need a recorded approval", scenario "Image changed after approval is not published".
