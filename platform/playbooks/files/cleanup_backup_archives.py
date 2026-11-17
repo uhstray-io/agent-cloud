@@ -172,7 +172,9 @@ def authorize(data):
                            ("VM.Backup", f"/vms/{v['vmid']}")):
             if path not in privileges:
                 raise Refusal(f"The token's permissions on {path} were not read.")
-            if not survey._flag(privileges[path].get(priv)) and privileges[path].get(priv) is not True:
+            # A privilege is held when its key is present: the value is only its propagate flag
+            # (pve-access-control RPCEnvironment.pm `check`: `defined($perm->{$priv})`).
+            if privileges[path].get(priv) is None:
                 text = f"{priv} on {path}"
                 if text not in missing:
                     missing.append(text)

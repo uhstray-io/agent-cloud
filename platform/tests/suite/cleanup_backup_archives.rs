@@ -394,6 +394,19 @@ fn authorize_passes_when_every_privilege_is_held() {
 }
 
 #[test]
+fn authorize_counts_a_privilege_held_without_propagation() {
+    // Arrange: Proxmox maps each held privilege to its propagate flag; 0 still means held
+    // (pve-access-control RPCEnvironment.pm `check` tests only that the key is defined).
+    let p = auth_payload(
+        json!({"Datastore.AllocateSpace": 0}),
+        json!({"VM.Backup": 0}),
+    );
+
+    // Act + Assert
+    assert_eq!(ok("authorize", &p)["authorized"], 1);
+}
+
+#[test]
 fn authorize_refuses_a_missing_vm_backup_naming_its_path() {
     let p = auth_payload(
         json!({"Datastore.AllocateSpace": 1}),
