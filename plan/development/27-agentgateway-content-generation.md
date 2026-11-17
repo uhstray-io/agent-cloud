@@ -149,7 +149,7 @@ Not blocked by the image model. It depends on `deploy-activepieces` delivering t
   4. `Apply Firewall (Dev)` on the gateway host;
   5. `Issue Internal Leaf (Dev)` on the Activepieces host;
   6. the Activepieces deploy places the CA bundle at `<leaf dir>/../step-ca-bundle.crt` and maps the gateway's server name on its host, as the o11y deploy does for its probe (README `:826-834`). The renewal proof reads that bundle (`renew-internal-certs.yml:826-827`) and does not resolve the name itself when `agw_verify_base_url` is set (`:847-850`). Both belong to `deploy-activepieces`;
-  7. `Renew Internal Certs (Dev)` with `--tags verify`, which must classify the leaf as a probe client and proves it in use as it stands; a plain run proves a leaf only when it renews it (`renew-internal-certs.yml:706`). For a long-running holder that proof passes without exercising the holder (Verified facts, the `probe-client` row). Task 2.2 closes that gap.
+  7. `Renew Internal Certs (Dev)` with `--tags verify` (a plain run proves only the leaves it renews, `renew-internal-certs.yml:706`). How each kind of holder is proven, and what is missing today, is in Verified facts, the `probe-client` row, and task 2.2.
 - The gateway deploy checks that its own server and verifier leaves are issued (`deploy-agentgateway.yml:330-347`), not an allowlisted client leaf on another host: the order above is a convention, not enforced.
 - If task 3.1 later moves the pin, gate 2.4 runs again on the new pin.
 
