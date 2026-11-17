@@ -37,6 +37,10 @@ use agent_cloud_tests::repo;
 use agent_cloud_tests::yaml::{self, Node};
 use regex::Regex;
 
+use crate::credential_leaks::{
+    INCLUDE_SHORTS, include_target, tagged_never, when_is_constant_false,
+};
+
 const RESOLVER_TASK: &str = "platform/playbooks/tasks/resolve-become-password.yml";
 const GUARD_TASK: &str = "platform/playbooks/tasks/assert-bao-transport.yml";
 const HARDEN_SSH: &str = "platform/playbooks/harden-ssh.yml";
@@ -234,22 +238,10 @@ fn escalating_plays_not_resolving_first(plays: &[Node]) -> Vec<String> {
 /// is the case: its block refuses overrides first, then sets the password.
 const CONTROLLER_ONLY_GUARD: &str = "refuse-var-overrides.yml";
 
-/// The file an include_tasks or import_tasks names, under any spelling, as a string or a `file:`.
-fn included_file(task: &Node) -> Option<&str> {
-    ["include_tasks", "import_tasks"]
-        .iter()
-        .filter_map(|m| module(task, m))
-        .find_map(|v| match v {
-            Node::Str(s) => Some(s.as_str()),
-            Node::Map(_) => v.get("file").and_then(Node::as_str),
-            _ => None,
-        })
-}
-
 /// Exactly `tasks/<guard>`, as every playbook includes it: a templated path (`{{ dir }}/tasks/...`)
 /// could render to another file, so it is not the guard.
 fn is_controller_only_guard(task: &Node) -> bool {
-    included_file(task) == Some(format!("tasks/{CONTROLLER_ONLY_GUARD}").as_str())
+    include_target(task, &INCLUDE_SHORTS) == Some(format!("tasks/{CONTROLLER_ONLY_GUARD}").as_str())
 }
 
 /// The first task a play actually runs. `pre_tasks` run first; when they run nothing, `roles` run
@@ -258,21 +250,21 @@ fn is_controller_only_guard(task: &Node) -> bool {
 /// or block with a constant-false `when`. Any other `when`, or a `never` tag, makes the answer
 /// unknown (Ansible applies a block's `when` and `tags` to everything in it), which fails closed.
 fn first_executed_task(play: &Node) -> Option<&Node> {
-    let non_empty = |key: &str| {
-        play.get(key)
-            .and_then(Node::as_seq)
-            .filter(|s| !s.is_empty())
-    };
     // pre_tasks that run nothing hand over to roles, then tasks.
-    let pre = non_empty("pre_tasks").map_or(First::Nothing, first_in);
+    let pre = first_in(play.get("pre_tasks").and_then(Node::as_seq).unwrap_or(&[]));
+    let has_roles = play
+        .get("roles")
+        .and_then(Node::as_seq)
+        .is_some_and(|r| !r.is_empty());
     let first = match pre {
-        First::Nothing if non_empty("roles").is_some() => return None,
+        First::Nothing if has_roles => return None,
         First::Nothing => first_in(play.get("tasks").and_then(Node::as_seq)?),
         decided => decided,
     };
-    match first {
-        First::Found(task) => Some(task),
-        First::Unknown | First::Nothing => None,
+    if let First::Found(task) = first {
+        Some(task)
+    } else {
+        None
     }
 }
 
@@ -288,7 +280,6 @@ enum First<'a> {
 }
 
 fn first_in(seq: &[Node]) -> First<'_> {
-    use crate::credential_leaks::{tagged_never, when_is_constant_false};
     for task in seq {
         // A constant-false `when` never runs, whatever its tags: the next sibling runs first.
         if when_is_constant_false(task) {
@@ -310,14 +301,12 @@ fn first_in(seq: &[Node]) -> First<'_> {
         };
         // A block whose every task is skipped still runs its `always:`; only when that runs
         // nothing too does the next sibling run first. An unknown block stays unknown.
-        match first_in(block) {
-            First::Nothing => {}
-            known => return known,
-        }
         let always = task.get("always").and_then(Node::as_seq).unwrap_or(&[]);
-        match first_in(always) {
-            First::Nothing => {}
-            known => return known,
+        for part in [block, always] {
+            match first_in(part) {
+                First::Nothing => {}
+                known => return known,
+            }
         }
     }
     First::Nothing
@@ -343,7 +332,7 @@ fn resolves(task: &Node) -> bool {
             .and_then(Node::as_str)
             .is_some_and(|v| STORE_LOOKUP.is_match(v))
     });
-    included_file(task) == Some(format!("tasks/{RESOLVER_FILE}").as_str()) || sets
+    include_target(task, &INCLUDE_SHORTS) == Some(format!("tasks/{RESOLVER_FILE}").as_str()) || sets
 }
 
 #[test]

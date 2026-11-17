@@ -83,6 +83,8 @@ const GUARD_REL: &str = "tasks/assert-bao-transport.yml";
 const PLAYBOOKS: &str = "platform/playbooks";
 const NETBOX_TOKEN: &str = "platform/playbooks/provision-netbox-automation-token.yml";
 const SEED_KEY: &str = "platform/playbooks/seed-openbao-key.yml";
+/// The name of the seed playbook's end_play, which must end the run before any store write.
+const SEED_END_PLAY: &str = "End read-only verification before every secret-store write";
 const SEED_POSTIZ: &str = "platform/playbooks/seed-postiz-secrets.yml";
 const SEED_ACCESS: &str = "platform/playbooks/tasks/assert-bao-seed-access.yml";
 const BAO_MERGE: &str = "platform/playbooks/tasks/bao-merge-keys.yml";
@@ -90,7 +92,7 @@ const TEMPLATES: &str = "platform/semaphore/templates.yml";
 const RATCHET: &str = "platform/tests/known_unguarded_bao_plays.txt";
 /// The module shorts that include a task file. Each is read through `module`, under all three
 /// spellings. The BATS guard match read `include_tasks:` alone; `import_tasks:` is read as well.
-const INCLUDE_SHORTS: [&str; 2] = ["include_tasks", "import_tasks"];
+pub(crate) const INCLUDE_SHORTS: [&str; 2] = ["include_tasks", "import_tasks"];
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -253,7 +255,7 @@ fn module<'a>(task: &'a Node, short: &str) -> Option<&'a Node> {
 
 /// The file a task includes, for `include_tasks: x` and the mapping form `{file: x, ...}`, under
 /// any of the `shorts` and any spelling of each.
-fn include_target<'a>(map: &'a Node, shorts: &[&str]) -> Option<&'a str> {
+pub(crate) fn include_target<'a>(map: &'a Node, shorts: &[&str]) -> Option<&'a str> {
     shorts.iter().find_map(|short| {
         let value = module(map, short)?;
         match value {
@@ -1396,7 +1398,7 @@ impl Guard {
 /// always errors, or the `never` tag. A guard counted under any of them would not run, so the
 /// transport-guard count and the seed chain refuse all three. The first-executed search needs the
 /// stricter, order-aware [`when_is_constant_false`], since an error there runs a `rescue:` first.
-pub(crate) fn never_runs(task: &Node) -> bool {
+fn never_runs(task: &Node) -> bool {
     when_any(task, item_constant_false) || when_always_errors(task) || tagged_never(task)
 }
 
@@ -1446,7 +1448,6 @@ fn when_always_errors(task: &Node) -> bool {
 /// each is a boolean, so Ansible skips the task silently. An integer-valued condition such as `0` is
 /// not one: ansible-core 2.20 raises on it, and the error runs an enclosing block's `rescue:`.
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
-    let is_false = item_constant_false;
     let is_true = |item: &Node| match item {
         Node::Bool(b) => *b,
         Node::Str(s) => matches!(bare_when(s), "true" | "True"),
@@ -1455,18 +1456,11 @@ pub(crate) fn when_is_constant_false(task: &Node) -> bool {
     match task.get("when") {
         // Ansible evaluates the items in order and an earlier one may raise first, so a list is
         // constant-false only when every item before the false one is a literal true.
-        Some(Node::Seq(items)) => {
-            for item in items {
-                if is_false(item) {
-                    return true;
-                }
-                if !is_true(item) {
-                    return false;
-                }
-            }
-            false
-        }
-        Some(item) => is_false(item),
+        Some(Node::Seq(items)) => items
+            .iter()
+            .find(|item| !is_true(item))
+            .is_some_and(item_constant_false),
+        Some(item) => item_constant_false(item),
         None => false,
     }
 }
@@ -1479,7 +1473,7 @@ pub(crate) fn tagged_never(task: &Node) -> bool {
         Some(Node::Str(s)) => s.split(',').any(|t| t.trim() == "never"),
         Some(Node::Seq(items)) => items
             .iter()
-            .any(|t| t.as_str().map(str::trim) == Some("never")),
+            .any(|t| t.as_str().is_some_and(|t| t.trim() == "never")),
         _ => false,
     }
 }
@@ -1801,8 +1795,7 @@ fn seed_access_check_ends_the_play_before_any_write() {
     // The named end_play, not the first: an inert end_play placed early would pass an order check
     // while the real one sat after the merge.
     let end = position(&seed_maps, |m| {
-        m.get("name").and_then(Node::as_str)
-            == Some("End read-only verification before every secret-store write")
+        m.get("name").and_then(Node::as_str) == Some(SEED_END_PLAY)
             && module(m, "meta").and_then(Node::as_str) == Some("end_play")
     });
 
@@ -1824,7 +1817,7 @@ fn seed_access_check_ends_the_play_before_any_write() {
         .find_map(|play| {
             task_with_ancestors(
                 play.get("tasks").and_then(Node::as_seq).unwrap_or(&[]),
-                "End read-only verification before every secret-store write",
+                SEED_END_PLAY,
             )
         })
         .expect("the named end_play is in a play's task tree");
