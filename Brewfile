@@ -4,6 +4,7 @@
 brew "ansible"
 brew "ansible-lint"
 brew "bats-core"
+brew "cargo-nextest"  # Rust test runner for the hook lanes (plan 24); needs rustup's cargo; CI pins its own version
 brew "gh"
 brew "git"
 brew "go"
