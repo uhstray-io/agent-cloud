@@ -540,3 +540,21 @@ fn a_declared_pair_on_a_shared_storage_is_listed() {
     );
     assert_eq!(out["volumes"][0]["source"], "declared", "{out}");
 }
+
+#[test]
+fn a_storage_whose_sharing_is_unknown_counts_as_shared() {
+    // Arrange: `local` reports no `shared` field and is not CephFS, so whether another cluster
+    // writes to it is unknown.
+    let mut payload = base(vec![read("n1", "local", vec![archive("local", 900, 1)])]);
+    payload["plan"]["reads"][1]["status"] = json!({"type": "dir"});
+
+    // Act
+    let out = ok("list", &payload);
+
+    // Assert
+    assert_eq!(out["count"], 0, "{out}");
+    assert_eq!(
+        out["not_listed"]["local"]["gone_on_shared"]["count"], 1,
+        "{out}"
+    );
+}

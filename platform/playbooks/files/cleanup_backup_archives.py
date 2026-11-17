@@ -121,8 +121,9 @@ def list_archives(data):
     # a node-local one, or CephFS on this cluster's own Ceph. On any other shared storage (NFS, CIFS,
     # PBS, an external CephFS) the vmid may be another cluster's guest, so it is kept unless declared.
     config = {c.get("storage"): c for c in data.get("storage_config") or []}
+    # Unknown counts as shared: a status with no `shared` field is not taken as node-local.
     own = {r["storage"] for r in data["plan"]["reads"]
-           if not survey._flag((r.get("status") or {}).get("shared"))
+           if (r.get("status") or {}).get("shared") in (0, "0", False)
            or survey._own_cephfs(config.get(r["storage"], {}))}
     listed, kept = [], {}
     for node, storage, v in _backups(data["content_reads"]):
