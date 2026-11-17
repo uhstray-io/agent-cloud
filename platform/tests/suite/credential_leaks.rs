@@ -1433,11 +1433,33 @@ fn when_always_errors(task: &Node) -> bool {
 /// each is a boolean, so Ansible skips the task silently. An integer-valued condition such as `0` is
 /// not one: ansible-core 2.20 raises on it, and the error runs an enclosing block's `rescue:`.
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
-    when_any(task, |item| match item {
+    let is_false = |item: &Node| match item {
         Node::Bool(b) => !b,
         Node::Str(s) => constant_false(s),
         _ => false,
-    })
+    };
+    let is_true = |item: &Node| match item {
+        Node::Bool(b) => *b,
+        Node::Str(s) => matches!(bare_when(s), "true" | "True"),
+        _ => false,
+    };
+    match task.get("when") {
+        // Ansible evaluates the items in order and an earlier one may raise first, so a list is
+        // constant-false only when every item before the false one is a literal true.
+        Some(Node::Seq(items)) => {
+            for item in items {
+                if is_false(item) {
+                    return true;
+                }
+                if !is_true(item) {
+                    return false;
+                }
+            }
+            false
+        }
+        Some(item) => is_false(item),
+        None => false,
+    }
 }
 
 /// Whether a task carries the `never` tag. Whether it then runs depends on the run's `--tags`, so
@@ -1511,6 +1533,19 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
     // An erroring constant never runs, but it is not a constant false: the first-executed search
     // reads it as unknown, since the error runs an enclosing rescue.
     assert!(!when_is_constant_false(&task("name: t\nwhen: \"0\"\n")));
+    // In a list, an item before the false one may raise first.
+    let erroring_first = task("name: t\nwhen: [\"0\", false]\n");
+    assert!(!when_is_constant_false(&erroring_first));
+    assert!(never_runs(&erroring_first));
+    assert!(when_is_constant_false(&task(
+        "name: t\nwhen: [true, false]\n"
+    )));
+    assert!(when_is_constant_false(&task(
+        "name: t\nwhen: [\"{{ True }}\", false]\n"
+    )));
+    assert!(!when_is_constant_false(&task(
+        "name: t\nwhen: [flag, false]\n"
+    )));
 }
 
 #[test]
@@ -1703,23 +1738,40 @@ fn bao_merge_keys_creates_a_path_only_under_cas() {
 }
 
 /// The task with this exact name in a task tree, preceded by every block that encloses it,
-/// outermost first; `block` and `always` are walked, `rescue` is not.
+/// outermost first; only `block` is walked, never `rescue` or `always`.
 fn task_with_ancestors<'a>(tasks: &'a [Node], name: &str) -> Option<Vec<&'a Node>> {
     for task in tasks {
         if task.get("name").and_then(Node::as_str) == Some(name) {
             return Some(vec![task]);
         }
-        // Not `rescue`: it runs only after a failure, so an end_play there does not end a run that
-        // succeeds.
-        for section in ["block", "always"] {
-            let children = task.get(section).and_then(Node::as_seq).unwrap_or(&[]);
-            if let Some(mut chain) = task_with_ancestors(children, name) {
-                chain.insert(0, task);
-                return Some(chain);
-            }
+        // Only `block`: `rescue` runs only after a failure, and `always` runs after the block, so
+        // a merge in that block would run before an end_play there, whatever the key order.
+        let children = task.get("block").and_then(Node::as_seq).unwrap_or(&[]);
+        if let Some(mut chain) = task_with_ancestors(children, name) {
+            chain.insert(0, task);
+            return Some(chain);
         }
     }
     None
+}
+
+#[test]
+fn task_with_ancestors_follows_only_block() {
+    let tasks = |text: &str| yaml::parse(text, "synthetic").remove(0);
+    let in_block =
+        tasks("- name: outer\n  block:\n    - name: end\n      ansible.builtin.meta: end_play\n");
+    let chain = task_with_ancestors(in_block.as_seq().expect("a list"), "end").expect("found");
+    assert_eq!(chain.len(), 2);
+    for hidden in [
+        "- block:\n    - ansible.builtin.debug: {msg: hi}\n  rescue:\n    - name: end\n      ansible.builtin.meta: end_play\n",
+        "- always:\n    - name: end\n      ansible.builtin.meta: end_play\n  block:\n    - ansible.builtin.debug: {msg: hi}\n",
+    ] {
+        let doc = tasks(hidden);
+        assert!(
+            task_with_ancestors(doc.as_seq().expect("a list"), "end").is_none(),
+            "{hidden}"
+        );
+    }
 }
 
 #[test]

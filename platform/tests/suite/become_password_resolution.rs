@@ -327,7 +327,7 @@ fn first_in(seq: &[Node]) -> First<'_> {
 /// the store's password. A literal, an extra var, or a default naming the path is not one.
 static STORE_LOOKUP: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#"^\s*\{{\{{\s*lookup\(\s*['"](?:community\.hashi_vault\.)?hashi_vault['"]\s*,\s*['"]{}['"][^{{}}]*\)\s*\}}\}}\s*$"#,
+        r#"^\s*\{{\{{\s*lookup\(\s*['"](?:community\.hashi_vault\.)?hashi_vault['"]\s*,\s*['"]{}['"]\s*(?:,[^{{}}]*)?\)\s*\}}\}}\s*$"#,
         regex::escape(SECRET_PATH)
     ))
     .expect("a valid regex")
@@ -736,6 +736,13 @@ const FIRST_EXECUTED_CASES: &str = r#"
   tasks:
     - ansible.builtin.set_fact:
         ansible_become_password: "x {{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password') }}"
+- name: bad the store path concatenated inside the lookup
+  hosts: h
+  become: true
+  gather_facts: false
+  tasks:
+    - ansible.builtin.set_fact:
+        ansible_become_password: "{{ lookup('community.hashi_vault.hashi_vault', 'secret/data/services/ssh:become_password' ~ 'x') }}"
 - name: bad the store lookup inside a Jinja comment
   hosts: h
   become: true

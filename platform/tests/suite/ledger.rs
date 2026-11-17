@@ -70,7 +70,7 @@ static FILE_RS: LazyLock<Regex> =
     LazyLock::new(|| re(r"^(?P<path>(?:[\w.-]+/)*suite/[\w-]+\.rs)(?:::(?P<name>\w+))?$"));
 static INNER_CFG: LazyLock<Regex> =
     LazyLock::new(|| re(r"#\s*!\s*\[\s*cfg(?:_attr)?\s*\([^\]]*\]"));
-static ATTRIBUTE: LazyLock<Regex> = LazyLock::new(|| re(r"#\[[^\]]*\]"));
+static ATTRIBUTE: LazyLock<Regex> = LazyLock::new(|| re(r"#\s*\[[^\]]*\]"));
 static NAME: LazyLock<Regex> = LazyLock::new(|| re(r"^test_\w+$"));
 static TEST_FILE: LazyLock<Regex> = LazyLock::new(|| re(r"^(?:test_\w+\.py|[\w-]+\.bats)$"));
 static BATS_TEST: LazyLock<Regex> =
@@ -235,16 +235,28 @@ fn defines_fn(text: &str, fn_name: &str, require_test: bool) -> bool {
         if !require_test {
             return true;
         }
+        // A counted test is a top-level item: its `fn` line starts at column 0. Inside a `mod`
+        // (rustfmt indents its items, which the rust_format test enforces) an outer attribute on
+        // the module could compile it out.
+        let whole = c.get(0).map_or("", |m| m.as_str());
+        let fn_line = whole.rsplit('\n').next().unwrap_or(whole);
+        if fn_line.starts_with([' ', '\t']) {
+            return false;
+        }
         // Every attribute on the fn, blank lines between them or not. They may be `#[test]`,
         // `#[cfg(test)]` or `#[allow(..)]` and must include `#[test]`. Anything else (`#[ignore]`,
         // `#[should_panic]`, `#[cfg_attr(..)]`, another `#[cfg(..)]`) changes whether or how the
         // test runs; others (`#[serial]`, say) are refused on purpose: a named test must carry
         // only these.
-        let run: Vec<&str> = ATTRIBUTE.find_iter(&c[1]).map(|m| m.as_str()).collect();
-        run.contains(&"#[test]")
+        // Compared with all whitespace removed: `# [test]` is `#[test]`.
+        let run: Vec<String> = ATTRIBUTE
+            .find_iter(&c[1])
+            .map(|m| m.as_str().split_whitespace().collect())
+            .collect();
+        run.iter().any(|a| a == "#[test]")
             && run
                 .iter()
-                .all(|a| *a == "#[test]" || *a == "#[cfg(test)]" || a.starts_with("#[allow("))
+                .all(|a| a == "#[test]" || a == "#[cfg(test)]" || a.starts_with("#[allow("))
     })
 }
 
@@ -937,6 +949,11 @@ fn a_test_fn_inside_a_literal_or_comment_is_not_a_test() {
     assert!(defines_test(cfg_out, "y"));
     assert!(!defines_test("#[test]\n#[ignore]\nfn x() {}\n", "x"));
     assert!(!defines_test("#[ignore]\n\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test("# [cfg(any())]\n#[test]\nfn x() {}\n", "x"));
+    assert!(!defines_test(
+        "#[cfg(any())]\nmod m {\n    #[test]\n    fn x() {}\n}\n",
+        "x"
+    ));
     assert!(!defines_test("#![cfg(any())]\n#[test]\nfn x() {}\n", "x"));
     assert!(!defines_test("#![cfg (any())]\n#[test]\nfn x() {}\n", "x"));
     assert!(!defines_test(

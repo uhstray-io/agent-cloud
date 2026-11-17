@@ -227,7 +227,15 @@ fn runs_store_cli(task: &Node) -> bool {
     if scanned.is_empty() {
         return false;
     }
-    scanned.extend(task.get("args"));
+    // Of the task-level args, only the keys that carry the command line: `stdin`, `chdir`,
+    // `creates` and the like are data, not the program run.
+    if let Some(args) = task.get("args") {
+        scanned.extend(
+            ["cmd", "argv", "_raw_params"]
+                .iter()
+                .filter_map(|k| args.get(k)),
+        );
+    }
     scanned.into_iter().any(|node| {
         let mut lines = Vec::new();
         command_lines(node, &mut lines);
@@ -264,6 +272,7 @@ fn a_store_cli_call_is_detected() {
     for clean in [
         "action: debug msg=\"bao kv put\"\n",
         "ansible.builtin.command: echo hi\nargs: {chdir: /tmp}\n",
+        "ansible.builtin.command: cat\nargs: {stdin: \"bao kv put x\"}\n",
     ] {
         assert!(!runs_store_cli(&task(clean)), "{clean}");
     }
