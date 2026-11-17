@@ -1,7 +1,7 @@
 """The ufw rule builders and readers (filter_plugins/ufw_rules.py), tested directly.
 
-test_apply_firewall_convergence.py proves apply-firewall.yml wires them into the adds and
-the prune guard; the command forms, tags and spellings live here, as function calls
+suite/apply_firewall_convergence_playbook.rs (Rust) proves apply-firewall.yml wires them
+into the adds and the prune guard; the command forms, tags and spellings live here, as function calls
 instead of playbook runs. Specs are in
 the form `ufw show added` prints (ufw 0.36.2 src/parser.py get_command), without the
 leading `ufw ` and the comment.
