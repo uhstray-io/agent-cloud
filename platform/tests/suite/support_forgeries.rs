@@ -124,8 +124,10 @@ fn a_value_needing_a_backslash_is_refused() {
 
 #[test]
 fn the_guard_references_every_name_the_python_finds() {
-    // The Python set on b09a5a34. Every one is required, so a walk that skips list items or keys
-    // and drops a name fails here instead of letting by_name accept a name the guard reads. The
+    // The Python set on b09a5a34. Every one is required, so a walk that drops list contents, or a
+    // name pattern that loses `_pass` or `_password`, fails here instead of letting by_name accept
+    // a name the guard reads. It does not cover the walk's mapping-key branch: each name that is a
+    // key in this guard also appears in a value. S6's shared walk brings its own key test. The
     // check is containment: a name the guard gains needs no edit; one it drops does.
     for name in [
         "_conn_forged",
