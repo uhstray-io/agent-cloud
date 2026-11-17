@@ -1391,9 +1391,32 @@ impl Guard {
     }
 }
 
-/// Whether a task never runs: a constant-false `when`, or the `never` tag.
+/// Whether a task never runs: a constant-false `when`, a `when` that always errors, or the `never`
+/// tag. A guard counted under any of them would not run, so the transport-guard count and the seed
+/// chain refuse all three; the first-executed search reads an erroring `when` as unknown instead.
 pub(crate) fn never_runs(task: &Node) -> bool {
-    when_is_constant_false(task) || tagged_never(task)
+    when_is_constant_false(task) || when_always_errors(task) || tagged_never(task)
+}
+
+/// Whether a task's `when` (or any item of a `when:` list) is a constant ansible-core raises on
+/// instead of skipping: an integer such as `0`, or a quoted `no`, `No` or `FALSE`, which Jinja reads
+/// as an undefined variable. Bare or wrapped once in `{{ }}`.
+fn when_always_errors(task: &Node) -> bool {
+    let errors = |item: &Node| {
+        item.as_str().is_some_and(|s| {
+            let t = s.trim();
+            let bare = t
+                .strip_prefix("{{")
+                .and_then(|t| t.strip_suffix("}}"))
+                .map_or(t, str::trim);
+            matches!(bare, "0" | "no" | "No" | "FALSE")
+        })
+    };
+    match task.get("when") {
+        Some(Node::Seq(items)) => items.iter().any(errors),
+        Some(item) => errors(item),
+        None => false,
+    }
 }
 
 /// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
@@ -1466,15 +1489,15 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
         "tags: never\n",
         "tags: [deploy, never]\n",
         "tags: \"never,deploy\"\n",
+        "when: \"0\"\n",
+        "when: \"{{ 0 }}\"\n",
+        "when: \"no\"\n",
+        "when: \"{{ No }}\"\n",
     ] {
         assert!(never_runs(&task(&format!("name: t\n{never}"))), "{never}");
     }
     for runs in [
         "when: true\n",
-        "when: \"no\"\n",
-        "when: \"{{ No }}\"\n",
-        "when: \"0\"\n",
-        "when: \"{{ 0 }}\"\n",
         "when: 1 == 1\n",
         "when: 1 != 2\n",
         "when: some_flag | bool\n",
@@ -1483,6 +1506,9 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
     ] {
         assert!(!never_runs(&task(&format!("name: t\n{runs}"))), "{runs}");
     }
+    // An erroring constant never runs, but it is not a constant false: the first-executed search
+    // reads it as unknown, since the error runs an enclosing rescue.
+    assert!(!when_is_constant_false(&task("name: t\nwhen: \"0\"\n")));
 }
 
 #[test]
