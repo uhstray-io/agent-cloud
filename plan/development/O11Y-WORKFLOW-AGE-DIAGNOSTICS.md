@@ -54,7 +54,8 @@ Only bounded integer counters with fixed field names are added. Existing public 
 - [Observability dashboard accuracy change](openspec/changes/o11y-dashboard-accuracy/)
 - [Observability platform principles](../../PRINCIPLES.md#7-observability)
 - [Dashboard data verifier](../../platform/playbooks/files/verify-o11y-dashboard-data.py)
-- [Verifier tests](../../platform/tests/test_verify_o11y_dashboard_data.py)
+- Verifier tests: `platform/tests/test_verify_o11y_dashboard_data.py` (plain text, not a link, so
+  the test's port to the Rust suite does not have to edit this file; plan 24, D10)
 - [Repository instructions](../../AGENTS.md)
 
 ## Revision History
