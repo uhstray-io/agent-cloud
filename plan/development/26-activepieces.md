@@ -275,6 +275,7 @@ Production follows the order in the sequence diagram. The owner exists before th
 | A platform-admin passes the gate | Only platform-admins reach the application | A member of `platform-admins` signs in through Authentik and reaches the application. |
 | A non-admin is refused at the edge | Only platform-admins reach the application | A signed-in user outside `platform-admins` is refused at Caddy, before the application. |
 | A direct connection from another LAN host is refused | The application port is reachable from the Caddy host only | A connection from another LAN host to the app port fails, and one from the Caddy group succeeds. |
+| An undeclared outbound connection is refused | Outbound traffic from the service host follows a declared allowlist | With egress in enforce mode, a connection from the host to an undeclared destination is refused and every declared egress probe succeeds. |
 | An undeclared webhook path stays gated | Webhook paths are exempted by exact path only | A webhook path that no inventory entry declares stays behind the gate. |
 | A restore swaps in only a fully loaded copy | The database can be backed up and restored | A restore that fails part-way leaves the live database unchanged, and only a fully loaded copy is swapped in. |
 | A dump restores into a running instance | The database can be backed up and restored | A dump taken by the backup playbook restores into a running instance that answers its health route, with its flows and connections present. |

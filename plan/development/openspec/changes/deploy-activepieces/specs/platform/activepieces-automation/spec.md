@@ -71,6 +71,15 @@ The host firewall SHALL admit the application port from the reverse proxy host a
 - **WHEN** a host on the local network other than the reverse proxy host opens a connection to the application port
 - **THEN** the connection fails, and a connection from the reverse proxy host succeeds
 
+### Requirement: Outbound traffic from the service host follows a declared allowlist
+
+From task 2.6 the host firewall SHALL refuse outbound connections from the service host that its declared egress allowlist does not name. The in-process SSRF guard MUST NOT be the only egress control, because upstream describes it as best-effort.
+
+#### Scenario: An undeclared outbound connection is refused
+
+- **WHEN** the egress mode is enforce and a process on the service host opens a connection to a destination and port the allowlist does not name
+- **THEN** the connection is refused, and each declared egress probe still succeeds
+
 ### Requirement: Webhook paths are exempted by exact path only
 
 The service's inbound webhook paths SHALL be behind the identity gate unless a flow is approved for one. A webhook exemption MUST name one exact path declared in inventory, which is the `/api/v1/webhooks/<flowId>` path of one flow. The `/sync`, `/draft/sync`, `/draft` and `/test` variants MUST NOT be exempt. An exemption MUST NOT cover a path prefix or a group of paths.
