@@ -11,9 +11,9 @@
 //! | Python test | Rust fn |
 //! |---|---|
 //! | `test_a_dry_run_init_failure_fails_the_run_and_still_writes_nothing` | `a_dry_run_init_failure_fails_the_run_and_still_writes_nothing` |
-//! | `test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal` (3 cases) | `a_missing_or_malformed_guard_receipt_has_a_fixed_refusal` |
+//! | `test_a_missing_or_malformed_guard_receipt_has_a_fixed_refusal` (3 cases) | `an_empty_guard_receipt_has_a_fixed_refusal`, `an_invalid_guard_receipt_has_a_fixed_refusal`, `an_incomplete_guard_receipt_has_a_fixed_refusal` |
 //! | `test_a_guard_that_cannot_start_has_a_fixed_refusal` | `a_guard_that_cannot_start_has_a_fixed_refusal` |
-//! | `test_a_failed_tofu_show_fails_the_run_in_either_mode` (2 cases) | `a_failed_tofu_show_fails_the_run_in_either_mode` |
+//! | `test_a_failed_tofu_show_fails_the_run_in_either_mode` (2 cases) | `a_failed_tofu_show_fails_a_dry_run`, `a_failed_tofu_show_fails_a_real_plan` |
 //!
 //! The Python read stdout only; this reads stdout, then stderr, as the other playbook-tier modules
 //! do. The fake-tofu writer, [`install_fake_tofu`], is private here: a candidate for the shared
@@ -171,7 +171,10 @@ fn tofu_run(tmp: &Path, opts: &Opts) -> Run {
         .collect();
     assert_eq!(tasks.len(), names.len(), "every named task is selected");
 
-    let mut vars = play["vars"].as_object().cloned().unwrap_or_default();
+    let mut vars = play["vars"]
+        .as_object()
+        .cloned()
+        .expect("the apply playbook's play has no vars mapping");
     let guard = opts
         .guard_script
         .clone()
@@ -199,7 +202,7 @@ fn tofu_run(tmp: &Path, opts: &Opts) -> Run {
     }]);
     let path = playbook::write(tmp, "p.yml", &harness);
     let mut cmd = process::ansible_playbook(tmp, "localhost,", &path.display().to_string());
-    let mut path_var = bin_dir.clone().into_os_string();
+    let mut path_var = bin_dir.into_os_string();
     path_var.push(":");
     path_var.push(std::env::var_os("PATH").unwrap_or_default());
     cmd.env("PATH", path_var)
@@ -260,37 +263,51 @@ fn a_dry_run_init_failure_fails_the_run_and_still_writes_nothing() {
     assert!(!Path::new(&run.calls[0][1]).parent().unwrap().exists());
 }
 
+/// One guard receipt case: the guard prints `receipt` and exits 1, and the run must refuse it
+/// with the fixed message and never repeat the receipt. Empty, invalid, and incomplete receipts
+/// fail closed.
+fn assert_receipt_refused(receipt: &str) {
+    let tmp = TempDir::new().unwrap();
+    let guard_script = tmp.path().join("bad_guard.py");
+    std::fs::write(
+        &guard_script,
+        format!("import sys\nsys.stdout.write('{receipt}')\nsys.exit(1)\n"),
+    )
+    .unwrap();
+    let run = tofu_run(
+        tmp.path(),
+        &Opts {
+            guard_script: Some(guard_script),
+            grafana_guard: true,
+            ..Opts::default()
+        },
+    );
+    assert!(!run.success, "receipt {receipt:?}: {}", run.out);
+    assert!(
+        run.out.contains(REFUSAL),
+        "receipt {receipt:?}: {}",
+        run.out
+    );
+    assert!(
+        receipt.is_empty() || !run.out.contains(receipt),
+        "receipt {receipt:?} repeated: {}",
+        run.out
+    );
+}
+
 #[test]
-fn a_missing_or_malformed_guard_receipt_has_a_fixed_refusal() {
-    // Empty, invalid, and incomplete receipts fail closed.
-    for receipt in ["", "not-json", "{}"] {
-        let tmp = TempDir::new().unwrap();
-        let guard_script = tmp.path().join("bad_guard.py");
-        std::fs::write(
-            &guard_script,
-            format!("import sys\nsys.stdout.write('{receipt}')\nsys.exit(1)\n"),
-        )
-        .unwrap();
-        let run = tofu_run(
-            tmp.path(),
-            &Opts {
-                guard_script: Some(guard_script),
-                grafana_guard: true,
-                ..Opts::default()
-            },
-        );
-        assert!(!run.success, "receipt {receipt:?}: {}", run.out);
-        assert!(
-            run.out.contains(REFUSAL),
-            "receipt {receipt:?}: {}",
-            run.out
-        );
-        assert!(
-            receipt.is_empty() || !run.out.contains(receipt),
-            "receipt {receipt:?} repeated: {}",
-            run.out
-        );
-    }
+fn an_empty_guard_receipt_has_a_fixed_refusal() {
+    assert_receipt_refused("");
+}
+
+#[test]
+fn an_invalid_guard_receipt_has_a_fixed_refusal() {
+    assert_receipt_refused("not-json");
+}
+
+#[test]
+fn an_incomplete_guard_receipt_has_a_fixed_refusal() {
+    assert_receipt_refused("{}");
 }
 
 #[test]
@@ -309,27 +326,35 @@ fn a_guard_that_cannot_start_has_a_fixed_refusal() {
     assert!(!run.out.contains("missing_guard.py"), "{}", run.out);
 }
 
+/// A failed `tofu show` fails the run, in a dry run (`check`) and in a real plan alike.
+fn assert_failed_show_fails(check: bool) {
+    let tmp = TempDir::new().unwrap();
+    let run = tofu_run(
+        tmp.path(),
+        &Opts {
+            check,
+            show_rc: 1,
+            ..Opts::default()
+        },
+    );
+    assert_eq!(
+        commands(&run.calls),
+        ["init", "plan", "show"],
+        "check={check}"
+    );
+    assert!(
+        !run.success && run.out.contains("'show_rc': 1,"),
+        "check={check}: {}",
+        run.out
+    );
+}
+
 #[test]
-fn a_failed_tofu_show_fails_the_run_in_either_mode() {
-    for check in [true, false] {
-        let tmp = TempDir::new().unwrap();
-        let run = tofu_run(
-            tmp.path(),
-            &Opts {
-                check,
-                show_rc: 1,
-                ..Opts::default()
-            },
-        );
-        assert_eq!(
-            commands(&run.calls),
-            ["init", "plan", "show"],
-            "check={check}"
-        );
-        assert!(
-            !run.success && run.out.contains("'show_rc': 1,"),
-            "check={check}: {}",
-            run.out
-        );
-    }
+fn a_failed_tofu_show_fails_a_dry_run() {
+    assert_failed_show_fails(true);
+}
+
+#[test]
+fn a_failed_tofu_show_fails_a_real_plan() {
+    assert_failed_show_fails(false);
 }
