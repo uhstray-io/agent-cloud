@@ -198,7 +198,8 @@ fn command_lines(node: &Node, out: &mut Vec<String>) {
 ///
 /// The module is read under its key (any spelling) and from `action:` / `local_action:` (a string's
 /// first word, or a mapping's `module`); for a command-family call, that value and the task-level
-/// `args` are both scanned, since either can carry the command line.
+/// `args` keys that can carry a program (`cmd`, `argv`, `_raw_params`, `stdin`, `command`) are
+/// scanned.
 fn runs_store_cli(task: &Node) -> bool {
     let is_command = |name: &str| {
         let short = name
@@ -227,11 +228,12 @@ fn runs_store_cli(task: &Node) -> bool {
     if scanned.is_empty() {
         return false;
     }
-    // Of the task-level args, only the keys that carry the command line: `stdin`, `chdir`,
-    // `creates` and the like are data, not the program run.
+    // Of the task-level args, the keys that can carry a program: the command line itself, and
+    // `stdin`, which is the program for `sh`, `bash -s` or `python3 -`. `chdir`, `creates` and the
+    // like are paths, not the program run.
     if let Some(args) = task.get("args") {
         scanned.extend(
-            ["cmd", "argv", "_raw_params"]
+            ["cmd", "argv", "_raw_params", "stdin", "command"]
                 .iter()
                 .filter_map(|k| args.get(k)),
         );
@@ -266,13 +268,13 @@ fn a_store_cli_call_is_detected() {
         "action: command bao kv put x\n",
         "local_action: {module: ansible.builtin.command, cmd: bao kv put x}\n",
         "ansible.builtin.command: {}\nargs: {cmd: bao kv put x}\n",
+        "ansible.builtin.command: bash -s\nargs: {stdin: \"bao kv put x\"}\n",
     ] {
         assert!(runs_store_cli(&task(flagged)), "{flagged}");
     }
     for clean in [
         "action: debug msg=\"bao kv put\"\n",
         "ansible.builtin.command: echo hi\nargs: {chdir: /tmp}\n",
-        "ansible.builtin.command: cat\nargs: {stdin: \"bao kv put x\"}\n",
     ] {
         assert!(!runs_store_cli(&task(clean)), "{clean}");
     }

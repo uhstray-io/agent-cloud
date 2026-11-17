@@ -1391,11 +1391,22 @@ impl Guard {
     }
 }
 
-/// Whether a task never runs: a constant-false `when`, a `when` that always errors, or the `never`
-/// tag. A guard counted under any of them would not run, so the transport-guard count and the seed
-/// chain refuse all three; the first-executed search reads an erroring `when` as unknown instead.
+/// Whether a task never runs: a `when` with any constant-false item (the items are ANDed, so one
+/// false item means it skips or an earlier item raises: either way it does not run), a `when` that
+/// always errors, or the `never` tag. A guard counted under any of them would not run, so the
+/// transport-guard count and the seed chain refuse all three. The first-executed search needs the
+/// stricter, order-aware [`when_is_constant_false`], since an error there runs a `rescue:` first.
 pub(crate) fn never_runs(task: &Node) -> bool {
-    when_is_constant_false(task) || when_always_errors(task) || tagged_never(task)
+    when_any(task, item_constant_false) || when_always_errors(task) || tagged_never(task)
+}
+
+/// Whether one `when` item is a constant false: the YAML bool or a [`constant_false`] string.
+fn item_constant_false(item: &Node) -> bool {
+    match item {
+        Node::Bool(b) => !b,
+        Node::Str(s) => constant_false(s),
+        _ => false,
+    }
 }
 
 /// Whether any item of a task's `when` (one value, or a `when:` list, whose items are ANDed)
@@ -1427,17 +1438,15 @@ fn when_always_errors(task: &Node) -> bool {
     })
 }
 
-/// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
-/// list (the items are ANDed). A constant false is the YAML bool, the strings `false` or `False`,
+/// Whether a task's `when` is a constant that is always false, so Ansible skips it silently: a
+/// single constant-false value, or a `when:` list whose first item that is not a literal true is a
+/// constant false (the items are evaluated in order, so an earlier unknown item may raise first and
+/// run a `rescue:`). A constant false is the YAML bool, the strings `false` or `False`,
 /// also wrapped once in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false:
 /// each is a boolean, so Ansible skips the task silently. An integer-valued condition such as `0` is
 /// not one: ansible-core 2.20 raises on it, and the error runs an enclosing block's `rescue:`.
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
-    let is_false = |item: &Node| match item {
-        Node::Bool(b) => !b,
-        Node::Str(s) => constant_false(s),
-        _ => false,
-    };
+    let is_false = item_constant_false;
     let is_true = |item: &Node| match item {
         Node::Bool(b) => *b,
         Node::Str(s) => matches!(bare_when(s), "true" | "True"),
@@ -1546,6 +1555,8 @@ fn never_runs_reads_wrapped_comparisons_and_the_never_tag() {
     assert!(!when_is_constant_false(&task(
         "name: t\nwhen: [flag, false]\n"
     )));
+    // ...but it never runs: a guard under it must not count.
+    assert!(never_runs(&task("name: t\nwhen: [flag, false]\n")));
 }
 
 #[test]
