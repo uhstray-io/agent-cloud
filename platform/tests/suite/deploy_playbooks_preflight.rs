@@ -516,6 +516,12 @@ const NOT_ACCEPTED: &[(&str, &str)] = &[
     ("nodefault", "(groups.get(target_service) | length) > 0"),
     // The `get` key is one name, optionally `| default('')`: a key that could cross `)` lets the
     // `, [])` belong to another filter, and an empty group passes (#1169 review).
+    // The trailing default must be an empty list too: `default([1])` makes a missing group's
+    // length 1, so a misspelled target passes (#1169 final-head review).
+    (
+        "subdefault1",
+        "(groups[target_service] | default([1]) | length) > 0",
+    ),
     (
         "ziplongest",
         "(groups.get(target_service) | zip_longest(['x'], []) | length) > 0",
