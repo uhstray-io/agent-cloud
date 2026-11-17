@@ -22,11 +22,13 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 import yaml
 from ansible_python import needs_ansible
+from fake_http import DrainingHandler, serve
 from harness_sandbox import run_playbook
 
 REPO = Path(__file__).resolve().parents[2]
@@ -259,23 +261,31 @@ def test_a_release_before_the_header_deploys_when_no_proxy_is_trusted(host):
 
 
 def _door_env(tmp_path: Path, extra: dict) -> tuple:
-    """The front door's real header check, then its real .env template, as weft-release.yml and the
-    deploy run them: the check first, the render only if it passed."""
+    """The front door's real header and mail checks, then its real .env template, as weft-release.yml
+    and the deploy run them: the checks first, the render only if they passed. `podman` is a script
+    that logs what it is asked, in engine.log."""
     env_file = tmp_path / "door.env"
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "podman").write_text(f'#!/bin/bash\necho "$*" >> "{tmp_path / "engine.log"}"\n')
+    (bindir / "podman").chmod(0o755)
     play = [{
         "hosts": "localhost", "connection": "local", "gather_facts": False,
+        "vars_files": [str(PLAYBOOKS / "vars/weft.yml")],
         "vars": {"_weft_release_name": NEW, "_weft_images": {"weft-door": f"{REGISTRY}/weft-door@{DIGEST}"},
-                 "_weft_door_dir": "/srv/weft-door", "weft_door_bind": "127.0.0.1",
+                 "weft_door_dir": "/srv/weft-door", "weft_door_bind": "127.0.0.1",
                  "weft_domain": "weft.example.test", **extra},
         "tasks": [
             {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-header.yml")},
+            {"ansible.builtin.include_tasks": str(PLAYBOOKS / "tasks/weft-door-mail.yml")},
             {"ansible.builtin.template": {"src": str(DOOR_DIR / "templates/door.env.j2"),
                                           "dest": str(env_file), "mode": "0600"}},
         ],
     }]
     playbook = tmp_path / "door.yml"
     playbook.write_text(yaml.safe_dump(play, width=10**6))
-    proc = run_playbook(playbook, tmp_path, env={"ANSIBLE_NOCOLOR": "1"})
+    env = {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}", "ANSIBLE_NOCOLOR": "1"}
+    proc = run_playbook(playbook, tmp_path, env=env)
     return proc, env_file
 
 
@@ -306,6 +316,139 @@ def test_a_front_door_with_no_proxy_to_believe_is_refused_before_its_env_is_rend
     assert proc.returncode != 0, proc.stdout[-4000:]
     assert "has no weft_door_trusted_proxies" in proc.stdout, proc.stdout[-4000:]
     assert not env_file.exists(), "the .env was rendered after the refusal"
+
+
+PROXIES = {"weft_door_trusted_proxies": ["192.0.2.5/32"]}
+
+
+def _env_lines(env_file: Path) -> dict:
+    return dict(line.split("=", 1) for line in env_file.read_text().splitlines()
+                if line and not line.startswith("#"))
+
+
+def test_staging_s_front_door_mails_a_catcher_on_its_own_loopback_that_sends_nothing(tmp_path):
+    # weft #541: the front door refuses to start without mail, and there is no provider yet. Staging's
+    # door hands every message to Mailpit, which keeps it. Its links are working sign-up and reset
+    # credentials, so they must reach nobody real, and must not cross a network in the clear: the
+    # door allows plain SMTP to its own loopback only, which is why the catcher shares its namespace.
+    proc, env_file = _door_env(tmp_path, {**PROXIES, "weft_environment": "staging", "weft_door_mailpit": True})
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    env = _env_lines(env_file)
+    pinned = yaml.safe_load((PLAYBOOKS / "vars/weft.yml").read_text())["_weft_mailpit_image"]
+    assert env["WEFT_DOOR_MAILPIT_IMAGE"] in pinned, env
+    assert "@sha256:" in env["WEFT_DOOR_MAILPIT_IMAGE"], "every image a weft host runs is pinned by digest"
+    assert env["WEFT_DOOR_URL"] == "https://weft.example.test", "every link points at the door's own https address"
+    assert env["WEFT_DOOR_MAIL_FROM"] == "no-reply@weft.example.test", env
+    log = (tmp_path / "engine.log").read_text()
+    assert f"pull {env['WEFT_DOOR_MAILPIT_IMAGE']}" in log, (
+        "the catcher is pulled with the checks, before anything stops: a pull that fails after the "
+        "stop leaves no front door\n" + log)
+    overlay = yaml.safe_load((DOOR_DIR / "compose.mailpit.yml").read_text())["services"]
+    door, catcher = overlay["door"], overlay["mailpit"]
+    assert door["environment"]["WEFT_FRONT_DOOR_SMTP_SECURITY"] == "plain"
+    assert door["environment"]["WEFT_FRONT_DOOR_SMTP_HOST"] == "127.0.0.1", (
+        "plain SMTP to anything but loopback refuses to start the door")
+    assert catcher["network_mode"] == "service:door", "the door's loopback is the catcher's only if they share it"
+    assert catcher["environment"]["MP_SMTP_BIND_ADDR"].startswith("127.0.0.1:"), catcher
+    assert catcher["image"].startswith("${WEFT_DOOR_MAILPIT_IMAGE:?"), "any default would be a tag"
+    assert not [key for key in catcher["environment"] if "RELAY" in key or "FORWARD" in key], (
+        "a relay or a forward is how a catcher sends real mail")
+    assert not [arg for arg in catcher.get("command", []) if "relay" in arg or "forward" in arg], catcher
+    assert all(port.startswith("127.0.0.1:") for port in door["ports"]), (
+        "the catcher's UI has no sign-in and shows live links: the VM's loopback only\n" + str(door["ports"]))
+
+
+@pytest.mark.parametrize("environment", ["rack", ""], ids=["rack", "unset"])
+def test_a_front_door_outside_staging_with_the_mail_catcher_is_refused_before_its_env_is_rendered(
+        tmp_path, environment):
+    # On the rack, a catcher is a front door whose every sign-up and reset reaches nobody, found by a
+    # customer who never gets their link. Refused with the checks, so the running door is untouched.
+    extra = {**PROXIES, "weft_door_mailpit": True}
+    if environment:
+        extra["weft_environment"] = environment
+    proc, env_file = _door_env(tmp_path, extra)
+    assert proc.returncode != 0, proc.stdout[-4000:]
+    assert "Only staging may run it" in proc.stdout, proc.stdout[-4000:]
+    assert not env_file.exists(), "the .env was rendered after the refusal"
+    assert not (tmp_path / "engine.log").exists(), "the catcher was pulled after the refusal"
+
+
+def test_a_front_door_without_the_mail_catcher_renders_none_of_it(tmp_path):
+    proc, env_file = _door_env(tmp_path, {**PROXIES, "weft_environment": "rack"})
+    assert proc.returncode == 0, proc.stdout[-4000:]
+    assert not [key for key in _env_lines(env_file) if "MAIL" in key or key == "WEFT_DOOR_URL"], (
+        "deploy.sh loads the catcher's overlay from .env alone\n" + env_file.read_text())
+    assert not (tmp_path / "engine.log").exists(), "nothing of the catcher is pulled"
+
+
+DOOR_ENGINE = """#!/bin/bash
+echo "$*" >> "{log}"
+case "$1 $2" in
+  "container exists") [ -e "{left}" ] ;;
+esac
+"""
+
+
+def _door_deploy_sh(tmp_path: Path, port: int, catcher: bool, left_behind: bool, command: str):
+    """The front door's real deploy.sh, against a podman that logs its arguments and says whether a
+    catcher container is left on the host."""
+    clone = tmp_path / "clone/platform"
+    door_dir = clone / "services/weft-door/deployment"
+    shutil.copytree(DOOR_DIR, door_dir, ignore=shutil.ignore_patterns(".env", "door.key"))
+    (clone / "lib").symlink_to(REPO / "platform/lib")
+    env = (f"WEFT_DOOR_IMAGE={REGISTRY}/weft-door@{DIGEST}\nWEFT_DOOR_DIR=/srv/weft-door\n"
+           f"WEFT_DOOR_BIND=127.0.0.1\nWEFT_DOOR_PORT={port}\n"
+           "WEFT_DOOR_WORKSPACE_URL=https://{name}.weft.example.test\n"
+           "WEFT_DOOR_CLIENT_ADDRESS_HEADER=CF-Connecting-IP\nWEFT_DOOR_TRUSTED_PROXIES=192.0.2.5/32\n")
+    if catcher:
+        env += f"WEFT_DOOR_MAILPIT_IMAGE=docker.io/axllent/mailpit@{DIGEST}\n"
+    (door_dir / ".env").write_text(env)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    left = tmp_path / "catcher-left"
+    if left_behind:
+        left.touch()
+    (bindir / "podman").write_text(DOOR_ENGINE.format(log=tmp_path / "engine.log", left=left))
+    (bindir / "podman").chmod(0o755)
+    proc = subprocess.run(["bash", "deploy.sh", command], cwd=door_dir, capture_output=True, text=True, timeout=60,
+                          env={**os.environ, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+                               "CONTAINER_ENGINE": "podman", "COMPOSE_CMD": "podman compose", "LOCAL_MODE": ""})
+    log = tmp_path / "engine.log"
+    return proc, (log.read_text().splitlines() if log.exists() else [])
+
+
+class _Page(DrainingHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.mark.parametrize("command", ["up", "stop"])
+def test_the_mail_catcher_stops_and_starts_with_the_door_whose_namespace_it_shares(tmp_path, command):
+    # podman refuses to remove a container another shares the network namespace of, so recreating the
+    # door alone fails while the catcher exists, and podman-compose still exits 0 and starts the OLD
+    # door again: a deploy that reports a release it is not running.
+    with serve(_Page) as url:
+        proc, log = _door_deploy_sh(tmp_path, int(url.rsplit(":", 1)[1]), True, False, command)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    composed = [line for line in log if line.startswith("compose ")]
+    assert composed and all("-f compose.mailpit.yml" in line for line in composed), log
+    assert composed[-1].endswith(" door mailpit"), composed
+
+
+def test_a_mail_catcher_the_env_no_longer_names_is_removed_before_the_door_is_recreated(tmp_path):
+    # Stopped, it still holds the door's namespace: recreating the door would fail, and the old door
+    # would start again on the old image.
+    with serve(_Page) as url:
+        proc, log = _door_deploy_sh(tmp_path, int(url.rsplit(":", 1)[1]), False, True, "up")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    removed = log.index("rm -f weft-door-mailpit")
+    up = next(i for i, line in enumerate(log) if line.startswith("compose ") and " up " in line)
+    assert removed < up, log
+    assert log[up].endswith(" door") and "compose.mailpit.yml" not in log[up], log
 
 
 def test_a_host_already_on_its_pin_is_left_alone(host):
