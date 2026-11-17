@@ -1171,8 +1171,9 @@ fn ufw_filters_give_the_results_their_tests_expect() {
 
     let item = "test_the_audit_rule_exists_only_in_audit_mode_and_only_with_an_allowlist";
     for id in [audit_without_mode, audit_without_list] {
-        // every rule's cmd is text without `log`; a non-list, or a rule with no text cmd, fails
-        // as pytest's `"log" in r["cmd"]` raised on it
+        // every rule's cmd is text without `log`; a non-list, or a rule whose cmd is not text,
+        // fails (pytest's `"log" in r[0]`, over `_desired`'s (cmd, tag, spec) tuples, raised on a
+        // null cmd)
         let no_audit = r[id].as_array().is_some_and(|rules| {
             rules
                 .iter()
