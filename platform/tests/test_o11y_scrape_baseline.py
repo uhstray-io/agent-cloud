@@ -1568,8 +1568,8 @@ else:
     return executable, inspected, removals
 
 
-# _cleanup gets the runner's own budget (cleanup_deadline is started + TOTAL_SECONDS), so only its
-# per-call caps bind, as in a real run; a 2 s budget was used up by slow starts under load (AC-968).
+# _cleanup gets the runner's whole TOTAL_SECONDS budget, far more than its per-call caps add up to,
+# so only those caps bind; a 2 s budget was used up by slow starts under load (AC-968).
 def test_native_promql_runner_cleans_only_exact_name_and_label_owned_containers(tmp_path):
     name = "o11y-promql-unique-1"
     owner = "invocation-unique"
