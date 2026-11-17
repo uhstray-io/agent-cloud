@@ -300,6 +300,7 @@ def test_pbs_sizes_are_logical_so_unexplained_and_reclaimable_bytes_are_unknown(
     (("/srv", "/srv/inner"), "", "one path inside the other", 40.0),  # two directories: two files
     # /srv with backup=inner/dump lists /srv/inner/dump, the inner storage's own dump directory
     (("/srv", "/srv/inner"), "backup=inner/dump", "one path inside the other", None),
+    (("/srv/dump", "/srv/dump"), "iso=images/iso", "same path", None),  # any type's override moves files
     (("/srv/a", "/srv/b"), "", "identical total and used bytes (inferred, not proven)", None),
 ])
 def test_combined_unexplained_bytes_count_a_shared_listing_once_and_unknown_overlap_as_unknown(
