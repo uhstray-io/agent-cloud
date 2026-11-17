@@ -128,7 +128,7 @@ fn cephfs_storages_on_one_filesystem_list_each_other_and_an_external_one_names_n
 
     // Assert: the whole cephfs section, the pool's usage rounded as given, and no sentinel printed.
     assert!(
-        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "filesystem_source": "external", "data_pools": [], "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "used_gib": 1.0, "percent_used": 37.4, "type": "replicated", "size": 3}]}"#),
+        out.contains(r#""cephfs": {"status": "read", "reason": null, "storages": [{"storage": "cephA", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephB"]}, {"storage": "cephB", "external": false, "filesystem": "cephfs", "filesystem_source": "only filesystem", "data_pools": ["cephfs_data"], "shares_filesystem_with": ["cephA"]}, {"storage": "cephExt", "external": true, "filesystem": null, "filesystem_source": "external", "data_pools": [], "shares_filesystem_with": []}], "pools": [{"pool": "cephfs_data", "ceph_used_gib": 1.0, "ceph_percent_used": 37.4, "type": "replicated", "size": 3}]}"#),
         "{out}"
     );
     for sentinel in ["MONHOST-SENTINEL", "PATH-SENTINEL", "SUBDIR-SENTINEL"] {
@@ -429,7 +429,7 @@ fn a_pool_ceph_has_no_stats_for_reports_its_usage_unknown_not_zero() {
     // Assert
     assert_eq!(
         out["cephfs"]["pools"],
-        json!([{"pool": "a_data", "used_gib": null, "percent_used": null, "type": null, "size": 3}]),
+        json!([{"pool": "a_data", "ceph_used_gib": null, "ceph_percent_used": null, "type": null, "size": 3}]),
         "{out}"
     );
 }

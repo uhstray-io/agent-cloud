@@ -22,10 +22,11 @@
 #   - whether each CephFS storage shares a filesystem on this cluster's Ceph with another (an external
 #     one shares none here), decided by filesystem name (its
 #     fs-name, or the cluster's only filesystem; unknown, and listed as no one's sharer, when neither
-#     resolves), and that filesystem's pools: Ceph's used bytes (all copies on disk when every OSD
-#     reports per-pool stats, so not comparable with a storage's used bytes), percent used, type and
-#     size (replicas, or data plus coding chunks when erasure-coded) (a CephFS with a monitor list
-#     names an external cluster and is not read);
+#     resolves), and that filesystem's pools: Ceph's used bytes and percent used, under Ceph's
+#     names (all copies on disk when every OSD reports per-pool stats, logical bytes otherwise;
+#     Proxmox does not say which, so neither compares with a storage's used bytes), type and size
+#     (replicas, or data plus coding chunks when erasure-coded) (a CephFS with a monitor list names an
+#     external cluster and is not read);
 #   - a disabled storage of any type is left out of every storage and CephFS figure, whatever its
 #     status row says; a backup job that names it still lists it as that job's storage;
 #   - per online node, the installed disks: device path, size, model, vendor, serial, Proxmox's `used`
