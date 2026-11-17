@@ -10,7 +10,8 @@
 //! would satisfy matches nothing. Patterns are the `regex` crate's syntax, which reads the ERE
 //! constructs the ported BATS patterns use; its escapes such as `\d` and `\t` are its own, not
 //! GNU grep's. A bare `{` is a compile error there (`mv {{`), so a ported pattern writes `\{`.
-//! A line-feed escape (`\n`, `\x0a`) is refused like a raw newline: no line ever holds one.
+//! A line-feed escape outside a class (`\n`, `\x0a`) is refused like a raw newline: no line ever
+//! holds one (`writes_line_feed` names the two forms the scan misses).
 //!
 //! An empty pattern or literal is found in every line and every text, so it checks nothing; grep
 //! reads one that holds a newline as several needles. Each assertion refuses both, naming the
@@ -18,6 +19,8 @@
 //!
 //! `task_block` and `assert_precedes` are the `assert_helpers.bash` forms (`task_block`,
 //! `assert_precedes`) over this text: one Ansible task's body, and the order of two first matches.
+
+use std::sync::LazyLock;
 
 use regex::Regex;
 
@@ -32,52 +35,69 @@ pub fn read(rel: &str) -> String {
 /// compile, or that `compile` refuses, panics, naming it.
 #[track_caller]
 pub fn any_line(text: &str, pattern: &str) -> bool {
-    let re = compile(pattern);
-    text.split_terminator('\n').any(|line| re.is_match(line))
+    first_line_matching(text, &compile("", pattern)).is_some()
 }
 
-/// The compiled `pattern`, refused where it cannot check what it says. An empty one is found in
-/// every line. A raw newline is several needles to grep, and no line holds one for a regex to
-/// match across. A line-feed escape (`\n`, `\x0a`) matches no line, for the same reason. Every
-/// line pattern compiles here, so `any_line` and `assert_precedes` refuse the same patterns.
+/// The compiled `pattern`, refused where it cannot check what it says (`require_needle`, then a
+/// line-feed escape, which matches no line). Every line pattern compiles here, so the line helpers
+/// refuse the same patterns. `origin` prefixes each panic (`"<file>: "`, or `""` for text).
 #[track_caller]
-fn compile(pattern: &str) -> Regex {
-    assert!(!pattern.is_empty(), "an empty pattern checks nothing");
-    assert!(
-        !pattern.contains('\n'),
-        "pattern `{pattern}` holds a newline; check each of its lines on its own"
-    );
+fn compile(origin: &str, pattern: &str) -> Regex {
+    require_needle(origin, pattern);
     assert!(
         !writes_line_feed(pattern),
-        "pattern `{pattern}` holds a line feed escape; a line never contains one, so it can only match across lines"
+        "{origin}`{pattern}` holds a line feed escape; a line never contains one, so it can only match across lines"
     );
     match Regex::new(pattern) {
         Ok(re) => re,
-        Err(e) => panic!("invalid pattern `{pattern}`: {e}"),
+        Err(e) => panic!("{origin}invalid pattern `{pattern}`: {e}"),
     }
 }
 
-/// Whether an escape in `pattern` writes U+000A. A backslash takes the byte after it with it, so
-/// `\\n` (an escaped backslash, then `n`) is not an escape. Every escape character is ASCII, so
-/// the walk goes by byte.
+/// Whether an escape outside a character class in `pattern` writes U+000A. A backslash takes the
+/// byte after it with it, so `\\n` (an escaped backslash, then `n`) is not an escape. Escapes inside
+/// a class are not refused: `[^\n]` is any character but a line feed, which a line holds. Two
+/// patterns get past this scan and match no line: a class of the line feed alone (`[\n]`), and an
+/// escape spread out under `(?x)` (`\x 0a`). Every escape character is ASCII, so the walk goes by
+/// byte.
 fn writes_line_feed(pattern: &str) -> bool {
     let bytes = pattern.as_bytes();
+    let mut class_depth = 0usize;
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'\\' {
-            match bytes.get(i + 1) {
-                Some(b'n') => return true,
-                Some(&kind @ (b'x' | b'u' | b'U'))
-                    if hex_escape_value(kind, &bytes[i + 2..]) == Some(0x0A) =>
-                {
-                    return true;
+        match bytes[i] {
+            b'\\' => {
+                if class_depth == 0 {
+                    match bytes.get(i + 1) {
+                        Some(b'n') => return true,
+                        Some(&kind @ (b'x' | b'u' | b'U'))
+                            if hex_escape_value(kind, &bytes[i + 2..]) == Some(0x0A) =>
+                        {
+                            return true;
+                        }
+                        _ => {}
+                    }
                 }
-                _ => {}
+                i += 2;
+                continue;
             }
-            i += 2;
-        } else {
-            i += 1;
+            b'[' => {
+                // A class opens, nested ones too (`[[:space:]]`). A `]` right after `[` or `[^` is
+                // a member, not the close: the regex crate reads `[]a]` as `]` or `a`.
+                class_depth += 1;
+                i += 1;
+                if bytes.get(i) == Some(&b'^') {
+                    i += 1;
+                }
+                if bytes.get(i) == Some(&b']') {
+                    i += 1;
+                }
+                continue;
+            }
+            b']' if class_depth > 0 => class_depth -= 1,
+            _ => {}
         }
+        i += 1;
     }
     false
 }
@@ -97,7 +117,8 @@ fn hex_escape_value(kind: u8, rest: &[u8]) -> Option<u32> {
         };
         rest.get(..width)?
     };
-    if digits.is_empty() || !digits.iter().all(u8::is_ascii_hexdigit) {
+    // `from_str_radix` takes a leading `+`, so the digits are checked first.
+    if !digits.iter().all(u8::is_ascii_hexdigit) {
         return None;
     }
     u32::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
@@ -105,45 +126,50 @@ fn hex_escape_value(kind: u8, rest: &[u8]) -> Option<u32> {
 
 /// Refuse a pattern or literal grep would read differently: an empty one is found everywhere, and
 /// grep reads each line of one that holds a newline as a separate needle, which neither `any_line`
-/// nor `contains` does.
-fn require_needle(rel: &str, needle: &str) {
+/// nor `contains` does. `origin` prefixes each panic, as in `compile`.
+#[track_caller]
+fn require_needle(origin: &str, needle: &str) {
     assert!(
         !needle.is_empty(),
-        "{rel}: an empty pattern or literal checks nothing"
+        "{origin}an empty pattern or literal checks nothing"
     );
     assert!(
         !needle.contains('\n'),
-        "{rel}: `{needle}` holds a newline; check each of its lines on its own"
+        "{origin}`{needle}` holds a newline; check each of its lines on its own"
     );
 }
 
 /// `grep -qE pattern file` must succeed.
+#[track_caller]
 pub fn assert_line(rel: &str, pattern: &str) {
-    require_needle(rel, pattern);
+    let re = compile(&format!("{rel}: "), pattern);
     assert!(
-        any_line(&read(rel), pattern),
+        first_line_matching(&read(rel), &re).is_some(),
         "{rel}: no line matches `{pattern}`"
     );
 }
 
 /// `! grep -qE pattern file`: no line of the file may match.
+#[track_caller]
 pub fn refute_line(rel: &str, pattern: &str) {
-    require_needle(rel, pattern);
+    let re = compile(&format!("{rel}: "), pattern);
     assert!(
-        !any_line(&read(rel), pattern),
+        first_line_matching(&read(rel), &re).is_none(),
         "{rel}: a line matches the forbidden `{pattern}`"
     );
 }
 
 /// `grep -qF literal file` must succeed.
+#[track_caller]
 pub fn assert_text(rel: &str, literal: &str) {
-    require_needle(rel, literal);
+    require_needle(&format!("{rel}: "), literal);
     assert!(read(rel).contains(literal), "{rel}: `{literal}` is missing");
 }
 
 /// `! grep -qF literal file`: the literal must be absent.
+#[track_caller]
 pub fn refute_text(rel: &str, literal: &str) {
-    require_needle(rel, literal);
+    require_needle(&format!("{rel}: "), literal);
     assert!(
         !read(rel).contains(literal),
         "{rel}: the forbidden `{literal}` is present"
@@ -159,18 +185,22 @@ pub fn refute_text(rel: &str, literal: &str) {
 /// body would pass every refute on it.
 #[track_caller]
 pub fn task_block(text: &str, name: &str) -> String {
+    assert!(!name.is_empty(), "an empty task name finds the first task");
     let header = format!("- name: \"{name}");
     let mut lines = text.split_terminator('\n');
     let Some(start) = lines.by_ref().find(|line| line.contains(header.as_str())) else {
         panic!("no task named \"{name}\"");
     };
     let indent = dash_column(start);
-    let next_task = Regex::new(r"^[[:space:]]*- name:").expect("a fixed pattern");
     lines
-        .take_while(|line| !(next_task.is_match(line) && dash_column(line) <= indent))
+        .take_while(|line| !(NEXT_TASK.is_match(line) && dash_column(line) <= indent))
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// A task header line, at any indent.
+static NEXT_TASK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[[:space:]]*- name:").expect("a fixed pattern"));
 
 /// 1-based column of the first `-` in `line`, 0 when it has none (awk's `index($0, "-")`).
 fn dash_column(line: &str) -> usize {
@@ -183,8 +213,8 @@ fn dash_column(line: &str) -> usize {
 /// which includes one line matching both patterns: the panic gives both line numbers.
 #[track_caller]
 pub fn assert_precedes(text: &str, a: &str, b: &str) {
-    let re_a = compile(a);
-    let re_b = compile(b);
+    let re_a = compile("", a);
+    let re_b = compile("", b);
     let Some(line_a) = first_line_matching(text, &re_a) else {
         panic!("no line matches `{a}`");
     };

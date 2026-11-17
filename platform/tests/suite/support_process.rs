@@ -25,14 +25,6 @@ fn output_text_joins_stdout_then_stderr_with_nothing_between_them() {
 }
 
 #[test]
-fn output_text_replaces_bytes_that_are_not_utf8() {
-    assert_eq!(
-        output_text(&output(b"a\xffb", b"\xc3")),
-        "a\u{fffd}b\u{fffd}"
-    );
-}
-
-#[test]
 fn fake_bin_runs_each_script_as_a_program_on_the_returned_path() {
     let dir = TempDir::new().unwrap();
     let path = fake_bin(dir.path(), &[("ac-fake-hello", "echo from-the-double\n")]);

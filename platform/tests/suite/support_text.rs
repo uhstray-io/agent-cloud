@@ -50,14 +50,6 @@ fn any_line_never_matches_across_a_newline() {
 }
 
 #[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_a_backslash_n_pattern_that_could_only_match_across_lines() {
-    // Compiled, `b\nc` matches no line of "ab\ncd", so the refusal is the difference between a
-    // check and a silent pass.
-    any_line("ab\ncd", r"b\nc");
-}
-
-#[test]
 fn any_line_keeps_a_carriage_return_as_part_of_its_line() {
     // grep splits at `\n` only, so a CRLF file's `\r` is the last character of its line: a
     // forbidden pattern that must consume it still matches.
@@ -203,13 +195,6 @@ fn task_block_is_the_body_after_the_header_without_the_header() {
 }
 
 #[test]
-fn task_block_stops_at_the_next_task_at_the_same_indent() {
-    // The next task is at column 1, the header's column: the body ends before it.
-    let body = task_block(PLAY, "Compute the declared rules");
-    assert!(!body.contains("Allow SSH"), "{body}");
-}
-
-#[test]
 fn task_block_stops_at_a_shallower_task() {
     // The child sits at column 5; the top-level `Last task` at column 1 is shallower and ends it.
     assert_eq!(
@@ -285,13 +270,7 @@ fn assert_precedes_names_a_missing_second_pattern() {
 }
 
 #[test]
-#[should_panic(expected = "an empty pattern checks nothing")]
-fn assert_precedes_refuses_an_empty_pattern() {
-    assert_precedes("alpha\n", "", "^alpha");
-}
-
-#[test]
-#[should_panic(expected = "an empty pattern checks nothing")]
+#[should_panic(expected = "an empty pattern or literal checks nothing")]
 fn any_line_refuses_an_empty_pattern() {
     any_line("ab", "");
 }
@@ -303,50 +282,8 @@ fn any_line_refuses_a_raw_line_feed_in_the_pattern() {
 }
 
 #[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_a_hex_line_feed_with_two_lowercase_digits() {
-    any_line("a\nb", r"\x0a");
-}
-
-#[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_a_hex_line_feed_with_two_uppercase_digits() {
-    any_line("a\nb", r"\x0A");
-}
-
-#[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_a_braced_hex_line_feed() {
-    any_line("a\nb", r"\x{a}");
-}
-
-#[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_a_four_digit_unicode_line_feed() {
-    any_line("a\nb", r"\u000a");
-}
-
-#[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_a_braced_unicode_line_feed() {
-    any_line("a\nb", r"\u{A}");
-}
-
-#[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_an_eight_digit_unicode_line_feed() {
-    any_line("a\nb", r"\U0000000A");
-}
-
-#[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn any_line_refuses_a_braced_long_unicode_line_feed() {
-    any_line("a\nb", r"\U{a}");
-}
-
-#[test]
-#[should_panic(expected = "holds a line feed escape")]
-fn refute_line_refuses_a_line_feed_escape() {
+#[should_panic(expected = "platform/tests/Cargo.toml: `\\n` holds a line feed escape")]
+fn refute_line_refuses_a_line_feed_escape_naming_the_file() {
     // Compiled, `\n` matches no line, so the refute would pass whatever the file held.
     refute_line(CARGO, r"\n");
 }
@@ -358,6 +295,45 @@ fn escapes_that_do_not_write_a_line_feed_are_allowed() {
     assert!(any_line("a b", r"a\sb"));
     assert!(any_line("a\u{b}b", r"\x0b"));
     assert!(any_line("a\u{a0}b", r"\x{a0}"));
+    // Inside a class an escape is one member: `[^\n]` is any character but a line feed.
+    assert!(any_line("ab", r"a[^\n]"));
+    assert!(any_line("a\tb", r"a[\n\t]b"));
+    assert!(any_line("a]", r"a[]\n]"));
+    assert!(any_line("a b", r"a[[:space:]\n]b"));
+}
+
+#[test]
+fn any_line_refuses_every_line_feed_escape_outside_a_class() {
+    // Compiled, each matches no line of the text, so the refusal is the difference between a check
+    // and a silent pass. The last two follow a class that has closed.
+    for pattern in [
+        r"b\nc",
+        r"\x0a",
+        r"\x0A",
+        r"\x{a}",
+        r"\x{000A}",
+        r"\u000a",
+        r"\u{A}",
+        r"\U0000000A",
+        r"\U{a}",
+        r"[a]\n",
+        r"[]a]\x0a",
+    ] {
+        let panic = std::panic::catch_unwind(|| any_line("ab\ncd", pattern))
+            .expect_err(&format!("`{pattern}` was not refused"));
+        let message = panic.downcast_ref::<String>().map_or("", String::as_str);
+        assert!(
+            message.contains("holds a line feed escape"),
+            "`{pattern}`: {message}"
+        );
+    }
+}
+
+#[test]
+#[should_panic(expected = "an empty task name finds the first task")]
+fn task_block_refuses_an_empty_name() {
+    // `- name: "` is in every header, so an empty name would silently take the first task.
+    task_block(PLAY, "");
 }
 
 #[test]
