@@ -1399,6 +1399,8 @@ pub(crate) fn never_runs(task: &Node) -> bool {
 /// Whether a task's `when` is a constant that is always false, alone or as any item of a `when:`
 /// list (the items are ANDed). A constant false is the YAML bool, the strings `false`, `False` or `0`,
 /// also wrapped once in `{{ }}`, or an integer comparison `a == b` / `a != b` that evaluates false.
+/// (ansible-core 2.20 aborts the run on an integer-valued condition such as `0` rather than skipping
+/// the task; either way the task does not run, so counting it as never running stays the safe side.)
 pub(crate) fn when_is_constant_false(task: &Node) -> bool {
     let is_false = |item: &Node| match item {
         Node::Bool(b) => !b,
@@ -1734,6 +1736,12 @@ fn seed_access_check_ends_the_play_before_any_write() {
         })
         .expect("the named end_play is in a play's task tree");
     let end_block = *chain.last().expect("a chain ends at the named task");
+    // The chain must end at the end_play the order check found: a same-named task elsewhere (in a
+    // rescue, which the chain does not walk) must not stand in for it.
+    assert!(
+        std::ptr::eq(end_block, seed_maps[end]),
+        "the named end_play the order check found is not the one in the play's task tree"
+    );
     // The named task is the end_play itself, gated on exactly the flag: a substring passed
     // `<flag> and false`, and a separate end_play elsewhere passed the order check (#1148 review).
     assert_eq!(

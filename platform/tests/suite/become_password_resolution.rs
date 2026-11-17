@@ -252,10 +252,11 @@ fn is_controller_only_guard(task: &Node) -> bool {
     included_file(task) == Some(format!("tasks/{CONTROLLER_ONLY_GUARD}").as_str())
 }
 
-/// The first task a play actually runs. `pre_tasks` run before `tasks`, and so do `roles`, which
-/// this check cannot see into, so a play with roles has none. A block is entered at its first
-/// item, and a leading controller-only guard include is skipped. A task or block that never runs
-/// (Ansible applies a block's `when` and `tags` to everything in it) is skipped too.
+/// The first task a play actually runs. `pre_tasks` run first; when they run nothing, `roles` run
+/// next, which this check cannot see into, so a play with roles has none; then `tasks`. A block is
+/// entered at its first item, a leading controller-only guard include is skipped, and so is a task
+/// or block with a constant-false `when`. Any other `when`, or a `never` tag, makes the answer
+/// unknown (Ansible applies a block's `when` and `tags` to everything in it), which fails closed.
 fn first_executed_task(play: &Node) -> Option<&Node> {
     let non_empty = |key: &str| {
         play.get(key)
@@ -279,7 +280,8 @@ fn first_executed_task(play: &Node) -> Option<&Node> {
 enum First<'a> {
     /// This task runs first.
     Found(&'a Node),
-    /// A `never` tag decides it by the run's `--tags`, so it cannot be known: fail closed.
+    /// A `never` tag (decided by the run's `--tags`) or a `when` that is not constant false (decided
+    /// by the run's variables) stands in the way, so it cannot be known: fail closed.
     Unknown,
     /// Nothing in the sequence runs.
     Nothing,
