@@ -393,6 +393,11 @@ fn a_free_form_git_command_is_not_argv() {
     assert!(!passes_argv(&task(
         "name: Commit\nansible.builtin.command:\n  cmd: git commit -m x\n"
     )));
+    // Both keys: ansible-core declares them mutually exclusive, so the task fails rather than runs
+    // the argv; it is not the argv form.
+    assert!(!passes_argv(&task(
+        "name: Commit\nansible.builtin.command:\n  argv: [git, commit, -m, x y]\n  cmd: git commit -m x\n"
+    )));
     assert!(passes_argv(&task(
         "name: Commit\nansible.builtin.command:\n  argv: [git, commit, -m, x y]\n"
     )));
