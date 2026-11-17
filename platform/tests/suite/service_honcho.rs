@@ -10,7 +10,8 @@
 //! Replaces `platform/tests/test_service_honcho.bats`. Structural only: file reads, no live deploy.
 //! A BATS `! grep ...` line that was not its test's last command never failed under `set -e`
 //! (CONTRIBUTING.md, "Writing BATS Tests"), so every check here that must not match is a real
-//! assertion. The service checks read the compose file as YAML, so each is bound to its service.
+//! assertion. The service-set, ports and healthcheck-presence checks read the compose file as
+//! YAML, so each is bound to its service.
 //!
 //! Port map (BATS @test → Rust fn):
 //!
@@ -87,19 +88,17 @@ fn refute_text(rel: &str, literal: &str) {
     );
 }
 
-/// The script at `rel`, after checking it is executable and starts `#!/usr/bin/env bash`.
-fn bash_script(rel: &str) -> String {
+/// The script at `rel` is executable and starts `#!/usr/bin/env bash`.
+fn bash_script(rel: &str) {
     let meta = std::fs::metadata(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"));
     assert!(
         meta.permissions().mode() & 0o111 != 0,
         "{rel} is not executable"
     );
-    let text = read(rel);
     assert!(
-        text.starts_with("#!/usr/bin/env bash"),
+        read(rel).starts_with("#!/usr/bin/env bash"),
         "{rel}: the first line is not `#!/usr/bin/env bash`"
     );
-    text
 }
 
 /// The compose file's services, by name.
