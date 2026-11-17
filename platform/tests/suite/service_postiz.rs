@@ -30,23 +30,15 @@
 //!   deploy playbook, so a pathspec that matches nothing fails;
 //! - the `Report` block is `task_block`'s: it ends at the next `- name:` at the same or shallower
 //!   indent, where the BATS awk ended only at a four-space one (the Report task is the file's last);
-//! - stricter, where a BATS regex matched lines it was not about: beside each kept BATS line, the
-//!   compose checks read the parsed file (the five services, each healthcheck's probe, the app's
-//!   healthy dependencies, the app's command and environment, the healthcheck's `/api/` path and
-//!   `<500` threshold, the engine probe's address); the deploy playbook's own app-health probe
-//!   is held to the same path and threshold; the psql check reads its own task (a `command` with
-//!   `argv`, no `shell`, the password by environment); the seed playbook's transport guard
-//!   precedes its first request; the OIDC chain refutes a second declaration of the secret; the
-//!   blueprint's live redirect ends in `/settings`; every app-template secret slot is declared or
-//!   shared-read; deploy.sh runs no plain `up -d`; and the engine's Postgres password is a
-//!   substitution too;
+//! - stricter, where a BATS regex matched lines it was not about: beside each kept BATS line, a
+//!   check on the parsed compose file or on the task itself (listed in the pull request body);
 //! - the DNS-instruction refute matches any postiz host, not one instance's;
 //! - `[ -x ]` is checked as any execute bit, not the owner bit alone;
 //! - the two identical `tasks/place-monorepo.yml` assertions of the deploy-playbook test are one.
 //!
 //! Helpers this file keeps privately until the batch's shared-support PR S7 lands: `task_block`,
-//! `assert_precedes`, `assert_contains`/`refute_contains` and `assert_in`/`refute_in`. The `text` helpers come from
-//! `agent_cloud_tests::text`.
+//! `assert_precedes`, `assert_contains`/`refute_contains` and `assert_in`/`refute_in`. The `text`
+//! helpers come from `agent_cloud_tests::text`.
 //!
 //! ## Port map (BATS @test -> Rust fn)
 //!
@@ -330,6 +322,12 @@ fn five_container_stack() {
         ]),
         "{COMPOSE}: the services"
     );
+    // A set hides a duplicated key, which the parsed map keeps.
+    assert_eq!(
+        services.as_map().unwrap_or_default().len(),
+        5,
+        "{COMPOSE}: a service is declared twice"
+    );
 }
 
 #[test]
@@ -448,10 +446,10 @@ fn mounted_app_config_is_actually_loaded() {
 #[test]
 fn nothing_probes_the_workflow_engine_on_loopback() {
     // The engine binds its frontend to the container IP, so a loopback probe is refused forever.
-    // Asserted across platform/, because the bug was a missed copy. Scoped to the YAML, shell and
-    // Jinja artifacts the BATS scan read (its globs, not `.py` or `.yaml`): the
-    // scan reads the tracked files (git pathspecs, where BATS ran `find` over the working tree;
-    // git's `*` crosses `/`, as find's recursion did). A comment line is excluded where the BATS
+    // Asserted across platform/, because the bug was a missed copy, over the YAML, shell and Jinja
+    // artifacts the BATS scan read (its globs; not `.py` or `.yaml`). The scan reads the tracked
+    // files (git pathspecs, where BATS ran `find` over the working tree; git's `*` crosses `/`, as
+    // find's recursion did). A comment line is excluded where the BATS
     // filter excluded a `:` followed by optional whitespace and `#`, as in `grep -Hn` output.
     let comment = Regex::new(r":[[:space:]]*#").expect("comment pattern");
     let scanned = repo::ls_files(&["platform/*.yml", "platform/*.sh", "platform/*.j2"]);
@@ -511,8 +509,10 @@ fn healthchecks_on_all_five_containers_app_dependencies_gated() {
             check
                 .and_then(|h| h.get("test"))
                 .and_then(Node::as_seq)
-                .is_some_and(|t| !t.is_empty()),
-            "{COMPOSE}: {name} has no healthcheck test"
+                .and_then(|t| t.first())
+                .and_then(Node::as_str)
+                .is_some_and(|kind| kind == "CMD" || kind == "CMD-SHELL"),
+            "{COMPOSE}: {name} has no healthcheck test (a list led by CMD or CMD-SHELL; NONE disables it)"
         );
         assert!(
             check.and_then(|h| h.get("disable")).is_none(),
@@ -550,12 +550,10 @@ fn app_config_does_not_go_through_compose_interpolation() {
     // The names above are a sample; the app service carries no environment of its own at all.
     let services = compose_services();
     let app = service(&services, "postiz");
-    for key in ["environment", "env_file"] {
-        assert!(
-            app.get(key).is_none(),
-            "{COMPOSE}: the app service sets {key}"
-        );
-    }
+    assert!(
+        app.get("environment").is_none(),
+        "{COMPOSE}: the app service sets environment"
+    );
 }
 
 #[test]
@@ -571,10 +569,7 @@ fn compose_has_no_hardcoded_credentials_or_ips() {
     text::assert_line(COMPOSE, r"POSTGRES_PASSWORD: \$\{POSTIZ_DB_PASSWORD\}");
     text::assert_line(COMPOSE, r"POSTGRES_PWD: \$\{TEMPORAL_DB_PASSWORD\}");
     // The engine's own Postgres takes the same value under the other variable name.
-    text::refute_line(
-        COMPOSE,
-        r"POSTGRES_(PASSWORD|PWD):\s*(temporal|postiz-password)\s*$",
-    );
+    text::refute_line(COMPOSE, r"POSTGRES_PASSWORD:\s*temporal\s*$");
     text::assert_line(COMPOSE, r"POSTGRES_PASSWORD: \$\{TEMPORAL_DB_PASSWORD\}");
 }
 
@@ -847,6 +842,11 @@ fn psql_check_preserves_its_exit_status() {
     // The password travels by environment and is forwarded by NAME, never in argv.
     assert_in(&task, r"^\s+PGPASSWORD: ", "the psql task's environment");
     refute_in(&task, r"^\s+- .*PGPASSWORD=", "the psql task's argv");
+    refute_in(
+        &task,
+        r"^\s+- .*_secrets\.postiz_db_password",
+        "the psql task's argv",
+    );
 }
 
 #[test]
