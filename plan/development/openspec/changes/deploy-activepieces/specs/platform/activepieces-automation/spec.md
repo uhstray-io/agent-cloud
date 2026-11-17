@@ -73,7 +73,7 @@ The host firewall SHALL admit the application port from the reverse proxy host a
 
 ### Requirement: Outbound traffic from the service follows a declared allowlist
 
-When the egress mode is enforce, outbound connections from the service host or any container of its compose project that the declared egress allowlist does not name SHALL be refused. The in-process SSRF guard MUST NOT be the only egress control, because upstream describes it as best-effort.
+When the egress mode is enforce, outbound connections from the service host or any container of its compose project that the declared egress allowlist does not name SHALL be refused. Whether the host firewall alone achieves this for the containers is an open question in plan 26 (O11). The in-process SSRF guard MUST NOT be the only egress control, because upstream describes it as best-effort.
 
 #### Scenario: An undeclared outbound connection is refused
 
