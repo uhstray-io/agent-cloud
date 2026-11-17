@@ -393,7 +393,7 @@ fn auth_payload(storage_privs: Value, vm_privs: Value) -> Value {
 fn authorize_passes_when_every_privilege_is_held() {
     let p = auth_payload(
         json!({"Datastore.AllocateSpace": 1}),
-        json!({"VM.Backup": 1}),
+        json!({"VM.Backup": 1, "VM.Audit": 1}),
     );
     assert_eq!(ok("authorize", &p)["authorized"], 1);
 }
@@ -404,7 +404,7 @@ fn authorize_counts_a_privilege_held_without_propagation() {
     // (pve-access-control RPCEnvironment.pm `check` tests only that the key is defined).
     let p = auth_payload(
         json!({"Datastore.AllocateSpace": 0}),
-        json!({"VM.Backup": 0}),
+        json!({"VM.Backup": 0, "VM.Audit": 0}),
     );
 
     // Act + Assert
@@ -560,26 +560,29 @@ fn a_storage_whose_sharing_is_unknown_counts_as_shared() {
 }
 
 #[test]
-fn authorize_requires_vm_audit_for_a_gone_guests_archive() {
-    // Arrange: the listed archive is a gone guest's. Proxmox's guest listing hides a guest the token
-    // lacks VM.Audit on, so without it "gone" may be a live guest the token cannot see.
-    let mut without = auth_payload(
-        json!({"Datastore.AllocateSpace": 1}),
-        json!({"VM.Backup": 1}),
-    );
-    without["volumes"][0]["source"] = json!("gone");
-    let mut with = auth_payload(
-        json!({"Datastore.AllocateSpace": 1}),
-        json!({"VM.Backup": 1, "VM.Audit": 0}),
-    );
-    with["volumes"][0]["source"] = json!("gone");
+fn authorize_requires_vm_audit_on_every_listed_guest() {
+    // Arrange: Proxmox's guest listing hides a guest the token lacks VM.Audit on. Both sources trust it:
+    // a gone guest may be a live one the token cannot see, and a declared pair's guest may be one an
+    // enabled all or pool job still backs up without the job's guest set showing it.
+    for source in ["gone", "declared"] {
+        let mut without = auth_payload(
+            json!({"Datastore.AllocateSpace": 1}),
+            json!({"VM.Backup": 1}),
+        );
+        without["volumes"][0]["source"] = json!(source);
+        let mut with = auth_payload(
+            json!({"Datastore.AllocateSpace": 1}),
+            json!({"VM.Backup": 1, "VM.Audit": 0}),
+        );
+        with["volumes"][0]["source"] = json!(source);
 
-    // Act
-    let text = refusal("authorize", &without);
+        // Act
+        let text = refusal("authorize", &without);
 
-    // Assert: refused without VM.Audit, naming it; authorized with it (a held privilege, propagate 0).
-    assert!(text.contains("VM.Audit on /vms/900"), "{text}");
-    assert_eq!(ok("authorize", &with)["authorized"], 1);
+        // Assert: refused without VM.Audit, naming it; authorized with it (a held privilege, propagate 0).
+        assert!(text.contains("VM.Audit on /vms/900"), "{source}: {text}");
+        assert_eq!(ok("authorize", &with)["authorized"], 1, "{source}");
+    }
 }
 
 #[test]

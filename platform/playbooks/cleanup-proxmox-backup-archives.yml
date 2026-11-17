@@ -22,9 +22,9 @@
 # value is refused, naming the current sha256. The sha256 is not secret.
 #
 # Permission: Proxmox deletes a backup volume with an owner vmid only for a token holding
-# Datastore.AllocateSpace on /storage/<storage> and VM.Backup on /vms/<vmid>. A gone guest's archive
+# Datastore.AllocateSpace on /storage/<storage> and VM.Backup on /vms/<vmid>. Every listed archive
 # also needs VM.Audit on /vms/<vmid>: the guest listing hides every guest the token lacks it on, so
-# without it a live guest would look gone. A vzdump job with no storage writes to vzdump's default
+# without it a live guest would look gone, or an enabled job backing it up would not be seen. A vzdump job with no storage writes to vzdump's default
 # storage, so it counts as covering every declared pair's storage. The run reads the
 # token's own effective privileges (GET /access/permissions) and refuses before any delete when one
 # is missing, naming each one with its path. After the deletes it re-reads the storages and refuses

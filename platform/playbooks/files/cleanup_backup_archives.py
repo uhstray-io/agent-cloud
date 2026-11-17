@@ -17,7 +17,8 @@ Three modes, JSON on stdin, JSON on stdout:
   authorize  {volumes, permission_reads} -> refused unless the token holds Datastore.AllocateSpace
              on /storage/<storage> and VM.Backup on /vms/<vmid> for every listed archive (the
              privileges Proxmox checks to delete a backup volume that has an owner vmid), and VM.Audit
-             on /vms/<vmid> for a gone guest's (without it the guest listing hides a live guest).
+             on /vms/<vmid> (without it the guest listing hides a live guest, so it would look gone and
+             no enabled job would be seen backing it up).
   verify     {volumes, before, after} -> refused if a listed archive is still present, or an archive
              not listed disappeared between the two content reads.
 
@@ -184,12 +185,12 @@ def authorize(data):
         privileges[path] = ((read.get("json") or {}).get("data") or {}).get(path) or {}
     missing = []
     for v in data["volumes"]:
-        needed = [("Datastore.AllocateSpace", f"/storage/{v['storage']}"), ("VM.Backup", f"/vms/{v['vmid']}")]
-        # A guest is "gone" because cluster/resources did not list it, and that listing leaves out every
-        # guest the token lacks VM.Audit on (pve-manager PVE/API2/Cluster.pm resources). Without VM.Audit on
-        # the guest, "gone" may be a live guest the token cannot see.
-        if v.get("source") == "gone":
-            needed.append(("VM.Audit", f"/vms/{v['vmid']}"))
+        # cluster/resources leaves out every guest the token lacks VM.Audit on (pve-manager
+        # PVE/API2/Cluster.pm resources). Both sources trust that listing: a gone guest is one it did not
+        # list, and an all or pool job's guests are taken from it for the enabled-job refusal of a
+        # declared pair. Without VM.Audit, either may be a live guest the token cannot see.
+        needed = [("Datastore.AllocateSpace", f"/storage/{v['storage']}"), ("VM.Backup", f"/vms/{v['vmid']}"),
+                  ("VM.Audit", f"/vms/{v['vmid']}")]
         for priv, path in needed:
             if path not in privileges:
                 raise Refusal(f"The token's permissions on {path} were not read.")
