@@ -48,7 +48,7 @@ with no proof path").
 
 #### Scenario: Long-running holder proven at renewal
 - WHEN renewal renews the content caller's leaf and the leaf is held by a long-running process (an Activepieces piece or the egress sidecar)
-- THEN renewal runs the declared reload, the serial in the mounted directory matches the one issued, and a request along that process's path, sent without an API key, answers 401 (the key check was reached) before the leaf is recorded as proven
+- THEN renewal runs the declared reload, which loads the files from the mounted directory into the holder, the serial in the mounted directory matches the one issued, and a request along that process's path, sent without an API key, answers 401 (the key check was reached) before the leaf is recorded as proven
 
 #### Scenario: Client leaf without a proof path
 - WHEN a client leaf is declared with no proof path
